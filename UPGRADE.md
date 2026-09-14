@@ -52,7 +52,7 @@ You don't strictly *have* to stop PM2 first — the migration runs at engine sta
 
 ### Why
 
-The system now treats a "fund" as a `(exchange, pair)` tuple instead of an `exchange` alone. State files move from `data/<exchange>/state.json` (etc.) into `data/<exchange>/<pair>/state.json` so multiple funds on the same exchange don't collide. The per-fund subdirectories also hold the regime state, fill ledger, chart buffer, transactions log, price caches, and the regime-engine-running auto-resume flag. The long-term candle store stays at the exchange level — it's shared context (not per-fund state) and its filename already carries the productId.
+The system now treats a "fund" as a `(exchange, pair)` tuple instead of an `exchange` alone. State files move from `data/<exchange>/state.json` (etc.) into `data/<exchange>/<pair>/state.json` so multiple funds on the same exchange don't collide. The per-fund subdirectories also hold the regime state, fill ledger, chart buffer, transactions log, and the regime-engine-running auto-resume flag. The long-term candle store and the backtest price caches stay at the exchange level — they're shared context (not per-fund state) and their filenames already carry the productId.
 
 ### What the migration does
 
@@ -66,11 +66,14 @@ For each configured exchange (`coinbase`, `gemini`, `cryptocom`):
     - `optimizer-cache.json`, `pending-corrective-buys.json`
     - `regime-engine-running.json` (the auto-resume flag — moves so resume still works)
     - `dry-run-state.json`
-    - All `*price-cache-*.json` files (e.g. `btc-price-cache-5min.json`, `btcusd-price-cache-1hour.json`)
     - All `.backup-*` files associated with the above
 4. Migration is idempotent — running it twice is a no-op.
 
 Note: `long-term-candles-*.json` is **not** moved — it's read and written at the exchange level (the productId is already in the filename, so funds on the same exchange don't collide). An earlier release incorrectly relocated it into the pair subdirectory; the migration now also does a one-time move-back for any install stuck in that state, skipping (and logging) the move if a rebuilt exchange-level copy already exists.
+
+The same applies to `*price-cache-*.json` (e.g. `btc-price-cache-5min.json`, `btcusd-price-cache-1hour.json`). These are **not** moved either — `getCacheFile` in `backtest-engine.js` has always resolved them at `data/<exchange>/`, and `GET /api/:exchange/backtest/prices` is exchange-scoped with no pair at all. An earlier release of this migration did relocate them, which stranded the entire accumulated candle history: the backtester logged `No cached data` and re-fetched the full range from the exchange REST API in 300-candle batches on every cold interval, and any depth older than the exchange's retention window was gone for good (backups exclude `*-price-cache*.json`, so no archive held a copy either). The migration now does a one-time un-stranding for any install in that state, and it runs even on installs that are otherwise fully migrated.
+
+Unlike the candle store, a price cache with copies on **both** sides is **merged**, not skipped — the stranded copy is usually the deeper one (months of history) while the exchange-level copy was rebuilt from whatever the exchange still serves, so discarding either would lose candles. The two `prices` arrays are unioned by timestamp (exchange-level rows win a collision, since they're the fresher generation), written through an atomic temp-file-plus-rename, and only then is the stranded copy deleted — a crash in between simply re-merges to the identical union on the next start. A cache file that doesn't parse, or that carries no `prices` array, is left exactly where it is and logged rather than merged. Re-running is a no-op.
 
 Separately, an earlier release of this same multi-pair migration moved `transactions.tsv` into the pair subdirectory above, but its reader/writer (`getLogFile`) had not yet been updated to look there — it kept resolving `data/<exchange>/transactions.tsv` and quietly recreated an empty file there on the next trade, so the Transactions page appeared to lose all history predating the upgrade. `getLogFile` now resolves the per-fund path like every other per-fund file, and the migration does a one-time reconciliation of any install left with both copies: if only the exchange-level file exists, it's moved into the pair directory; if both exist, the exchange-level file's rows (which are all necessarily newer than the move) are appended onto the per-fund file and the exchange-level copy is deleted. This reconciliation runs even on installs that are otherwise already fully migrated, and is idempotent — running it again is a no-op.
 

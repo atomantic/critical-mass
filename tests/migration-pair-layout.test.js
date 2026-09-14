@@ -41,13 +41,11 @@ const KNOWN_PER_FUND_FILES = [
   'regime-engine-running.json',
   'dry-run-state.json',
 ];
-const KNOWN_PER_FUND_FILE_PREFIXES = [
-  'btc-price-cache',
-  'btcusd-price-cache',
-  'btc-usdc-price-cache',
-  'cro-usd-price-cache',
-  'price-cache-',
-];
+// Deliberately empty: every prefix that ever lived here named an exchange-level
+// cache and was removed (long-term-candles in #535, price caches in #565). The
+// parity assertion below is what keeps a future re-add from silently stranding
+// another cache.
+const KNOWN_PER_FUND_FILE_PREFIXES = [];
 
 /** @type {string|null} */
 let tmpDir = null;
@@ -305,6 +303,153 @@ describe('long-term-candles cache is exchange-level, not per-fund (issue #535)',
       fs.readFileSync(path.join(exchangeDir, 'long-term-candles-btc-usdc.json'), 'utf8'),
       'stranded-candle-history',
     );
+  });
+});
+
+describe('price caches are exchange-level, not per-fund (issue #565)', () => {
+  const exchangeDir = () => path.join(tmpDir, EXCHANGE);
+  const fundDir = () => path.join(exchangeDir(), PAIR);
+  const CACHE = 'btc-usdc-price-cache-daily.json';
+
+  /** @param {number[]} timestamps */
+  const cacheEnvelope = (timestamps, marker = 'x') => JSON.stringify({
+    lastFetch: '2026-01-01T00:00:00.000Z',
+    intervalType: 'daily',
+    exchange: EXCHANGE,
+    productId: PAIR,
+    intervals: timestamps.length,
+    prices: timestamps.map((timestamp) => ({ timestamp, close: timestamp / 1000, marker })),
+  });
+
+  /** @param {string} file */
+  const readPrices = (file) => JSON.parse(fs.readFileSync(file, 'utf8')).prices;
+
+  it('isPerFundFile does not classify a price cache as per-fund', () => {
+    assert.equal(migration.isPerFundFile('btcusd-price-cache-5min.json'), false);
+    assert.equal(migration.isPerFundFile('btc-price-cache-1hour.json'), false);
+    assert.equal(migration.isPerFundFile('btc-usdc-price-cache-daily.json'), false);
+    assert.equal(migration.isPerFundFile('cro-usd-price-cache-10min.json'), false);
+    assert.equal(migration.isPerFundFile('price-cache-daily.json'), false);
+  });
+
+  it('a legacy layout leaves every *price-cache*.json at the exchange level after migration', () => {
+    writeLegacyFile(exchangeDir(), 'state.json', 'legacy-state');
+    const caches = ['btc-price-cache-5min.json', 'btcusd-price-cache-1hour.json', 'price-cache-daily.json'];
+    for (const name of caches) writeLegacyFile(exchangeDir(), name, `content-${name}`);
+
+    const result = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.equal(result.migrated, true);
+    for (const name of caches) {
+      assert.equal(
+        fs.readFileSync(path.join(exchangeDir(), name), 'utf8'),
+        `content-${name}`,
+        `${name} must stay at the exchange level`,
+      );
+      assert.ok(!fs.existsSync(path.join(fundDir(), name)), `${name} must not be moved into the fund subdirectory`);
+    }
+  });
+
+  it('un-strands a price cache left in the pair subdirectory with no exchange-level copy', () => {
+    writeLegacyFile(fundDir(), 'state.json', 'migrated-state');
+    writeLegacyFile(fundDir(), CACHE, cacheEnvelope([1, 2, 3]));
+
+    assert.equal(migration.needsPairMigration(EXCHANGE), false);
+
+    const result = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.equal(result.migrated, false);
+    assert.deepEqual(result.priceCacheRepair, { repairedFiles: 1, mergedFiles: 0, skippedFiles: [] });
+    assert.deepEqual(readPrices(path.join(exchangeDir(), CACHE)).map((c) => c.timestamp), [1, 2, 3]);
+    assert.ok(!fs.existsSync(path.join(fundDir(), CACHE)), 'the stranded copy must be gone');
+  });
+
+  it('merges both copies into the timestamp-union without dropping a candle from either side', () => {
+    writeLegacyFile(fundDir(), 'state.json', 'migrated-state');
+    // Stranded copy is the DEEPER one (the live-install shape): older history.
+    writeLegacyFile(fundDir(), CACHE, cacheEnvelope([10, 20, 30, 40], 'stranded'));
+    // Exchange-level copy was rebuilt from what the exchange still serves.
+    writeLegacyFile(exchangeDir(), CACHE, cacheEnvelope([30, 40, 50], 'rebuilt'));
+
+    const result = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.deepEqual(result.priceCacheRepair, { repairedFiles: 0, mergedFiles: 1, skippedFiles: [] });
+    const merged = readPrices(path.join(exchangeDir(), CACHE));
+    assert.deepEqual(merged.map((c) => c.timestamp), [10, 20, 30, 40, 50], 'union, ascending, no duplicates');
+    // The rebuilt (fresher) generation wins a timestamp collision.
+    assert.deepEqual(merged.map((c) => c.marker), ['stranded', 'stranded', 'rebuilt', 'rebuilt', 'rebuilt']);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(exchangeDir(), CACHE), 'utf8')).intervals, 5);
+    assert.ok(!fs.existsSync(path.join(fundDir(), CACHE)), 'the stranded copy must be deleted only after the merge landed');
+  });
+
+  it('is idempotent: re-running after a merge changes nothing and re-creates no pair-level file', () => {
+    writeLegacyFile(fundDir(), 'state.json', 'migrated-state');
+    writeLegacyFile(fundDir(), CACHE, cacheEnvelope([10, 20], 'stranded'));
+    writeLegacyFile(exchangeDir(), CACHE, cacheEnvelope([20, 30], 'rebuilt'));
+
+    migration.migrateExchangeToPairs(EXCHANGE);
+    const afterMerge = fs.readFileSync(path.join(exchangeDir(), CACHE), 'utf8');
+
+    const second = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.deepEqual(second.priceCacheRepair, { repairedFiles: 0, mergedFiles: 0, skippedFiles: [] });
+    assert.equal(fs.readFileSync(path.join(exchangeDir(), CACHE), 'utf8'), afterMerge, 'a second run must not rewrite the merged cache');
+    assert.ok(!fs.existsSync(path.join(fundDir(), CACHE)));
+  });
+
+  it('recovers from a crash between the merged write and the stranded delete without duplicating candles', () => {
+    writeLegacyFile(fundDir(), 'state.json', 'migrated-state');
+    writeLegacyFile(fundDir(), CACHE, cacheEnvelope([10, 20], 'stranded'));
+    writeLegacyFile(exchangeDir(), CACHE, cacheEnvelope([20, 30], 'rebuilt'));
+
+    // Simulate the crash: the atomic write lands, then the process dies before
+    // fs.rmSync removes the stranded copy.
+    const originalRmSync = fs.rmSync;
+    // @ts-expect-error deliberately replacing the real implementation
+    fs.rmSync = () => { throw new Error('simulated crash before delete'); };
+    assert.throws(() => migration.migrateExchangeToPairs(EXCHANGE), /simulated crash/);
+    fs.rmSync = originalRmSync;
+
+    // Post-crash state: the merged cache is parseable and complete, and the
+    // stranded copy is still there.
+    const postCrash = readPrices(path.join(exchangeDir(), CACHE));
+    assert.deepEqual(postCrash.map((c) => c.timestamp), [10, 20, 30]);
+    assert.ok(fs.existsSync(path.join(fundDir(), CACHE)), 'the crash left the stranded copy behind');
+
+    const resumed = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.deepEqual(resumed.priceCacheRepair, { repairedFiles: 0, mergedFiles: 1, skippedFiles: [] });
+    assert.deepEqual(readPrices(path.join(exchangeDir(), CACHE)).map((c) => c.timestamp), [10, 20, 30], 'no duplicated candles on re-merge');
+    assert.ok(!fs.existsSync(path.join(fundDir(), CACHE)), 'the resumed run finished the delete');
+  });
+
+  it('leaves an unparseable or prices-less cache untouched instead of merging it', () => {
+    writeLegacyFile(fundDir(), 'state.json', 'migrated-state');
+    const BROKEN = 'btc-price-cache-5min.json';
+    const NO_PRICES = 'price-cache-1hour.json';
+    writeLegacyFile(fundDir(), BROKEN, '{not json');
+    writeLegacyFile(exchangeDir(), BROKEN, cacheEnvelope([1]));
+    writeLegacyFile(fundDir(), NO_PRICES, cacheEnvelope([2]));
+    writeLegacyFile(exchangeDir(), NO_PRICES, JSON.stringify({ lastFetch: 'x' }));
+
+    const result = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.equal(result.priceCacheRepair.mergedFiles, 0);
+    assert.deepEqual(result.priceCacheRepair.skippedFiles.sort(), [BROKEN, NO_PRICES].sort());
+    assert.equal(fs.readFileSync(path.join(fundDir(), BROKEN), 'utf8'), '{not json', 'the corrupt stranded copy is left in place');
+    assert.deepEqual(readPrices(path.join(exchangeDir(), BROKEN)).map((c) => c.timestamp), [1], 'the good exchange-level copy is untouched');
+    assert.deepEqual(readPrices(path.join(fundDir(), NO_PRICES)).map((c) => c.timestamp), [2], 'the stranded copy is never deleted when the target has no prices array');
+    assert.equal(fs.readFileSync(path.join(exchangeDir(), NO_PRICES), 'utf8'), JSON.stringify({ lastFetch: 'x' }));
+  });
+
+  it('leaves backup/temp variants of a price cache alone', () => {
+    writeLegacyFile(fundDir(), 'state.json', 'migrated-state');
+    writeLegacyFile(fundDir(), 'btc-price-cache-5min.json.backup-1234', 'old-bytes');
+
+    const result = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.deepEqual(result.priceCacheRepair, { repairedFiles: 0, mergedFiles: 0, skippedFiles: [] });
+    assert.equal(fs.readFileSync(path.join(fundDir(), 'btc-price-cache-5min.json.backup-1234'), 'utf8'), 'old-bytes');
   });
 });
 

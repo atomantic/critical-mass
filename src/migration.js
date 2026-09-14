@@ -21,6 +21,7 @@
 const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('./paths');
+const { upsertCandles } = require('./candle-utils');
 
 const KEYS_DIR = DATA_DIR; // Keys stored alongside data
 
@@ -313,22 +314,28 @@ const PER_FUND_FILES = [
 /**
  * Per-fund file glob prefixes. Any file in data/<exchange>/ whose name starts
  * with one of these prefixes is moved into the fund subdirectory during
- * multi-pair migration. This catches per-product price caches which include
- * the productId in their filename.
+ * multi-pair migration.
  *
- * NOTE: long-term-candles-*.json is deliberately NOT in this list — it is
- * read/written at the exchange level (long-term-candle-store.js:cachePath),
- * not per-fund, even though its filename embeds the productId. See
- * repairStrandedLongTermCandles below for un-stranding installs affected by
- * an earlier version of this migration that moved it incorrectly.
+ * Deliberately EMPTY. Two families of exchange-level caches used to be listed
+ * here and both were wrong, for the same reason: their filenames already embed
+ * the productId, so funds on one exchange cannot collide, and their accessors
+ * resolve the exchange level — never a pair subdirectory.
+ *
+ *  - long-term-candles-*.json — read/written by long-term-candle-store.js
+ *    (cachePath). Removed in #535.
+ *  - *-price-cache-*.json — read/written by backtest-engine.js (getCacheFile,
+ *    via getExchangeDataDir) and served by the exchange-scoped route
+ *    GET /api/:exchange/backtest/prices. Removed in #565.
+ *
+ * Installs migrated by an earlier release still have those files stranded in a
+ * pair subdirectory; repairStrandedLongTermCandles / repairStrandedPriceCaches
+ * below un-strand them. The array and its parity guard in
+ * tests/migration-pair-layout.test.js are kept so re-adding an exchange-level
+ * cache here fails loudly instead of silently stranding it a third time.
+ *
+ * @type {string[]}
  */
-const PER_FUND_FILE_PREFIXES = [
-  'btc-price-cache',
-  'btcusd-price-cache',
-  'btc-usdc-price-cache',
-  'cro-usd-price-cache',
-  'price-cache-',
-];
+const PER_FUND_FILE_PREFIXES = [];
 
 /**
  * Check if a filename should be migrated to a fund subdirectory.
@@ -336,7 +343,7 @@ const PER_FUND_FILE_PREFIXES = [
  *   - Exact PER_FUND_FILES names (state.json, regime-state.json, ...)
  *   - Names starting with a per-fund file followed by '.' or '-' (catches
  *     .bak, .backup, .backup-1234, .tmp, etc.)
- *   - Names starting with a PER_FUND_FILE_PREFIX (price-cache, long-term-candles)
+ *   - Names starting with a PER_FUND_FILE_PREFIX (currently none — see above)
  * @param {string} filename
  * @returns {boolean}
  */
@@ -346,7 +353,7 @@ const isPerFundFile = (filename) => {
   for (const f of PER_FUND_FILES) {
     if (filename.startsWith(f + '.') || filename.startsWith(f + '-')) return true;
   }
-  // Match prefix-based files (price caches, long-term candles, with any suffix)
+  // Match prefix-based files (with any suffix)
   for (const prefix of PER_FUND_FILE_PREFIXES) {
     if (filename.startsWith(prefix)) return true;
   }
@@ -420,57 +427,186 @@ const needsPairMigration = (exchange) => {
 };
 
 /**
- * Un-strand long-term-candles-*.json files that an earlier version of the
- * pair migration incorrectly relocated into a `data/<exchange>/<pair>/`
- * subdirectory. The store is exchange-level (long-term-candle-store.js
- * cachePath), not per-fund — the productId in the filename already keeps
- * multiple funds on one exchange from colliding, so there's no reason for
- * the file to live under a pair subdirectory.
+ * Walk every pair subdirectory under `data/<exchange>/` and rename any file
+ * that belongs at the exchange level back up one directory, un-stranding
+ * installs that ran an earlier version of the pair migration.
  *
- * Scans every pair subdirectory under `data/<exchange>/` and renames any
- * `long-term-candles-*.json` file back up to the exchange level. If a file
- * already exists at the exchange-level target (e.g. it was rebuilt from
- * scratch after being stranded), the stranded copy is skipped and logged
- * rather than overwriting — a rebuilt cache is at least as fresh.
+ * Shared by both un-stranding repairs — they differ only in which filenames
+ * they claim (`matches`) and how they reconcile a name that already exists at
+ * the exchange-level target (`reconcile`, called only in that case). The move
+ * itself is a single `renameSync`, so there is no partial state a crash could
+ * leave; any multi-step reconciliation is the `reconcile` callback's problem.
  *
  * Idempotent and safe to call unconditionally on every engine startup,
  * independent of whether the rest of the pair migration has anything to do
  * (an install can be fully migrated already and still have a stranded file
  * from before this repair existed).
  *
- * @param {string} exchange
- * @returns {{repairedFiles: number, skippedFiles: string[]}}
+ * @param {Object} params
+ * @param {string} params.exchange
+ * @param {string} params.label - Log prefix, e.g. 'Pair Migration'
+ * @param {(filename: string) => boolean} params.matches - Claims a stranded filename
+ * @param {(ctx: {src: string, dst: string, name: string, pairName: string, exchange: string, label: string}) => 'merged'|'skipped'} params.reconcile
+ * @returns {{repairedFiles: number, mergedFiles: number, skippedFiles: string[]}}
  */
-const repairStrandedLongTermCandles = (exchange) => {
+const unstrandExchangeLevelFiles = ({ exchange, label, matches, reconcile }) => {
   const exchangeDir = path.join(DATA_DIR, exchange);
+  /** @type {string[]} */
   const skippedFiles = [];
   let repairedFiles = 0;
-  if (!fs.existsSync(exchangeDir)) return { repairedFiles, skippedFiles };
+  let mergedFiles = 0;
+  if (!fs.existsSync(exchangeDir)) return { repairedFiles, mergedFiles, skippedFiles };
 
   const pairDirs = fs.readdirSync(exchangeDir, { withFileTypes: true }).filter((e) => e.isDirectory());
   for (const pairDir of pairDirs) {
     const pairPath = path.join(exchangeDir, pairDir.name);
     const strandedFiles = fs.readdirSync(pairPath, { withFileTypes: true })
-      .filter((e) => e.isFile() && e.name.startsWith('long-term-candles'));
+      .filter((e) => e.isFile() && matches(e.name));
 
     for (const file of strandedFiles) {
       const src = path.join(pairPath, file.name);
       const dst = path.join(exchangeDir, file.name);
 
       if (fs.existsSync(dst)) {
-        console.log(`  ⚠️  [Pair Migration] Skip un-stranding (exchange-level file already exists): ${pairDir.name}/${file.name}`);
-        skippedFiles.push(file.name);
+        const outcome = reconcile({ src, dst, name: file.name, pairName: pairDir.name, exchange, label });
+        if (outcome === 'merged') mergedFiles++;
+        else skippedFiles.push(file.name);
         continue;
       }
 
       fs.renameSync(src, dst);
       repairedFiles++;
-      console.log(`  ✓ [Pair Migration] Un-stranded ${pairDir.name}/${file.name} → ${exchange}/${file.name}`);
+      console.log(`  ✓ [${label}] Un-stranded ${pairDir.name}/${file.name} → ${exchange}/${file.name}`);
     }
   }
 
+  return { repairedFiles, mergedFiles, skippedFiles };
+};
+
+/**
+ * Conflict rule for caches the engine can rebuild wholesale: keep the
+ * exchange-level copy (it was rebuilt after the stranding, so it is at least
+ * as fresh) and leave the stranded copy on disk rather than discarding it.
+ * @param {{name: string, pairName: string, label: string}} ctx
+ * @returns {'skipped'}
+ */
+const keepRebuiltExchangeCopy = ({ name, pairName, label }) => {
+  console.log(`  ⚠️  [${label}] Skip un-stranding (exchange-level file already exists): ${pairName}/${name}`);
+  return 'skipped';
+};
+
+/**
+ * True for a price-cache file as `getCacheFile` (backtest-engine.js) names it:
+ * `<productSlug>-price-cache-<interval>.json`, plus the un-slugged legacy
+ * `price-cache-<interval>.json` shape. Backup/temp variants
+ * (`....json.backup-1234`) are deliberately excluded — only a live cache
+ * envelope is ever read or merged.
+ * @param {string} filename
+ * @returns {boolean}
+ */
+const isPriceCacheFile = (filename) => filename.includes('price-cache') && filename.endsWith('.json');
+
+/**
+ * Parse a price-cache envelope, returning null when the file is unreadable,
+ * is not JSON, or carries no `prices` array. A null means "leave this file
+ * exactly where it is" — never merge, never delete.
+ * @param {string} file
+ * @returns {{prices: Array}|null}
+ */
+const readPriceCacheEnvelope = (file) => {
+  // try/catch is unavoidable here: a corrupt cache must degrade to "left in
+  // place and logged", not abort the engine's startup migration.
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Array.isArray(parsed?.prices) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+/** @param {Array} prices @returns {Array} rows `upsertCandles` can key by timestamp */
+const keyableCandles = (prices) => prices.filter((c) => Number.isFinite(c?.timestamp));
+
+/**
+ * Conflict rule for price caches (issue #565): merge, never skip. Unlike the
+ * long-term candle store, the stranded copy is typically the DEEPER one — it
+ * accumulated for months before the migration hid it, while the exchange-level
+ * copy was rebuilt from whatever depth the exchange REST API still serves.
+ * Skipping would discard that history permanently, since `createBackup`
+ * excludes `*-price-cache*.json` so no archive holds it either.
+ *
+ * The two `prices` arrays are unioned by timestamp with `upsertCandles`; the
+ * exchange-level (rebuilt, fresher) rows win a collision, the stranded rows
+ * supply the depth. The union is written through `atomicWriteSync` and the
+ * stranded copy deleted only once that write has landed, so a crash in between
+ * re-enters here on the next run and re-merges to the identical union — the
+ * timestamp keying makes a repeat merge idempotent by construction.
+ *
+ * @param {{src: string, dst: string, name: string, pairName: string, exchange: string, label: string}} ctx
+ * @returns {'merged'|'skipped'}
+ */
+const mergeStrandedPriceCache = ({ src, dst, name, pairName, exchange, label }) => {
+  const stranded = readPriceCacheEnvelope(src);
+  const exchangeLevel = readPriceCacheEnvelope(dst);
+  if (!stranded || !exchangeLevel) {
+    const unreadable = [!stranded && `${pairName}/${name}`, !exchangeLevel && `${exchange}/${name}`].filter(Boolean).join(', ');
+    console.log(`  ⚠️  [${label}] Left ${pairName}/${name} in place — not a mergeable cache envelope (unparseable or no prices array: ${unreadable})`);
+    return 'skipped';
+  }
+
+  const strandedRows = keyableCandles(stranded.prices);
+  const exchangeRows = keyableCandles(exchangeLevel.prices);
+  const merged = upsertCandles(strandedRows, exchangeRows);
+  const dropped = (stranded.prices.length - strandedRows.length) + (exchangeLevel.prices.length - exchangeRows.length);
+
+  // Lazy require: state-tracker requires migration at module load, so a
+  // top-level require here would form a cycle.
+  const { atomicWriteSync } = require('./state-tracker');
+  atomicWriteSync(dst, JSON.stringify({ ...exchangeLevel, intervals: merged.length, prices: merged }, null, 2));
+  fs.rmSync(src);
+
+  const droppedNote = dropped > 0 ? `, ${dropped} malformed row(s) skipped` : '';
+  console.log(`  ✓ [${label}] Merged ${pairName}/${name} → ${exchange}/${name}: ${strandedRows.length} stranded + ${exchangeRows.length} exchange-level = ${merged.length} candle(s)${droppedNote}`);
+  return 'merged';
+};
+
+/**
+ * Un-strand long-term-candles-*.json files that an earlier version of the
+ * pair migration incorrectly relocated into a `data/<exchange>/<pair>/`
+ * subdirectory (issue #535). The store is exchange-level
+ * (long-term-candle-store.js cachePath), not per-fund.
+ *
+ * @param {string} exchange
+ * @returns {{repairedFiles: number, skippedFiles: string[]}}
+ */
+const repairStrandedLongTermCandles = (exchange) => {
+  const { repairedFiles, skippedFiles } = unstrandExchangeLevelFiles({
+    exchange,
+    label: 'Pair Migration',
+    matches: (name) => name.startsWith('long-term-candles'),
+    reconcile: keepRebuiltExchangeCopy,
+  });
   return { repairedFiles, skippedFiles };
 };
+
+/**
+ * Un-strand `*-price-cache-*.json` files that an earlier version of the pair
+ * migration relocated into a `data/<exchange>/<pair>/` subdirectory (issue
+ * #565). `getCacheFile` (backtest-engine.js) has always resolved them through
+ * `getExchangeDataDir`, so once moved they became invisible: `getPriceData`
+ * logged `No cached data` and re-fetched the whole range in 300-candle
+ * batches, and any depth older than the exchange's retention window was lost
+ * outright.
+ *
+ * @param {string} exchange
+ * @returns {{repairedFiles: number, mergedFiles: number, skippedFiles: string[]}}
+ */
+const repairStrandedPriceCaches = (exchange) => unstrandExchangeLevelFiles({
+  exchange,
+  label: 'Price Cache Repair',
+  matches: isPriceCacheFile,
+  reconcile: mergeStrandedPriceCache,
+});
 
 /**
  * Split TSV file content into a header line and its data rows, tolerating the
@@ -614,18 +750,23 @@ const repairStrandedTransactionLog = (exchange, pair) => {
  * Cleans up empty pre-existing pair subdirectories that may have been
  * accidentally created by the API server before migration ran.
  *
- * Also un-strands any long-term-candles-*.json files a previous version of
- * this migration incorrectly moved into a pair subdirectory (see
- * repairStrandedLongTermCandles), and reconciles a stranded exchange-level
- * transactions.tsv (see repairStrandedTransactionLog) — both run regardless
- * of whether the rest of the migration below has anything to do, so an
- * already-migrated exchange still gets reconciled.
+ * Also un-strands the exchange-level caches a previous version of this
+ * migration incorrectly moved into a pair subdirectory —
+ * long-term-candles-*.json (repairStrandedLongTermCandles) and
+ * *-price-cache-*.json (repairStrandedPriceCaches) — and reconciles a stranded
+ * exchange-level transactions.tsv (repairStrandedTransactionLog). All three
+ * run regardless of whether the rest of the migration below has anything to
+ * do, so an already-migrated exchange still gets reconciled.
  *
  * @param {string} exchange
- * @returns {{migrated: boolean, defaultPair: string|null, movedFiles: number, reason?: string, skippedFiles?: string[], repairedFiles?: number, skippedRepairFiles?: string[], transactionLogRepair?: {repaired: boolean, action: string, rowsAppended: number}}}
+ * @returns {{migrated: boolean, defaultPair: string|null, movedFiles: number, reason?: string, skippedFiles?: string[], repairedFiles?: number, skippedRepairFiles?: string[], priceCacheRepair?: {repairedFiles: number, mergedFiles: number, skippedFiles: string[]}, transactionLogRepair?: {repaired: boolean, action: string, rowsAppended: number}}}
  */
 const migrateExchangeToPairs = (exchange) => {
   const { repairedFiles, skippedFiles: skippedRepairFiles } = repairStrandedLongTermCandles(exchange);
+  // Runs before the needsPairMigration branch below so an install that is
+  // already fully migrated — the only state in which a price cache CAN be
+  // stranded — still gets repaired (issue #565).
+  const priceCacheRepair = repairStrandedPriceCaches(exchange);
 
   // Resolve the default pair from config (legacy productId field) up front —
   // both the no-op early-return below and the main migration path need it to
@@ -648,6 +789,7 @@ const migrateExchangeToPairs = (exchange) => {
       reason: 'no-op (already migrated or empty)',
       repairedFiles,
       skippedRepairFiles,
+      priceCacheRepair,
       transactionLogRepair,
     };
   }
@@ -661,6 +803,7 @@ const migrateExchangeToPairs = (exchange) => {
       reason: `Cannot determine default pair for ${exchange} (config.exchanges.${exchange}.productId missing)`,
       repairedFiles,
       skippedRepairFiles,
+      priceCacheRepair,
       transactionLogRepair: { repaired: false, action: 'none', rowsAppended: 0 },
     };
   }
@@ -718,7 +861,7 @@ const migrateExchangeToPairs = (exchange) => {
   // skipped transactions.tsv (both a stranded and a per-fund copy exist).
   const transactionLogRepair = repairStrandedTransactionLog(exchange, defaultPair);
 
-  return { migrated: true, defaultPair, movedFiles: moved, skippedFiles, repairedFiles, skippedRepairFiles, transactionLogRepair };
+  return { migrated: true, defaultPair, movedFiles: moved, skippedFiles, repairedFiles, skippedRepairFiles, priceCacheRepair, transactionLogRepair };
 };
 
 /**
@@ -745,6 +888,7 @@ module.exports = {
   migrateExchangeToPairs,
   normalizeExchangeTreeToPairs,
   repairStrandedLongTermCandles,
+  repairStrandedPriceCaches,
   repairStrandedTransactionLog,
   isPerFundFile,
   PER_FUND_FILES,
