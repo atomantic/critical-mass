@@ -154,6 +154,22 @@ Archives created by this release and later need neither step.
 
 ### Future archives
 
-An archive whose manifest version is newer than the running build is rejected with an actionable error and no destination changes — upgrade critical-mass before restoring it.
+An archive whose **manifest version** is newer than the running build is rejected with an actionable error and no destination changes — upgrade critical-mass before restoring it.
+
+Inside the manifest, the configuration snapshot carries **two** markers, and they answer different questions:
+
+| Marker | Meaning | Bump it when |
+| --- | --- | --- |
+| `version` (`CONFIG_SNAPSHOT_VERSION`) | The snapshot's *shape*. A mismatch is fatal — the reader cannot interpret the payload at all. | A field is **removed**, **re-typed**, or **moved**. |
+| `fieldRevision` (`CONFIG_SNAPSHOT_FIELD_REVISION`) | How many fields the snapshot allowlists carry. | A field is **added** to `DEFAULTS`, `REGIME_DEFAULTS` or `GLOBAL_DEFAULTS`. Never bump `version` for this. |
+
+**The rule for contributors: adding a config field bumps the field revision, never the snapshot version; removing or re-typing one bumps the version.** A test asserts the field-revision constant equals the combined allowlist size, so adding a key without bumping it fails CI.
+
+This makes restoring *across* builds work in both directions:
+
+- **Older archive → newer build.** Its fields are a subset of what this build knows; it restores unchanged.
+- **Newer archive → older build** (the multi-machine and rollback cases). Because the archive's field revision is strictly greater than the running build's, a setting the build has no concept of is **ignored rather than fatal**: it is dropped from the reconstructed configuration, the machine keeps its own default for it, and the restore dialog lists the dropped settings as a pre-restore warning (`droppedFields`). The restore itself proceeds. Upgrade the destination first if you need those settings applied.
+
+Tolerance stops at the allowlist: a dropped field is **never** written to `data/config.json`, so a crafted archive still cannot smuggle a credential in through an unknown key. At an equal or older field revision an unknown key remains a hard rejection, as before.
 
 ---

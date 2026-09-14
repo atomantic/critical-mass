@@ -455,6 +455,24 @@ function BackupRestore() {
               </div>
             )
           )}
+          {compatibility?.droppedFields?.length > 0 && !compatibilityLoading && (
+            <div className="bg-amber-900/30 border border-amber-700 rounded-lg p-4 mb-4">
+              <p className="text-sm font-semibold text-amber-200 mb-2">
+                This archive was written by a newer build of critical-mass
+                {compatibility.snapshotFieldRevision ? ` (field revision ${compatibility.snapshotFieldRevision})` : ''}.
+                {' '}{compatibility.droppedFields.length} setting(s) it carries are not understood here and will be ignored —
+                this machine keeps its own defaults for them.
+              </p>
+              <ul className="text-xs text-amber-200/90 font-mono space-y-1">
+                {compatibility.droppedFields.map(field => (
+                  <li key={field}>{field}</li>
+                ))}
+              </ul>
+              <p className="text-xs text-amber-200/70 mt-2">
+                Everything else restores normally. Upgrade this machine first if you need those settings applied.
+              </p>
+            </div>
+          )}
           {compatibility?.legacyLayout && !compatibilityLoading && (
             <div className="bg-amber-900/30 border border-amber-700 rounded-lg p-4 mb-4">
               <p className="text-sm font-semibold text-amber-200 mb-2">

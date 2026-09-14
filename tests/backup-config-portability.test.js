@@ -21,6 +21,11 @@ const {
   normalizeToMultiExchange,
   normalizeExchangeBlock,
   deepMerge,
+  CONFIG_SNAPSHOT_VERSION,
+  CONFIG_SNAPSHOT_FIELD_REVISION,
+  SNAPSHOT_FUND_KEYS,
+  SNAPSHOT_REGIME_KEYS,
+  SNAPSHOT_GLOBAL_KEYS,
 } = require('../src/config-utils');
 
 /** A source install whose ONLY fund lives in the machine-local base config. */
@@ -521,5 +526,145 @@ describe('backup config portability — disclosing and gating removed funds (#53
     assert.equal(result.success, true, result.error);
     assert.equal(result.configRestored, true);
     assert.deepEqual(fundIdentities(dest), ['coinbase/ETH-USDC']);
+  });
+});
+
+// Covers issue #567: the snapshot allowlists are derived from the live defaults
+// objects, so they widen on every ordinary feature commit while
+// CONFIG_SNAPSHOT_VERSION deliberately stays put. A second marker —
+// CONFIG_SNAPSHOT_FIELD_REVISION — lets an older build recognize "written by a
+// newer build" and ignore the one knob it does not know instead of refusing the
+// entire restore.
+describe('backup config portability — newer-build archives (#567)', () => {
+  /** Rewrite an archive's manifest with the install's own snapshot, mutated. */
+  const remanifest = (install, filename, mutate) => {
+    const config = buildConfigSnapshot(effectiveConfig(install));
+    mutate(config);
+    replaceManifest(install, filename, JSON.stringify({
+      manifestVersion: 1, createdAt: new Date().toISOString(), config,
+    }));
+  };
+
+  /** An archive from a build that added one regime knob and one fund field. */
+  const newerBuildArchive = (install, filename, revision = CONFIG_SNAPSHOT_FIELD_REVISION + 1) =>
+    remanifest(install, filename, (config) => {
+      config.fieldRevision = revision;
+      const fund = config.exchanges.coinbase.pairs['ETH-USDC'];
+      fund.someNewFundField = 'from-the-future';
+      fund.regime.someNewKnob = 42;
+    });
+
+  /** The destination's override file, verbatim. */
+  const overrideText = (install) => fs.readFileSync(path.join(install.dataDir, 'config.json'), 'utf8');
+
+  it('emits both markers and keeps the field revision in step with the allowlists', () => {
+    // The literal constant must track the lists it describes, so adding a key
+    // to REGIME_DEFAULTS without bumping the revision fails CI right here.
+    assert.equal(
+      CONFIG_SNAPSHOT_FIELD_REVISION,
+      SNAPSHOT_FUND_KEYS.length + SNAPSHOT_REGIME_KEYS.length + SNAPSHOT_GLOBAL_KEYS.length,
+    );
+    const snapshot = buildConfigSnapshot({});
+    assert.equal(snapshot.version, CONFIG_SNAPSHOT_VERSION);
+    assert.equal(snapshot.fieldRevision, CONFIG_SNAPSHOT_FIELD_REVISION);
+  });
+
+  it('restores a higher-revision archive, dropping and reporting the fields it does not know', () => {
+    const source = makeInstall('source', SOURCE_BASE);
+    const created = createBackup({ paths: source.paths });
+    newerBuildArchive(source, created.filename);
+
+    const dest = makeInstall('dest', DEST_BASE);
+    transferArchive(source, dest, created.filename);
+
+    const warnings = [];
+    const result = restoreBackup(created.filename, {
+      paths: dest.paths,
+      acceptFundRemoval: true,
+      logger: { info: () => {}, warn: (message) => warnings.push(message), error: () => {} },
+    });
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.configRestored, true);
+    assert.deepEqual(
+      [...result.droppedFields].sort(),
+      ['coinbase/ETH-USDC.regime.someNewKnob', 'coinbase/ETH-USDC.someNewFundField'],
+    );
+    assert.equal(warnings.filter(w => w.includes('someNewKnob')).length, 1);
+
+    // The archived fund still lands intact — only the unknown knobs are gone.
+    assert.deepEqual(fundIdentities(dest), ['coinbase/ETH-USDC']);
+    assert.doesNotMatch(overrideText(dest), /someNewKnob|someNewFundField/);
+    assert.equal(JSON.parse(overrideText(dest)).exchanges.coinbase.pairs['ETH-USDC'].totalAllocation, 1234);
+  });
+
+  it('still rejects the same unknown keys at the current or an older field revision', () => {
+    for (const revision of [CONFIG_SNAPSHOT_FIELD_REVISION, CONFIG_SNAPSHOT_FIELD_REVISION - 1]) {
+      const source = makeInstall(`source-${revision}`, SOURCE_BASE);
+      const created = createBackup({ paths: source.paths });
+      newerBuildArchive(source, created.filename, revision);
+
+      const dest = makeInstall(`dest-${revision}`, DEST_BASE);
+      transferArchive(source, dest, created.filename);
+      const before = overrideText(dest);
+
+      const result = restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true });
+      assert.equal(result.success, false, `revision ${revision} must stay fatal`);
+      assert.equal(result.code, 'config-snapshot-invalid');
+      assert.match(result.error, /carries unsupported field "someNewFundField"/);
+      assert.equal(overrideText(dest), before, 'destination must be untouched');
+    }
+  });
+
+  it('never persists a credential-bearing global key a newer-build archive carries', () => {
+    const source = makeInstall('source', SOURCE_BASE);
+    const created = createBackup({ paths: source.paths });
+    remanifest(source, created.filename, (config) => {
+      config.fieldRevision = CONFIG_SNAPSHOT_FIELD_REVISION + 1;
+      // `notifications` holds the Telegram bot token and is deliberately outside
+      // the allowlist. Tolerating a newer build's extra fields must NOT become a
+      // way to smuggle one into data/config.json.
+      config.global.notifications = { telegram: { botToken: 'INJECTED' } };
+    });
+
+    const dest = makeInstall('dest', DEST_BASE);
+    transferArchive(source, dest, created.filename);
+
+    const result = restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true });
+    assert.equal(result.success, true, result.error);
+    assert.deepEqual(result.droppedFields, ['global.notifications']);
+    assert.doesNotMatch(overrideText(dest), /INJECTED|notifications/);
+  });
+
+  it('inspectBackup reports a higher-revision archive as compatible with a warning', () => {
+    const source = makeInstall('source', SOURCE_BASE);
+    const created = createBackup({ paths: source.paths });
+    newerBuildArchive(source, created.filename);
+
+    const dest = makeInstall('dest', DEST_BASE);
+    transferArchive(source, dest, created.filename);
+
+    const report = inspectBackup(created.filename, { paths: dest.paths });
+    assert.equal(report.success, true);
+    assert.equal(report.compatible, true);
+    assert.equal(report.error, undefined);
+    assert.equal(report.snapshotFieldRevision, CONFIG_SNAPSHOT_FIELD_REVISION + 1);
+    assert.deepEqual(
+      [...report.droppedFields].sort(),
+      ['coinbase/ETH-USDC.regime.someNewKnob', 'coinbase/ETH-USDC.someNewFundField'],
+    );
+    // The archive's own funds are still disclosed normally.
+    assert.deepEqual(report.funds.map(f => `${f.exchange}/${f.pair}`), ['coinbase/ETH-USDC']);
+  });
+
+  it('reports no dropped fields for an ordinary same-build archive', () => {
+    const source = makeInstall('source', SOURCE_BASE);
+    const created = createBackup({ paths: source.paths });
+    const dest = makeInstall('dest', DEST_BASE);
+    transferArchive(source, dest, created.filename);
+
+    assert.deepEqual(inspectBackup(created.filename, { paths: dest.paths }).droppedFields, []);
+    const result = restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true });
+    assert.equal(result.success, true, result.error);
+    assert.deepEqual(result.droppedFields, []);
   });
 });
