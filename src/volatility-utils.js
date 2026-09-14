@@ -267,6 +267,48 @@ const calculateAllMetrics = (candles1m, candles5m, prevBaseline, config = {}) =>
 };
 
 /**
+ * Apply volatility and market metrics to marketState from candle windows.
+ * Single owner for candle sorting, calculateAllMetrics, and marketState assignment.
+ * Returns false without mutating when either array is empty or not an array.
+ *
+ * @param {Object} marketState - Mutable market state object
+ * @param {Candle[]} candles1m - 1-minute candles
+ * @param {Candle[]} candles5m - 5-minute candles
+ * @param {Object} [config] - Regime / metrics configuration
+ * @returns {boolean} True if metrics were applied, false if skipped
+ */
+const applyMarketMetrics = (marketState, candles1m, candles5m, config = {}) => {
+  if (!marketState || typeof marketState !== 'object' ||
+      !Array.isArray(candles1m) || candles1m.length === 0 ||
+      !Array.isArray(candles5m) || candles5m.length === 0) {
+    return false;
+  }
+
+  // Adapters return exchange-native order — Coinbase/Gemini are newest-first
+  // while volatility-utils assumes oldest-first (issue #203). Sort here so the
+  // hot metrics path never feeds inverted momentum/swing/vol windows.
+  candles1m.sort((a, b) => a.timestamp - b.timestamp);
+  candles5m.sort((a, b) => a.timestamp - b.timestamp);
+
+  const metrics = calculateAllMetrics(candles1m, candles5m, marketState.volBaseline, config);
+
+  marketState.atr1m = metrics.atr1m;
+  marketState.atr5m = metrics.atr5m;
+  marketState.realizedVol = metrics.realizedVol;
+  marketState.volBaseline = metrics.volBaseline;
+  marketState.vwap = metrics.vwap;
+  marketState.recentSwing = metrics.recentSwing;
+  marketState.momentum = metrics.momentum;
+
+  // Calculate VWAP distance
+  if (marketState.lastPrice > 0 && marketState.atr1m > 0) {
+    marketState.vwapDistance = (marketState.lastPrice - marketState.vwap) / marketState.atr1m;
+  }
+
+  return true;
+};
+
+/**
  * Calculate volatility expansion ratio
  * @param {number} realizedVol - Current realized volatility
  * @param {number} baseline - Volatility baseline
@@ -449,6 +491,7 @@ module.exports = {
   calculateMomentum,
   calculateMomentumAcceleration,
   calculateAllMetrics,
+  applyMarketMetrics,
   calculateVolExpansion,
   calculateVWAPDistance,
   calculateEMA,

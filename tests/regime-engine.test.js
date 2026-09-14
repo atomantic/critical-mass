@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { cancelPartialFillOrder, resolveEntryBudget, makeFillDedupKey, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody } = require('../src/regime-engine');
+const { createRegimeEngine, cancelPartialFillOrder, resolveEntryBudget, makeFillDedupKey, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody } = require('../src/regime-engine');
 const { instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/health-monitor');
 
 describe('makeFillDedupKey', () => {
@@ -317,5 +317,111 @@ describe('isAuthDeniedError (API key / IP allowlist)', () => {
     assert.equal(isAuthDeniedError({ status: 500, message: 'server error' }), false);
     assert.equal(isAuthDeniedError({ status: 'network', message: 'network timeout' }), false);
     assert.equal(isAuthDeniedError(null), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// updateMetrics empty candle retention regression test (issue #584)
+// ---------------------------------------------------------------------------
+describe('updateMetrics marketState retention on empty candles (issue #584)', () => {
+  const PRODUCT_DETAILS = {
+    baseMinSize: '0.0001',
+    baseIncrement: '0.00000001',
+    quoteIncrement: '0.01',
+  };
+
+  const makeMockExecutor = (over = {}) => ({
+    cancelAllEntries: async () => ({ success: true }),
+    cancelTpOrder: async () => ({ success: true }),
+    cancelBodyTpOrder: async () => ({ cancelled: true }),
+    placeBodyTpOrder: async () => ({ success: true, orderId: 'tp-1' }),
+    setStaleTimeoutMultiplier: () => {},
+    getPendingCounts: () => ({ buys: 0, sells: 0, total: 0 }),
+    isLadderOrder: () => false,
+    getOrderPlacedAt: () => null,
+    markSettled: () => {},
+    removeBodyTracking: () => {},
+    handleOrderFill: () => {},
+    checkPendingOrderFills: async () => ({ polled: 0, filled: 0, cancelled: 0 }),
+    ...over,
+  });
+
+  it('keeps prior marketState metrics and does not transition to HARVEST on empty candle arrays', async () => {
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    engine._test.setProductDetails(PRODUCT_DETAILS);
+    engine._test.setRunning(true);
+    engine._test.setOrderExecutor(makeMockExecutor());
+
+    const ms = engine._getMarketState();
+    ms.lastPrice = 100000;
+    ms.atr1m = 250;
+    ms.atr5m = 500;
+    ms.realizedVol = 0.006;
+    ms.volBaseline = 0.005;
+    ms.vwap = 98000;
+    ms.recentSwing = 400;
+    ms.momentum = { magnitude: 0.2, direction: 'up' };
+    ms.vwapDistance = 8.0;
+
+    engine.forceRegime('CAUTION', 'test setup');
+    assert.equal(engine.getState().regime.mode, 'CAUTION');
+
+    // Gemini candle adapter behavior on API error: swallows and resolves []
+    engine._test.setAdapter({
+      getCandles: async () => [],
+    });
+
+    await engine._test.updateMetrics();
+
+    // Assert atr1m, vwap, volBaseline and other metrics are unchanged
+    assert.equal(ms.atr1m, 250, 'atr1m must be unchanged');
+    assert.equal(ms.vwap, 98000, 'vwap must be unchanged');
+    assert.equal(ms.volBaseline, 0.005, 'volBaseline must be unchanged');
+    assert.equal(ms.atr5m, 500, 'atr5m must be unchanged');
+    assert.equal(ms.realizedVol, 0.006, 'realizedVol must be unchanged');
+    assert.equal(ms.vwapDistance, 8.0, 'vwapDistance must be unchanged');
+
+    // Assert regime does NOT transition to HARVEST
+    assert.equal(engine.getState().regime.mode, 'CAUTION', 'regime must not demote to HARVEST');
+  });
+
+  it('calls logHourlySummary and ensureTakeProfitPlaced when candle fetch throws (fetchFailed branch)', async () => {
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    engine._test.setProductDetails(PRODUCT_DETAILS);
+    engine._test.setRunning(true);
+
+    let tpPlaced = 0;
+    engine._test.setOrderExecutor(makeMockExecutor({
+      placeBodyTpOrder: async () => {
+        tpPlaced++;
+        return { success: true, orderId: 'tp-1' };
+      },
+    }));
+
+    // Set a position with a body lacking TP so ensureTakeProfitPlaced has work to do
+    const pos = engine._getPositionState();
+    pos.celestialBodies = [
+      {
+        id: 'body-test-1',
+        tier: 'PROBE',
+        assetQty: 0.005,
+        avgPrice: 100000,
+        costBasis: 500,
+        tpOrderId: null,
+      },
+    ];
+    pos.totalAsset = 0.005;
+
+    // Simulate adapter throwing (fetchFailed = true)
+    engine._test.setAdapter({
+      getCandles: async () => {
+        throw new Error('Gemini API 503 Service Unavailable');
+      },
+    });
+
+    await engine._test.updateMetrics();
+
+    // ensureTakeProfitPlaced must have run
+    assert.ok(tpPlaced > 0, 'ensureTakeProfitPlaced must be called on fetch failure');
   });
 });
