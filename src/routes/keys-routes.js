@@ -59,7 +59,7 @@ module.exports = (app, deps) => {
   // Save keys for an exchange (shared handler for POST and PUT)
   const saveExchangeKeys = (req, res) => {
     const { exchange } = req.params;
-    const body = req.body;
+    const body = req.body || {};
 
     let keysData;
     if (exchange === 'coinbase') {

@@ -383,7 +383,7 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
-    const { enabled, dryRun } = req.body;
+    const { enabled, dryRun } = req.body || {};
     const logger = exchangeLogger(exchange, pair, '/api/:exchange/config');
 
     if (typeof enabled === 'boolean') {
@@ -514,20 +514,33 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
-    const { granularity = 'ONE_MINUTE', limit = 60 } = req.query;
+
+    const granularitySeconds = {
+      'ONE_MINUTE': 60, 'FIVE_MINUTE': 300, 'FIFTEEN_MINUTE': 900,
+      'ONE_HOUR': 3600, 'SIX_HOUR': 21600, 'ONE_DAY': 86400,
+    };
+
+    const granularity = req.query.granularity || 'ONE_MINUTE';
+    const limitParam = req.query.limit ? parseInt(req.query.limit, 10) : 60;
+
+    // Validate granularity against valid keys
+    if (!(granularity in granularitySeconds)) {
+      return res.status(400).json({ success: false, error: 'granularity must be one of: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE, ONE_HOUR, SIX_HOUR, ONE_DAY' });
+    }
+
+    // Validate limit is a positive integer within sane bounds
+    if (!Number.isFinite(limitParam) || limitParam <= 0 || limitParam > 350) {
+      return res.status(400).json({ success: false, error: 'limit must be a positive integer between 1 and 350' });
+    }
+
     const config = getFundConfig(exchange, pair);
     const { getAdapter } = require('../adapters');
     const adapter = getAdapter(exchange);
 
     const productId = config.productId;
     const now = Math.floor(Date.now() / 1000);
-
-    const granularitySeconds = {
-      'ONE_MINUTE': 60, 'FIVE_MINUTE': 300, 'FIFTEEN_MINUTE': 900,
-      'ONE_HOUR': 3600, 'SIX_HOUR': 21600, 'ONE_DAY': 86400,
-    };
-    const seconds = granularitySeconds[granularity] || 60;
-    const start = now - (parseInt(limit, 10) * seconds);
+    const seconds = granularitySeconds[granularity];
+    const start = now - (limitParam * seconds);
 
     // The adapter throws on failure (never returns an `{ error }` shape), so
     // there is no result to check here — just propagate as an upstream (502)
