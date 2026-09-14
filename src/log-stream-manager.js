@@ -4,6 +4,10 @@
 // replacement/unsubscribe races can be unit tested without a real PM2
 // binary, a real child_process, or a real socket.io server (see #448).
 
+// CSI (ESC/[ or 0x9B) + OSC (ESC]…BEL/ST). Own the helper — no strip-ansi dep.
+const ANSI_RE = /(?:\u001B|\u009B)(?:\][^\u0007\u001B]*(?:\u0007|\u001B\\)?|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/g;
+const stripAnsi = (text) => text.replace(ANSI_RE, '');
+
 /**
  * Registry of active PM2 log-tail children, keyed by socket id.
  */
@@ -88,7 +92,8 @@ const registerLogStreamHandlers = ({ socket, registry, spawnFn, log, allowedProc
       stdoutBuf += chunk.toString();
       const parts = stdoutBuf.split('\n');
       stdoutBuf = parts.pop();
-      for (const line of parts) {
+      for (const raw of parts) {
+        const line = stripAnsi(raw);
         if (line.trim()) socket.emit('logs:line', { processName, line, type: 'stdout', timestamp: Date.now() });
       }
     });
@@ -97,7 +102,8 @@ const registerLogStreamHandlers = ({ socket, registry, spawnFn, log, allowedProc
       stderrBuf += chunk.toString();
       const parts = stderrBuf.split('\n');
       stderrBuf = parts.pop();
-      for (const line of parts) {
+      for (const raw of parts) {
+        const line = stripAnsi(raw);
         if (line.trim()) socket.emit('logs:line', { processName, line, type: 'stderr', timestamp: Date.now() });
       }
     });

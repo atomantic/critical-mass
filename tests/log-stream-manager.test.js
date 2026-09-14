@@ -201,6 +201,41 @@ describe('log-stream-manager socket handlers', () => {
     const err = socket.emitted.find(e => e.event === 'logs:error');
     assert.ok(err);
   });
+
+  it('strips ANSI colour codes from stdout/stderr before emit (#588)', () => {
+    const { socket, spawned } = setup();
+    socket.trigger('logs:subscribe', { processName: 'critical-mass', lines: 100 });
+    const child = spawned[0];
+
+    child.stdout.emit('data', Buffer.from('\u001B[31m\u001B[1m>>>> do: pm2 update\u001B[22m\u001B[39m\n'));
+    child.stderr.emit('data', Buffer.from('\u001B[1m\u001B[90m[TAILING] last 500 lines\u001B[39m\u001B[22m\n'));
+    child.stdout.emit('data', Buffer.from('🚀 plain engine line\n'));
+
+    const lines = socket.emitted.filter(e => e.event === 'logs:line');
+    assert.equal(lines.length, 3);
+    assert.equal(lines[0].payload.line, '>>>> do: pm2 update');
+    assert.equal(lines[0].payload.type, 'stdout');
+    assert.equal(lines[1].payload.line, '[TAILING] last 500 lines');
+    assert.equal(lines[1].payload.type, 'stderr');
+    assert.equal(lines[2].payload.line, '🚀 plain engine line');
+    for (const { payload } of lines) {
+      assert.equal(payload.line.includes('\u001B'), false);
+    }
+  });
+
+  it('drops lines that are only ANSI escape codes (#588)', () => {
+    const { socket, spawned } = setup();
+    socket.trigger('logs:subscribe', { processName: 'critical-mass', lines: 100 });
+    const child = spawned[0];
+
+    child.stdout.emit('data', Buffer.from('\u001B[31m\u001B[1m\u001B[22m\u001B[39m\n'));
+    child.stderr.emit('data', Buffer.from('\u001B[0m\n'));
+    child.stdout.emit('data', Buffer.from('kept\n'));
+
+    const lines = socket.emitted.filter(e => e.event === 'logs:line');
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].payload.line, 'kept');
+  });
 });
 
 describe('log-stream-manager flush handler (#451)', () => {
