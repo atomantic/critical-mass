@@ -270,10 +270,11 @@ const calculateAllMetrics = (candles1m, candles5m, prevBaseline, config = {}) =>
  * Apply volatility and market metrics to marketState from candle windows.
  * Single owner for candle sorting, calculateAllMetrics, and marketState assignment.
  * Returns false without mutating when either array is empty or not an array.
+ * Note: Candle arrays are sorted in-place oldest-first if valid.
  *
  * @param {Object} marketState - Mutable market state object
- * @param {Candle[]} candles1m - 1-minute candles
- * @param {Candle[]} candles5m - 5-minute candles
+ * @param {Candle[]} candles1m - 1-minute candles (sorted in-place oldest-first)
+ * @param {Candle[]} candles5m - 5-minute candles (sorted in-place oldest-first)
  * @param {Object} [config] - Regime / metrics configuration
  * @returns {boolean} True if metrics were applied, false if skipped
  */
