@@ -7,13 +7,21 @@ const path = require('path');
 
 const migration = require('../src/migration');
 
+/** @returns {string|null} size+mtime of a file, or null when it is absent */
+const fileSignature = (file) => {
+  if (!fs.existsSync(file)) return null;
+  const { size, mtimeMs } = fs.statSync(file);
+  return `${size}:${mtimeMs}`;
+};
+
 /**
  * Reload the module fresh per test so its module-level `pendingStates` /
  * `lastSaveTime` start clean and don't bleed across cases, and point the data
  * directory at a throwaway tmp root through the `migration.getExchangeDataDir`
- * seam every other per-fund module is tested through. The legacy root file is
- * backed up and restored so the suite can exercise the one-time import without
- * destroying a developer's own pre-migration state.
+ * seam every other per-fund module is tested through. `LEGACY_STATE_FILE` is
+ * repointed into the same tmp root: the legacy path is a real file in the app
+ * root on any machine that has run the engine, so reading it would make these
+ * cases depend on developer state, and writing it would clobber it.
  */
 const setup = (t, now = 10_000) => {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now });
@@ -28,16 +36,25 @@ const setup = (t, now = 10_000) => {
   const modPath = require.resolve('../src/dry-run-state');
   delete require.cache[modPath];
   const mod = require('../src/dry-run-state');
-  const legacyBackup = fs.existsSync(mod.LEGACY_STATE_FILE)
-    ? fs.readFileSync(mod.LEGACY_STATE_FILE)
-    : null;
+  // Capture the REAL app-root legacy path before repointing. On any machine
+  // that has run the engine it is a live file, and a regression writing
+  // through the closure constant would clobber it while every tmp-root
+  // assertion below still passed — so guard it for the whole suite, not just
+  // the one case that names it.
+  const appRootLegacy = mod.LEGACY_STATE_FILE;
+  const appRootBefore = fileSignature(appRootLegacy);
+  mod.LEGACY_STATE_FILE = path.join(tmpRoot, mod.STATE_FILENAME);
 
   t.after(() => {
     migration.getExchangeDataDir = originalGetExchangeDataDir;
-    if (legacyBackup === null) fs.rmSync(mod.LEGACY_STATE_FILE, { force: true });
-    else fs.writeFileSync(mod.LEGACY_STATE_FILE, legacyBackup);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     delete require.cache[modPath];
+    // Cleanup first, assertion last: a failure here must not strand the tmp
+    // root or the patched seam.
+    assert.equal(
+      fileSignature(appRootLegacy), appRootBefore,
+      `the suite must never create or modify ${appRootLegacy}`
+    );
   });
 
   return {
@@ -97,7 +114,7 @@ describe('dry-run-state per-fund location (#531)', () => {
     assert.ok(fs.existsSync(file), `expected per-fund state at ${file}`);
     assert.equal(readFund(file).tag, 'A');
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).version, 1, 'version envelope preserved');
-    assert.equal(fs.existsSync(LEGACY_STATE_FILE), false, 'nothing is written to the app root any more');
+    assert.equal(fs.existsSync(LEGACY_STATE_FILE), false, 'nothing is written to the legacy single-file location any more');
   });
 
   it('keeps two funds on the same exchange isolated', (t) => {
@@ -198,6 +215,19 @@ describe('dry-run-state legacy root import (#531)', () => {
     clearState('coinbase', 'BTC-USD');
 
     assert.equal(loadState('coinbase', 'BTC-USD'), null, 'a reset fund stays reset');
+  });
+
+  // Every other case in this file repoints LEGACY_STATE_FILE at a tmp root, so
+  // nothing else would notice the default being moved. The legacy importer is
+  // only reachable for real operators if that default still resolves to the
+  // pre-#531 path, so pin it here against the un-overridden module.
+  it('defaults LEGACY_STATE_FILE to the pre-#531 app-root path', () => {
+    const modPath = require.resolve('../src/dry-run-state');
+    delete require.cache[modPath];
+    const fresh = require('../src/dry-run-state');
+    assert.equal(fresh.STATE_FILENAME, 'dry-run-state.json');
+    assert.equal(fresh.LEGACY_STATE_FILE, path.join(__dirname, '..', 'dry-run-state.json'));
+    delete require.cache[modPath];
   });
 
   it('leaves an unreadable legacy file in place rather than quarantining it', (t) => {
