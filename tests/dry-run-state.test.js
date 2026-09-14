@@ -197,6 +197,18 @@ describe('dry-run-state legacy root import (#531)', () => {
     assert.equal(loadState('coinbase', 'BTC-USD'), null, 'a reset fund stays reset');
   });
 
+  // Every other case in this file repoints LEGACY_STATE_FILE at a tmp root, so
+  // nothing else would notice the default being moved. The legacy importer is
+  // only reachable for real operators if that default still resolves to the
+  // pre-#531 path, so pin it here against the un-overridden module.
+  it('defaults LEGACY_STATE_FILE to the pre-#531 app-root path', () => {
+    const modPath = require.resolve('../src/dry-run-state');
+    delete require.cache[modPath];
+    const fresh = require('../src/dry-run-state');
+    assert.equal(fresh.LEGACY_STATE_FILE, path.join(__dirname, '..', fresh.STATE_FILENAME));
+    delete require.cache[modPath];
+  });
+
   it('leaves an unreadable legacy file in place rather than quarantining it', (t) => {
     const { loadState, LEGACY_STATE_FILE } = setup(t);
     fs.writeFileSync(LEGACY_STATE_FILE, '{ not json');
