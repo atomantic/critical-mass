@@ -272,6 +272,51 @@ const getCacheFile = (intervalType, exchange = 'coinbase', productId = null) => 
 };
 
 /**
+ * Read a price cache file, tolerating the legacy `{candles}` envelope alongside
+ * the canonical `{prices}` one. Never throws — a malformed or absent file
+ * yields an empty array so callers can treat that the same as "no cache yet".
+ * @param {string} file - Cache file path
+ * @returns {Array} Cached price records (empty array if none)
+ */
+const readPriceCache = (file) => {
+  if (!fs.existsSync(file)) return [];
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return [];
+  }
+  if (!data || typeof data !== 'object') return [];
+  if (Array.isArray(data.prices)) return data.prices;
+  if (Array.isArray(data.candles)) return data.candles; // legacy envelope (read-only)
+  return [];
+};
+
+/**
+ * Write a price cache file in the canonical `{prices}` envelope.
+ * @param {string} file - Cache file path
+ * @param {Object} params
+ * @param {string} params.intervalType - Interval type
+ * @param {string} params.exchange - Exchange name
+ * @param {string} params.productId - Product ID
+ * @param {Array} params.prices - Price records to persist
+ */
+const writePriceCache = (file, { intervalType, exchange, productId, prices }) => {
+  const cacheDir = path.dirname(file);
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+  }
+  fs.writeFileSync(file, JSON.stringify({
+    lastFetch: new Date().toISOString(),
+    intervalType,
+    exchange,
+    productId,
+    intervals: prices.length,
+    prices
+  }, null, 2));
+};
+
+/**
  * Load cached price data, fetching only new data since last fetch
  * Historical data never expires - we only append new intervals
  * @param {number} intervals - Number of intervals needed
@@ -286,20 +331,15 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
   const { preferCache = false, productId = null } = options;
   const effectiveProductId = productId || DEFAULT_PRODUCT_IDS[exchange] || DEFAULT_PRODUCT_IDS.coinbase;
   const cacheFile = getCacheFile(intervalType, exchange, effectiveProductId);
-  const cacheDir = getExchangeDataDir(exchange);
   const granConfig = GRANULARITY[intervalType];
   const config = getIntervalConfig(intervalType);
   const now = Date.now();
   const nowSeconds = Math.floor(now / 1000);
 
-  let cache = null;
-  let cachedPrices = [];
-
-  // Load existing cache if available
-  if (fs.existsSync(cacheFile)) {
-    cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
-    cachedPrices = cache.prices || [];
-  }
+  // Load existing cache if available (transparently accepts the legacy
+  // {candles} envelope so a cache written by scripts/backtest-updown.js is
+  // never silently dropped — see #566).
+  let cachedPrices = readPriceCache(cacheFile);
 
   // If preferCache is set and we have enough cached data, use it without fetching
   if (preferCache && cachedPrices.length >= intervals) {
@@ -381,20 +421,13 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
       cachedPrices = await fetchPriceData(intervals, intervalType, exchange, effectiveProductId);
     }
 
-    // Save updated cache
-    const cacheData = {
-      lastFetch: new Date().toISOString(),
+    // Save updated cache (always in the canonical {prices} envelope)
+    writePriceCache(cacheFile, {
       intervalType,
       exchange,
       productId: effectiveProductId,
-      intervals: cachedPrices.length,
       prices: cachedPrices
-    };
-
-    if (!fs.existsSync(cacheDir)) {
-      fs.mkdirSync(cacheDir, { recursive: true });
-    }
-    fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2));
+    });
   } else {
     console.log(`Using cached ${intervalType} data for ${effectiveProductId} from ${exchange} (${cachedPrices.length} intervals)`);
   }
@@ -835,6 +868,8 @@ module.exports = {
   getPriceData,
   fetchPriceData,
   getCacheFile,
+  readPriceCache,
+  writePriceCache,
   // Exported for unit testing of the caching/aggregation invariants (#206, #213A)
   aggregateCandles,
   isCompleteBucket,
