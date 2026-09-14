@@ -10,7 +10,7 @@ const { buildScorecardAnalysis } = require('../src/updown/scorecard-analytics');
 
 describe('scorecard indicator configuration', () => {
   it('re-exports the canonical shared catalog without drift', () => {
-    const shared = require('../shared/indicator-config');
+    const shared = require('../shared/indicator-config.mjs');
     assert.equal(INDICATORS, shared.INDICATORS);
     assert.equal(INDICATOR_WEIGHTS, shared.INDICATOR_WEIGHTS);
     assert.equal(INDICATOR_LABELS, shared.INDICATOR_LABELS);
