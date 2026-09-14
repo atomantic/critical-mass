@@ -423,6 +423,20 @@
       }
     },
     {
+      "measurementId": "a2a0d2998faed199cc4be2bcba07c7d19670feb3da80d5cc160a65577ed57bb4",
+      "assessedAt": "2026-09-14T21:18:53.278Z",
+      "report": {
+        "version": 1,
+        "category": "ui-bugs",
+        "score": 52,
+        "worstSeverity": 8,
+        "coverage": "broad",
+        "confidence": "high",
+        "scannedFiles": 101,
+        "totalFiles": 101
+      }
+    },
+    {
       "measurementId": "9d7efaea5d9301d9afda20678f527de72dc643b534f4ad0da2e168561d0e2148",
       "assessedAt": "2026-09-11T15:35:12.864Z",
       "report": {
