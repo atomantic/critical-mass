@@ -81,7 +81,7 @@ module.exports = (app, deps) => {
   });
 
   app.patch('/api/config', (req, res) => {
-    const { enabled, dryRun } = req.body;
+    const { enabled, dryRun } = req.body || {};
     if (typeof enabled === 'boolean') setExchangeEnabled('coinbase', enabled);
     if (typeof dryRun === 'boolean') setExchangeDryRun('coinbase', dryRun);
     const config = getExchangeConfig('coinbase');
