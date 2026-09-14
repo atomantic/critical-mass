@@ -1,7 +1,7 @@
 // @ts-check
 /**
  * Server-side re-exports of canonical UpDown signal action resolution.
- * Canonical implementation lives in shared/signal-actions.js.
+ * Canonical implementation lives in shared/signal-actions.mjs.
  */
 
 const {
@@ -14,7 +14,7 @@ const {
   resolveAction,
   resolveActionLabel,
   labelHistoryActions,
-} = require('../../shared/signal-actions')
+} = require('../../shared/signal-actions.mjs')
 
 module.exports = {
   BUY_SIDE,
