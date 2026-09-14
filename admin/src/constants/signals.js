@@ -3,7 +3,7 @@ import {
   resolveAction,
   resolveActionLabel as getActionLabel,
   labelHistoryActions,
-} from '../../../shared/signal-actions'
+} from '../../../shared/signal-actions.mjs'
 
 export const SIGNAL_TYPES = {
   STRONG_BUY: 'STRONG_BUY',

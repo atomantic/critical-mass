@@ -6,6 +6,7 @@ import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { createRequestOwner } from '../utils/requestOwner.mjs'
 import { deriveRegimeFillGroups, searchRegimeFillGroups, visibleOrphanBuys } from '../utils/regimeFillGroups.mjs'
+import { resolveElapsedDisplay } from '../utils/liveTimerElapsed.mjs'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
@@ -446,12 +447,15 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
     )
   }
 
-  if (variant === 'elapsed' && elapsed !== undefined) {
-    const elapsedMs = now - elapsed
+  if (variant === 'elapsed') {
+    const display = resolveElapsedDisplay(elapsed, now, formatDuration)
     return (
       <div className="bg-gray-900 rounded p-1.5">
         <div className="text-[10px] text-gray-400 mb-0.5">{label}</div>
-        <span className="text-sm font-mono text-gray-300">{formatDuration(elapsedMs)}</span>
+        <span className="text-sm font-mono text-gray-300">{display.primary}</span>
+        {display.secondary && (
+          <div className="text-[10px] text-gray-400">{display.secondary}</div>
+        )}
       </div>
     )
   }

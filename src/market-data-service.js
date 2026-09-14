@@ -62,6 +62,16 @@ const bumpStopGeneration = (key) => {
 // (issue #211-B), narrowed to this file's actual call sites rather than the
 // full REST surface the live trading engine exercises (issue #228).
 
+/** Operator-facing retry reason strings keyed by ingest outcome. */
+const INGEST_RETRY_REASON = {
+  short: 'ledger short of cumulative',
+  'no-fills-yet': 'has no fills yet',
+  'fetch-failed': 'fetch failed',
+  'persist-failed': 'persist failed',
+};
+
+const INGEST_NEEDS_RETRY = new Set(['short', 'no-fills-yet', 'fetch-failed', 'persist-failed']);
+
 /**
  * Fetch and ingest any new fills for an order, advancing the
  * lastIngestedFilledSize watermark on the tracked-order object only on
@@ -78,32 +88,23 @@ const bumpStopGeneration = (key) => {
  * @param {Object} trackedOrder - Mutated: lastIngestedFilledSize updated on success
  * @param {number} cumulativeFilledSize - From the WS event (always cumulative)
  * @param {string} label - Log label, e.g. 'partial fill', 'FILLED', 'CANCELLED'
- * @returns {Promise<{fetched: boolean, fillsCount: number, ingestedCount: number}>}
- *   fetched=false means either adapter.getOrderFills() threw OR
- *   fillLedger.persist() threw — in both cases the watermark is NOT
- *   advanced and the caller should retry on the next WS update.
- *   fillsCount=0 with fetched=true means either: (a) the watermark
- *   already covered cumulativeFilledSize (early-out, no work needed),
- *   or (b) the exchange has not yet exposed any fills (e.g. Coinbase
- *   returns [] briefly right after a FILLED event). Callers that need
- *   to distinguish (a) from (b) should check the watermark themselves
- *   before calling — see handleOrderUpdate's FILLED branch.
+ * @returns {Promise<{outcome: 'already-covered'|'covered'|'short'|'no-fills-yet'|'fetch-failed'|'persist-failed', recordedSize: number, ingestedCount: number, error?: string}>}
+ *   Named outcome describing which path ran; callers branch on `outcome`
+ *   (and may use `recordedSize`) instead of re-deriving state.
  */
 const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFilledSize, label) => {
   const { adapter, fillLedger, exchange, isStopped = () => false } = deps;
   const logger = deps.logger || createContextLogger({ exchange, pair: deps.pair });
   const lastSize = trackedOrder.lastIngestedFilledSize || 0;
   if (cumulativeFilledSize <= lastSize) {
-    return { fetched: true, fillsCount: 0, ingestedCount: 0 };
+    return { outcome: 'already-covered', recordedSize: lastSize, ingestedCount: 0 };
   }
 
   // Sync trackedOrder.lastIngestedFilledSize from the actual ledger.
   // After a restart, trackedOrder is recreated with watermark=0 even
   // though fills may already be on disk; on adapter/persist failure
   // the caller would otherwise schedule a retry chain for an order
-  // that's already fully recorded. Returns the reconciled size so the
-  // failure paths can signal fetched=true (no work needed) when the
-  // ledger already covers the WS-reported cumulative.
+  // that's already fully recorded.
   const reconcileWatermarkFromLedger = () => {
     const recordedSize = fillLedger.getRecordedSizeForOrder
       ? fillLedger.getRecordedSizeForOrder(orderId)
@@ -125,7 +126,9 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
     // Bail post-stop: the service may have been replaced during the await,
     // and writing to its now-stale fillLedger or trackedOrder via persist
     // / reconcile would corrupt the replacement service's state.
-    if (isStopped()) return { fetched: false, fillsCount: 0, ingestedCount: 0 };
+    if (isStopped()) {
+      return { outcome: 'fetch-failed', recordedSize: lastSize, ingestedCount: 0, error: err.message };
+    }
     // Try to flush any in-memory ledger state from a prior failed-persist
     // call before reading the ledger. If persist succeeds, in-memory is
     // in sync with disk and we can safely reconcile the watermark — covers
@@ -133,27 +136,28 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
     // adapter is just transiently unavailable, so the caller doesn't
     // schedule an unnecessary retry chain. If persist fails, the in-memory
     // ledger may be ahead of disk, so don't advance the watermark and
-    // signal fetched=false so the caller retries (which will re-attempt
+    // signal persist-failed so the caller retries (which will re-attempt
     // persist).
-    let persistOk = true;
+    let persistErrMsg = null;
     try {
       fillLedger.persist();
-    } catch (_persistErr) {
-      persistOk = false;
+    } catch (persistErr) {
+      persistErrMsg = persistErr.message;
     }
-    if (persistOk) {
-      const recordedSize = reconcileWatermarkFromLedger();
-      if (recordedSize >= cumulativeFilledSize) {
-        return { fetched: true, fillsCount: 0, ingestedCount: 0 };
-      }
+    if (persistErrMsg != null) {
+      return { outcome: 'persist-failed', recordedSize: lastSize, ingestedCount: 0, error: persistErrMsg };
     }
-    return { fetched: false, fillsCount: 0, ingestedCount: 0 };
+    const recordedSize = reconcileWatermarkFromLedger();
+    if (recordedSize >= cumulativeFilledSize) {
+      return { outcome: 'already-covered', recordedSize, ingestedCount: 0 };
+    }
+    return { outcome: 'fetch-failed', recordedSize, ingestedCount: 0, error: err.message };
   }
 
   // After awaiting I/O, recheck stopped — caller's service may have been
   // stopped during the fetch. Don't write to a now-stale fillLedger.
   if (isStopped()) {
-    return { fetched: false, fillsCount: fills.length, ingestedCount: 0 };
+    return { outcome: 'fetch-failed', recordedSize: lastSize, ingestedCount: 0 };
   }
 
   if (fills.length === 0) {
@@ -176,10 +180,13 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
       // watermark past what's durably recorded — a subsequent crash
       // would lose those fills. Caller retries; the next persist attempt
       // will sync disk before we trust the ledger again.
-      return { fetched: false, fillsCount: 0, ingestedCount: 0 };
+      return { outcome: 'persist-failed', recordedSize: lastSize, ingestedCount: 0, error: err.message };
     }
-    reconcileWatermarkFromLedger();
-    return { fetched: true, fillsCount: 0, ingestedCount: 0 };
+    const recordedSize = reconcileWatermarkFromLedger();
+    if (recordedSize >= cumulativeFilledSize) {
+      return { outcome: 'already-covered', recordedSize, ingestedCount: 0 };
+    }
+    return { outcome: 'no-fills-yet', recordedSize, ingestedCount: 0 };
   }
 
   // Pass placedAt for fill time tracking on buy orders (entry + ladder).
@@ -201,9 +208,8 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
   // threw, in-memory fills are ahead of disk; ingestFill's tradeId dedup
   // means a retry would return ingestedCount=0 with no chance to flush.
   // Calling persist() unconditionally rewrites the full atomic snapshot
-  // and lets the next call catch up the disk. On failure we treat it the
-  // same as an adapter failure: do NOT advance the watermark, signal
-  // fetched=false so the caller retries.
+  // and lets the next call catch up the disk. On failure do NOT advance
+  // the watermark; signal persist-failed so the caller retries.
   try {
     fillLedger.persist();
   } catch (err) {
@@ -211,7 +217,7 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
       orderId,
       error: err.message,
     });
-    return { fetched: false, fillsCount: fills.length, ingestedCount: 0 };
+    return { outcome: 'persist-failed', recordedSize: lastSize, ingestedCount: 0, error: err.message };
   }
 
   // Derive watermark from actual ledger contents — NOT cumulativeFilledSize.
@@ -239,7 +245,8 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
     });
   }
 
-  return { fetched: true, fillsCount: fills.length, ingestedCount };
+  const outcome = recordedSize >= cumulativeFilledSize ? 'covered' : 'short';
+  return { outcome, recordedSize, ingestedCount };
 };
 
 /** Interval between periodic REST metrics updates (ms) */
@@ -346,7 +353,11 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
   }
 
   const hadUnrecorded = filledSize > (trackedOrder.lastIngestedFilledSize || 0);
-  let catchup = { fetched: true, fillsCount: 0, ingestedCount: 0 };
+  let catchup = {
+    outcome: 'already-covered',
+    recordedSize: trackedOrder.lastIngestedFilledSize || 0,
+    ingestedCount: 0,
+  };
   if (hadUnrecorded) {
     const label = attempt === 0 ? status : `${status} (retry ${attempt})`;
     catchup = await ingestNewFillsForOrder({
@@ -363,17 +374,10 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
     if (isStopped()) return { settledNow: false, retryScheduled: false };
   }
 
-  // Settle only when the ledger actually covers the WS-reported cumulative
-  // filledSize. A truthy fillsCount alone isn't sufficient: Gemini and
-  // Crypto.com's adapters synthesize getOrderFills from recent-trade
-  // queries and can return a partial set, so a non-empty response can
-  // still leave the order short of the full cancelled quantity.
-  // O(1) via getRecordedSizeForOrder; the cancel retry chain runs
-  // indefinitely so we cannot afford an O(N) scan on every backoff tick.
-  const recordedSize = fillLedger.getRecordedSizeForOrder
-    ? fillLedger.getRecordedSizeForOrder(orderId)
-    : (fillLedger.getFillsForOrder(orderId) || []).reduce((s, f) => s + (f.size || 0), 0);
-  const stillNeedsCatchup = hadUnrecorded && (!catchup.fetched || recordedSize < filledSize);
+  // Settle only when ingest reports coverage. Gemini/Crypto.com adapters
+  // can return a partial set ('short'); empty races and I/O failures are
+  // named outcomes that also keep the retry chain alive.
+  const stillNeedsCatchup = hadUnrecorded && INGEST_NEEDS_RETRY.has(catchup.outcome);
   if (!stillNeedsCatchup) {
     markSettled(orderId);
     scheduleTimeout(() => untrackOrder(orderId), untrackDelayMs);
@@ -393,7 +397,7 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
       orderId,
       status,
       filledSize,
-      recordedSize,
+      recordedSize: catchup.recordedSize,
       retryTimeBudgetMs,
     });
     markSettled(orderId);
@@ -1050,13 +1054,12 @@ const createMarketDataService = (exchange, pair) => {
     const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, `partial retry ${attempt}`);
     if (timerTracker.isStopped()) return;
 
-    if (filledSize <= (trackedOrder.lastIngestedFilledSize || 0)) return; // recovered
+    if (!INGEST_NEEDS_RETRY.has(result.outcome)) return; // recovered
 
     // Still short. Reschedule up to the attempt cap; after that, let the
     // next WS event drive recovery (or the terminal-state catch-up).
     if (attempt + 1 <= PARTIAL_MAX_ATTEMPTS) {
-      const reason = result.fetched ? 'ledger short of cumulative' : 'fetch/persist failed';
-      schedulePartialRetry(orderId, trackedOrder, filledSize, attempt + 1, reason);
+      schedulePartialRetry(orderId, trackedOrder, filledSize, attempt + 1, INGEST_RETRY_REASON[result.outcome]);
     } else {
       logger.warn(`⚠️ [${exchange}] Partial-fill ingest gave up for ${orderId} after ${PARTIAL_MAX_ATTEMPTS} attempts — relying on next WS event or terminal catch-up`, {
         orderId,
@@ -1174,15 +1177,16 @@ const createMarketDataService = (exchange, pair) => {
     if (timerTracker.isStopped()) return;
 
     // Re-read target AFTER the await — replays during ingestion may have
-    // advanced the cumulative. If the watermark covers the latest target
+    // advanced the cumulative. If recordedSize covers the latest target
     // (not just the value we passed to ingest), settle.
-    if (target.filledSize <= (trackedOrder.lastIngestedFilledSize || 0)) {
+    if (target.filledSize <= result.recordedSize) {
       finalizeFilledOrder(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees);
       return;
     }
 
-    const reason = result.fetched ? 'ledger short of cumulative' : 'fetch/persist failed';
-    scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, attempt + 1, reason);
+    // Target may have grown past what this call covered; treat that as short.
+    const reasonKey = INGEST_NEEDS_RETRY.has(result.outcome) ? result.outcome : 'short';
+    scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, attempt + 1, INGEST_RETRY_REASON[reasonKey]);
   };
 
   const armFilledTimer = (orderId, trackedOrder, target, attempt, reason) => {
@@ -1529,16 +1533,13 @@ const createMarketDataService = (exchange, pair) => {
       if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
         const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'partial fill');
         if (timerTracker.isStopped()) return;
-        // Schedule a bounded retry whenever the ledger doesn't yet cover
-        // the WS cumulative. That includes both adapter/persist failures
-        // (fetched=false) and the Gemini/Crypto.com case where fetched=
-        // true but getOrderFills' recent-trade synthesis returned only
-        // a subset. Open orders can stay open for hours without emitting
-        // another WS event, so without this an executed partial would
-        // sit unrecorded until cancel/FILLED catch-up.
-        if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
-          const reason = result.fetched ? 'ledger short of cumulative' : 'fetch/persist failed';
-          schedulePartialRetry(orderId, trackedOrder, filledSize, 1, reason);
+        // Schedule a bounded retry whenever ingest reports a gap —
+        // fetch/persist failures, empty-fills races, or Gemini/Crypto.com
+        // partial-history. Open orders can stay open for hours without
+        // emitting another WS event, so without this an executed partial
+        // would sit unrecorded until cancel/FILLED catch-up.
+        if (INGEST_NEEDS_RETRY.has(result.outcome)) {
+          schedulePartialRetry(orderId, trackedOrder, filledSize, 1, INGEST_RETRY_REASON[result.outcome]);
         }
       }
       return;
@@ -1593,20 +1594,15 @@ const createMarketDataService = (exchange, pair) => {
 
       // FILLED is terminal — Coinbase is not guaranteed to emit follow-
       // up WS events, so we cannot wait for "the next event" to retry.
-      // Schedule a retry chain whenever the ledger doesn't yet cover
-      // the WS-reported cumulative filledSize: that includes adapter/
-      // persist failures (fetched=false) and the Gemini/Crypto.com
-      // partial-history case where we ingested some fills but not all.
-      // The retry re-enters via enqueueOrderWork so it serializes
-      // against any later updates for the same order. Service stop
-      // cancels these timers via timerTracker.cancelAll().
-      if (!result.fetched) {
-        scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, 1, 'fetch/persist failed');
-        return;
-      }
-      if ((trackedOrder.lastIngestedFilledSize || 0) < target.filledSize) {
-        const reason = result.fillsCount === 0 ? 'has no fills yet' : 'ledger short of cumulative';
-        scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, 1, reason);
+      // Schedule a retry chain whenever ingest reports a gap (fetch/
+      // persist failure, empty-fills race, or Gemini/Crypto.com partial
+      // history). Also retry if a replay advanced the target past what
+      // this call covered. The retry re-enters via enqueueOrderWork so
+      // it serializes against any later updates for the same order.
+      // Service stop cancels these timers via timerTracker.cancelAll().
+      if (target.filledSize > result.recordedSize) {
+        const reasonKey = INGEST_NEEDS_RETRY.has(result.outcome) ? result.outcome : 'short';
+        scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, 1, INGEST_RETRY_REASON[reasonKey]);
         return;
       }
       // Finalize with the target's latest aggregates — replays during the
@@ -2037,6 +2033,7 @@ module.exports = {
   getMarketDataService,
   stopAllMarketDataServices,
   ingestNewFillsForOrder,
+  INGEST_RETRY_REASON,
   settleCancelledOrder,
   createTimerTracker,
   createWorkQueue,
