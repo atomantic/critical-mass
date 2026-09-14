@@ -319,3 +319,105 @@ describe('PUT /api/notifications/config masked-token round-trip guard', () => {
     assert.equal(written.global.notifications.telegram.botToken, newToken);
   });
 });
+
+describe('POST /api/sync and POST /api/trade gates (simpleDcaEnabled, issue #568)', () => {
+  // Warm the adapter module cache before any fs mock is installed: `dca-engine`
+  // destructures the real `getAdapter`, which lazily requires this module, and a
+  // mocked `fs.readFileSync` would make that require fail.
+  require('../src/adapters/coinbase');
+
+  afterEach(() => mock.restoreAll());
+
+  const createFakeApp = () => {
+    const handlers = {};
+    const register = (method) => (route, handler) => { handlers[`${method} ${route}`] = handler; };
+    return {
+      handlers,
+      get: register('GET'),
+      put: register('PUT'),
+      patch: register('PATCH'),
+      post: register('POST'),
+      delete: register('DELETE'),
+    };
+  };
+
+  const createRes = () => ({
+    statusCode: 200, body: null,
+    status(code) { this.statusCode = code; return this; },
+    json(payload) { this.body = payload; return this; },
+  });
+
+  const invoke = async (app, key, req = {}) => {
+    const res = createRes();
+    await app.handlers[key]({ body: {}, params: {}, query: {}, ...req }, res);
+    return res;
+  };
+
+  /**
+   * `legacy-routes.js` destructures `runIntervalCycle`/`syncOrderStatuses` from
+   * `dca-engine` at require time, so reassigning them on the module object would
+   * never reach the handlers. `stateTracker.loadState` is called through the
+   * namespace by the route (/api/sync) and by `runIntervalCycle` itself
+   * (/api/trade), so it is the seam that actually proves the engine was reached.
+   */
+  const setup = (simpleDcaEnabled, { fundEnabled = false } = {}) => {
+    const config = {
+      exchanges: { coinbase: { productId: 'BTC-USDC', totalAllocation: 5000, enabled: fundEnabled, dryRun: true } },
+      global: { simpleDcaEnabled },
+    };
+    setupFsMocks({ base: config, user: null });
+
+    const loadStateCalls = [];
+    mock.method(stateTracker, 'loadState', (...args) => { loadStateCalls.push(args); return { orders: [] }; });
+    mock.method(stateTracker, 'getPendingOrders', () => []);
+    mock.method(stateTracker, 'saveState', () => {});
+    mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
+
+    const app = createFakeApp();
+    registerLegacyRoutes(app, {
+      parseTSV: () => [],
+      calculateCostBasis: () => ({}),
+      getNextTradeInfo: () => ({}),
+    });
+
+    return { app, loadStateCalls };
+  };
+
+  it('POST /api/trade returns 400 and reaches no engine work when simpleDcaEnabled is false', async () => {
+    const { app, loadStateCalls } = setup(false);
+    const res = await invoke(app, 'POST /api/trade');
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body.success, false);
+    assert.equal(res.body.error, 'Simple DCA is disabled. Use Regime engine.');
+    assert.equal(loadStateCalls.length, 0);
+  });
+
+  it('POST /api/sync returns 400 and reaches no engine work when simpleDcaEnabled is false', async () => {
+    const { app, loadStateCalls } = setup(false);
+    const res = await invoke(app, 'POST /api/sync');
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body.success, false);
+    assert.equal(res.body.error, 'Simple DCA is disabled. Use Regime engine.');
+    assert.equal(loadStateCalls.length, 0);
+  });
+
+  it('POST /api/trade still runs the cycle and echoes its result when simpleDcaEnabled is true', async () => {
+    const { app, loadStateCalls } = setup(true, { fundEnabled: false });
+    const res = await invoke(app, 'POST /api/trade');
+    assert.equal(res.statusCode, 200);
+    assert.ok(loadStateCalls.length > 0, 'runIntervalCycle should have been reached');
+    assert.equal(res.body.status, 'disabled');
+    assert.equal(res.body.trigger, 'manual');
+    assert.equal(typeof res.body.triggeredAt, 'string');
+  });
+
+  it('POST /api/sync still syncs and returns its envelope when simpleDcaEnabled is true', async () => {
+    const { app, loadStateCalls } = setup(true);
+    const res = await invoke(app, 'POST /api/sync');
+    assert.equal(res.statusCode, 200);
+    assert.ok(loadStateCalls.length > 0, 'syncOrderStatuses should have been reached');
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.filledOrders, 0);
+    assert.equal(typeof res.body.lastSyncTime, 'string');
+  });
+});

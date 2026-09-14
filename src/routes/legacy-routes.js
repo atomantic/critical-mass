@@ -4,7 +4,7 @@
  */
 
 const stateTracker = require('../state-tracker');
-const { getExchangeConfig, getDefaultPair, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun, getRegimeConfig } = require('../config-utils');
+const { getExchangeConfig, getDefaultPair, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun, getRegimeConfig, getGlobalConfig } = require('../config-utils');
 const { syncOrderStatuses, runIntervalCycle } = require('../dca-engine');
 const { createContextLogger, getLogFile } = require('../logger');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
@@ -81,7 +81,7 @@ module.exports = (app, deps) => {
   });
 
   app.patch('/api/config', (req, res) => {
-    const { enabled, dryRun } = req.body;
+    const { enabled, dryRun } = req.body || {};
     if (typeof enabled === 'boolean') setExchangeEnabled('coinbase', enabled);
     if (typeof dryRun === 'boolean') setExchangeDryRun('coinbase', dryRun);
     const config = getExchangeConfig('coinbase');
@@ -166,6 +166,9 @@ module.exports = (app, deps) => {
   });
 
   app.post('/api/sync', asyncRoute(async (req, res) => {
+    if (!getGlobalConfig().simpleDcaEnabled) {
+      return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
+    }
     const pair = legacyPair();
     const config = getExchangeConfig('coinbase');
     const state = stateTracker.loadState(config, 'coinbase', pair);
@@ -179,6 +182,9 @@ module.exports = (app, deps) => {
   });
 
   app.post('/api/trade', asyncRoute(async (req, res) => {
+    if (!getGlobalConfig().simpleDcaEnabled) {
+      return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
+    }
     legacyLogger('/api/trade').info('ℹ️ Manual trade triggered via API', { action: 'manual-trade' });
     const result = await runIntervalCycle('coinbase', legacyPair());
     res.json({ ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
