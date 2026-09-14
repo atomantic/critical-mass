@@ -36,7 +36,7 @@ const { createRecoveryModule } = require('./recovery');
 const { createTpOptimizer } = require('./tp-optimizer');
 const { createSizeOptimizer } = require('./size-optimizer');
 const { createLadderCalculator } = require('./ladder-calculator');
-const { calculateAllMetrics, clamp, computeAdaptiveStaleMs, roundAsset, roundUSDC, roundPrice } = require('./volatility-utils');
+const { applyMarketMetrics, clamp, computeAdaptiveStaleMs, roundAsset, roundUSDC, roundPrice } = require('./volatility-utils');
 const { createMacroRegime } = require('./macro-regime');
 const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking } = require('./apy-calculator');
 const { tradeEvents } = require('./trade-events');
@@ -3423,26 +3423,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return;
     }
 
-    // Adapters return exchange-native order — Coinbase/Gemini are newest-first
-    // while volatility-utils assumes oldest-first (issue #203). Sort here so the
-    // hot metrics path never feeds inverted momentum/swing/vol windows.
-    candles1m.sort((a, b) => a.timestamp - b.timestamp);
-    candles5m.sort((a, b) => a.timestamp - b.timestamp);
-
-    const metrics = calculateAllMetrics(candles1m, candles5m, marketState.volBaseline, config);
-
-    marketState.atr1m = metrics.atr1m;
-    marketState.atr5m = metrics.atr5m;
-    marketState.realizedVol = metrics.realizedVol;
-    marketState.volBaseline = metrics.volBaseline;
-    marketState.vwap = metrics.vwap;
-    marketState.recentSwing = metrics.recentSwing;
-    marketState.momentum = metrics.momentum;
-
-    // Calculate VWAP distance
-    if (marketState.lastPrice > 0 && marketState.atr1m > 0) {
-      marketState.vwapDistance = (marketState.lastPrice - marketState.vwap) / marketState.atr1m;
-    }
+    applyMarketMetrics(marketState, candles1m, candles5m, config);
 
     // Feed volatility data to TP optimizer for continuous vol-based sampling
     if (config.tpAutoManaged && marketState.atr5m > 0 && marketState.lastPrice > 0) {
@@ -6073,6 +6054,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Clear the background TTL timers a merge/fill schedules (5-min dedup
       // sweeps) so a test process can exit without waiting on them.
       clearTimers: () => { for (const t of ttlTimers) clearTimeout(t); ttlTimers.clear(); },
+      updateMetrics,
+      ensureTakeProfitPlaced,
     },
   };
 };

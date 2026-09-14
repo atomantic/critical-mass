@@ -13,7 +13,7 @@
 
 const { createWebSocketFeed } = require('./websocket-feed');
 const { createRegimeDetector } = require('./regime-detector');
-const { calculateAllMetrics } = require('./volatility-utils');
+const { applyMarketMetrics } = require('./volatility-utils');
 const { getAdapter, isSupported } = require('./adapters');
 const { createHealthMonitor, instrumentAdapterForHealth } = require('./health-monitor');
 const { getRegimeConfig, getFundConfig, getDefaultPair, getBaseCurrency } = require('./config-utils');
@@ -1700,41 +1700,8 @@ const createMarketDataService = (exchange, pair) => {
       candles5m = result5m.value;
     }
 
-    // Require BOTH candle sets before updating — vwap/atr5m/recentSwing all
-    // derive from candles5m, so proceeding with an empty 5m set (transient
-    // fetch failure) would zero vwap while atr1m stays positive, and the next
-    // ticker would classify with vwap=0 (price reads as massively above VWAP)
-    // → false CAUTION/TREND transitions. The live engine path bails entirely
-    // when either fetch fails; mirror that all-or-nothing semantics here and
-    // keep the prior metrics until the full window is available.
-    if (candles1m?.length > 0 && candles5m?.length > 0) {
-      // Mirror the live engine path (regime-engine.js updateMetrics): seed
-      // the EMA with the previous volBaseline (NOT lastPrice) and pass the
-      // regime config so atrPeriod/vwapPeriodHours overrides apply.
-      const config = getRegimeConfig(exchange, resolvedPair);
-
-      // Adapters return exchange-native order — Coinbase/Gemini are newest-first
-      // while volatility-utils assumes oldest-first (issue #203). Sort here so the
-      // metrics path never feeds inverted momentum/swing/vol windows.
-      candles1m.sort((a, b) => a.timestamp - b.timestamp);
-      candles5m.sort((a, b) => a.timestamp - b.timestamp);
-
-      const metrics = calculateAllMetrics(candles1m || [], candles5m || [], marketState.volBaseline, config);
-
-      marketState.atr1m = metrics.atr1m;
-      marketState.atr5m = metrics.atr5m;
-      marketState.realizedVol = metrics.realizedVol;
-      marketState.volBaseline = metrics.volBaseline;
-      marketState.vwap = metrics.vwap;
-      marketState.recentSwing = metrics.recentSwing;
-      marketState.momentum = metrics.momentum;
-
-      // calculateAllMetrics doesn't return vwapDistance — derive it locally
-      // the same way the engine does (ATR-normalized distance from VWAP).
-      if (marketState.lastPrice > 0 && marketState.atr1m > 0) {
-        marketState.vwapDistance = (marketState.lastPrice - marketState.vwap) / marketState.atr1m;
-      }
-    }
+    const config = getRegimeConfig(exchange, resolvedPair);
+    applyMarketMetrics(marketState, candles1m, candles5m, config);
   };
 
   /**

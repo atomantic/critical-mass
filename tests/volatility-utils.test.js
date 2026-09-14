@@ -11,6 +11,7 @@ const {
   updateEMABaseline,
   calculateMomentum,
   calculateAllMetrics,
+  applyMarketMetrics,
   calculateVolExpansion,
   calculateVWAPDistance,
   calculateEMA,
@@ -671,6 +672,144 @@ describe('calculateAllMetrics', () => {
     });
     assert.ok(metrics.atr1m >= 0);
     assert.ok(metrics.vwap >= 0);
+  });
+});
+
+// ============================================================================
+// applyMarketMetrics (issue #584)
+// ============================================================================
+describe('applyMarketMetrics', () => {
+  const makeRecentCandles = (count, basePrice = 100) => {
+    const now = Date.now();
+    return Array.from({ length: count }, (_, i) => {
+      const price = basePrice + (i % 3) * 2 - 2;
+      return mkCandle(
+        price - 1, price + 3, price - 3, price,
+        100 + i * 10,
+        now - (count - i) * 60000
+      );
+    });
+  };
+
+  it('returns false without mutating when either candle array is empty or not an array', () => {
+    const candles1m = makeRecentCandles(30);
+    const candles5m = makeRecentCandles(15);
+    const initial = {
+      atr1m: 1.5,
+      atr5m: 3.0,
+      realizedVol: 0.05,
+      volBaseline: 0.04,
+      vwap: 100.0,
+      recentSwing: 2.0,
+      momentum: { magnitude: 0.1, direction: 'up' },
+      vwapDistance: 0.5,
+      lastPrice: 101.0,
+    };
+
+    // Empty 1m candles
+    const state1 = { ...initial };
+    assert.equal(applyMarketMetrics(state1, [], candles5m), false);
+    assert.deepEqual(state1, initial, 'state must not be mutated on empty 1m candles');
+
+    // Empty 5m candles
+    const state2 = { ...initial };
+    assert.equal(applyMarketMetrics(state2, candles1m, []), false);
+    assert.deepEqual(state2, initial, 'state must not be mutated on empty 5m candles');
+
+    // Null/undefined/non-array candles
+    const state3 = { ...initial };
+    assert.equal(applyMarketMetrics(state3, null, candles5m), false);
+    assert.equal(applyMarketMetrics(state3, candles1m, undefined), false);
+    assert.equal(applyMarketMetrics(state3, 'not an array', candles5m), false);
+    assert.deepEqual(state3, initial, 'state must not be mutated on non-array candle inputs');
+
+    // Invalid marketState
+    assert.equal(applyMarketMetrics(null, candles1m, candles5m), false);
+    assert.equal(applyMarketMetrics(undefined, candles1m, candles5m), false);
+    assert.equal(applyMarketMetrics(123, candles1m, candles5m), false);
+  });
+
+  it('calculates metrics, assigns seven fields, and derives vwapDistance', () => {
+    const candles1m = makeRecentCandles(30);
+    const candles5m = makeRecentCandles(15);
+    const marketState = {
+      lastPrice: 102.0,
+      volBaseline: 0.02,
+      atr1m: 0,
+      atr5m: 0,
+      realizedVol: 0,
+      vwap: 0,
+      recentSwing: 0,
+      momentum: null,
+      vwapDistance: 0,
+    };
+
+    const res = applyMarketMetrics(marketState, candles1m, candles5m);
+    assert.equal(res, true);
+
+    assert.equal(typeof marketState.atr1m, 'number');
+    assert.ok(marketState.atr1m > 0);
+    assert.equal(typeof marketState.atr5m, 'number');
+    assert.ok(marketState.atr5m > 0);
+    assert.equal(typeof marketState.realizedVol, 'number');
+    assert.equal(typeof marketState.volBaseline, 'number');
+    assert.equal(typeof marketState.vwap, 'number');
+    assert.ok(marketState.vwap > 0);
+    assert.equal(typeof marketState.recentSwing, 'number');
+    assert.ok(marketState.momentum && typeof marketState.momentum.magnitude === 'number');
+
+    const expectedVwapDistance = (marketState.lastPrice - marketState.vwap) / marketState.atr1m;
+    assert.equal(marketState.vwapDistance, expectedVwapDistance);
+  });
+
+  it('does not compute vwapDistance when lastPrice is 0 or negative', () => {
+    const candles1m = makeRecentCandles(30);
+    const candles5m = makeRecentCandles(15);
+    const marketState = {
+      lastPrice: 0,
+      volBaseline: 0.02,
+      vwapDistance: 42,
+    };
+
+    const res = applyMarketMetrics(marketState, candles1m, candles5m);
+    assert.equal(res, true);
+    assert.equal(marketState.vwapDistance, 42, 'vwapDistance must remain unmutated when lastPrice <= 0');
+  });
+
+  it('sorts newest-first adapter candles oldest-first before running calculateAllMetrics', () => {
+    const candles1mAsc = makeRecentCandles(30);
+    const candles5mAsc = makeRecentCandles(15);
+    // Reverse them to simulate newest-first adapter output (Coinbase/Gemini)
+    const candles1mDesc = candles1mAsc.slice().reverse();
+    const candles5mDesc = candles5mAsc.slice().reverse();
+
+    const stateAsc = { lastPrice: 102.0, volBaseline: 0.02 };
+    const stateDesc = { lastPrice: 102.0, volBaseline: 0.02 };
+
+    applyMarketMetrics(stateAsc, candles1mAsc, candles5mAsc);
+    applyMarketMetrics(stateDesc, candles1mDesc, candles5mDesc);
+
+    assert.equal(stateDesc.atr1m, stateAsc.atr1m);
+    assert.equal(stateDesc.atr5m, stateAsc.atr5m);
+    assert.equal(stateDesc.realizedVol, stateAsc.realizedVol);
+    assert.equal(stateDesc.volBaseline, stateAsc.volBaseline);
+    assert.equal(stateDesc.vwap, stateAsc.vwap);
+    assert.equal(stateDesc.recentSwing, stateAsc.recentSwing);
+    assert.deepEqual(stateDesc.momentum, stateAsc.momentum);
+    assert.equal(stateDesc.vwapDistance, stateAsc.vwapDistance);
+  });
+
+  it('passes custom config parameters through to calculateAllMetrics', () => {
+    const candles1m = makeRecentCandles(30);
+    const candles5m = makeRecentCandles(15);
+    const stateA = { lastPrice: 100, volBaseline: 1.0 };
+    const stateB = { lastPrice: 100, volBaseline: 1.0 };
+
+    applyMarketMetrics(stateA, candles1m, candles5m, { atrPeriod: 7 });
+    applyMarketMetrics(stateB, candles1m, candles5m, { atrPeriod: 14 });
+
+    assert.ok(stateA.atr1m > 0 && stateB.atr1m > 0);
+    assert.notEqual(stateA.atr1m, stateB.atr1m);
   });
 });
 
