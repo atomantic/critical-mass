@@ -625,10 +625,44 @@ describe('operator authentication resource bounds', () => {
         assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: 'wrong-password' })).status, 401);
       }
       assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD })).status, 429);
+      assert.equal((await fetch(baseUrl + '/api/providers', {
+        headers: { Authorization: `Bearer ${PASSWORD}`, 'X-Forwarded-For': '192.0.2.99' },
+      })).status, 429);
       assert.equal(hash.mock.callCount(), 5);
       time = 60_000;
       assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD })).status, 200);
       assert.equal(hash.mock.callCount(), 6);
+    });
+  });
+
+  it('shares failed bearer guesses across API, session, and socket authentication', async (t) => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    let time = 0;
+    const hash = t.mock.method(crypto, 'scrypt');
+    await withServer({ authFile, readJSON, writeJSON, now: () => time }, async ({ auth, baseUrl }) => {
+      const headers = { Authorization: 'Bearer wrong-password' };
+      const socketAttempt = () => new Promise((resolve) => auth.socketMiddleware({
+        conn: { remoteAddress: '127.0.0.1' },
+        handshake: { headers: { 'x-forwarded-for': '192.0.2.10' }, auth: { token: 'wrong-password' } },
+      }, resolve));
+      for (let i = 0; i < 2; i++) {
+        assert.equal((await fetch(baseUrl + '/api/providers', { headers })).status, 401);
+        assert.equal((await fetch(baseUrl + '/api/auth/session', { headers })).status, 200);
+      }
+      assert.equal((await socketAttempt()).message, 'Operator authentication required');
+      assert.equal((await fetch(baseUrl + '/api/providers', { headers })).status, 429);
+      assert.equal((await fetch(baseUrl + '/api/auth/session', { headers })).status, 429);
+      assert.equal((await socketAttempt()).status, 429);
+      assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD })).status, 429);
+      assert.equal(hash.mock.callCount(), 5);
+      time = 60_000;
+      for (let i = 0; i < 7; i++) {
+        assert.equal((await fetch(baseUrl + '/api/providers', {
+          headers: { Authorization: `Bearer ${PASSWORD}` },
+        })).status, 200);
+      }
+      assert.equal(hash.mock.callCount(), 12);
     });
   });
 

@@ -54,9 +54,26 @@ const createLogStreamRegistry = () => {
  * capture emitted socket events / log lines.
  */
 const registerLogStreamHandlers = ({ socket, registry, spawnFn, log, allowedProcesses }) => {
-  socket.on('logs:subscribe', ({ processName, lines } = {}) => {
+  // Socket payloads are untrusted JSON. Validate before destructuring or
+  // coercing values: listener exceptions escape Socket.IO's event dispatch.
+  const validProcessPayload = (payload) => {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+      || typeof payload.processName !== 'string') {
+      socket.emit('logs:error', { error: 'Invalid log request: processName must be a string' });
+      return false;
+    }
+    return true;
+  };
+
+  socket.on('logs:subscribe', (payload) => {
+    if (!validProcessPayload(payload)) return;
+    const { processName, lines } = payload;
     if (!allowedProcesses.has(processName)) {
       socket.emit('logs:error', { error: `Invalid process: ${processName}` });
+      return;
+    }
+    if (lines !== undefined && typeof lines !== 'number' && typeof lines !== 'string') {
+      socket.emit('logs:error', { error: 'Invalid log request: lines must be a number or string' });
       return;
     }
     const tailLines = Math.min(Math.max(parseInt(lines, 10) || 500, 1), 5000);
@@ -113,7 +130,9 @@ const registerLogStreamHandlers = ({ socket, registry, spawnFn, log, allowedProc
     }
   });
 
-  socket.on('logs:flush', ({ processName } = {}) => {
+  socket.on('logs:flush', (payload) => {
+    if (!validProcessPayload(payload)) return;
+    const { processName } = payload;
     if (!allowedProcesses.has(processName)) {
       socket.emit('logs:error', { error: `Invalid process: ${processName}` });
       return;

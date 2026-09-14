@@ -131,24 +131,33 @@ const createOperatorAuth = ({
   now = Date.now,
 } = {}) => {
   const attempts = new Map();
-  const limitAttempts = (req, res, next) => {
+  const reserveAttempt = (peer = 'unknown') => {
     const time = now();
-    for (const [peer, entry] of attempts) {
-      if (time >= entry.expires) attempts.delete(peer);
+    for (const [tracked, entry] of attempts) {
+      if (time >= entry.expires) attempts.delete(tracked);
     }
     // Forwarded headers never create a fresh budget. Unknown peers share one.
-    const peer = req.socket?.remoteAddress || 'unknown';
     let entry = attempts.get(peer);
     if (!entry && attempts.size < MAX_TRACKED_PEERS) {
       entry = { count: 0, expires: time + ATTEMPT_WINDOW_MS };
       attempts.set(peer, entry);
     }
     if (!entry || entry.count >= MAX_ATTEMPTS) {
-      res.set('Retry-After', String(Math.max(1, Math.ceil(((entry?.expires || time + ATTEMPT_WINDOW_MS) - time) / 1000))));
-      return res.status(429).json({ error: 'Too many authentication attempts; retry later' });
+      const retryAfter = String(Math.max(1, Math.ceil(((entry?.expires || time + ATTEMPT_WINDOW_MS) - time) / 1000)));
+      throw authError(429, 'Too many authentication attempts; retry later', { 'Retry-After': retryAfter });
     }
     entry.count += 1;
-    next();
+    return entry;
+  };
+  const limitAttempts = (req, res, next) => {
+    try {
+      reserveAttempt(req.socket?.remoteAddress);
+      req.operatorAttemptReserved = true;
+      next();
+    } catch (error) {
+      res.set('Retry-After', error.headers['Retry-After']);
+      res.status(error.status).json({ error: error.message });
+    }
   };
   const validatePasswords = (req, res, next) => {
     for (const value of [submittedSecret(req.body), req.body?.currentPassword, readBearerToken(req.headers.authorization)]) {
@@ -225,11 +234,19 @@ const createOperatorAuth = ({
     writeJSON(authFile, next);
   };
 
-  const authenticate = async (headers = {}) => {
+  const authenticate = async (headers = {}, peer, attemptReserved = false) => {
     if (!hasPassword()) return null;
 
     const bearer = readBearerToken(headers.authorization);
-    if (bearer && await passwordMatches(bearer)) return { source: 'bearer' };
+    if (bearer) {
+      // Reserve before the KDF so every credential entry point shares the same
+      // peer budget. Successful automation does not accumulate failed guesses.
+      const attempt = attemptReserved ? null : reserveAttempt(peer);
+      if (await passwordMatches(bearer)) {
+        if (attempt) attempt.count -= 1;
+        return { source: 'bearer' };
+      }
+    }
 
     const session = parseCookies(headers.cookie)[COOKIE_NAME];
     if (!session) return null;
@@ -237,7 +254,7 @@ const createOperatorAuth = ({
   };
 
   const requireAuth = async (req, res, next) => {
-    const auth = await authenticate(req.headers);
+    const auth = await authenticate(req.headers, req.socket?.remoteAddress, req.operatorAttemptReserved);
     if (!auth) return res.status(401).json({ error: 'Operator authentication required' });
     if (auth.source === 'session' && MUTATING_METHODS.has(req.method) && !requestOriginMatches(req)) {
       return res.status(403).json({ error: 'Request origin is not authorized' });
@@ -249,7 +266,7 @@ const createOperatorAuth = ({
   const socketMiddleware = (socket, next) => {
     const headers = { ...socket.handshake.headers };
     if (socket.handshake.auth?.token) headers.authorization = `Bearer ${socket.handshake.auth.token}`;
-    authenticate(headers).then((auth) => {
+    authenticate(headers, socket.conn?.remoteAddress || socket.request?.socket?.remoteAddress).then((auth) => {
       if (auth) return next();
       const error = new Error('Operator authentication required');
       error.data = { code: 'UNAUTHORIZED' };
@@ -271,7 +288,7 @@ const createOperatorAuth = ({
 
   const registerSessionRoutes = (app) => {
     app.get('/api/auth/session', async (req, res) => {
-      const auth = await authenticate(req.headers);
+      const auth = await authenticate(req.headers, req.socket?.remoteAddress, req.operatorAttemptReserved);
       if (auth?.source === 'session') setSessionCookie(req, res);
       res.json({
         authenticated: Boolean(auth),
@@ -302,7 +319,7 @@ const createOperatorAuth = ({
       if (isBootstrapping() && !canBootstrap(req)) {
         return res.status(403).json({ error: 'Initial operator setup requires loopback access or a valid bootstrap secret' });
       }
-      const auth = await authenticate(req.headers);
+      const auth = await authenticate(req.headers, req.socket?.remoteAddress, req.operatorAttemptReserved);
       if (auth?.source === 'session' && !requestOriginMatches(req)) {
         return res.status(403).json({ error: 'Request origin is not authorized' });
       }
@@ -335,7 +352,7 @@ const createOperatorAuth = ({
       if (!hasPassword()) {
         return res.json({ authenticated: false, required: true, bootstrapRequired: true });
       }
-      if ((await authenticate(req.headers))?.source === 'session' && !requestOriginMatches(req)) {
+      if ((await authenticate(req.headers, req.socket?.remoteAddress, req.operatorAttemptReserved))?.source === 'session' && !requestOriginMatches(req)) {
         return res.status(403).json({ error: 'Request origin is not authorized' });
       }
       const currentPassword = submittedSecret(req.body);
@@ -354,7 +371,7 @@ const createOperatorAuth = ({
     });
 
     app.delete('/api/auth/session', async (req, res) => {
-      if ((await authenticate(req.headers))?.source === 'session' && !requestOriginMatches(req)) {
+      if ((await authenticate(req.headers, req.socket?.remoteAddress, req.operatorAttemptReserved))?.source === 'session' && !requestOriginMatches(req)) {
         return res.status(403).json({ error: 'Request origin is not authorized' });
       }
       res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict', path: '/' });
