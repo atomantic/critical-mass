@@ -11,7 +11,7 @@ const {
   labelHistoryActions,
   BUY_SIDE,
   SELL_SIDE,
-} = require('../shared/signal-actions')
+} = require('../shared/signal-actions.mjs')
 
 describe('signal-actions — unified UpDown action resolution', () => {
   describe('isBuyType', () => {
