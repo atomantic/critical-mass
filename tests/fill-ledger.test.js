@@ -1701,6 +1701,18 @@ describe('Fill Ledger', () => {
       }
     });
 
+    it('supports instance-scoped cycleCompleteSellRatio in opts', () => {
+      const { createFillLedger } = freshFillLedgerModule();
+      const ledger = createFillLedger('inst-thresh', 'BTC-USDC', 'BTC-USDC', { cycleCompleteSellRatio: 0.7 });
+      ledger.ingestFill(makeBuyFill({ tradeId: 'it-b1', orderId: 'itb-1', price: '100000', size: '1.0', timestamp: 1000 }), null, { cycleId: null });
+      ledger.ingestFill(makeSellFill({ tradeId: 'it-s1', orderId: 'its-1', price: '105000', size: '0.6', timestamp: 2000 }), null, { cycleId: null });
+
+      const preview = ledger.previewRecalculateCycles();
+      const real = ledger.recalculateCycles();
+      assert.equal(preview.cyclesCompleted, 0);
+      assert.equal(real.cyclesCompleted, 0);
+    });
+
     it('asserts 0.5 appears exactly once as named constant in src/fill-ledger.js', () => {
       const src = fs.readFileSync(path.join(__dirname, '../src/fill-ledger.js'), 'utf8');
       const matches = src.match(/0\.5/g) || [];

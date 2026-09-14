@@ -103,16 +103,17 @@ const setCycleCompleteSellRatioForTest = (val) => {
 /**
  * Determine whether a cycle is completed based on total sell size vs buy size.
  * @param {Fill[]} cycleFills - All fills in the cycle
+ * @param {number} [threshold=CYCLE_COMPLETE_SELL_RATIO] - Completion threshold
  * @returns {boolean} True if cycle is completed
  */
-const isCompletedCycle = (cycleFills) => {
+const isCompletedCycle = (cycleFills, threshold = CYCLE_COMPLETE_SELL_RATIO) => {
   let buys = 0;
   let sells = 0;
   for (const fill of cycleFills) {
     if (fill.side === 'buy') buys += fill.size;
     else if (fill.side === 'sell') sells += fill.size;
   }
-  return buys > 0 && (sells / buys) >= CYCLE_COMPLETE_SELL_RATIO;
+  return buys > 0 && (sells / buys) >= threshold;
 };
 
 /**
@@ -144,7 +145,7 @@ const groupFillsByCycle = (allFills) => {
  */
 const splitOrphansIntoCycles = (orphanFills) => {
   if (!orphanFills || orphanFills.length === 0) return [];
-  const sorted = [...orphanFills].sort((a, b) => a.timestamp - b.timestamp);
+  const sorted = [...orphanFills].sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
   const rawCycles = [];
   let current = [];
   let lastWasSell = false;
@@ -173,6 +174,35 @@ const splitOrphansIntoCycles = (orphanFills) => {
 };
 
 /**
+ * Build mapping from old cycle IDs to sequential cycle-1, cycle-2... IDs.
+ * Completed cycles are ordered first by timestamp, followed by active cycles.
+ * @param {Map<string, number>} cycleTimestamps - Map of cycleId -> earliest fill timestamp
+ * @param {Set<string>} completedIds - Set of completed cycleIds
+ * @returns {{ idMap: Map<string, string>, nextCycleNumber: number, renumbered: number }}
+ */
+const buildCycleRenumberingMap = (cycleTimestamps, completedIds) => {
+  const completedEntries = [];
+  const activeEntries = [];
+  for (const [id, ts] of cycleTimestamps) {
+    if (completedIds.has(id)) completedEntries.push([id, ts]);
+    else activeEntries.push([id, ts]);
+  }
+  completedEntries.sort((a, b) => a[1] - b[1]);
+  activeEntries.sort((a, b) => a[1] - b[1]);
+
+  let cycleNum = 1;
+  let renumbered = 0;
+  const idMap = new Map();
+  for (const [oldId] of [...completedEntries, ...activeEntries]) {
+    const newId = `cycle-${cycleNum}`;
+    idMap.set(oldId, newId);
+    if (oldId !== newId) renumbered++;
+    cycleNum++;
+  }
+  return { idMap, nextCycleNumber: cycleNum, renumbered };
+};
+
+/**
  * Create fill ledger instance
  * @param {string} exchange - Exchange name
  * @param {string} [productId] - Product ID (e.g. 'BTC-USDC') used to derive base currency for logs
@@ -188,6 +218,7 @@ const splitOrphansIntoCycles = (orphanFills) => {
  */
 const createFillLedger = (exchange, productId, pair, opts = {}) => {
   const quiet = opts.quiet === true;
+  const cycleCompletionRatio = typeof opts.cycleCompleteSellRatio === 'number' ? opts.cycleCompleteSellRatio : undefined;
   const logger = createContextLogger({ exchange, pair: pair || productId });
   /** @type {Map<string, Fill>} */
   const fills = new Map();
@@ -1002,7 +1033,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     const activeCycles = [];
 
     for (const [cycleId, cycleFills] of cycleMap) {
-      if (isCompletedCycle(cycleFills)) {
+      if (isCompletedCycle(cycleFills, cycleCompletionRatio)) {
         completedCycles.push({ cycleId, fills: cycleFills });
       } else {
         activeCycles.push({ cycleId, fills: cycleFills });
@@ -1075,7 +1106,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         }
 
         // Check if this is a completed cycle
-        if (isCompletedCycle(cycleFills)) {
+        if (isCompletedCycle(cycleFills, cycleCompletionRatio)) {
           const { cycleDetail, pnl, holdbackAsset } = computeCycleStats(cycleId, cycleFills);
           cycleDetails.push(cycleDetail);
           totalRealizedPnL += pnl;
@@ -1109,24 +1140,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       }
 
       const completedIds = new Set(cycleDetails.map(d => d.cycleId));
-      const completedEntries = [];
-      const activeEntries = [];
-      for (const [id, ts] of cycleTimestamps) {
-        if (completedIds.has(id)) completedEntries.push([id, ts]);
-        else activeEntries.push([id, ts]);
-      }
-      completedEntries.sort((a, b) => a[1] - b[1]);
-      activeEntries.sort((a, b) => a[1] - b[1]);
-
-      let cycleNum = 1;
-      let renumbered = 0;
-      const idMap = new Map();
-      for (const [oldId] of [...completedEntries, ...activeEntries]) {
-        const newId = `cycle-${cycleNum}`;
-        idMap.set(oldId, newId);
-        if (oldId !== newId) renumbered++;
-        cycleNum++;
-      }
+      const { idMap, nextCycleNumber: cycleNum, renumbered } = buildCycleRenumberingMap(cycleTimestamps, completedIds);
 
       if (renumbered > 0) {
         cycleIndex.clear();
@@ -1224,7 +1238,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
     const cycleDetails = [];
     for (const [cycleId, cycleFills] of cycleMap) {
-      if (isCompletedCycle(cycleFills)) {
+      if (isCompletedCycle(cycleFills, cycleCompletionRatio)) {
         cycleDetails.push(computeCycleStats(cycleId, cycleFills).cycleDetail);
       }
     }
@@ -1237,7 +1251,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     if (orphanCycles.length > 0) {
       for (const { cycleId, fills: cycleFills } of orphanCycles) {
         orphansFixed += cycleFills.length;
-        if (isCompletedCycle(cycleFills)) {
+        if (isCompletedCycle(cycleFills, cycleCompletionRatio)) {
           cycleDetails.push(computeCycleStats(cycleId, cycleFills).cycleDetail);
         } else {
           previewActiveCycleId = cycleId;
@@ -1262,22 +1276,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       }
 
       const completedIds = new Set(cycleDetails.map(d => d.cycleId));
-      const completedEntries = [];
-      const activeEntries = [];
-      for (const [id, ts] of cycleTimestamps) {
-        if (completedIds.has(id)) completedEntries.push([id, ts]);
-        else activeEntries.push([id, ts]);
-      }
-      completedEntries.sort((a, b) => a[1] - b[1]);
-      activeEntries.sort((a, b) => a[1] - b[1]);
-
-      let cycleNum = 1;
-      const idMap = new Map();
-      for (const [oldId] of [...completedEntries, ...activeEntries]) {
-        const newId = `cycle-${cycleNum}`;
-        idMap.set(oldId, newId);
-        cycleNum++;
-      }
+      const { idMap } = buildCycleRenumberingMap(cycleTimestamps, completedIds);
 
       for (const detail of cycleDetails) {
         if (idMap.has(detail.cycleId)) detail.cycleId = idMap.get(detail.cycleId);
@@ -1768,6 +1767,7 @@ module.exports = {
   isCompletedCycle,
   splitOrphansIntoCycles,
   groupFillsByCycle,
+  buildCycleRenumberingMap,
   setCycleCompleteSellRatioForTest,
 };
 
