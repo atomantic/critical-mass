@@ -55,6 +55,7 @@ const { resolveFundDataDir } = require('./migration');
 const celestialHierarchy = require('./celestial-hierarchy');
 const { fmtCurrency: fmtPrice, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
+const { createEngineLocks } = require('./engine-locks');
 
 /** Interval between periodic metrics/regime-classification updates (ms) */
 const METRICS_INTERVAL_MS = 60000;
@@ -756,26 +757,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let wsFeed = null;
   let metricsInterval = null;
   let reconcileInterval = null;
-  let reconcileInProgress = false; // Lock to prevent concurrent reconciliation ticks
-  // Mutual-exclusion lock for body merges/roll-ups (#189). manualMergeBody,
-  // rollupAllBodies, and the automatic dust consolidator all cancel/replace TP
-  // orders and rewrite celestialBodies; without a lock the metrics-timer dust
-  // merge can interleave with an operator roll-up or the reconcile loop at an
-  // await and double-count a body's qty/cost. Held across a whole merge; the
-  // reconcile loop also defers while it is set (and vice-versa).
-  let mergeInProgress = false;
+  // Merge / reconcile / fill / entry mutual exclusion lives in engine-locks.js
+  // (#580). Fills wait (bounded) for an in-flight merge; a merge never waits on
+  // fills. Manual operator merges are not gated on in-flight fills (deliberate).
+  const engineLocks = createEngineLocks({
+    logWarn: (msg) => logger.warn(msg),
+  });
   // Cooldown after a failed dust consolidation so a body that can't currently be
   // merged (e.g. target TP partially filled) doesn't re-attempt+re-log every
   // cycle (#189). 0 = no cooldown.
   let dustMergeRetryAfter = 0;
-  // Count of in-flight handleOrderFill calls (WS push + polling can overlap at
-  // awaits — see handleOrderFill wrapper). The AUTOMATIC dust consolidator yields
-  // while this is > 0 so it never STARTS a merge mid-fill: a buy fill mutates
-  // celestialBodies / cancels-replaces a body TP, which would race the merge's
-  // own cancel+rewrite. Manual operator merges are not gated (deliberate action).
-  let fillInProgress = 0;
   let stateSaveInterval = null;
-  let entryInProgress = false;
   // Rate limit for the "placements blocked by an unresolved intent" log line.
   let placementBlockLoggedAt = 0;
   // Short-lived cache of the intent check. evaluateEntryTrigger runs on every
@@ -783,7 +775,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // read immediately before each dispatch — so this can only delay the
   // engine-side skip (and the operator's unblock) by up to a second, never let
   // a duplicate order through.
-  let placementIntentCache = { at: 0, intents: [] }; // Lock to prevent concurrent entry evaluations
+  let placementIntentCache = { at: 0, intents: [] };
   let insufficientFundsCooldownUntil = 0; // Cooldown after InsufficientFunds to prevent rapid retry spam
   const recentlyProcessedFills = new Set(); // Dedup guard: prevents double-processing when stale check and fill check race
   const recentlyProcessedSellFills = new Set(); // Dedup guard: prevents sell orders from being processed twice across WS/reconcile/polling
@@ -3263,28 +3255,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const handleOrderFill = async (fillData) => {
     const dedupRef = { set: null, key: null };
-    fillInProgress++; // gates the automatic dust consolidator (see fillInProgress)
     try {
-      // Defer to an in-flight body merge (#196): a merge rewrites celestialBodies
-      // + TP state across its awaits, and so does the fill handler — both touching
-      // the same body would double-count or drop qty/cost. The fillInProgress gate
-      // above stops a NEW merge from starting mid-fill; this WAIT covers the other
-      // direction (a merge already running when the fill arrives). Fills must not
-      // be dropped, so we wait, not skip. Deadlock-free: a running merge never
-      // waits on fillInProgress. Bounded so a stuck flag can't hang a fill forever.
-      const waitDeadline = Date.now() + 15000;
-      while (mergeInProgress && Date.now() < waitDeadline) {
-        await new Promise(resolve => setTimeout(resolve, 25));
-      }
-      if (mergeInProgress) {
-        logger.warn(`⚠️ [${exchange}] Fill ${fillData.orderId} proceeding after 15s wait — merge lock still held (possible stuck merge)`);
-      }
-      return await handleOrderFillImpl(fillData, dedupRef);
+      // withFillGate increments the in-flight fill count (so dust consolidation
+      // will not START a merge mid-fill) and waits out an already-running merge
+      // (#196). Deadlock-free because withMergeLock never consults the fill gate.
+      return await engineLocks.withFillGate(
+        () => handleOrderFillImpl(fillData, dedupRef),
+        { exchange, orderId: fillData.orderId }
+      );
     } catch (err) {
       if (dedupRef.set) dedupRef.set.delete(dedupRef.key);
       throw err;
-    } finally {
-      fillInProgress--;
     }
   };
 
@@ -3513,7 +3494,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const consolidateDustBodies = async () => {
     if (isDryRun || !productDetails?.baseMinSize) return;
-    if (mergeInProgress || reconcileInProgress || fillInProgress > 0) return; // busy → retry next tick (no cooldown)
+    if (engineLocks.isMutatingPosition()) return; // busy → retry next tick (no cooldown)
     if (Date.now() < dustMergeRetryAfter) return;        // backing off after a failed attempt
     const bodies = positionState.celestialBodies || [];
     if (bodies.length < 2) return;
@@ -3574,11 +3555,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const reconcileTick = () => {
       if (!isRunning) return; // Guard against firing after stop
-      if (reconcileInProgress) return; // Skip tick if previous run is still in progress
-      if (mergeInProgress) return; // Defer while a body merge/roll-up cancels & replaces TPs (#189)
-      reconcileInProgress = true;
-
-      // Collect every async chain this tick dispatches so reconcileInProgress is
+      engineLocks.withReconcileLock(() => {
+      // Collect every async chain this tick dispatches so the reconcile lock is
       // held until ALL of them settle — the body-TP chains below cancel/replace
       // TPs fire-and-forget, and clearing the flag on the recovery promise alone
       // would let a merge (or the next reconcile tick) race an in-flight TP
@@ -3836,8 +3814,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }));
 
       // Release the lock only after every dispatched chain settles (#189 review).
-      Promise.allSettled(pending).finally(() => {
-        reconcileInProgress = false;
+      return Promise.allSettled(pending);
       });
   };
 
@@ -3854,7 +3831,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const evaluateEntryTrigger = async () => {
     // Prevent concurrent entry evaluations (race condition from rapid ticker updates)
-    if (entryInProgress) return;
+    if (engineLocks.isEntryInProgress()) return;
 
     // A placement whose outcome we could not establish (ambiguous response we
     // could not reconcile, or a crash inside the dispatch window) leaves a
@@ -3945,10 +3922,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const timeTrigger = timeSinceLastEntry >= config.maxIntervalMs;
 
     if (volTrigger || timeTrigger) {
-      entryInProgress = true;
-      await executeEntry(volTrigger ? 'volatility' : 'timer').finally(() => {
-        entryInProgress = false;
-      });
+      await engineLocks.withEntryLock(() =>
+        executeEntry(volTrigger ? 'volatility' : 'timer')
+      );
     }
   };
 
@@ -3979,15 +3955,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Claim the entry lock BEFORE the first await. Ticker events fire many
     // times per second; the balance fetch below is an async gap, and the
-    // evaluateEntryTrigger guard (`if (entryInProgress) return`) only blocks
-    // re-entry once this flag is set. Setting it after the await (the old
-    // bug) let every tick that landed during the balance round-trip place its
-    // own full-budget ladder — multi-x budget over-commitment, with only the
-    // last ladder's orders tracked (issue #98). All early-returns from here
-    // must clear it, so the rest of the function runs under try/finally.
-    if (entryInProgress) return;
-    entryInProgress = true;
-    try {
+    // evaluateEntryTrigger guard (`if (engineLocks.isEntryInProgress()) return`)
+    // only blocks re-entry once this flag is set. Setting it after the await
+    // (the old bug) let every tick that landed during the balance round-trip
+    // place its own full-budget ladder — multi-x budget over-commitment, with
+    // only the last ladder's orders tracked (issue #98). All early-returns from
+    // here must clear it, so the rest of the function runs under withEntryLock.
+    if (engineLocks.isEntryInProgress()) return;
+    await engineLocks.withEntryLock(async () => {
       // Calculate remaining budget, capped at actual available balance
       let remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
       const quoteCurrency = getQuoteCurrency(productId);
@@ -4069,9 +4044,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       };
 
       await placeLadder();
-    } finally {
-      entryInProgress = false;
-    }
+    });
   };
 
   /**
@@ -5483,8 +5456,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // and re-place a right-sized TP — all in one call, reusing the exact same
     // booking path the buy-merge race already relies on. We call
     // handleOrderFillImpl directly (not the handleOrderFill wrapper) because
-    // the wrapper defers to `mergeInProgress`, which THIS call holds — going
-    // through it would self-stall for its full 15s wait window every time.
+    // the wrapper's fill gate waits on this merge hold — going through it
+    // would self-stall for its full 15s wait window every time.
     const bookExecutionDuringCancel = async (body, snapshot, cancelResult) => {
       const soldTp = snapshot.tpOrderId;
       pendingMergeTpOrders.delete(soldTp);
@@ -5642,23 +5615,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   /**
    * Public single-body merge. Acquires the merge lock (deferring if a merge or
    * reconcile is already running) so a metrics-timer dust merge can't interleave
-   * with an operator roll-up or the reconcile loop (#189). Callers that already
-   * hold the lock (rollupAllBodies) pass { _noLock: true }.
+   * with an operator roll-up or the reconcile loop (#189). Nested callers that
+   * already hold the lock (rollupAllBodies) reenter rather than self-deadlocking.
    * @param {string} bodyId
-   * @param {{targetId?: string, label?: string, _noLock?: boolean}} [opts]
+   * @param {{targetId?: string, label?: string}} [opts]
    */
-  const manualMergeBody = async (bodyId, opts = {}) => {
-    if (opts._noLock) return _mergeBodyImpl(bodyId, opts);
-    if (mergeInProgress || reconcileInProgress) {
-      return { success: false, message: 'A merge or reconcile is already in progress' };
-    }
-    mergeInProgress = true;
-    try {
-      return await _mergeBodyImpl(bodyId, opts);
-    } finally {
-      mergeInProgress = false;
-    }
-  };
+  const manualMergeBody = async (bodyId, opts = {}) =>
+    engineLocks.withMergeLock(() => _mergeBodyImpl(bodyId, opts));
 
   /**
    * Collapse every celestial body into a single body with one TP order.
@@ -5673,13 +5636,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: false, message: `Need at least 2 bodies to collapse, found ${startCount}` };
     }
     // Acquire the merge lock ONCE for the whole collapse (defer to any in-flight
-    // merge/reconcile); internal calls pass _noLock so they don't re-acquire it
-    // (which would self-deadlock against this hold) (#189).
-    if (mergeInProgress || reconcileInProgress) {
-      return { success: false, message: 'A merge or reconcile is already in progress' };
-    }
-    mergeInProgress = true;
-    try {
+    // merge/reconcile). Inner manualMergeBody calls reenter that hold (#189).
+    return engineLocks.withMergeLock(async () => {
       logger.info(`🔗 [${exchange}] Collapse-all triggered: ${startCount} bodies → 1`);
 
       let mergedCount = 0;
@@ -5689,7 +5647,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const bodies = positionState.celestialBodies || [];
         if (bodies.length < 2) break;
         const lowest = [...bodies].sort((a, b) => (a.tpPrice || 0) - (b.tpPrice || 0))[0];
-        const result = await manualMergeBody(lowest.id, { _noLock: true });
+        const result = await manualMergeBody(lowest.id);
         if (!result.success) {
           return {
             success: false,
@@ -5707,9 +5665,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         mergedCount,
         finalBody: lastResult?.mergedBody || null,
       };
-    } finally {
-      mergeInProgress = false;
-    }
+    });
   };
 
   /**
@@ -5724,14 +5680,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const resetCycleBuys = async () => {
     if (!isRunning) return { success: false, message: 'Engine not running' };
-    // Also gate on fillInProgress (as consolidateDustBodies does, line 3350):
-    // a fill mid-handling may be ingested into the ledger under the
-    // about-to-be-superseded cycle but not yet reflected in
+    // Also gate on in-flight fills (as consolidateDustBodies does via
+    // isMutatingPosition): a fill mid-handling may be ingested into the ledger
+    // under the about-to-be-superseded cycle but not yet reflected in
     // positionState.cycleBuys — resetting the cycle boundary underneath it
     // desyncs cycleBuys from the ledger and a restart's auto-correct can
     // silently erase a real buy step (issue #232 follow-up).
-    if (mergeInProgress || reconcileInProgress || fillInProgress > 0) {
-      return { success: false, message: 'A merge, reconcile, or fill is in progress — try again' };
+    if (engineLocks.isMutatingPosition()) {
+      return { success: false, message: engineLocks.describeBusy('position') };
     }
     // resetCycle() treats a DRAINING lifecycle as "this cycle boundary is the
     // close trigger" and transitions straight to CLOSED (stopping the engine
@@ -6098,11 +6054,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       setAdapter: (v) => { adapter = v; },
       setOrderExecutor: (v) => { orderExecutor = v; },
       setRecoveryModule: (v) => { recoveryModule = v; },
-      setMergeInProgress: (v) => { mergeInProgress = v; },
-      setReconcileInProgress: (v) => { reconcileInProgress = v; },
-      setFillInProgress: (v) => { fillInProgress = v; },
+      setMergeInProgress: engineLocks._test.setMergeInProgress,
+      setReconcileInProgress: engineLocks._test.setReconcileInProgress,
+      setFillInProgress: engineLocks._test.setFillInProgress,
       setDustMergeRetryAfter: (v) => { dustMergeRetryAfter = v; },
-      getFlags: () => ({ isRunning, mergeInProgress, reconcileInProgress, fillInProgress, dustMergeRetryAfter }),
+      getFlags: () => ({ isRunning, dustMergeRetryAfter, ...engineLocks.getFlags() }),
       consolidateDustBodies,
       mergeBody: _mergeBodyImpl,
       handleOrderFill,

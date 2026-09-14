@@ -253,7 +253,7 @@ describe('#196 consolidateDustBodies — target selection and cooldown', () => {
 });
 
 // ---------------------------------------------------------------------------
-// _mergeBodyImpl — targetId / _noLock / guards
+// _mergeBodyImpl — targetId / merge-lock reentrancy / guards
 // ---------------------------------------------------------------------------
 
 describe('#196 _mergeBodyImpl — targetId and guards', () => {
@@ -294,20 +294,28 @@ describe('#196 _mergeBodyImpl — targetId and guards', () => {
     assert.equal(eng._getPositionState().celestialBodies.length, 2, 'no body removed on abort');
   });
 
-  it('_noLock bypasses the merge lock (used by rollupAllBodies)', async () => {
-    const eng = makeEngine({ bodies: [makeBody('a', 1, 1, 'tp-a'), makeBody('b', 2, 1, 'tp-b')] });
-    // Hold the lock as if a collapse-all were in progress.
+  it('rollupAllBodies nested merges reenter the lock rather than self-deadlocking', async () => {
+    const eng = makeEngine({
+      bodies: [
+        makeBody('a', 50000, 0.01, 'tp-a'),
+        makeBody('b', 51000, 0.01, 'tp-b'),
+        makeBody('c', 52000, 0.01, 'tp-c'),
+      ],
+    });
+    // An externally held flag still refuses a new public merge (not reentrancy).
     eng._test.setMergeInProgress(true);
-    // Through the public lock path this would be rejected as "in progress"...
     const locked = await eng.manualMergeBody('a', { targetId: 'b' });
     assert.equal(locked.success, false);
     assert.match(locked.message, /in progress/i);
-    // ...but _noLock proceeds into _mergeBodyImpl (fails later on its own merits,
-    // here at the "engine running but" path — proving it did NOT short-circuit on
-    // the lock). We assert it got PAST the lock check by getting a different error.
-    const bypass = await eng.manualMergeBody('ghost-source', { _noLock: true });
-    assert.equal(bypass.success, false);
-    assert.match(bypass.message, /not found/i, 'should reach body lookup, not the lock guard');
+    eng._test.setMergeInProgress(false);
+
+    // Collapse-all holds the lock once and calls manualMergeBody per step;
+    // those nested calls must reenter, not return "already in progress".
+    const collapse = await eng.rollupAllBodies();
+    assert.equal(collapse.success, true, `collapse should succeed: ${collapse.message}`);
+    assert.equal(collapse.mergedCount, 2);
+    assert.equal(eng._getPositionState().celestialBodies.length, 1);
+    assert.equal(eng._test.getFlags().mergeInProgress, false);
   });
 });
 
