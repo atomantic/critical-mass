@@ -25,7 +25,7 @@ const { createContextLogger } = require('./logger');
 /**
  * @typedef {Object} SimulatedOrder
  * @property {string} orderId - Simulated order ID
- * @property {'entry' | 'take_profit' | 'body_tp'} type - Order type
+ * @property {'entry' | 'ladder_entry' | 'take_profit' | 'body_tp'} type - Order type
  * @property {'buy' | 'sell'} side - Order side
  * @property {number} price - Limit price
  * @property {number} size - Size in BTC
@@ -334,15 +334,15 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     const now = Date.now();
 
     for (const [orderId, order] of pendingOrders) {
-      if (order.type === 'entry' && order.side === 'buy' && order.status === 'open') {
+      if ((order.type === 'entry' || order.type === 'ladder_entry') && order.side === 'buy' && order.status === 'open') {
         // Entry fills only if the market trades at or below our bid level — a real
         // maker buy limit never fills above the limit price. Matches the exact,
         // tolerance-free TP-side check in checkTpFills (currentPrice >= order.price)
         // so dry-run fills are not asymmetrically optimistic about entries. (#154)
         if (currentPrice <= order.price) {
           simulateFill(orderId, order.price);
-        } else if (now - order.placedAt > (order.staleMs ?? config.orderStaleMs)) {
-          // Cancel stale entries that haven't filled
+        } else if (order.type === 'entry' && now - order.placedAt > (order.staleMs ?? config.orderStaleMs)) {
+          // Cancel stale entries that haven't filled (ladder entries are persistent)
           order.status = 'cancelled';
           pendingOrders.delete(orderId);
           logDecision('entry_cancelled', 'N/A', currentPrice, {
@@ -403,7 +403,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     // Note: Don't push to filledOrders yet - we need to add P&L data first for TP orders
     pendingOrders.delete(orderId);
 
-    if (order.type === 'entry') {
+    if (order.type === 'entry' || order.type === 'ladder_entry') {
       simulatedTotalBought += order.size;
 
       // Apply the configured per-side fee rate (matches live cost-basis math).
@@ -448,8 +448,8 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
         totalBought: simulatedTotalBought,
       });
       logger.info(
-        `🧪 [${exchange}] [DRY-RUN] Entry FILLED: ${order.size} ${baseCurrency} @ ${fmtPrice(fillPrice)}`,
-        { orderId, orderType: 'entry', assetQty: order.size, fillPrice, costBasis, totalBought: simulatedTotalBought }
+        `🧪 [${exchange}] [DRY-RUN] ${order.type === 'ladder_entry' ? 'Ladder entry' : 'Entry'} FILLED: ${order.size} ${baseCurrency} @ ${fmtPrice(fillPrice)}`,
+        { orderId, orderType: order.type, assetQty: order.size, fillPrice, costBasis, totalBought: simulatedTotalBought }
       );
 
       // Push to filled orders after all data is populated
@@ -811,6 +811,145 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   };
 
   // ============================================================================
+  // Ladder Mode Functions
+  // ============================================================================
+
+  /**
+   * Place liquidity ladder orders (simulated)
+   * @param {Array<{index: number, price: number, assetQty: number, sizeUsdc: number}>} levels - Ladder levels to place
+   * @returns {Promise<{orders: Array<{orderId: string, ladderIndex: number, price: number, sizeUsdc: number, assetQty: number}>, failedCount: number}>}
+   */
+  const placeLadderOrders = async (levels) => {
+    const results = [];
+    let failedCount = 0;
+
+    for (const level of levels) {
+      if (!level || !level.price || !level.assetQty) {
+        failedCount++;
+        continue;
+      }
+
+      const orderId = generateOrderId();
+      const order = {
+        orderId,
+        type: /** @type {any} */ ('ladder_entry'),
+        side: 'buy',
+        price: level.price,
+        size: level.assetQty,
+        sizeUsdc: level.sizeUsdc,
+        ladderIndex: level.index,
+        placedAt: Date.now(),
+        status: 'open',
+        filledAt: null,
+        fillPrice: null,
+        staleMs: null,
+      };
+
+      pendingOrders.set(orderId, order);
+
+      results.push({
+        orderId,
+        ladderIndex: level.index,
+        price: level.price,
+        sizeUsdc: level.sizeUsdc,
+        assetQty: level.assetQty,
+      });
+
+      logDecision('entry_placed', 'N/A', level.price, {
+        orderId,
+        bidPrice: level.price,
+        assetQty: level.assetQty,
+        sizeUsdc: level.sizeUsdc,
+        ladderIndex: level.index,
+        isLadder: true,
+      });
+
+      logger.info(
+        `🧪 [${exchange}] [DRY-RUN] Ladder order placed [rung ${level.index}]: ${level.assetQty} ${baseCurrency} @ ${fmtPrice(level.price)} ($${level.sizeUsdc})`,
+        { orderId, orderType: 'ladder_entry', side: 'buy', assetQty: level.assetQty, sizeUsdc: level.sizeUsdc, price: level.price, ladderIndex: level.index }
+      );
+    }
+
+    return { orders: results, failedCount };
+  };
+
+  /**
+   * Cancel all unfilled ladder orders
+   * @returns {Promise<{cancelled: number, remainingTracked: number}>} Cancel results
+   */
+  const cancelAllLadderOrders = async () => {
+    let cancelled = 0;
+    for (const [orderId, order] of pendingOrders) {
+      if (order.type === 'ladder_entry') {
+        order.status = 'cancelled';
+        pendingOrders.delete(orderId);
+        cancelled++;
+        logDecision('entry_cancelled', 'N/A', order.price, {
+          orderId,
+          reason: 'ladder_cancelled',
+          ladderIndex: order.ladderIndex,
+        });
+        logger.info(
+          `🧪 [${exchange}] [DRY-RUN] Ladder order cancelled: ${orderId}`,
+          { orderId, orderType: 'ladder_entry', reason: 'ladder_cancelled' }
+        );
+      }
+    }
+    const remainingTracked = Array.from(pendingOrders.values())
+      .filter(o => o.type === 'ladder_entry').length;
+    return { cancelled, remainingTracked };
+  };
+
+  /**
+   * Get all pending ladder orders
+   * @returns {Array<{orderId: string, price: number, size: number, sizeUsdc: number, ladderIndex: number, placedAt: number}>}
+   */
+  const getPendingLadderOrders = () => {
+    const ladderOrders = [];
+    for (const [orderId, order] of pendingOrders) {
+      if (order.type === 'ladder_entry' && order.status === 'open') {
+        ladderOrders.push({
+          orderId,
+          price: order.price,
+          size: order.size,
+          sizeUsdc: order.sizeUsdc,
+          ladderIndex: order.ladderIndex,
+          placedAt: order.placedAt,
+        });
+      }
+    }
+    return ladderOrders.sort((a, b) => b.price - a.price); // Sort by price descending (top of ladder first)
+  };
+
+  /**
+   * Check if an order is a ladder entry order
+   * @param {string} orderId - Order ID to check
+   * @returns {boolean}
+   */
+  const isLadderOrder = (orderId) => {
+    const order = pendingOrders.get(orderId);
+    return order?.type === 'ladder_entry';
+  };
+
+  /**
+   * Get the placedAt timestamp for an order
+   * @param {string} orderId - Order ID
+   * @returns {number|null} Timestamp when order was placed, or null if not found
+   */
+  const getOrderPlacedAt = (orderId) => {
+    const order = pendingOrders.get(orderId);
+    return order ? order.placedAt : null;
+  };
+
+  /**
+   * Mark an orderId as settled (for interface parity with live executor)
+   * @param {string} orderId - Order ID
+   */
+  const markSettled = (orderId) => {
+    // No-op in dry-run; provides interface parity with live executor
+  };
+
+  // ============================================================================
 
   /**
    * Handle order fill notification (passthrough for compatibility)
@@ -846,18 +985,20 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    */
   const getPendingCounts = () => {
     let entries = 0;
+    let ladderEntries = 0;
     let takeProfits = 0;
     let bodies = 0;
 
     for (const order of pendingOrders.values()) {
       if (order.status === 'open') {
         if (order.type === 'entry') entries++;
+        else if (order.type === 'ladder_entry') ladderEntries++;
         else if (order.type === 'take_profit') takeProfits++;
         else if (order.type === 'body_tp') bodies++;
       }
     }
 
-    return { entries, takeProfits, bodies, satellites: bodies, total: pendingOrders.size };
+    return { entries, ladderEntries, takeProfits, bodies, total: pendingOrders.size };
   };
 
   /**
@@ -928,6 +1069,13 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    */
   const restorePendingOrder = (orderId, order) => {
     // No-op in dry-run mode - we don't recover simulated orders
+  };
+
+  /**
+   * Clear all timers (no-op in dry-run mode)
+   */
+  const clearTimers = () => {
+    // No-op in dry-run mode
   };
 
   /**
@@ -1262,6 +1410,9 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   };
 
   return {
+    capabilities: {
+      liveReconciliation: false,
+    },
     // Standard executor interface
     placeEntryBid,
     placeTakeProfitOrder,
@@ -1271,13 +1422,22 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     cancelAllEntries,
     handleOrderFill,
     handleOrderCancel,
+    markSettled,
+    getOrderPlacedAt,
     getPendingCounts,
     getPendingEntries,
     checkInvariants,
     getActiveTpOrderId,
     getSummary,
     clearPendingOrders,
+    clearTimers,
     restorePendingOrder,
+
+    // Ladder mode functions
+    placeLadderOrders,
+    cancelAllLadderOrders,
+    getPendingLadderOrders,
+    isLadderOrder,
 
     // Body TP functions
     placeBodyTpOrder,
