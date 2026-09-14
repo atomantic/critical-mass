@@ -1650,6 +1650,9 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   return {
+    capabilities: {
+      liveReconciliation: true,
+    },
     placeEntryBid,
     placeTakeProfitOrder,
     cancelTpOrder,

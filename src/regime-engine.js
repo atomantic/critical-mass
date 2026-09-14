@@ -32,6 +32,7 @@ const { createRiskManager } = require('./risk-manager');
 const { createOrderExecutor } = require('./order-executor');
 const { classifyBodyTpCancellation } = require('./cancellation-result');
 const { createDryRunExecutor } = require('./dry-run-executor');
+const { validateExecutor } = require('./executor-contract');
 const { createRecoveryModule } = require('./recovery');
 const { createTpOptimizer } = require('./tp-optimizer');
 const { createSizeOptimizer } = require('./size-optimizer');
@@ -723,6 +724,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         },
       }, pair);
 
+  validateExecutor(orderExecutor, isDryRun ? 'dry-run' : 'live');
+
   // `let` so the #196 reconcile lock-release test can inject a mock with a
   // controllable deferred promise; no production reassignment.
   let recoveryModule = createRecoveryModule(exchange, adapter, productId);
@@ -902,7 +905,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Save dry-run state to disk
    */
   const saveDryRunState = () => {
-    if (!isDryRun || !orderExecutor.exportState) return;
+    if (!isDryRun) return;
 
     // Persist macro regime state into position for recovery
     if (macroRegime) {
@@ -923,7 +926,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {boolean} Whether state was loaded
    */
   const loadDryRunState = () => {
-    if (!isDryRun || !orderExecutor.importState) return false;
+    if (!isDryRun) return false;
 
     const savedState = dryRunState.loadState(exchange, pair);
     if (!savedState || !savedState.isDryRun) return false;
@@ -1254,10 +1257,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             `⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${orderStatus.status} while offline (no partials) — clearing for re-placement`,
             { bodyId: body.id, orderId: body.tpOrderId, status: orderStatus.status }
           );
-          if (orderExecutor.removeBodyTracking) {
             orderExecutor.removeBodyTracking(body.tpOrderId);
-          }
-          body.tpOrderId = null;
+            body.tpOrderId = null;
           body.tpPrice = 0;
           body.assetOnOrder = 0;
           continue;
@@ -1364,7 +1365,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const calculateApyMetrics = () => _calculateApyMetrics(positionState, config, marketState);
   const initializeApyTracking = () => _initializeApyTracking(
     positionState, config, exchange,
-    orderExecutor.getFilledOrders ? () => orderExecutor.getFilledOrders() : undefined,
+    isDryRun ? () => orderExecutor.getFilledOrders() : undefined,
     productId
   );
 
@@ -1387,9 +1388,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       priceIncrement = parseFloat(productDetails.quoteIncrement) || 0.01;
       logger.info(`📏 [${exchange}] Price increment: ${priceIncrement}`);
     }
-    if (orderExecutor.setPriceIncrement) {
-      orderExecutor.setPriceIncrement(priceIncrement);
-    }
+    orderExecutor.setPriceIncrement(priceIncrement);
 
     // Recover state from exchange (skip in dry-run mode)
     if (!isDryRun) {
@@ -1513,10 +1512,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           && tpOrderStatus.status !== 'FAILED'
           && tpOrderStatus.status !== 'EXPIRED');
 
-        if (tpOrderExists && orderExecutor.restorePendingOrder) {
+        if (tpOrderExists) {
           // Check if a celestial body owns this TP — restore as body_tp if so
           const bodyOwner = (positionState.celestialBodies || []).find(b => b.tpOrderId === positionState.activeTpOrderId);
-          if (bodyOwner && orderExecutor.restoreBodyTpOrder) {
+          if (bodyOwner) {
             const placedAt = tpOrderStatus?.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now());
             orderExecutor.restoreBodyTpOrder(bodyOwner.id, positionState.activeTpOrderId, bodyOwner.assetQty, positionState.lastTpPrice, placedAt);
             logger.info(`📋 [${exchange}] Restored legacy TP as body_tp: ${positionState.activeTpOrderId.slice(0, 8)} → body ${bodyOwner.id.slice(-8)}`);
@@ -1646,7 +1645,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             continue;
           }
 
-          if (bodyExists && orderExecutor.restoreBodyTpOrder) {
+          if (bodyExists) {
             const bodyPlacedAt = bodyStatus?.createdTime ? new Date(bodyStatus.createdTime).getTime() : Date.now();
             orderExecutor.restoreBodyTpOrder(
               body.id,
@@ -1691,7 +1690,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP% ${currentTpPct.toFixed(2)}% exceeds max ${bEffectiveMax.toFixed(2)}% — cancelling and repricing`);
             const cancelResult = await adapter.cancelOrder(body.tpOrderId);
             if (cancelResult.success) {
-              if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(body.tpOrderId);
+              orderExecutor.removeBodyTracking(body.tpOrderId);
               body.tpOrderId = null;
               body.tpPrice = 0;
               body.assetOnOrder = 0;
@@ -1824,17 +1823,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (savedOrderIds.has(order.orderId)) {
           // This is our order - restore tracking instead of canceling
           const savedEntry = savedPendingEntries.find(e => e.orderId === order.orderId);
-          if (orderExecutor.restorePendingOrder) {
-            orderExecutor.restorePendingOrder(order.orderId, {
-              type: 'entry',
-              price: savedEntry.price,
-              size: savedEntry.assetQty,
-              sizeUsdc: savedEntry.sizeUsdc,
-              placedAt: order.createdTime ? new Date(order.createdTime).getTime() : (savedEntry.placedAt || Date.now()),
-            });
-            restoredEntries++;
-            logger.info(`🔄 [${exchange}] Restored pending entry: ${order.orderId} @ ${fmtPrice(savedEntry.price)}`);
-          }
+          orderExecutor.restorePendingOrder(order.orderId, {
+            type: 'entry',
+            price: savedEntry.price,
+            size: savedEntry.assetQty,
+            sizeUsdc: savedEntry.sizeUsdc,
+            placedAt: order.createdTime ? new Date(order.createdTime).getTime() : (savedEntry.placedAt || Date.now()),
+          });
+          restoredEntries++;
+          logger.info(`🔄 [${exchange}] Restored pending entry: ${order.orderId} @ ${fmtPrice(savedEntry.price)}`);
 
           // Check if order has any fills while offline (partial fills)
           if (order.filledSize && order.filledSize > 0) {
@@ -1870,15 +1867,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // Check if this "orphan" has partial fills — if so, restore it instead of cancelling
           if (order.filledSize && order.filledSize > 0) {
             logger.info(`📦 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} has partial fills (${order.filledSize} ${baseCurrency}) — restoring instead of cancelling`);
-            if (orderExecutor.restorePendingOrder) {
-              orderExecutor.restorePendingOrder(order.orderId, {
-                type: 'entry',
-                price: order.price,
-                size: order.size,
-                sizeUsdc: order.size * order.price,
-                placedAt: order.createdTime ? new Date(order.createdTime).getTime() : Date.now(),
-              });
-            }
+            orderExecutor.restorePendingOrder(order.orderId, {
+              type: 'entry',
+              price: order.price,
+              size: order.size,
+              sizeUsdc: order.size * order.price,
+              placedAt: order.createdTime ? new Date(order.createdTime).getTime() : Date.now(),
+            });
             // Ingest any fills we don't already have
             const rawFills = await adapter.getOrderFills(order.orderId);
             let orderHadNewFills = false;
@@ -2000,17 +1995,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         for (const order of openEntries) {
           if (savedLadderIds.has(order.orderId)) {
             const savedOrder = savedLadderOrders.find(o => o.orderId === order.orderId);
-            if (orderExecutor.restorePendingOrder) {
-              orderExecutor.restorePendingOrder(order.orderId, {
-                type: 'ladder_entry',
-                price: savedOrder.price,
-                size: savedOrder.assetQty,
-                sizeUsdc: savedOrder.sizeUsdc,
-                ladderIndex: savedOrder.ladderIndex,
-                placedAt: order.createdTime ? new Date(order.createdTime).getTime() : (savedOrder.placedAt || Date.now()),
-              });
-              restoredLadder++;
-            }
+            orderExecutor.restorePendingOrder(order.orderId, {
+              type: 'ladder_entry',
+              price: savedOrder.price,
+              size: savedOrder.assetQty,
+              sizeUsdc: savedOrder.sizeUsdc,
+              ladderIndex: savedOrder.ladderIndex,
+              placedAt: order.createdTime ? new Date(order.createdTime).getTime() : (savedOrder.placedAt || Date.now()),
+            });
+            restoredLadder++;
           }
         }
 
@@ -2198,7 +2191,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (isDryRun) {
         dryRunState.forceSave(exchange, {
           isDryRun: true,
-          executor: orderExecutor.exportState ? orderExecutor.exportState() : {},
+          executor: orderExecutor.exportState(),
           position: { ...positionState },
           tpOptimizer: tpOptimizer.exportState(),
           // Include sizeOptimizer so dry-run restarts don't lose sizing
@@ -2342,12 +2335,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // In dry-run mode, check if any orders should fill based on current price
     if (isDryRun) {
-      if (orderExecutor.checkTpFills) {
-        orderExecutor.checkTpFills(data.price);
-      }
-      if (orderExecutor.checkEntryFills) {
-        orderExecutor.checkEntryFills(data.price);
-      }
+      orderExecutor.checkTpFills(data.price);
+      orderExecutor.checkEntryFills(data.price);
     }
 
     // Update unrealized P&L — syncPositionState already aggregates body values
@@ -2410,7 +2399,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // which checks completionPercentage >= 100 before CANCELLED (issue #107).
         const fullyFilled = (data.completionPercentage || 0) >= 100;
         logger.warn(`⚠️ [${exchange}] WS CANCELLED ${data.orderId} with ${data.filledSize} ${fullyFilled ? 'full' : 'partial'} fill — routing through handleOrderFill before dropping tracking`);
-        orderExecutor.markSettled?.(data.orderId);
+        orderExecutor.markSettled(data.orderId);
         await handleOrderFill(fullyFilled
           ? { ...data, status: 'FILLED', isPartialFill: false }
           : buildPartialFillData(data.orderId, data.side, data));
@@ -2573,7 +2562,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const isLadderFill =
         (positionState.pendingLadderOrders &&
           positionState.pendingLadderOrders.some(o => o.orderId === fillData.orderId)) ||
-        (orderExecutor.isLadderOrder && orderExecutor.isLadderOrder(fillData.orderId));
+        orderExecutor.isLadderOrder(fillData.orderId);
 
       const summary = fillLedger.aggregateFills(fillsToAggregate);
 
@@ -3465,7 +3454,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // HARVEST: normal timeout (1.0x)
     // CAUTION: faster repricing (0.7x) - uncertain markets need quicker adjustments
     // TREND: fastest repricing (0.5x) - trending markets move quickly
-    if (!isDryRun && orderExecutor.setStaleTimeoutMultiplier) {
+    if (orderExecutor.capabilities?.liveReconciliation) {
       const regime = regimeDetector.getMode();
       const multiplier = regime === 'CAUTION' ? 0.7 : regime === 'TREND' ? 0.5 : 1.0;
       orderExecutor.setStaleTimeoutMultiplier(multiplier);
@@ -3564,7 +3553,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const pending = [];
 
       // Check for entry fills that WebSocket might have missed
-      if (!isDryRun && orderExecutor.checkPendingOrderFills) {
+      if (orderExecutor.capabilities?.liveReconciliation) {
         pending.push(orderExecutor.checkPendingOrderFills()
           .then(result => {
             // A SUCCESSFUL order-status poll proves the order-status REST path
@@ -4593,7 +4582,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const executorLadderOrders = orderExecutor.getPendingLadderOrders ? orderExecutor.getPendingLadderOrders() : [];
     const hasTrackedLadder = (positionState.pendingLadderOrders && positionState.pendingLadderOrders.length > 0) || executorLadderOrders.length > 0;
     if (positionState.ladderActive || hasTrackedLadder) {
-      const { cancelled } = await orderExecutor.cancelAllLadderOrders();
+      const { cancelled } = orderExecutor.cancelAllLadderOrders ? await orderExecutor.cancelAllLadderOrders() : { cancelled: 0 };
       if (cancelled > 0) logger.info(`🧹 [${exchange}] Cancelled ${cancelled} unfilled ladder orders`);
     }
 
@@ -4692,6 +4681,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.lastEntryPrice = price;
       positionState.lastEntryTime = Date.now();
 
+      if (positionState.pendingLadderOrders?.length > 0) {
+        positionState.pendingLadderOrders = positionState.pendingLadderOrders.filter(o => o.orderId !== orderId);
+        if (positionState.pendingLadderOrders.length === 0) {
+          positionState.ladderActive = false;
+        }
+      }
+
       if (mergeTarget) {
         const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id, mergeTarget.tpOrderId);
         if (!cancelResult.cancelled) {
@@ -4767,7 +4763,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           positionState.cyclesCompleted += 1;
           const actualTpPct = body.avgPrice > 0 ? ((price - body.avgPrice) / body.avgPrice) * 100 : 0;
 
-          const optimalAnalytics = orderExecutor.getOptimalTpAnalytics
+          const optimalAnalytics = isDryRun
             ? orderExecutor.getOptimalTpAnalytics() : null;
           const lastCycle = optimalAnalytics?.cycles?.[optimalAnalytics.cycles.length - 1];
           const optimalTpPct = lastCycle?.optimalTpPct || actualTpPct;
@@ -4883,11 +4879,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     pause: tailEvents.getPauseState(),
     risk: riskManager.getState(),
     orders: orderExecutor.getPendingCounts(),
-    pendingOrders: !isDryRun && orderExecutor.getPendingOrdersList
+    pendingOrders: orderExecutor.capabilities?.liveReconciliation
       ? buildPendingOrders(orderExecutor.getPendingOrdersList(), positionState)
       : [],
     apy: calculateApyMetrics(),
-    dryRun: isDryRun && orderExecutor.getDryRunState ? orderExecutor.getDryRunState() : null,
+    dryRun: isDryRun ? orderExecutor.getDryRunState() : null,
     tpOptimizer: tpOptimizer.getStatus(),
     sizeOptimizer: sizeOptimizer.getStatus(),
     fillTimeStats: fillLedger.getFillTimeStats ? fillLedger.getFillTimeStats(7) : null,
@@ -4896,7 +4892,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       totalHoldback: closedTrades.getTotalHoldback(),
       count: closedTrades.getCount(),
     },
-    effectiveStaleMs: !isDryRun && orderExecutor.getEffectiveStaleMs ? orderExecutor.getEffectiveStaleMs() : config.orderStaleMs,
+    effectiveStaleMs: orderExecutor.capabilities?.liveReconciliation ? orderExecutor.getEffectiveStaleMs() : config.orderStaleMs,
     // Include current config for real-time dashboard updates
     config: {
       maxUsdcDeployed: config.maxUsdcDeployed,
@@ -5118,7 +5114,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: false, error: `Placement intent ${intentId} was already resolved` };
     }
 
-    if (typeof orderExecutor.adoptPlacement !== 'function') {
+    if (!orderExecutor.capabilities?.liveReconciliation) {
       return { success: false, error: 'This executor cannot adopt orders; the placement intent remains unresolved' };
     }
     if (!found.orderId) return { success: false, error: 'Exchange lookup returned no order id; the placement intent remains unresolved' };
@@ -5282,7 +5278,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {Array|null}
    */
   const getDryRunLog = (limit = 100) => {
-    if (isDryRun && orderExecutor.getDecisionLog) {
+    if (isDryRun) {
       return orderExecutor.getDecisionLog(limit);
     }
     return null;
@@ -5293,7 +5289,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {Object|null}
    */
   const getDryRunPnL = () => {
-    if (isDryRun && orderExecutor.getSimulatedPnL) {
+    if (isDryRun) {
       return orderExecutor.getSimulatedPnL();
     }
     return null;
@@ -5304,7 +5300,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {boolean}
    */
   const resetDryRun = () => {
-    if (isDryRun && orderExecutor.resetDryRunState) {
+    if (isDryRun) {
       orderExecutor.resetDryRunState();
       positionState = createInitialPositionState();
       // Clear saved state file
@@ -6053,6 +6049,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       setProductDetails: (v) => { productDetails = v; },
       setAdapter: (v) => { adapter = v; },
       setOrderExecutor: (v) => { orderExecutor = v; },
+      handleTicker: (data) => handleTicker(data),
+      evaluateEntryTrigger: () => evaluateEntryTrigger(),
       setRecoveryModule: (v) => { recoveryModule = v; },
       setMergeInProgress: engineLocks._test.setMergeInProgress,
       setReconcileInProgress: engineLocks._test.setReconcileInProgress,

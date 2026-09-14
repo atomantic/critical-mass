@@ -801,6 +801,46 @@
  */
 
 /**
+ * @typedef {Object} OrderExecutor
+ * @property {{liveReconciliation: boolean}} capabilities - Executor feature metadata
+ * @property {(sizeUsdc: number, currentBid: number, currentAsk: number, retryCount?: number, effectiveOffsetBps?: number|null, staleMs?: number|null) => Promise<{success: boolean, orderId?: string, price?: number, assetQty?: number, errorMessage?: string}>} placeEntryBid
+ * @property {(assetQty: number, tpPrice: number, options?: {forceUpdate?: boolean}) => Promise<{success: boolean, orderId?: string, price?: number, wasUpdated?: boolean, errorMessage?: string}>} placeTakeProfitOrder
+ * @property {() => Promise<{cancelled: boolean, filled: boolean, filledDuringCancel?: boolean, filledSize?: number}>} cancelTpOrder
+ * @property {(currentBid: number) => Promise<{cancelled: number, refreshed: number, filled: number, failed: number}>} refreshStaleOrders
+ * @property {(orderId: string, currentBid: number, currentAsk: number, effectiveOffsetBps?: number|null, staleMs?: number|null) => Promise<{success: boolean, newOrderId?: string, reason?: string, filledDuringCancel?: boolean}>} atomicReplace
+ * @property {() => Promise<{cancelled: number, filled?: number, failed?: number}>} cancelAllEntries
+ * @property {(orderId: string, size?: number) => void} handleOrderFill
+ * @property {(orderId: string) => void} handleOrderCancel
+ * @property {() => {entries: number, ladderEntries: number, takeProfits: number, bodies: number, total: number}} getPendingCounts
+ * @property {() => Map<string, any>} getPendingEntries
+ * @property {() => {valid: boolean, reason?: string, issues?: string[]}} checkInvariants
+ * @property {() => string|null} getActiveTpOrderId
+ * @property {() => string|Object} getSummary
+ * @property {() => void} clearPendingOrders
+ * @property {(orderId: string, orderData: any) => void} restorePendingOrder
+ * @property {(orderId: string) => void} markSettled
+ * @property {(orderId: string) => number|null} getOrderPlacedAt
+ * @property {(assetQty: number, tpPrice: number, bodyId: string) => Promise<{success: boolean, orderId?: string, errorMessage?: string}>} placeBodyTpOrder
+ * @property {(bodyId: string, tpOrderId: string) => Promise<{cancelled: boolean, filled: boolean, filledSize?: number}>} cancelBodyTpOrder
+ * @property {() => Promise<{cancelled: number, filled: number, failed: number}>} cancelAllBodyTpOrders
+ * @property {(orderId: string) => boolean} isBodyTpOrder
+ * @property {(tpOrderId: string) => Object|null} getBodyByTpOrderId
+ * @property {(bodyId: string, tpOrderId: string, assetQty: number, tpPrice: number, placedAt?: number) => void} restoreBodyTpOrder
+ * @property {(tpOrderId: string) => void} removeBodyTracking
+ * @property {(levels: Array<{index: number, price: number, assetQty: number, sizeUsdc: number}>) => Promise<{orders: Array<any>, failedCount: number}>} placeLadderOrders
+ * @property {() => Promise<{cancelled: number, remainingTracked: number}>} cancelAllLadderOrders
+ * @property {() => Array<{orderId: string, price: number, size: number, sizeUsdc: number, ladderIndex: number, placedAt: number}>} getPendingLadderOrders
+ * @property {(orderId: string) => boolean} isLadderOrder
+ * @property {(increment: number) => void} setPriceIncrement
+ * @property {() => void} clearTimers
+ * @property {() => Promise<{filled: number, cancelled: number, polled: number}>} [checkPendingOrderFills]
+ * @property {(multiplier: number) => void} [setStaleTimeoutMultiplier]
+ * @property {() => Array<any>} [getPendingOrdersList]
+ * @property {() => number} [getEffectiveStaleMs]
+ * @property {(found: any, intent: any) => {tracked: boolean, message: string}} [adoptPlacement]
+ */
+
+/**
  * @typedef {Object} ReconciliationFill
  * @property {string} tradeId
  * @property {string} orderId

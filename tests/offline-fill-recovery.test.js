@@ -62,6 +62,8 @@ const makeExecutor = (over = {}) => ({
   cancelBodyTpOrder: async () => ({ cancelled: true }),
   placeBodyTpOrder: async () => ({ success: true, orderId: `tp-new-${++tpCounter}` }),
   checkPendingOrderFills: async () => ({ polled: 0, filled: 0, cancelled: 0 }),
+  cancelAllLadderOrders: async () => ({ cancelled: 0 }),
+  getPendingLadderOrders: () => [],
   markSettled: () => {},
   removeBodyTracking: () => {},
   handleOrderFill: () => {},
