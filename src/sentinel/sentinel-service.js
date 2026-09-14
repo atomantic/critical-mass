@@ -317,12 +317,26 @@ const createSentinelService = (io, deps) => {
   });
 
   /**
-   * Get alerts, optionally filtered by severity
+   * Recency timestamp for alert ordering. Prefer publishedAt (what the UI
+   * shows); fall back to detectedAt. Unparseable/missing dates sort as oldest
+   * so a bad feed entry cannot scatter the list.
+   * @param {Object} alert
+   * @returns {number}
+   */
+  const alertRecencyMs = (alert) => {
+    const ms = new Date(alert.publishedAt || alert.detectedAt).getTime();
+    return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+  };
+
+  /**
+   * Get alerts newest-first by publication (then detection) time, optionally
+   * filtered by severity. Insertion order is not publication order — feeds
+   * append items in whatever order each poll returns them.
    * @param {{ severity?: string }} [filter]
    * @returns {Object[]}
    */
   const getAlerts = (filter = {}) => {
-    let result = [...alerts].reverse(); // newest first
+    let result = [...alerts].sort((a, b) => alertRecencyMs(b) - alertRecencyMs(a));
     if (filter.severity) {
       result = result.filter(a => a.severity === filter.severity);
     }
