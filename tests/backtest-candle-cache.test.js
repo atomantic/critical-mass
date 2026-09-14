@@ -4,11 +4,18 @@
  *       dedupe-dropped, so a partial boundary candle won forever.
  * #213A incremental refresh of aggregated interval types aggregated by array
  *       index (offset-sensitive) instead of wall-clock time bucket.
+ * #566  scripts/backtest-updown.js and backtest-engine.js wrote two
+ *       incompatible envelopes ({candles} vs {prices}) to the same cache
+ *       path, so whichever tool ran last silently destroyed the other's
+ *       candle corpus.
  */
-const { describe, it } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
-const { aggregateCandles, isCompleteBucket, upsertCandles } = require('../src/backtest-engine');
+const { aggregateCandles, isCompleteBucket, upsertCandles, readPriceCache, writePriceCache, getCacheFile } = require('../src/backtest-engine');
 
 const FIVE_MIN = 5 * 60 * 1000;
 const TEN_MIN = 10 * 60 * 1000;
@@ -84,5 +91,111 @@ describe('#206 in-progress candles are not persisted and completed replacements 
     const candles = [0, HOUR, 2 * HOUR, 3 * HOUR].map(ts => ({ timestamp: ts, high: 1, low: 1, close: 1 }));
     const complete = candles.filter(c => isCompleteBucket(c.timestamp, HOUR, now));
     assert.deepEqual(complete.map(c => c.timestamp), [0, HOUR, 2 * HOUR]);
+  });
+});
+
+describe('#566 readPriceCache/writePriceCache — single-format shared cache', () => {
+  let dir;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-price-cache-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const candles = [
+    { timestamp: 0, open: 1, high: 2, low: 1, close: 2, volume: 10 },
+    { timestamp: HOUR, open: 2, high: 3, low: 2, close: 3, volume: 20 },
+  ];
+
+  it('reads a {prices} file (canonical envelope)', () => {
+    const file = path.join(dir, 'canonical.json');
+    fs.writeFileSync(file, JSON.stringify({ lastFetch: 'x', count: candles.length, prices: candles }));
+    assert.deepEqual(readPriceCache(file), candles);
+  });
+
+  it('transparently reads a legacy {count, candles} file without loss', () => {
+    const file = path.join(dir, 'legacy.json');
+    fs.writeFileSync(file, JSON.stringify({ lastFetch: 'x', count: candles.length, candles }));
+    const out = readPriceCache(file);
+    assert.deepEqual(out, candles, 'legacy candles envelope must map 1:1 to prices');
+    assert.equal(out.length, candles.length);
+  });
+
+  it('returns [] for an absent file without throwing', () => {
+    const file = path.join(dir, 'does-not-exist.json');
+    assert.doesNotThrow(() => readPriceCache(file));
+    assert.deepEqual(readPriceCache(file), []);
+  });
+
+  it('returns [] for a malformed file without throwing', () => {
+    const file = path.join(dir, 'malformed.json');
+    fs.writeFileSync(file, '{ not valid json');
+    assert.doesNotThrow(() => readPriceCache(file));
+    assert.deepEqual(readPriceCache(file), []);
+  });
+
+  it('writePriceCache always emits the canonical {prices} envelope', () => {
+    const file = path.join(dir, 'out.json');
+    writePriceCache(file, { intervalType: '1min', exchange: 'coinbase', productId: 'BTC-USDC', prices: candles });
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.ok(Array.isArray(raw.prices), 'must write a prices array');
+    assert.equal(raw.prices.length, candles.length);
+    assert.equal(raw.candles, undefined, 'must not write a candles key');
+    assert.equal(raw.intervalType, '1min');
+    assert.equal(raw.exchange, 'coinbase');
+    assert.equal(raw.productId, 'BTC-USDC');
+  });
+
+  it('round-trips a legacy {candles} file through a read+rewrite with the same candle count', () => {
+    const file = path.join(dir, 'roundtrip.json');
+    fs.writeFileSync(file, JSON.stringify({ lastFetch: 'x', count: candles.length, candles }));
+
+    const loaded = readPriceCache(file);
+    assert.equal(loaded.length, candles.length);
+
+    writePriceCache(file, { intervalType: '1min', exchange: 'coinbase', productId: 'BTC-USDC', prices: loaded });
+
+    const rewritten = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.ok(Array.isArray(rewritten.prices));
+    assert.equal(rewritten.prices.length, candles.length, 'candle count must be preserved by the {candles} -> {prices} rewrite');
+    assert.equal(rewritten.candles, undefined);
+  });
+
+  it('full round trip (script writes -> engine reads -> engine writes -> script reads) never loses candles', () => {
+    const file = path.join(dir, 'cross-tool.json');
+
+    // 1. "script" writes the legacy {candles} envelope (pre-fix shape).
+    fs.writeFileSync(file, JSON.stringify({ lastFetch: 'x', count: candles.length, candles }));
+    let count = readPriceCache(file).length;
+    assert.equal(count, candles.length);
+
+    // 2. "engine" reads it (tolerates legacy shape) then writes canonical {prices}.
+    let prices = readPriceCache(file);
+    assert.equal(prices.length, count);
+    writePriceCache(file, { intervalType: '1min', exchange: 'coinbase', productId: 'BTC-USDC', prices });
+    count = readPriceCache(file).length;
+    assert.equal(count, candles.length, 'engine write must not drop candles');
+
+    // 3. "engine" appends a new candle and writes again.
+    const withNew = [...readPriceCache(file), { timestamp: 2 * HOUR, open: 3, high: 4, low: 3, close: 4, volume: 30 }];
+    writePriceCache(file, { intervalType: '1min', exchange: 'coinbase', productId: 'BTC-USDC', prices: withNew });
+    count = readPriceCache(file).length;
+    assert.equal(count, candles.length + 1, 'candle count must be monotonically non-decreasing');
+
+    // 4. "script" reads the file back via the same shared helper (now canonical {prices}).
+    prices = readPriceCache(file);
+    assert.equal(prices.length, candles.length + 1);
+  });
+});
+
+describe('#566 scripts/backtest-updown.js resolves the shared cache path via getCacheFile', () => {
+  it('CACHE_FILE equals getCacheFile(\'1min\', \'coinbase\', \'BTC-USDC\')', () => {
+    // Requiring the script only evaluates its top-level consts (no side effects
+    // beyond that at require-time); it exports CACHE_FILE for this assertion.
+    const { CACHE_FILE } = require('../scripts/backtest-updown');
+    assert.equal(CACHE_FILE, getCacheFile('1min', 'coinbase', 'BTC-USDC'));
   });
 });

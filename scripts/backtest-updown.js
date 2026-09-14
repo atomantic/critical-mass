@@ -25,13 +25,14 @@ const { createSignalEngine, ALL_SIGNAL_TFS } = require('../src/updown/signal-eng
 const { TF_MS, findLastIndex, seedCompletedCandles } = require('../src/updown/replay-candles')
 const { createPerpBook } = require('../src/updown/perp-book')
 const { PERP_CONTRACT_SIZE_BTC } = require('../src/updown/perp-contract')
-const { getCacheFile } = require('../src/backtest-engine')
+const { getCacheFile, readPriceCache, writePriceCache } = require('../src/backtest-engine')
 const { DATA_DIR } = require('../src/paths')
 
 const coinbase = getAdapter('coinbase')
-const COINBASE_DIR = path.join(DATA_DIR, 'coinbase')
 const BACKTEST_DIR = path.join(DATA_DIR, 'updown', 'backtest')
-const CACHE_FILE = path.join(COINBASE_DIR, 'btc-usdc-price-cache-1min.json')
+// Shares the exact cache path/envelope backtest-engine.js uses for 1min/coinbase/BTC-USDC
+// so the two tools never clobber each other's candle corpus (#566).
+const CACHE_FILE = getCacheFile('1min', 'coinbase', 'BTC-USDC')
 
 const seedUpTo = (aggregator, tfCandles, evalTs) =>
   seedCompletedCandles(aggregator, tfCandles, evalTs, ALL_SIGNAL_TFS)
@@ -56,10 +57,9 @@ const NO_CACHE = hasFlag('no-cache')
  */
 async function loadOrFetch1mCandles(fromMs, toMs) {
   let cached = []
-  if (!NO_CACHE && fs.existsSync(CACHE_FILE)) {
-    const data = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'))
-    cached = data.candles || []
-    console.log(`  Cache: ${cached.length} candles loaded`)
+  if (!NO_CACHE) {
+    cached = readPriceCache(CACHE_FILE)
+    if (cached.length > 0) console.log(`  Cache: ${cached.length} candles loaded`)
   }
 
   // Determine ranges we need
@@ -138,13 +138,13 @@ async function loadOrFetch1mCandles(fromMs, toMs) {
     merged.sort((a, b) => a.timestamp - b.timestamp)
     cached = merged
 
-    // Save cache
-    if (!fs.existsSync(COINBASE_DIR)) fs.mkdirSync(COINBASE_DIR, { recursive: true })
-    fs.writeFileSync(CACHE_FILE, JSON.stringify({
-      lastFetch: new Date().toISOString(),
-      count: cached.length,
-      candles: cached,
-    }))
+    // Save cache in the canonical {prices} envelope (#566)
+    writePriceCache(CACHE_FILE, {
+      intervalType: '1min',
+      exchange: 'coinbase',
+      productId: 'BTC-USDC',
+      prices: cached
+    })
     console.log(`  Saved ${cached.length} candles to cache`)
   }
 
@@ -630,4 +630,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { seedUpTo, findLastIndex, findCandleGaps, TF_MS, runSimulation, computeStats }
+module.exports = { seedUpTo, findLastIndex, findCandleGaps, TF_MS, runSimulation, computeStats, CACHE_FILE }
