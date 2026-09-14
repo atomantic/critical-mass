@@ -321,6 +321,11 @@ describe('PUT /api/notifications/config masked-token round-trip guard', () => {
 });
 
 describe('POST /api/sync and POST /api/trade gates (simpleDcaEnabled, issue #568)', () => {
+  // Warm the adapter module cache before any fs mock is installed: `dca-engine`
+  // destructures the real `getAdapter`, which lazily requires this module, and a
+  // mocked `fs.readFileSync` would make that require fail.
+  require('../src/adapters/coinbase');
+
   afterEach(() => mock.restoreAll());
 
   const createFakeApp = () => {
@@ -348,32 +353,25 @@ describe('POST /api/sync and POST /api/trade gates (simpleDcaEnabled, issue #568
     return res;
   };
 
-  const dcaEngine = require('../src/dca-engine');
-
-  const setup = (simpleDcaEnabled) => {
+  /**
+   * `legacy-routes.js` destructures `runIntervalCycle`/`syncOrderStatuses` from
+   * `dca-engine` at require time, so reassigning them on the module object would
+   * never reach the handlers. `stateTracker.loadState` is called through the
+   * namespace by the route (/api/sync) and by `runIntervalCycle` itself
+   * (/api/trade), so it is the seam that actually proves the engine was reached.
+   */
+  const setup = (simpleDcaEnabled, { fundEnabled = false } = {}) => {
     const config = {
-      exchanges: { coinbase: { productId: 'BTC-USDC', totalAllocation: 5000, enabled: true, dryRun: false } },
+      exchanges: { coinbase: { productId: 'BTC-USDC', totalAllocation: 5000, enabled: fundEnabled, dryRun: true } },
       global: { simpleDcaEnabled },
     };
-    const fsMocks = setupFsMocks({ base: config, user: null });
-    mock.method(stateTracker, 'loadState', () => ({ orders: [] }));
+    setupFsMocks({ base: config, user: null });
+
+    const loadStateCalls = [];
+    mock.method(stateTracker, 'loadState', (...args) => { loadStateCalls.push(args); return { orders: [] }; });
+    mock.method(stateTracker, 'getPendingOrders', () => []);
+    mock.method(stateTracker, 'saveState', () => {});
     mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
-
-    const engineCalls = [];
-    const originals = {
-      runIntervalCycle: dcaEngine.runIntervalCycle,
-      syncOrderStatuses: dcaEngine.syncOrderStatuses,
-    };
-
-    dcaEngine.runIntervalCycle = async (exchange, pair) => {
-      engineCalls.push({ fn: 'runIntervalCycle', exchange, pair });
-      return { status: 'success', exchange, pair };
-    };
-
-    dcaEngine.syncOrderStatuses = async (state, exchange) => {
-      engineCalls.push({ fn: 'syncOrderStatuses', exchange });
-      return [];
-    };
 
     const app = createFakeApp();
     registerLegacyRoutes(app, {
@@ -382,43 +380,44 @@ describe('POST /api/sync and POST /api/trade gates (simpleDcaEnabled, issue #568
       getNextTradeInfo: () => ({}),
     });
 
-    const cleanup = () => {
-      dcaEngine.runIntervalCycle = originals.runIntervalCycle;
-      dcaEngine.syncOrderStatuses = originals.syncOrderStatuses;
-    };
-
-    return { app, engineCalls, cleanup };
+    return { app, loadStateCalls };
   };
 
-  it('POST /api/trade returns 400 when simpleDcaEnabled is false', async () => {
-    const { app, cleanup } = setup(false);
+  it('POST /api/trade returns 400 and reaches no engine work when simpleDcaEnabled is false', async () => {
+    const { app, loadStateCalls } = setup(false);
     const res = await invoke(app, 'POST /api/trade');
     assert.equal(res.statusCode, 400);
     assert.equal(res.body.success, false);
     assert.equal(res.body.error, 'Simple DCA is disabled. Use Regime engine.');
-    cleanup();
+    assert.equal(loadStateCalls.length, 0);
   });
 
-  it('POST /api/trade never invokes runIntervalCycle when simpleDcaEnabled is false', async () => {
-    const { app, engineCalls, cleanup } = setup(false);
-    await invoke(app, 'POST /api/trade');
-    assert.equal(engineCalls.filter(c => c.fn === 'runIntervalCycle').length, 0);
-    cleanup();
-  });
-
-  it('POST /api/sync returns 400 when simpleDcaEnabled is false', async () => {
-    const { app, cleanup } = setup(false);
+  it('POST /api/sync returns 400 and reaches no engine work when simpleDcaEnabled is false', async () => {
+    const { app, loadStateCalls } = setup(false);
     const res = await invoke(app, 'POST /api/sync');
     assert.equal(res.statusCode, 400);
     assert.equal(res.body.success, false);
     assert.equal(res.body.error, 'Simple DCA is disabled. Use Regime engine.');
-    cleanup();
+    assert.equal(loadStateCalls.length, 0);
   });
 
-  it('POST /api/sync never invokes syncOrderStatuses when simpleDcaEnabled is false', async () => {
-    const { app, engineCalls, cleanup } = setup(false);
-    await invoke(app, 'POST /api/sync');
-    assert.equal(engineCalls.filter(c => c.fn === 'syncOrderStatuses').length, 0);
-    cleanup();
+  it('POST /api/trade still runs the cycle and echoes its result when simpleDcaEnabled is true', async () => {
+    const { app, loadStateCalls } = setup(true, { fundEnabled: false });
+    const res = await invoke(app, 'POST /api/trade');
+    assert.equal(res.statusCode, 200);
+    assert.ok(loadStateCalls.length > 0, 'runIntervalCycle should have been reached');
+    assert.equal(res.body.status, 'disabled');
+    assert.equal(res.body.trigger, 'manual');
+    assert.equal(typeof res.body.triggeredAt, 'string');
+  });
+
+  it('POST /api/sync still syncs and returns its envelope when simpleDcaEnabled is true', async () => {
+    const { app, loadStateCalls } = setup(true);
+    const res = await invoke(app, 'POST /api/sync');
+    assert.equal(res.statusCode, 200);
+    assert.ok(loadStateCalls.length > 0, 'syncOrderStatuses should have been reached');
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.filledOrders, 0);
+    assert.equal(typeof res.body.lastSyncTime, 'string');
   });
 });
