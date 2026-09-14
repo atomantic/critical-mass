@@ -1755,7 +1755,11 @@ const updateSentinelConfig = (updates) => {
 // whatever base the destination has.
 // ============================================================================
 
-/** Snapshot format version. Bump only for a breaking shape change. */
+/**
+ * Snapshot SHAPE version. Bump only for a breaking shape change — a field
+ * removed, re-typed, or moved. Additive growth of the allowlists below does
+ * NOT move it; that is what `CONFIG_SNAPSHOT_FIELD_REVISION` is for (#567).
+ */
 const CONFIG_SNAPSHOT_VERSION = 1;
 
 /**
@@ -1781,6 +1785,23 @@ const SNAPSHOT_GLOBAL_KEYS = Object.freeze([
 ]);
 
 /**
+ * Snapshot FIELD revision: how many fields the three allowlists above carry.
+ *
+ * The allowlists are derived from the live defaults objects, so they widen on
+ * every ordinary feature commit while `CONFIG_SNAPSHOT_VERSION` deliberately
+ * stays put. Without a second marker a reader cannot tell "a version-1 payload
+ * written by a newer build" from "a version-1 payload it fully understands",
+ * so it took the strict-rejection path meant for crafted archives and refused
+ * the whole restore over one unknown knob (#567).
+ *
+ * Written as a literal, not computed from the lists, so the test that asserts
+ * it equals `SNAPSHOT_FUND_KEYS.length + SNAPSHOT_REGIME_KEYS.length +
+ * SNAPSHOT_GLOBAL_KEYS.length` fails CI the moment a field is added to
+ * DEFAULTS / REGIME_DEFAULTS / GLOBAL_DEFAULTS without bumping it.
+ */
+const CONFIG_SNAPSHOT_FIELD_REVISION = 114;
+
+/**
  * Copy only the allowlisted, defined keys of `source`, in allowlist order (so
  * two snapshots of equal content are structurally identical).
  * @param {Object|undefined} source
@@ -1801,7 +1822,7 @@ const isPlainObject = (value) => !!value && typeof value === 'object' && !Array.
  * Build a self-contained snapshot of the effective non-secret configuration.
  *
  * @param {Object} config - A full (already merged) configuration object
- * @returns {{version: number, exchanges: Object, global: Object}} Snapshot
+ * @returns {{version: number, fieldRevision: number, exchanges: Object, global: Object}} Snapshot
  */
 const buildConfigSnapshot = (config) => {
   const normalized = normalizeToMultiExchange(isPlainObject(config) ? config : {});
@@ -1821,6 +1842,7 @@ const buildConfigSnapshot = (config) => {
   }
   return {
     version: CONFIG_SNAPSHOT_VERSION,
+    fieldRevision: CONFIG_SNAPSHOT_FIELD_REVISION,
     exchanges,
     global: pickAllowed(normalized.global, SNAPSHOT_GLOBAL_KEYS),
   };
@@ -1829,11 +1851,24 @@ const buildConfigSnapshot = (config) => {
 /**
  * Schema-validate a snapshot read back out of an archive.
  *
- * Strict by design: an unknown key is a rejection, not a value to pass through,
- * because the snapshot is replayed into the destination's live config file.
+ * Two markers gate a cross-build read (#567). `version` is the SHAPE contract:
+ * a mismatch is fatal because the reader cannot interpret the payload at all.
+ * `fieldRevision` is the ALLOWLIST contract, and it moves on every ordinary
+ * commit that adds a config field — so a payload whose revision is strictly
+ * GREATER than this build's was written by a newer build, and a key this build
+ * does not recognize is simply a setting that did not exist here yet: drop it
+ * (the destination falls back to its own default for it) and report it in
+ * `droppedFields`. That mirrors the round-trip tolerance `sanitizeRegimeConfig`
+ * already applies to stored regime blocks. At an equal or older revision an
+ * unknown key is still a crafted or corrupt archive, and still fatal.
+ *
+ * Dropped, never passed through: the returned `snapshot` is the sanitized copy
+ * `reconstructConfigOverride` replays into data/config.json, so the allowlist's
+ * secret-smuggling guard holds in the forward direction too.
  *
  * @param {*} snapshot - Untrusted snapshot from an archive manifest
- * @returns {{valid: boolean, error?: string}}
+ * @returns {{valid: true, snapshot: Object, droppedFields: Array<string>}
+ *   | {valid: false, error: string}}
  */
 const validateConfigSnapshot = (snapshot) => {
   if (!isPlainObject(snapshot)) {
@@ -1851,13 +1886,38 @@ const validateConfigSnapshot = (snapshot) => {
   if (snapshot.global !== undefined && !isPlainObject(snapshot.global)) {
     return { valid: false, error: 'configuration snapshot `global` is not an object' };
   }
-  for (const key of Object.keys(snapshot.global || {})) {
-    if (!SNAPSHOT_GLOBAL_KEYS.includes(key)) {
-      return { valid: false, error: `configuration snapshot carries unsupported global field "${key}"` };
-    }
+
+  // A missing/non-integer marker is an archive from before this contract
+  // existed: revision 0, strict. Only a STRICTLY newer revision earns tolerance.
+  const payloadRevision = Number.isInteger(snapshot.fieldRevision) ? snapshot.fieldRevision : 0;
+  const fromNewerBuild = payloadRevision > CONFIG_SNAPSHOT_FIELD_REVISION;
+
+  const sanitized = structuredClone(snapshot);
+  /** @type {Array<string>} */
+  const droppedFields = [];
+  /**
+   * Handle one unknown key: drop it from the sanitized copy when the payload
+   * comes from a newer build, otherwise hand back the fatal error to return.
+   * @param {Object} container - Object in `sanitized` holding the key
+   * @param {string} key
+   * @param {string} fieldPath - Reporting path, e.g. `coinbase/BTC-USDC.regime.foo`
+   * @param {string} error - Fatal message when tolerance does not apply
+   * @returns {string|null}
+   */
+  const dropOrReject = (container, key, fieldPath, error) => {
+    if (!fromNewerBuild) return error;
+    delete container[key];
+    droppedFields.push(fieldPath);
+    return null;
+  };
+
+  for (const key of Object.keys(sanitized.global || {})) {
+    if (SNAPSHOT_GLOBAL_KEYS.includes(key)) continue;
+    const fatal = dropOrReject(sanitized.global, key, `global.${key}`, `configuration snapshot carries unsupported global field "${key}"`);
+    if (fatal) return { valid: false, error: fatal };
   }
   const allowedFundKeys = new Set([...SNAPSHOT_FUND_KEYS, 'regime']);
-  for (const [exchange, block] of Object.entries(snapshot.exchanges)) {
+  for (const [exchange, block] of Object.entries(sanitized.exchanges)) {
     if (!isPlainObject(block) || !isPlainObject(block.pairs)) {
       return { valid: false, error: `configuration snapshot entry for exchange "${exchange}" has no \`pairs\` object` };
     }
@@ -1872,23 +1932,23 @@ const validateConfigSnapshot = (snapshot) => {
         return { valid: false, error: `configuration snapshot fund "${exchange}/${pair}" has no productId` };
       }
       for (const key of Object.keys(fund)) {
-        if (!allowedFundKeys.has(key)) {
-          return { valid: false, error: `configuration snapshot fund "${exchange}/${pair}" carries unsupported field "${key}"` };
-        }
+        if (allowedFundKeys.has(key)) continue;
+        const fatal = dropOrReject(fund, key, `${exchange}/${pair}.${key}`, `configuration snapshot fund "${exchange}/${pair}" carries unsupported field "${key}"`);
+        if (fatal) return { valid: false, error: fatal };
       }
       if (fund.regime !== undefined) {
         if (!isPlainObject(fund.regime)) {
           return { valid: false, error: `configuration snapshot fund "${exchange}/${pair}" has a non-object regime block` };
         }
         for (const key of Object.keys(fund.regime)) {
-          if (!SNAPSHOT_REGIME_KEYS.includes(key)) {
-            return { valid: false, error: `configuration snapshot fund "${exchange}/${pair}" carries unsupported regime field "${key}"` };
-          }
+          if (SNAPSHOT_REGIME_KEYS.includes(key)) continue;
+          const fatal = dropOrReject(fund.regime, key, `${exchange}/${pair}.regime.${key}`, `configuration snapshot fund "${exchange}/${pair}" carries unsupported regime field "${key}"`);
+          if (fatal) return { valid: false, error: fatal };
         }
       }
     }
   }
-  return { valid: true };
+  return { valid: true, snapshot: sanitized, droppedFields };
 };
 
 /**
@@ -1952,11 +2012,15 @@ const minimizeReconstructedTarget = (target, base) => {
  * @param {Object} [args.baseConfig] - Destination's raw base config.json contents
  * @param {Object} [args.destinationGlobal] - Destination's effective `global` block,
  *   read BEFORE the restore, so its credentials (Telegram, Sentinel) survive.
- * @returns {{ok: true, override: Object} | {ok: false, error: string}}
+ * @returns {{ok: true, override: Object, droppedFields: Array<string>}
+ *   | {ok: false, error: string}}
  */
-const reconstructConfigOverride = ({ snapshot, baseConfig, destinationGlobal }) => {
-  const validation = validateConfigSnapshot(snapshot);
+const reconstructConfigOverride = ({ snapshot: archivedSnapshot, baseConfig, destinationGlobal }) => {
+  const validation = validateConfigSnapshot(archivedSnapshot);
   if (!validation.valid) return { ok: false, error: validation.error };
+  // The SANITIZED snapshot from here on: a field only a newer build knows was
+  // dropped above and must never reach data/config.json (#567).
+  const { snapshot, droppedFields } = validation;
 
   const base = isPlainObject(baseConfig) ? baseConfig : {};
   const target = structuredClone(base);
@@ -2002,7 +2066,7 @@ const reconstructConfigOverride = ({ snapshot, baseConfig, destinationGlobal }) 
 
   for (const candidate of [minimizeReconstructedTarget(target, base), target]) {
     const override = computeDiff(base, candidate);
-    if (reproduces(override)) return { ok: true, override };
+    if (reproduces(override)) return { ok: true, override, droppedFields };
   }
 
   const describe = (entry) => Object.keys(entry || {}).sort().join(', ') || 'none';
@@ -2099,6 +2163,12 @@ module.exports = {
   productIdMatchesPair,
   // Backup archive config portability (#430)
   CONFIG_SNAPSHOT_VERSION,
+  CONFIG_SNAPSHOT_FIELD_REVISION,
+  // Exported so a test can assert the field revision still matches the
+  // allowlists it describes (#567).
+  SNAPSHOT_FUND_KEYS,
+  SNAPSHOT_REGIME_KEYS,
+  SNAPSHOT_GLOBAL_KEYS,
   buildConfigSnapshot,
   validateConfigSnapshot,
   reconstructConfigOverride,

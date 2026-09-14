@@ -543,8 +543,9 @@ const readManifestSnapshot = (manifest) => {
  * @param {string} filename - Backup filename
  * @param {{paths?: {dataDir?: string, baseConfigFile?: string}}} [options]
  * @returns {{success: boolean, filename?: string, legacy?: boolean, compatible?: boolean,
- *   manifestVersion?: number|null, snapshotVersion?: number|null, createdAt?: string,
- *   funds?: Array<Object>, error?: string, code?: string}}
+ *   manifestVersion?: number|null, snapshotVersion?: number|null,
+ *   snapshotFieldRevision?: number|null, droppedFields?: Array<string>,
+ *   createdAt?: string, funds?: Array<Object>, error?: string, code?: string}}
  */
 const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
   const paths = resolvePaths(pathOverrides);
@@ -618,6 +619,11 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
     compatible: rebuilt.ok,
     manifestVersion: MANIFEST_VERSION,
     snapshotVersion: envelope.snapshot?.version ?? null,
+    // An archive from a newer build stays COMPATIBLE (#567): the settings this
+    // build has no concept of are listed here as a pre-restore warning instead
+    // of blocking the whole restore.
+    snapshotFieldRevision: Number.isInteger(envelope.snapshot?.fieldRevision) ? envelope.snapshot.fieldRevision : null,
+    droppedFields: rebuilt.droppedFields ?? [],
     createdAt: envelope.createdAt,
     funds,
     removedFunds,
@@ -650,7 +656,8 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
  *   from the destination configuration (issue #533).
  * @param {{info: Function, warn: Function, error: Function}} [options.logger] - Context logger
  * @returns {{ success: boolean, filesRestored?: number, configRestored?: boolean,
- *   legacy?: boolean, error?: string, code?: string, rolledBack?: boolean, recovery?: Object }}
+ *   legacy?: boolean, droppedFields?: Array<string>, error?: string, code?: string,
+ *   rolledBack?: boolean, recovery?: Object }}
  */
 const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null, acceptLegacyWithoutBase = false, acceptFundRemoval = false, logger = SILENT_LOGGER } = {}) => {
   const paths = resolvePaths(pathOverrides);
@@ -719,6 +726,8 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
   }
 
   let override = null;
+  /** @type {Array<string>} */
+  let droppedFields = [];
   if (snapshot) {
     const rebuilt = reconstructConfigOverride({
       snapshot,
@@ -727,6 +736,12 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     });
     if (!rebuilt.ok) return abort(rebuilt.error, 'config-snapshot-invalid');
     override = rebuilt.override;
+    droppedFields = rebuilt.droppedFields ?? [];
+    if (droppedFields.length > 0) {
+      logger.warn(`⚠️ 💾 Restore ${filename}: archive written by a newer build — ignoring ${droppedFields.length} setting(s) this build has no concept of, destination keeps its own defaults (${droppedFields.join(', ')})`, {
+        action: 'restore-dropped-fields', filename, droppedFields, count: droppedFields.length,
+      });
+    }
 
     // The reconstruction above already tombstones base-defined pairs the
     // snapshot lacks; this catches every fund the destination actually runs
@@ -812,7 +827,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
   // Only now can a reader see the new config.json.
   if (override) invalidateConfigCache();
 
-  return { success: true, filesRestored: applied.filesRestored, configRestored: Boolean(override), legacy };
+  return { success: true, filesRestored: applied.filesRestored, configRestored: Boolean(override), legacy, droppedFields };
 };
 
 module.exports = {
