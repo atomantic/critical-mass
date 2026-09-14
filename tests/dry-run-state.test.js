@@ -7,6 +7,13 @@ const path = require('path');
 
 const migration = require('../src/migration');
 
+/** @returns {string|null} size+mtime of a file, or null when it is absent */
+const fileSignature = (file) => {
+  if (!fs.existsSync(file)) return null;
+  const { size, mtimeMs } = fs.statSync(file);
+  return `${size}:${mtimeMs}`;
+};
+
 /**
  * Reload the module fresh per test so its module-level `pendingStates` /
  * `lastSaveTime` start clean and don't bleed across cases, and point the data
@@ -29,12 +36,25 @@ const setup = (t, now = 10_000) => {
   const modPath = require.resolve('../src/dry-run-state');
   delete require.cache[modPath];
   const mod = require('../src/dry-run-state');
+  // Capture the REAL app-root legacy path before repointing. On any machine
+  // that has run the engine it is a live file, and a regression writing
+  // through the closure constant would clobber it while every tmp-root
+  // assertion below still passed — so guard it for the whole suite, not just
+  // the one case that names it.
+  const appRootLegacy = mod.LEGACY_STATE_FILE;
+  const appRootBefore = fileSignature(appRootLegacy);
   mod.LEGACY_STATE_FILE = path.join(tmpRoot, mod.STATE_FILENAME);
 
   t.after(() => {
     migration.getExchangeDataDir = originalGetExchangeDataDir;
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     delete require.cache[modPath];
+    // Cleanup first, assertion last: a failure here must not strand the tmp
+    // root or the patched seam.
+    assert.equal(
+      fileSignature(appRootLegacy), appRootBefore,
+      `the suite must never create or modify ${appRootLegacy}`
+    );
   });
 
   return {
@@ -205,7 +225,8 @@ describe('dry-run-state legacy root import (#531)', () => {
     const modPath = require.resolve('../src/dry-run-state');
     delete require.cache[modPath];
     const fresh = require('../src/dry-run-state');
-    assert.equal(fresh.LEGACY_STATE_FILE, path.join(__dirname, '..', fresh.STATE_FILENAME));
+    assert.equal(fresh.STATE_FILENAME, 'dry-run-state.json');
+    assert.equal(fresh.LEGACY_STATE_FILE, path.join(__dirname, '..', 'dry-run-state.json'));
     delete require.cache[modPath];
   });
 
