@@ -414,8 +414,26 @@ module.exports = (app, deps) => {
     const now = new Date();
     const fromParam = req.query.from;
     const toParam = req.query.to;
+
+    // Validate from/to date format (YYYY-MM-DD) before parsing
+    const dateFormatRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (fromParam && !dateFormatRegex.test(fromParam)) {
+      return res.status(400).json({ success: false, error: 'from must be in YYYY-MM-DD format' });
+    }
+    if (toParam && !dateFormatRegex.test(toParam)) {
+      return res.status(400).json({ success: false, error: 'to must be in YYYY-MM-DD format' });
+    }
+
     const to = toParam ? new Date(toParam + 'T23:59:59Z') : now;
     const from = fromParam ? new Date(fromParam + 'T00:00:00Z') : new Date(now.getTime() - 7 * 86400000);
+
+    // Validate that dates parsed successfully
+    if (fromParam && Number.isNaN(from.getTime())) {
+      return res.status(400).json({ success: false, error: 'from date is invalid' });
+    }
+    if (toParam && Number.isNaN(to.getTime())) {
+      return res.status(400).json({ success: false, error: 'to date is invalid' });
+    }
 
     const records = readJSONLFiles(from, to);
     res.json(buildScorecardAnalysis(records));
@@ -443,7 +461,7 @@ module.exports = (app, deps) => {
   });
 
   app.put('/api/updown/contract', (req, res) => {
-    const { expiry, target, stop, range, direction } = req.body;
+    const { expiry, target, stop, range, direction } = req.body || {};
     if (direction && direction !== 'up' && direction !== 'down') {
       return res.status(400).json({ success: false, error: 'direction must be "up" or "down"' });
     }
@@ -468,7 +486,7 @@ module.exports = (app, deps) => {
   });
 
   app.put('/api/updown/position', (req, res) => {
-    const { entryPrice, contracts, direction } = req.body;
+    const { entryPrice, contracts, direction, entryTime } = req.body || {};
     if (!entryPrice || !contracts || !direction) {
       return res.status(400).json({ success: false, error: 'entryPrice, contracts, and direction are required' });
     }
@@ -481,7 +499,7 @@ module.exports = (app, deps) => {
     if (!Number.isFinite(px) || px <= 0 || !Number.isFinite(qty) || qty <= 0) {
       return res.status(400).json({ success: false, error: 'entryPrice and contracts must be positive numbers' });
     }
-    updownService.setPosition({ entryPrice: px, contracts: qty, direction, entryTime: req.body.entryTime });
+    updownService.setPosition({ entryPrice: px, contracts: qty, direction, entryTime });
     res.json({ success: true });
   });
 
@@ -628,7 +646,7 @@ module.exports = (app, deps) => {
   });
 
   app.post('/api/updown/trades', (req, res) => {
-    const { date, cost, returnAmount, note, direction: bodyDirection } = req.body;
+    const { date, cost, returnAmount, note, direction: bodyDirection } = req.body || {};
     if (cost == null || returnAmount == null) {
       return res.status(400).json({ success: false, error: 'cost and returnAmount are required' });
     }
@@ -692,6 +710,7 @@ module.exports = (app, deps) => {
 
   app.put('/api/updown/trades/:id', (req, res) => {
     const id = parseInt(req.params.id, 10);
+    const body = req.body || {};
     try {
       const data = readTrades();
       const trade = data.trades.find(t => t.id === id);
@@ -699,18 +718,18 @@ module.exports = (app, deps) => {
 
       // Reject non-numeric updates before mutating the trade (issue #151).
       for (const field of ['cost', 'returnAmount', 'btcPriceAtExit']) {
-        if (req.body[field] != null && !Number.isFinite(parseFiniteNumber(req.body[field]))) {
+        if (body[field] != null && !Number.isFinite(parseFiniteNumber(body[field]))) {
           return res.status(400).json({ success: false, error: `${field} must be a number` });
         }
       }
 
-      if (req.body.date != null) trade.date = req.body.date;
-      if (req.body.cost != null) trade.cost = parseFiniteNumber(req.body.cost);
-      if (req.body.returnAmount != null) trade.returnAmount = parseFiniteNumber(req.body.returnAmount);
-      if (req.body.note != null) trade.note = req.body.note;
-      if (req.body.direction != null) trade.direction = req.body.direction;
-      if (req.body.exitTime != null) trade.exitTime = req.body.exitTime;
-      if (req.body.btcPriceAtExit != null) trade.btcPriceAtExit = parseFiniteNumber(req.body.btcPriceAtExit);
+      if (body.date != null) trade.date = body.date;
+      if (body.cost != null) trade.cost = parseFiniteNumber(body.cost);
+      if (body.returnAmount != null) trade.returnAmount = parseFiniteNumber(body.returnAmount);
+      if (body.note != null) trade.note = body.note;
+      if (body.direction != null) trade.direction = body.direction;
+      if (body.exitTime != null) trade.exitTime = body.exitTime;
+      if (body.btcPriceAtExit != null) trade.btcPriceAtExit = parseFiniteNumber(body.btcPriceAtExit);
       trade.pnl = trade.returnAmount - trade.cost;
       writeTrades(data);
       res.json({ success: true, trade });

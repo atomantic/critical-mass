@@ -277,10 +277,10 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/force-regime', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const { regime, reason } = req.body;
+    const { regime, reason } = req.body || {};
 
     const validRegimes = ['HARVEST', 'CAUTION', 'TREND'];
-    if (!regime || !validRegimes.includes(regime.toUpperCase())) {
+    if (typeof regime !== 'string' || !validRegimes.includes(regime.toUpperCase())) {
       return res.status(400).json({ success: false, error: `Invalid regime. Must be one of: ${validRegimes.join(', ')}` });
     }
 
@@ -536,7 +536,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/dismiss-fills', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const { orderIds } = req.body;
+    const { orderIds } = req.body || {};
     if (!Array.isArray(orderIds) || orderIds.length === 0) {
       return res.status(400).json({ success: false, error: 'orderIds array is required' });
     }

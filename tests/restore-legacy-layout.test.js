@@ -104,11 +104,15 @@ describe('normalizeExchangeTreeToPairs (issue #541)', () => {
 
     const result = normalizeExchangeTreeToPairs({ root, exchange: 'coinbase', pair: 'BTC-USDC' });
 
-    assert.deepEqual(result.moved.sort(), ['btc-usdc-price-cache-1min.json', 'fill-ledger.json', 'state.json']);
+    assert.deepEqual(result.moved.sort(), ['fill-ledger.json', 'state.json']);
     assert.deepEqual(result.skipped, []);
     assert.equal(read(path.join(root, 'coinbase', 'BTC-USDC', 'state.json')), '{"legacy":true}');
     // Exchange-level by design — the productId in the name already disambiguates.
+    // Both the long-term candle store (#535) and the backtest price caches (#565)
+    // are read and written at data/<exchange>/, so the restore must leave them there.
     assert.equal(read(path.join(root, 'coinbase', 'long-term-candles-btc-usdc.json')), 'candles');
+    assert.equal(read(path.join(root, 'coinbase', 'btc-usdc-price-cache-1min.json')), 'cache');
+    assert.equal(read(path.join(root, 'coinbase', 'BTC-USDC', 'btc-usdc-price-cache-1min.json')), null);
     assert.equal(read(path.join(root, 'coinbase', 'state.json')), null);
   });
 
