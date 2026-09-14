@@ -6,9 +6,9 @@
  * (ScorecardPanel, ScorecardAnalysis). Adding an indicator here propagates to both.
  */
 
-const INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum', 'obv', 'williamsR', 'cci'];
+export const INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum', 'obv', 'williamsR', 'cci'];
 
-const INDICATOR_WEIGHTS = {
+export const INDICATOR_WEIGHTS = {
   rsi: 0.10,
   stochastic: 0.08,
   macd: 0.22,
@@ -20,7 +20,7 @@ const INDICATOR_WEIGHTS = {
   cci: 0.07,
 };
 
-const INDICATOR_LABELS = {
+export const INDICATOR_LABELS = {
   rsi: 'RSI',
   stochastic: 'Stoch',
   macd: 'MACD',
@@ -30,10 +30,4 @@ const INDICATOR_LABELS = {
   obv: 'OBV',
   williamsR: 'Will %R',
   cci: 'CCI',
-};
-
-module.exports = {
-  INDICATORS,
-  INDICATOR_WEIGHTS,
-  INDICATOR_LABELS,
 };

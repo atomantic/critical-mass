@@ -4,7 +4,7 @@
   "description": "Multi-exchange BTC accumulation engine with celestial position management",
   "main": "index.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19.0"
   },
   "scripts": {
     "start": "pm2 stop ecosystem.config.cjs >/dev/null 2>&1 || true; pm2 delete ecosystem.config.cjs >/dev/null 2>&1 || true; for p in 5570 5571 5572 5573 5574; do if lsof -i :$p -sTCP:LISTEN -t >/dev/null 2>&1; then echo \"Error: required port $p remains occupied after stopping Critical Mass PM2 processes.\" >&2; exit 1; fi; done; pm2 start ecosystem.config.cjs && pm2 save",

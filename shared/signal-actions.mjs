@@ -12,14 +12,14 @@
  *   anything else   → HOLD  (flat + SELL is stand-aside, not a short)
  */
 
-const BUY_SIDE = new Set(['BUY', 'STRONG_BUY'])
-const SELL_SIDE = new Set(['SELL', 'STRONG_SELL'])
+export const BUY_SIDE = new Set(['BUY', 'STRONG_BUY'])
+export const SELL_SIDE = new Set(['SELL', 'STRONG_SELL'])
 
 /** @param {string|null|undefined} type */
-const isBuyType = (type) => BUY_SIDE.has(type)
+export const isBuyType = (type) => BUY_SIDE.has(type)
 
 /** @param {string|null|undefined} type */
-const isSellType = (type) => SELL_SIDE.has(type)
+export const isSellType = (type) => SELL_SIDE.has(type)
 
 /**
  * Coarse side for fill idempotency. BUY and STRONG_BUY are the same side so a
@@ -27,7 +27,7 @@ const isSellType = (type) => SELL_SIDE.has(type)
  * @param {string|null|undefined} type
  * @returns {'BUY' | 'SELL' | 'HOLD'}
  */
-const signalSide = (type) => {
+export const signalSide = (type) => {
   if (isBuyType(type)) return 'BUY'
   if (isSellType(type)) return 'SELL'
   return 'HOLD'
@@ -37,7 +37,7 @@ const signalSide = (type) => {
  * @param {boolean|{direction?: string, contracts?: number}|null|undefined} held
  * @returns {boolean}
  */
-const isHeldLong = (held) => {
+export const isHeldLong = (held) => {
   if (!held) return false
   if (held === true) return true
   if (typeof held.contracts === 'number') {
@@ -51,7 +51,7 @@ const isHeldLong = (held) => {
  * @param {boolean|{direction?: string, contracts?: number}|null|undefined} [held]
  * @returns {'OPEN' | 'ADD' | 'HOLD' | 'CLOSE'}
  */
-const resolveAction = (type, held = null) => {
+export const resolveAction = (type, held = null) => {
   const long = isHeldLong(held)
   if (isBuyType(type)) return long ? 'ADD' : 'OPEN'
   if (long) return 'CLOSE'
@@ -69,7 +69,7 @@ const resolveAction = (type, held = null) => {
  * @param {boolean|{direction?: string, contracts?: number}|null|undefined} [held]
  * @returns {string}
  */
-const resolveActionLabel = (type, held = null) => {
+export const resolveActionLabel = (type, held = null) => {
   if (!type) return 'CALCULATING...'
   if (type === 'OPEN' || type === 'ADD' || type === 'HOLD' || type === 'CLOSE') return type
   return resolveAction(type, held)
@@ -81,7 +81,7 @@ const resolveActionLabel = (type, held = null) => {
  * @param {Array<{type?: string, action?: string, timestamp?: number}>} entries
  * @returns {Array<Object>} new array, original objects not mutated
  */
-const labelHistoryActions = (entries) => {
+export const labelHistoryActions = (entries) => {
   if (!Array.isArray(entries) || entries.length === 0) return []
   const sorted = entries
     .map((e, i) => ({ e, i, ts: Number(e?.timestamp) || 0 }))
@@ -97,17 +97,4 @@ const labelHistoryActions = (entries) => {
     byIndex[i] = { ...e, action }
   }
   return byIndex
-}
-
-// Export for CommonJS (Node.js server)
-module.exports = {
-  BUY_SIDE,
-  SELL_SIDE,
-  isBuyType,
-  isSellType,
-  signalSide,
-  isHeldLong,
-  resolveAction,
-  resolveActionLabel,
-  labelHistoryActions,
 }

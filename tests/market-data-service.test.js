@@ -3,7 +3,7 @@ const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  ingestNewFillsForOrder, settleCancelledOrder, createTimerTracker, createWorkQueue, createMarketDataService,
+  ingestNewFillsForOrder, INGEST_RETRY_REASON, settleCancelledOrder, createTimerTracker, createWorkQueue, createMarketDataService,
 } = require('../src/market-data-service');
 const { createHealthMonitor, instrumentAdapterForHealth, isRateLimitError } = require('../src/health-monitor');
 
@@ -100,7 +100,7 @@ describe('ingestNewFillsForOrder', () => {
       'order-1', trackedOrder, 1.0, 'partial fill'
     );
 
-    assert.deepEqual(result, { fetched: true, fillsCount: 0, ingestedCount: 0 });
+    assert.deepEqual(result, { outcome: 'already-covered', recordedSize: 1.0, ingestedCount: 0 });
     assert.equal(ledger.ingested.length, 0);
     assert.equal(trackedOrder.lastIngestedFilledSize, 1.0);
   });
@@ -113,8 +113,8 @@ describe('ingestNewFillsForOrder', () => {
       'order-1', trackedOrder, 0.4, 'partial fill'
     );
 
-    assert.equal(result.fetched, true);
-    assert.equal(result.fillsCount, 1);
+    assert.equal(result.outcome, 'covered');
+    assert.equal(result.recordedSize, 0.4);
     assert.equal(result.ingestedCount, 1);
     assert.equal(ledger.ingested.length, 1);
     assert.equal(ledger.ingested[0].tradeId, 't1');
@@ -155,8 +155,8 @@ describe('ingestNewFillsForOrder', () => {
       'order-1', trackedOrder, 1.0, 'FILLED'
     );
 
-    assert.equal(filled.fetched, true);
-    assert.equal(filled.fillsCount, 2);
+    assert.equal(filled.outcome, 'covered');
+    assert.equal(filled.recordedSize, 1.0);
     assert.equal(filled.ingestedCount, 1, 't1 should be deduped, only t2 newly ingested');
     assert.equal(ledger.ingested.length, 2);
     assert.equal(trackedOrder.lastIngestedFilledSize, 1.0);
@@ -170,7 +170,8 @@ describe('ingestNewFillsForOrder', () => {
       'order-1', trackedOrder, 0.5, 'partial fill'
     );
 
-    assert.equal(result.fetched, false);
+    assert.equal(result.outcome, 'fetch-failed');
+    assert.equal(result.error, 'network down');
     assert.equal(result.ingestedCount, 0);
     assert.equal(ledger.ingested.length, 0);
     assert.equal(trackedOrder.lastIngestedFilledSize ?? 0, 0,
@@ -218,8 +219,9 @@ describe('ingestNewFillsForOrder', () => {
       'order-1', trackedOrder, 0.5, 'FILLED'
     );
 
-    assert.equal(result.fetched, true,
-      'ledger already covers WS cumulative — fetched=true so caller does not retry');
+    assert.equal(result.outcome, 'already-covered',
+      'ledger already covers WS cumulative — caller must not retry');
+    assert.equal(result.recordedSize, 0.5);
     assert.equal(trackedOrder.lastIngestedFilledSize, 0.5,
       'watermark reconciled from ledger after adapter failure');
   });
@@ -249,7 +251,7 @@ describe('ingestNewFillsForOrder', () => {
       'order-1', trackedOrder, 0.5, 'FILLED'
     );
 
-    assert.equal(result.fetched, false, 'must bail with fetched=false post-stop');
+    assert.equal(result.outcome, 'fetch-failed', 'must bail post-stop');
     assert.equal(persistCalls, 0, 'must not persist post-stop (could clobber replacement service)');
     assert.equal(trackedOrder.lastIngestedFilledSize ?? 0, 0,
       'must not advance watermark on a stopped service');
@@ -260,7 +262,7 @@ describe('ingestNewFillsForOrder', () => {
     // advanced the watermark, ingestFill's tradeId dedup would mean a
     // retry sees no NEW fills (ingestedCount=0), and without an
     // unconditional persist call the disk would never catch up. The
-    // helper must signal fetched=false so the caller retries, AND
+    // helper must signal persist-failed so the caller retries, AND
     // unconditionally call persist on retries to flush the queue.
     const adapter = makeAdapter([[makeFill('t1', 0.4)]]);
     let persistCalls = 0;
@@ -283,10 +285,32 @@ describe('ingestNewFillsForOrder', () => {
       'order-1', trackedOrder, 0.4, 'partial fill'
     );
 
-    assert.equal(result.fetched, false, 'persist failure must surface as fetched=false');
+    assert.equal(result.outcome, 'persist-failed', 'persist failure must be distinct from fetch-failed');
+    assert.equal(result.error, 'disk full');
     assert.equal(persistCalls, 1, 'persist was attempted');
     assert.equal(trackedOrder.lastIngestedFilledSize ?? 0, 0,
       'watermark must NOT advance when persist failed — caller relies on this to retry');
+  });
+
+  it('distinguishes fetch-failed from persist-failed on the adapter-error recovery path', async () => {
+    // Adapter throws; recovery persist also throws. Must surface
+    // persist-failed (not fetch-failed) so callers/log reasons split the
+    // two failure modes that used to share fetched=false.
+    const adapter = makeAdapter([new Error('network down')]);
+    const failingLedger = {
+      ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [],
+      getRecordedSizeForOrder: () => 0,
+      persist: () => { throw new Error('disk full'); },
+    };
+
+    const result = await ingestNewFillsForOrder(
+      { adapter, fillLedger: failingLedger, exchange: 'coinbase' },
+      'order-1', trackedOrder, 0.5, 'FILLED'
+    );
+
+    assert.equal(result.outcome, 'persist-failed');
+    assert.equal(result.error, 'disk full');
   });
 
   it('does not advance watermark when adapter returns empty fills (Coinbase post-FILLED race)', async () => {
@@ -297,8 +321,8 @@ describe('ingestNewFillsForOrder', () => {
       'order-1', trackedOrder, 0.5, 'FILLED'
     );
 
-    assert.equal(result.fetched, true);
-    assert.equal(result.fillsCount, 0);
+    assert.equal(result.outcome, 'no-fills-yet');
+    assert.equal(result.recordedSize, 0);
     assert.equal(result.ingestedCount, 0);
     assert.equal(trackedOrder.lastIngestedFilledSize ?? 0, 0,
       'watermark must NOT advance on empty response — caller relies on this to retry');
@@ -322,7 +346,7 @@ describe('ingestNewFillsForOrder', () => {
       'order-1', trackedOrder, 0.5, 'FILLED'
     );
 
-    assert.equal(result.fetched, true);
+    assert.equal(result.outcome, 'no-fills-yet');
     assert.equal(persistAttempts, 1, 'must attempt persist on empty-fills path to flush prior in-memory state');
   });
 
@@ -339,13 +363,13 @@ describe('ingestNewFillsForOrder', () => {
       'order-1', trackedOrder, 0.7, 'partial fill'
     );
 
-    assert.equal(result.fetched, true);
-    assert.equal(result.fillsCount, 1);
+    assert.equal(result.outcome, 'short');
+    assert.equal(result.recordedSize, 0.3);
     assert.equal(trackedOrder.lastIngestedFilledSize, 0.3,
       'watermark must reflect actual ledger contents (0.3), not WS cumulative (0.7), so retries can catch the missing 0.4');
   });
 
-  it('returns fetched=false if isStopped() flips during the adapter fetch', async () => {
+  it('returns fetch-failed if isStopped() flips during the adapter fetch', async () => {
     let stopped = false;
     const adapter = {
       getOrderFills: async () => {
@@ -359,7 +383,7 @@ describe('ingestNewFillsForOrder', () => {
       'order-1', trackedOrder, 0.4, 'partial fill'
     );
 
-    assert.equal(result.fetched, false, 'must bail with fetched=false post-stop');
+    assert.equal(result.outcome, 'fetch-failed', 'must bail post-stop');
     assert.equal(ledger.ingested.length, 0, 'must not write to fillLedger after stop');
     assert.equal(trackedOrder.lastIngestedFilledSize ?? 0, 0, 'watermark must not advance');
   });
@@ -412,12 +436,60 @@ describe('ingestNewFillsForOrder', () => {
       'order-1', trackedOrder, 1.0, 'FILLED'
     );
 
+    assert.equal(r1.outcome, 'covered');
     assert.equal(r1.ingestedCount, 1);
+    assert.equal(r2.outcome, 'covered');
     assert.equal(r2.ingestedCount, 1);
+    assert.equal(r3.outcome, 'covered');
     assert.equal(r3.ingestedCount, 1);
     assert.equal(ledger.ingested.length, 3);
     assert.deepEqual(ledger.ingested.map(x => x.tradeId), ['t1', 't2', 't3']);
     assert.equal(trackedOrder.lastIngestedFilledSize, 1.0);
+  });
+});
+
+describe('INGEST_RETRY_REASON', () => {
+  it('labels no-fills-yet identically for partial and FILLED retry paths', async () => {
+    // Both schedulePartialRetry and scheduleFilledRetry must pull the
+    // same operator-facing string from INGEST_RETRY_REASON so logs do
+    // not disagree about an empty-fills race.
+    assert.equal(INGEST_RETRY_REASON['no-fills-yet'], 'has no fills yet');
+
+    const captureReasons = async (status, filledSize) => {
+      const lines = [];
+      const original = { log: console.log, warn: console.warn, info: console.info };
+      console.log = (line) => lines.push(String(line));
+      console.warn = (line) => lines.push(String(line));
+      console.info = (line) => lines.push(String(line));
+      const svc = createMarketDataService('coinbase');
+      try {
+        svc._test.injectAdapter({ getOrderFills: async () => [] });
+        svc._test.injectFillLedger({
+          ingestFill: () => ({ ingested: false, fill: null }),
+          getFillsForOrder: () => [],
+          getRecordedSizeForOrder: () => 0,
+          persist: () => {},
+        });
+        svc._test.injectProductId('BTC-USDC');
+        svc.trackOrder('order-NF', { type: 'take_profit', price: 70000, size: 1.0, placedAt: Date.now() });
+        await svc._test.handleOrderUpdate({
+          orderId: 'order-NF', status, filledSize, averageFilledPrice: 70000, totalFees: 0,
+        });
+      } finally {
+        console.log = original.log;
+        console.warn = original.warn;
+        console.info = original.info;
+        svc.stop();
+      }
+      return lines.filter((l) => l.includes('has no fills yet'));
+    };
+
+    const partialLines = await captureReasons('OPEN', 0.5);
+    const filledLines = await captureReasons('FILLED', 0.5);
+    assert.ok(partialLines.length >= 1, 'partial path must log the shared no-fills-yet reason');
+    assert.ok(filledLines.length >= 1, 'FILLED path must log the shared no-fills-yet reason');
+    assert.ok(partialLines.every((l) => l.includes(INGEST_RETRY_REASON['no-fills-yet'])));
+    assert.ok(filledLines.every((l) => l.includes(INGEST_RETRY_REASON['no-fills-yet'])));
   });
 });
 
@@ -1736,8 +1808,8 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     // Same concern as the cancel-side re-arm: an in-flight FILLED retry
     // may be sitting on a long stale backoff (5-min cap after many failed
     // attempts). When a fresh WS replay arrives, scheduleFilledRetry
-    // (called from processOrderUpdate's FILLED branch via the !result.fetched
-    // path) must cancel the prior timer and arm a new one with the fresh
+    // (called from processOrderUpdate's FILLED branch via the outcome
+    // retry path) must cancel the prior timer and arm a new one with the fresh
     // attempt's smaller delay. On Gemini/Crypto.com, waiting on the stale
     // timer can let missing fills age out of the recent-trade window.
     const fakeAdapter = {
