@@ -525,7 +525,7 @@ module.exports = (app, deps) => {
 
     // Validate granularity against valid keys
     if (!(granularity in granularitySeconds)) {
-      return res.status(400).json({ success: false, error: 'granularity must be one of: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE, ONE_HOUR, SIX_HOUR, ONE_DAY' });
+      return res.status(400).json({ success: false, error: `granularity must be one of: ${Object.keys(granularitySeconds).join(', ')}` });
     }
 
     // Validate limit is a positive integer within sane bounds

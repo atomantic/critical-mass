@@ -486,7 +486,7 @@ module.exports = (app, deps) => {
   });
 
   app.put('/api/updown/position', (req, res) => {
-    const { entryPrice, contracts, direction } = req.body || {};
+    const { entryPrice, contracts, direction, entryTime } = req.body || {};
     if (!entryPrice || !contracts || !direction) {
       return res.status(400).json({ success: false, error: 'entryPrice, contracts, and direction are required' });
     }
@@ -499,7 +499,7 @@ module.exports = (app, deps) => {
     if (!Number.isFinite(px) || px <= 0 || !Number.isFinite(qty) || qty <= 0) {
       return res.status(400).json({ success: false, error: 'entryPrice and contracts must be positive numbers' });
     }
-    updownService.setPosition({ entryPrice: px, contracts: qty, direction, entryTime: req.body.entryTime });
+    updownService.setPosition({ entryPrice: px, contracts: qty, direction, entryTime });
     res.json({ success: true });
   });
 

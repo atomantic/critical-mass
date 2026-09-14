@@ -221,146 +221,148 @@ describe('route error handling (issue #530)', () => {
 });
 
 describe('malformed request bodies and query params return 400 (issue #570)', () => {
-  it('GET /api/coinbase/candles with invalid granularity returns 400, not 502', async () => {
+  // Mount one real route module on a throwaway express app behind the JSON error
+  // middleware, so an unguarded `req.body` surfaces the way it does in production
+  // (Express 5 leaves `req.body` undefined when no JSON body is sent).
+  const withRoutes = async (moduleName, deps, run) => {
     const app = express();
     app.use(express.json());
-    require('../src/routes/exchange-routes')(app, { readJSON: () => ({}) });
+    require(`../src/routes/${moduleName}`)(app, deps);
     app.use((err, req, res, next) => errorMiddleware(err, req, res, next));
     const { server, baseUrl } = await listen(app);
     try {
-      const res = await fetch(`${baseUrl}/api/coinbase/candles?pair=BTC-USDC&granularity=NOPE`);
-      assert.equal(res.status, 400);
-      assert.match(res.headers.get('content-type') || '', /application\/json/);
-      const body = await res.json();
-      assert.equal(body.success, false);
-      assert.match(body.error, /granularity/i);
+      await run(baseUrl);
     } finally {
       await close(server);
     }
-  });
+  };
 
-  it('GET /api/coinbase/candles with invalid limit (abc) returns 400, not 502', async () => {
-    const app = express();
-    app.use(express.json());
-    require('../src/routes/exchange-routes')(app, { readJSON: () => ({}) });
-    app.use((err, req, res, next) => errorMiddleware(err, req, res, next));
-    const { server, baseUrl } = await listen(app);
-    try {
-      const res = await fetch(`${baseUrl}/api/coinbase/candles?pair=BTC-USDC&limit=abc`);
-      assert.equal(res.status, 400);
-      assert.match(res.headers.get('content-type') || '', /application\/json/);
-      const body = await res.json();
-      assert.equal(body.success, false);
-      assert.match(body.error, /limit/i);
-    } finally {
-      await close(server);
-    }
-  });
+  const exchangeDeps = { readJSON: () => ({}) };
+  const updownDeps = {
+    updownService: { setPosition: () => {}, setContract: () => {}, getState: () => ({}) },
+    candleCache: {},
+    readJSON: () => ({}),
+    writeJSON: () => {},
+    DATA_DIR: os.tmpdir(),
+  };
+  const legacyDeps = { parseTSV: () => [], calculateCostBasis: () => ({}), getNextTradeInfo: () => ({}) };
 
-  it('GET /api/coinbase/candles with limit=0 returns 400', async () => {
-    const app = express();
-    app.use(express.json());
-    require('../src/routes/exchange-routes')(app, { readJSON: () => ({}) });
-    app.use((err, req, res, next) => errorMiddleware(err, req, res, next));
-    const { server, baseUrl } = await listen(app);
-    try {
-      const res = await fetch(`${baseUrl}/api/coinbase/candles?pair=BTC-USDC&limit=0`);
-      assert.equal(res.status, 400);
-      assert.match(res.headers.get('content-type') || '', /application\/json/);
-      const body = await res.json();
-      assert.equal(body.success, false);
-      assert.match(body.error, /limit/i);
-    } finally {
-      await close(server);
-    }
-  });
+  const expect400 = async (res, pattern) => {
+    assert.equal(res.status, 400);
+    assert.match(res.headers.get('content-type') || '', /application\/json/);
+    const body = await res.json();
+    assert.equal(body.success, false);
+    assert.match(body.error, pattern);
+  };
 
-  it('GET /api/coinbase/candles with limit=351 (exceeds cap) returns 400', async () => {
-    const app = express();
-    app.use(express.json());
-    require('../src/routes/exchange-routes')(app, { readJSON: () => ({}) });
-    app.use((err, req, res, next) => errorMiddleware(err, req, res, next));
-    const { server, baseUrl } = await listen(app);
-    try {
-      const res = await fetch(`${baseUrl}/api/coinbase/candles?pair=BTC-USDC&limit=351`);
-      assert.equal(res.status, 400);
-      assert.match(res.headers.get('content-type') || '', /application\/json/);
-      const body = await res.json();
-      assert.equal(body.success, false);
-      assert.match(body.error, /limit/i);
-    } finally {
-      await close(server);
-    }
-  });
-
-  it('GET /api/coinbase/candles with granularity=ONE_MINUTE&limit=60 does not reject at validation layer', async () => {
-    const app = express();
-    app.use(express.json());
-    require('../src/routes/exchange-routes')(app, { readJSON: () => ({}) });
-    app.use((err, req, res, next) => errorMiddleware(err, req, res, next));
-    const { server, baseUrl } = await listen(app);
-    try {
-      const res = await fetch(`${baseUrl}/api/coinbase/candles?pair=BTC-USDC&granularity=ONE_MINUTE&limit=60`);
-      // Should not be 400 from validation (might be 500/502 from adapter, but not 400 from validation)
-      assert.notEqual(res.status, 400, 'should not reject valid granularity and limit with 400');
-    } finally {
-      await close(server);
-    }
-  });
-
-  it('POST /api/coinbase/regime/force-regime with non-string regime returns 400, not 500', async () => {
-    const app = express();
-    app.use(express.json());
-    require('../src/routes/regime-routes')(app, {
-      getIPC: () => ({ request: () => Promise.resolve({ success: true }) }),
-      readJSON: () => ({ configs: {} }),
-    });
-    app.use((err, req, res, next) => errorMiddleware(err, req, res, next));
-    const { server, baseUrl } = await listen(app);
-    try {
-      const res = await fetch(`${baseUrl}/api/coinbase/regime/force-regime`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ regime: 5 }),
+  describe('GET /api/:exchange/candles query validation', () => {
+    for (const [label, query, pattern] of [
+      ['invalid granularity', 'granularity=NOPE', /granularity/i],
+      ['non-numeric limit', 'limit=abc', /limit/i],
+      ['limit=0', 'limit=0', /limit/i],
+      ['limit above the 350 cap', 'limit=351', /limit/i],
+    ]) {
+      it(`${label} returns 400, not 502`, async () => {
+        await withRoutes('exchange-routes', exchangeDeps, async (baseUrl) => {
+          const res = await fetch(`${baseUrl}/api/coinbase/candles?pair=BTC-USDC&${query}`);
+          await expect400(res, pattern);
+        });
       });
-      assert.equal(res.status, 400);
-      assert.match(res.headers.get('content-type') || '', /application\/json/);
-      const body = await res.json();
-      assert.equal(body.success, false);
-      assert.match(body.error, /regime/i);
-    } finally {
-      await close(server);
     }
-  });
 
-  it('POST /api/coinbase/regime/force-regime with object regime returns 400, not 500', async () => {
-    const app = express();
-    app.use(express.json());
-    require('../src/routes/regime-routes')(app, {
-      getIPC: () => ({ request: () => Promise.resolve({ success: true }) }),
-      readJSON: () => ({ configs: {} }),
-    });
-    app.use((err, req, res, next) => errorMiddleware(err, req, res, next));
-    const { server, baseUrl } = await listen(app);
-    try {
-      const res = await fetch(`${baseUrl}/api/coinbase/regime/force-regime`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ regime: {} }),
+    it('the granularity+limit the dashboard sends is not rejected', async () => {
+      await withRoutes('exchange-routes', exchangeDeps, async (baseUrl) => {
+        const res = await fetch(`${baseUrl}/api/coinbase/candles?pair=BTC-USDC&granularity=ONE_MINUTE&limit=60`);
+        assert.notEqual(res.status, 400, 'valid granularity and limit must reach the adapter');
       });
-      assert.equal(res.status, 400);
-      assert.match(res.headers.get('content-type') || '', /application\/json/);
-      const body = await res.json();
-      assert.equal(body.success, false);
-      assert.match(body.error, /regime/i);
-    } finally {
-      await close(server);
+    });
+  });
+
+  describe('GET /api/updown/scorecard-analysis date validation', () => {
+    for (const [label, query] of [
+      ['unparseable from', 'from=garbage'],
+      ['unparseable to', 'to=not-a-date'],
+      ['well-formed but impossible from', 'from=2026-13-45'],
+    ]) {
+      it(`${label} returns 400, not 500`, async () => {
+        await withRoutes('updown-routes', updownDeps, async (baseUrl) => {
+          const res = await fetch(`${baseUrl}/api/updown/scorecard-analysis?${query}`);
+          await expect400(res, /from|to/i);
+        });
+      });
     }
   });
-});
 
-process.on('exit', () => {
-  for (const file of tmpFiles) {
-    try { fs.unlinkSync(file); } catch { /* already gone */ }
-  }
+  describe('POST /api/:exchange/regime/force-regime regime typing', () => {
+    for (const [label, payload] of [
+      ['a numeric regime', { regime: 5 }],
+      ['an object regime', { regime: {} }],
+    ]) {
+      it(`${label} returns 400, not 500`, async () => {
+        await withRoutes('regime-routes', {}, async (baseUrl) => {
+          const res = await fetch(`${baseUrl}/api/coinbase/regime/force-regime?pair=BTC-USDC`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          await expect400(res, /regime/i);
+        });
+      });
+    }
+  });
+
+  describe('an absent or non-JSON body never reaches the error boundary', () => {
+    // `req.body` is genuinely `undefined` for both shapes below — no
+    // `body: {}` harness default can stand in for them (that is what let this
+    // whole class of 500 ship unnoticed).
+    const bodylessRequests = [
+      ['no body at all', {}],
+      ['a non-JSON Content-Type', { headers: { 'Content-Type': 'text/plain' }, body: 'not json' }],
+    ];
+
+    /** Endpoints whose own required-field check should now produce its documented 400. */
+    const documented400 = [
+      ['keys-routes', {}, 'POST', '/api/coinbase/keys', /required/i],
+      ['keys-routes', {}, 'PUT', '/api/coinbase/keys', /required/i],
+      ['regime-routes', {}, 'POST', '/api/coinbase/regime/force-regime?pair=BTC-USDC', /regime/i],
+      ['regime-routes', {}, 'POST', '/api/coinbase/regime/dismiss-fills?pair=BTC-USDC', /orderIds/i],
+      ['updown-routes', updownDeps, 'PUT', '/api/updown/position', /required/i],
+      ['updown-routes', updownDeps, 'POST', '/api/updown/trades', /required/i],
+    ];
+
+    for (const [moduleName, deps, method, route, pattern] of documented400) {
+      for (const [shape, init] of bodylessRequests) {
+        it(`${method} ${route.split('?')[0]} with ${shape} returns its documented 400`, async () => {
+          const routeDeps = moduleName === 'keys-routes' ? { writeJSON: () => {} } : deps;
+          await withRoutes(moduleName, routeDeps, async (baseUrl) => {
+            const res = await fetch(`${baseUrl}${route}`, { method, ...init });
+            await expect400(res, pattern);
+          });
+        });
+      }
+    }
+
+    /**
+     * These two have no documented 400 for an empty body — a body with neither
+     * toggle is a no-op today (tightening that is issue #569). What must never
+     * happen is the TypeError-driven 500.
+     */
+    const neverFivexx = [
+      ['exchange-routes', exchangeDeps, 'PATCH', '/api/coinbase/config?pair=BTC-USDC'],
+      ['legacy-routes', legacyDeps, 'PATCH', '/api/config'],
+      ['updown-routes', updownDeps, 'PUT', '/api/updown/contract'],
+    ];
+
+    for (const [moduleName, deps, method, route] of neverFivexx) {
+      for (const [shape, init] of bodylessRequests) {
+        it(`${method} ${route.split('?')[0]} with ${shape} never returns 5xx`, async () => {
+          await withRoutes(moduleName, deps, async (baseUrl) => {
+            const res = await fetch(`${baseUrl}${route}`, { method, ...init });
+            assert.ok(res.status < 500, `expected a client-side status, got ${res.status}`);
+            assert.match(res.headers.get('content-type') || '', /application\/json/);
+          });
+        });
+      }
+    }
+  });
 });
