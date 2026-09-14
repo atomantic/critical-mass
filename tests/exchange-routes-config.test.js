@@ -379,3 +379,120 @@ describe('PUT /api/:exchange/config persists consolidation settings (#548)', () 
     assert.equal(JSON.stringify(fsMocks.user()), before, 'a rejected value must never be persisted');
   });
 });
+
+// Regression for #569: PATCH /api/:exchange/config used to apply enabled/dryRun
+// only when they were literal booleans but reported applied:true regardless, so
+// a caller sending "true"/"false" strings (or a mistyped key) got an affirmative
+// 200 while nothing changed. Now both fields go through readBooleanFlag (same
+// convention as regime-routes.js), rejecting non-booleans before any write or
+// IPC call, and the response's `applied` reflects whether either flag was set.
+describe('PATCH /api/:exchange/config validates enabled/dryRun (issue #569)', () => {
+  afterEach(() => mock.restoreAll());
+
+  const setup = (coinbaseRequest = () => Promise.resolve({ success: true })) => {
+    const fsMocks = setupFsMocks(BASE_CONFIG);
+    const app = createFakeApp();
+    registerExchangeRoutes(app, {
+      exchangeIPCMap: { coinbase: { request: coinbaseRequest } },
+      parseTSV: () => [],
+      calculateCostBasis: () => ({}),
+      getNextTradeInfo: () => ({}),
+    });
+    return { app, fsMocks };
+  };
+
+  const reqFor = (body) => ({ params: { exchange: 'coinbase' }, query: { pair: 'BTC-USDC' }, body });
+
+  const NON_BOOLEAN_FLAG_VALUES = ['false', 'true', 0, 1, [], {}, null];
+
+  for (const field of ['enabled', 'dryRun']) {
+    for (const bad of NON_BOOLEAN_FLAG_VALUES) {
+      it(`rejects a non-boolean ${field} (${JSON.stringify(bad)}) with 400 and never persists or calls IPC`, async () => {
+        let ipcCalls = 0;
+        const { app, fsMocks } = setup(() => { ipcCalls += 1; return Promise.resolve({ success: true }); });
+        const before = JSON.stringify(fsMocks.user());
+
+        const res = await invoke(app, 'PATCH /api/:exchange/config', reqFor({ [field]: bad }));
+
+        assert.equal(res.statusCode, 400, `non-boolean ${field} must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+        assert.equal(res.body.success, false);
+        assert.match(res.body.error, new RegExp(`${field} must be a boolean`));
+        assert.equal(JSON.stringify(fsMocks.user()), before, 'a rejected flag must never be persisted');
+        assert.equal(ipcCalls, 0, 'a rejected flag must never reach the live engine');
+      });
+    }
+  }
+
+  it('rejects before any write when enabled is invalid, even if dryRun is a valid boolean', async () => {
+    let ipcCalls = 0;
+    const { app, fsMocks } = setup(() => { ipcCalls += 1; return Promise.resolve({ success: true }); });
+    const before = JSON.stringify(fsMocks.user());
+
+    const res = await invoke(app, 'PATCH /api/:exchange/config', reqFor({ enabled: 'true', dryRun: false }));
+
+    assert.equal(res.statusCode, 400);
+    assert.equal(JSON.stringify(fsMocks.user()), before, 'nothing must be persisted when either flag is rejected');
+    assert.equal(ipcCalls, 0, 'IPC must not be reached when either flag is rejected');
+  });
+
+  it('a body with neither field is a no-op: 200, applied:false, config untouched', async () => {
+    const { app, fsMocks } = setup();
+    const before = JSON.stringify(fsMocks.user());
+
+    const res = await invoke(app, 'PATCH /api/:exchange/config', reqFor({}));
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.applied, false);
+    assert.equal(JSON.stringify(fsMocks.user()), before, 'no field supplied must not persist anything');
+  });
+
+  it('a body with a mistyped key (dry_run) is a no-op: 200, applied:false', async () => {
+    const { app, fsMocks } = setup();
+    const before = JSON.stringify(fsMocks.user());
+
+    const res = await invoke(app, 'PATCH /api/:exchange/config', reqFor({ dry_run: false }));
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.applied, false);
+    assert.equal(JSON.stringify(fsMocks.user()), before, 'a mistyped key must not be treated as a match');
+  });
+
+  it('applies a literal enabled=false and reports applied:true', async () => {
+    const { app } = setup();
+
+    const res = await invoke(app, 'PATCH /api/:exchange/config', reqFor({ enabled: false }));
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.applied, true);
+    assert.equal(res.body.persisted, true);
+    assert.equal(res.body.config.enabled, false);
+  });
+
+  it('applies a literal dryRun=false, forwards it to the engine, and reports applied:true', async () => {
+    let seenPayload = null;
+    const { app } = setup((_op, payload) => { seenPayload = payload; return Promise.resolve({ success: true }); });
+
+    const res = await invoke(app, 'PATCH /api/:exchange/config', reqFor({ dryRun: false }));
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.applied, true);
+    assert.equal(res.body.config.dryRun, false);
+    assert.deepStrictEqual(seenPayload, { dryRun: false });
+  });
+
+  it('preserves the 503 persisted:true/applied:false engine-rejection path for dryRun', async () => {
+    const { app } = setup(() => Promise.reject(new Error('engine unavailable')));
+
+    const res = await invoke(app, 'PATCH /api/:exchange/config', reqFor({ dryRun: false }));
+
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.body.success, false);
+    assert.equal(res.body.persisted, true);
+    assert.equal(res.body.applied, false);
+
+    const after = await invoke(app, 'GET /api/:exchange/config', reqFor({}));
+    assert.equal(after.body.dryRun, false, 'disk state must match the persisted:true response');
+  });
+});

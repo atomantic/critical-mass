@@ -29,7 +29,7 @@ const {
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
 const { syncOrderStatuses, runIntervalCycle, executeConsolidation, reconcilePlacementIntent } = require('../dca-engine');
-const { shouldAutoResumeRegime } = require('../shared-utils');
+const { shouldAutoResumeRegime, readBooleanFlag } = require('../shared-utils');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { resolvePairParam, getSafeIPC, asyncRoute } = require('./route-utils');
 
@@ -383,11 +383,19 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
-    const { enabled, dryRun } = req.body || {};
+    const body = req.body || {};
+    const enabledFlag = readBooleanFlag(body, 'enabled', undefined);
+    if (enabledFlag.error) return res.status(400).json({ success: false, error: enabledFlag.error });
+    const dryRunFlag = readBooleanFlag(body, 'dryRun', undefined);
+    if (dryRunFlag.error) return res.status(400).json({ success: false, error: dryRunFlag.error });
+    const { value: enabled } = enabledFlag;
+    const { value: dryRun } = dryRunFlag;
     const logger = exchangeLogger(exchange, pair, '/api/:exchange/config');
+    let applied = false;
 
     if (typeof enabled === 'boolean') {
       setExchangeEnabled(exchange, pair, enabled);
+      applied = true;
       logger.info(`ℹ️ [${exchange}/${pair}] Trading automation ${enabled ? 'ENABLED' : 'DISABLED'}`, {
         action: 'toggle-enabled',
         enabled,
@@ -396,13 +404,14 @@ module.exports = (app, deps) => {
 
     if (typeof dryRun === 'boolean') {
       setExchangeDryRun(exchange, pair, dryRun);
+      applied = true;
       logger.info(`ℹ️ [${exchange}/${pair}] Dry-run mode ${dryRun ? 'ENABLED' : 'DISABLED'}`, {
         action: 'toggle-dry-run',
         dryRun,
       });
       try {
-        const applied = await getIPC(exchange).request('regime:update-config', { dryRun }, exchange, pair);
-        if (applied?.success === false) throw new Error(applied.error || applied.message || 'Engine rejected config update');
+        const engineResult = await getIPC(exchange).request('regime:update-config', { dryRun }, exchange, pair);
+        if (engineResult?.success === false) throw new Error(engineResult.error || engineResult.message || 'Engine rejected config update');
       } catch (err) {
         logger.error(`❌ 🚨 [${exchange}/${pair}] Dry-run setting persisted but live engine update failed: ${err.message}`, {
           action: 'toggle-dry-run',
@@ -421,7 +430,7 @@ module.exports = (app, deps) => {
       }
     }
 
-    res.json({ success: true, persisted: true, applied: true, config: getFundConfig(exchange, pair) });
+    res.json({ success: true, persisted: true, applied, config: getFundConfig(exchange, pair) });
   });
 
   // Get state for an exchange/fund (?pair= optional)

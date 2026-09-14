@@ -264,6 +264,105 @@ describe('PUT /api/config validates against the allowlist (issue #146)', () => {
   }
 });
 
+// Regression for #569: PATCH /api/config used to apply enabled/dryRun only
+// when they were literal booleans but always reported success, so a caller
+// sending "true"/"false" strings (or a mistyped key) got an affirmative 200
+// while nothing changed. Now both fields go through readBooleanFlag (the same
+// convention as regime-routes.js and PATCH /api/:exchange/config), rejecting
+// non-booleans before any write, and the response's `applied` reflects
+// whether either flag was actually set.
+describe('PATCH /api/config validates enabled/dryRun (issue #569)', () => {
+  afterEach(() => mock.restoreAll());
+
+  const BASE_COINBASE = {
+    exchanges: { coinbase: { productId: 'BTC-USDC', enabled: true, dryRun: true } },
+    global: { schedulerInterval: 30000 },
+  };
+
+  const setup = () => {
+    const fsMocks = setupFsMocks({ base: BASE_COINBASE, user: null });
+    const app = createFakeApp();
+    registerLegacyRoutes(app, {
+      parseTSV: () => [],
+      calculateCostBasis: () => ({}),
+      getNextTradeInfo: () => ({}),
+    });
+    return { app, fsMocks };
+  };
+
+  const NON_BOOLEAN_FLAG_VALUES = ['false', 'true', 0, 1, [], {}, null];
+
+  for (const field of ['enabled', 'dryRun']) {
+    for (const bad of NON_BOOLEAN_FLAG_VALUES) {
+      it(`rejects a non-boolean ${field} (${JSON.stringify(bad)}) with 400 and persists nothing`, async () => {
+        const { app, fsMocks } = setup();
+
+        const res = await invoke(app, 'PATCH /api/config', { body: { [field]: bad } });
+
+        assert.equal(res.statusCode, 400, `non-boolean ${field} must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+        assert.equal(res.body.success, false);
+        assert.match(res.body.error, new RegExp(`${field} must be a boolean`));
+        assert.equal(fsMocks.written(), null, 'a rejected flag must never be persisted');
+      });
+    }
+  }
+
+  it('rejects before any write when enabled is invalid, even if dryRun is a valid boolean', async () => {
+    const { app, fsMocks } = setup();
+
+    const res = await invoke(app, 'PATCH /api/config', { body: { enabled: 'true', dryRun: false } });
+
+    assert.equal(res.statusCode, 400);
+    assert.equal(fsMocks.written(), null, 'nothing must be persisted when either flag is rejected');
+  });
+
+  it('a body with neither field is a no-op: 200, applied:false, config untouched', async () => {
+    const { app, fsMocks } = setup();
+
+    const res = await invoke(app, 'PATCH /api/config', { body: {} });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.applied, false);
+    assert.equal(fsMocks.written(), null, 'no field supplied must not persist anything');
+  });
+
+  it('a body with a mistyped key (dry_run) is a no-op: 200, applied:false', async () => {
+    const { app, fsMocks } = setup();
+
+    const res = await invoke(app, 'PATCH /api/config', { body: { dry_run: false } });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.applied, false);
+    assert.equal(fsMocks.written(), null, 'a mistyped key must not be treated as a match');
+  });
+
+  it('applies a literal enabled=false and reports applied:true', async () => {
+    const { app, fsMocks } = setup();
+
+    const res = await invoke(app, 'PATCH /api/config', { body: { enabled: false } });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.applied, true);
+    // getExchangeConfig() re-reads through this suite's fs mock, which (unlike
+    // exchange-routes-config.test.js's) doesn't feed writeFileSync output back
+    // into readFileSync/existsSync — so assert against the persisted write
+    // itself (the pattern the rest of this file already uses), not res.body.config.
+    assert.equal(fsMocks.written().exchanges.coinbase.enabled, false);
+  });
+
+  it('applies a literal dryRun=false and reports applied:true', async () => {
+    const { app, fsMocks } = setup();
+
+    const res = await invoke(app, 'PATCH /api/config', { body: { dryRun: false } });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.applied, true);
+    assert.equal(fsMocks.written().exchanges.coinbase.dryRun, false);
+  });
+});
+
 describe('PUT /api/notifications/config masked-token round-trip guard', () => {
   afterEach(() => mock.restoreAll());
 
