@@ -1645,6 +1645,82 @@ describe('Fill Ledger', () => {
   });
 
   // =======================================================================
+  // Cycle recalculation parity & shared rules (issue #582)
+  // =======================================================================
+  describe('previewRecalculateCycles and recalculateCycles parity (issue #582)', () => {
+    it('agrees on cyclesCompleted, orphansFixed, and the set of cycleDetails cycle ids', () => {
+      const ledger = createTestLedger('parity-test');
+      // Build a ledger with orphan fills: completed cycle + active cycle
+      ledger.ingestFill(makeBuyFill({ tradeId: 'p-b1', orderId: 'pb-1', price: '100000', size: '0.002', timestamp: 1000 }), null, { cycleId: null });
+      ledger.ingestFill(makeSellFill({ tradeId: 'p-s1', orderId: 'ps-1', price: '105000', size: '0.002', timestamp: 2000 }), null, { cycleId: null });
+      ledger.ingestFill(makeBuyFill({ tradeId: 'p-b2', orderId: 'pb-2', price: '101000', size: '0.001', timestamp: 3000 }), null, { cycleId: null });
+
+      const preview = ledger.previewRecalculateCycles();
+      const real = ledger.recalculateCycles();
+
+      assert.equal(preview.cyclesCompleted, real.cyclesCompleted);
+      assert.equal(preview.orphansFixed, real.orphansFixed);
+      assert.equal(preview.activeCycleId, real.activeCycleId);
+      const previewCycleIds = preview.cycleDetails.map(d => d.cycleId);
+      const realCycleIds = real.cycleDetails.map(d => d.cycleId);
+      assert.deepStrictEqual(previewCycleIds, realCycleIds, 'preview and apply must produce the identical set of cycleDetails cycle IDs');
+      assert.ok(previewCycleIds.length > 0, 'at least one completed cycle verified');
+    });
+
+    it('pins that changing the shared threshold moves preview and apply together', () => {
+      const fillLedgerMod = freshFillLedgerModule();
+      const { createFillLedger, setCycleCompleteSellRatioForTest, CYCLE_COMPLETE_SELL_RATIO } = fillLedgerMod;
+      const originalRatio = CYCLE_COMPLETE_SELL_RATIO;
+      try {
+        // Buy 1.0, Sell 0.6 -> sell ratio is 0.6.
+        // At default threshold (0.5), 0.6 >= 0.5 so cycle is completed.
+        const ledger1 = createFillLedger('thresh-1');
+        ledger1.ingestFill(makeBuyFill({ tradeId: 't-b1', orderId: 'tb-1', price: '100000', size: '1.0', timestamp: 1000 }), null, { cycleId: null });
+        ledger1.ingestFill(makeSellFill({ tradeId: 't-s1', orderId: 'ts-1', price: '105000', size: '0.6', timestamp: 2000 }), null, { cycleId: null });
+
+        const preview1 = ledger1.previewRecalculateCycles();
+        const real1 = ledger1.recalculateCycles();
+        assert.equal(preview1.cyclesCompleted, 1, 'completed at default threshold');
+        assert.equal(real1.cyclesCompleted, 1, 'completed at default threshold');
+
+        // Increase threshold to 0.7. Now 0.6 < 0.7, so cycle should NOT be completed in BOTH.
+        setCycleCompleteSellRatioForTest(0.7);
+
+        const ledger2 = createFillLedger('thresh-2');
+        ledger2.ingestFill(makeBuyFill({ tradeId: 't-b2', orderId: 'tb-2', price: '100000', size: '1.0', timestamp: 1000 }), null, { cycleId: null });
+        ledger2.ingestFill(makeSellFill({ tradeId: 't-s2', orderId: 'ts-2', price: '105000', size: '0.6', timestamp: 2000 }), null, { cycleId: null });
+
+        const preview2 = ledger2.previewRecalculateCycles();
+        const real2 = ledger2.recalculateCycles();
+        assert.equal(preview2.cyclesCompleted, 0, 'not completed at 0.7 threshold in preview');
+        assert.equal(real2.cyclesCompleted, 0, 'not completed at 0.7 threshold in apply');
+        assert.equal(preview2.cycleDetails.length, 0);
+        assert.equal(real2.cycleDetails.length, 0);
+      } finally {
+        setCycleCompleteSellRatioForTest(originalRatio);
+      }
+    });
+
+    it('supports instance-scoped cycleCompleteSellRatio in opts', () => {
+      const { createFillLedger } = freshFillLedgerModule();
+      const ledger = createFillLedger('inst-thresh', 'BTC-USDC', 'BTC-USDC', { cycleCompleteSellRatio: 0.7 });
+      ledger.ingestFill(makeBuyFill({ tradeId: 'it-b1', orderId: 'itb-1', price: '100000', size: '1.0', timestamp: 1000 }), null, { cycleId: null });
+      ledger.ingestFill(makeSellFill({ tradeId: 'it-s1', orderId: 'its-1', price: '105000', size: '0.6', timestamp: 2000 }), null, { cycleId: null });
+
+      const preview = ledger.previewRecalculateCycles();
+      const real = ledger.recalculateCycles();
+      assert.equal(preview.cyclesCompleted, 0);
+      assert.equal(real.cyclesCompleted, 0);
+    });
+
+    it('asserts 0.5 appears exactly once as named constant in src/fill-ledger.js', () => {
+      const src = fs.readFileSync(path.join(__dirname, '../src/fill-ledger.js'), 'utf8');
+      const matches = src.match(/0\.5/g) || [];
+      assert.equal(matches.length, 1, `expected 0.5 to appear exactly once, but found ${matches.length} occurrences`);
+    });
+  });
+
+  // =======================================================================
   // Read-only caching + quiet logs (issue #183)
   // =======================================================================
   describe('getCachedFillLedger / quiet (issue #183)', () => {
