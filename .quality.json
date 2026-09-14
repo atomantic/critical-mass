@@ -73,6 +73,20 @@
       }
     },
     {
+      "measurementId": "4731445d241f35939468ea20e9e1584b6094be03d4002ecc869dade71188dafb",
+      "assessedAt": "2026-09-14T21:19:30.220Z",
+      "report": {
+        "version": 1,
+        "category": "better-cognitive-load",
+        "score": 62,
+        "worstSeverity": 7,
+        "coverage": "broad",
+        "confidence": "high",
+        "scannedFiles": 275,
+        "totalFiles": 275
+      }
+    },
+    {
       "measurementId": "ae22aa6229e89d1fb0799b514203a3c1f1ee3ca6a1109bb3f956944344baebf6",
       "assessedAt": "2026-09-10T20:30:13.198Z",
       "report": {
