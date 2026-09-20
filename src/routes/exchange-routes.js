@@ -572,7 +572,7 @@ module.exports = (app, deps) => {
     const config = getFundConfig(exchange, pair);
     const state = stateTracker.loadState(config, exchange, pair);
 
-    const filledOrders = await syncOrderStatuses(state, exchange);
+    const filledOrders = await syncOrderStatuses(state, exchange, pair);
     if (filledOrders.length > 0) {
       stateTracker.saveState(state, exchange, pair);
     }

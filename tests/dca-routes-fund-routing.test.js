@@ -32,6 +32,7 @@ pathsModule.DATA_DIR = configDataDir;
 const configUtils = require('../src/config-utils');
 const migration = require('../src/migration');
 const dcaEngine = require('../src/dca-engine');
+const orderManager = require('../src/order-manager');
 
 const EXCHANGE_ROUTES = require.resolve('../src/routes/exchange-routes');
 
@@ -206,6 +207,35 @@ describe('POST /api/:exchange/trade fund routing (issue #546)', () => {
 
     assert.equal(res.statusCode, 400);
     assert.deepEqual(engineCalls, []);
+  });
+});
+
+describe('POST /api/:exchange/sync fund routing', () => {
+  it('records a nondefault fund sell in that fund transaction log and state', async () => {
+    seedPendingOrders(DEFAULT_PAIR, 1);
+    seedPendingOrders(OTHER_PAIR, 1);
+    const defaultStateFile = path.join(tempRoot, 'coinbase', DEFAULT_PAIR, 'state.json');
+    const beforeDefault = fs.readFileSync(defaultStateFile, 'utf8');
+    const orderId = `sell-${OTHER_PAIR}-0`;
+    mock.method(orderManager, 'checkFilledOrders', async (orders) => {
+      assert.deepEqual(orders.map(order => order.orderId), [orderId]);
+      return [{ orderId, filledSize: 0.01, averageFilledPrice: 3000, fillValue: 30, netProceeds: 30 }];
+    });
+
+    const res = await invoke(app, 'POST /api/:exchange/sync', {
+      params: { exchange: 'coinbase' }, query: { pair: OTHER_PAIR },
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.pair, OTHER_PAIR);
+    assert.equal(res.body.filledOrders, 1);
+    assert.equal(fs.existsSync(path.join(tempRoot, 'coinbase', DEFAULT_PAIR, 'transactions.tsv')), false);
+    const history = fs.readFileSync(path.join(tempRoot, 'coinbase', OTHER_PAIR, 'transactions.tsv'), 'utf8');
+    assert.match(history, /SELL_FILLED/);
+    assert.ok(history.includes(orderId));
+    const state = JSON.parse(fs.readFileSync(path.join(tempRoot, 'coinbase', OTHER_PAIR, 'state.json'), 'utf8'));
+    assert.equal(state.orders[0].status, 'filled');
+    assert.equal(fs.readFileSync(defaultStateFile, 'utf8'), beforeDefault);
   });
 });
 

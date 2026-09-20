@@ -290,6 +290,9 @@ const NOTIFICATION_DEFAULTS = {
   quietHours: { enabled: false, start: 23, end: 7 },
 };
 
+// Node clamps delays above its signed 32-bit limit to 1 ms.
+const BACKUP_INTERVAL_BOUNDS = { min: 300000, max: 2147483647 };
+
 /**
  * Global default configuration
  * @type {GlobalConfig}
@@ -1665,10 +1668,19 @@ const updateNotificationConfig = (updates) => {
 const getBackupConfig = () => {
   const config = loadConfig();
   const backup = config.global?.backup || {};
-  return {
+  const result = {
     ...GLOBAL_DEFAULTS.backup,
     ...backup,
   };
+  // Files edited by hand bypass the API schema. Never hand an unsafe delay
+  // to either backup timer, which could churn through the retained history.
+  for (const key of ['intervalMs', 'fundStateIntervalMs']) {
+    const value = result[key];
+    if (!Number.isFinite(value) || value < BACKUP_INTERVAL_BOUNDS.min || value > BACKUP_INTERVAL_BOUNDS.max) {
+      result[key] = GLOBAL_DEFAULTS.backup[key];
+    }
+  }
+  return result;
 };
 
 /**
@@ -2031,9 +2043,14 @@ const minimizeReconstructedTarget = (target, base) => {
 const reconstructConfigOverride = ({ snapshot: archivedSnapshot, baseConfig, destinationGlobal }) => {
   const validation = validateConfigSnapshot(archivedSnapshot);
   if (!validation.valid) return { ok: false, error: validation.error };
-  // The SANITIZED snapshot from here on: a field only a newer build knows was
-  // dropped above and must never reach data/config.json (#567).
-  const { snapshot, droppedFields } = validation;
+  // Start with the sanitized archive and materialize this build's defaults
+  // for settings added since it was written. Older version-1 archives lack
+  // those keys; comparing them directly with a newly materialized snapshot
+  // otherwise rejects every restore after an additive default is introduced.
+  // Archived values still win, and unknown newer-build fields were already
+  // dropped above before any reconstruction can persist them (#567).
+  const { droppedFields } = validation;
+  const snapshot = buildConfigSnapshot(validation.snapshot);
 
   const base = isPlainObject(baseConfig) ? baseConfig : {};
   const target = structuredClone(base);
@@ -2120,6 +2137,7 @@ const diffSnapshotAgainstConfig = ({ snapshot, effectiveConfig }) => {
 };
 
 module.exports = {
+  BACKUP_INTERVAL_BOUNDS,
   loadConfig,
   saveConfig,
   loadRawConfig,

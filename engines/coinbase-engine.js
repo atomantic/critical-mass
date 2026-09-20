@@ -38,7 +38,7 @@ const { getChartDataBuffer, getChartData, removeChartDataBuffer, shutdownAllBuff
 const { createFillLedger } = require('../src/fill-ledger');
 const { createManualTradeImporter } = require('../src/manual-trade-import');
 const { createIPCServer } = require('../src/ipc/ipc-server');
-const { createSocketIOProxy } = require('../src/ipc/socket-io-proxy');
+const { createSocketIOProxy, forwardTradeEvents } = require('../src/ipc/socket-io-proxy');
 const { saveRegimeRunningFlag, shouldAutoResumeRegime, fundKey, fundLabel, readBooleanFlag } = require('../src/shared-utils');
 const { stopAllRegimeEngines } = require('../src/engine-stop-all');
 const { registerEngineLifecycleHandlers } = require('../src/engine-lifecycle-handlers');
@@ -76,6 +76,7 @@ const ENGINE_NAME = `cm-${EXCHANGE_NAME}`;
 
 const ipcServer = createIPCServer(IPC_PORT, ENGINE_NAME);
 const ioProxy = createSocketIOProxy(ipcServer);
+forwardTradeEvents(ipcServer);
 
 // ============ Engine State ============
 //
@@ -146,7 +147,6 @@ const wireMarketDataCallbacks = (exchange, pair) => {
 };
 
 const createEngineCallbacks = (exchange, pair) => ({
-  onTradeEvent: (event) => ioProxy.emit('trade:event', event),
   onRegimeChange: (prevMode, newMode, reason) =>
     ioProxy.emit('regime:change', { exchange, pair, prevMode, newMode, reason, message: `${prevMode} -> ${newMode}` }),
   onHealthChange: (mode, reason) =>
@@ -900,9 +900,10 @@ setupShutdownHandlers();
 
 // Last-resort fault reporters (issue #532). The engine process has no notifier
 // of its own — trade events reach Telegram through the gateway's IPC
-// subscription — so there is nothing to flush here beyond letting the emit
-// leave the socket before the exit.
+// subscription. Drain the outbound frame before exit so the gateway can send
+// the notification even after this process has terminated.
 registerProcessGuards({
   logger: engineLogger(EXCHANGE_NAME),
   source: `${EXCHANGE_NAME}-engine`,
+  flush: () => ipcServer.flush(),
 });

@@ -176,6 +176,7 @@ describe('#232 resetCycleBuys() — operator reset to resume buying', () => {
     // Sanity: the pre-reset cycle is at the cap (buys paused).
     assert.equal(ledger.getCurrentCycleAllBuysCount(), 3);
     assert.equal(eng._getPositionState().cycleBuys, 3);
+    ledger.persist();
     const bodiesBefore = eng._getPositionState().celestialBodies.map(b => b.id);
     assert.deepEqual(bodiesBefore, ['bodyA', 'bodyB']);
 
@@ -221,6 +222,29 @@ describe('#232 resetCycleBuys() — operator reset to resume buying', () => {
       true
     );
     assert.equal(restarted.getFillLedger().getCurrentCycleId(), ledger.getCurrentCycleId());
+
+    // Resume buying after the restart, then reset again. The restored boundary
+    // had no fills on disk at boot, so the ledger must reserve that cycle number
+    // even though load() could only see the prior cycle.
+    const restartedLedger = restarted.getFillLedger();
+    restartedLedger.ingestFill({
+      tradeId: 'after-reset-restart', orderId: 'buy-after-reset-restart',
+      side: 'buy', price: '50000', size: '0.01',
+    });
+    restarted._test.setRunning(true);
+    restarted._test.setProductDetails(PRODUCT_DETAILS);
+    restarted._test.setAdapter(makeAdapter());
+    restarted._test.setOrderExecutor(makeExecutor());
+    Object.assign(restarted._getPositionState(), structuredClone(savedState.position), { cycleBuys: 1 });
+    assert.equal(restartedLedger.getCurrentCycleAllBuysCount(), 1);
+
+    const resetAgain = await restarted.resetCycleBuys();
+    assert.equal(resetAgain.success, true);
+    assert.notEqual(restartedLedger.getCurrentCycleId(), savedState.position.activeCycleId,
+      'the next reset must advance past the cycle restored without fills');
+    assert.equal(restartedLedger.getCurrentCycleAllBuysCount(), 0,
+      'buys after restart must remain in the prior cycle');
+    assert.equal(loadRegimeState('coinbase', TEST_PAIR).position.activeCycleId, restartedLedger.getCurrentCycleId());
 
     // Open celestial bodies (and their TPs) are preserved across the reset.
     const bodiesAfter = eng._getPositionState().celestialBodies.map(b => b.id);

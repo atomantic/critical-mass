@@ -114,6 +114,9 @@ describe('PUT /api/backups/config', () => {
     { label: 'intervalMs: null', body: { intervalMs: null } },
     { label: 'intervalMs: NaN', body: { intervalMs: NaN } },
     { label: 'intervalMs: Infinity', body: { intervalMs: Infinity } },
+    { label: 'intervalMs: timer overflow', body: { intervalMs: 2147483648 } },
+    { label: 'fundStateIntervalMs: timer overflow', body: { fundStateIntervalMs: 2147483648 } },
+    { label: 'fundStateIntervalMs: 30 days', body: { fundStateIntervalMs: 30 * 24 * 60 * 60 * 1000 } },
     { label: 'maxBackups: 0', body: { maxBackups: 0 } },
     { label: 'maxBackups: null', body: { maxBackups: null } },
     { label: 'maxBackups: negative', body: { maxBackups: -1 } },
@@ -180,5 +183,10 @@ describe('PUT /api/backups/config', () => {
     const res2 = await putConfig(app, { maxBackups: 100 });
     assert.equal(res2.statusCode, 200, JSON.stringify(res2.body));
     assert.equal(res2.body.config.maxBackups, 100);
+
+    const res3 = await putConfig(app, { intervalMs: 2147483647, fundStateIntervalMs: 2147483647 });
+    assert.equal(res3.statusCode, 200, JSON.stringify(res3.body));
+    assert.equal(res3.body.config.intervalMs, 2147483647);
+    assert.equal(res3.body.config.fundStateIntervalMs, 2147483647);
   });
 });

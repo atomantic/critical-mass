@@ -860,6 +860,11 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    */
   const setCurrentCycleId = (cycleId) => {
     currentCycleId = cycleId;
+    // A persisted reset can name a cycle with no fills yet, so load() cannot
+    // infer its number from the ledger. Reserve it when restoring the boundary
+    // or the next reset will reuse this ID and retain its buy count.
+    const match = typeof cycleId === 'string' && cycleId.match(/^cycle-(\d+)$/);
+    if (match) nextCycleNumber = Math.max(nextCycleNumber, Number(match[1]) + 1);
   };
 
   /**

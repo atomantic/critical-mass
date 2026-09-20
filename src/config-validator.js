@@ -6,7 +6,7 @@
 
 const { validateConfigUpdate } = require('./config-validation');
 const { PRESET_FIELD_RULES, LEGACY_PRESET_FIELD_RULES } = require('./regime-preset-contract');
-const { REGIME_DEFAULTS, validateRegimeConfig } = require('./config-utils');
+const { REGIME_DEFAULTS, validateRegimeConfig, BACKUP_INTERVAL_BOUNDS } = require('./config-utils');
 
 const REGIME_ALLOWED_KEYS = new Set(Object.keys(REGIME_DEFAULTS));
 
@@ -122,9 +122,9 @@ const AGGRESSIVENESS_SCHEMA = { ...PRESET_FIELD_RULES, ...LEGACY_PRESET_FIELD_RU
 // can never reach `pruneBackups` and delete every archive.
 const BACKUP_CONFIG_SCHEMA = {
   enabled: { type: 'boolean' },
-  intervalMs: { type: 'number', min: 300000 },
+  intervalMs: { type: 'number', ...BACKUP_INTERVAL_BOUNDS },
   maxBackups: { type: 'number', min: 1, max: 100, integer: true },
-  fundStateIntervalMs: { type: 'number', min: 300000 },
+  fundStateIntervalMs: { type: 'number', ...BACKUP_INTERVAL_BOUNDS },
   fundStateMaxBackups: { type: 'number', min: 1, max: 168, integer: true },
   includePriceCache: { type: 'boolean' },
 };

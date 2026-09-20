@@ -650,6 +650,11 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
 }
 
 function RegimeDashboard({ exchange = 'coinbase', pair }) {
+  const capitalAdjustInputId = useId()
+  const athDropId = useId()
+  const spacingModeId = useId()
+  const sizeModeId = useId()
+  const minSpacingId = useId()
   const pairQuery = buildPairQuery(pair)
   const [localStatus, setLocalStatus] = useState(null)
   const [config, setConfig] = useState(null)

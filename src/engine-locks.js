@@ -141,9 +141,12 @@ const createEngineLocks = (opts = {}) => {
       reconcileInProgress = false;
       throw err;
     }
-    Promise.resolve(result).finally(() => {
+    const release = () => {
       reconcileInProgress = false;
-    });
+    };
+    // Observe both outcomes without creating an unhandled rejected cleanup
+    // promise. Return the original result so the caller still owns its error.
+    Promise.resolve(result).then(release, release);
     return result;
   };
 

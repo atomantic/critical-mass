@@ -183,6 +183,24 @@ describe('dry-run-state legacy root import (#531)', () => {
     assert.equal(readFund(fileFor('gemini', 'BTCUSD')).tag, 'bare');
   });
 
+  it('imports a bare exchange slot only into the default fund, while preserving composite slots', (t) => {
+    const { loadState, fileFor, LEGACY_STATE_FILE } = setup(t);
+    t.mock.method(require('../src/config-utils'), 'getDefaultPair', () => 'BTC-USDC');
+    writeLegacy(LEGACY_STATE_FILE, { coinbase: { ...mkState('legacy-btc'), savedAt: 9_000 } });
+
+    assert.equal(loadState('coinbase', 'ETH-USDC'), null, 'a new ETH fund must not adopt old BTC orders');
+    assert.equal(fs.existsSync(fileFor('coinbase', 'ETH-USDC')), false);
+    assert.equal(loadState('coinbase', 'BTC-USDC').tag, 'legacy-btc');
+
+    writeLegacy(LEGACY_STATE_FILE, {
+      coinbase: { ...mkState('legacy-btc'), savedAt: 9_000 },
+      'coinbase::ETH-USDC': { ...mkState('explicit-eth'), savedAt: 9_000 },
+    });
+    assert.equal(loadState('coinbase', 'ETH-USDC').tag, 'explicit-eth');
+    assert.equal(readFund(fileFor('coinbase', 'BTC-USDC')).tag, 'legacy-btc');
+    assert.equal(readFund(fileFor('coinbase', 'ETH-USDC')).tag, 'explicit-eth');
+  });
+
   it('imports each fund into its own file and never crosses slots', (t) => {
     const { loadState, fileFor, LEGACY_STATE_FILE } = setup(t);
     writeLegacy(LEGACY_STATE_FILE, {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useId } from 'react'
 import { History, Plus, Trash2, Edit3, Check, X, ArrowUp, ArrowDown } from 'lucide-react'
 import { useToast } from '../Toast'
 import { runDashboardAction } from '../../utils/dashboardAction.mjs'
@@ -28,6 +28,12 @@ function isExpression(str) {
 const INVALID_AMOUNT_MESSAGE = 'Enter a finite number or sum, such as 200+300.'
 
 export default function TradeHistory() {
+  const dateId = useId()
+  const costId = useId()
+  const returnId = useId()
+  const noteId = useId()
+  const costErrorId = useId()
+  const returnErrorId = useId()
   const { addToast } = useToast()
   const [busy, setBusy] = useState(false)
   const [trades, setTrades] = useState([])
@@ -201,8 +207,9 @@ export default function TradeHistory() {
           </div>
           <div className="grid grid-cols-3 gap-2">
             <div>
-              <label htmlFor="trade-date" className="text-[10px] text-gray-400 block mb-0.5">Date</label>
+              <label htmlFor={dateId} className="text-[10px] text-gray-400 block mb-0.5">Date</label>
               <input
+                id={dateId}
                 disabled={busy}
                 type="date"
                 value={form.date}
@@ -211,8 +218,9 @@ export default function TradeHistory() {
               />
             </div>
             <div>
-              <label className="text-[10px] text-gray-400 block mb-0.5">Cost (Open)</label>
+              <label htmlFor={costId} className="text-[10px] text-gray-400 block mb-0.5">Cost (Open)</label>
               <input
+                id={costId}
                 disabled={busy}
                 type="text"
                 inputMode="decimal"
@@ -221,19 +229,20 @@ export default function TradeHistory() {
                 placeholder="500 or 200+300"
                 required
                 aria-invalid={Boolean(validationErrors.cost)}
-                aria-describedby={validationErrors.cost ? 'trade-cost-error' : undefined}
+                aria-describedby={validationErrors.cost ? costErrorId : undefined}
                 className={`w-full bg-gray-800 border rounded px-2 py-1 text-xs text-white placeholder-gray-400 focus:outline-none ${validationErrors.cost ? 'border-red-500 focus:border-red-500' : 'border-gray-700 focus:border-emerald-500'}`}
               />
               {validationErrors.cost && (
-                <div id="trade-cost-error" role="alert" className="text-[10px] text-red-400 mt-0.5">{validationErrors.cost}</div>
+                <div id={costErrorId} role="alert" className="text-[10px] text-red-400 mt-0.5">{validationErrors.cost}</div>
               )}
               {isExpression(form.cost) && !Number.isNaN(parsedCost) && (
                 <div className="text-[10px] text-emerald-400 mt-0.5">= {fmt(parsedCost)}</div>
               )}
             </div>
             <div>
-              <label htmlFor="trade-return" className="text-[10px] text-gray-400 block mb-0.5">Return (Close)</label>
+              <label htmlFor={returnId} className="text-[10px] text-gray-400 block mb-0.5">Return (Close)</label>
               <input
+                id={returnId}
                 disabled={busy}
                 type="text"
                 inputMode="decimal"
@@ -242,11 +251,11 @@ export default function TradeHistory() {
                 placeholder="650 or 300+350"
                 required
                 aria-invalid={Boolean(validationErrors.returnAmount)}
-                aria-describedby={validationErrors.returnAmount ? 'trade-return-error' : undefined}
+                aria-describedby={validationErrors.returnAmount ? returnErrorId : undefined}
                 className={`w-full bg-gray-800 border rounded px-2 py-1 text-xs text-white placeholder-gray-400 focus:outline-none ${validationErrors.returnAmount ? 'border-red-500 focus:border-red-500' : 'border-gray-700 focus:border-emerald-500'}`}
               />
               {validationErrors.returnAmount && (
-                <div id="trade-return-error" role="alert" className="text-[10px] text-red-400 mt-0.5">{validationErrors.returnAmount}</div>
+                <div id={returnErrorId} role="alert" className="text-[10px] text-red-400 mt-0.5">{validationErrors.returnAmount}</div>
               )}
               {isExpression(form.returnAmount) && !Number.isNaN(parsedReturnAmount) && (
                 <div className="text-[10px] text-emerald-400 mt-0.5">= {fmt(parsedReturnAmount)}</div>
@@ -274,9 +283,9 @@ export default function TradeHistory() {
             </div>
           </div>
           <div>
-            <label htmlFor="trade-note" className="text-[10px] text-gray-400 block mb-0.5">Note (optional)</label>
+            <label htmlFor={noteId} className="text-[10px] text-gray-400 block mb-0.5">Note (optional)</label>
             <input
-              id="trade-note"
+              id={noteId}
               disabled={busy}
               type="text"
               value={form.note}

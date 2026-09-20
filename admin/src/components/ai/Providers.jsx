@@ -4,6 +4,8 @@ import { createRunLifecycle } from '../../utils/runLifecycle.mjs'
 const PROVIDER_TYPES = { cli: 'CLI', api: 'API' }
 
 export default function AIProviders() {
+  const providerSelectId = useId()
+  const promptTextareaId = useId()
   const [providers, setProviders] = useState([])
   const [activeProviderId, setActiveProviderId] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -519,8 +521,6 @@ function ProviderForm({ provider, onClose, onSave }) {
     onSave()
   }
 
-  const providerSelectId = useId()
-  const promptTextareaId = useId()
   const nameInputId = useId()
   const typeSelectId = useId()
   const commandInputId = useId()
@@ -651,11 +651,12 @@ function ProviderForm({ provider, onClose, onSave }) {
           )}
 
           <div>
-            <label className="block text-sm text-gray-400 mb-1">
+            <label htmlFor={availableModelsId} className="block text-sm text-gray-400 mb-1">
               Available Models
               {formData.type === 'api' && <span className="text-xs text-gray-400 ml-2">(Use Refresh after saving)</span>}
             </label>
             <textarea
+              id={availableModelsId}
               value={modelsText}
               onChange={(e) => setModelsText(e.target.value)}
               onBlur={handleModelsBlur}

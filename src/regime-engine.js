@@ -2532,6 +2532,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // key if processing throws. A per-call object (not a shared closure var)
     // keeps this correct even if two handleOrderFill calls interleave across
     // awaits (WS vs polling).
+    // An open partial buy must remain in BOTH pending-order stores: the
+    // executor map drives future polls and the position list survives restart.
+    // CANCELLED-with-execution is terminal even when isPartialFill is true.
+    const keepEntryTracked = fillData.isPartialFill
+      && fillData.side?.toLowerCase() === 'buy' && !isTerminalStatus(fillData);
     // Freeze a partially-filled sell before resizing — see cancelPartialFillOrder.
     if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'sell') {
       const cancellation = await cancelPartialFillOrder({ adapter, exchange, pair: productId }, fillData.orderId);
@@ -2627,9 +2632,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // getFillsForOrder set on the second pass and creating a duplicate body
       // at full size (cycleBuys double-incremented). Mirrors the sell dedup.
       // For partials, key on filled size so an advancing partial still processes.
-      const buyDedupKey = fillData.isPartialFill
-        ? `${fillData.orderId}:${(fillData.filledSize || 0).toFixed(8)}`
-        : fillData.orderId;
+      const buyDedupKey = makeFillDedupKey(fillData.orderId, keepEntryTracked, fillData.filledSize);
       if (recentlyProcessedBuyFills.has(buyDedupKey)) {
         logger.info(`⏭️ [${exchange}] Buy fill already processed, skipping: ${buyDedupKey}`);
         return;
@@ -2664,7 +2667,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // row the exchange had exposed, and returning outright would strand the
         // persisted pending-entry (and its share of deployedInPosition) until a
         // restart, even though the executor has already dropped the order.
-        if (!fillData.isPartialFill) retireTrackedEntry(fillData.orderId);
+        if (!keepEntryTracked) {
+          retireTrackedEntry(fillData.orderId);
+          orderExecutor.handleOrderFill(fillData.orderId);
+        }
         return;
       }
 
@@ -2932,7 +2938,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // deployedInPosition alongside the bodies' costBasis, so leaving the
       // original full size there double-counts the tranche already committed to
       // a body and under-reports availableCapital until the remainder fills.
-      const entryIsTerminal = !fillData.isPartialFill;
+      const entryIsTerminal = !keepEntryTracked;
       // Shrink by what this pass actually booked. `summary` covers only the new
       // fills when `ingestedFills` is non-empty, but falls back to ALL of the
       // order's fills otherwise — and on the synthetic-fill path that fallback
@@ -3376,7 +3382,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
     }
 
-    orderExecutor.handleOrderFill(fillData.orderId);
+    if (!keepEntryTracked) orderExecutor.handleOrderFill(fillData.orderId);
   };
 
   /**
@@ -5061,7 +5067,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // (e.g. 0.02 → 0.05 → 0.08) is processed once per advance instead
       // of being swallowed by orderId-only dedup. Terminal full-fill
       // callbacks keep orderId-only dedup since filledSize is final.
-      const dedupKey = makeFillDedupKey(orderId, status.isPartialFill, status.filledSize);
+      // A terminal buy (including CANCELLED with an already-booked partial)
+      // still needs retirement even when its cumulative fill size is unchanged.
+      const terminalBuy = status.side?.toLowerCase() === 'buy' && isTerminalStatus(status);
+      const dedupKey = makeFillDedupKey(orderId, status.isPartialFill && !terminalBuy, status.filledSize);
       if (recentlyProcessedFills.has(dedupKey)) {
         logger.warn(`⚠️ [${exchange}] Duplicate fill callback for ${dedupKey}, skipping`);
         return;
@@ -6334,6 +6343,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       consolidateDustBodies,
       mergeBody: _mergeBodyImpl,
       handleOrderFill,
+      handlePolledFill: (orderId, status) => liveCallbacks.onFillDetected(orderId, status),
       getMergeTpSnapshots: () => ({ pending: new Map(pendingMergeTpOrders), completed: new Map(completedMergeTpOrders) }),
       sweepLedgerDrift,
       getFillDrift: () => fillDrift,

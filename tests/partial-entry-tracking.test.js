@@ -36,6 +36,7 @@ adapters.getAdapter = () => ({ getReconciliationFills: async () => stubbedExchan
 
 
 const { createRegimeEngine } = require('../src/regime-engine');
+const { createOrderExecutor } = require('../src/order-executor');
 
 const TEST_PAIR = '__testpartial__';
 const JUNK_DIR = isolatedData.fundDir('coinbase', TEST_PAIR);
@@ -86,6 +87,78 @@ const makeEngine = (adapter, executor) => {
 };
 
 describe('partially-filled entry orders stay tracked', () => {
+  for (const type of ['entry', 'ladder_entry']) {
+    for (const terminalStatus of ['FILLED', 'CANCELLED']) {
+      it(`keeps real ${type} polling through advancing partials until ${terminalStatus}`, async () => {
+        const orderId = `poll-${type}-${terminalStatus}`;
+        let orderStatus = {
+          status: 'PARTIALLY_FILLED', side: 'BUY', filledSize: 0.01,
+          averageFilledPrice: 2500,
+        };
+        let fills = [buyFill(orderId, `${orderId}-a`, 0.01, 2500)];
+        let polls = 0;
+        let tpSequence = 0;
+        const cancelled = new Set();
+        const adapter = {
+          getOrder: async id => {
+            if (id === orderId) { polls++; return orderStatus; }
+            return { status: cancelled.has(id) ? 'CANCELLED' : 'OPEN', side: 'SELL', filledSize: 0 };
+          },
+          getOrderFills: async () => fills,
+          placeLimitSell: async () => ({ success: true, orderId: `${orderId}-tp-${++tpSequence}` }),
+          cancelOrder: async id => { cancelled.add(id); return { success: true }; },
+        };
+        const eng = makeEngine(adapter);
+        const callbacks = [];
+        const executor = createOrderExecutor('coinbase', eng._getConfig(), adapter, TEST_PAIR, {
+          onFillDetected: (id, status) => {
+            callbacks.push(eng._test.handlePolledFill(id, status));
+          },
+        }, TEST_PAIR);
+        eng._test.setOrderExecutor(executor);
+        const pos = eng._getPositionState();
+        const pendingKey = type === 'entry' ? 'pendingEntryOrders' : 'pendingLadderOrders';
+        pos[pendingKey] = [{ orderId, price: 2500, assetQty: 0.03, sizeUsdc: 75 }];
+        executor.restorePendingOrder(orderId, {
+          type, price: 2500, size: 0.03, sizeUsdc: 75, placedAt: Date.now(),
+        });
+        const poll = async () => {
+          await executor.checkPendingOrderFills();
+          await Promise.all(callbacks.splice(0));
+        };
+        const isTracked = () => executor.getPendingOrdersList().some(o => o.orderId === orderId);
+        try {
+          await poll();
+          assert.equal(isTracked(), true, 'the first partial must remain available to the next real executor poll');
+          assert.ok(Math.abs(pos[pendingKey][0].assetQty - 0.02) < 1e-8);
+
+          fills = [...fills, buyFill(orderId, `${orderId}-b`, 0.01, 2500)];
+          orderStatus = { ...orderStatus, filledSize: 0.02 };
+          await poll();
+          assert.equal(isTracked(), true, 'an advancing partial still has a resting remainder');
+          assert.ok(Math.abs(pos[pendingKey][0].assetQty - 0.01) < 1e-8);
+
+          if (terminalStatus === 'FILLED') {
+            fills = [...fills, buyFill(orderId, `${orderId}-c`, 0.01, 2500)];
+          }
+          orderStatus = {
+            ...orderStatus, status: terminalStatus,
+            filledSize: terminalStatus === 'FILLED' ? 0.03 : 0.02,
+          };
+          await poll();
+          assert.equal(polls, 3, 'the terminal exchange status must actually be polled');
+          assert.equal(isTracked(), false, 'terminal orders leave executor tracking');
+          assert.deepEqual(pos[pendingKey], [], 'terminal orders leave persisted tracking, including cancelled partials');
+          const qty = pos.celestialBodies.reduce((sum, body) => sum + body.assetQty, 0);
+          assert.ok(Math.abs(qty - orderStatus.filledSize) < 1e-8, `all filled tranches must belong to bodies, got ${qty}`);
+          assert.equal(pos.cycleBuys, 1, 'one exchange order is one cycle buy');
+        } finally {
+          executor.clearTimers();
+        }
+      });
+    }
+  }
+
   it('keeps a partially-filled entry in pendingEntryOrders, and drops it only when terminal', async () => {
     // The order is placed for 0.079186 and fills 0.049987 first. This is the
     // exact shape of gemini order 73771291391430116, whose remaining 0.029199
