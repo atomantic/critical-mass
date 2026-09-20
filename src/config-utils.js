@@ -296,6 +296,8 @@ const GLOBAL_DEFAULTS = {
     enabled: true,
     intervalMs: 24 * 60 * 60 * 1000, // 24 hours
     maxBackups: 7,
+    fundStateIntervalMs: 60 * 60 * 1000, // 1 hour; small state snapshots close the recovery gap
+    fundStateMaxBackups: 24, // retain one day of hourly fund-state recovery points
     includePriceCache: false, // price caches are ~45MB per exchange, can be regenerated
   },
 };

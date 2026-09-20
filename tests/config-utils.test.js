@@ -236,6 +236,8 @@ describe('GLOBAL_DEFAULTS', () => {
   it('has backup configuration', () => {
     assert.equal(GLOBAL_DEFAULTS.backup.enabled, true);
     assert.equal(GLOBAL_DEFAULTS.backup.maxBackups, 7);
+    assert.equal(GLOBAL_DEFAULTS.backup.fundStateIntervalMs, 60 * 60 * 1000);
+    assert.equal(GLOBAL_DEFAULTS.backup.fundStateMaxBackups, 24);
   });
 
   it('has simpleDcaEnabled defaulting to false', () => {
@@ -1386,6 +1388,8 @@ describe('getBackupConfig', () => {
     const result = getBackupConfig();
     assert.equal(result.enabled, GLOBAL_DEFAULTS.backup.enabled);
     assert.equal(result.maxBackups, GLOBAL_DEFAULTS.backup.maxBackups);
+    assert.equal(result.fundStateIntervalMs, GLOBAL_DEFAULTS.backup.fundStateIntervalMs);
+    assert.equal(result.fundStateMaxBackups, GLOBAL_DEFAULTS.backup.fundStateMaxBackups);
   });
 
   it('merges stored backup overrides', () => {
