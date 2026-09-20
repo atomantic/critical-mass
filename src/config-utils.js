@@ -205,6 +205,10 @@ const REGIME_DEFAULTS = {
   // Invariants
   maxOpenOrders: 100,
   reconcileIntervalMs: 60000,
+  // How often the engine re-checks the exchange for fills the local ledger
+  // never recorded. Detect-only (logs + surfaces on state; never auto-ingests).
+  // 0 disables the sweep.
+  fillDriftSweepMs: 1800000,
 
   // Tail Events
   maxSpreadBps: 50,
@@ -1332,6 +1336,7 @@ const REGIME_FIELD_RULES = {
   safeRecoveryMs: { type: 'number' },
   maxOpenOrders: { type: 'number' },
   reconcileIntervalMs: { type: 'number' },
+  fillDriftSweepMs: { type: 'number' },
   maxSpreadBps: { type: 'number' },
   spreadPauseMs: { type: 'number' },
   minDepthUsdc: { type: 'number' },
@@ -1799,7 +1804,7 @@ const SNAPSHOT_GLOBAL_KEYS = Object.freeze([
  * SNAPSHOT_GLOBAL_KEYS.length` fails CI the moment a field is added to
  * DEFAULTS / REGIME_DEFAULTS / GLOBAL_DEFAULTS without bumping it.
  */
-const CONFIG_SNAPSHOT_FIELD_REVISION = 114;
+const CONFIG_SNAPSHOT_FIELD_REVISION = 115;
 
 /**
  * Copy only the allowlisted, defined keys of `source`, in allowlist order (so

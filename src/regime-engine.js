@@ -15,7 +15,8 @@
  */
 
 const { getAdapter } = require('./adapters');
-const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency } = require('./config-utils');
+const { getUnaccountedFills } = require('./sync-fills');
+const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency, getConfiguredFunds } = require('./config-utils');
 const { createFillLedger } = require('./fill-ledger');
 const { createClosedTrades } = require('./closed-trades');
 const {
@@ -542,6 +543,9 @@ const repairHistoricalFillAnnotations = ({
   }
 };
 
+/** Floor for `fillDriftSweepMs` — one full-history exchange fetch per minute. */
+const MIN_FILL_DRIFT_SWEEP_MS = 60_000;
+
 /**
  * Create regime engine instance.
  *
@@ -771,6 +775,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // cycle (#189). 0 = no cooldown.
   let dustMergeRetryAfter = 0;
   let stateSaveInterval = null;
+  let fillDriftInterval = null;
+  let fillDriftInFlight = false;
+  // Most recent drift verdict, surfaced on getState() so the UI/operator sees a
+  // leak without reading logs. null until the first sweep completes.
+  let fillDrift = null;
+  // Most recent "does the model cover what we actually hold" verdict, surfaced
+  // on getState() alongside fillDrift. null until the first sweep completes.
+  let positionCoverage = null;
   // Rate limit for the "placements blocked by an unresolved intent" log line.
   let placementBlockLoggedAt = 0;
   // Short-lived cache of the intent check. evaluateEntryTrigger runs on every
@@ -2116,6 +2128,35 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Guarded: a bare `setInterval(saveLiveState, ...)` turns a full disk into
       // an uncaughtException that kills the process from a timer tick (#532).
       stateSaveInterval = setInterval(() => saveLiveStateGuarded('state-save-timer'), 300000);
+      // Exchange-vs-ledger drift check. Deliberately on its own timer rather
+      // than inside reconcileTick: it is a read-only network sweep and must
+      // never hold the reconcile lock behind a slow or hung trade fetch.
+      // 0 disables. Any positive value is clamped to a floor: the sweep is a
+      // full-history exchange fetch, and a misconfigured `fillDriftSweepMs: 1`
+      // would queue one every millisecond, exhausting the rate limit the trading
+      // path depends on.
+      const configuredSweepMs = config.fillDriftSweepMs ?? 0;
+      const driftSweepMs = configuredSweepMs > 0
+        ? Math.max(configuredSweepMs, MIN_FILL_DRIFT_SWEEP_MS)
+        : 0;
+      if (configuredSweepMs > 0 && driftSweepMs !== configuredSweepMs) {
+        logger.warn(`⚠️ [${exchange}] fillDriftSweepMs ${configuredSweepMs}ms is below the ${MIN_FILL_DRIFT_SWEEP_MS}ms floor — using the floor`, {
+          configured: configuredSweepMs,
+          applied: driftSweepMs,
+        });
+      }
+      if (driftSweepMs > 0 && adapter.capabilities?.fillReconciliation) {
+        fillDriftInterval = setInterval(() => {
+          // A slow exchange can outlast the interval; never stack sweeps.
+          if (fillDriftInFlight) return;
+          fillDriftInFlight = true;
+          sweepLedgerDrift()
+            .catch(err => {
+              logger.error(`❌ [${exchange}] Ledger drift sweep failed: ${err.message}`, { error: err.message });
+            })
+            .finally(() => { fillDriftInFlight = false; });
+        }, driftSweepMs);
+      }
     } else {
       // Start periodic state saving for dry-run (every 60 seconds)
       stateSaveInterval = setInterval(saveDryRunState, 60000);
@@ -2238,6 +2279,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (stateSaveInterval) {
         clearInterval(stateSaveInterval);
         stateSaveInterval = null;
+      }
+
+      if (fillDriftInterval) {
+        clearInterval(fillDriftInterval);
+        fillDriftInterval = null;
       }
 
       // Stop macro regime
@@ -2419,6 +2465,28 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Drop a terminal order from the persisted pending-entry / ladder lists.
+   * Shared by the normal commit path and the skip-recommit early return, which
+   * would otherwise leave the entry (and its deployedInPosition share) behind.
+   * @param {string} orderId
+   * @returns {void}
+   */
+  const retireTrackedEntry = (orderId) => {
+    let changed = false;
+    if (positionState.pendingEntryOrders?.length > 0) {
+      const before = positionState.pendingEntryOrders.length;
+      positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(e => e.orderId !== orderId);
+      changed = positionState.pendingEntryOrders.length !== before;
+    }
+    if (positionState.pendingLadderOrders?.length > 0) {
+      const before = positionState.pendingLadderOrders.length;
+      positionState.pendingLadderOrders = positionState.pendingLadderOrders.filter(o => o.orderId !== orderId);
+      changed = changed || positionState.pendingLadderOrders.length !== before;
+    }
+    if (changed) saveLiveState();
+  };
+
+  /**
    * Handle order fill
    * @param {Object} fillData - Fill data
    */
@@ -2555,6 +2623,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // gate the orderId-only guard would swallow every advancing partial.
       if (shouldSkipBuyRecommit(ingestedFills.length, positionState.celestialBodies, fillData.orderId)) {
         logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} already owned by a body and no new fills ingested — skipping re-commit (retry after partial failure); reconcile will repair any missing TP`);
+        // The re-commit is what's redundant, not the bookkeeping. A TERMINAL
+        // status can land here when the partial poll already ingested every fill
+        // row the exchange had exposed, and returning outright would strand the
+        // persisted pending-entry (and its share of deployedInPosition) until a
+        // restart, even though the executor has already dropped the order.
+        if (!fillData.isPartialFill) retireTrackedEntry(fillData.orderId);
         return;
       }
 
@@ -2807,18 +2881,53 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // committing a body — keeping cycleBuys consistent.
       commitBuyCounter();
 
-      // Remove filled entry from persisted pending orders
+      // Remove filled entry from persisted pending orders — but ONLY once the
+      // order is terminal. A PARTIAL buy fill leaves the order live on the book
+      // with an unfilled remainder; dropping it here left the in-memory
+      // pendingOrders map as the sole tracking, so a restart (or any path that
+      // clears it) orphaned the remaining tranche forever. Gemini has no
+      // order-events WS, so `checkPendingOrderFills` over that map is the ONLY
+      // detector of the order completing — nothing re-derives it from the
+      // exchange. That leaked 1.204 ETH of ETHUSD buys across 61 fills before
+      // it was caught; see docs/fill-ledger-sell-linkage.md.
+      //
+      // A partial keeps the order tracked but must SHRINK it to the unfilled
+      // remainder: apy-calculator sums pendingEntryOrders' sizeUsdc into
+      // deployedInPosition alongside the bodies' costBasis, so leaving the
+      // original full size there double-counts the tranche already committed to
+      // a body and under-reports availableCapital until the remainder fills.
+      const entryIsTerminal = !fillData.isPartialFill;
+      // Shrink by what this pass actually booked. `summary` covers only the new
+      // fills when `ingestedFills` is non-empty, but falls back to ALL of the
+      // order's fills otherwise — and on the synthetic-fill path that fallback
+      // is reachable for a second partial (the synthetic row is ingested for
+      // partial 1, so nothing is "new", yet no body owns the order and
+      // shouldSkipBuyRecommit does not intercept). Subtracting the cumulative
+      // size from an already-shrunk entry would double-count the first tranche.
+      const bookedSize = ingestedFills.length > 0
+        ? ingestedFills.reduce((sum, f) => sum + (f.size || 0), 0)
+        : summary.totalSize;
+      const bookedCost = ingestedFills.length > 0
+        ? ingestedFills.reduce((sum, f) => sum + (f.size || 0) * (f.price || 0) + (f.netFee || 0), 0)
+        : summary.totalValue + summary.totalFees;
+      const shrinkTracked = (orders) => orders.map(o => (o.orderId !== fillData.orderId ? o : {
+        ...o,
+        assetQty: Math.max(0, (o.assetQty || 0) - bookedSize),
+        sizeUsdc: Math.max(0, (o.sizeUsdc || 0) - bookedCost),
+      }));
+
       if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
-        positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(
-          e => e.orderId !== fillData.orderId
-        );
+        positionState.pendingEntryOrders = entryIsTerminal
+          ? positionState.pendingEntryOrders.filter(e => e.orderId !== fillData.orderId)
+          : shrinkTracked(positionState.pendingEntryOrders);
       }
 
-      // Remove from ladder tracking if it was a ladder order
+      // Same rule for a ladder rung: a partially filled rung is still resting on
+      // the book, so it stays tracked — at its remaining size.
       if (isLadderFill && positionState.pendingLadderOrders && positionState.pendingLadderOrders.length > 0) {
-        positionState.pendingLadderOrders = positionState.pendingLadderOrders.filter(
-          o => o.orderId !== fillData.orderId
-        );
+        positionState.pendingLadderOrders = entryIsTerminal
+          ? positionState.pendingLadderOrders.filter(o => o.orderId !== fillData.orderId)
+          : shrinkTracked(positionState.pendingLadderOrders);
       }
 
       // Ladder orders stay in place on individual fills (no reprice).
@@ -3515,6 +3624,123 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     } else {
       lastTpNeedKey = null;
     }
+  };
+
+  /**
+   * Assert the position model covers every unit of base currency the account
+   * actually holds: `balance == Σ body.assetQty + realizedAssetPnL (reserves)`.
+   * Anything left over is asset the engine bought and never sold but no longer
+   * tracks — it will never get a take-profit and shows up nowhere in the UI.
+   * Detect-only, like the rest of this sweep.
+   * @returns {Promise<void>}
+   */
+  const checkPositionCoverage = async () => {
+    if (typeof adapter.getAccountBalance !== 'function') return;
+    // getAccountBalance is ACCOUNT-wide, not fund-scoped. With two funds on one
+    // exchange sharing a base currency, the sibling's holdings read as this
+    // fund's coverage gap, so the invariant is unsound and the check is skipped
+    // rather than allowed to cry wolf every sweep.
+    const sharingBase = getConfiguredFunds()
+      .filter(f => f.exchange === exchange && getBaseCurrency(f.pair) === baseCurrency);
+    if (sharingBase.length > 1) {
+      positionCoverage = { checkedAt: Date.now(), skipped: `${sharingBase.length} funds on ${exchange} share ${baseCurrency}` };
+      return;
+    }
+    const balance = await adapter.getAccountBalance(baseCurrency);
+    const onExchange = Number(balance?.total);
+    if (!Number.isFinite(onExchange)) return;
+
+    const inBodies = (positionState.celestialBodies || []).reduce((sum, b) => sum + (b.assetQty || 0), 0);
+    const reserves = positionState.realizedAssetPnL || 0;
+    const unmodelled = roundAsset(onExchange - inBodies - reserves);
+    positionCoverage = {
+      checkedAt: Date.now(),
+      onExchange: roundAsset(onExchange),
+      inBodies: roundAsset(inBodies),
+      reserves: roundAsset(reserves),
+      unmodelled,
+    };
+
+    // A resting TP holds asset the body still owns, so tiny rounding is normal;
+    // anything the exchange min-size could trade is not.
+    const tolerance = Number(productDetails?.baseMinSize) || 0;
+    if (Math.abs(unmodelled) <= tolerance) return;
+
+    logger.warn(
+      `⚖️ [${exchange}] Position coverage gap: exchange holds ${roundAsset(onExchange)} ${baseCurrency}, model accounts for ${roundAsset(inBodies + reserves)} `
+      + `(${roundAsset(inBodies)} in ${(positionState.celestialBodies || []).length} bodies + ${roundAsset(reserves)} reserves) — ${unmodelled} ${baseCurrency} untracked`,
+      { pair: productId, ...positionCoverage, bodies: (positionState.celestialBodies || []).length }
+    );
+  };
+
+  /**
+   * Detect-only sweep: ask the exchange for every fill since engine start and
+   * report the ones the local ledger never recorded. Runs on its own timer
+   * (fillDriftSweepMs), never under the reconcile lock.
+   *
+   * This exists because nothing else notices. Gemini has no order-events WS, so
+   * a fill is only ever recorded if the order was still in the executor's
+   * in-memory pendingOrders map when the poll ran; lose that entry and the fill
+   * is gone silently and permanently. Detection is deliberately NOT repair —
+   * auto-ingesting historical fills into a live engine would re-open cycle and
+   * cost-basis accounting mid-flight. Repair stays an operator action
+   * (scripts/backfill-missing-fills.js).
+   *
+   * It also checks the second, independent way asset can go missing: the ledger
+   * can be complete while the POSITION MODEL still fails to represent what the
+   * account holds. `heldOpenBuyCostBasis` decides a buy is closed on a boolean
+   * — `sellOrderId` is set and that sell has fills — with no quantity check, and
+   * `sellOrderId` is re-stamped across merges and TP replacements. So a buy
+   * order only partly sold counts as fully closed and its unsold remainder
+   * disappears from the model: bought, never sold, in no body, no TP, invisible.
+   * gemini/ETHUSD was carrying 1.14 ETH in that state. The only identity that
+   * cannot lie is `balance == Σ body.assetQty + reserves`, so that is what this
+   * asserts.
+   * @returns {Promise<void>}
+   */
+  const sweepLedgerDrift = async () => {
+    const startDate = new Date(positionState.engineStartTime).toISOString();
+    const result = await getUnaccountedFills(exchange, fillLedger, null, { startDate, pair: productId });
+    if (!result.success) {
+      logger.warn(`⚠️ [${exchange}] Ledger drift sweep failed: ${result.error}`, { error: result.error });
+      return;
+    }
+
+    const orders = result.unaccountedOrders || [];
+    const asset = roundAsset(orders.reduce((sum, o) => sum + (o.side === 'buy' ? o.totalBtc : -o.totalBtc), 0));
+    // Netted like `asset` above — a gross sum would report a matched missing
+    // buy+sell as ~0 net asset but double the dollars.
+    const usd = roundUSDC(orders.reduce((sum, o) => sum + (o.side === 'buy' ? o.totalUsdc : -o.totalUsdc), 0));
+    fillDrift = {
+      checkedAt: Date.now(),
+      fills: result.unaccountedCount,
+      orders: orders.length,
+      netAsset: asset,
+      usd,
+      orderIds: orders.slice(0, 20).map(o => o.orderId),
+    };
+
+    if (result.unaccountedCount > 0) {
+      logger.warn(
+        `🩸 [${exchange}] Ledger drift: ${result.unaccountedCount} exchange fill(s) across ${orders.length} order(s) missing from the ledger — net ${asset} ${baseCurrency} / $${usd} unaccounted since ${startDate}`,
+        {
+          pair: productId,
+          unaccountedFills: result.unaccountedCount,
+          unaccountedOrders: orders.length,
+          netAsset: asset,
+          usd,
+          since: startDate,
+          orderIds: fillDrift.orderIds,
+        }
+      );
+    }
+
+    // After the drift verdict is logged, never before: this needs a second
+    // network call (the account balance), and a routine rejection there must not
+    // throw past the finding this sweep exists to report.
+    await checkPositionCoverage().catch(err => {
+      logger.warn(`⚠️ [${exchange}] Position coverage check failed: ${err.message}`, { error: err.message });
+    });
   };
 
   /**
@@ -4864,6 +5090,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     pendingOrders: orderExecutor.capabilities?.liveReconciliation
       ? buildPendingOrders(orderExecutor.getPendingOrdersList(), positionState)
       : [],
+    fillDrift,
+    positionCoverage,
     apy: calculateApyMetrics(),
     dryRun: isDryRun ? orderExecutor.getDryRunState() : null,
     tpOptimizer: tpOptimizer.getStatus(),
@@ -6069,6 +6297,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       mergeBody: _mergeBodyImpl,
       handleOrderFill,
       getMergeTpSnapshots: () => ({ pending: new Map(pendingMergeTpOrders), completed: new Map(completedMergeTpOrders) }),
+      sweepLedgerDrift,
+      getFillDrift: () => fillDrift,
+      getPositionCoverage: () => positionCoverage,
       reconcileTick,
       reconcilePendingPlacements,
       checkOfflineOrderFills,
