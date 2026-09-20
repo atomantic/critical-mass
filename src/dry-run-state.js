@@ -227,8 +227,11 @@ const importLegacyFundState = (exchange, pair, resolvedPair, logger) => {
   if (!legacyFunds) return null;
 
   const key = composeFundKey(exchange, resolvedPair);
-  // Accept the bare-exchange key too: that is what pre-multi-pair installs wrote.
-  const legacyKey = [key, exchange]
+  // A bare exchange slot predates multi-pair support and belongs only to its
+  // default fund. Importing it into every newly added pair would copy the
+  // original asset's simulated orders and accounting into unrelated funds.
+  const defaultPair = require('./config-utils').getDefaultPair(exchange);
+  const legacyKey = [key, ...(resolvedPair === defaultPair ? [exchange] : [])]
     .find(candidate => Object.hasOwn(legacyFunds, candidate) && legacyFunds[candidate]);
   if (!legacyKey) return null;
 

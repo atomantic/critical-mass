@@ -26,6 +26,7 @@ const {
   SNAPSHOT_FUND_KEYS,
   SNAPSHOT_REGIME_KEYS,
   SNAPSHOT_GLOBAL_KEYS,
+  REGIME_DEFAULTS,
 } = require('../src/config-utils');
 
 /** A source install whose ONLY fund lives in the machine-local base config. */
@@ -131,6 +132,39 @@ afterEach(() => {
 });
 
 describe('backup config portability — manifest round-trip (#430)', () => {
+  it('restores a v2.24.1 manifest that predates additive regime defaults', () => {
+    const source = makeInstall('source', SOURCE_BASE);
+    const state = { position: { cycleBuys: 3, totalAsset: 2, totalCostBasis: 1234 } };
+    writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'regime-state.json'), state);
+    const created = createBackup({ paths: source.paths });
+    assert.equal(created.success, true, created.error);
+
+    // v2.24.1 materialized every field then known, but neither of these
+    // markers/settings existed. Keep its actual version-1 archive shape.
+    const archivedConfig = buildConfigSnapshot(effectiveConfig(source));
+    delete archivedConfig.fieldRevision;
+    delete archivedConfig.exchanges.coinbase.pairs['ETH-USDC'].regime.fillDriftSweepMs;
+    replaceManifest(source, created.filename, JSON.stringify({ manifestVersion: 1, config: archivedConfig }));
+
+    const dest = makeInstall('dest', DEST_BASE);
+    transferArchive(source, dest, created.filename);
+    const report = inspectBackup(created.filename, { paths: dest.paths });
+    assert.equal(report.compatible, true, report.error);
+    assert.equal(report.snapshotFieldRevision, null);
+    assert.deepEqual(report.removedFunds.map(({ pair }) => pair), ['BTC-USDC']);
+
+    const refused = restoreBackup(created.filename, { paths: dest.paths });
+    assert.equal(refused.code, 'fund-removal-unacknowledged', 'old archives retain the fund-removal gate');
+    const restored = restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true });
+    assert.equal(restored.success, true, restored.error);
+    assert.deepEqual(fundIdentities(dest), ['coinbase/ETH-USDC']);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'regime-state.json'), 'utf8')), state);
+    const fund = buildConfigSnapshot(effectiveConfig(dest)).exchanges.coinbase.pairs['ETH-USDC'];
+    assert.equal(fund.totalAllocation, 1234);
+    assert.equal(fund.regime.baseSizeUsdc, 77);
+    assert.equal(fund.regime.fillDriftSweepMs, REGIME_DEFAULTS.fillDriftSweepMs);
+  });
+
   it('restores the source fund onto a destination whose base defaults differ', () => {
     const source = makeInstall('source', SOURCE_BASE);
     // Fund state lives under the pair-scoped path; it is meaningless if the

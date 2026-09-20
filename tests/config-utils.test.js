@@ -1383,6 +1383,28 @@ describe('config.example.json regime blocks stay inside validator bounds', () =>
 describe('getBackupConfig', () => {
   afterEach(() => mock.restoreAll());
 
+  for (const unsafe of [0, -1, 299999, 2147483648, 30 * 24 * 60 * 60 * 1000, null, '300000']) {
+    it(`uses safe defaults for hand-edited backup delays: ${JSON.stringify(unsafe)}`, () => {
+      setupFsMocks({
+        base: { exchanges: {}, global: { backup: { intervalMs: unsafe, fundStateIntervalMs: unsafe } } },
+        user: null,
+      });
+      const result = getBackupConfig();
+      assert.equal(result.intervalMs, GLOBAL_DEFAULTS.backup.intervalMs);
+      assert.equal(result.fundStateIntervalMs, GLOBAL_DEFAULTS.backup.fundStateIntervalMs);
+    });
+  }
+
+  it('preserves both supported timer boundaries from stored config', () => {
+    setupFsMocks({
+      base: { exchanges: {}, global: { backup: { intervalMs: 300000, fundStateIntervalMs: 2147483647 } } },
+      user: null,
+    });
+    const result = getBackupConfig();
+    assert.equal(result.intervalMs, 300000);
+    assert.equal(result.fundStateIntervalMs, 2147483647);
+  });
+
   it('returns GLOBAL_DEFAULTS.backup when none stored', () => {
     setupFsMocks({ base: { exchanges: {}, global: {} }, user: null });
     const result = getBackupConfig();
