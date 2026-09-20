@@ -329,6 +329,33 @@ const createInitialMarketState = () => ({
 const createInitialPositionState = createInitialRegimePositionState;
 
 /**
+ * Restore the operator-selected cycle boundary before recovery rebuilds the
+ * position from fills. Older state files omit this marker and deliberately
+ * fall back to the fill-ledger heuristic.
+ * @param {Object} fillLedger
+ * @param {RegimePositionState} positionState
+ * @param {Object} logger
+ * @param {string} exchange
+ * @returns {boolean} Whether a valid persisted cycle ID was applied
+ */
+const restorePersistedCycleId = (fillLedger, positionState, logger, exchange) => {
+  const persistedCycleId = positionState?.activeCycleId;
+  if (typeof persistedCycleId !== 'string' || !/^cycle-\d+$/.test(persistedCycleId)) {
+    return false;
+  }
+
+  const previousCycleId = fillLedger.getCurrentCycleId();
+  if (previousCycleId !== persistedCycleId) {
+    logger.info(`🔄 [${exchange}] Restoring persisted active cycle: ${persistedCycleId}`, {
+      previousCycleId,
+      cycleId: persistedCycleId,
+    });
+  }
+  fillLedger.setCurrentCycleId(persistedCycleId);
+  return true;
+};
+
+/**
  * Repair historical fill annotations from ledger.
  * Performs four steps of self-healing for fills that predate annotation code:
  * 1. Recover orphan buys (unfilled bodies) by merging into historical bodies
@@ -1135,6 +1162,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       || pos.activeTpOrderId
       || (pos.celestialBodies && pos.celestialBodies.length > 0)
       || pos.realizedPnL > 0
+      || typeof pos.activeCycleId === 'string'
     );
     if (!hasMeaningfulState) {
       logger.info(`ℹ️ [${exchange}] No saved live state or empty position`);
@@ -1424,6 +1452,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           action: 'start', pair, error: err.message,
         });
         return { success: false, error: err.message, needsOperator: true };
+      }
+
+      // An operator reset is a durable boundary, not a new fill. Restore it
+      // before exchange recovery and cycleBuys auto-correction; otherwise the
+      // fill ledger's active-cycle heuristic can resurrect the pre-reset cycle
+      // and immediately re-apply the buy limit after a restart.
+      if (hasSavedState) {
+        restorePersistedCycleId(fillLedger, positionState, logger, exchange);
       }
 
       // Then recover/validate from exchange (source of truth)
@@ -4827,8 +4863,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.avgCostBasis = 0;
     }
 
-    // Start new cycle in fill ledger
-    fillLedger.startNewCycle();
+    // Persist the boundary in regime-state.json with the other operator-owned
+    // position state. The fill ledger remains the fallback for legacy state
+    // files that predate this marker.
+    positionState.activeCycleId = fillLedger.startNewCycle();
     riskManager.resetCycleTracking();
 
     const bodyCount = bodies.length;
@@ -6321,6 +6359,7 @@ module.exports = {
   createRegimeEngine,
   createInitialMarketState,
   createInitialPositionState,
+  restorePersistedCycleId,
   cancelPartialFillOrder,
   buildPartialFillData,
   makeFillDedupKey,

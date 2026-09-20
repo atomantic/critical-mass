@@ -13,7 +13,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
-const { createRegimeEngine } = require('../src/regime-engine');
+const { createRegimeEngine, restorePersistedCycleId } = require('../src/regime-engine');
+const { loadRegimeState } = require('../src/state-tracker');
 
 const TEST_PAIR = '__test232__';
 const JUNK_DIR = path.join(__dirname, '..', 'data', 'coinbase', TEST_PAIR);
@@ -192,6 +193,34 @@ describe('#232 resetCycleBuys() — operator reset to resume buying', () => {
     // old cycle's fills no longer count toward the current-cycle buy limit.
     assert.notEqual(ledger.getCurrentCycleId(), cycleIdBefore);
     assert.equal(ledger.getCurrentCycleAllBuysCount(), 0);
+    assert.equal(
+      eng._getPositionState().activeCycleId,
+      ledger.getCurrentCycleId(),
+      'the reset stores the new cycle boundary in live state'
+    );
+
+    // A fresh ledger would otherwise choose the most recent still-open cycle
+    // from fills. Verify the persisted operator boundary is what a restart
+    // applies, even when the pre-reset fills are the only ledger evidence.
+    const savedState = loadRegimeState('coinbase', TEST_PAIR);
+    assert.equal(savedState.position.activeCycleId, ledger.getCurrentCycleId());
+    const restarted = createRegimeEngine(
+      'coinbase',
+      TEST_PAIR,
+      { dryRun: false, productId: TEST_PAIR, maxCycleBuys: 3 },
+      {}
+    );
+    engines.push(restarted);
+    assert.equal(
+      restorePersistedCycleId(
+        restarted.getFillLedger(),
+        savedState.position,
+        { info: () => {} },
+        'coinbase'
+      ),
+      true
+    );
+    assert.equal(restarted.getFillLedger().getCurrentCycleId(), ledger.getCurrentCycleId());
 
     // Open celestial bodies (and their TPs) are preserved across the reset.
     const bodiesAfter = eng._getPositionState().celestialBodies.map(b => b.id);
