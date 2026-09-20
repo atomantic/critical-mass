@@ -36,6 +36,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getAdapter } = require('../src/adapters');
+const { checkEngineStopped } = require('../src/engine-liveness');
 const { createFillLedger } = require('../src/fill-ledger');
 const { createNewBody, syncPositionState } = require('../src/celestial-hierarchy');
 const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
@@ -54,19 +55,23 @@ if (!EXCHANGE_ARG || !PAIR_ARG || EXCHANGE_ARG.startsWith('--')) {
 const EXCHANGE = EXCHANGE_ARG.toLowerCase();
 const PAIR = PAIR_ARG.toUpperCase();
 const BASE = getBaseCurrency(PAIR);
-const HEARTBEAT_PATH = path.join(resolveFundDataDir(EXCHANGE, PAIR), 'regime-engine-running.json');
-const HEARTBEAT_STALE_MS = 5 * 60 * 1000;
-
-const assertEngineStopped = () => {
-  if (!fs.existsSync(HEARTBEAT_PATH)) return;
-  const ageMs = Date.now() - fs.statSync(HEARTBEAT_PATH).mtimeMs;
-  if (ageMs < HEARTBEAT_STALE_MS) {
-    console.error(
-      `\n❌ ${EXCHANGE}/${PAIR} engine looks alive — heartbeat touched ${Math.round(ageMs / 1000)}s ago.`
-      + '\n   Stop it first (pm2 stop <process>), then re-run with --apply.'
-    );
-    process.exit(1);
+/**
+ * Refuse to write under a live engine — it holds these files in memory and its
+ * next periodic save would discard the repair. See src/engine-liveness.js for
+ * why the running flag's mtime is NOT a heartbeat.
+ * @returns {Promise<void>}
+ */
+const assertEngineStopped = async () => {
+  const { safe, reason } = await checkEngineStopped(EXCHANGE, PAIR);
+  if (safe) {
+    console.log(`  engine check: ${reason}`);
+    return;
   }
+  console.error(
+    `\n❌ REFUSING to write ${EXCHANGE}/${PAIR}: ${reason}.`
+    + '\n   Stop it first (pm2 stop <process>), then re-run with --apply.'
+  );
+  process.exit(1);
 };
 
 /**
@@ -79,7 +84,11 @@ const fifoRemaining = (fills) => {
   const lots = [];
   for (const fill of [...fills].sort((a, b) => a.timestamp - b.timestamp)) {
     if (fill.side === 'buy') {
-      lots.push({ qty: fill.size, unit: (fill.size * fill.price + (fill.netFee || 0)) / fill.size });
+      lots.push({
+        qty: fill.size,
+        unit: (fill.size * fill.price + (fill.netFee || 0)) / fill.size,
+        cycleId: fill.cycleId || '(none)',
+      });
       continue;
     }
     let remaining = fill.size;
@@ -93,7 +102,17 @@ const fifoRemaining = (fills) => {
   }
   const qty = lots.reduce((sum, l) => sum + l.qty, 0);
   const cost = lots.reduce((sum, l) => sum + l.qty * l.unit, 0);
-  return { qty, cost, unit: qty > 0 ? cost / qty : 0 };
+  // Which cycles the surviving lots belong to. FIFO consumes sells GLOBALLY,
+  // while this engine's accounting unit is the atomic cycle (CLAUDE.md), so a
+  // basis drawn from several cycles is a cross-cycle average — fine as a
+  // diagnostic, a judgement call as a real body's cost. Surface it rather than
+  // hide it; the operator decides.
+  const byCycle = new Map();
+  for (const l of lots) {
+    const prev = byCycle.get(l.cycleId) || { qty: 0, cost: 0 };
+    byCycle.set(l.cycleId, { qty: prev.qty + l.qty, cost: prev.cost + l.qty * l.unit });
+  }
+  return { qty, cost, unit: qty > 0 ? cost / qty : 0, byCycle };
 };
 
 async function main() {
@@ -142,6 +161,9 @@ async function main() {
   const untracked = roundAsset(onExchange - inBodies - reserves);
 
   const fifo = fifoRemaining(fills);
+  // Dust below what the exchange can trade is not a real open position.
+  const product = await adapter.getProductDetails(PAIR).catch(() => null);
+  const tolerance = Number(product?.baseMinSize) || 0;
   const costBasis = roundUSDC(untracked * fifo.unit);
 
   console.log(`  exchange balance : ${roundAsset(onExchange)} ${BASE}`);
@@ -181,6 +203,31 @@ async function main() {
   }
 
   console.log(`  FIFO remaining   : ${roundAsset(fifo.qty)} ${BASE} cost $${roundUSDC(fifo.cost)} → $${roundUSDC(fifo.unit)}/${BASE}`);
+  const cycles = [...fifo.byCycle.entries()].sort((a, b) => b[1].qty - a[1].qty);
+  console.log(`  basis drawn from : ${cycles.length} cycle(s) — ${cycles.slice(0, 5)
+    .map(([id, v]) => `${id} ${roundAsset(v.qty)} @ $${roundUSDC(v.qty > 0 ? v.cost / v.qty : 0)}`).join(', ')}`);
+  if (cycles.length > 1) {
+    console.log('  ⚠️  FIFO consumes sells globally, so this basis is a CROSS-CYCLE average.');
+    console.log('      This engine\'s accounting unit is the atomic cycle — review the spread above');
+    console.log('      before adopting; the value becomes a real body\'s cost and drives its TP.');
+  }
+
+  // A buy the ledger still shows as open has its cost in heldOpenBuyCostBasis
+  // already. Adopting that same quantity into a body with no order links would
+  // count the cost twice once the body's TP books its annotated P&L. Those buys
+  // belong in a body via the engine's own recovery, not via this script.
+  const sellOrderIdsWithFills = new Set(fills.filter(f => f.side === 'sell').map(f => String(f.orderId)));
+  const heldOpenQty = fills
+    .filter(f => f.side === 'buy' && (!f.sellOrderId || !sellOrderIdsWithFills.has(String(f.sellOrderId))))
+    .reduce((sum, f) => sum + f.size, 0);
+  if (heldOpenQty > tolerance) {
+    console.error(
+      `\n❌ the ledger still shows ${roundAsset(heldOpenQty)} ${BASE} of buys as OPEN (no sell behind their sellOrderId).`
+      + `\n   Their cost is already in heldOpenBuyCostBasis, so folding the same quantity into a new body`
+      + `\n   would count it twice when that body's TP books its P&L. Reconcile those buys into bodies first.`
+    );
+    process.exit(1);
+  }
   console.log(`  new body         : ${untracked} ${BASE} @ $${roundUSDC(fifo.unit)} = $${costBasis}`);
 
   const spot = await adapter.getCurrentPrice(PAIR).catch(() => null);
@@ -209,7 +256,7 @@ async function main() {
     return;
   }
 
-  assertEngineStopped();
+  await assertEngineStopped();
 
   const statePath = path.join(resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
   const backupPath = `${statePath}.backup-adopt-${Date.now()}`;

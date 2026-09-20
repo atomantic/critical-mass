@@ -40,6 +40,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getAdapter } = require('../src/adapters');
+const { checkEngineStopped } = require('../src/engine-liveness');
 const { resolveFundDataDir } = require('../src/migration');
 const { getBaseCurrency, getQuoteCurrency } = require('../src/config-utils');
 
@@ -59,7 +60,6 @@ const QUOTE = getQuoteCurrency(PAIR);
 const fundDir = resolveFundDataDir(EXCHANGE, PAIR);
 const LEDGER_PATH = path.join(fundDir, 'fill-ledger.json');
 const STATE_PATH = path.join(fundDir, 'regime-state.json');
-const HEARTBEAT_PATH = path.join(fundDir, 'regime-engine-running.json');
 
 // Annotations that live only on a pseudo row and must survive its removal.
 const ANNOTATION_KEYS = [
@@ -77,20 +77,23 @@ const ANNOTATION_KEYS = [
 // and must survive untouched. coinbase/BTC-USDC alone holds 20 such rows.
 const PSEUDO_TRADE_ID = /^(synthetic-|consolidated-sell-)/;
 
-const HEARTBEAT_STALE_MS = 5 * 60 * 1000;
-
-/** Refuse to write under a live engine — it would overwrite us on its next save. */
-const assertEngineStopped = () => {
-  if (!fs.existsSync(HEARTBEAT_PATH)) return;
-  const stat = fs.statSync(HEARTBEAT_PATH);
-  const ageMs = Date.now() - stat.mtimeMs;
-  if (ageMs < HEARTBEAT_STALE_MS) {
-    console.error(
-      `\n❌ ${EXCHANGE}/${PAIR} engine looks alive — ${HEARTBEAT_PATH} was touched ${Math.round(ageMs / 1000)}s ago.`
-      + `\n   Stop it first (pm2 stop <process>), then re-run with --apply.`
-    );
-    process.exit(1);
+/**
+ * Refuse to write under a live engine — it holds these files in memory and its
+ * next periodic save would discard the repair. See src/engine-liveness.js for
+ * why the running flag's mtime is NOT a heartbeat.
+ * @returns {Promise<void>}
+ */
+const assertEngineStopped = async () => {
+  const { safe, reason } = await checkEngineStopped(EXCHANGE, PAIR);
+  if (safe) {
+    console.log(`  engine check: ${reason}`);
+    return;
   }
+  console.error(
+    `\n❌ REFUSING to write ${EXCHANGE}/${PAIR}: ${reason}.`
+    + '\n   Stop it first (pm2 stop <process>), then re-run with --apply.'
+  );
+  process.exit(1);
 };
 
 /** Sum an annotation once per orderId — never across an order's partial rows. */
@@ -147,6 +150,12 @@ async function main() {
   // conversions and manual imports are real history with no exchange fill
   // behind them, and dropping them would erase it.
   const exchangeOrderIds = new Set(exchangeFills.map(f => f.orderId));
+  const exchangeFillsByOrder = new Map();
+  for (const f of exchangeFills) {
+    const rows = exchangeFillsByOrder.get(f.orderId) || [];
+    rows.push(f);
+    exchangeFillsByOrder.set(f.orderId, rows);
+  }
 
   const byOrderId = new Map();
   ledger.forEach((fill, idx) => {
@@ -165,6 +174,18 @@ async function main() {
     const pseudo = rows.filter(r => PSEUDO_TRADE_ID.test(String(r.fill.tradeId))
       && !exchangeByTradeId.has(String(r.fill.tradeId)));
     if (pseudo.length === 0) continue;
+
+    // A pseudo row stands in for a real fill. Drop it ONLY when the exchange's
+    // own fills for this order cover the quantity it represents — a truncated or
+    // partially-paginated response would otherwise delete real size, and the net
+    // check below compares against that same short response, so it would pass.
+    const exchangeQty = (exchangeFillsByOrder.get(orderId) || []).reduce((sum, f) => sum + f.size, 0);
+    const pseudoQty = pseudo.reduce((sum, r) => sum + r.fill.size, 0);
+    if (exchangeQty + 1e-9 < pseudoQty) {
+      console.warn(`  ⚠️  ${orderId}: exchange reports ${fmt(exchangeQty, 8)} ${BASE} but pseudo rows represent `
+        + `${fmt(pseudoQty, 8)} — keeping them (incomplete exchange response?)`);
+      continue;
+    }
 
     // The row that will carry the annotations: the earliest real fill already
     // in the ledger, or (when every row on this order is pseudo) the earliest
@@ -328,7 +349,7 @@ async function main() {
     return;
   }
 
-  assertEngineStopped();
+  await assertEngineStopped();
 
   const backupPath = `${LEDGER_PATH}.backup-backfill-${Date.now()}`;
   fs.copyFileSync(LEDGER_PATH, backupPath);

@@ -556,6 +556,9 @@ const repairHistoricalFillAnnotations = ({
  * @param {Object} [maybeCallbacks]
  * @returns {Object}
  */
+/** Floor for `fillDriftSweepMs` — one full-history exchange fetch per minute. */
+const MIN_FILL_DRIFT_SWEEP_MS = 60_000;
+
 const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCallbacks, maybeCallbacks) => {
   let pair;
   let exchangeConfig;
@@ -773,6 +776,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let dustMergeRetryAfter = 0;
   let stateSaveInterval = null;
   let fillDriftInterval = null;
+  let fillDriftInFlight = false;
   // Most recent drift verdict, surfaced on getState() so the UI/operator sees a
   // leak without reading logs. null until the first sweep completes.
   let fillDrift = null;
@@ -2127,12 +2131,30 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Exchange-vs-ledger drift check. Deliberately on its own timer rather
       // than inside reconcileTick: it is a read-only network sweep and must
       // never hold the reconcile lock behind a slow or hung trade fetch.
-      const driftSweepMs = config.fillDriftSweepMs ?? 0;
+      // 0 disables. Any positive value is clamped to a floor: the sweep is a
+      // full-history exchange fetch, and a misconfigured `fillDriftSweepMs: 1`
+      // would queue one every millisecond, exhausting the rate limit the trading
+      // path depends on.
+      const configuredSweepMs = config.fillDriftSweepMs ?? 0;
+      const driftSweepMs = configuredSweepMs > 0
+        ? Math.max(configuredSweepMs, MIN_FILL_DRIFT_SWEEP_MS)
+        : 0;
+      if (configuredSweepMs > 0 && driftSweepMs !== configuredSweepMs) {
+        logger.warn(`⚠️ [${exchange}] fillDriftSweepMs ${configuredSweepMs}ms is below the ${MIN_FILL_DRIFT_SWEEP_MS}ms floor — using the floor`, {
+          configured: configuredSweepMs,
+          applied: driftSweepMs,
+        });
+      }
       if (driftSweepMs > 0 && adapter.capabilities?.fillReconciliation) {
         fillDriftInterval = setInterval(() => {
-          sweepLedgerDrift().catch(err => {
-            logger.error(`❌ [${exchange}] Ledger drift sweep failed: ${err.message}`, { error: err.message });
-          });
+          // A slow exchange can outlast the interval; never stack sweeps.
+          if (fillDriftInFlight) return;
+          fillDriftInFlight = true;
+          sweepLedgerDrift()
+            .catch(err => {
+              logger.error(`❌ [${exchange}] Ledger drift sweep failed: ${err.message}`, { error: err.message });
+            })
+            .finally(() => { fillDriftInFlight = false; });
         }, driftSweepMs);
       }
     } else {
@@ -2446,6 +2468,28 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Handle order fill
    * @param {Object} fillData - Fill data
    */
+  /**
+   * Drop a terminal order from the persisted pending-entry / ladder lists.
+   * Shared by the normal commit path and the skip-recommit early return, which
+   * would otherwise leave the entry (and its deployedInPosition share) behind.
+   * @param {string} orderId
+   * @returns {void}
+   */
+  const retireTrackedEntry = (orderId) => {
+    let changed = false;
+    if (positionState.pendingEntryOrders?.length > 0) {
+      const before = positionState.pendingEntryOrders.length;
+      positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(e => e.orderId !== orderId);
+      changed = positionState.pendingEntryOrders.length !== before;
+    }
+    if (positionState.pendingLadderOrders?.length > 0) {
+      const before = positionState.pendingLadderOrders.length;
+      positionState.pendingLadderOrders = positionState.pendingLadderOrders.filter(o => o.orderId !== orderId);
+      changed = changed || positionState.pendingLadderOrders.length !== before;
+    }
+    if (changed) saveLiveState();
+  };
+
   const handleOrderFillImpl = async (fillData, dedupRef) => {
     // dedupRef is a per-call holder: the buy/sell branches record the inner
     // dedup key they add ({ set, key }) into it so the wrapper can clear that
@@ -2579,6 +2623,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // gate the orderId-only guard would swallow every advancing partial.
       if (shouldSkipBuyRecommit(ingestedFills.length, positionState.celestialBodies, fillData.orderId)) {
         logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} already owned by a body and no new fills ingested — skipping re-commit (retry after partial failure); reconcile will repair any missing TP`);
+        // The re-commit is what's redundant, not the bookkeeping. A TERMINAL
+        // status can land here when the partial poll already ingested every fill
+        // row the exchange had exposed, and returning outright would strand the
+        // persisted pending-entry (and its share of deployedInPosition) until a
+        // restart, even though the executor has already dropped the order.
+        if (!fillData.isPartialFill) retireTrackedEntry(fillData.orderId);
         return;
       }
 
