@@ -40,6 +40,12 @@ const MANIFEST_FILENAME = 'backup-manifest.json';
 /** Manifest envelope version. Restore rejects anything it does not know. */
 const MANIFEST_VERSION = 1;
 
+/** Directory and manifest used by the lightweight hourly fund-state snapshots. */
+const FUND_STATE_BACKUP_DIRNAME = 'fund-state';
+const FUND_STATE_MANIFEST_FILENAME = 'fund-state-manifest.json';
+const FUND_STATE_MANIFEST_VERSION = 1;
+const FUND_STATE_SNAPSHOT_FILENAMES = ['fill-ledger.json', 'regime-state.json', 'closed-trades.json', 'state.json'];
+
 const SPAWN_TIMEOUT_MS = 60000;
 
 /** Root-level credential files that must remain machine-local. */
@@ -57,11 +63,12 @@ const SILENT_LOGGER = { info: () => {}, warn: () => {}, error: () => {} };
  * temp-directory tests can exercise create/restore without going near the live
  * install.
  * @param {{dataDir?: string, baseConfigFile?: string}} [overrides]
- * @returns {{dataDir: string, backupsDir: string, baseConfigFile: string, userConfigFile: string}}
+ * @returns {{dataDir: string, backupsDir: string, fundStateBackupsDir: string, baseConfigFile: string, userConfigFile: string}}
  */
 const resolvePaths = ({ dataDir = DATA_DIR, baseConfigFile } = {}) => ({
   dataDir,
   backupsDir: path.join(dataDir, 'backups'),
+  fundStateBackupsDir: path.join(dataDir, 'backups', FUND_STATE_BACKUP_DIRNAME),
   baseConfigFile: baseConfigFile || resolveBaseConfigFile(),
   userConfigFile: path.join(dataDir, 'config.json'),
 });
@@ -496,6 +503,228 @@ const pruneBackups = (maxBackups) => {
   return { pruned, remaining: backups.length - pruned };
 };
 
+const isSafeFundStateSegment = (value) => typeof value === 'string' && /^[A-Za-z0-9._-]+$/.test(value);
+
+/**
+ * Return the configured exchange/pair identities without reading the live
+ * config cache. The snapshot is deliberately derived from configuration so a
+ * fund directory that is no longer configured is never copied back into the
+ * recovery set by accident.
+ * @param {Object} config
+ * @returns {Array<{exchange: string, pair: string}>}
+ */
+const configuredFundIdentities = (config) => Object.entries(config?.exchanges || {}).flatMap(([exchange, block]) =>
+  Object.keys(normalizeExchangeBlock(block).pairs || {}).map((pair) => ({ exchange, pair }))
+);
+
+/**
+ * Read a fund-state snapshot manifest and reject malformed snapshots before
+ * they can be listed or restored.
+ * @param {string} snapshotDir
+ * @returns {{ok: true, manifest: Object} | {ok: false, error: string}}
+ */
+const readFundStateManifest = (snapshotDir) => {
+  const read = readJsonFile(path.join(snapshotDir, FUND_STATE_MANIFEST_FILENAME));
+  if (!read.ok) return read;
+  const manifest = read.value;
+  if (!manifest || Array.isArray(manifest) || manifest.manifestVersion !== FUND_STATE_MANIFEST_VERSION
+    || typeof manifest.snapshotId !== 'string' || !Array.isArray(manifest.funds)) {
+    return { ok: false, error: `${FUND_STATE_MANIFEST_FILENAME} is malformed or unsupported` };
+  }
+  return { ok: true, manifest };
+};
+
+/**
+ * Calculate a snapshot's size without following symlinks.
+ * @param {string} root
+ * @returns {number}
+ */
+const directorySizeBytes = (root) => {
+  let total = 0;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const full = path.join(root, entry.name);
+    if (entry.isDirectory()) total += directorySizeBytes(full);
+    else if (entry.isFile()) total += fs.statSync(full).size;
+  }
+  return total;
+};
+
+/**
+ * List the hourly fund-state snapshots, newest first.
+ * @param {{paths?: {dataDir?: string, baseConfigFile?: string}}} [options]
+ * @returns {Array<{snapshotId: string, createdAt: string, funds: Array<Object>, sizeBytes: number}>}
+ */
+const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
+  const paths = resolvePaths(pathOverrides);
+  if (!fs.existsSync(paths.fundStateBackupsDir)) return [];
+
+  return fs.readdirSync(paths.fundStateBackupsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && isSafeFundStateSegment(entry.name) && !entry.name.startsWith('.'))
+    .map((entry) => {
+      const snapshotDir = path.join(paths.fundStateBackupsDir, entry.name);
+      const parsed = readFundStateManifest(snapshotDir);
+      if (!parsed.ok) return null;
+      const { manifest } = parsed;
+      if (manifest.snapshotId !== entry.name || !isSafeFundStateSegment(manifest.snapshotId)) return null;
+      return {
+        snapshotId: manifest.snapshotId,
+        createdAt: manifest.createdAt,
+        funds: manifest.funds,
+        sizeBytes: directorySizeBytes(snapshotDir),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+};
+
+/**
+ * Prune hourly fund-state snapshots independently from the full archive
+ * retention policy.
+ * @param {number} [maxBackups]
+ * @param {{paths?: {dataDir?: string, baseConfigFile?: string}}} [options]
+ * @returns {{pruned: number, remaining: number}}
+ */
+const pruneFundStateBackups = (maxBackups, { paths: pathOverrides } = {}) => {
+  const paths = resolvePaths(pathOverrides);
+  const keep = Number.isInteger(maxBackups) && maxBackups >= 1
+    ? maxBackups
+    : GLOBAL_DEFAULTS.backup.fundStateMaxBackups;
+  const backups = listFundStateBackups({ paths: pathOverrides });
+  let pruned = 0;
+  for (const backup of backups.slice(keep)) {
+    fs.rmSync(path.join(paths.fundStateBackupsDir, backup.snapshotId), { recursive: true, force: true });
+    pruned++;
+  }
+  return { pruned, remaining: backups.length - pruned };
+};
+
+/**
+ * Copy the small set of non-reconstructable per-fund state files into a
+ * separate rolling snapshot. These snapshots live under data/backups, so
+ * deleting a fund directory cannot delete its recovery point.
+ * @param {{paths?: {dataDir?: string, baseConfigFile?: string}, now?: Date, maxBackups?: number}} [options]
+ * @returns {{success: boolean, snapshotId?: string, createdAt?: string, funds?: Array<Object>, files?: number, sizeBytes?: number, pruned?: number, remaining?: number, error?: string}}
+ */
+const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBackups } = {}) => {
+  const paths = resolvePaths(pathOverrides);
+  const effective = readEffectiveConfig(paths);
+  if (!effective.ok) return { success: false, error: effective.error };
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) return { success: false, error: 'Invalid snapshot time' };
+
+  const identities = configuredFundIdentities(effective.config);
+  const unsafe = identities.find(({ exchange, pair }) => !isSafeFundStateSegment(exchange) || !isSafeFundStateSegment(pair));
+  if (unsafe) return { success: false, error: `Cannot snapshot unsafe fund path ${unsafe.exchange}/${unsafe.pair}` };
+
+  ensureBackupsDir(paths.backupsDir);
+  const createdAt = now.toISOString();
+  let snapshotId = `fund-state-${now.getTime()}`;
+  let suffix = 0;
+  while (fs.existsSync(path.join(paths.fundStateBackupsDir, snapshotId))) snapshotId = `fund-state-${now.getTime()}-${++suffix}`;
+
+  const stageDir = fs.mkdtempSync(path.join(paths.backupsDir, '.fund-state-stage-'));
+  const funds = [];
+  let files = 0;
+  try {
+    for (const { exchange, pair } of identities) {
+      const sourceDir = path.join(paths.dataDir, exchange, pair);
+      const copied = [];
+      for (const name of FUND_STATE_SNAPSHOT_FILENAMES) {
+        const source = path.join(sourceDir, name);
+        if (!fs.existsSync(source)) continue;
+        const stat = fs.lstatSync(source);
+        if (!stat.isFile()) continue;
+        const target = path.join(stageDir, exchange, pair, name);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.copyFileSync(source, target);
+        copied.push(name);
+        files++;
+      }
+      if (copied.length > 0) funds.push({ exchange, pair, files: copied });
+    }
+
+    if (files === 0) {
+      fs.rmSync(stageDir, { recursive: true, force: true });
+      return { success: true, createdAt, funds: [], files: 0, pruned: 0 };
+    }
+
+    fs.writeFileSync(path.join(stageDir, FUND_STATE_MANIFEST_FILENAME), JSON.stringify({
+      manifestVersion: FUND_STATE_MANIFEST_VERSION,
+      snapshotId,
+      createdAt,
+      funds,
+    }, null, 2), { mode: 0o600 });
+    fs.mkdirSync(paths.fundStateBackupsDir, { recursive: true });
+    fs.renameSync(stageDir, path.join(paths.fundStateBackupsDir, snapshotId));
+  } catch (error) {
+    fs.rmSync(stageDir, { recursive: true, force: true });
+    return { success: false, error: `Fund-state snapshot failed: ${error.message}` };
+  }
+
+  const pruned = pruneFundStateBackups(maxBackups, { paths: pathOverrides });
+  return {
+    success: true,
+    snapshotId,
+    createdAt,
+    funds,
+    files,
+    sizeBytes: directorySizeBytes(path.join(paths.fundStateBackupsDir, snapshotId)),
+    pruned: pruned.pruned,
+    remaining: pruned.remaining,
+  };
+};
+
+/**
+ * Restore one fund from a rolling state snapshot through the same durable
+ * transactional applier used by full archives.
+ * @param {string} snapshotId
+ * @param {string} exchange
+ * @param {string} pair
+ * @param {{paths?: {dataDir?: string, baseConfigFile?: string}, logger?: Object}} [options]
+ * @returns {{success: boolean, filesRestored?: number, error?: string, code?: string, rolledBack?: boolean, recovery?: Object}}
+ */
+const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrides, logger = SILENT_LOGGER } = {}) => {
+  if (!isSafeFundStateSegment(snapshotId) || !isSafeFundStateSegment(exchange) || !isSafeFundStateSegment(pair)) {
+    return { success: false, error: 'Invalid fund-state snapshot or fund identity' };
+  }
+  const paths = resolvePaths(pathOverrides);
+  const snapshotDir = path.join(paths.fundStateBackupsDir, snapshotId);
+  let stat;
+  try {
+    stat = fs.lstatSync(snapshotDir);
+  } catch (error) {
+    return { success: false, error: error?.code === 'ENOENT' ? 'Fund-state snapshot not found' : error.message };
+  }
+  if (!stat.isDirectory()) return { success: false, error: 'Fund-state snapshot is invalid' };
+
+  const parsed = readFundStateManifest(snapshotDir);
+  if (!parsed.ok) return { success: false, error: parsed.error };
+  if (parsed.manifest.snapshotId !== snapshotId) return { success: false, error: 'Fund-state snapshot identity mismatch' };
+  const fund = parsed.manifest.funds.find((entry) => entry.exchange === exchange && entry.pair === pair);
+  if (!fund || !Array.isArray(fund.files) || fund.files.length === 0) {
+    return { success: false, error: `Snapshot does not contain state for ${exchange}/${pair}` };
+  }
+
+  const stageDir = fs.mkdtempSync(path.join(paths.dataDir, STAGE_PREFIX));
+  try {
+    for (const name of fund.files) {
+      if (!FUND_STATE_SNAPSHOT_FILENAMES.includes(name)) throw new Error(`Snapshot contains an unsupported state file: ${name}`);
+      const source = path.join(snapshotDir, exchange, pair, name);
+      const sourceStat = fs.lstatSync(source);
+      if (!sourceStat.isFile()) throw new Error(`Snapshot state file is not a regular file: ${name}`);
+      const target = path.join(stageDir, exchange, pair, name);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(source, target);
+    }
+  } catch (error) {
+    fs.rmSync(stageDir, { recursive: true, force: true });
+    return { success: false, error: `Fund-state restore staging failed: ${error.message}` };
+  }
+
+  const applied = applyStagedFiles({ dataDir: paths.dataDir, stageDir, filename: `${snapshotId}/${exchange}/${pair}`, logger });
+  if (!applied.success && applied.rolledBack !== false) fs.rmSync(stageDir, { recursive: true, force: true });
+  return applied;
+};
+
 /**
  * Read an archive's manifest without extracting the archive.
  * @param {string} zipPath
@@ -832,10 +1061,14 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
 
 module.exports = {
   createBackup,
+  createFundStateBackup,
   listBackups,
+  listFundStateBackups,
   deleteBackup,
   pruneBackups,
+  pruneFundStateBackups,
   restoreBackup,
+  restoreFundStateBackup,
   inspectBackup,
   MANIFEST_FILENAME,
   MANIFEST_VERSION,
