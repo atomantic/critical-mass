@@ -16,12 +16,15 @@
 // with mock exchange deps, then reads the closed-trades.json the engine
 // actually wrote.
 //
-// Disk safety: throwaway pair '__testcyclestamp__' under
-// data/coinbase/, deleted in after().
+// Disk safety: throwaway pair '__testcyclestamp__' lives under a disposable
+// temp root that is removed in after().
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+
+const { createIsolatedDataDir } = require('./test-data-dir');
+const isolatedData = createIsolatedDataDir('cm-cycle-stamp-test');
 
 // The size optimizer persists its output per-pair into the SHARED
 // data/config.json, so constructing an engine on a throwaway pair would
@@ -35,14 +38,14 @@ configUtils.updateRegimeConfig = () => {};
 const { createRegimeEngine } = require('../src/regime-engine');
 
 const TEST_PAIR = '__testcyclestamp__';
-const JUNK_DIR = path.join(__dirname, '..', 'data', 'coinbase', TEST_PAIR);
+const JUNK_DIR = isolatedData.fundDir('coinbase', TEST_PAIR);
 
 const engines = [];
 
 after(() => {
   for (const eng of engines) eng._test.clearTimers();
-  fs.rmSync(JUNK_DIR, { recursive: true, force: true });
   configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
+  isolatedData.cleanup();
 });
 
 const PRODUCT_DETAILS = { baseMinSize: '0.0001', baseIncrement: '0.00000001' };

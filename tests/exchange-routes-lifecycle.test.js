@@ -17,19 +17,26 @@
  * used by tests/fill-ledger.test.js and tests/corrective-buy-paths.test.js —
  * instead of stubbing those modules out.
  */
-const { describe, it, beforeEach, afterEach, mock } = require('node:test');
+const { describe, it, beforeEach, afterEach, after, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// Keep config-utils' user override seam outside the checkout too. Per-fund
+// state is redirected to tempRoot below; this root covers the mocked
+// data/config.json path used for fund discovery and persistence.
+const pathsModule = require('../src/paths');
+const originalDataDir = pathsModule.DATA_DIR;
+const configDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exchange-routes-config-'));
+pathsModule.DATA_DIR = configDataDir;
 const configUtils = require('../src/config-utils');
 const migration = require('../src/migration');
 const adapters = require('../src/adapters');
 const registerExchangeRoutes = require('../src/routes/exchange-routes');
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(configDataDir, 'config.json');
 
 // Real fs, captured before any mock.method() calls touch the module — used
 // both as the fallthrough target inside the mock and directly by test setup
@@ -163,6 +170,11 @@ describe('fund lifecycle routes', () => {
     mock.restoreAll();
     migration.getExchangeDataDir = originalGetExchangeDataDir;
     if (tempRoot) realFs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  after(() => {
+    pathsModule.DATA_DIR = originalDataDir;
+    fs.rmSync(configDataDir, { recursive: true, force: true });
   });
 
   describe('POST /api/:exchange/funds', () => {

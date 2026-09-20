@@ -4,7 +4,16 @@
  */
 
 const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS, getBackupConfig, updateBackupConfig, maskSecret, isMaskedSecret, getConfiguredExchanges, invalidateConfigCache } = require('../config-utils');
-const { createBackup, listBackups, deleteBackup, pruneBackups, restoreBackup, inspectBackup } = require('../backup-service');
+const {
+  createBackup,
+  listBackups,
+  listFundStateBackups,
+  deleteBackup,
+  pruneBackups,
+  restoreBackup,
+  restoreFundStateBackup,
+  inspectBackup,
+} = require('../backup-service');
 const { createContextLogger } = require('../logger');
 const { performRestore } = require('../restore-coordinator');
 const { drainPendingWrites } = require('../pending-writes');
@@ -141,8 +150,9 @@ module.exports = (app, deps) => {
 
   app.get('/api/backups', (req, res) => {
     const backups = listBackups();
+    const fundStateBackups = listFundStateBackups();
     const config = getBackupConfig();
-    res.json({ success: true, backups, config });
+    res.json({ success: true, backups, fundStateBackups, config });
   });
 
   app.get('/api/backups/config', (req, res) => {
@@ -214,6 +224,31 @@ module.exports = (app, deps) => {
     });
     res.json({ success: true });
   });
+
+  // Fund-state snapshots contain only the non-reconstructable per-fund files
+  // and are restored through the same writer-quiescence/transaction gate as a
+  // full archive. The pair is explicit so an hourly snapshot cannot overwrite
+  // another fund by accident.
+  app.post('/api/backups/fund-state/:snapshotId/:exchange/:pair/restore', asyncRoute(async (req, res) => {
+    const logger = settingsLogger('/api/backups/fund-state/:snapshotId/:exchange/:pair/restore');
+    const { snapshotId, exchange, pair } = req.params;
+    const filename = `${snapshotId}/${exchange}/${pair}`;
+    const { status, body } = await performRestore({
+      filename,
+      force: req.body?.force === true,
+      exchangeIPCMap,
+      configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
+      restore: () => restoreFundStateBackup(snapshotId, exchange, pair, { logger }),
+      gatewayWriters: gatewayWriters(),
+      drainPendingWrites,
+      invalidateCaches: () => {
+        invalidateConfigCache();
+        candleCache?.invalidate();
+      },
+      logger,
+    });
+    res.status(status).json(body);
+  }));
 
   // Restoring overwrites live data files in place, so it is gated on CONFIRMED
   // writer shutdown: every configured engine process must positively
