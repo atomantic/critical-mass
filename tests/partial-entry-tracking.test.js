@@ -31,6 +31,7 @@ const originalGetAdapter = adapters.getAdapter;
 let stubbedExchangeFills = [];
 adapters.getAdapter = () => ({ getReconciliationFills: async () => stubbedExchangeFills });
 
+
 const { createRegimeEngine } = require('../src/regime-engine');
 
 const TEST_PAIR = '__testpartial__';
@@ -176,5 +177,44 @@ describe('ledger drift sweep', () => {
     assert.ok(Math.abs(drift.netAsset - 0.03) < 1e-8, `net asset drift, got ${drift.netAsset}`);
     assert.deepEqual(drift.orderIds, ['order-x']);
     assert.equal(eng.getState().fillDrift.fills, 2, 'drift is surfaced on engine state');
+  });
+});
+
+describe('position coverage check', () => {
+  // The ledger can be complete while the position model still fails to account
+  // for asset the account holds — a buy order only partly sold counts as fully
+  // closed, so its unsold remainder sits in no body and gets no TP.
+  const coverageEngine = (balanceTotal, bodies) => {
+    const eng = makeEngine({
+      getOrderFills: async () => [],
+      getAccountBalance: async () => ({ total: balanceTotal, available: balanceTotal, hold: 0 }),
+    });
+    eng._getPositionState().engineStartTime = Date.now() - 86_400_000;
+    eng._getPositionState().celestialBodies = bodies;
+    eng._getPositionState().realizedAssetPnL = 0.5;
+    return eng;
+  };
+
+  it('flags base currency the exchange holds that no body or reserve accounts for', async () => {
+    stubbedExchangeFills = [];
+    const eng = coverageEngine(1.9, [{ id: 'b1', tier: 'satellite', assetQty: 0.25, costBasis: 600, avgPrice: 2400 }]);
+
+    await eng._test.sweepLedgerDrift();
+
+    const cov = eng._test.getPositionCoverage();
+    assert.equal(cov.onExchange, 1.9);
+    assert.equal(cov.inBodies, 0.25);
+    assert.equal(cov.reserves, 0.5);
+    assert.ok(Math.abs(cov.unmodelled - 1.15) < 1e-8, `untracked asset, got ${cov.unmodelled}`);
+    assert.equal(eng.getState().positionCoverage.unmodelled, cov.unmodelled, 'surfaced on engine state');
+  });
+
+  it('reports no gap when bodies plus reserves cover the balance', async () => {
+    stubbedExchangeFills = [];
+    const eng = coverageEngine(0.75, [{ id: 'b1', tier: 'satellite', assetQty: 0.25, costBasis: 600, avgPrice: 2400 }]);
+
+    await eng._test.sweepLedgerDrift();
+
+    assert.equal(eng._test.getPositionCoverage().unmodelled, 0);
   });
 });

@@ -776,6 +776,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // Most recent drift verdict, surfaced on getState() so the UI/operator sees a
   // leak without reading logs. null until the first sweep completes.
   let fillDrift = null;
+  // Most recent "does the model cover what we actually hold" verdict, surfaced
+  // on getState() alongside fillDrift. null until the first sweep completes.
+  let positionCoverage = null;
   // Rate limit for the "placements blocked by an unresolved intent" log line.
   let placementBlockLoggedAt = 0;
   // Short-lived cache of the intent check. evaluateEntryTrigger runs on every
@@ -3549,6 +3552,43 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Assert the position model covers every unit of base currency the account
+   * actually holds: `balance == Σ body.assetQty + realizedAssetPnL (reserves)`.
+   * Anything left over is asset the engine bought and never sold but no longer
+   * tracks — it will never get a take-profit and shows up nowhere in the UI.
+   * Detect-only, like the rest of this sweep.
+   * @returns {Promise<void>}
+   */
+  const checkPositionCoverage = async () => {
+    if (typeof adapter.getAccountBalance !== 'function') return;
+    const balance = await adapter.getAccountBalance(baseCurrency);
+    const onExchange = Number(balance?.total);
+    if (!Number.isFinite(onExchange)) return;
+
+    const inBodies = (positionState.celestialBodies || []).reduce((sum, b) => sum + (b.assetQty || 0), 0);
+    const reserves = positionState.realizedAssetPnL || 0;
+    const unmodelled = roundAsset(onExchange - inBodies - reserves);
+    positionCoverage = {
+      checkedAt: Date.now(),
+      onExchange: roundAsset(onExchange),
+      inBodies: roundAsset(inBodies),
+      reserves: roundAsset(reserves),
+      unmodelled,
+    };
+
+    // A resting TP holds asset the body still owns, so tiny rounding is normal;
+    // anything the exchange min-size could trade is not.
+    const tolerance = Number(productDetails?.baseMinSize) || 0;
+    if (Math.abs(unmodelled) <= tolerance) return;
+
+    logger.warn(
+      `⚖️ [${exchange}] Position coverage gap: exchange holds ${roundAsset(onExchange)} ${baseCurrency}, model accounts for ${roundAsset(inBodies + reserves)} `
+      + `(${roundAsset(inBodies)} in ${(positionState.celestialBodies || []).length} bodies + ${roundAsset(reserves)} reserves) — ${unmodelled} ${baseCurrency} untracked`,
+      { pair: productId, ...positionCoverage, bodies: (positionState.celestialBodies || []).length }
+    );
+  };
+
+  /**
    * Detect-only sweep: ask the exchange for every fill since engine start and
    * report the ones the local ledger never recorded. Runs on its own timer
    * (fillDriftSweepMs), never under the reconcile lock.
@@ -3560,6 +3600,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * auto-ingesting historical fills into a live engine would re-open cycle and
    * cost-basis accounting mid-flight. Repair stays an operator action
    * (scripts/backfill-missing-fills.js).
+   *
+   * It also checks the second, independent way asset can go missing: the ledger
+   * can be complete while the POSITION MODEL still fails to represent what the
+   * account holds. `heldOpenBuyCostBasis` decides a buy is closed on a boolean
+   * — `sellOrderId` is set and that sell has fills — with no quantity check, and
+   * `sellOrderId` is re-stamped across merges and TP replacements. So a buy
+   * order only partly sold counts as fully closed and its unsold remainder
+   * disappears from the model: bought, never sold, in no body, no TP, invisible.
+   * gemini/ETHUSD was carrying 1.14 ETH in that state. The only identity that
+   * cannot lie is `balance == Σ body.assetQty + reserves`, so that is what this
+   * asserts.
    * @returns {Promise<void>}
    */
   const sweepLedgerDrift = async () => {
@@ -3581,6 +3632,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       usd,
       orderIds: orders.slice(0, 20).map(o => o.orderId),
     };
+
+    await checkPositionCoverage();
 
     if (result.unaccountedCount === 0) return;
 
@@ -4946,6 +4999,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       ? buildPendingOrders(orderExecutor.getPendingOrdersList(), positionState)
       : [],
     fillDrift,
+    positionCoverage,
     apy: calculateApyMetrics(),
     dryRun: isDryRun ? orderExecutor.getDryRunState() : null,
     tpOptimizer: tpOptimizer.getStatus(),
@@ -6153,6 +6207,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       getMergeTpSnapshots: () => ({ pending: new Map(pendingMergeTpOrders), completed: new Map(completedMergeTpOrders) }),
       sweepLedgerDrift,
       getFillDrift: () => fillDrift,
+      getPositionCoverage: () => positionCoverage,
       reconcileTick,
       reconcilePendingPlacements,
       checkOfflineOrderFills,
