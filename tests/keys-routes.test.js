@@ -308,6 +308,20 @@ describe('API key routes', () => {
       assert.match(res.body.error, /name and privateKey are required/i);
     });
 
+    it('clarifies Coinbase Advanced API requirement when regular apiKey/apiSecret are submitted (400)', async () => {
+      const app = createFakeApp();
+      const writeJSON = () => { throw new Error('should not write'); };
+      registerKeysRoutes(app, { writeJSON });
+
+      const res = await invoke(app, 'POST /api/:exchange/keys', {
+        params: { exchange: 'coinbase' },
+        body: { apiKey: 'regular-key', apiSecret: 'regular-secret' },
+      });
+
+      assert.equal(res.statusCode, 400);
+      assert.match(res.body.error, /Coinbase Advanced API \/ CDP keys are required/i);
+    });
+
     it('rejects Crypto.com keys when apiKey is missing (400)', async () => {
       const app = createFakeApp();
       const writeJSON = () => { throw new Error('should not write'); };

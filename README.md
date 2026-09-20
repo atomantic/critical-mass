@@ -93,6 +93,9 @@ cp config.example.json config.json  # Copy example config and customize
 Create exchange-specific key files in the `data/` directory:
 
 **Coinbase** (`data/coinbase-keys.json`):
+
+> **Important:** Critical Mass requires **Coinbase Advanced API** credentials via the [Coinbase Developer Platform (CDP)](https://cloud.coinbase.com/access/api), **NOT** the regular/legacy Coinbase API (`coinbase.com/settings/api`). Standard Coinbase API keys are incompatible and will fail to authenticate.
+
 ```json
 {
   "name": "organizations/{org-id}/apiKeys/{key-id}",
@@ -252,10 +255,21 @@ npm test
 
 ### Coinbase
 
-1. Go to [Coinbase Developer Platform](https://www.coinbase.com/settings/api)
-2. Create new API key with **View** and **Trade** permissions
-3. Add your server's IP to the allowlist
-4. Copy the API key name and private key to `data/coinbase-keys.json`
+> **Important:** You must use the **Coinbase Advanced API** via the [Coinbase Developer Platform (CDP)](https://cloud.coinbase.com/access/api), **NOT** the regular/legacy Coinbase API (`coinbase.com/settings/api`). Standard/legacy Coinbase API keys do not support the required EC private key authentication and will fail.
+
+1. Go to the [Coinbase Developer Platform (CDP) API Keys](https://cloud.coinbase.com/access/api) portal
+2. Create a new API key with **View** and **Trade** permissions under Advanced Trade
+3. Add your server's IP to the IP allowlist (recommended)
+4. Download or copy your API credentials:
+   - **API Key Name**: Formatted as `organizations/{org-id}/apiKeys/{key-id}`
+   - **Private Key**: The EC private key in PEM format (`-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----\n`)
+5. Save the credentials via the admin UI (**API Keys** tab) or copy them to `data/coinbase-keys.json`:
+   ```json
+   {
+     "name": "organizations/{org-id}/apiKeys/{key-id}",
+     "privateKey": "-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----\n"
+   }
+   ```
 
 ### Gemini
 
