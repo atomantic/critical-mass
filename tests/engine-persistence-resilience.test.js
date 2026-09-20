@@ -34,6 +34,9 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+const { createIsolatedDataDir } = require('./test-data-dir');
+const isolatedData = createIsolatedDataDir('cm-persistence-test');
+
 const {
   createHealthMonitor,
   createInitialHealthState,
@@ -46,9 +49,11 @@ const { createFaultReporter, registerProcessGuards } = require('../src/process-g
 const { tradeEvents } = require('../src/trade-events');
 
 const TEST_PAIR = '__test532__';
-const FUND_DIR = path.join(__dirname, '..', 'data', 'coinbase', TEST_PAIR);
+const FUND_DIR = isolatedData.fundDir('coinbase', TEST_PAIR);
 const STATE_FILE = path.join(FUND_DIR, 'regime-state.json');
 const CORRUPT_JSON = '{ "position": { "realizedPnL": 42, ';
+
+after(() => isolatedData.cleanup());
 
 /** @param {Object} [overrides] - Config overrides @returns {Object} Minimal health config */
 const createTestConfig = (overrides = {}) => ({

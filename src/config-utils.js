@@ -12,6 +12,7 @@ const { isDeepStrictEqual } = require('util');
 const fs = require('fs');
 const path = require('path');
 const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils');
+const pathsModule = require('./paths');
 // logger imports migration; migration's back-edge to config-utils must stay lazy.
 const { createContextLogger } = require('./logger');
 
@@ -27,7 +28,11 @@ const configLogger = createContextLogger({ module: 'config-utils' });
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
 const EXAMPLE_CONFIG_FILE = path.join(__dirname, '..', 'config.example.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const getUserConfigFile = () => path.join(pathsModule.DATA_DIR, 'config.json');
+// Preserve the exported path snapshot for callers that use it as metadata;
+// file I/O below resolves the current centralized data root at call time so
+// isolated test processes can redirect user config without touching live data.
+const USER_CONFIG_FILE = getUserConfigFile();
 
 // Resolve the effective base-config path. config.json is git-ignored (it holds
 // the operator's real allocations/capital), so a fresh clone won't have one —
@@ -347,9 +352,10 @@ const _resetConfigCacheForTests = invalidateConfigCache;
  */
 const loadRawConfig = () => {
   const baseFile = resolveBaseConfigFile();
+  const userConfigFile = getUserConfigFile();
   const baseMtime = _statMtimeMs(baseFile);
-  const userMtime = _statMtimeMs(USER_CONFIG_FILE);
-  const cacheKey = `${baseFile}|${baseMtime}|${userMtime}`;
+  const userMtime = _statMtimeMs(userConfigFile);
+  const cacheKey = `${baseFile}|${baseMtime}|${userConfigFile}|${userMtime}`;
   if (_configCache && _configCacheKey === cacheKey) {
     return _configCache;
   }
@@ -369,7 +375,7 @@ const loadRawConfig = () => {
   let user;
   try {
     base = baseMtime > 0 ? JSON.parse(fs.readFileSync(baseFile, 'utf8')) : {};
-    user = userMtime > 0 ? JSON.parse(fs.readFileSync(USER_CONFIG_FILE, 'utf8')) : {};
+    user = userMtime > 0 ? JSON.parse(fs.readFileSync(userConfigFile, 'utf8')) : {};
   } catch (err) {
     if (_configCache) {
       // Leave _configCacheKey stale so the next call retries the read and picks
@@ -378,9 +384,9 @@ const loadRawConfig = () => {
       // otherwise flood every process's log. Operators must still notice their
       // change didn't take effect; the engine keeps running on last-good config.
       if (!_configReloadFailedLogged) {
-        configLogger.warn(`⚠️ [config] reload failed (${err.message}) — STILL USING LAST-GOOD CONFIG; repair ${USER_CONFIG_FILE}`, {
+        configLogger.warn(`⚠️ [config] reload failed (${err.message}) — STILL USING LAST-GOOD CONFIG; repair ${userConfigFile}`, {
           error: err.message,
-          configFile: USER_CONFIG_FILE,
+          configFile: userConfigFile,
           usingLastGoodConfig: true,
         });
         _configReloadFailedLogged = true;
@@ -407,7 +413,7 @@ const loadRawConfig = () => {
  * @param {string} [file] - Target path; defaults to the live data/config.json
  * @returns {void}
  */
-const writeUserConfigFile = (override, file = USER_CONFIG_FILE) => {
+const writeUserConfigFile = (override, file = getUserConfigFile()) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   // Atomic write (tmp + rename): a crash mid-write would otherwise leave a
   // truncated config.json, and loadRawConfig throws on parse failure — which
