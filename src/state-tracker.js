@@ -1336,7 +1336,7 @@ const describePlacementIntents = (exchange = 'coinbase', pair, now = Date.now())
 const buildPlacementIntentHint = (intent) => {
   const what = `${intent?.side ?? 'order'} ${intent?.size ?? '?'} @ ${intent?.price ?? 'market'}`;
   return intent?.clientOrderId
-    ? `Check the exchange for client order id ${intent.clientOrderId} (${what}). Adopt it if it is live or filled; discard only once you have confirmed the exchange never accepted it.`
+    ? `The running engine automatically checks the exchange for client order id ${intent.clientOrderId} (${what}) and retries inconclusive lookups. Manual adoption or discard is available if automatic recovery cannot establish the outcome.`
     : `No client order id was recorded — the process died before the response. Check the exchange's open orders and recent fills for ${what} around ${new Date(intent?.createdAt ?? Date.now()).toISOString()}, cancel any duplicate, then discard this intent.`;
 };
 

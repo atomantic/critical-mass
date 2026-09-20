@@ -3525,12 +3525,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const reconcileTick = () => {
       if (!isRunning) return; // Guard against firing after stop
-      engineLocks.withReconcileLock(() => {
+      return engineLocks.withReconcileLock(async () => {
       // Collect every async chain this tick dispatches so the reconcile lock is
       // held until ALL of them settle — the body-TP chains below cancel/replace
       // TPs fire-and-forget, and clearing the flag on the recovery promise alone
       // would let a merge (or the next reconcile tick) race an in-flight TP
       // re-placement (#189 review).
+      await reconcilePendingPlacements();
       const pending = [];
 
       // Check for entry fills that WebSocket might have missed
@@ -5025,7 +5026,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (now - placementBlockLoggedAt > PLACEMENT_BLOCK_LOG_INTERVAL_MS) {
       placementBlockLoggedAt = now;
       const [oldest] = blocking;
-      logger.error(`⏸️ [${exchange}] New entries blocked — ${blocking.length} unresolved placement intent(s); oldest ${oldest.action ?? 'order'} ${oldest.id} needs operator reconcile`, {
+      logger.error(`⏸️ [${exchange}] New entries blocked — ${blocking.length} unresolved placement intent(s); oldest ${oldest.action ?? 'order'} ${oldest.id} awaiting automatic exchange reconciliation`, {
         pendingIntents: blocking.length,
         intentId: oldest.id,
         action: oldest.action ?? null,
@@ -5044,14 +5045,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * never became a live order. Both are exactly-once: the disk row is removed
    * as part of the action, so a duplicate call finds nothing to act on.
    *
-   * Nothing here auto-clears on a timer or on an empty lookup — "we did not
-   * find it" is not "it is not there", and that distinction is the whole point
-   * of the intent.
+   * Automatic reconciliation uses the same durable adoption path and clears
+   * only positively identified terminal orders with zero fills.
    * @param {string} intentId - Intent id to reconcile
    * @param {'adopt'|'discard'} action - Operator decision
    * @returns {Promise<{success: boolean, message?: string, error?: string, adoptedOrderId?: string}>} Result
    */
-  const reconcilePlacementIntent = async (intentId, action) => {
+  const reconcilePlacementIntent = async (intentId, action, { automatic = false } = {}) => {
     if (action !== 'adopt' && action !== 'discard') {
       return { success: false, error: `Unknown reconcile action '${action}' (expected 'adopt' or 'discard')` };
     }
@@ -5083,6 +5083,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (found?.__lookupError) {
       return { success: false, error: `Lookup failed (${found.__lookupError.message}) — the intent stays pending; we must not assume the order is absent` };
     }
+    // Some adapters search bounded history, so null alone cannot safely release
+    // an old intent. A positively identified terminal order with no fills can.
+    if (automatic && found?.orderId && ['CANCELLED', 'EXPIRED', 'FAILED', 'REJECTED'].includes(found.status)
+      && found.filledSize === 0) {
+      const removed = resolvePlacementIntent(exchange, pair, intentId);
+      placementIntentCache = { at: 0, intents: [] };
+      return { success: removed, message: 'Exchange confirmed an unfilled terminal order; placements may resume' };
+    }
+    if (automatic && found && !['OPEN', 'PARTIALLY_FILLED', 'FILLED', 'CANCELLED', 'EXPIRED', 'FAILED', 'REJECTED'].includes(found.status)) {
+      return { success: false, error: 'Exchange order status remains unknown; retrying automatically' };
+    }
+    if (automatic && !found) return { success: false, error: 'No matching order found; retaining the intent and retrying automatically' };
     if (!found) {
       return { success: false, error: `The exchange reports no order for client id ${intent.clientOrderId}. If you have confirmed that, discard the intent instead — an empty lookup is never auto-cleared.` };
     }
@@ -5170,7 +5182,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     resolvePlacementIntent(exchange, pair, intentId);
 
-    logger.info(`ℹ️ ✅ [${exchange}] Operator adopted exchange order ${found.orderId} for placement intent ${intentId} (${intent.action ?? 'order'})`, {
+    logger.info(`ℹ️ ✅ [${exchange}] ${automatic ? 'Automatically adopted' : 'Operator adopted'} exchange order ${found.orderId} for placement intent ${intentId} (${intent.action ?? 'order'})`, {
       intentId,
       orderId: found.orderId,
       clientOrderId: intent.clientOrderId,
@@ -5179,6 +5191,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     });
     placementIntentCache = { at: 0, intents: [] };
     return { success: true, adoptedOrderId: found.orderId, message: adopted.message };
+  };
+
+  // Run under the periodic reconciliation lock, before polling fills or TP
+  // repair. Sequential lookups avoid bursts and cannot overlap another tick.
+  const reconcilePendingPlacements = async () => {
+    if (isDryRun || typeof adapter.findOrderByClientOrderId !== 'function') return;
+    for (const intent of getBlockingPlacementIntents(exchange, pair)) {
+      if (!intent.clientOrderId) continue;
+      try {
+        const result = await reconcilePlacementIntent(intent.id, 'adopt', { automatic: true });
+        if (!result.success) logger.warn(`⏳ [${exchange}] Placement ${intent.id}: ${result.error}`);
+      } catch (err) {
+        logger.warn(`⏳ [${exchange}] Placement ${intent.id} recovery will retry: ${err.message}`);
+      }
+    }
   };
 
   /**
@@ -6043,6 +6070,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       handleOrderFill,
       getMergeTpSnapshots: () => ({ pending: new Map(pendingMergeTpOrders), completed: new Map(completedMergeTpOrders) }),
       reconcileTick,
+      reconcilePendingPlacements,
       checkOfflineOrderFills,
       // Background persistence guards (issue #532)
       saveLiveStateGuarded,

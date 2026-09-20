@@ -585,3 +585,20 @@ describe('gemini placeMarketBuy partial-IOC handling (issue #208A)', () => {
     assert.match(res.errorMessage, /cancelled/i);
   });
 });
+
+describe('Gemini client-id array lookup', () => {
+  const order = { order_id: '73771292061492539', client_order_id: 'client-1', symbol: 'ethusd', side: 'sell', is_live: false, is_cancelled: true, executed_amount: '0', original_amount: '0.033715', timestampms: 1789786336550 };
+  it('normalizes the real client-id response without losing order id precision', async () => {
+    installFetchMock(() => [order]);
+    const found = await createGeminiAdapter(keysPath).findOrderByClientOrderId('client-1', 'ETHUSD');
+    assert.equal(found.orderId, order.order_id);
+    assert.equal(found.status, 'CANCELLED');
+    assert.equal(found.filledSize, 0);
+  });
+  for (const [name, response] of [['missing fill amount', [{ ...order, executed_amount: undefined }]], ['invalid fill amount', [{ ...order, executed_amount: 'invalid' }]], ['empty', []], ['wrong client', [{ ...order, client_order_id: 'other' }]], ['duplicate', [order, order]], ['wrong product', [{ ...order, symbol: 'btcusd' }]], ['missing id', [{ ...order, order_id: undefined }]]]) {
+    it(`retains uncertainty for ${name} responses`, async () => {
+      installFetchMock(() => response);
+      await assert.rejects(createGeminiAdapter(keysPath).findOrderByClientOrderId('client-1', 'ETHUSD'), /unresolved/);
+    });
+  }
+});
