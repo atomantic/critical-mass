@@ -185,6 +185,20 @@ describe('createEngineLocks — reconcile and entry', () => {
     assert.equal(locks.getFlags().reconcileInProgress, false);
   });
 
+  it('withReconcileLock lets the caller catch an async rejection and retry', async () => {
+    const locks = createEngineLocks();
+    const failure = Promise.reject(new Error('reconcile failed'));
+    const result = locks.withReconcileLock(() => failure);
+    assert.equal(result, failure, 'the caller retains the original promise');
+    await assert.rejects(result, /reconcile failed/);
+    // An ignored .finally() chain rejects separately on the next turn even
+    // though the original rejection was caught; node:test reports it as a
+    // failure. Let that turn run before asserting the gate is reusable.
+    await tick();
+    assert.equal(locks.getFlags().reconcileInProgress, false);
+    assert.equal(await locks.withReconcileLock(async () => 'retried'), 'retried');
+  });
+
   it('withEntryLock acquire/releases around fn', async () => {
     const locks = createEngineLocks();
     let during = false;
