@@ -15,7 +15,14 @@ const { createOrderExecutor } = require('../src/order-executor');
 const { createDryRunExecutor } = require('../src/dry-run-executor');
 const { createRegimeEngine } = require('../src/regime-engine');
 
-const TEST_PAIR = 'BTC-USDC';
+// A SENTINEL pair, never a real one. Constructing an executor/engine for a pair
+// creates data/<exchange>/<pair>/ and the after() hook below recursively deletes
+// it — so naming a live fund here rm -rf's that fund's real fill-ledger.json,
+// regime-state.json and closed-trades.json on every `npm test`. This file used
+// 'BTC-USDC', the production Coinbase fund, and destroyed it repeatedly before
+// anyone connected the two. Match the sibling suites (__test201__,
+// __testpartial__) and keep the name impossible to confuse with a real pair.
+const TEST_PAIR = '__testexec__';
 const JUNK_DIR = path.join(__dirname, '..', 'data', 'coinbase', TEST_PAIR);
 
 const engines = [];
@@ -109,8 +116,8 @@ describe('Order Executor Contract - Interface Parity', () => {
 
   it('both live and dry-run executors implement every required contract method', () => {
     const adapter = makeMockAdapter();
-    const liveExec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {}, 'BTC-USDC');
-    const dryRunExec = createDryRunExecutor('coinbase', baseConfig(), { lastPrice: 50000, regime: 'NEUTRAL' }, {}, 'BTC-USDC');
+    const liveExec = createOrderExecutor('coinbase', baseConfig(), adapter, TEST_PAIR, {}, TEST_PAIR);
+    const dryRunExec = createDryRunExecutor('coinbase', baseConfig(), { lastPrice: 50000, regime: 'NEUTRAL' }, {}, TEST_PAIR);
 
     // Neither should throw validation errors
     assert.doesNotThrow(() => validateExecutor(liveExec, 'live'));
@@ -133,8 +140,8 @@ describe('Order Executor Contract - Interface Parity', () => {
 
   it('both executors return identical pendingCounts key sets', () => {
     const adapter = makeMockAdapter();
-    const liveExec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {}, 'BTC-USDC');
-    const dryRunExec = createDryRunExecutor('coinbase', baseConfig(), { lastPrice: 50000, regime: 'NEUTRAL' }, {}, 'BTC-USDC');
+    const liveExec = createOrderExecutor('coinbase', baseConfig(), adapter, TEST_PAIR, {}, TEST_PAIR);
+    const dryRunExec = createDryRunExecutor('coinbase', baseConfig(), { lastPrice: 50000, regime: 'NEUTRAL' }, {}, TEST_PAIR);
 
     const expectedKeys = ['bodies', 'entries', 'ladderEntries', 'takeProfits', 'total'];
 
