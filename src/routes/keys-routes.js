@@ -64,7 +64,10 @@ module.exports = (app, deps) => {
     let keysData;
     if (exchange === 'coinbase') {
       if (!body.name || !body.privateKey) {
-        return res.status(400).json({ success: false, error: 'name and privateKey are required for Coinbase' });
+        const errorDetail = (body.apiKey || body.apiSecret)
+          ? ' (Coinbase Advanced API / CDP keys are required, not regular Coinbase API keys)'
+          : '';
+        return res.status(400).json({ success: false, error: `name and privateKey are required for Coinbase${errorDetail}` });
       }
       keysData = { name: body.name, privateKey: body.privateKey, createdAt: new Date().toISOString() };
     } else {

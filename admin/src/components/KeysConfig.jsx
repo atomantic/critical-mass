@@ -3,18 +3,33 @@ import { useState, useEffect } from 'react'
 const EXCHANGE_FIELD_CONFIGS = {
   coinbase: {
     title: 'Coinbase Advanced Trade API',
-    description: 'Configure your Coinbase API credentials. You can create API keys at https://www.coinbase.com/settings/api',
+    description: 'Configure your Coinbase Advanced Trade API credentials. Keys must be generated through the Coinbase Developer Platform (CDP) — regular Coinbase API keys are not supported.',
+    portalUrl: 'https://cloud.coinbase.com/access/api',
+    portalLabel: 'Coinbase Developer Platform (CDP)',
+    notice: 'Critical Mass requires Coinbase Advanced API (CDP) credentials. Do NOT use regular or legacy Coinbase API keys from coinbase.com/settings/api — standard API secrets cannot authenticate and will fail.',
     fields: [
-      { key: 'name', label: 'API Key Name', type: 'text', placeholder: 'organizations/.../apiKeys/...', help: 'The API key identifier (starts with "organizations/")' },
-      { key: 'privateKey', label: 'Private Key', type: 'textarea', placeholder: '-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----', help: 'The EC private key in PEM format' },
+      { key: 'name', label: 'API Key Name', type: 'text', placeholder: 'organizations/.../apiKeys/...', help: 'The CDP API key name (starts with "organizations/"). Regular Coinbase API keys do not use this format.' },
+      { key: 'privateKey', label: 'Private Key', type: 'textarea', placeholder: '-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----', help: 'The CDP EC private key in PEM format (starts with "-----BEGIN EC PRIVATE KEY-----"). Standard API secrets are not supported.' },
     ],
   },
   gemini: {
     title: 'Gemini API',
     description: 'Configure your Gemini API credentials. You can create API keys at https://exchange.gemini.com/settings/api',
+    portalUrl: 'https://exchange.gemini.com/settings/api',
+    portalLabel: 'Gemini API Settings',
     fields: [
       { key: 'apiKey', label: 'API Key', type: 'text', placeholder: 'master-xxxxxxxx', help: 'Your Gemini API key' },
       { key: 'apiSecret', label: 'API Secret', type: 'password', placeholder: '••••••••••••••••', help: 'Your Gemini API secret' },
+    ],
+  },
+  cryptocom: {
+    title: 'Crypto.com API',
+    description: 'Configure your Crypto.com Exchange API credentials. You can create API keys at https://exchange.crypto.com/settings/api',
+    portalUrl: 'https://exchange.crypto.com/settings/api',
+    portalLabel: 'Crypto.com Exchange API Settings',
+    fields: [
+      { key: 'apiKey', label: 'API Key', type: 'text', placeholder: 'your-api-key', help: 'Your Crypto.com API key' },
+      { key: 'apiSecret', label: 'API Secret', type: 'password', placeholder: '••••••••••••••••', help: 'Your Crypto.com API secret' },
     ],
   },
 }
@@ -197,7 +212,41 @@ function KeysConfig({ exchange, onSave }) {
           </button>
         </div>
 
-        <p className="text-gray-400 text-sm mb-1">{config.description}</p>
+        {config.notice && (
+          <div className="mb-4 p-3.5 rounded-lg bg-amber-950/40 border border-amber-500/40 text-amber-200 text-xs leading-relaxed">
+            <div className="font-semibold text-amber-100 flex items-center gap-1.5 mb-1 text-sm">
+              <svg className="w-4 h-4 text-amber-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <span>Coinbase Advanced API Required</span>
+            </div>
+            <p className="mb-2 text-amber-200/90">{config.notice}</p>
+            {config.portalUrl && (
+              <a
+                href={config.portalUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-amber-300 hover:text-white underline font-medium"
+              >
+                Create API Key on {config.portalLabel || 'Portal'} →
+              </a>
+            )}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-2 text-sm text-gray-400 mb-1">
+          <p>{config.description}</p>
+          {!config.notice && config.portalUrl && (
+            <a
+              href={config.portalUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-blue-400 hover:text-blue-300 underline shrink-0 inline-flex items-center gap-1"
+            >
+              Open Settings →
+            </a>
+          )}
+        </div>
         <p className="text-gray-400 text-xs mb-6">
           {configured && createdAt ? `Stored on ${new Date(createdAt).toLocaleString()}` : ' '}
         </p>
