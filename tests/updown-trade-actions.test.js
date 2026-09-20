@@ -29,8 +29,10 @@ const setup = async (method, request) => {
   const calls = []
   const toasts = []
   let cursor = 0
+  let idCursor = 0
   let mounted = false
   const component = vm.runInNewContext(componentSource, {
+    useId: () => `trade-control-${idCursor++}`,
     useState: initial => {
       const index = cursor++
       if (!(index in state)) state[index] = initial
@@ -49,7 +51,7 @@ const setup = async (method, request) => {
       return options ? request() : response(true, { success: true, trades: [trade], summary: null })
     },
   })
-  const render = () => { cursor = 0; const result = component(); mounted = true; return result }
+  const render = () => { cursor = 0; idCursor = 0; const result = component(); mounted = true; return result }
   render()
   await flush()
   if (method === 'PUT') render().handleEdit(trade)
