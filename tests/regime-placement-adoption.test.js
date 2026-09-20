@@ -113,3 +113,70 @@ describe('regime operator placement adoption', () => {
     assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
   });
 });
+
+describe('automatic placement recovery', () => {
+  it('adopts a body TP and persists ownership without operator input', async () => {
+    const body = seedBody();
+    makeIntent('body_tp', { bodyId: body.id });
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(diskPosition().celestialBodies[0].tpOrderId, 'adopted');
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+  });
+  it('clears a confirmed unfilled cancellation automatically', async () => {
+    makeIntent('body_tp', { bodyId: 'body-1' });
+    adapter.findOrderByClientOrderId = async () => ({ orderId: 'cancelled', status: 'CANCELLED', filledSize: 0 });
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(executor.getPendingCounts().total, 0);
+  });
+  it('retries a failed lookup and retains partial fills for normal accounting', async () => {
+    seedBody();
+    makeIntent('body_tp', { bodyId: 'body-1' });
+    adapter.findOrderByClientOrderId = async () => { throw new Error('timeout'); };
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+    adapter.findOrderByClientOrderId = async () => ({ orderId: 'partial', status: 'CANCELLED', filledSize: 0.1 });
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(diskPosition().celestialBodies[0].tpOrderId, 'partial');
+    assert.equal(executor.getPendingCounts().total, 1);
+  });
+  it('keeps an empty history lookup blocked', async () => {
+    makeIntent('entry_bid');
+    adapter.findOrderByClientOrderId = async () => null;
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+  });
+  it('keeps unknown statuses blocked', async () => {
+    makeIntent('entry_bid');
+    adapter.findOrderByClientOrderId = async () => ({ orderId: 'unknown', status: 'UNKNOWN' });
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+  });
+});
+
+// Exercise the production scheduler entry point, including its overlap guard.
+it('periodic reconciliation holds its lock through recovery and adopts before fill polling', async () => {
+  makeIntent('entry_bid');
+  let finishLookup;
+  let lookups = 0;
+  adapter.findOrderByClientOrderId = () => {
+    lookups++;
+    return new Promise(resolve => { finishLookup = resolve; });
+  };
+  let trackedAtPoll = false;
+  executor.checkPendingOrderFills = async () => {
+    trackedAtPoll = executor.getPendingCounts().total === 1;
+    return { polled: 0, filled: 0, cancelled: 0 };
+  };
+  engine._test.setRecoveryModule({ reconcile: async () => ({ updated: false }) });
+  engine._test.setRunning(true);
+  const pass = engine._test.reconcileTick();
+  engine._test.reconcileTick();
+  assert.equal(lookups, 1);
+  assert.equal(engine._test.getFlags().reconcileInProgress, true);
+  finishLookup({ orderId: 'recovered', status: 'OPEN' });
+  await pass;
+  assert.equal(trackedAtPoll, true);
+  assert.equal(engine._test.getFlags().reconcileInProgress, false);
+  assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+});

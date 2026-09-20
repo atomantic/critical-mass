@@ -586,20 +586,34 @@ const createGeminiAdapter = (keysPath = null) => {
    * failure propagates: "we could not check" must never be read as "it isn't
    * there", which is exactly how a live order gets double-placed.
    * @param {string} clientOrderId - Deterministic client order id we submitted
-   * @param {string|null} [_productId] - Unused; Gemini's lookup is global by id
+   * @param {string|null} [productId] - Optional product identity check
    * @returns {Promise<OrderDetails|null>} Normalized order details, or null if absent
    */
-  adapter.findOrderByClientOrderId = async (clientOrderId, _productId = null) => {
+  adapter.findOrderByClientOrderId = async (clientOrderId, productId = null) => {
     if (!clientOrderId) return null;
 
     const notFound = Symbol('order-not-found');
-    const result = await makeRestRequest('/v1/order/status', { client_order_id: clientOrderId })
+    let result = await makeRestRequest('/v1/order/status', { client_order_id: clientOrderId })
       .catch((err) => {
         if (isOrderNotFound(err)) return notFound;
         throw err;
       });
 
     if (result === notFound) return null;
+
+    // Client-id lookups return an array in production. Select only an exact,
+    // unique match; an empty or ambiguous array is not proof of absence.
+    if (Array.isArray(result)) {
+      const matches = result.filter(order => order?.client_order_id === clientOrderId);
+      if (matches.length !== 1) {
+        throw new Error(`Gemini client order lookup returned ${matches.length} matching orders — outcome still unresolved`);
+      }
+      result = matches[0];
+    }
+    if ((result?.client_order_id && result.client_order_id !== clientOrderId)
+      || (productId && result?.symbol && result.symbol.toLowerCase() !== toGeminiSymbol(productId))) {
+      throw new Error('Gemini client order lookup returned a different order — outcome still unresolved');
+    }
 
     // A decoded response that carries no order_id is INCONCLUSIVE, not absent.
     // Throwing keeps the placement unresolved (the caller re-raises rather than
@@ -609,6 +623,10 @@ const createGeminiAdapter = (keysPath = null) => {
       throw new Error(`Gemini order lookup for client_order_id ${clientOrderId} returned no order id — outcome still unresolved`);
     }
 
+    if (result.executed_amount == null || String(result.executed_amount).trim() === ''
+      || !Number.isFinite(Number(result.executed_amount)) || Number(result.executed_amount) < 0) {
+      throw new Error('Gemini client order lookup returned no valid fill amount — outcome still unresolved');
+    }
     return normalizeOrderStatus(result);
   };
 
