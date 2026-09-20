@@ -10,6 +10,27 @@
  * admin UI only connects to the gateway (:5570).
  */
 
+const { tradeEvents } = require('../trade-events');
+
+/** Bridge process-local engine events into the gateway's IPC transport. */
+const forwardTradeEvents = (ipcServer, emitter = tradeEvents) => {
+  const listener = (event) => ipcServer.broadcast('trade:event', event);
+  emitter.on('trade', listener);
+  return () => emitter.removeListener('trade', listener);
+};
+
+/** Deliver trade events through the gateway bus so its notifier hears them. */
+const forwardIPCEvent = (io, msg, emitter = tradeEvents) => {
+  if (msg.channel === 'trade:event') {
+    // The gateway's existing trade listener performs the single UI emission.
+    emitter.emit('trade', msg.payload);
+  } else if (msg.room) {
+    io.to(msg.room).emit(msg.channel, msg.payload);
+  } else {
+    io.emit(msg.channel, msg.payload);
+  }
+};
+
 /**
  * Create a Socket.IO-compatible proxy backed by an IPC server
  * @param {Object} ipcServer - IPC server instance (from ipc-server.js)
@@ -55,4 +76,4 @@ const createSocketIOProxy = (ipcServer) => {
   return proxy;
 };
 
-module.exports = { createSocketIOProxy };
+module.exports = { createSocketIOProxy, forwardTradeEvents, forwardIPCEvent };

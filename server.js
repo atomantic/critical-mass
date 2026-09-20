@@ -41,6 +41,7 @@ const {
   fundLabel,
 } = require('./src/shared-utils');
 const { createIPCClient } = require('./src/ipc/ipc-client');
+const { forwardIPCEvent } = require('./src/ipc/socket-io-proxy');
 const { maintenanceGuard, isMaintenanceActive } = require('./src/restore-maintenance');
 const { createUpDownService } = require('./src/updown/updown-service');
 const { createCandleCache } = require('./src/candle-cache');
@@ -204,11 +205,7 @@ const ipcEventListeners = [];
 const createExchangeIPC = (port, name) => {
   const client = createIPCClient(`ws://127.0.0.1:${port}`, name, {
     onEvent: (msg) => {
-      if (msg.room) {
-        io.to(msg.room).emit(msg.channel, msg.payload);
-      } else {
-        io.emit(msg.channel, msg.payload);
-      }
+      forwardIPCEvent(io, msg);
       for (const listener of ipcEventListeners) listener(name, msg);
     },
     onConnect: () => log('INFO', `🔗 Gateway connected to ${name} engine IPC`),

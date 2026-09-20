@@ -33,6 +33,8 @@ const createIPCServer = (port, name) => {
   let wss = null;
   /** @type {Set<WebSocket>} */
   const clients = new Set();
+  /** @type {Set<Promise<void>>} Outbound frames awaiting their send callback. */
+  const pendingBroadcasts = new Set();
   /** @type {Map<string, (payload: any, exchange: string|null, pair: string|null) => Promise<any>>} */
   const requestHandlers = new Map();
 
@@ -182,10 +184,30 @@ const createIPCServer = (port, name) => {
     const data = serialize(msg);
     for (const client of clients) {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(data);
+        let complete;
+        const sent = new Promise((resolve) => { complete = resolve; });
+        pendingBroadcasts.add(sent);
+        const onSent = (err) => {
+          pendingBroadcasts.delete(sent);
+          complete();
+          if (err) {
+            logger.error(`❌ 🔗 [${name}] IPC event send failed: ${err.message}`, {
+              channel, event: 'broadcast', error: err.message,
+            });
+          }
+        };
+        try {
+          client.send(data, onSent);
+        } catch (err) {
+          onSent(err);
+        }
       }
     }
   };
+
+  // Fatal process guards wait for queued frames to leave the engine socket.
+  // The guard owns the timeout, so a wedged socket cannot prevent exit(1).
+  const flush = () => Promise.all([...pendingBroadcasts]);
 
   /**
    * Register a handler for incoming requests on a channel.
@@ -217,6 +239,7 @@ const createIPCServer = (port, name) => {
     start,
     stop,
     broadcast,
+    flush,
     onRequest,
     getClientCount: () => clients.size,
   };
