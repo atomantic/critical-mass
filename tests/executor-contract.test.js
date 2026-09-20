@@ -4,6 +4,9 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+const { createIsolatedDataDir } = require('./test-data-dir');
+const isolatedData = createIsolatedDataDir('cm-executor-contract-test');
+
 // Neutralize updateRegimeConfig before requiring regime-engine to avoid writing data/config.json
 const configUtils = require('../src/config-utils');
 const originalUpdateRegimeConfig = configUtils.updateRegimeConfig;
@@ -16,14 +19,14 @@ const { createDryRunExecutor } = require('../src/dry-run-executor');
 const { createRegimeEngine } = require('../src/regime-engine');
 
 // A SENTINEL pair, never a real one. Constructing an executor/engine for a pair
-// creates data/<exchange>/<pair>/ and the after() hook below recursively deletes
-// it — so naming a live fund here rm -rf's that fund's real fill-ledger.json,
-// regime-state.json and closed-trades.json on every `npm test`. This file used
-// 'BTC-USDC', the production Coinbase fund, and destroyed it repeatedly before
-// anyone connected the two. Match the sibling suites (__test201__,
-// __testpartial__) and keep the name impossible to confuse with a real pair.
+// writes per-fund state, so the suite binds it to a disposable temp root. This
+// file used 'BTC-USDC', the production Coinbase fund, and its cleanup destroyed
+// that fund's real fill-ledger.json, regime-state.json and closed-trades.json on
+// every `npm test` before anyone connected the two. Match the sibling suites
+// (__test201__, __testpartial__) and keep the name impossible to confuse with a
+// real pair.
 const TEST_PAIR = '__testexec__';
-const JUNK_DIR = path.join(__dirname, '..', 'data', 'coinbase', TEST_PAIR);
+const JUNK_DIR = isolatedData.fundDir('coinbase', TEST_PAIR);
 
 const engines = [];
 
@@ -31,8 +34,8 @@ after(() => {
   for (const eng of engines) {
     if (eng._test?.clearTimers) eng._test.clearTimers();
   }
-  fs.rmSync(JUNK_DIR, { recursive: true, force: true });
   configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
+  isolatedData.cleanup();
 });
 
 const baseConfig = (overrides = {}) => ({

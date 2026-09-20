@@ -11,12 +11,15 @@
 // its remaining tranche was never ingested. That leaked 1.204 ETH across 61
 // buy fills on gemini/ETHUSD before an exchange reconciliation caught it.
 //
-// Disk safety: throwaway pair '__testpartial__' → data/coinbase/__testpartial__/,
-// deleted in after().
+// Disk safety: throwaway pair '__testpartial__' lives under a disposable temp
+// root that is removed in after().
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+
+const { createIsolatedDataDir } = require('./test-data-dir');
+const isolatedData = createIsolatedDataDir('cm-partial-entry-test');
 
 // The size optimizer persists per-pair into the SHARED data/config.json, so a
 // throwaway pair would register itself as a real fund. Neutralize BEFORE
@@ -35,13 +38,13 @@ adapters.getAdapter = () => ({ getReconciliationFills: async () => stubbedExchan
 const { createRegimeEngine } = require('../src/regime-engine');
 
 const TEST_PAIR = '__testpartial__';
-const JUNK_DIR = path.join(__dirname, '..', 'data', 'coinbase', TEST_PAIR);
+const JUNK_DIR = isolatedData.fundDir('coinbase', TEST_PAIR);
 
 const engines = [];
 after(() => {
   for (const eng of engines) eng._test.clearTimers();
-  fs.rmSync(JUNK_DIR, { recursive: true, force: true });
   configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
+  isolatedData.cleanup();
   adapters.getAdapter = originalGetAdapter;
 });
 

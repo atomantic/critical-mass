@@ -28,6 +28,8 @@ const BASE_CONFIG = {
       enabled: true,
       intervalMs: 24 * 60 * 60 * 1000,
       maxBackups: 7,
+      fundStateIntervalMs: 60 * 60 * 1000,
+      fundStateMaxBackups: 24,
       includePriceCache: false,
     },
   },
@@ -150,6 +152,8 @@ describe('PUT /api/backups/config', () => {
       enabled: false,
       intervalMs: 21600000,
       maxBackups: 14,
+      fundStateIntervalMs: 3600000,
+      fundStateMaxBackups: 48,
       includePriceCache: true,
     });
     assert.equal(res.statusCode, 200, JSON.stringify(res.body));
@@ -157,6 +161,8 @@ describe('PUT /api/backups/config', () => {
     assert.equal(res.body.config.enabled, false);
     assert.equal(res.body.config.intervalMs, 21600000);
     assert.equal(res.body.config.maxBackups, 14);
+    assert.equal(res.body.config.fundStateIntervalMs, 3600000);
+    assert.equal(res.body.config.fundStateMaxBackups, 48);
     assert.equal(res.body.config.includePriceCache, true);
     assert.equal(getRescheduleCalls(), 1);
 
