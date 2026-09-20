@@ -118,3 +118,48 @@ describe('coinbase unknown-outcome reconciliation (issue #226)', () => {
     assert.equal(called, false);
   });
 });
+
+describe('coinbase fill-drift reconciliation (issue #609)', () => {
+  it('reports fills when Coinbase marks a page as continued without a cursor', async () => {
+    const adapter = createCoinbaseAdapter(keysPath);
+    let calls = 0;
+    global.fetch = async (url) => {
+      calls++;
+      assert.equal(new URL(url).pathname, '/api/v3/brokerage/orders/historical/fills');
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          has_next: true,
+          fills: [{
+            trade_id: 'trade-609',
+            order_id: 'order-609',
+            product_id: 'BTC-USDC',
+            side: 'BUY',
+            price: '50000',
+            size: '0.01',
+            commission: '0.05',
+            trade_time: '2026-09-20T00:00:00.000Z',
+          }],
+        }),
+      };
+    };
+
+    const fills = await adapter.getReconciliationFills('BTC-USDC', Date.parse('2026-09-19T00:00:00.000Z'));
+
+    assert.equal(calls, 1, 'cursorless response must terminate the sweep');
+    assert.deepEqual(fills, [{
+      tradeId: 'trade-609',
+      orderId: 'order-609',
+      side: 'buy',
+      price: 50000,
+      size: 0.01,
+      quoteAmount: 500,
+      fee: 0.05,
+      feeCurrency: 'USDC',
+      timestamp: Date.parse('2026-09-20T00:00:00.000Z'),
+      liquidityIndicator: 'TAKER',
+    }]);
+  });
+});
