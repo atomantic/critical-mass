@@ -2839,7 +2839,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // order-events WS, so `checkPendingOrderFills` over that map is the ONLY
       // detector of the order completing — nothing re-derives it from the
       // exchange. That leaked 1.204 ETH of ETHUSD buys across 61 fills before
-      // it was caught; see docs/pnl-architecture.md.
+      // it was caught; see docs/fill-ledger-sell-linkage.md.
       const entryIsTerminal = !fillData.isPartialFill;
       if (entryIsTerminal && positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
         positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(

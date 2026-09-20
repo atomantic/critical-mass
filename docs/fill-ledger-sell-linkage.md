@@ -110,3 +110,42 @@ When modifying annotation code, verify:
 - [ ] Offline fill detection also links source buys to the sell orderId
 - [ ] `placeTakeProfitOrder` in celestial mode checks `ownedByBody` before cancelling `activeTpOrderId`
 - [ ] Repair scripts always set `isSatellite: true` on affected buys as a defensive measure
+
+## What `sellOrderId` is not (2026-09-20)
+
+`sellOrderId` is a **crash-resilience breadcrumb, not a consumption record.** It is
+stamped at TP *placement* over every fill of a buy order, and re-stamped whenever
+bodies merge or a TP is cancelled and replaced. It carries no quantity: a buy order
+that was only partly sold looks exactly like one that was fully sold.
+
+Two defects followed from reading more into it than that, both found on
+gemini/ETHUSD:
+
+**1. Inventory that vanished from the position model.**
+`computeRealizedFromCyclePairs` counts a buy as held open only when `sellOrderId` is
+absent *or* names a sell with no fills (`fill-ledger.js`). Orders whose TP was sized
+from only their first tranche — see the partial-fill leak below — therefore counted
+as fully closed, and their unsold remainder left the model: in no body, no
+take-profit, absent from the UI. 1.14 ETH sat in that state.
+
+Making the rule quantity-aware does **not** fix it. Because the linkage is
+re-stamped, `Σ(buys claiming sell X) − sold − holdback` reported 7.89 ETH against a
+true 1.14. The only identity that cannot lie is
+
+```
+exchange balance == Σ body.assetQty + realizedAssetPnL (reserves)
+```
+
+`sweepLedgerDrift` asserts exactly that (`⚖️ Position coverage gap`), and
+`scripts/adopt-untracked-asset.js` repairs a gap by folding the difference into a
+body at a FIFO-derived cost basis. Do not re-derive inventory from `sellOrderId`.
+
+**2. The partial-fill leak that created the gap.**
+`handleOrderFill`'s buy branch dropped the order from
+`positionState.pendingEntryOrders` on *any* fill, partial included. That list is the
+only persisted mirror of order-executor's in-memory `pendingOrders` map, and Gemini
+has no order-events WebSocket (`adapters/gemini/websocket.js` subscribes `l2` only),
+so polling that map is the sole detector of an order completing. Losing the entry
+orphaned the unfilled remainder permanently — 61 buy fills / 1.204 ETH between May
+and September 2026. Both removals are now gated on `!fillData.isPartialFill`;
+`tests/partial-entry-tracking.test.js` pins it.

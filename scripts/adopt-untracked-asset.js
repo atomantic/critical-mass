@@ -130,7 +130,7 @@ async function main() {
   const costBasis = roundUSDC(untracked * fifo.unit);
 
   console.log(`  exchange balance : ${roundAsset(onExchange)} ${BASE}`);
-  console.log(`  ledger net       : ${roundAsset(ledgerNet)} ${BASE}${Math.abs(ledgerNet - onExchange) > 1e-6 ? '   ⚠️  ledger does not match the exchange — run backfill-missing-fills.js first' : ''}`);
+  console.log(`  ledger net       : ${roundAsset(ledgerNet)} ${BASE}`);
   console.log(`  in ${String(bodies.length).padStart(2)} bodies     : ${roundAsset(inBodies)} ${BASE}`);
   console.log(`  reserves         : ${roundAsset(reserves)} ${BASE} (zero-cost)`);
   console.log(`  UNTRACKED        : ${untracked} ${BASE}\n`);
@@ -138,6 +138,24 @@ async function main() {
   if (untracked <= 0) {
     console.log('✅ Nothing to adopt — the model already covers the balance.');
     return;
+  }
+
+  // The cost basis is a FIFO replay of the ledger, so a ledger that disagrees
+  // with the exchange makes it meaningless — and dangerously so: too few
+  // remaining lots drives the per-unit cost toward zero, which prices the new
+  // body's TP at ~0 and dumps the whole position at market. Refuse rather than
+  // warn.
+  if (Math.abs(ledgerNet - onExchange) > 1e-6) {
+    console.error(
+      `\n❌ the ledger (${roundAsset(ledgerNet)}) and the exchange (${roundAsset(onExchange)}) disagree by `
+      + `${roundAsset(Math.abs(ledgerNet - onExchange))} ${BASE} — the FIFO cost basis would be wrong.`
+      + '\n   Run scripts/backfill-missing-fills.js first.'
+    );
+    process.exit(1);
+  }
+  if (!(fifoRemaining(fills).unit > 0)) {
+    console.error('\n❌ FIFO replay left no priced inventory — refusing to adopt at a zero cost basis.');
+    process.exit(1);
   }
 
   console.log(`  FIFO remaining   : ${roundAsset(fifo.qty)} ${BASE} cost $${roundUSDC(fifo.cost)} → $${roundUSDC(fifo.unit)}/${BASE}`);
