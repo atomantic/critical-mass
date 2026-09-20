@@ -423,6 +423,7 @@
  * @property {number} totalCostBasis - Total cost including fees
  * @property {number} avgCostBasis - Average cost per BTC
  * @property {number} cycleBuys - Number of buy orders filled in current cycle
+ * @property {string|null} [activeCycleId] - Durable operator-selected cycle boundary
  * @property {number} lastEntryPrice - Price of last entry
  * @property {number} lastEntryTime - Timestamp of last entry
  * @property {number} anchorPrice - Price anchor for volatility clock
