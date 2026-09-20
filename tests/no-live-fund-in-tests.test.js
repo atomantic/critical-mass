@@ -73,6 +73,10 @@ describe('tests never target a live fund directory', () => {
     const safe = "const dir = path.join(os.tmpdir(), 'cm-x', 'data', 'coinbase', 'BTC-USDC');";
     assert.deepEqual(repoDataPairs(safe), []);
 
+    // The inline form: the path is built inside the rmSync call itself.
+    const inline = "fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', 'BTC-USDC'), { recursive: true });";
+    assert.deepEqual(repoDataPairs(inline), ['BTC-USDC']);
+
     // A sentinel pair under the repo data dir is the approved pattern.
     const sentinel = `
       const TEST_PAIR = '__testexec__';
@@ -91,8 +95,12 @@ describe('tests never target a live fund directory', () => {
     for (const name of fs.readdirSync(TESTS_DIR)) {
       if (!name.endsWith('.test.js') || name === path.basename(__filename)) continue;
       const source = fs.readFileSync(path.join(TESTS_DIR, name), 'utf8');
-      // Only a recursive delete can take out a fund directory.
-      if (!/rmSync\s*\([^)]*recursive/.test(source)) continue;
+      // Only a recursive delete can take out a fund directory. Test the two
+      // halves separately: a paren-bounded window cannot span a NESTED call, so
+      // `fs.rmSync(path.join(...), { recursive: true })` — the inline form of the
+      // very bug this guards — would slip past a single combined pattern.
+      if (!/\brm(?:Sync|dirSync)?\s*\(/.test(source)) continue;
+      if (!/recursive\s*:\s*true/.test(source)) continue;
       for (const pair of repoDataPairs(source)) {
         if (live.has(pair)) offenders.push(`${name} → ${pair}`);
       }

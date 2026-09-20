@@ -16,7 +16,7 @@
 
 const { getAdapter } = require('./adapters');
 const { getUnaccountedFills } = require('./sync-fills');
-const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency } = require('./config-utils');
+const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency, getConfiguredFunds } = require('./config-utils');
 const { createFillLedger } = require('./fill-ledger');
 const { createClosedTrades } = require('./closed-trades');
 const {
@@ -2840,19 +2840,31 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // detector of the order completing — nothing re-derives it from the
       // exchange. That leaked 1.204 ETH of ETHUSD buys across 61 fills before
       // it was caught; see docs/fill-ledger-sell-linkage.md.
+      //
+      // A partial keeps the order tracked but must SHRINK it to the unfilled
+      // remainder: apy-calculator sums pendingEntryOrders' sizeUsdc into
+      // deployedInPosition alongside the bodies' costBasis, so leaving the
+      // original full size there double-counts the tranche already committed to
+      // a body and under-reports availableCapital until the remainder fills.
       const entryIsTerminal = !fillData.isPartialFill;
-      if (entryIsTerminal && positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
-        positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(
-          e => e.orderId !== fillData.orderId
-        );
+      const shrinkTracked = (orders) => orders.map(o => (o.orderId !== fillData.orderId ? o : {
+        ...o,
+        assetQty: Math.max(0, (o.assetQty || 0) - summary.totalSize),
+        sizeUsdc: Math.max(0, (o.sizeUsdc || 0) - (summary.totalValue + summary.totalFees)),
+      }));
+
+      if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
+        positionState.pendingEntryOrders = entryIsTerminal
+          ? positionState.pendingEntryOrders.filter(e => e.orderId !== fillData.orderId)
+          : shrinkTracked(positionState.pendingEntryOrders);
       }
 
-      // Remove from ladder tracking if it was a ladder order (same terminal-only
-      // rule: a partially filled ladder rung is still resting on the book).
-      if (entryIsTerminal && isLadderFill && positionState.pendingLadderOrders && positionState.pendingLadderOrders.length > 0) {
-        positionState.pendingLadderOrders = positionState.pendingLadderOrders.filter(
-          o => o.orderId !== fillData.orderId
-        );
+      // Same rule for a ladder rung: a partially filled rung is still resting on
+      // the book, so it stays tracked — at its remaining size.
+      if (isLadderFill && positionState.pendingLadderOrders && positionState.pendingLadderOrders.length > 0) {
+        positionState.pendingLadderOrders = entryIsTerminal
+          ? positionState.pendingLadderOrders.filter(o => o.orderId !== fillData.orderId)
+          : shrinkTracked(positionState.pendingLadderOrders);
       }
 
       // Ladder orders stay in place on individual fills (no reprice).
@@ -3561,6 +3573,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const checkPositionCoverage = async () => {
     if (typeof adapter.getAccountBalance !== 'function') return;
+    // getAccountBalance is ACCOUNT-wide, not fund-scoped. With two funds on one
+    // exchange sharing a base currency, the sibling's holdings read as this
+    // fund's coverage gap, so the invariant is unsound and the check is skipped
+    // rather than allowed to cry wolf every sweep.
+    const sharingBase = getConfiguredFunds()
+      .filter(f => f.exchange === exchange && getBaseCurrency(f.pair) === baseCurrency);
+    if (sharingBase.length > 1) {
+      positionCoverage = { checkedAt: Date.now(), skipped: `${sharingBase.length} funds on ${exchange} share ${baseCurrency}` };
+      return;
+    }
     const balance = await adapter.getAccountBalance(baseCurrency);
     const onExchange = Number(balance?.total);
     if (!Number.isFinite(onExchange)) return;
@@ -3623,7 +3645,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     const orders = result.unaccountedOrders || [];
     const asset = roundAsset(orders.reduce((sum, o) => sum + (o.side === 'buy' ? o.totalBtc : -o.totalBtc), 0));
-    const usd = roundUSDC(orders.reduce((sum, o) => sum + o.totalUsdc, 0));
+    // Netted like `asset` above — a gross sum would report a matched missing
+    // buy+sell as ~0 net asset but double the dollars.
+    const usd = roundUSDC(orders.reduce((sum, o) => sum + (o.side === 'buy' ? o.totalUsdc : -o.totalUsdc), 0));
     fillDrift = {
       checkedAt: Date.now(),
       fills: result.unaccountedCount,
@@ -3633,22 +3657,27 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       orderIds: orders.slice(0, 20).map(o => o.orderId),
     };
 
-    await checkPositionCoverage();
+    if (result.unaccountedCount > 0) {
+      logger.warn(
+        `🩸 [${exchange}] Ledger drift: ${result.unaccountedCount} exchange fill(s) across ${orders.length} order(s) missing from the ledger — net ${asset} ${baseCurrency} / $${usd} unaccounted since ${startDate}`,
+        {
+          pair: productId,
+          unaccountedFills: result.unaccountedCount,
+          unaccountedOrders: orders.length,
+          netAsset: asset,
+          usd,
+          since: startDate,
+          orderIds: fillDrift.orderIds,
+        }
+      );
+    }
 
-    if (result.unaccountedCount === 0) return;
-
-    logger.warn(
-      `🩸 [${exchange}] Ledger drift: ${result.unaccountedCount} exchange fill(s) across ${orders.length} order(s) missing from the ledger — net ${asset} ${baseCurrency} / $${usd} unaccounted since ${startDate}`,
-      {
-        pair: productId,
-        unaccountedFills: result.unaccountedCount,
-        unaccountedOrders: orders.length,
-        netAsset: asset,
-        usd,
-        since: startDate,
-        orderIds: fillDrift.orderIds,
-      }
-    );
+    // After the drift verdict is logged, never before: this needs a second
+    // network call (the account balance), and a routine rejection there must not
+    // throw past the finding this sweep exists to report.
+    await checkPositionCoverage().catch(err => {
+      logger.warn(`⚠️ [${exchange}] Position coverage check failed: ${err.message}`, { error: err.message });
+    });
   };
 
   /**

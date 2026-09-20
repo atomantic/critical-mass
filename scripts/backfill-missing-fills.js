@@ -69,6 +69,14 @@ const ANNOTATION_KEYS = [
   'consumedCostFraction',
 ];
 
+// Rows the ENGINE writes as a stand-in for a real exchange fill it could not
+// fetch. Only these are replaceable by the real fill. Everything else with a
+// non-exchange tradeId is real history with no exchange counterpart —
+// `dca-convert-buy-<orderId>` (which carries the REAL exchange orderId, so
+// exchange-absence alone would misclassify it) and `fill-<uuid>` recovery rows —
+// and must survive untouched. coinbase/BTC-USDC alone holds 20 such rows.
+const PSEUDO_TRADE_ID = /^(synthetic-|consolidated-sell-)/;
+
 const HEARTBEAT_STALE_MS = 5 * 60 * 1000;
 
 /** Refuse to write under a live engine — it would overwrite us on its next save. */
@@ -154,7 +162,8 @@ async function main() {
 
   for (const [orderId, rows] of byOrderId) {
     if (!exchangeOrderIds.has(orderId)) continue;
-    const pseudo = rows.filter(r => !exchangeByTradeId.has(String(r.fill.tradeId)));
+    const pseudo = rows.filter(r => PSEUDO_TRADE_ID.test(String(r.fill.tradeId))
+      && !exchangeByTradeId.has(String(r.fill.tradeId)));
     if (pseudo.length === 0) continue;
 
     // The row that will carry the annotations: the earliest real fill already
@@ -272,16 +281,25 @@ async function main() {
 
   console.log('\n=== Reconciliation ===');
   const exchangeNet = netAsset(exchangeFills);
+  // Rows deliberately preserved in section 1 (DCA conversions, manual imports,
+  // recovery fills) have no exchange fill behind them, so they must be excluded
+  // before the repaired ledger is compared against the exchange — otherwise the
+  // invariant can never hold on exactly the funds that carry them.
+  const preserved = repaired.filter(f => !exchangeByTradeId.has(String(f.tradeId)));
+  const preservedNet = netAsset(preserved);
+  const repairedExchangeNet = netAsset(repaired) - preservedNet;
   console.log(`  ledger net ${BASE}:   ${fmt(netAsset(ledger))} → ${fmt(netAsset(repaired))}`);
+  console.log(`  non-exchange rows: ${preserved.length} preserved, net ${fmt(preservedNet)} ${BASE} (excluded from the check below)`);
+  console.log(`  exchange-backed:   ${fmt(repairedExchangeNet)} ${BASE}`);
   console.log(`  exchange net ${BASE}: ${fmt(exchangeNet)}`);
   console.log(`  ledger rows:       ${ledger.length} → ${repaired.length}`);
   console.log(`  realized bodyPnl (once per order):      $${beforePnl.total.toFixed(4)} (${beforePnl.count} sells) → $${afterPnl.total.toFixed(4)} (${afterPnl.count} sells)`);
   console.log(`  realized holdback (once per order):     ${beforeHold.total.toFixed(8)} ${BASE} → ${afterHold.total.toFixed(8)} ${BASE}`);
 
   let failed = false;
-  const drift = Math.abs(netAsset(repaired) - exchangeNet);
+  const drift = Math.abs(repairedExchangeNet - exchangeNet);
   if (drift > 1e-6) {
-    console.error(`\n❌ repaired ledger still differs from the exchange by ${fmt(drift, 8)} ${BASE}`);
+    console.error(`\n❌ repaired ledger's exchange-backed rows still differ from the exchange by ${fmt(drift, 8)} ${BASE}`);
     failed = true;
   }
   if (Math.abs(beforePnl.total - afterPnl.total) > 0.01) {

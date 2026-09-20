@@ -40,7 +40,7 @@ const { createFillLedger } = require('../src/fill-ledger');
 const { createNewBody, syncPositionState } = require('../src/celestial-hierarchy');
 const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
 const { resolveFundDataDir } = require('../src/migration');
-const { getBaseCurrency } = require('../src/config-utils');
+const { getBaseCurrency, getConfiguredFunds } = require('../src/config-utils');
 const { roundAsset, roundUSDC } = require('../src/volatility-utils');
 
 const [, , EXCHANGE_ARG, PAIR_ARG] = process.argv;
@@ -120,6 +120,21 @@ async function main() {
     process.exit(1);
   }
 
+  // getAccountBalance reports the ACCOUNT's base-currency balance, not this
+  // fund's. With two funds on one exchange sharing a base currency, the other
+  // fund's coin reads as this fund's coverage gap — and --apply would fold it
+  // into a body whose take-profit then sells it. Refuse rather than guess.
+  const sharingBase = getConfiguredFunds()
+    .filter(f => f.exchange === EXCHANGE && getBaseCurrency(f.pair) === BASE);
+  if (sharingBase.length > 1) {
+    console.error(
+      `\n❌ ${sharingBase.length} funds on ${EXCHANGE} share ${BASE} (${sharingBase.map(f => f.pair).join(', ')}).`
+      + `\n   The exchange reports one account-wide ${BASE} balance, so the untracked amount cannot be`
+      + `\n   attributed to ${PAIR} alone. Adopt manually after deciding the split.`
+    );
+    process.exit(1);
+  }
+
   const ledgerNet = fills.reduce((sum, f) => sum + (f.side === 'buy' ? f.size : -f.size), 0);
   const bodies = saved.position.celestialBodies || [];
   const inBodies = bodies.reduce((sum, b) => sum + (b.assetQty || 0), 0);
@@ -135,7 +150,14 @@ async function main() {
   console.log(`  reserves         : ${roundAsset(reserves)} ${BASE} (zero-cost)`);
   console.log(`  UNTRACKED        : ${untracked} ${BASE}\n`);
 
-  if (untracked <= 0) {
+  if (untracked < 0) {
+    console.error(
+      `\n❌ the model claims ${roundAsset(-untracked)} ${BASE} MORE than the account holds.`
+      + '\n   That is asset the engine believes it owns and does not — investigate before adopting.'
+    );
+    process.exit(1);
+  }
+  if (untracked === 0) {
     console.log('✅ Nothing to adopt — the model already covers the balance.');
     return;
   }

@@ -112,6 +112,20 @@ describe('partially-filled entry orders stay tracked', () => {
       'a partial fill leaves the order resting on the book — it must stay tracked',
     );
 
+    // ...but SHRUNK to the unfilled remainder. apy-calculator sums
+    // pendingEntryOrders' sizeUsdc into deployedInPosition alongside the bodies'
+    // costBasis, so leaving the full original size here double-counts the
+    // tranche already committed to a body and under-reports availableCapital.
+    const resting = pos.pendingEntryOrders[0];
+    assert.ok(
+      Math.abs(resting.assetQty - (0.079186 - 0.049987)) < 1e-8,
+      `tracked qty should be the unfilled remainder, got ${resting.assetQty}`,
+    );
+    assert.ok(
+      resting.sizeUsdc < 199 && resting.sizeUsdc > 0,
+      `tracked sizeUsdc should shrink by the filled tranche's cost, got ${resting.sizeUsdc}`,
+    );
+
     // Remaining tranche arrives; the order is now terminal.
     fills = [...fills, buyFill('entry-1', 'tid-b', 0.029199, 2512.43)];
     await eng._test.handleOrderFill({
@@ -152,6 +166,10 @@ describe('partially-filled entry orders stay tracked', () => {
       pos.pendingLadderOrders.map(o => o.orderId),
       ['rung-1'],
       'a partially-filled ladder rung is still resting on the book',
+    );
+    assert.ok(
+      Math.abs(pos.pendingLadderOrders[0].assetQty - (0.01 - 0.004)) < 1e-8,
+      `tracked rung qty should be the unfilled remainder, got ${pos.pendingLadderOrders[0].assetQty}`,
     );
   });
 });
