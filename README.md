@@ -61,7 +61,7 @@ limits; see [Simulation endpoint limits](docs/simulation-limits.md).
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 20.19.0 or newer
 - PM2 available on your `PATH` for the production commands below (installed separately from the project dependencies)
 - Exchange API key with View and Trade permissions
 
