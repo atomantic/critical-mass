@@ -667,7 +667,15 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
       const nextCursor = data.cursor;
       if (!nextCursor) {
-        throw new Error(`Coinbase reconciliation response for ${normalizedProductId} has more pages but no cursor`);
+        // Coinbase has returned has_next=true without a cursor for otherwise
+        // complete responses. There is no safe request to make for a page the
+        // API did not identify, so preserve the fills received and stop rather
+        // than making every reconciliation pass fail on the inconsistent flag.
+        logger.warn(`⚠️ Coinbase reconciliation response for ${normalizedProductId} indicated more pages without a cursor; treating the current page as final`, {
+          productId: normalizedProductId,
+          fills: rawFills.length,
+        });
+        break;
       }
       if (seenCursors.has(nextCursor)) {
         throw new Error(`Coinbase reconciliation cursor repeated for ${normalizedProductId}; refusing to return incomplete fills`);

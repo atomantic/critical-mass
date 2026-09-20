@@ -148,6 +148,27 @@ describe('adapter fill reconciliation contract (issue #252)', () => {
     assert.equal(fills.length, 51);
   });
 
+  it('coinbase accepts a page that claims more results without supplying a cursor', async () => {
+    let calls = 0;
+    global.fetch = async () => {
+      calls++;
+      return jsonResponse({
+        fills: [{
+          trade_id: 'cursorless-trade', order_id: 'cursorless-order', side: 'BUY',
+          price: '1', size: '1', commission: '0', trade_time: '2026-08-23T00:00:00Z',
+        }],
+        has_next: true,
+      });
+    };
+
+    const adapter = createCoinbaseAdapter(writeKeys('coinbase'));
+    const fills = await adapter.getReconciliationFills('BTC-USDC', Date.now() - 1000);
+
+    assert.equal(calls, 1);
+    assert.equal(fills.length, 1);
+    assert.equal(fills[0].tradeId, 'cursorless-trade');
+  });
+
   it('coinbase rejects a repeated cursor instead of returning incomplete fills', async () => {
     let page = 0;
     global.fetch = async () => {

@@ -29,7 +29,7 @@ const {
 } = require('./src/interval-utils');
 const { runIntervalCycle } = require('./src/dca-engine');
 const { createNotifier } = require('./src/notifier');
-const { createBackup, pruneBackups } = require('./src/backup-service');
+const { createBackup, pruneBackups, createFundStateBackup } = require('./src/backup-service');
 const { DATA_DIR } = require('./src/paths');
 const {
   readJSON,
@@ -134,11 +134,16 @@ app.param('exchange', (req, res, next, exchange) => {
 // ============ Backup Scheduler ============
 
 let backupTimer = null;
+let fundStateBackupTimer = null;
 
 const rescheduleBackupTimer = () => {
   if (backupTimer) {
     clearInterval(backupTimer);
     backupTimer = null;
+  }
+  if (fundStateBackupTimer) {
+    clearInterval(fundStateBackupTimer);
+    fundStateBackupTimer = null;
   }
 
   const backupConfig = getBackupConfig();
@@ -165,8 +170,26 @@ const rescheduleBackupTimer = () => {
     }
   }, backupConfig.intervalMs);
 
+  fundStateBackupTimer = setInterval(() => {
+    const config = getBackupConfig();
+    if (!config.enabled) return;
+
+    const result = createFundStateBackup({ maxBackups: config.fundStateMaxBackups });
+    if (result.success) {
+      if (result.snapshotId) {
+        log('INFO', `💾 Fund-state snapshot created: ${result.snapshotId} (${result.files} files, ${result.funds.length} funds)`);
+        if (result.pruned > 0) {
+          log('INFO', `💾 Pruned ${result.pruned} old fund-state snapshots, ${result.remaining} remaining`);
+        }
+      }
+    } else {
+      log('ERROR', `💾 Fund-state snapshot failed: ${result.error}`);
+    }
+  }, backupConfig.fundStateIntervalMs);
+
   const hours = (backupConfig.intervalMs / 3600000).toFixed(1);
-  log('INFO', `💾 Backup scheduler started: every ${hours}h, max ${backupConfig.maxBackups} backups`);
+  const stateHours = (backupConfig.fundStateIntervalMs / 3600000).toFixed(1);
+  log('INFO', `💾 Backup scheduler started: full archive every ${hours}h, max ${backupConfig.maxBackups} archives; fund state every ${stateHours}h, max ${backupConfig.fundStateMaxBackups} snapshots`);
 };
 
 // ============ Crypto Exchange Engine IPC ============
@@ -524,6 +547,10 @@ const gracefulShutdown = async (signal) => {
   if (backupTimer) {
     clearInterval(backupTimer);
     backupTimer = null;
+  }
+  if (fundStateBackupTimer) {
+    clearInterval(fundStateBackupTimer);
+    fundStateBackupTimer = null;
   }
 
   extraServers.forEach((s) => s.close());

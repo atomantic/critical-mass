@@ -7,6 +7,13 @@ const INTERVAL_OPTIONS = [
   { label: '48 hours', value: 48 * 60 * 60 * 1000 },
 ]
 
+const FUND_STATE_INTERVAL_OPTIONS = [
+  { label: '1 hour', value: 60 * 60 * 1000 },
+  { label: '2 hours', value: 2 * 60 * 60 * 1000 },
+  { label: '6 hours', value: 6 * 60 * 60 * 1000 },
+  { label: '12 hours', value: 12 * 60 * 60 * 1000 },
+]
+
 const formatBytes = (bytes) => {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -16,6 +23,7 @@ const formatBytes = (bytes) => {
 function BackupRestore() {
   const [config, setConfig] = useState(null)
   const [backups, setBackups] = useState([])
+  const [fundStateBackups, setFundStateBackups] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -56,6 +64,7 @@ function BackupRestore() {
       if (res.ok) {
         const data = await res.json()
         setBackups(data.backups || [])
+        setFundStateBackups(data.fundStateBackups || [])
         setConfig(data.config || {})
         setRefreshError(null)
       } else {
@@ -138,6 +147,30 @@ function BackupRestore() {
     } finally {
       setCreating(false)
     }
+  }
+
+  const handleRestoreFundState = async (snapshotId, exchange, pair) => {
+    if (!window.confirm(`Restore ${exchange}/${pair} from ${snapshotId}? Running engines will be stopped and its state files replaced.`)) return
+    setRestoring(true)
+    setMessage(null)
+    try {
+      const res = await fetch(`/api/backups/fund-state/${encodeURIComponent(snapshotId)}/${encodeURIComponent(exchange)}/${encodeURIComponent(pair)}/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.success) {
+        setMessage({ type: 'success', text: data.message || `Restored ${data.filesRestored} files for ${exchange}/${pair}` })
+      } else {
+        setMessage({ type: 'error', text: data.error || 'Fund-state restore failed' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Fund-state restore failed' })
+    } finally {
+      setRestoring(false)
+    }
+    fetchData({ silent: true })
   }
 
   const handleDelete = async (filename) => {
@@ -317,6 +350,20 @@ function BackupRestore() {
               </select>
             </div>
             <div>
+              <label htmlFor="fund-state-interval" className="block text-sm font-medium text-gray-300 mb-1">Fund-State Snapshot Interval</label>
+              <select
+                id="fund-state-interval"
+                value={config.fundStateIntervalMs}
+                onChange={e => setConfig(prev => ({ ...prev, fundStateIntervalMs: parseInt(e.target.value) }))}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+              >
+                {FUND_STATE_INTERVAL_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-400">Small recovery copies for ledger, position, and closed-trade state</p>
+            </div>
+            <div>
               <label htmlFor="backup-max-count" className="block text-sm font-medium text-gray-300 mb-1">Max Backups</label>
               <input
                 id="backup-max-count"
@@ -328,6 +375,19 @@ function BackupRestore() {
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
               />
               <p className="mt-1 text-xs text-gray-400">Oldest backups are pruned automatically</p>
+            </div>
+            <div>
+              <label htmlFor="fund-state-max-count" className="block text-sm font-medium text-gray-300 mb-1">Fund-State Snapshots</label>
+              <input
+                id="fund-state-max-count"
+                type="number"
+                value={config.fundStateMaxBackups}
+                onChange={e => setConfig(prev => ({ ...prev, fundStateMaxBackups: Math.max(1, Math.min(168, parseInt(e.target.value) || 24)) }))}
+                min={1}
+                max={168}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+              />
+              <p className="mt-1 text-xs text-gray-400">Hourly recovery points retained</p>
             </div>
           </div>
 
@@ -370,6 +430,43 @@ function BackupRestore() {
             {creating ? 'Creating...' : 'Create Backup Now'}
           </button>
         </div>
+      </div>
+
+      {/* Hourly Fund-State Recovery */}
+      <div className="bg-gray-800 rounded-lg p-6">
+        <h3 className="text-lg font-semibold mb-1">Fund-State Recovery Points ({fundStateBackups.length})</h3>
+        <p className="text-sm text-gray-400 mb-4">Small rolling snapshots protect fills and position state even when a fund directory is lost.</p>
+        {fundStateBackups.length === 0 ? (
+          <p className="text-gray-400 text-sm">No fund-state snapshots yet. The first one is created on the next scheduled interval.</p>
+        ) : (
+          <div className="space-y-3">
+            {fundStateBackups.map(snapshot => (
+              <div key={snapshot.snapshotId} className="p-3 bg-gray-700/50 rounded-lg">
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <div>
+                    <div className="text-sm font-mono text-gray-200">{snapshot.snapshotId}</div>
+                    <div className="text-xs text-gray-400 mt-0.5">{new Date(snapshot.createdAt).toLocaleString()} &middot; {formatBytes(snapshot.sizeBytes)}</div>
+                  </div>
+                  <span className="text-xs text-gray-400">{snapshot.funds.length} fund(s)</span>
+                </div>
+                <div className="space-y-1">
+                  {snapshot.funds.map(fund => (
+                    <div key={`${snapshot.snapshotId}:${fund.exchange}:${fund.pair}`} className="flex items-center justify-between gap-3 text-xs">
+                      <span className="font-mono text-gray-300">{fund.exchange} &middot; {fund.pair} &middot; {fund.files.length} file(s)</span>
+                      <button
+                        onClick={() => handleRestoreFundState(snapshot.snapshotId, fund.exchange, fund.pair)}
+                        disabled={restoring}
+                        className="px-3 py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded font-medium transition-colors"
+                      >
+                        Restore Fund State
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Restore Confirmation */}
