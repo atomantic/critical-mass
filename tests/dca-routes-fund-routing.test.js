@@ -16,12 +16,19 @@
  * Config I/O is mocked with the same two-file fs seam used by
  * tests/exchange-routes-lifecycle.test.js.
  */
-const { describe, it, beforeEach, afterEach, mock } = require('node:test');
+const { describe, it, beforeEach, afterEach, after, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// Keep config-utils' user override seam outside the checkout too. The route
+// fixtures already redirect per-fund data in beforeEach; this root covers the
+// mocked data/config.json path those handlers use for fund discovery.
+const pathsModule = require('../src/paths');
+const originalDataDir = pathsModule.DATA_DIR;
+const configDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dca-routes-config-'));
+pathsModule.DATA_DIR = configDataDir;
 const configUtils = require('../src/config-utils');
 const migration = require('../src/migration');
 const dcaEngine = require('../src/dca-engine');
@@ -29,7 +36,7 @@ const dcaEngine = require('../src/dca-engine');
 const EXCHANGE_ROUTES = require.resolve('../src/routes/exchange-routes');
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(configDataDir, 'config.json');
 
 const realFs = {
   existsSync: fs.existsSync.bind(fs),
@@ -164,6 +171,11 @@ afterEach(() => {
   delete require.cache[EXCHANGE_ROUTES];
   configUtils._resetConfigCacheForTests();
   realFs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+after(() => {
+  pathsModule.DATA_DIR = originalDataDir;
+  fs.rmSync(configDataDir, { recursive: true, force: true });
 });
 
 describe('POST /api/:exchange/trade fund routing (issue #546)', () => {

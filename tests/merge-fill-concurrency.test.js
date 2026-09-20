@@ -7,14 +7,17 @@
 // engine's _test hooks, with mock exchange deps injected so no network is hit.
 //
 // Disk safety: the engine is constructed with a throwaway pair/productId
-// ('__test196__') so any state / fill-ledger persistence lands in
-// data/coinbase/__test196__/, which the suite deletes in after(). The
-// concurrency-defer and fail-fast tests never reach a persistence call anyway —
-// only the full-merge test does, and its writes are isolated + cleaned up.
+// ('__test196__') so any state / fill-ledger persistence lands in a disposable
+// temp root, which the suite deletes in after(). The concurrency-defer and
+// fail-fast tests never reach a persistence call anyway — only the full-merge
+// test does, and its writes are isolated + cleaned up.
 const { describe, it, beforeEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+
+const { createIsolatedDataDir } = require('./test-data-dir');
+const isolatedData = createIsolatedDataDir('cm-merge-fill-test');
 
 // The merge-snapshot fill path credits realized P&L through config.json. Keep
 // this integration suite isolated from the operator's shared fund config.
@@ -25,7 +28,7 @@ configUtils.updateRegimeConfig = () => {};
 const { createRegimeEngine } = require('../src/regime-engine');
 
 const TEST_PAIR = '__test196__';
-const JUNK_DIR = path.join(__dirname, '..', 'data', 'coinbase', TEST_PAIR);
+const JUNK_DIR = isolatedData.fundDir('coinbase', TEST_PAIR);
 
 // Every engine the suite builds, so we can clear the background TTL timers a
 // merge schedules (5-min dedup sweeps) and let the process exit promptly.
@@ -33,8 +36,8 @@ const engines = [];
 
 after(() => {
   for (const eng of engines) eng._test.clearTimers();
-  fs.rmSync(JUNK_DIR, { recursive: true, force: true });
   configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
+  isolatedData.cleanup();
 });
 
 // ---------------------------------------------------------------------------
