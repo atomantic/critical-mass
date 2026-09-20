@@ -543,6 +543,9 @@ const repairHistoricalFillAnnotations = ({
   }
 };
 
+/** Floor for `fillDriftSweepMs` — one full-history exchange fetch per minute. */
+const MIN_FILL_DRIFT_SWEEP_MS = 60_000;
+
 /**
  * Create regime engine instance.
  *
@@ -556,9 +559,6 @@ const repairHistoricalFillAnnotations = ({
  * @param {Object} [maybeCallbacks]
  * @returns {Object}
  */
-/** Floor for `fillDriftSweepMs` — one full-history exchange fetch per minute. */
-const MIN_FILL_DRIFT_SWEEP_MS = 60_000;
-
 const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCallbacks, maybeCallbacks) => {
   let pair;
   let exchangeConfig;
@@ -2465,10 +2465,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Handle order fill
-   * @param {Object} fillData - Fill data
-   */
-  /**
    * Drop a terminal order from the persisted pending-entry / ladder lists.
    * Shared by the normal commit path and the skip-recommit early return, which
    * would otherwise leave the entry (and its deployedInPosition share) behind.
@@ -2490,6 +2486,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (changed) saveLiveState();
   };
 
+  /**
+   * Handle order fill
+   * @param {Object} fillData - Fill data
+   */
   const handleOrderFillImpl = async (fillData, dedupRef) => {
     // dedupRef is a per-call holder: the buy/sell branches record the inner
     // dedup key they add ({ set, key }) into it so the wrapper can clear that
@@ -2897,10 +2897,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // original full size there double-counts the tranche already committed to
       // a body and under-reports availableCapital until the remainder fills.
       const entryIsTerminal = !fillData.isPartialFill;
+      // Shrink by what this pass actually booked. `summary` covers only the new
+      // fills when `ingestedFills` is non-empty, but falls back to ALL of the
+      // order's fills otherwise — and on the synthetic-fill path that fallback
+      // is reachable for a second partial (the synthetic row is ingested for
+      // partial 1, so nothing is "new", yet no body owns the order and
+      // shouldSkipBuyRecommit does not intercept). Subtracting the cumulative
+      // size from an already-shrunk entry would double-count the first tranche.
+      const bookedSize = ingestedFills.length > 0
+        ? ingestedFills.reduce((sum, f) => sum + (f.size || 0), 0)
+        : summary.totalSize;
+      const bookedCost = ingestedFills.length > 0
+        ? ingestedFills.reduce((sum, f) => sum + (f.size || 0) * (f.price || 0) + (f.netFee || 0), 0)
+        : summary.totalValue + summary.totalFees;
       const shrinkTracked = (orders) => orders.map(o => (o.orderId !== fillData.orderId ? o : {
         ...o,
-        assetQty: Math.max(0, (o.assetQty || 0) - summary.totalSize),
-        sizeUsdc: Math.max(0, (o.sizeUsdc || 0) - (summary.totalValue + summary.totalFees)),
+        assetQty: Math.max(0, (o.assetQty || 0) - bookedSize),
+        sizeUsdc: Math.max(0, (o.sizeUsdc || 0) - bookedCost),
       }));
 
       if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {

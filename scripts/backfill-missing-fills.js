@@ -165,6 +165,7 @@ async function main() {
   });
 
   const droppedIdx = new Set();
+  const touchedOrders = new Set();
   const twins = [];
   /** orderId → annotations rescued from its dropped pseudo rows */
   const orphanedAnnotations = new Map();
@@ -179,11 +180,19 @@ async function main() {
     // own fills for this order cover the quantity it represents — a truncated or
     // partially-paginated response would otherwise delete real size, and the net
     // check below compares against that same short response, so it would pass.
+    // Compare against the exchange quantity NOT already represented by this
+    // order's matched real rows. The raw total includes those, so a truncated
+    // response returning only the already-matched fills would otherwise satisfy
+    // the guard and the pseudo row — real, unreplaced quantity — is deleted.
     const exchangeQty = (exchangeFillsByOrder.get(orderId) || []).reduce((sum, f) => sum + f.size, 0);
+    const matchedQty = rows
+      .filter(r => exchangeByTradeId.has(String(r.fill.tradeId)))
+      .reduce((sum, r) => sum + r.fill.size, 0);
+    const unmatchedExchangeQty = exchangeQty - matchedQty;
     const pseudoQty = pseudo.reduce((sum, r) => sum + r.fill.size, 0);
-    if (exchangeQty + 1e-9 < pseudoQty) {
-      console.warn(`  ⚠️  ${orderId}: exchange reports ${fmt(exchangeQty, 8)} ${BASE} but pseudo rows represent `
-        + `${fmt(pseudoQty, 8)} — keeping them (incomplete exchange response?)`);
+    if (unmatchedExchangeQty + 1e-9 < pseudoQty) {
+      console.warn(`  ⚠️  ${orderId}: exchange has ${fmt(unmatchedExchangeQty, 8)} ${BASE} unmatched but pseudo rows `
+        + `represent ${fmt(pseudoQty, 8)} — keeping them (incomplete exchange response?)`);
       continue;
     }
 
@@ -210,6 +219,7 @@ async function main() {
         orphanedAnnotations.set(orderId, { ...(orphanedAnnotations.get(orderId) || {}), ...rescued });
       }
       droppedIdx.add(p.idx);
+      touchedOrders.add(orderId);
       twins.push({ orderId, tradeId: p.fill.tradeId, side: p.fill.side, size: p.fill.size, moved });
     }
   }
@@ -318,6 +328,30 @@ async function main() {
   console.log(`  realized holdback (once per order):     ${beforeHold.total.toFixed(8)} ${BASE} → ${afterHold.total.toFixed(8)} ${BASE}`);
 
   let failed = false;
+
+  // NOTE: comparing the repaired ledger's exchange-backed rows against the
+  // exchange is now a TAUTOLOGY — section 1 only removes rows the exchange never
+  // issued and section 2 adds every exchange tradeId the ledger lacked, so the
+  // two sets are equal by construction and the comparison can never fail. The
+  // check that actually has teeth is per-ORDER conservation over the orders
+  // whose pseudo rows were dropped: those are the only places this repair can
+  // lose real quantity.
+  const repairedByOrder = new Map();
+  for (const f of repaired) {
+    const rows = repairedByOrder.get(f.orderId) || [];
+    rows.push(f);
+    repairedByOrder.set(f.orderId, rows);
+  }
+  for (const orderId of touchedOrders) {
+    const after = netAsset(repairedByOrder.get(orderId) || []);
+    const onExchange = netAsset(exchangeFillsByOrder.get(orderId) || []);
+    if (Math.abs(after - onExchange) > 1e-8) {
+      console.error(`\n❌ order ${orderId}: dropped its pseudo row(s) but the repaired rows net ${fmt(after, 8)} ${BASE} `
+        + `against the exchange's ${fmt(onExchange, 8)} — the repair would lose real quantity`);
+      failed = true;
+    }
+  }
+
   const drift = Math.abs(repairedExchangeNet - exchangeNet);
   if (drift > 1e-6) {
     console.error(`\n❌ repaired ledger's exchange-backed rows still differ from the exchange by ${fmt(drift, 8)} ${BASE}`);
@@ -342,7 +376,7 @@ async function main() {
   }
   if (failed) process.exit(1);
 
-  console.log('\n✅ Validation passed: ledger matches the exchange, booked P&L unchanged.');
+  console.log(`\n✅ Validation passed: ${touchedOrders.size} order(s) with dropped pseudo rows reconcile against the exchange, booked P&L unchanged.`);
 
   if (!APPLY) {
     console.log('\n(Dry run — re-run with --apply to write.)');

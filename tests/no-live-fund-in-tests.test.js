@@ -58,6 +58,17 @@ const repoDataPairs = (source) => {
   return pairs;
 };
 
+/**
+ * Does this source recursively delete anything? Two separate patterns on
+ * purpose: a paren-bounded window cannot span a NESTED call, so
+ * `fs.rmSync(path.join(...), { recursive: true })` — the inline form of the very
+ * bug this file guards — slips past a single combined regex.
+ * @param {string} source
+ * @returns {boolean}
+ */
+const doesRecursiveDelete = (source) =>
+  /\brm(?:Sync|dirSync)?\s*\(/.test(source) && /recursive\s*:\s*true/.test(source);
+
 describe('tests never target a live fund directory', () => {
   it('detects the pattern that destroyed coinbase/BTC-USDC', () => {
     // The exact shape tests/executor-contract.test.js shipped with, so this
@@ -76,6 +87,11 @@ describe('tests never target a live fund directory', () => {
     // The inline form: the path is built inside the rmSync call itself.
     const inline = "fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', 'BTC-USDC'), { recursive: true });";
     assert.deepEqual(repoDataPairs(inline), ['BTC-USDC']);
+    // The pre-filter is the half that actually changed — assert it directly, or
+    // reverting it to a single paren-bounded pattern leaves the suite green.
+    assert.equal(doesRecursiveDelete(inline), true, 'the pre-filter must span a nested rmSync call');
+    assert.equal(doesRecursiveDelete(offending), true);
+    assert.equal(doesRecursiveDelete("fs.rmSync(tmp, { force: true });"), false, 'a non-recursive delete is not a hazard');
 
     // A sentinel pair under the repo data dir is the approved pattern.
     const sentinel = `
@@ -95,12 +111,7 @@ describe('tests never target a live fund directory', () => {
     for (const name of fs.readdirSync(TESTS_DIR)) {
       if (!name.endsWith('.test.js') || name === path.basename(__filename)) continue;
       const source = fs.readFileSync(path.join(TESTS_DIR, name), 'utf8');
-      // Only a recursive delete can take out a fund directory. Test the two
-      // halves separately: a paren-bounded window cannot span a NESTED call, so
-      // `fs.rmSync(path.join(...), { recursive: true })` — the inline form of the
-      // very bug this guards — would slip past a single combined pattern.
-      if (!/\brm(?:Sync|dirSync)?\s*\(/.test(source)) continue;
-      if (!/recursive\s*:\s*true/.test(source)) continue;
+      if (!doesRecursiveDelete(source)) continue;
       for (const pair of repoDataPairs(source)) {
         if (live.has(pair)) offenders.push(`${name} → ${pair}`);
       }

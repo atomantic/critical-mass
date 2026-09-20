@@ -28,7 +28,31 @@ const { PORTS } = require('../ecosystem.config.cjs');
 
 const RUNNING_FLAG = 'regime-engine-running.json';
 
-/** Engine IPC port per exchange, from the single source of truth. */
+/**
+ * Ports an exchange's engine might be listening on, most likely first.
+ *
+ * Probing only the PM2 value fails OPEN — the dangerous direction — for an
+ * engine started outside PM2 or with an env override, because the probe finds
+ * nothing and the caller concludes "stopped". The engines resolve their own
+ * port from env with their own built-in fallbacks
+ * (`coinbase-engine.js:72`, `gemini-engine.js:3`, `cryptocom-engine.js:3`),
+ * so check every port that resolution could land on.
+ * @param {string} exchange
+ * @returns {number[]} distinct candidate ports, empty for an unknown exchange
+ */
+const candidatePorts = (exchange) => {
+  const env = process.env;
+  const shared = Number(env.EXCHANGE_IPC_PORT) || 0;
+  const perExchange = {
+    coinbase: [shared, Number(env.COINBASE_IPC_PORT) || 0, PORTS.COINBASE_IPC, 5570],
+    gemini: [shared, Number(env.GEMINI_IPC_PORT) || 0, PORTS.GEMINI_IPC, 5571],
+    cryptocom: [shared, Number(env.CRYPTOCOM_IPC_PORT) || 0, PORTS.CRYPTOCOM_IPC, 5574],
+  }[exchange];
+  if (!perExchange) return [];
+  return [...new Set(perExchange.filter(port => Number.isInteger(port) && port > 0))];
+};
+
+/** Engine IPC port per exchange, from the PM2 source of truth. */
 const IPC_PORT = {
   coinbase: PORTS.COINBASE_IPC,
   gemini: PORTS.GEMINI_IPC,
@@ -62,7 +86,13 @@ const readRunningFlag = (exchange, pair) => {
 const isPortListening = (port, timeoutMs = 750) => new Promise((resolve) => {
   const socket = new net.Socket();
   const done = (result) => {
-    socket.removeAllListeners();
+    // Keep an error sink: a late ECONNRESET / ERR_SOCKET_CLOSED during teardown
+    // would otherwise be an unhandled 'error' event and kill the repair script
+    // mid-run. removeAllListeners() with no replacement is what did that.
+    socket.removeAllListeners('connect');
+    socket.removeAllListeners('timeout');
+    socket.removeAllListeners('error');
+    socket.on('error', () => {});
     socket.destroy();
     resolve(result);
   };
@@ -85,24 +115,27 @@ const checkEngineStopped = async (exchange, pair) => {
     return { safe: false, reason: `${RUNNING_FLAG} records the engine as RUNNING` };
   }
 
-  const port = IPC_PORT[exchange];
-  if (port === undefined) {
+  const ports = candidatePorts(exchange);
+  if (ports.length === 0) {
     // Unknown exchange: the flag is all we have. An explicit false is trusted.
     return flag === false
       ? { safe: true, reason: `${RUNNING_FLAG} records the engine as stopped` }
       : { safe: false, reason: `no ${RUNNING_FLAG} for ${exchange}/${pair} and no known IPC port to probe` };
   }
 
-  if (await isPortListening(port)) {
-    return { safe: false, reason: `the ${exchange} engine is accepting IPC on 127.0.0.1:${port}` };
+  for (const port of ports) {
+    if (await isPortListening(port)) {
+      return { safe: false, reason: `the ${exchange} engine is accepting IPC on 127.0.0.1:${port}` };
+    }
   }
 
+  const probed = ports.join(', ');
   return {
     safe: true,
     reason: flag === false
-      ? `${RUNNING_FLAG} records the engine as stopped and nothing is listening on 127.0.0.1:${port}`
-      : `no engine is listening on 127.0.0.1:${port}`,
+      ? `${RUNNING_FLAG} records the engine as stopped and nothing is listening on 127.0.0.1:{${probed}}`
+      : `no engine is listening on 127.0.0.1:{${probed}}`,
   };
 };
 
-module.exports = { checkEngineStopped, readRunningFlag, isPortListening, IPC_PORT };
+module.exports = { checkEngineStopped, readRunningFlag, isPortListening, candidatePorts, IPC_PORT };

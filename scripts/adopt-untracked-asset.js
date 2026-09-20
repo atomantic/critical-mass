@@ -179,8 +179,10 @@ async function main() {
     );
     process.exit(1);
   }
-  if (untracked === 0) {
-    console.log('✅ Nothing to adopt — the model already covers the balance.');
+  if (untracked <= tolerance) {
+    console.log(untracked === 0
+      ? '✅ Nothing to adopt — the model already covers the balance.'
+      : `✅ Nothing to adopt — the ${roundAsset(untracked)} ${BASE} gap is at or below the exchange minimum (${tolerance}), so no placeable TP could be sized for it.`);
     return;
   }
 
@@ -197,7 +199,7 @@ async function main() {
     );
     process.exit(1);
   }
-  if (!(fifoRemaining(fills).unit > 0)) {
+  if (!(fifo.unit > 0)) {
     console.error('\n❌ FIFO replay left no priced inventory — refusing to adopt at a zero cost basis.');
     process.exit(1);
   }
@@ -216,9 +218,18 @@ async function main() {
   // already. Adopting that same quantity into a body with no order links would
   // count the cost twice once the body's TP books its annotated P&L. Those buys
   // belong in a body via the engine's own recovery, not via this script.
+  // Buys a body already owns are accounted for — their cost is in that body's
+  // costBasis, not double-counted. Only an open buy that NO body claims is the
+  // hazard, and counting the body-owned ones would fire this guard on every
+  // fund holding an open position, i.e. the normal case.
+  const bodyOrderIds = new Set(bodies
+    .flatMap(b => [...(b.sourceOrderIds || []), ...(b.buyOrders || []).map(o => o.orderId)])
+    .map(String));
   const sellOrderIdsWithFills = new Set(fills.filter(f => f.side === 'sell').map(f => String(f.orderId)));
   const heldOpenQty = fills
-    .filter(f => f.side === 'buy' && (!f.sellOrderId || !sellOrderIdsWithFills.has(String(f.sellOrderId))))
+    .filter(f => f.side === 'buy'
+      && !bodyOrderIds.has(String(f.orderId))
+      && (!f.sellOrderId || !sellOrderIdsWithFills.has(String(f.sellOrderId))))
     .reduce((sum, f) => sum + f.size, 0);
   if (heldOpenQty > tolerance) {
     console.error(
