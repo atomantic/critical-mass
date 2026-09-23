@@ -186,6 +186,11 @@ buy fill rows of order "abc123"
 - **Full close:** a sale that closes the body consumes every tranche it
   covered in full, so an approximate legacy seed can never strand a sliver of
   a closed body open.
+- **Boot seal:** on engine start, every buy order with no record whose
+  `sellOrderId` names a sell with fills (closed under the legacy rule) is
+  sealed as `consumedBy: { __legacy__: size − open qty in live tranches }`.
+  The link must be read while it still says so: the next TP placed for a
+  later tranche of the same order re-stamps `sellOrderId` on every row.
 - **Legacy:** orders no sell has recorded against keep the boolean rule, and
   `consumedCostFraction` is now only stamped on those (composed per order,
   issue #704). The first record on a pre-#607 order seeds `__legacy__` with

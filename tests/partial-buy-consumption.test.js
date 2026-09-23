@@ -506,3 +506,61 @@ describe('late fill of a rolled-up source TP (issue #607)', () => {
     assert.ok(Math.abs(derived.heldOpenAssetQty - (0.03 - 0.004)) < EPS, `held qty ${derived.heldOpenAssetQty}`);
   });
 });
+
+describe('legacy order closed before deploy, continued after (issue #607)', () => {
+  it('seals the pre-deploy closure at boot, so a re-stamped later tranche does not resurrect it', async () => {
+    const sells = { 'tp-b': [rawFill('sell', 'tp-b', 'tp-b-t1', 0.0059, 52000)] };
+    const eng = makeEngine({ getOrderFills: async (orderId) => sells[orderId] || [] });
+    const pos = eng._getPositionState();
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    // Pre-deploy: 0.004 of buy-p filled into body A, whose TP closed it.
+    ledger.ingestFill(rawFill('buy', 'buy-p', 'buy-p-t1', 0.004, 50000));
+    ledger.ingestFill(rawFill('buy', 'buy-y', 'buy-y-t1', 0.1, 40000));
+    ledger.annotateFillsByOrderId('buy-p', { sellOrderId: 'tp-a' });
+    ledger.ingestFill(rawFill('sell', 'tp-a', 'tp-a-t1', 0.004, 52000));
+    ledger.annotateFillsByOrderId('tp-a', { bodyPnl: 8, bodyHoldbackAsset: 0, isBodyOwned: true });
+    pos.celestialBodies = [makeBody('body-yyyyyyyy', 'buy-y', 0.1, 40000, 'tp-y')];
+
+    // Deploy: boot seals the legacy closure.
+    assert.equal(eng._test.sealLegacyClosure(), 1);
+    assert.deepEqual(ledger.getBuyOrderConsumption('buy-p').consumedBy, { __legacy__: 0.004 });
+    assert.equal(eng._test.sealLegacyClosure(), 0, 'idempotent');
+
+    // Post-deploy: the same order fills 0.006 more into a new body B, whose
+    // TP placement re-stamps sellOrderId on EVERY row of the order.
+    ledger.ingestFill(rawFill('buy', 'buy-p', 'buy-p-t2', 0.006, 50000));
+    const bodyB = makeBody('body-bbbbbbbb', 'buy-p', 0.006, 50000, 'tp-b');
+    bodyB.assetOnOrder = 0.0059;
+    pos.celestialBodies.push(bodyB);
+    ledger.annotateFillsByOrderId('buy-p', { sellOrderId: 'tp-b' });
+    assert.ok(Math.abs(ledger.getDerivedRealizedPnL().heldOpenAssetQty - 0.106) < EPS, 'only B and Y are held before B sells');
+
+    await eng._test.handleOrderFill(sellFill('tp-b', 0.0059, 52000));
+
+    assert.deepEqual(ledger.getBuyOrderConsumption('buy-p').consumedBy, { __legacy__: 0.004, 'tp-b': 0.006 });
+    const derived = ledger.getDerivedRealizedPnL();
+    assert.ok(Math.abs(derived.heldOpenAssetQty - 0.1) < EPS, `A's long-sold part is not resurrected, got ${derived.heldOpenAssetQty}`);
+    assert.ok(Math.abs(derived.heldOpenBuyCostBasis - 4000) < 0.01, `no phantom cost, got ${derived.heldOpenBuyCostBasis}`);
+  });
+
+  it('does not seal orders whose linked sell has no fills, and credits live tranches', () => {
+    const eng = makeEngine({});
+    const pos = eng._getPositionState();
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-r', 'buy-r-t1', 0.01, 50000));
+    ledger.annotateFillsByOrderId('buy-r', { sellOrderId: 'tp-resting' });
+    // A live body whose order is (falsely) linked to a filled sell (#677 shape).
+    ledger.ingestFill(rawFill('buy', 'buy-l', 'buy-l-t1', 0.02, 50000));
+    ledger.ingestFill(rawFill('sell', 'tp-other', 'tp-other-t1', 0.001, 52000));
+    ledger.annotateFillsByOrderId('buy-l', { sellOrderId: 'tp-other' });
+    const live = makeBody('body-llllllll', 'buy-l', 0.02, 50000, 'tp-l');
+    delete live.buyOrders[0].consumedQty;
+    pos.celestialBodies = [live];
+
+    assert.equal(eng._test.sealLegacyClosure(), 1);
+    assert.equal(ledger.getBuyOrderConsumption('buy-r').consumedBy, null, 'a resting TP link is not closure');
+    assert.deepEqual(ledger.getBuyOrderConsumption('buy-l').consumedBy, { __legacy__: 0 }, 'the live tranche stays open');
+  });
+});

@@ -1463,6 +1463,47 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   };
 
   /**
+   * One-time seal of legacy closure (issue #607). A buy order no sell has
+   * recorded consumption against, whose sellOrderId names a sell WITH fills,
+   * is "closed" under the legacy boolean rule. That linkage is fragile: the
+   * next TP placed for a later tranche of the same order re-stamps
+   * sellOrderId on every row, and the quantity already sold under the old
+   * link would resurface as open. Sealing records what the legacy rule
+   * treated as closed as `consumedBy.__legacy__` while the link still says so:
+   * the order's size minus what live body tranches still hold open.
+   *
+   * Idempotent: orders that already carry a consumedBy record are skipped.
+   * @param {Map<string, number>} openQtyByOrder - orderId → open qty held by live tranches
+   * @returns {number} buy orders sealed
+   */
+  const sealLegacyClosedBuys = (openQtyByOrder = new Map()) => {
+    const sellOrderIdsWithFills = new Set();
+    for (const f of fills.values()) if (f.side === 'sell' && f.orderId) sellOrderIdsWithFills.add(f.orderId);
+    const byOrder = new Map();
+    for (const f of fills.values()) {
+      if (f.side !== 'buy' || !f.orderId) continue;
+      const agg = byOrder.get(f.orderId) || { size: 0, rows: [], hasRecord: false, legacyClosed: false };
+      agg.size += f.size || 0;
+      agg.rows.push(f);
+      if (f.consumedBy && typeof f.consumedBy === 'object') agg.hasRecord = true;
+      if (f.sellOrderId && sellOrderIdsWithFills.has(f.sellOrderId)) agg.legacyClosed = true;
+      byOrder.set(f.orderId, agg);
+    }
+    let sealed = 0;
+    for (const [orderId, agg] of byOrder) {
+      if (agg.hasRecord || !agg.legacyClosed) continue;
+      const seed = roundAsset(Math.max(0, agg.size - (openQtyByOrder.get(orderId) || 0)));
+      for (const f of agg.rows) f.consumedBy = { [LEGACY_CONSUMPTION_KEY]: seed };
+      sealed += 1;
+    }
+    if (sealed > 0) {
+      dirtySinceLastPersist = true;
+      bumpLedgerVersion();
+    }
+    return sealed;
+  };
+
+  /**
    * Idempotency guard for capital-growth credit (issue #210-B). Capital growth
    * (config.maxUsdcDeployed += pnl) is a non-idempotent config.json write that
    * happens mid-fill, before the fill-processed state is saved — so a crash
@@ -1833,6 +1874,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     updateFillCycleId,
     getBuyOrderConsumption,
     recordBuyConsumption,
+    sealLegacyClosedBuys,
     annotateFillsByOrderId,
     annotateFillsByOrderIds,
     claimCapitalCredit,

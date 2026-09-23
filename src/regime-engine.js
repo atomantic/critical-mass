@@ -1852,7 +1852,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // (#606) at the ledger's live cycle and persist it now, or the next
       // restart restores a stale ID that names a different cycle (#675).
       if (syncActiveCycleIdAfterRecalc(recalcResult)) saveLiveState();
-      if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0) {
+
+      // Seal legacy closure into per-buy consumption records while the
+      // sellOrderId links still say which orders were closed (issue #607) —
+      // the next TP placed for a later tranche would re-stamp them.
+      const sealedLegacy = sealLegacyClosure();
+      if (sealedLegacy > 0) {
+        fillLedger.persist();
+        logger.info(`🔒 [${exchange}] Sealed legacy closure of ${sealedLegacy} buy order(s) into consumption records`);
+      }
+      if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0 || sealedLegacy > 0) {
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         refreshRealizedFromCyclePairs();
         logger.info(`📋 [${exchange}] Cycle-pair realized: $${positionState.realizedPnL.toFixed(2)} USD, ${positionState.realizedAssetPnL.toFixed(6)} ${baseCurrency} reserves (${recalcResult.cyclesCompleted} cycles)`);
@@ -2574,6 +2583,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       changed = changed || positionState.pendingLadderOrders.length !== before;
     }
     if (changed) saveLiveState();
+  };
+
+  /**
+   * Seal the legacy boolean closure into consumption records (issue #607),
+   * crediting each order with what live body tranches still hold open.
+   * @returns {number} buy orders sealed
+   */
+  const sealLegacyClosure = () => {
+    const openQtyByOrder = new Map();
+    const seen = new Set();
+    for (const body of (positionState.celestialBodies || [])) {
+      for (const entry of (body.buyOrders || [])) {
+        if (!entry || !entry.orderId || seen.has(entry)) continue;
+        seen.add(entry);
+        const size = Number(entry.assetQty) || 0;
+        if (!(size > 0)) continue;
+        const prior = Number.isFinite(entry.consumedQty)
+          ? entry.consumedQty
+          : size * Math.min(Math.max(fillLedger.getBuyOrderConsumption(entry.orderId)?.consumedCostFraction ?? 0, 0), 1);
+        openQtyByOrder.set(entry.orderId, (openQtyByOrder.get(entry.orderId) || 0) + Math.max(0, size - prior));
+      }
+    }
+    return fillLedger.sealLegacyClosedBuys(openQtyByOrder);
   };
 
   /**
@@ -6673,6 +6705,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // internal closures the integration tests exercise. Test-only — never call
     // from production code.
     _test: {
+      sealLegacyClosure: () => sealLegacyClosure(),
       setRunning: (v) => { isRunning = v; },
       setProductDetails: (v) => { productDetails = v; },
       setAdapter: (v) => { adapter = v; },
