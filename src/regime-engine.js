@@ -4069,6 +4069,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             ? `${remainingBodies} celestial bodies still active`
             : 'not the engine\'s take-profit order (manual/external sell?)';
           logger.warn(`⚠️ [${exchange}] Untracked sell ${String(sellOrderId).slice(0,8)} (${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}) — ${reason}, skipping cycle completion`);
+          // Position model is deliberately left untouched (issue #750). Which
+          // holding a foreign sell drew down — zero-cost reserves or the
+          // managed position — is unknowable from the fill, so any
+          // attribution to totalAsset/totalCostBasis (or realizedAssetPnL)
+          // would be a guess that corrupts P&L either way. The ledger keeps
+          // the fact instead: `untrackedSell` rows lower ledgerNetAsset and
+          // are broken out as `untrackedSellQty`, so the position-coverage
+          // sweep (positionCoverage.ledger.untrackedSold) shows the gap and
+          // its cause. Resolution is an operator action.
+          if (remainingBodies === 0 && positionState.totalAsset > 0) {
+            logger.warn(
+              `⚖️ [${exchange}] Untracked sell ${String(sellOrderId).slice(0,8)} may have consumed the held position (${positionState.totalAsset} ${baseCurrency}) — position left unchanged; see positionCoverage.ledger.untrackedSold, operator review required`,
+              { pair: productId, orderId: sellOrderId, soldQty: summary2.totalSize, totalAsset: positionState.totalAsset, reserves: positionState.realizedAssetPnL || 0 }
+            );
+          }
           fillLedger.annotateFillsByOrderId(sellOrderId, { untrackedSell: true });
           saveLiveState();
           fillLedger.persist();
@@ -4652,8 +4667,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    *   untrackedOpen = heldOpen − inBodies — open buy inventory no body tracks
    *                   (exact for sells booked with consumption records;
    *                   pre-#607 history still closes on sellOrderId)
+   * plus `untrackedSold`: Σ size of foreign (`untrackedSell`) sells (issue
+   * #750). They are already inside `net`, so they push `unmodelled` negative
+   * by their size; the field says how much of that gap they explain, since
+   * the engine does not guess whether they drew down reserves or position.
    * @param {number} inBodies - Σ body.assetQty
-   * @returns {{net: number, heldOpen: number, inBodies: number, reserves: number, unmodelled: number, untrackedOpen: number}}
+   * @returns {{net: number, heldOpen: number, inBodies: number, reserves: number, unmodelled: number, untrackedOpen: number, untrackedSold: number}}
    */
   const computeLedgerCoverage = (inBodies) => {
     const derived = fillLedger.getDerivedRealizedPnL();
@@ -4667,6 +4686,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       reserves: roundAsset(reserves),
       unmodelled: roundAsset(net - inBodies - reserves),
       untrackedOpen: roundAsset(heldOpen - inBodies),
+      untrackedSold: roundAsset(derived.untrackedSellQty || 0),
     };
   };
 
@@ -4696,7 +4716,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (Math.abs(ledger.unmodelled) <= tolerance) return;
       logger.warn(
         `⚖️ [${exchange}] Ledger coverage gap: ledger nets ${ledger.net} ${baseCurrency}, model accounts for ${roundAsset(ledger.inBodies + ledger.reserves)} `
-        + `(${ledger.inBodies} in bodies + ${ledger.reserves} reserves) — ${ledger.unmodelled} ${baseCurrency} untracked; ledger holds ${ledger.heldOpen} ${baseCurrency} of buys open`,
+        + `(${ledger.inBodies} in bodies + ${ledger.reserves} reserves) — ${ledger.unmodelled} ${baseCurrency} untracked; ledger holds ${ledger.heldOpen} ${baseCurrency} of buys open`
+        + (ledger.untrackedSold > 0 ? `; ${ledger.untrackedSold} ${baseCurrency} left via untracked (foreign) sells` : ''),
         { pair: productId, ...ledger }
       );
     };
@@ -4740,7 +4761,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     logger.warn(
       `⚖️ [${exchange}] Position coverage gap: exchange holds ${roundAsset(onExchange)} ${baseCurrency}, model accounts for ${roundAsset(inBodies + reserves)} `
-      + `(${roundAsset(inBodies)} in ${(positionState.celestialBodies || []).length} bodies + ${roundAsset(reserves)} reserves) — ${unmodelled} ${baseCurrency} untracked`,
+      + `(${roundAsset(inBodies)} in ${(positionState.celestialBodies || []).length} bodies + ${roundAsset(reserves)} reserves) — ${unmodelled} ${baseCurrency} untracked`
+      + (ledger.untrackedSold > 0 ? `; ${ledger.untrackedSold} ${baseCurrency} left via untracked (foreign) sells` : ''),
       { pair: productId, ...positionCoverage, bodies: (positionState.celestialBodies || []).length }
     );
   };
