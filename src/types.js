@@ -440,6 +440,7 @@
  * @property {number} realizedAssetPnL - Cumulative realized P&L in BTC (holdback reserves)
  * @property {number} assetOnOrder - BTC currently in open sell orders
  * @property {number} maxDrawdownSeen - Maximum drawdown observed
+ * @property {{peakEquity: number|null, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, capitalBase: number|null}|null} [drawdownGuard] - Persisted drawdown-guard tracker (risk-manager getPersistedState; fund-equity unit)
  * @property {boolean} scalingDisabled - Whether scaling is temporarily disabled
  * @property {string|null} scalingDisabledReason - Reason scaling is disabled
  * @property {MacroRegimeState|null} [macroRegime] - Macro regime state for persistence

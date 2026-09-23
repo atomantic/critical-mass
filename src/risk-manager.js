@@ -5,7 +5,7 @@
  * Enforces position limits and tracks risk metrics:
  * - BTC exposure caps
  * - USDC deployment caps
- * - Maximum drawdown tracking
+ * - Maximum drawdown tracking (fund-level equity — see computeFundEquity)
  * - Ladder step limits
  *
  * All checks return structured results for consistent handling.
@@ -34,6 +34,8 @@ const createRiskManager = (exchange, config, productId) => {
   let maxDrawdownSeen = 0;
   let isDrawdownPaused = false;
   let drawdownPausedAt = null; // Timestamp when drawdown pause started
+  let lastCapitalBase = null; // capitalBase seen on the previous updateDrawdown (peak re-basing)
+  let lastDrawdownPercent = 0; // drawdown on the most recent observation (dashboard)
   let cycleBuysLimitReachedAt = null; // Timestamp when ladder limit was first reached
 
   /**
@@ -149,19 +151,50 @@ const createRiskManager = (exchange, config, productId) => {
   };
 
   /**
-   * Update equity and check drawdown
-   * @param {number} totalAsset - Current BTC position
-   * @param {number} currentPrice - Current BTC price
-   * @param {number} totalCostBasis - Total cost invested
-   * @returns {{drawdownPercent: number, isPaused: boolean, peakEquity: number}}
+   * Update equity and check drawdown.
+   *
+   * `currentEquity` MUST be fund-level mark-to-market equity as produced by
+   * `computeFundEquity` (see the equity-definition note there) — the same unit
+   * `forceResume` receives, so a manual resume re-bases the peak in the unit
+   * this function compares against.
+   *
+   * `capitalBase` is the principal component of that equity. When it changes
+   * between observations (operator deposit / withdrawal / budget edit) the
+   * peak is shifted by the same delta, so moving capital in or out never reads
+   * as a gain or a drawdown.
+   *
+   * @param {number} currentEquity - Fund equity in quote currency
+   * @param {number} [capitalBase] - Principal included in `currentEquity`
+   * @returns {{drawdownPercent: number, isPaused: boolean, peakEquity: number, drawdownPausedAt: number|null}}
    */
-  const updateDrawdown = (totalAsset, currentPrice, totalCostBasis) => {
-    // Calculate current equity as position market value (not P&L)
-    // This ensures we track drawdown from the actual capital at risk
-    const currentEquity = totalAsset * currentPrice;
+  const updateDrawdown = (currentEquity, capitalBase) => {
+    // Depleted equity against a known positive peak — or, on a first sample
+    // with no peak yet, against a funded capital base — is a 100% drawdown: it
+    // must pause (fail closed), not fall through to the "nothing to track" skip
+    // below. The drawdownResetHours auto-reset deliberately does not apply
+    // here: it re-bases the peak to current equity, and a non-positive peak is
+    // meaningless, so a depleted fund stays paused until equity recovers or
+    // the operator intervenes.
+    if (Number.isFinite(currentEquity) && currentEquity <= 0 && (peakEquity === null || peakEquity <= 0)
+        && Number.isFinite(capitalBase) && capitalBase > 0) {
+      peakEquity = capitalBase;
+      lastCapitalBase = capitalBase;
+    }
+    if (Number.isFinite(currentEquity) && currentEquity <= 0 && peakEquity !== null && peakEquity > 0) {
+      lastDrawdownPercent = 100;
+      maxDrawdownSeen = 100;
+      if (!isDrawdownPaused) {
+        isDrawdownPaused = true;
+        drawdownPausedAt = Date.now();
+        logger.warn(`⚠️ [${exchange}] Drawdown limit reached: fund equity depleted (${currentEquity.toFixed(2)}) from peak ${peakEquity.toFixed(2)}`, {
+          peakEquity, currentEquity, maxDrawdownPercent: config.maxDrawdownPercent,
+        });
+      }
+      return { drawdownPercent: 100, isPaused: true, peakEquity, drawdownPausedAt };
+    }
 
-    // Skip drawdown tracking if no position
-    if (totalAsset <= 0 || currentEquity <= 0) {
+    // No meaningful equity (no price yet / unfunded fund) — nothing to track.
+    if (!Number.isFinite(currentEquity) || currentEquity <= 0) {
       return {
         drawdownPercent: 0,
         isPaused: isDrawdownPaused,
@@ -170,8 +203,20 @@ const createRiskManager = (exchange, config, productId) => {
       };
     }
 
-    // Initialize peakEquity on first observation with a position
-    if (peakEquity === null) {
+    // Re-base the peak on a capital change so deposits/withdrawals are neutral.
+    if (Number.isFinite(capitalBase)) {
+      if (peakEquity !== null && lastCapitalBase !== null && capitalBase !== lastCapitalBase) {
+        const delta = capitalBase - lastCapitalBase;
+        peakEquity += delta;
+        logger.info(`💵 [${exchange}] Drawdown peak re-based by ${delta >= 0 ? '+' : ''}${delta.toFixed(2)} for capital change`, {
+          capitalBase, lastCapitalBase, peakEquity,
+        });
+      }
+      lastCapitalBase = capitalBase;
+    }
+
+    // Initialize (or recover from a non-positive re-based) peak on first observation
+    if (peakEquity === null || peakEquity <= 0) {
       peakEquity = currentEquity;
       logger.info(`📊 [${exchange}] Initialized peak equity to $${peakEquity.toFixed(2)}`, { peakEquity });
     }
@@ -197,6 +242,7 @@ const createRiskManager = (exchange, config, productId) => {
 
     // Calculate drawdown from peak
     const drawdownPercent = ((peakEquity - currentEquity) / peakEquity) * 100;
+    lastDrawdownPercent = drawdownPercent;
 
     // Track max drawdown
     if (drawdownPercent > maxDrawdownSeen) {
@@ -353,12 +399,19 @@ const createRiskManager = (exchange, config, productId) => {
   };
 
   /**
-   * Reset risk tracking (for new cycle)
+   * Cycle-boundary hook (called from the engine's resetCycle).
+   *
+   * Intentionally does NOT reset the drawdown peak. Fund equity
+   * (`computeFundEquity`) is continuous across a body TP / cycle reset — the
+   * sold asset reappears as realized quote P&L and holdback reserves — so the
+   * peak stays meaningful across cycles. Resetting it here would erase the
+   * drawdown baseline every time a TP closed a cycle, which is exactly when a
+   * crash with a still-open ladder is most likely to be under way. The only
+   * peak resets are the drawdownResetHours auto-reset and the manual
+   * forceResume. (Under the old market-value equity the reset was required
+   * because equity collapsed to ~0 after a TP.)
    */
-  const resetCycleTracking = () => {
-    peakEquity = null; // Reset to uninitialized
-    // Don't reset maxDrawdownSeen - it's a session metric
-  };
+  const resetCycleTracking = () => {};
 
   /**
    * Get current risk state
@@ -372,6 +425,7 @@ const createRiskManager = (exchange, config, productId) => {
     return {
       peakEquity,
       maxDrawdownSeen,
+      currentDrawdownPercent: lastDrawdownPercent,
       isDrawdownPaused,
       drawdownPausedAt,
       drawdownPausedHours,
@@ -380,17 +434,54 @@ const createRiskManager = (exchange, config, productId) => {
   };
 
   /**
-   * Force resume from drawdown pause (manual override)
-   * @param {number} [currentEquity] - Current equity to set as new peak (optional)
+   * Snapshot of the drawdown tracker for persistence in positionState, so a
+   * restart neither clears an active pause nor forgets the peak.
+   * @returns {{peakEquity: number|null, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, capitalBase: number|null}}
    */
-  const forceResume = (currentEquity) => {
+  const getPersistedState = () => ({
+    peakEquity,
+    maxDrawdownSeen,
+    isDrawdownPaused,
+    drawdownPausedAt,
+    capitalBase: lastCapitalBase,
+  });
+
+  /**
+   * Restore a snapshot written by getPersistedState. Invalid / missing fields
+   * are ignored (the tracker then re-initializes from the next observation).
+   * @param {Object|null|undefined} saved
+   */
+  const restoreState = (saved) => {
+    if (!saved || typeof saved !== 'object') return;
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const savedPeak = num(saved.peakEquity);
+    if (savedPeak !== null && savedPeak > 0) peakEquity = savedPeak;
+    const savedMax = num(saved.maxDrawdownSeen);
+    if (savedMax !== null && savedMax > maxDrawdownSeen) maxDrawdownSeen = savedMax;
+    const savedCapital = num(saved.capitalBase);
+    if (savedCapital !== null) lastCapitalBase = savedCapital;
+    if (saved.isDrawdownPaused === true) {
+      isDrawdownPaused = true;
+      drawdownPausedAt = num(saved.drawdownPausedAt) ?? Date.now();
+    }
+  };
+
+  /**
+   * Force resume from drawdown pause (manual override)
+   * @param {number} [currentEquity] - Current fund equity (computeFundEquity unit) to set as the new peak (optional)
+   * @param {number} [capitalBase] - Capital base included in `currentEquity`; recorded so the next
+   *   updateDrawdown does not re-apply a capital change the new peak already contains
+   */
+  const forceResume = (currentEquity, capitalBase) => {
     if (isDrawdownPaused) {
       isDrawdownPaused = false;
       drawdownPausedAt = null;
-      if (currentEquity !== undefined) {
+      if (Number.isFinite(currentEquity) && currentEquity > 0) {
         peakEquity = currentEquity; // Reset peak to current equity
+        lastDrawdownPercent = 0;
+        if (Number.isFinite(capitalBase)) lastCapitalBase = capitalBase;
       }
-      logger.info(`▶️ [${exchange}] Manually resumed from drawdown pause, peak reset to ${peakEquity.toFixed(2)}`, {
+      logger.info(`▶️ [${exchange}] Manually resumed from drawdown pause, peak reset to ${(peakEquity ?? 0).toFixed(2)}`, {
         peakEquity, resumeType: 'manual',
       });
     }
@@ -408,10 +499,90 @@ const createRiskManager = (exchange, config, productId) => {
     getSummary,
     resetCycleTracking,
     getState,
+    getPersistedState,
+    restoreState,
     forceResume,
   };
 };
 
+/**
+ * Principal component of drawdown equity, in quote currency.
+ *
+ * Explicit deposits win — the engine-tracked position-state deposit first
+ * (updateConfig keeps it current for direct depositedCapital edits AND for
+ * maxUsdcDeployed add/withdraw deltas, which never touch config.depositedCapital),
+ * then config, then the legacy originalCapital alias; otherwise the
+ * maxUsdcDeployed budget. This
+ * deliberately does NOT use the APY calculator's auto-derived fallback
+ * (maxUsdcDeployed − realizedPnL): that fallback moves with every realized
+ * sell, which would cancel realized profit out of equity and make each TP
+ * read as a drawdown.
+ *
+ * @param {Object} position - Position state
+ * @param {Object} config - Regime config
+ * @returns {number}
+ */
+const resolveDrawdownCapitalBase = (position, config) => {
+  if (position?.depositedCapital > 0) return position.depositedCapital;
+  if (config?.depositedCapital > 0) return config.depositedCapital;
+  if (position?.originalCapital > 0) return position.originalCapital;
+  return config?.maxUsdcDeployed > 0 ? config.maxUsdcDeployed : 0;
+};
+
+/**
+ * Fund-level mark-to-market equity used by the drawdown guard.
+ *
+ * EQUITY DEFINITION (issue #693):
+ *
+ *   equity = capitalBase                      principal (resolveDrawdownCapitalBase)
+ *          − totalCostBasis                   quote currently tied up in open bodies
+ *          + realizedPnL                      realized quote P&L (cycle-pair model)
+ *          + (totalAsset + realizedAssetPnL) × price
+ *                                             open-body asset + zero-cost holdback
+ *                                             reserves, marked to market
+ *
+ * i.e. quote capital + all held asset at market — the Total P&L model from
+ * CLAUDE.md with the principal added so the percentage is a fund-level
+ * drawdown rather than a P&L swing on a small denominator.
+ *
+ * Why not market value alone (totalAsset × price, the original definition):
+ * a body TP sells asset for quote, so market value falls on every profitable
+ * TP and a routine take-profit would read as a drawdown (and, once the
+ * position is flat, equity is 0 and nothing is tracked at all).
+ *
+ * Under this definition a TP fill is non-negative: the body's cost leaves
+ * totalCostBasis, its sold qty leaves totalAsset, the proceeds minus prorated
+ * cost enter realizedPnL and the holdback enters realizedAssetPnL. Net change
+ * is +costBasis × holdback/assetQty (the holdback's cost, which the P&L model
+ * books as zero-cost reserve) plus (fill price − mark) × sold qty. A buy fill
+ * is ~neutral (quote → asset at the fill price). Only price moves on held
+ * asset (bodies + reserves) and realized losses move equity down.
+ *
+ * The +holdback-cost step is deliberate, not an accounting leak: CLAUDE.md's
+ * P&L model books reserves as zero-cost (their cost went to the paired sell),
+ * and this equity stays consistent with the dashboard's Total P&L. The step is
+ * permanent — carried by both equity and the peak from then on — so the dollar
+ * distance from the peak is unaffected; only the percentage denominator grows
+ * by the accumulated holdback cost, a small fraction of fund capital.
+ *
+ * @param {Object} position - Position state (totalAsset, totalCostBasis, realizedPnL, realizedAssetPnL, depositedCapital)
+ * @param {Object} config - Regime config
+ * @param {number} currentPrice - Mark price
+ * @returns {{equity: number, capitalBase: number}}
+ */
+const computeFundEquity = (position, config, currentPrice) => {
+  const capitalBase = resolveDrawdownCapitalBase(position, config);
+  const price = Number.isFinite(currentPrice) && currentPrice > 0 ? currentPrice : 0;
+  const heldAsset = (position?.totalAsset || 0) + (position?.realizedAssetPnL || 0);
+  const equity = capitalBase
+    - (position?.totalCostBasis || 0)
+    + (position?.realizedPnL || 0)
+    + heldAsset * price;
+  return { equity, capitalBase };
+};
+
 module.exports = {
   createRiskManager,
+  computeFundEquity,
+  resolveDrawdownCapitalBase,
 };

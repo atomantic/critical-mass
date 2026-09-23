@@ -29,7 +29,7 @@ const { createTailEventsMonitor } = require('./tail-events');
 const { createWebSocketFeed } = require('./websocket-feed');
 const { createRegimeDetector } = require('./regime-detector');
 const { createPositionSizer } = require('./position-sizer');
-const { createRiskManager } = require('./risk-manager');
+const { createRiskManager, computeFundEquity } = require('./risk-manager');
 const { createOrderExecutor } = require('./order-executor');
 const { classifyBodyTpCancellation } = require('./cancellation-result');
 const { createDryRunExecutor } = require('./dry-run-executor');
@@ -1323,6 +1323,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (body.tpOrderId && !openOrderIds.has(body.tpOrderId)) {
         const orderStatus = bodyStatusByOrderId.get(body.tpOrderId);
 
+        // A cancel-for-replace whose booking failed before the restart (#670)
+        // persisted the execution it knew about. Book from it rather than
+        // from a CANCELLED status that may omit (or understate) the filled
+        // size — otherwise the branches below would book too little, or clear
+        // the TP and re-place against the unreduced body, losing the sale.
+        const knownExecution = isCancelledStatus(orderStatus) ? knownTpCancelExecution(body, orderStatus) : null;
+        if (knownExecution) {
+          orderExecutor.markSettled(body.tpOrderId);
+          // bookTpCancelExecution contains its own failure (keeps the marker
+          // and the TP identity for the reconcile retry).
+          await bookTpCancelExecution(body, body.tpOrderId, knownExecution, 'Startup recovery');
+          continue;
+        }
+
         // Catch CANCELLED-with-partials at startup (Gemini heartbeat-cancels
         // open orders during downtime). The interval reconciler would catch
         // this too, but only after reconcileIntervalMs.
@@ -1798,9 +1812,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (expiredBodies > 0) logger.warn(`⚠️ [${exchange}] ${expiredBodies} body TP orders need re-placement`);
 
         // Reprice any restored body TPs whose TP% exceeds the effective max
-        // (fixes bodies that were placed with uncapped holdback floor)
-        // Cancel directly via adapter since executor map may not be populated yet
-        for (const body of savedBodies) {
+        // (fixes bodies that were placed with uncapped holdback floor).
+        // Every body that still carries a tpOrderId here had its executor
+        // tracking restored just above, so cancel through the executor —
+        // cancelBodyTpForReplace books any tranche sold during the cancel
+        // instead of re-listing it (issue #670).
+        for (const body of [...savedBodies]) {
           if (!body.tpOrderId || body.avgPrice <= 0) continue;
           // Skip bodies with a manual TP override — user intentionally set this price
           if (body.manualTpPct != null) continue;
@@ -1809,23 +1826,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const bEffectiveMax = config.tpMaxPercent * (bTierCfg.tpMaxScale || 1);
           if (currentTpPct > bEffectiveMax * 1.01) {
             logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP% ${currentTpPct.toFixed(2)}% exceeds max ${bEffectiveMax.toFixed(2)}% — cancelling and repricing`);
-            const cancelResult = await adapter.cancelOrder(body.tpOrderId);
-            if (cancelResult.success) {
-              orderExecutor.removeBodyTracking(body.tpOrderId);
-              body.tpOrderId = null;
-              body.tpPrice = 0;
-              body.assetOnOrder = 0;
+            const oldTp = body.tpOrderId;
+            const outcome = await cancelBodyTpForReplace(body, 'Startup reprice');
+            if (outcome === 'cancelled') {
               await placeBodyTp(body);
-            } else {
-              const status = await adapter.getOrder(body.tpOrderId).catch(() => null);
-              if (isFilledStatus(status)) {
-                logger.info(`📋 [${exchange}] Overpriced body TP ${body.tpOrderId.slice(0, 8)} already filled — polling will process`);
-              } else {
-                logger.warn(
-                  `⚠️ [${exchange}] Failed to cancel overpriced body TP ${body.tpOrderId}: ${cancelResult.errorMessage || 'unknown'}`,
-                  { bodyId: body.id, orderId: body.tpOrderId, error: cancelResult.errorMessage || 'unknown' }
-                );
-              }
+            } else if (outcome === 'filled') {
+              logger.info(`📋 [${exchange}] Overpriced body TP ${oldTp.slice(0, 8)} already filled — polling will process`);
+            } else if (outcome === 'unresolved') {
+              logger.warn(
+                `⚠️ [${exchange}] Failed to cancel overpriced body TP ${oldTp}`,
+                { bodyId: body.id, orderId: oldTp }
+              );
             }
           }
         }
@@ -2852,15 +2863,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         throw new Error(`Partial TP ${fillData.orderId} cancellation unresolved; retry reconciliation`);
       }
       // The sell may have advanced or fully filled while cancellation was in flight.
+      const knownFilledSize = fillData.filledSize || 0;
       fillData = buildPartialFillData(fillData.orderId, 'sell', cancellation.order, {
         isPartialFill: !isFilledStatus(cancellation.order),
         totalFees: cancellation.order.totalFees,
         source: fillData.source,
       });
+      // Some exchanges omit cumulative filledSize on a CANCELLED status (the
+      // executor then reports its polled high-water mark instead). Filled size
+      // only grows, so never let the frozen status undercut a size the caller
+      // already knew — the trade-level fill check below still has to match it.
+      const statusOmittedSize = !(parseFloat(cancellation.order.filledSize) > 0);
+      if (!(fillData.filledSize >= knownFilledSize)) fillData.filledSize = knownFilledSize;
       // Require the final fill set before accounting; never synthesize a stale
       // partial from the pre-cancel poll while the fills endpoint catches up.
       const finalFills = await adapter.getOrderFills(fillData.orderId);
       const finalSize = finalFills.reduce((sum, fill) => sum + Number(fill.size || 0), 0);
+      // With no size on the status, the known size may be only the executor's
+      // polled high-water mark, below the true final fill. The trade-level
+      // fills are then the best evidence — accept them when they cover at
+      // least what was known, or the size check below throws on every retry.
+      if (statusOmittedSize && Number.isFinite(finalSize) && finalSize > 0 && finalSize >= knownFilledSize - 1e-8) {
+        fillData.filledSize = finalSize;
+      }
       if (!(fillData.filledSize > 0) || !Number.isFinite(finalSize) || Math.abs(finalSize - fillData.filledSize) > 1e-8) {
         throw new Error(`Partial TP ${fillData.orderId} final fills incomplete; retry reconciliation`);
       }
@@ -3314,12 +3339,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           );
           if (Math.abs(sellQty - merged.assetOnOrder) > 0.00000001) {
             logger.warn(`⚠️ [${exchange}] Stale TP detected for body ${merged.id.slice(-8)}: onOrder=${merged.assetOnOrder}, expected=${sellQty} — cancelling for re-place`);
-            const cancelResult = await orderExecutor.cancelBodyTpOrder(merged.id, merged.tpOrderId);
-            if (cancelResult.cancelled) {
-              orderExecutor.removeBodyTracking(merged.tpOrderId);
-              merged.tpOrderId = null;
-              merged.tpPrice = 0;
-              merged.assetOnOrder = 0;
+            if (await cancelBodyTpForReplace(merged, 'Post-merge stale-size') === 'cancelled') {
               await placeBodyTp(merged);
             }
           }
@@ -4013,6 +4033,127 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Cancel a body's TP so the caller can re-place it (operator TP edit,
+   * reconcile stale-size, post-merge stale-size, startup reprice) — issue #670.
+   *
+   * A TP can sell a tranche WHILE it is being cancelled; cancelBodyTpOrder
+   * still reports `cancelled: true` (with filledSize > 0) and has already
+   * dropped all executor tracking for the order, so no poll will ever find
+   * that sale. Re-placing for the full, un-reduced body would then list asset
+   * the body no longer holds. classifyBodyTpCancellation tells the outcomes
+   * apart:
+   * - `cancelled`: clears the body's TP fields → returns 'cancelled' (the
+   *   only outcome on which the caller re-places).
+   * - `cancelled_with_execution`: books the sale immediately through the
+   *   normal body-TP sell path — the body still carries `tpOrderId = oldTp`,
+   *   so the sell handler finds it, records per-buy consumption, prorates
+   *   qty/cost, credits capital, and re-places a right-sized TP itself (or
+   *   closes the body on a full-size fill) → returns 'booked', or
+   *   'booking_failed' if the booking threw. The caller must NOT re-place.
+   * - `filled` / `unresolved`: leaves the TP untouched → returned as-is.
+   *
+   * Books through the handleOrderFill wrapper so an operator edit waits out
+   * an in-flight merge like any other fill (none of the callers hold the
+   * merge lock, so this cannot self-stall), and a failed booking releases its
+   * dedup key. If booking fails, the body keeps `tpOrderId = oldTp` so the
+   * reconcile loop re-discovers the CANCELLED order's partial and books it on
+   * a later tick.
+   * @param {Object} body - Celestial body whose TP is being replaced
+   * @param {string} context - Log label for the calling path
+   * @returns {Promise<'cancelled'|'booked'|'booking_failed'|'filled'|'unresolved'>}
+   */
+  const cancelBodyTpForReplace = async (body, context) => {
+    const oldTp = body.tpOrderId;
+    if (!oldTp) return 'cancelled';
+    const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id, oldTp);
+    const outcome = classifyBodyTpCancellation(cancelResult);
+    if (outcome === 'cancelled') {
+      orderExecutor.removeBodyTracking(oldTp);
+      body.tpOrderId = null;
+      body.tpPrice = 0;
+      body.assetOnOrder = 0;
+      return 'cancelled';
+    }
+    if (outcome !== 'cancelled_with_execution') return outcome;
+
+    logger.warn(
+      `⚠️ [${exchange}] ${context}: body ${body.id.slice(-8)} TP ${oldTp.slice(0, 8)} sold ${cancelResult.filledSize} ${baseCurrency} during cancel — booking before re-place (#670)`,
+      { bodyId: body.id, orderId: oldTp, filledSize: cancelResult.filledSize, context }
+    );
+    return bookTpCancelExecution(body, oldTp, cancelResult, context);
+  };
+
+  /**
+   * Book a body TP's execution that was reported by a cancel (see
+   * cancelBodyTpForReplace) through the normal body-TP sell path. The body
+   * must still carry `tpOrderId = orderId`.
+   *
+   * On failure the known execution is kept on the body as
+   * `pendingTpCancelExecution` (persisted with it), so the reconcile loop can
+   * retry the booking even when the exchange's CANCELLED status omits the
+   * filled size — otherwise it would read "cancelled, nothing filled", clear
+   * the TP and re-place against the unreduced body, losing the sale.
+   * @param {Object} body
+   * @param {string} orderId - The cancelled TP
+   * @param {{filledSize: number, filledValue?: number, averageFilledPrice?: number, totalFees?: number}} execution
+   * @param {string} context - Log label
+   * @returns {Promise<'booked'|'booking_failed'>}
+   */
+  /**
+   * The execution a failed cancel-for-replace booking recorded for this
+   * body's current TP (see bookTpCancelExecution), when the exchange's
+   * CANCELLED status does not report MORE than it — a status that omits the
+   * size, or reports a smaller one, must not override what we already knew.
+   * @param {Object} body
+   * @param {Object|null} status - Exchange order status for body.tpOrderId
+   * @returns {Object|null}
+   */
+  const knownTpCancelExecution = (body, status) => {
+    const known = body.pendingTpCancelExecution;
+    if (!known || !body.tpOrderId || known.orderId !== body.tpOrderId) return null;
+    return (parseFloat(status?.filledSize) || 0) > known.filledSize ? null : known;
+  };
+
+  const bookTpCancelExecution = async (body, orderId, execution, context) => {
+    // A TP that executed its whole planned size before the cancel landed
+    // (the cancel-after-full-fill race) is a completed TP, not a partial:
+    // route it as terminal so the sell handler closes the body and books its
+    // designed holdback as reserves instead of re-listing that holdback. The
+    // partial-fill flag would otherwise force the partial branch whenever the
+    // exchange's status carries no completionPercentage. Mirrors the sell
+    // handler's classification, including its legacy fallback for bodies
+    // with no recorded assetOnOrder.
+    const onOrder = body.assetOnOrder || 0;
+    const executedFullTp = onOrder > 0
+      ? execution.filledSize >= onOrder * 0.99
+      : body.assetQty > 0 && execution.filledSize / body.assetQty >= 0.95;
+    try {
+      await handleOrderFill(buildPartialFillData(orderId, 'sell', {
+        status: executedFullTp ? 'FILLED' : 'CANCELLED',
+        filledSize: execution.filledSize,
+        filledValue: execution.filledValue,
+        averageFilledPrice: execution.averageFilledPrice,
+      }, { totalFees: execution.totalFees || 0, ...(executedFullTp && { isPartialFill: false }) }));
+    } catch (err) {
+      body.pendingTpCancelExecution = {
+        orderId,
+        filledSize: execution.filledSize,
+        filledValue: execution.filledValue || 0,
+        averageFilledPrice: execution.averageFilledPrice || 0,
+        totalFees: execution.totalFees || 0,
+      };
+      saveLiveState();
+      logger.warn(
+        `⚠️ [${exchange}] ${context}: failed to book body ${body.id.slice(-8)} TP ${orderId.slice(0, 8)} execution during cancel: ${err.message} — keeping TP identity for reconciliation`,
+        { bodyId: body.id, orderId, error: err.message, context }
+      );
+      return 'booking_failed';
+    }
+    delete body.pendingTpCancelExecution;
+    return 'booked';
+  };
+
+  /**
    * Update trade imbalance from recent trades
    */
   const updateTradeImbalance = () => {
@@ -4128,6 +4269,53 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Seed the risk manager's drawdown tracker from the persisted snapshot once
+   * per engine instance, so a restart keeps an active pause and the peak.
+   */
+  let drawdownStateHydrated = false;
+  const hydrateDrawdownState = () => {
+    if (drawdownStateHydrated) return;
+    drawdownStateHydrated = true;
+    riskManager.restoreState(positionState.drawdownGuard);
+  };
+
+  /** Mirror the tracker into positionState (persisted with regime-state.json). */
+  const persistDrawdownState = () => {
+    const snapshot = riskManager.getPersistedState();
+    positionState.drawdownGuard = snapshot;
+    positionState.maxDrawdownSeen = snapshot.maxDrawdownSeen;
+  };
+
+  /**
+   * Evaluate the maxDrawdownPercent guard (issue #693). Runs once per metrics
+   * tick, independent of candle fetches (it needs only the live mark price).
+   * checkAllCaps / canPlaceEntry and the ladder guard read the resulting pause
+   * on every subsequent entry evaluation. Equity unit: computeFundEquity.
+   * @returns {Object|null} updateDrawdown result, or null when no price yet
+   */
+  const refreshDrawdownGuard = () => {
+    hydrateDrawdownState();
+    const price = marketState.lastPrice;
+    if (!(price > 0)) return null;
+    // A fill / merge / reset mid-flight can leave bodies and the ledger out of
+    // step (e.g. a TP's body already removed but its sell not yet paired),
+    // which would read as a transient equity drop. Skip this sample; the
+    // previous pause state stands until the next tick.
+    if (engineLocks.isMutatingPosition()) return null;
+    // realizedPnL / realizedAssetPnL are derived lazily from the ledger; refresh
+    // them so a just-filled TP's proceeds and holdback are in the equity.
+    refreshRealizedFromCyclePairs();
+    const { equity, capitalBase } = computeFundEquity(positionState, config, price);
+    const wasPaused = riskManager.getState().isDrawdownPaused;
+    const result = riskManager.updateDrawdown(equity, capitalBase);
+    persistDrawdownState();
+    // Flush a pause-state transition to disk now, so a crash before the
+    // 5-minute save timer cannot restart the engine without the pause.
+    if (result.isPaused !== wasPaused && !isDryRun) saveLiveStateGuarded('drawdown-guard');
+    return result;
+  };
+
+  /**
    * Update volatility metrics via REST API
    */
   const updateMetrics = async () => {
@@ -4135,6 +4323,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // open-order count so a flat engine is exempt from the stale-orders check
     // (issue #211-A) — nothing can go stale when there are no resting orders.
     healthMonitor.checkHealth({ openOrderCount: orderExecutor.getPendingCounts().total });
+
+    // Drawdown guard first — before the candle fetch can early-return, so a
+    // candle-endpoint outage never silently disables it.
+    refreshDrawdownGuard();
 
     const now = Math.floor(Date.now() / 1000);
     const oneHourAgo = now - 3600;
@@ -4554,7 +4746,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 await handleOrderFill(fillData);
               } else if (isCancelledStatus(bodyStatus)) {
                 const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-                if (bodyStatus.filledSize > 0) {
+                // A cancel-for-replace whose booking failed (#670) left the
+                // execution it knew about on the body; retry with it rather
+                // than trusting a status that may omit the filled size.
+                const knownExecution = knownTpCancelExecution(body, bodyStatus);
+                if (knownExecution) {
+                  orderExecutor.markSettled(body.tpOrderId);
+                  await bookTpCancelExecution(body, body.tpOrderId, knownExecution, 'Reconcile retry');
+                } else if (bodyStatus.filledSize > 0) {
                   // Route partials through handleOrderFill before re-placing — otherwise
                   // they're lost (Gemini has no order-events WS, and polling drops the
                   // order from pendingOrders once it sees CANCELLED).
@@ -4625,12 +4824,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                   );
                   if (Math.abs(sellQty - body.assetOnOrder) > 0.00000001) {
                     logger.warn(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP stale (onOrder=${body.assetOnOrder}, expected=${sellQty}) — cancelling for re-place`);
-                    const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id, body.tpOrderId);
-                    if (cancelResult.cancelled) {
-                      orderExecutor.removeBodyTracking(body.tpOrderId);
-                      body.tpOrderId = null;
-                      body.tpPrice = 0;
-                      body.assetOnOrder = 0;
+                    if (await cancelBodyTpForReplace(body, 'Reconcile stale-size') === 'cancelled') {
                       saveLiveState();
                       await placeBodyTp(body);
                     }
@@ -4846,6 +5040,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Skip tail events check — ladder IS the flash event strategy,
     // orders should stay in place regardless of spread/depth/flash conditions
+
+    // Fund drawdown pause blocks NEW ladders too (the reactive path gets it via
+    // canPlaceEntry). Already-resting rungs are left alone.
+    if (riskManager.getState().isDrawdownPaused) return;
 
     // Check regime allows entries
     if (!regimeDetector.allowsEntries()) return;
@@ -6303,16 +6501,35 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {{success: boolean, message: string}}
    */
   const forceResumeDrawdown = () => {
+    hydrateDrawdownState();
     const riskState = riskManager.getState();
     if (!riskState.isDrawdownPaused) {
       return { success: false, message: 'Not in drawdown pause' };
     }
 
-    // Calculate current equity to set as new peak
-    const currentValue = positionState.totalAsset * marketState.lastPrice;
-    const currentEquity = currentValue - positionState.totalCostBasis;
+    // New peak = current fund equity, in the SAME unit updateDrawdown compares
+    // against (computeFundEquity). The old P&L-unit value (market value − cost)
+    // would re-base the peak to a number unrelated to the tracked equity.
+    // Without a mark price there is no equity to re-base to, and clearing the
+    // pause alone would just re-pause on the next tick.
+    const price = marketState.lastPrice;
+    if (!(price > 0)) {
+      return { success: false, message: 'No market price yet — try again once the price feed is live' };
+    }
+    // Same reason refreshDrawdownGuard skips mid-mutation samples: a fill or
+    // merge in flight can leave bodies and ledger momentarily inconsistent.
+    if (engineLocks.isMutatingPosition()) {
+      return { success: false, message: 'Position update in progress — try again in a moment' };
+    }
+    refreshRealizedFromCyclePairs();
+    const { equity: currentEquity, capitalBase } = computeFundEquity(positionState, config, price);
+    if (!(currentEquity > 0)) {
+      return { success: false, message: `Fund equity is depleted ($${currentEquity.toFixed(2)}) — cannot re-base the drawdown peak` };
+    }
 
-    riskManager.forceResume(currentEquity);
+    riskManager.forceResume(currentEquity, capitalBase);
+    persistDrawdownState();
+    if (!isDryRun) saveLiveStateGuarded('drawdown-resume');
     logger.info(`▶️ [${exchange}] Drawdown pause manually cleared, peak reset to $${currentEquity.toFixed(2)}`);
 
     return { success: true, message: `Resumed, peak reset to $${currentEquity.toFixed(2)}` };
@@ -6718,14 +6935,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (!body) return { success: false, message: `Body ${bodyId.slice(-8)} not found` };
 
     if (body.tpOrderId) {
-      const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id, body.tpOrderId);
-      if (!cancelResult.cancelled) {
-        const reason = cancelResult.filled ? 'already filled' : 'cancel failed';
-        return { success: false, message: `Existing TP ${reason}` };
+      const outcome = await cancelBodyTpForReplace(body, 'Manual TP edit');
+      if (outcome !== 'cancelled') {
+        // A tranche that sold during the cancel was booked by the helper,
+        // which also re-placed a right-sized TP — the operator can retry the
+        // edit against the reduced body.
+        const reason = {
+          filled: 'already filled',
+          unresolved: 'cancel failed',
+          booked: 'sold during cancel — sale booked and the TP re-sized to what the body still holds; retry to apply the new TP',
+          booking_failed: 'sold during cancel — booking deferred to reconciliation',
+        }[outcome];
+        saveLiveState();
+        const state = getState();
+        if (callbacks.onStatusUpdate) callbacks.onStatusUpdate(state);
+        return { success: false, message: `Existing TP ${reason}`, status: state };
       }
-      body.tpOrderId = null;
-      body.tpPrice = 0;
-      body.assetOnOrder = 0;
     }
 
     body.manualTpPct = tpPct;
@@ -6867,6 +7092,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     if ((config.entryMode || 'reactive') !== 'ladder') {
       return { success: false, message: 'Entry mode is not ladder' };
+    }
+    // A manual rebuild places fresh buy rungs — the drawdown pause (#693)
+    // applies; the operator clears it explicitly via Resume first.
+    if (riskManager.getState().isDrawdownPaused) {
+      return { success: false, message: 'Drawdown pause active — resume from the drawdown pause before rebuilding the ladder' };
     }
 
     const allocatedCapital = getAllocatedCapital();
@@ -7117,6 +7347,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       clearTimers: () => { for (const t of ttlTimers) clearTimeout(t); ttlTimers.clear(); },
       updateMetrics,
       ensureTakeProfitPlaced,
+      refreshDrawdownGuard,
+      getOrderExecutor: () => orderExecutor,
+      checkAllCaps: () => riskManager.checkAllCaps(positionState),
     },
   };
 };
