@@ -964,15 +964,28 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * fires onEntryCancelled for 'entry' and 'ladder_entry' orders alike, and a
    * ladder rung that loses its partial size is exposed to the same
    * under-reporting re-poll as a plain entry.
+   *
+   * Persists immediately when the mark rises: the stamp exists precisely for
+   * the window in which the fill it describes may fail to book, and leaving it
+   * to the periodic state-save timer would let a restart inside that window
+   * lose it — startImpl's catch-up would then trust an under-reporting poll
+   * and purge the real partial. Guarded save: this runs inside the executor's
+   * cancel callback, where a disk-error throw must not abort the fill routing
+   * that follows.
    * @param {string} orderId
    * @param {number} filledSize
    */
   const stampKnownFilledSize = (orderId, filledSize) => {
     if (!(filledSize > 0)) return;
+    let raised = false;
     for (const list of ['pendingEntryOrders', 'pendingLadderOrders']) {
       const row = positionState[list]?.find(e => e.orderId === orderId);
-      if (row) row.knownFilledSize = Math.max(row.knownFilledSize || 0, filledSize);
+      if (row && !((row.knownFilledSize || 0) >= filledSize)) {
+        row.knownFilledSize = filledSize;
+        raised = true;
+      }
     }
+    if (raised && !isDryRun) saveLiveStateGuarded('known-filled-size');
   };
 
   /**
@@ -2690,6 +2703,53 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
       }
 
+      // Catch up saved ladder rungs that went terminal while offline, the same
+      // way as entries above (issue #764): the restore block below keeps only
+      // rungs still open on the exchange, so without this a rung that filled —
+      // or was cancelled with a partial, possibly recorded only as its
+      // knownFilledSize — would be dropped with nothing booked. A failed
+      // catch-up is retained (re-armed by catchUpTerminalEntry) for the
+      // reconcile sweep to retry, exactly like failedCatchUpIds for entries.
+      const savedLadderSnapshot = positionState.pendingLadderOrders || [];
+      const terminalSavedLadder = savedLadderSnapshot.filter(o => !allOpenIds.has(o.orderId));
+      const failedLadderCatchUpIds = new Set();
+      if (terminalSavedLadder.length > 0) {
+        const ladderStatuses = await Promise.all(
+          terminalSavedLadder.map(o => adapter.getOrder(o.orderId).catch(err => ({ __err: err })))
+        );
+        for (let i = 0; i < terminalSavedLadder.length; i++) {
+          const savedRung = terminalSavedLadder[i];
+          const orderStatus = ladderStatuses[i];
+          if (!orderStatus || orderStatus.__err) {
+            // Unknown status — keep the row rather than drop a possible fill;
+            // the reconcile sweep re-polls it.
+            logger.warn(
+              `⚠️ [${exchange}] Failed to check offline ladder rung ${savedRung.orderId.slice(0, 8)}: ${orderStatus?.__err?.message || 'no status'} — keeping it for the reconcile sweep`,
+              { orderId: savedRung.orderId, orderType: 'ladder_entry', error: orderStatus?.__err?.message }
+            );
+            failedLadderCatchUpIds.add(savedRung.orderId);
+            continue;
+          }
+          if (!isTerminalStatus(orderStatus)) {
+            // Missing from the open-orders snapshot but not terminal (a
+            // listing race) — keep it for the sweep, which re-arms live rungs.
+            failedLadderCatchUpIds.add(savedRung.orderId);
+            continue;
+          }
+          const result = await catchUpTerminalEntry(savedRung, orderStatus, 'ladder_entry');
+          if (result.outcome === 'failed') failedLadderCatchUpIds.add(savedRung.orderId);
+        }
+        // A catch-up that threw after handleOrderFill already dropped the live
+        // row must not lose it — re-add from the snapshot (as entries do).
+        const liveLadderIds = new Set((positionState.pendingLadderOrders || []).map(o => o.orderId));
+        const droppedRetained = savedLadderSnapshot.filter(
+          o => failedLadderCatchUpIds.has(o.orderId) && !liveLadderIds.has(o.orderId)
+        );
+        if (droppedRetained.length > 0) {
+          positionState.pendingLadderOrders = [...(positionState.pendingLadderOrders || []), ...droppedRetained];
+        }
+      }
+
       // Restore or cancel persisted ladder orders
       const savedLadderOrders = positionState.pendingLadderOrders || [];
       if (positionState.ladderActive && savedLadderOrders.length > 0) {
@@ -2712,8 +2772,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
 
         // Remove any saved ladder orders that are no longer open on the exchange
+        // — except rungs whose offline catch-up above must be retried.
         const openOrderIds = new Set(openEntries.map(o => o.orderId));
-        positionState.pendingLadderOrders = savedLadderOrders.filter(o => openOrderIds.has(o.orderId));
+        positionState.pendingLadderOrders = savedLadderOrders.filter(
+          o => openOrderIds.has(o.orderId) || failedLadderCatchUpIds.has(o.orderId)
+        );
 
         cancelledLadder = savedLadderOrders.length - positionState.pendingLadderOrders.length;
 

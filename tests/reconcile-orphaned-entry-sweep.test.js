@@ -281,6 +281,23 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
     assert.ok(Math.abs(bodies[0].assetQty - 0.4) < 1e-8, `the body must reflect the known 0.4 partial — got ${bodies[0].assetQty}`);
   });
 
+  it('persists a raised knownFilledSize to disk immediately, not on the periodic save timer (issue #764)', () => {
+    // The stamp covers the window where the fill it records may fail to book;
+    // a restart inside that window must still see it.
+    const { loadRegimeState } = require('../src/state-tracker');
+    const orderId = 'e9';
+    const eng = makeEngine({ getOrderFills: async () => [], getOrder: async () => ({ status: 'CANCELLED', filledSize: 0 }) });
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [{ orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() }];
+
+    eng._test.handleEntryCancelled(orderId, { filledSize: 0.4 });
+
+    const onDisk = loadRegimeState('coinbase', TEST_PAIR)?.position?.pendingEntryOrders || [];
+    const row = onDisk.find(e => e.orderId === orderId);
+    assert.ok(row, 'the saved row must be on disk');
+    assert.equal(row.knownFilledSize, 0.4, 'the raised high-water mark must be persisted immediately');
+  });
+
   it('still purges a genuinely empty cancel via onEntryCancelled when no partial is known', () => {
     const orderId = 'e8';
     const eng = makeEngine({ getOrderFills: async () => [], getOrder: async () => ({ status: 'CANCELLED', filledSize: 0 }) });

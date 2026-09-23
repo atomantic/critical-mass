@@ -193,6 +193,81 @@ describe('startup catch-up for saved entries that went terminal offline (issue #
     assert.ok(Math.abs(bodies[0].assetQty - 0.4) < 1e-8, `the body must reflect the known 0.4 partial — got ${bodies[0].assetQty}`);
   });
 
+  it('catches up a saved ladder rung that went terminal offline instead of dropping its known partial (issue #764)', async () => {
+    const RUNG_ID = 'terminal-ladder-1';
+    const eng = makeEngine('__teststartupcatchup_d__', {
+      getOrder: async (orderId) => (orderId === RUNG_ID
+        ? { status: 'CANCELLED', filledSize: 0, averageFilledPrice: 2000 }
+        : { status: 'OPEN', filledSize: 0 }),
+      getOrderFills: async () => { throw new Error('trade scan unavailable'); },
+    });
+
+    const pos = eng._getPositionState();
+    pos.ladderActive = true;
+    pos.pendingLadderOrders = [{
+      orderId: RUNG_ID, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() - 60000, ladderIndex: 0, knownFilledSize: 0.4,
+    }];
+
+    const result = await eng.start();
+    assert.equal(result.success, true, `start() must still succeed: ${result.error}`);
+
+    const finalPos = eng._getPositionState();
+    assert.equal((finalPos.pendingLadderOrders || []).length, 0, 'the caught-up rung is cleared once booked');
+    const bodies = finalPos.celestialBodies.filter(b => (b.sourceOrderIds || []).includes(RUNG_ID));
+    assert.equal(bodies.length, 1, 'the rung\'s known partial must be booked into a body, not dropped by the ladder restore');
+    assert.ok(Math.abs(bodies[0].assetQty - 0.4) < 1e-8, `the body must reflect the known 0.4 partial — got ${bodies[0].assetQty}`);
+  });
+
+  it('retains a saved ladder rung whose offline catch-up fails, for the reconcile sweep to retry (issue #764)', async () => {
+    const RUNG_ID = 'terminal-ladder-2';
+    const restoreCalls = [];
+    const eng = makeEngine('__teststartupcatchup_e__', {
+      // Status proves a real fill, but no usable price and no trade scan —
+      // nothing can be booked on this attempt.
+      getOrder: async (orderId) => (orderId === RUNG_ID
+        ? { status: 'FILLED', filledSize: 1.5, filledValue: 0, averageFilledPrice: 0 }
+        : { status: 'OPEN', filledSize: 0 }),
+      getOrderFills: async () => { throw new Error('trade scan unavailable'); },
+    });
+    eng._test.setOrderExecutor({
+      setPriceIncrement: () => {},
+      getPendingCounts: () => ({ total: 0 }),
+      getOrderPlacedAt: () => null,
+      isLadderOrder: () => false,
+      restorePendingOrder: (orderId, spec) => restoreCalls.push({ orderId, spec }),
+      markSettled: () => {},
+      checkPendingOrderFills: async () => ({ polled: 0, filled: 0, cancelled: 0 }),
+      handleOrderFill: () => {},
+      cancelBodyTpOrder: async () => ({ cancelled: true }),
+      placeBodyTpOrder: async () => ({ success: true, orderId: 'tp-1' }),
+      removeBodyTracking: () => {},
+      exportState: () => ({}),
+      cancelAllEntries: async () => {},
+      cancelAllLadderOrders: async () => {},
+      cancelTpOrder: async () => ({ cancelled: true }),
+      handleOrderCancel: () => {},
+    });
+
+    const pos = eng._getPositionState();
+    pos.ladderActive = true;
+    pos.pendingLadderOrders = [{
+      orderId: RUNG_ID, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() - 60000, ladderIndex: 0,
+    }];
+
+    const result = await eng.start();
+    assert.equal(result.success, true, `start() must still succeed: ${result.error}`);
+
+    const finalPos = eng._getPositionState();
+    const kept = (finalPos.pendingLadderOrders || []).find(o => o.orderId === RUNG_ID);
+    assert.ok(kept, 'a rung whose catch-up failed must be retained, not purged as no-longer-open');
+    assert.equal(kept.knownFilledSize, 1.5, 'the failed catch-up must record the size it observed');
+    assert.ok(
+      restoreCalls.some(c => c.orderId === RUNG_ID && c.spec.type === 'ladder_entry' && c.spec.ladderIndex === 0),
+      'executor tracking must be re-armed as a ladder_entry for the retry',
+    );
+    assert.equal(finalPos.celestialBodies.filter(b => (b.sourceOrderIds || []).includes(RUNG_ID)).length, 0, 'nothing bookable yet');
+  });
+
   it('purges the entry as before when catch-up succeeds', async () => {
     const eng = makeEngine('__teststartupcatchup_b__', {
       getOrder: async (orderId) => (orderId === RESTORED_ORDER_ID
