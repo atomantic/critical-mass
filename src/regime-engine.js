@@ -1820,11 +1820,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         positionState.cycleBuys = actualCycleBuys;
       }
 
-      // Seal legacy closure into per-buy consumption records while the
-      // sellOrderId links still say which orders were closed (issue #607).
-      // Must run BEFORE anything that can place a body TP — offline fill
-      // recovery, TP repricing — because placeBodyTp re-stamps sellOrderId
-      // on every row of the order, erasing the evidence.
       // Book entry tranches the ledger holds but no owning body records
       // (issue #756) first, so the seal counts them as open.
       const recoveredEntryTranches = await recoverUnbookedOwnedEntryTranches().catch(err => {
@@ -1834,6 +1829,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (recoveredEntryTranches > 0) {
         logger.info(`🔧 [${exchange}] Booked unrecorded tranches of ${recoveredEntryTranches} entry order(s) into their own bodies`);
       }
+
+      // Seal legacy closure into per-buy consumption records while the
+      // sellOrderId links still say which orders were closed (issue #607).
+      // Must run BEFORE anything that can place a body TP — offline fill
+      // recovery, TP repricing — because placeBodyTp re-stamps sellOrderId
+      // on every row of the order, erasing the evidence.
       const sealedLegacy = sealLegacyClosure();
       if (sealedLegacy > 0) {
         fillLedger.persist();
