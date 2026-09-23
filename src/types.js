@@ -206,6 +206,11 @@
  * @property {string} productId - Product ID
  * @property {string} side - Order side
  * @property {string} status - Order status
+ * @property {number} size - Remaining unfilled base quantity (exchange-reported when
+ *   available, otherwise originalSize - filledSize). NOT the size the order was
+ *   originally placed for — see originalSize.
+ * @property {number} originalSize - Base quantity the order was originally placed for
+ * @property {number} price - Limit price the order was placed at
  * @property {number} filledSize - Amount filled
  * @property {string} createdTime - ISO timestamp
  */
@@ -813,17 +818,11 @@
  * @property {(orderId: string) => void} handleOrderCancel
  * @property {() => {entries: number, ladderEntries: number, takeProfits: number, bodies: number, total: number}} getPendingCounts
  * @property {() => Map<string, any>} getPendingEntries
- * @property {() => {valid: boolean, reason?: string, issues?: string[]}} checkInvariants
- * @property {() => string|null} getActiveTpOrderId
- * @property {() => string|Object} getSummary
- * @property {() => void} clearPendingOrders
  * @property {(orderId: string, orderData: any) => void} restorePendingOrder
  * @property {(orderId: string) => void} markSettled
  * @property {(orderId: string) => number|null} getOrderPlacedAt
  * @property {(assetQty: number, tpPrice: number, bodyId: string) => Promise<{success: boolean, orderId?: string, errorMessage?: string}>} placeBodyTpOrder
  * @property {(bodyId: string, tpOrderId: string) => Promise<{cancelled: boolean, filled: boolean, filledSize?: number}>} cancelBodyTpOrder
- * @property {(orderId: string) => boolean} isBodyTpOrder
- * @property {(tpOrderId: string) => Object|null} getBodyByTpOrderId
  * @property {(bodyId: string, tpOrderId: string, assetQty: number, tpPrice: number, placedAt?: number) => void} restoreBodyTpOrder
  * @property {(tpOrderId: string) => void} removeBodyTracking
  * @property {(levels: Array<{index: number, price: number, assetQty: number, sizeUsdc: number}>) => Promise<{orders: Array<any>, failedCount: number}>} placeLadderOrders
@@ -837,6 +836,9 @@
  * @property {() => Array<any>} [getPendingOrdersList]
  * @property {() => number} [getEffectiveStaleMs]
  * @property {(found: any, intent: any) => {tracked: boolean, message: string}} [adoptPlacement]
+ * @property {() => string|null} [getActiveTpOrderId] - Not contract-required (issue #725): implemented by both executors, but no production caller — test-only observability for TP-placement concurrency safety
+ * @property {(orderId: string) => boolean} [isBodyTpOrder] - Not contract-required (issue #725): implemented by both executors, but no production caller — regime-engine.js resolves body ownership from positionState.celestialBodies instead
+ * @property {(tpOrderId: string) => Object|null} [getBodyByTpOrderId] - Not contract-required (issue #725): implemented by both executors, but no production caller outside their own internal fill handling (dry-run) — test-only read of a body's stamped cost basis
  */
 
 /**

@@ -999,51 +999,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   };
 
   /**
-   * Check invariants
-   * @returns {{valid: boolean, reason?: string}}
-   */
-  const checkInvariants = () => {
-    const openCount = Array.from(pendingOrders.values()).filter(o => o.status === 'open').length;
-    if (openCount > config.maxOpenOrders) {
-      return {
-        valid: false,
-        reason: `too_many_orders:${openCount}>${config.maxOpenOrders}`,
-      };
-    }
-    return { valid: true };
-  };
-
-  /**
    * Get active TP order ID
    * @returns {string|null}
    */
   const getActiveTpOrderId = () => activeTpOrderId;
-
-  /**
-   * Get status summary for logging
-   * @returns {string}
-   */
-  const getSummary = () => {
-    const counts = getPendingCounts();
-    let summary = `[DRY-RUN] pending=${counts.total}(entries=${counts.entries},tp=${counts.takeProfits},bodies=${counts.bodies})`;
-
-    if (activeTpOrderId) {
-      summary += ` active_tp=${activeTpOrderId.substring(0, 12)}@$${lastTpPrice}`;
-    }
-
-    return summary;
-  };
-
-  /**
-   * Clear all pending orders
-   */
-  const clearPendingOrders = () => {
-    pendingOrders.clear();
-    bodyTpOrders.clear();
-    activeTpOrderId = null;
-    lastTpPrice = 0;
-    lastTpSize = 0;
-  };
 
   /**
    * Restore pending order (for recovery - no-op in dry-run)
@@ -1345,10 +1304,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     getOrderPlacedAt,
     getPendingCounts,
     getPendingEntries,
-    checkInvariants,
     getActiveTpOrderId,
-    getSummary,
-    clearPendingOrders,
     clearTimers,
     restorePendingOrder,
 

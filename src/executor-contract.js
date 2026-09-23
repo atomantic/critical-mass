@@ -16,17 +16,11 @@ const REQUIRED_EXECUTOR_METHODS = [
   'handleOrderCancel',
   'getPendingCounts',
   'getPendingEntries',
-  'checkInvariants',
-  'getActiveTpOrderId',
-  'getSummary',
-  'clearPendingOrders',
   'restorePendingOrder',
   'markSettled',
   'getOrderPlacedAt',
   'placeBodyTpOrder',
   'cancelBodyTpOrder',
-  'isBodyTpOrder',
-  'getBodyByTpOrderId',
   'restoreBodyTpOrder',
   'removeBodyTracking',
   'placeLadderOrders',
@@ -35,6 +29,24 @@ const REQUIRED_EXECUTOR_METHODS = [
   'isLadderOrder',
   'setPriceIncrement',
   'clearTimers',
+];
+
+// Implemented identically by both executors and exported, but NOT required by
+// the contract: nothing in src/, scripts/, admin/, or server.js ever calls
+// them (issue #725 verified this — a superset of the three #678 deleted).
+// Unlike #678's three, these carry real, still-valuable test coverage with no
+// clean production-path substitute (race-conditions.test.js exercises
+// getActiveTpOrderId for TP-placement concurrency safety; order-executor /
+// placement-intents / regime-placement-adoption / dry-run-executor tests rely
+// on isBodyTpOrder + getBodyByTpOrderId — including the #133/#213E dry-run
+// cost-basis regression suite, which has no other way to read a body's
+// stamped cost basis) — so they stay implemented and test-only rather than
+// being deleted outright. Keep this list in sync with types.js's OrderExecutor
+// typedef (documented there as optional, bracketed properties).
+const TEST_ONLY_EXECUTOR_METHODS = [
+  'getActiveTpOrderId',
+  'isBodyTpOrder',
+  'getBodyByTpOrderId',
 ];
 
 /**
@@ -56,5 +68,6 @@ const validateExecutor = (executor, name) => {
 
 module.exports = {
   REQUIRED_EXECUTOR_METHODS,
+  TEST_ONLY_EXECUTOR_METHODS,
   validateExecutor,
 };
