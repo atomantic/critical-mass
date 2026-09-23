@@ -23,15 +23,27 @@ const configUtils = require('../src/config-utils');
 const originalUpdateRegimeConfig = configUtils.updateRegimeConfig;
 configUtils.updateRegimeConfig = () => {};
 
+// start() connects a REAL websocket feed — stub it BEFORE regime-engine is
+// required (it destructures createWebSocketFeed at load).
+const websocketFeedModule = require('../src/websocket-feed');
+const originalCreateWebSocketFeed = websocketFeedModule.createWebSocketFeed;
+websocketFeedModule.createWebSocketFeed = () => ({ connect: () => {}, disconnect: () => {} });
+
 const { createRegimeEngine } = require('../src/regime-engine');
 
 const TEST_PAIR = '__test670__';
-const JUNK_DIR = isolatedData.fundDir('coinbase', TEST_PAIR);
 
 const engines = [];
-after(() => {
-  for (const eng of engines) eng._test.clearTimers();
+/** Engines that ran start() and so own production intervals only stop() clears. */
+const started = new Set();
+after(async () => {
+  // stop() clears the production intervals start() schedules.
+  for (const eng of engines) {
+    if (started.has(eng)) await eng.stop().catch(() => {});
+    eng._test.clearTimers();
+  }
   configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
+  websocketFeedModule.createWebSocketFeed = originalCreateWebSocketFeed;
   isolatedData.cleanup();
 });
 
@@ -69,13 +81,13 @@ const makeBody = (tpOrderId) => ({
 /**
  * @param {{cancelResult: Object, adapter?: Object}} opts
  */
-const makeEngine = ({ cancelResult, adapter = {} }) => {
+const makeEngine = ({ cancelResult, adapter = {}, executor = {}, productDetails = PRODUCT_DETAILS, pair = TEST_PAIR }) => {
   const placed = [];
   const cancels = [];
   let n = 0;
-  const eng = createRegimeEngine('coinbase', TEST_PAIR, { dryRun: false, productId: TEST_PAIR }, {});
+  const eng = createRegimeEngine('coinbase', pair, { dryRun: false, productId: pair }, {});
   eng._test.setRunning(true);
-  eng._test.setProductDetails(PRODUCT_DETAILS);
+  eng._test.setProductDetails(productDetails);
   eng._test.setAdapter({
     // Terminal-confirm lookups made by the partial-sell freeze.
     getOrder: async () => ({ status: 'CANCELLED', filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 }),
@@ -94,6 +106,7 @@ const makeEngine = ({ cancelResult, adapter = {} }) => {
     getPendingCounts: () => ({ total: 0 }),
     getOrderPlacedAt: () => null,
     isLadderOrder: () => false,
+    ...executor,
   });
   const pos = eng._getPositionState();
   pos.celestialBodies = [makeBody('tp-old')];
@@ -112,19 +125,19 @@ const seedBuy = (eng) => {
   });
 };
 
-const readSellRow = (orderId) => {
-  const ledger = JSON.parse(fs.readFileSync(path.join(JUNK_DIR, 'fill-ledger.json'), 'utf8'));
+const readSellRow = (orderId, pair = TEST_PAIR) => {
+  const ledger = JSON.parse(fs.readFileSync(path.join(isolatedData.fundDir('coinbase', pair), 'fill-ledger.json'), 'utf8'));
   return ledger.find(f => f.orderId === orderId);
 };
 
-const assertBookedAndResized = (eng, placed, orderId) => {
+const assertBookedAndResized = (eng, placed, orderId, pair = TEST_PAIR) => {
   const body = eng._getPositionState().celestialBodies.find(b => b.id === 'b1');
   assert.ok(body, 'body survives a partial sale');
   assert.ok(Math.abs(body.assetQty - 0.006) < 1e-9, `sold tranche deducted, got ${body.assetQty}`);
   assert.ok(Math.abs(body.costBasis - 300) < 1e-6, `prorated cost deducted, got ${body.costBasis}`);
   assert.notEqual(body.tpOrderId, orderId, 'body no longer points at the cancelled TP');
 
-  const sell = readSellRow(orderId);
+  const sell = readSellRow(orderId, pair);
   assert.ok(sell, 'the sale reached the fill ledger');
   assert.ok(Math.abs(sell.bodyPnl - 1.98) < 1e-9, `sale carries bodyPnl, got ${sell.bodyPnl}`);
   assert.equal(sell.bodyHoldbackAsset, 0, 'a partial sale books no reserves');
@@ -213,5 +226,96 @@ describe('#670 TP cancel-for-replace books executions during cancel', () => {
     assert.equal(body.assetQty, 0.01);
     assert.equal(body.tpOrderId, 'tp-new-1');
     assert.equal(placed.length, 1);
+  });
+  it('post-merge stale-size re-place books the sold tranche instead of re-listing it', async () => {
+    // A baseMinSize between the holdback sell size (~0.0195) and the merged
+    // body (0.02) makes placeBodyTp sell the full body, which the post-merge
+    // defense-in-depth check then reads as a stale TP and cancels. That cancel
+    // races a 0.004 fill.
+    let cancelCalls = 0;
+    const { eng, placed } = makeEngine({
+      cancelResult: null,
+      productDetails: { baseMinSize: '0.0197', baseIncrement: '0.00000001' },
+      adapter: {
+        getOrder: async (orderId) => (orderId === 'tp-old'
+          ? { status: 'OPEN', filledSize: 0 }
+          : { status: 'CANCELLED', filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 }),
+        getOrderFills: async (orderId) => (orderId === 'buy-new'
+          ? [{ tradeId: 'buy-new-t1', orderId, side: 'buy', price: '50000', size: '0.01', totalCommission: '0.05', rebate: '0', tradeTime: new Date().toISOString() }]
+          : sellFill(orderId)),
+      },
+      executor: {
+        // First cancel: the merge target's own TP (clean). Second: the
+        // post-merge stale-size re-place, which sold 0.004 during the cancel.
+        cancelBodyTpOrder: async () => (++cancelCalls === 1 ? { cancelled: true, filled: false, filledSize: 0 } : EXECUTION),
+        // Force findMergeTarget to pick the single existing body.
+        getPendingCounts: () => ({ total: 1_000_000 }),
+      },
+    });
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+
+    assert.equal(cancelCalls, 2, 'merge cancel + post-merge stale-size cancel');
+    const body = eng._getPositionState().celestialBodies.find(b => b.id === 'b1');
+    assert.ok(Math.abs(body.assetQty - 0.016) < 1e-9, `sold tranche deducted from the merged body, got ${body.assetQty}`);
+    assert.notEqual(body.tpOrderId, 'tp-new-1', 'body no longer points at the cancelled post-merge TP');
+    const sell = readSellRow('tp-new-1');
+    assert.ok(sell && Number.isFinite(sell.bodyPnl), 'the sale was booked with bodyPnl');
+    assert.equal(placed[0][0], 0.02, 'the first (merge) placement sold the full body');
+    for (const [size] of placed.slice(1)) {
+      assert.ok(size <= 0.016 + 1e-12, `re-placed TP ${size} must not exceed the 0.016 the body still holds`);
+    }
+  });
+
+  it('startup overpriced-TP reprice books the sold tranche instead of re-listing it', async () => {
+    const restored = [];
+    // Own pair: start() reloads persisted state, which earlier tests wrote
+    // for TEST_PAIR.
+    const pair = '__test670startup__';
+    const { eng, placed, cancels } = makeEngine({
+      pair,
+      cancelResult: EXECUTION,
+      adapter: {
+        getProductDetails: async () => ({ ...PRODUCT_DETAILS, quoteIncrement: '0.01' }),
+        getCurrentPrice: async () => 50000,
+        getAccountBalance: async () => ({ available: 0, hold: 0 }),
+        loadCredentials: () => ({ apiKey: 'test', apiSecret: 'test' }),
+        // Live and unfilled at restore time; CANCELLED with the tranche once
+        // the reprice has cancelled it.
+        getOrder: async () => (cancels.length === 0
+          ? { status: 'OPEN', filledSize: 0 }
+          : { status: 'CANCELLED', filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 }),
+      },
+      executor: {
+        setPriceIncrement: () => {},
+        restorePendingOrder: () => {},
+        restoreBodyTpOrder: (...args) => restored.push(args),
+        exportState: () => ({}),
+        cancelAllEntries: async () => {},
+        cancelAllLadderOrders: async () => {},
+        cancelTpOrder: async () => ({ cancelled: true }),
+        handleOrderCancel: () => {},
+      },
+    });
+    eng._test.setRunning(false);
+    eng._test.setRecoveryModule({
+      recoverState: async () => ({
+        position: { totalAsset: 0, totalCostBasis: 0, avgCostBasis: 0, cycleBuys: 0, lastEntryPrice: 0, lastEntryTime: 0 },
+        openOrders: new Map(),
+        discrepancies: [],
+      }),
+    });
+    // Far above any tier's TP cap → the startup reprice fires.
+    eng._getPositionState().celestialBodies[0].tpPrice = 75000;
+    seedBuy(eng);
+
+    started.add(eng);
+    const result = await eng.start();
+    assert.equal(result.success, true, `start() must succeed: ${result.error}`);
+
+    assert.ok(restored.some(([bodyId, orderId]) => bodyId === 'b1' && orderId === 'tp-old'), 'tracking restored before the reprice');
+    assert.deepEqual(cancels, ['tp-old'], 'reprice cancelled through the executor');
+    assertBookedAndResized(eng, placed, 'tp-old', pair);
+    assert.equal(placed.length, 1, 'the reprice did not also re-place a full-size TP');
   });
 });
