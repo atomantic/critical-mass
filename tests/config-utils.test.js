@@ -1613,6 +1613,18 @@ describe('fund deletion tombstones', () => {
       'ordinary saves must not introduce a tombstone key');
   });
 
+  it('refuses to change an existing fund\'s traded asset (#685 defence in depth)', () => {
+    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+    const before = JSON.stringify(mocks.user());
+    assert.throws(
+      () => configUtils.updateFundConfig('coinbase', 'BTC-USDC', { productId: 'ETH-USDC' }),
+      /cannot change a fund's traded asset/,
+    );
+    assert.equal(JSON.stringify(mocks.user()), before, 'a refused save must not write');
+    // A quote-only change on the same asset is still allowed.
+    configUtils.updateFundConfig('coinbase', 'BTC-USDC', { productId: 'BTC-USD' });
+  });
+
   it('suppresses a tombstoned pair in a legacy flat exchange block', () => {
     const flat = { productId: 'BTC-USDC', enabled: true, deletedPairs: ['BTC-USDC'] };
     assert.deepStrictEqual(configUtils.normalizeExchangeBlock(flat).pairs, {});
