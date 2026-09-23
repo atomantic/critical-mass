@@ -11,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const { roundBTC, roundUSDC } = require('../src/volatility-utils');
 const { getAuthHeaders } = require('../src/adapters/coinbase/auth');
-const { updateRegimeConfig } = require('../src/config-utils');
+const { updateExchangeRegimeConfig } = require('../src/config-utils');
 
 const { DATA_DIR } = require('../src/paths');
 const COINBASE_DIR = path.join(DATA_DIR, 'coinbase');
@@ -176,7 +176,7 @@ async function main() {
     console.log('✅ regime-state.json saved');
 
     // Update config
-    updateRegimeConfig('coinbase', { maxUsdcDeployed: newMaxUsdc });
+    updateExchangeRegimeConfig('coinbase', { maxUsdcDeployed: newMaxUsdc });
     console.log('✅ config.json updated');
   }
 
