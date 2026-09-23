@@ -203,4 +203,33 @@ describe('drawdown guard wired into the engine (issue #693)', () => {
       eng._test.setFillInProgress(0);
     }
   });
+
+  it('refuses a manual resume without a mark price or mid-mutation, and blocks manual ladder rebuilds while paused', async () => {
+    const { eng, config } = makeEngine();
+    setPrice(eng, 100);
+    await eng._test.updateMetrics();
+    setPrice(eng, 70);
+    await eng._test.updateMetrics();
+    assert.equal(eng.getState().risk.isDrawdownPaused, true);
+
+    config.entryMode = 'ladder';
+    const rebuild = await eng.rebuildLadder();
+    assert.equal(rebuild.success, false);
+    assert.match(rebuild.message, /Drawdown pause/);
+    config.entryMode = 'reactive';
+
+    eng._test.setFillInProgress(1);
+    try {
+      assert.equal(eng.forceResumeDrawdown().success, false);
+    } finally {
+      eng._test.setFillInProgress(0);
+    }
+
+    setPrice(eng, 0);
+    assert.equal(eng.forceResumeDrawdown().success, false);
+    assert.equal(eng.getState().risk.isDrawdownPaused, true, 'pause must stand when resume is refused');
+
+    setPrice(eng, 70);
+    assert.equal(eng.forceResumeDrawdown().success, true);
+  });
 });

@@ -530,6 +530,13 @@ const resolveDrawdownCapitalBase = (position, config) => {
  * is ~neutral (quote → asset at the fill price). Only price moves on held
  * asset (bodies + reserves) and realized losses move equity down.
  *
+ * The +holdback-cost step is deliberate, not an accounting leak: CLAUDE.md's
+ * P&L model books reserves as zero-cost (their cost went to the paired sell),
+ * and this equity stays consistent with the dashboard's Total P&L. The step is
+ * permanent — carried by both equity and the peak from then on — so the dollar
+ * distance from the peak is unaffected; only the percentage denominator grows
+ * by the accumulated holdback cost, a small fraction of fund capital.
+ *
  * @param {Object} position - Position state (totalAsset, totalCostBasis, realizedPnL, realizedAssetPnL, depositedCapital)
  * @param {Object} config - Regime config
  * @param {number} currentPrice - Mark price

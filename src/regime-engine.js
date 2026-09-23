@@ -4158,8 +4158,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // them so a just-filled TP's proceeds and holdback are in the equity.
     refreshRealizedFromCyclePairs();
     const { equity, capitalBase } = computeFundEquity(positionState, config, price);
+    const wasPaused = riskManager.getState().isDrawdownPaused;
     const result = riskManager.updateDrawdown(equity, capitalBase);
     persistDrawdownState();
+    // Flush a pause-state transition to disk now, so a crash before the
+    // 5-minute save timer cannot restart the engine without the pause.
+    if (result.isPaused !== wasPaused && !isDryRun) saveLiveStateGuarded('drawdown-guard');
     return result;
   };
 
@@ -6356,18 +6360,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // New peak = current fund equity, in the SAME unit updateDrawdown compares
     // against (computeFundEquity). The old P&L-unit value (market value − cost)
     // would re-base the peak to a number unrelated to the tracked equity.
+    // Without a mark price there is no equity to re-base to, and clearing the
+    // pause alone would just re-pause on the next tick.
     const price = marketState.lastPrice;
     if (!(price > 0)) {
-      riskManager.forceResume();
-      persistDrawdownState();
-      logger.info(`▶️ [${exchange}] Drawdown pause manually cleared (no mark price — peak unchanged)`);
-      return { success: true, message: 'Resumed (no mark price — peak unchanged)' };
+      return { success: false, message: 'No market price yet — try again once the price feed is live' };
+    }
+    // Same reason refreshDrawdownGuard skips mid-mutation samples: a fill or
+    // merge in flight can leave bodies and ledger momentarily inconsistent.
+    if (engineLocks.isMutatingPosition()) {
+      return { success: false, message: 'Position update in progress — try again in a moment' };
     }
     refreshRealizedFromCyclePairs();
     const { equity: currentEquity, capitalBase } = computeFundEquity(positionState, config, price);
 
     riskManager.forceResume(currentEquity, capitalBase);
     persistDrawdownState();
+    if (!isDryRun) saveLiveStateGuarded('drawdown-resume');
     logger.info(`▶️ [${exchange}] Drawdown pause manually cleared, peak reset to $${currentEquity.toFixed(2)}`);
 
     return { success: true, message: `Resumed, peak reset to $${currentEquity.toFixed(2)}` };
@@ -6922,6 +6931,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     if ((config.entryMode || 'reactive') !== 'ladder') {
       return { success: false, message: 'Entry mode is not ladder' };
+    }
+    // A manual rebuild places fresh buy rungs — the drawdown pause (#693)
+    // applies; the operator clears it explicitly via Resume first.
+    if (riskManager.getState().isDrawdownPaused) {
+      return { success: false, message: 'Drawdown pause active — resume from the drawdown pause before rebuilding the ladder' };
     }
 
     const allocatedCapital = getAllocatedCapital();
