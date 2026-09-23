@@ -1988,18 +1988,24 @@ describe('Fill Ledger', () => {
       assert.notEqual(cycleOf(ledger, 's-s'), ledger.getCurrentCycleId());
     });
 
-    it('moves a linked pair that is entirely inside the live timeframe into the live cycle as a unit', () => {
+    it('never folds a component holding a sell by timestamp, even entirely inside the live timeframe', () => {
       const ledger = createTestLedger('fold-pair');
       seedCompletedCycle1(ledger);
+      // A manual-trade import pair (linked buy → sell) and a lone unlinked sell.
       ledger.ingestFill(buy('p-b', 'p-buy', 31), null, { cycleId: null });
       ledger.annotateFillsByOrderId('p-buy', { sellOrderId: 'p-sell' });
       ledger.ingestFill(sell('p-s', 'p-sell', 32), null, { cycleId: null });
+      ledger.ingestFill(sell('lone-s', 'lone-sell', 33), null, { cycleId: null });
       ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
 
+      const preview = ledger.previewRecalculateCycles();
       const result = ledger.recalculateCycles();
 
-      assert.equal(result.liveCycleOrphansAttributed, 2);
-      assert.deepStrictEqual(currentTradeIds(ledger), ['p-b', 'p-s']);
+      assert.equal(result.liveCycleOrphansAttributed, 0);
+      assert.deepStrictEqual(currentTradeIds(ledger), [], 'no foreign sell may join (or complete) the live cycle');
+      assert.equal(cycleOf(ledger, 'p-b'), cycleOf(ledger, 'p-s'), 'the pair stays together in a recovered cycle');
+      assert.notEqual(cycleOf(ledger, 'lone-s'), ledger.getCurrentCycleId());
+      assert.equal(preview.cyclesCompleted, result.cyclesCompleted);
     });
 
     it('leaves an orphan whose order spans two cycles unattributed (ambiguous)', () => {
@@ -2023,9 +2029,12 @@ describe('Fill Ledger', () => {
       seedCompletedCycle1(ledger);
       ledger.ingestFill(buy('c2-b1', 'c2-buy-1', 20), null, { cycleId: 'cycle-2' });
       ledger.ingestFill(buy('c2-b2', 'c2-buy-2', 21), null, { cycleId: 'cycle-2' });
+      // TP placement stamped both buys with their sell; the TP filled while the
+      // engine was down and sync-fills re-imported it null.
+      ledger.annotateFillsByOrderId('c2-buy-1', { sellOrderId: 'c2-tp' });
+      ledger.annotateFillsByOrderId('c2-buy-2', { sellOrderId: 'c2-tp' });
       ledger.setCurrentCycleId('cycle-2');
-      // Unlinked sell the engine missed while down, covering the whole position.
-      ledger.ingestFill(sell('late-s', 'late-sell', 23, '0.002'), null, { cycleId: null });
+      ledger.ingestFill(sell('late-s', 'c2-tp', 23, '0.002'), null, { cycleId: null });
 
       const preview = ledger.previewRecalculateCycles();
       const result = ledger.recalculateCycles();

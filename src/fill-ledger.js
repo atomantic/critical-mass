@@ -224,12 +224,17 @@ const linkedOrderIdsOf = (fill) => {
  *      order) — exactly one such cycle wins;
  *   2. otherwise buy↔sell linkage to fills already in a cycle — exactly one
  *      such cycle wins;
- *   3. otherwise, when it has NO linkage to any cycled fill, timestamp: it
- *      folds into the live cycle only if EVERY fill in it is at/after the
- *      live cycle's start boundary (a fill the engine missed during
- *      downtime inside the live cycle).
- * Components linked to more than one cycle, straddling the boundary, or
- * predating it are left for recovered-cycle placement, as before.
+ *   3. otherwise, when it has NO linkage to any cycled fill, timestamp: a
+ *      BUY-ONLY component folds into the live cycle only if every fill in it
+ *      is at/after the live cycle's start boundary (a buy the engine missed
+ *      during downtime inside the live cycle). A component holding a sell
+ *      never folds by time: the engine's own TP sells reach their cycle via
+ *      linkage above, so an unlinked sell (e.g. a manual-trade import pair)
+ *      is not the live cycle's buy(n) → sell(1) close and must not complete
+ *      it or reduce its position.
+ * Components linked to more than one cycle, holding an unlinked sell,
+ * straddling the boundary, or predating it are left for recovered-cycle
+ * placement, as before.
  *
  * @param {Object} params
  * @param {Map<string, Fill[]>} params.cycleMap - cycleId -> fills already carrying that cycleId
@@ -309,7 +314,7 @@ const attributeOrphanFills = ({ cycleMap, orphanFills, liveCycleId, liveStartTs 
     } else if (weak.size > 0) {
       if (weak.size === 1) target = [...weak][0];
       reason = 'link';
-    } else if (hasLiveBoundary && members.every(f => Number(f.timestamp) >= /** @type {number} */ (liveStartTs))) {
+    } else if (hasLiveBoundary && members.every(f => f.side === 'buy' && Number(f.timestamp) >= /** @type {number} */ (liveStartTs))) {
       target = liveCycleId;
       reason = 'timeframe';
     }
