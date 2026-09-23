@@ -985,6 +985,16 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       // Skip body-owned fills — they have independent position tracking
       if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
 
+      // A buy recalculateCycles folded into this cycle by timestamp alone
+      // (#705) counts toward the cycle's buy limit, but nothing links it to
+      // an engine order (sync-fills re-imports manual trades too), so it must
+      // not enter the position the core TP is sized from — that would place
+      // an automatic sell for it (R2 in docs/pnl-architecture.md).
+      if (fill.cycleAttribution === 'timeframe') {
+        if (fill.side === 'buy') uniqueBuyOrders.add(fill.orderId);
+        continue;
+      }
+
       if (fill.side === 'buy') {
         const costBasis = fill.quoteAmount + fill.netFee;
         totalAsset = roundAsset(totalAsset + fill.size);

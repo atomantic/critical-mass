@@ -1921,6 +1921,21 @@ describe('Fill Ledger', () => {
       assert.equal(ledger.getCurrentCycleStartedAt(), T0 + 30 * HOUR);
     });
 
+    it('counts a timeframe-folded buy toward cycleBuys but keeps it out of the core position', () => {
+      const ledger = createTestLedger('fold-rebuild');
+      seedCompletedCycle1(ledger);
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+      ledger.ingestFill(buy('live-b', 'live-buy', 31), null, { cycleId: 'cycle-2' });
+      ledger.ingestFill(buy('late-b', 'late-buy', 32), null, { cycleId: null });
+
+      ledger.recalculateCycles();
+      const rebuilt = ledger.rebuildPositionFromFills();
+
+      assert.equal(rebuilt.cycleBuys, 2);
+      assert.equal(ledger.getCurrentCycleBuysCount(), 2);
+      assert.equal(rebuilt.totalAsset, 0.001, 'no core TP may be sized over an unlinked import');
+    });
+
     it('does not fold anything into an empty live cycle with no known start time', () => {
       const ledger = createTestLedger('fold-no-boundary');
       seedCompletedCycle1(ledger);

@@ -1103,7 +1103,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * (#705), live-cycle membership changed, so the position counters derived
    * from it at boot (cycleBuys, and the core totals) are stale — an
    * under-counted cycleBuys would let the engine bypass its per-cycle entry
-   * limit. Re-derive them from the ledger exactly as the reconcile path does:
+   * limit. (Timestamp-folded buys raise cycleBuys only; rebuildPositionFromFills
+   * keeps them out of the core totals so no TP is auto-placed for them — R2.) Re-derive them from the ledger exactly as the reconcile path does:
    * core totals from the current cycle's fills, body totals from bodies
    * (authoritative in celestial mode), and cycleBuys from all current-cycle
    * buy orders in celestial mode (issue #210-A).
@@ -3985,7 +3986,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const cycleFills = fillLedger.getCurrentCycleFills();
           const buyOrderIds = new Set();
           for (const fill of cycleFills) {
-            if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId) {
+            // Timestamp-folded buys (#705) are not in the core position this TP sold.
+            if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId && fill.cycleAttribution !== 'timeframe') {
               fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: fillData.orderId });
               buyOrderIds.add(fill.orderId);
             }
@@ -5498,7 +5500,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Link all current-cycle non-body buys to this sell order (skip body-owned buys)
       const cycleFills = fillLedger.getCurrentCycleFills();
       for (const fill of cycleFills) {
-        if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId) {
+        // Timestamp-folded buys (#705) are not in the core position this TP sells.
+        if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId && fill.cycleAttribution !== 'timeframe') {
           fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: result.orderId });
         }
       }
@@ -6192,7 +6195,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.lastTpPrice = intent.price ?? 0;
       positionState.assetOnOrder = intent.size ?? 0;
       const sourceIds = new Set(fillLedger.getCurrentCycleFills()
-        .filter(f => f.side === 'buy' && !f.isBodyOwned && !f.isSatellite && !f.bodyId)
+        .filter(f => f.side === 'buy' && !f.isBodyOwned && !f.isSatellite && !f.bodyId && f.cycleAttribution !== 'timeframe')
         .map(f => f.orderId));
       fillLedger.annotateFillsByOrderIds(sourceIds, { sellOrderId: found.orderId });
     }

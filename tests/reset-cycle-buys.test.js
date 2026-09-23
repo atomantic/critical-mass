@@ -396,6 +396,10 @@ describe('#705 live-cycle start boundary and counter resync', () => {
 
     assert.equal(ledger.getCurrentCycleAllBuysCount(), 2, 'the missed buy now counts toward the live cycle');
     assert.equal(pos.cycleBuys, 2, 'cycleBuys is resynced so the per-cycle entry limit sees it');
+    // …but with no bodies the core totals come from rebuildPositionFromFills,
+    // and an unlinked timestamp-folded buy must not enter the position a core
+    // TP would be sized from (no automatic sell for it — R2).
+    assert.equal(pos.totalAsset, 0.01, 'only the engine-stamped live buy is in the core position');
     assert.ok(ledger.getCurrentCycleFills().some(f => f.tradeId === 'f705-miss'));
     assert.ok(!ledger.getCurrentCycleFills().some(f => f.tradeId === 'f705-old'), 'pre-reset orphan stays out');
     assert.equal(pos.activeCycleId, ledger.getCurrentCycleId());
