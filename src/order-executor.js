@@ -1514,14 +1514,16 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * exchange-balance clamp honest without re-fetching, and the order IDs let
    * callers reason about which buys landed inside their own sweep.
    * `unbookedFills` lists the rungs that filled COMPLETELY before their
-   * cancel took, with their spend: those stay tracked for polling to book
-   * later, so no body carries their cost yet — the caller must reserve it
-   * itself (per order, with the cumulative filled size, so it can skip one
-   * polling fully booked in the meantime).
-   * Both costs cover only what was not already booked as an earlier partial
-   * (the tracker's high-water mark): an earlier tranche is already in a
-   * body's costBasis and in the caller's balance snapshot.
-   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number, partialFillOrderIds: string[], partialFillsCost: number, unbookedFills: Array<{orderId: string, filledSize: number, cost: number}>}>} Cancel results
+   * cancel took: those stay tracked for polling to book later, so no body
+   * carries their cost yet — the caller must reserve it itself. Each entry
+   * carries the cumulative `filledSize` and a per-unit `unitCost` bound, so
+   * the caller can reserve exactly what its persisted fill ledger does not
+   * hold yet (this executor's tracker is empty after a restart).
+   * `partialFillsCost` and each entry's `cost` cover only what was not
+   * already booked as an earlier partial (the tracker's high-water mark): an
+   * earlier tranche is already in a body's costBasis and in the caller's
+   * balance snapshot.
+   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number, partialFillOrderIds: string[], partialFillsCost: number, unbookedFills: Array<{orderId: string, filledSize: number, unitCost: number, cost: number}>}>} Cancel results
    */
   const cancelAllLadderOrders = async () => {
     let cancelled = 0;
@@ -1584,7 +1586,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         }
         cancelled++;
       } else if (result.filled) {
-        unbookedFills.push({ orderId, filledSize: Number(result.filledSize) || 0, cost: newFillCost(orderId, order, result) });
+        const filledSize = Number(result.filledSize) || 0;
+        // Upper-bound quote per unit: a buy limit never fills above
+        // order.price, plus the order's average fee per unit.
+        const unitCost = Math.max(filledSize > 0 ? (Number(result.filledValue) || 0) / filledSize : 0, Number(order.price) || 0)
+          + (filledSize > 0 ? (Number(result.totalFees) || 0) / filledSize : 0);
+        unbookedFills.push({ orderId, filledSize, unitCost, cost: newFillCost(orderId, order, result) });
         logger.info(`📋 [${exchange}] Ladder order ${orderId.slice(0, 8)} filled during cancel — polling will process`, {
           orderId,
           orderType: 'ladder_entry',

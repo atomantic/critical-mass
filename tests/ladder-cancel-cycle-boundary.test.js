@@ -169,6 +169,29 @@ describe('resetCycle — a rung that fills during its own cancel sweep (#711)', 
     assert.ok(pos.totalAsset > 0 && pos.totalCostBasis > 0, 'aggregates re-derived from the surviving body');
   });
 
+  it('fresh ledger (no live cycle yet): the first reset still carries the mid-cancel buy', async () => {
+    let eng;
+    eng = makeEngine({
+      fillsByOrder: { 'rung-f': [rawFill('buy', 'rung-f', 't-rung-f', 0.002, 40000)] },
+      executor: { cancelAllLadderOrders: sweepBooking(() => eng, [{ orderId: 'rung-f', size: 0.002, price: 40000 }]) },
+    });
+    const ledger = eng.getFillLedger();
+    assert.equal(ledger.getCurrentCycleId(), null, 'no cycle started yet');
+    ledger.ingestFill(rawFill('buy', 'buy-0', 't-buy-0', 0.01, 50000)); // stamped null
+    const pos = eng._getPositionState();
+    pos.cycleBuys = 1;
+    pos.ladderActive = true;
+
+    await eng._test.resetCycle();
+
+    const newCycle = ledger.getCurrentCycleId();
+    assert.ok(newCycle);
+    assert.equal(ledger.getFillsForOrder('rung-f')[0].cycleId, newCycle, 'the null-stamped sweep buy moved into the first cycle');
+    assert.equal(ledger.getFillsForOrder('buy-0')[0].cycleId, null, 'pre-sweep rows are left alone');
+    assert.equal(pos.cycleBuys, 1);
+    assert.equal(ledger.getCurrentCycleAllBuysCount(), 1);
+  });
+
   it('operator reset with preserved bodies counts only the mid-cancel buy, not the carried-over bodies', async () => {
     let eng;
     eng = makeEngine({
@@ -427,7 +450,7 @@ describe('rebuildLadder — budget after a fill during the cancel (#711)', () =>
     const { eng, placed } = setupLadderEngine({
       balances: [100000],
       maxUsdc: 1000, // the deployed cap binds, not cash
-      cancel: async () => ({ cancelled: 2, remainingTracked: 1, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [{ orderId: 'rung-u', filledSize: 0.008, cost: 400 }] }),
+      cancel: async () => ({ cancelled: 2, remainingTracked: 1, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [{ orderId: 'rung-u', filledSize: 0.008, unitCost: 50000, cost: 400 }] }),
     });
 
     const res = await eng.rebuildLadder();
@@ -444,7 +467,7 @@ describe('rebuildLadder — budget after a fill during the cancel (#711)', () =>
     const { eng, placed } = setupLadderEngine({
       balances: [100000],
       maxUsdc: 1000,
-      cancel: async () => ({ cancelled: 2, remainingTracked: 1, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [{ orderId: 'rung-p', filledSize: 0.008, cost: 200 }] }),
+      cancel: async () => ({ cancelled: 2, remainingTracked: 1, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [{ orderId: 'rung-p', filledSize: 0.008, unitCost: 50000, cost: 200 }] }),
     });
     eng.getFillLedger().ingestFill(rawFill('buy', 'rung-p', 't-rung-p-1', 0.004, 50000));
     eng._getPositionState().celestialBodies = [makeBody('body-pppppppp', 'rung-p', 0.004, 50000, 'tp-p')];
@@ -498,6 +521,26 @@ describe('rebuildLadder — budget after a fill during the cancel (#711)', () =>
     assert.ok(total > 0 && total <= 700 + 1e-6, `the $300 committed during the await must count, got $${total.toFixed(2)}`);
   });
 
+  it('reserves only the unbooked tranche after a restart emptied the executor\'s partial tracker', async () => {
+    // rung-q's earlier $200 partial was booked before a restart, so the
+    // executor's tracker is empty and its `cost` covers the full $400. The
+    // persisted ledger still says 0.004 is booked — reserve only the rest.
+    const { eng, placed } = setupLadderEngine({
+      balances: [100000],
+      maxUsdc: 1000,
+      cancel: async () => ({ cancelled: 1, remainingTracked: 1, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [{ orderId: 'rung-q', filledSize: 0.008, unitCost: 50000, cost: 400 }] }),
+    });
+    eng.getFillLedger().ingestFill(rawFill('buy', 'rung-q', 't-rung-q-1', 0.004, 50000));
+    eng._getPositionState().celestialBodies = [makeBody('body-qqqqqqqq', 'rung-q', 0.004, 50000, 'tp-q')];
+
+    const res = await eng.rebuildLadder();
+
+    assert.equal(res.success, true, res.message);
+    const total = placedTotal(placed);
+    assert.ok(total > 400 + 1e-6, `the booked $200 must not be reserved twice, got $${total.toFixed(2)}`);
+    assert.ok(total <= 600 + 1e-6, `got $${total.toFixed(2)}`);
+  });
+
   it('does not count a completely-filled rung twice once polling booked it during the sweep', async () => {
     // Polling committed rung-u to a body while the sweep awaited: its $400 is
     // in getAllocatedCapital() now, so it must not be added again.
@@ -507,7 +550,7 @@ describe('rebuildLadder — budget after a fill during the cancel (#711)', () =>
       cancel: async (e) => {
         e.getFillLedger().ingestFill(rawFill('buy', 'rung-u', 't-rung-u', 0.008, 50000));
         e._getPositionState().celestialBodies = [makeBody('body-uuuuuuuu', 'rung-u', 0.008, 50000, 'tp-u')];
-        return { cancelled: 2, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [{ orderId: 'rung-u', filledSize: 0.008, cost: 400 }] };
+        return { cancelled: 2, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [{ orderId: 'rung-u', filledSize: 0.008, unitCost: 50000, cost: 400 }] };
       },
     });
 

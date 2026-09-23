@@ -997,6 +997,8 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
     assert.equal(result.unbookedFills.length, 1);
     assert.equal(result.unbookedFills[0].orderId, 'ladder-full');
     assert.ok(Math.abs(result.unbookedFills[0].cost - 510.5) < 1e-9, `unbooked spend = filledValue + fees, got ${result.unbookedFills[0].cost}`);
+    assert.equal(result.unbookedFills[0].filledSize, 0.01);
+    assert.ok(Math.abs(result.unbookedFills[0].unitCost - 51050) < 1e-6, `per-unit bound = max(avg, limit) + fee/unit, got ${result.unbookedFills[0].unitCost}`);
     assert.equal(result.remainingTracked, 1, 'left tracked for polling to book');
     assert.equal(captured.length, 0);
     exec.clearTimers();
@@ -1038,6 +1040,7 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
 
     assert.equal(result.unbookedFills.length, 1);
     assert.ok(Math.abs(result.unbookedFills[0].cost - 102) < 1e-9, `bounded by 0.002 @ the 51000 limit, got ${result.unbookedFills[0].cost}`);
+    assert.equal(result.unbookedFills[0].unitCost, 51000, 'the limit price bounds the per-unit cost too');
     exec.clearTimers();
   });
 

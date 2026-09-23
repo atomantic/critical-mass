@@ -6344,13 +6344,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // (#674), and a concurrent WS/poll fill can land in the same window. The
     // closing TP never consumed such a buy, so it opens the NEW cycle (#711).
     const closingCycleId = fillLedger.getCurrentCycleId();
+    // A fresh ledger has no live cycle until its first reset: its fills are
+    // stamped null, so the closing "cycle" is the null-cycle rows.
+    const closingCycleFills = () => (closingCycleId
+      ? fillLedger.getCurrentCycleFills()
+      : fillLedger.getAllFills().filter(f => f.cycleId == null));
     let preSweepTradeIds = null;
 
     // Cancel remaining ladder orders - check both positionState and executor tracking
     const executorLadderOrders = orderExecutor.getPendingLadderOrders ? orderExecutor.getPendingLadderOrders() : [];
     const hasTrackedLadder = (positionState.pendingLadderOrders && positionState.pendingLadderOrders.length > 0) || executorLadderOrders.length > 0;
     if (positionState.ladderActive || hasTrackedLadder) {
-      if (closingCycleId) preSweepTradeIds = new Set(fillLedger.getCurrentCycleFills().map(f => f.tradeId));
+      preSweepTradeIds = new Set(closingCycleFills().map(f => f.tradeId));
       const { cancelled, partialFills = 0 } = orderExecutor.cancelAllLadderOrders ? await orderExecutor.cancelAllLadderOrders() : { cancelled: 0 };
       if (cancelled > 0) logger.info(`🧹 [${exchange}] Cancelled ${cancelled} unfilled ladder orders${partialFills > 0 ? ` (${partialFills} partially filled during the cancel and were booked)` : ''}`);
     }
@@ -6393,7 +6398,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // pre-sweep snapshot. Sells stay put: a sell landing in that window closes
     // buys of the cycle it was ingested under.
     const sweepBuys = preSweepTradeIds
-      ? fillLedger.getCurrentCycleFills().filter(f => f.side === 'buy' && !preSweepTradeIds.has(f.tradeId))
+      ? closingCycleFills().filter(f => f.side === 'buy' && !preSweepTradeIds.has(f.tradeId))
       : [];
 
     // Persist the boundary in regime-state.json with the other operator-owned
@@ -7907,16 +7912,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Deployed cap: derived after that await, so a fill committed during it
     // is counted and the new ladder can't push deployed capital past
     // maxUsdcDeployed. A rung that filled completely is reserved until polling
-    // books it into a body — unless polling already booked ALL of it while
-    // the sweep ran, in which case the body's costBasis counts it and adding
-    // it again would undersize the ladder. Body ownership alone is not
-    // enough: a rung booked earlier as a partial already has a body, while
-    // the remainder this cost covers is unbooked.
-    const fullyBooked = (u) => isBuyAlreadyCommitted(positionState.celestialBodies, u.orderId)
-      && fillLedger.getRecordedSizeForOrder(u.orderId) >= (Number(u.filledSize) || 0) - 1e-9;
-    const unbookedSpend = unbookedFills
-      .filter(u => !fullyBooked(u))
-      .reduce((sum, u) => sum + (Number(u.cost) || 0), 0);
+    // books it into a body — only the part the persisted fill ledger does not
+    // hold yet: a tranche booked earlier (as a partial, before a restart, or
+    // by polling while the sweep ran) is already in a body's costBasis or was
+    // sold and its capital returned, so reserving it again would undersize
+    // the ladder.
+    const unbookedSpend = unbookedFills.reduce((sum, u) => {
+      const unbookedSize = Math.max(0, (Number(u.filledSize) || 0) - fillLedger.getRecordedSizeForOrder(u.orderId));
+      return sum + unbookedSize * (Number(u.unitCost) || 0);
+    }, 0);
     const postCancelAllocated = getAllocatedCapital() + unbookedSpend;
     remainingBudget = Math.min(config.maxUsdcDeployed - postCancelAllocated, postCancelQuote);
     if (remainingBudget < (config.baseSizeUsdc || 50)) {
