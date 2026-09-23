@@ -251,6 +251,100 @@ describe('placeWithUnknownReconcile — intent is durable before dispatch', () =
   });
 });
 
+// ---------------------------------------------------------------------------
+// #710 — a post-acceptance intent-cleanup failure must not masquerade as a
+// placement failure. `clearIntent()` is pure local housekeeping (a disk
+// write) that runs AFTER the exchange-side outcome is already known; if that
+// write throws (disk full, permission error), the caller must still get the
+// real outcome it already has, not an unrelated disk-write exception.
+// ---------------------------------------------------------------------------
+describe('placeWithUnknownReconcile — a post-outcome intent-cleanup failure never masks the real result (issue #710)', () => {
+  it('still returns the successful placement when clearing the intent afterward fails', async () => {
+    const originalWriteFileSync = fs.writeFileSync.bind(fs);
+    let writeCalls = 0;
+    // Call 1 is the pre-dispatch recordPlacementIntent write — let it succeed
+    // normally so the placement can actually be attempted. Every write after
+    // that (i.e. the post-success clearIntent -> resolvePlacementIntent ->
+    // savePlacementIntents write) simulates a disk failure.
+    mock.method(fs, 'writeFileSync', (...args) => {
+      writeCalls += 1;
+      if (writeCalls === 1) return originalWriteFileSync(...args);
+      throw new Error('ENOSPC: no space left on device');
+    });
+
+    const result = await placeWithUnknownReconcile({ name: EXCHANGE }, PRODUCT, async () => (
+      { success: true, orderId: 'ok-710' }
+    ), scope());
+
+    assert.equal(result.success, true, 'a housekeeping write failure must not swallow a genuine placement success');
+    assert.equal(result.orderId, 'ok-710');
+    const [stale] = readIntents();
+    assert.ok(stale, 'the intent stays on disk (stale) when clearing it fails — an operator reconciles it manually');
+    assert.equal(stale.action, 'entry_bid');
+  });
+
+  it('still rethrows the real rejection error when clearing the intent afterward fails', async () => {
+    const originalWriteFileSync = fs.writeFileSync.bind(fs);
+    let writeCalls = 0;
+    mock.method(fs, 'writeFileSync', (...args) => {
+      writeCalls += 1;
+      if (writeCalls === 1) return originalWriteFileSync(...args);
+      throw new Error('ENOSPC: no space left on device');
+    });
+    const rejection = Object.assign(new Error('INVALID_PRICE'), { status: 'error' });
+
+    await assert.rejects(
+      () => placeWithUnknownReconcile({ name: EXCHANGE }, PRODUCT, async () => { throw rejection; }, scope()),
+      /INVALID_PRICE/,
+      'the genuine rejection error must surface, not a housekeeping disk error',
+    );
+  });
+
+  it('still returns the adopted order when clearing the intent afterward fails (reconciled adoption)', async () => {
+    const originalWriteFileSync = fs.writeFileSync.bind(fs);
+    let writeCalls = 0;
+    mock.method(fs, 'writeFileSync', (...args) => {
+      writeCalls += 1;
+      if (writeCalls === 1) return originalWriteFileSync(...args);
+      throw new Error('ENOSPC: no space left on device');
+    });
+    const adapter = {
+      name: EXCHANGE,
+      findOrderByClientOrderId: async () => ({ orderId: 'real-710', status: 'OPEN' }),
+    };
+
+    const result = await placeWithUnknownReconcile(adapter, PRODUCT, async () => {
+      throw unknownError('coid-710-adopt');
+    }, { ...scope(), retryDelaysMs: [] });
+
+    assert.equal(result.success, true, 'a housekeeping write failure must not swallow a reconciled adoption');
+    assert.equal(result.reconciled, true);
+    assert.equal(result.orderId, 'real-710');
+    const [stale] = readIntents();
+    assert.ok(stale, 'the intent stays on disk (stale) when clearing it fails — an operator reconciles it manually');
+  });
+
+  it('still returns the definitive not-found failure when clearing the intent afterward fails (reconciled not-found)', async () => {
+    const originalWriteFileSync = fs.writeFileSync.bind(fs);
+    let writeCalls = 0;
+    mock.method(fs, 'writeFileSync', (...args) => {
+      writeCalls += 1;
+      if (writeCalls === 1) return originalWriteFileSync(...args);
+      throw new Error('ENOSPC: no space left on device');
+    });
+    const adapter = { name: EXCHANGE, findOrderByClientOrderId: async () => null };
+
+    const result = await placeWithUnknownReconcile(adapter, PRODUCT, async () => {
+      throw unknownError('coid-710-notfound');
+    }, { ...scope(), retryDelaysMs: [] });
+
+    assert.equal(result.success, false, 'a positive not-found is still a definitive (non-throwing) failure');
+    assert.notEqual(result.pending, true, 'a positive not-found is definitive, not pending, even when clearing the intent afterward fails');
+    const [stale] = readIntents();
+    assert.ok(stale, 'the intent stays on disk (stale) when clearing it fails — an operator reconciles it manually');
+  });
+});
+
 describe('placeWithUnknownReconcile — unreconcilable outcomes stay pending', () => {
   it('holds the intent pending when there is no way to reconcile', async () => {
     // No findOrderByClientOrderId — the adapter cannot look the order up at all.
