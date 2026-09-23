@@ -269,6 +269,28 @@ describe('startup booking of partially-filled open entries (issue #671)', () => 
     assert.ok((after.pendingEntryOrders || []).some(e => e.orderId === ORDER_ID), 'the resting entry stays tracked after the poll');
   });
 
+  it('a fill pass with only duplicate rows books the unsettled ones and never the settled ones', async () => {
+    const pair = '__teststartuppartial_j__';
+    const T2A = { tradeId: 'entry-1-t2a', orderId: ORDER_ID, side: 'buy', size: 0.002, price: 50000, netFee: 0 };
+    const seed = createFillLedger('coinbase', pair, pair, { quiet: true });
+    seed.startNewCycle();
+    seed.ingestFill(withTime(T1));
+    seed.annotateFillsByOrderId(ORDER_ID, { isBodyOwned: true, bodyId: 'body-old', sellOrderId: 'tp-old' });
+    seed.ingestFill(withTime(T2A));
+    seed.persist();
+
+    // Drive handleOrderFill directly (no start(), so no boot repairs run).
+    const { eng } = makeEngine(pair, { fills: [T1, T2A] });
+    eng._test.setRunning(true);
+    eng._test.setProductDetails({ baseMinSize: '0.0001', baseIncrement: '0.00000001', quoteIncrement: '0.01' });
+    await eng._test.handleOrderFill({
+      orderId: ORDER_ID, side: 'buy', status: 'OPEN',
+      filledSize: 0.006, filledValue: 300, averageFilledPrice: 50000, isPartialFill: true,
+    });
+    const held = bodiesFor(eng._getPositionState()).reduce((sum, b) => sum + b.assetQty, 0);
+    assert.ok(Math.abs(held - 0.002) < 1e-9, `only the unsettled tranche is booked (got ${held})`);
+  });
+
   it('adopted orphan entry: persisted to pendingEntryOrders and its tranche booked into a body', async () => {
     const fillSource = { fills: [T1] };
     const { eng, restored } = makeEngine('__teststartuppartial_c__', fillSource);

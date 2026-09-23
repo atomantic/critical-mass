@@ -3123,15 +3123,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // first poll after a restart lands here: the executor's partial-size
       // tracker starts at 0, so the order's unchanged filledSize reads as an
       // advance (issue #671).
+      // Rows no body booked yet (if any) are still booked on their own.
       if (ingestedFills.length === 0
-        && !isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId)
-        && fillsToAggregate.some(f => f.bodyId || f.isBodyOwned || f.isSatellite || f.sellOrderId)) {
-        logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} holds only tranches a retired body already settled and no new fills — nothing to book`);
-        if (!keepEntryTracked) {
-          retireTrackedEntry(fillData.orderId);
-          orderExecutor.handleOrderFill(fillData.orderId);
+        && !isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId)) {
+        const unsettled = fillsToAggregate.filter(f => !(f.bodyId || f.isBodyOwned || f.isSatellite || f.sellOrderId));
+        if (unsettled.length === 0) {
+          logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} holds only tranches a retired body already settled and no new fills — nothing to book`);
+          if (!keepEntryTracked) {
+            retireTrackedEntry(fillData.orderId);
+            orderExecutor.handleOrderFill(fillData.orderId);
+          }
+          return;
         }
-        return;
+        fillsToAggregate = unsettled;
       }
 
       // Buy-fill dedup across WS vs polling. Without it, a buy detected by both
