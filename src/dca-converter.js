@@ -177,22 +177,35 @@ const previewConversion = (exchange, pair) => {
  *   order, and always start a brand-new cycle for the pending block.
  *   `linkPendingSells: false` (mergeToRegime, an existing regime run):
  *   leave sellOrderId unset — the caller annotates isBodyOwned/bodyId once
- *   celestial bodies exist — and reuse the fund's persisted live cycle
- *   (`mergeActiveCycleId`, #675's positionState.activeCycleId — a fresh
- *   fillLedger instance can't otherwise know it, since load()'s own
- *   heuristic only sees fills already on disk and a just-reserved boundary
- *   may have none yet) for the pending block while that cycle is not yet
- *   completed (per isCompletedCycle's sell-ratio threshold, not merely
- *   "zero sells so far"), so open positions merged in land in the engine's
- *   real in-progress cycle — including one with a partial TP fill already
- *   on it — instead of a new cycle that would orphan the persisted
- *   boundary. Restoring this boundary right before the pending block also
- *   reserves its cycle NUMBER (setCurrentCycleId bumps nextCycleNumber),
- *   so the filled loop above can never coincidentally reassign that same
- *   reserved-but-fill-less cycle ID to an unrelated completed DCA pair.
+ *   celestial bodies exist — and reuse the fund's genuine live cycle for
+ *   the pending block while that cycle is not yet completed (per
+ *   isCompletedCycle's sell-ratio threshold, not merely "zero sells so
+ *   far", and NEVER a cycle this same call just created for a completed
+ *   DCA pair — see below), so open positions merged in land in the
+ *   engine's real in-progress cycle — including one with a partial TP
+ *   fill already on it — instead of a new cycle that would orphan it.
+ *   The live cycle is `mergeActiveCycleId` (#675's positionState.
+ *   activeCycleId) when the caller has one, else whichever cycle the
+ *   ledger itself already considered live before this call touched
+ *   anything (older state files without the persisted marker fall back
+ *   to the ledger's own heuristic, mirroring restorePersistedCycleId in
+ *   regime-engine.js). Restoring `mergeActiveCycleId` also reserves its
+ *   cycle NUMBER (setCurrentCycleId bumps nextCycleNumber), so the filled
+ *   loop above can never coincidentally reassign that same reserved-but-
+ *   fill-less cycle ID to an unrelated completed DCA pair.
  * @returns {{ filledIngested: number, pendingIngested: number }}
  */
 const ingestDcaOrdersIntoLedger = (fillLedger, filled, pending, { linkPendingSells, mergeActiveCycleId = null }) => {
+  // Capture whatever cycle the ledger considered "live" BEFORE this import
+  // touches anything — either restored from genuine pre-existing fills on
+  // disk (real regime-engine trading activity), or null on a fresh/just-
+  // reset ledger. This is the merge-mode fallback candidate below for when
+  // there is no persisted position.activeCycleId to restore. It MUST be
+  // captured now, before the filled loop runs: every completed order in
+  // that loop calls its own startNewCycle(), and a cycle it creates must
+  // never be mistaken for a pre-existing live one.
+  const originalActiveCycleId = fillLedger.getCurrentCycleId();
+
   // Reserve the persisted live cycle's NUMBER (if any) before assigning any
   // cycle to the imported orders, so nextCycleNumber can never let the
   // filled loop's own startNewCycle() calls below coincidentally reissue
@@ -251,30 +264,42 @@ const ingestDcaOrdersIntoLedger = (fillLedger, filled, pending, { linkPendingSel
     // preserving.
     fillLedger.startNewCycle();
   } else {
-    // mergeToRegime preserves an existing regime run. Restore the persisted
-    // boundary again here (not "wherever the filled loop above happened to
-    // leave the ledger's cursor" — each completed order in that loop calls
-    // its own startNewCycle(), which advances past it) before deciding
-    // whether to reuse it. If the boundary's cycle is not yet completed —
+    // mergeToRegime preserves an existing regime run. Decide which
+    // pre-existing cycle (if any) is the fund's genuine live boundary for
+    // the pending block — prefer the persisted boundary
+    // (mergeActiveCycleId / position.activeCycleId, #675) when present;
+    // otherwise fall back to originalActiveCycleId, the cycle the ledger
+    // itself considered live BEFORE this import touched anything (older
+    // state files without the persisted marker fall back to the ledger's
+    // own heuristic, exactly as restorePersistedCycleId in regime-engine.js
+    // does). Restore that candidate (not "wherever the filled loop above
+    // happened to leave the cursor" — each completed order there calls its
+    // own startNewCycle()) and reuse it only while NOT yet completed, per
     // the SAME completion test (isCompletedCycle / CYCLE_COMPLETE_SELL_RATIO)
     // recalculateCycles() and every other cycle-boundary decision in the
-    // engine uses, not merely "zero sells so far" — the merged pending buys
-    // belong there. A partially-filled TP (sell ratio below the completion
-    // threshold) still leaves the cycle "live" per #675's active-cycle
-    // semantics: positionState.activeCycleId keeps naming it, and the engine
+    // engine uses.
+    //
+    // Never fall back to "whatever cycle the filled loop just created" —
+    // a completed DCA order can legitimately hold back more than half its
+    // bought asset (config.holdbackPercent > 50), which would read as
+    // "incomplete" under the 0.5 sell-ratio threshold despite being a
+    // fully closed trade; mistaking it for a live cycle here would mix the
+    // pending buys into it and reintroduce this issue's original bug.
+    //
+    // A partially-filled TP (sell ratio below the completion threshold) on
+    // a genuine pre-existing/persisted boundary still leaves that cycle
+    // "live": positionState.activeCycleId keeps naming it, and the engine
     // restores that same boundary on restart. Starting a new cycle here
-    // anyway would silently orphan that persisted boundary from the buys
-    // just merged in. A brand-new cycle is only warranted once the active
-    // cycle has actually closed (sell ratio at/above threshold) or there was
-    // no persisted boundary to restore in the first place.
-    if (mergeActiveCycleId) {
-      fillLedger.setCurrentCycleId(mergeActiveCycleId);
-    }
-    const activeCycleId = fillLedger.getCurrentCycleId();
-    const activeCycleIsComplete = activeCycleId
-      ? isCompletedCycle(fillLedger.getCurrentCycleFills())
-      : true;
-    if (!activeCycleId || activeCycleIsComplete) {
+    // anyway would silently orphan that boundary from the buys just merged
+    // in — a brand-new cycle is only warranted once the boundary has
+    // actually closed, or there was no pre-existing boundary at all.
+    const candidateCycleId = mergeActiveCycleId || originalActiveCycleId;
+    if (candidateCycleId) {
+      fillLedger.setCurrentCycleId(candidateCycleId);
+      if (isCompletedCycle(fillLedger.getCurrentCycleFills())) {
+        fillLedger.startNewCycle();
+      }
+    } else {
       fillLedger.startNewCycle();
     }
   }

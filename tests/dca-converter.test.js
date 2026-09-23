@@ -481,5 +481,56 @@ describe('dca-converter fund routing (issue #414)', () => {
       const mergedRegimeState = JSON.parse(fs.readFileSync(regimeStatePath, 'utf8'));
       assert.equal(mergedRegimeState.position.activeCycleId, 'cycle-5');
     });
+
+    // Third codex review finding: a completed DCA order can legitimately
+    // hold back more than half its bought asset (config.holdbackPercent >
+    // 50, mirrored here by a sellQuantity well under half the buyQuantity).
+    // With no persisted position.activeCycleId and no pre-existing ledger
+    // activity, the cycle the filled loop just created for that trade must
+    // never be mistaken for a genuine pre-existing "live" cycle merely
+    // because its sell ratio reads as "incomplete" under the 0.5 threshold
+    // -- that would mix the pending buys into an already-closed trade's
+    // cycle, reintroducing this issue's original bug.
+    it('never reuses a just-completed high-holdback DCA trade as the "live" cycle for pending buys', () => {
+      seedFund(DEFAULT_PAIR, { orders: [] }); // no persisted activeCycleId, empty ledger
+
+      const highHoldbackOrders = [
+        {
+          status: 'filled',
+          orderId: 'sell-holdback',
+          buyOrderId: 'buy-holdback',
+          buyQuantity: 1.0,
+          buyPrice: 50000,
+          buyUSDC: 50000,
+          buyFees: 0,
+          buyCostBasis: 50000,
+          // 70% holdback: sold well under half of what was bought, so
+          // isCompletedCycle's 0.5 sell-ratio threshold alone would read
+          // this closed trade's own cycle as "incomplete".
+          sellQuantity: 0.3,
+          sellPrice: 51000,
+          sellFees: 0,
+          createdAt: '2025-01-01T00:00:00.000Z',
+          filledAt: '2025-01-02T00:00:00.000Z',
+        },
+        mergeOrders()[1], // the one pending order
+      ];
+      reseedOrders(DEFAULT_PAIR, highHoldbackOrders);
+
+      const result = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(result.success, true);
+      assert.equal(result.summary.filledOrders, 1);
+      assert.equal(result.summary.pendingOrders, 1);
+
+      const ledger = JSON.parse(fs.readFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), 'utf8'));
+      const holdbackBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-holdback');
+      const openBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-open');
+      assert.ok(holdbackBuy && openBuy);
+      assert.notEqual(
+        openBuy.cycleId,
+        holdbackBuy.cycleId,
+        'the pending buy must land in a fresh cycle, not the just-closed high-holdback trade\'s cycle',
+      );
+    });
   });
 });
