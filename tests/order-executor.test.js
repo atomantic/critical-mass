@@ -451,6 +451,10 @@ describe('cancelAllEntries — refused-cancel fill handling (issue #209 A)', () 
 
     assert.equal(cancelled, 0, 'a full fill discovered after a successful cancel ack is not a cancel');
     assert.equal(captured.length, 1, 'the fill is routed through onFillDetected');
+    assert.equal(captured[0].orderId, 'entry-success-full');
+    assert.equal(captured[0].status.status, 'FILLED');
+    assert.equal(captured[0].status.filledSize, 0.1);
+    assert.equal(captured[0].status.isPartialFill, undefined, 'a full fill is not flagged as partial');
     assert.deepEqual(entryCancelled, [], 'onEntryCancelled must NOT fire for a genuine fill');
     assert.equal(exec.getPendingCounts().entries, 0);
   });
