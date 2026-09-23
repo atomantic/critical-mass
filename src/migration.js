@@ -20,7 +20,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { DATA_DIR } = require('./paths');
+const { DATA_DIR, APP_ROOT } = require('./paths');
 const { upsertCandles } = require('./candle-utils');
 
 const KEYS_DIR = DATA_DIR; // Keys stored alongside data
@@ -39,11 +39,19 @@ const needsMigration = () => {
 
 /**
  * Check if keys migration is needed
- * @returns {boolean} True if old keys.json exists
+ *
+ * Checks for the exact file `migrateKeys` writes (`data/coinbase-keys.json`),
+ * not a differently-named file (issue #688 — a mismatched filename here made
+ * this return `true` forever, so deleting `data/coinbase-keys.json` after
+ * migration caused the next startup to silently recreate it from the root
+ * `keys.json`). `migrateKeys` renames the root file away on a successful
+ * migration, so once that has happened this returns `false` even if the
+ * copied key is later deleted — the migration is one-shot by design.
+ * @returns {boolean} True if a root keys.json exists and hasn't been migrated yet
  */
 const needsKeysMigration = () => {
-  const oldKeysFile = path.join(__dirname, '..', 'keys.json');
-  const newKeysFile = path.join(KEYS_DIR, 'coinbase.json');
+  const oldKeysFile = path.join(APP_ROOT, 'keys.json');
+  const newKeysFile = path.join(KEYS_DIR, 'coinbase-keys.json');
 
   return fs.existsSync(oldKeysFile) && !fs.existsSync(newKeysFile);
 };
@@ -133,10 +141,17 @@ const migrateData = (exchange = 'coinbase') => {
 
 /**
  * Migrate keys.json to data/coinbase-keys.json
+ *
+ * Renames the root file to `keys.json.migrated` on success (issue #688) —
+ * once renamed, `needsKeysMigration` can never see it again, so a
+ * subsequent startup cannot resurrect a key the operator deleted from
+ * `data/coinbase-keys.json`. `chmodSync`ing the copy to 0600 matters
+ * because `fs.copyFileSync` preserves the source file's mode, and a root
+ * `keys.json` is commonly 0644.
  * @returns {boolean} True if migration happened
  */
 const migrateKeys = () => {
-  const oldKeysFile = path.join(__dirname, '..', 'keys.json');
+  const oldKeysFile = path.join(APP_ROOT, 'keys.json');
   const newKeysFile = path.join(KEYS_DIR, 'coinbase-keys.json');
 
   if (!fs.existsSync(oldKeysFile)) {
@@ -149,10 +164,13 @@ const migrateKeys = () => {
     fs.mkdirSync(KEYS_DIR, { recursive: true });
   }
 
-  // Copy keys (don't delete original for safety)
+  // Copy keys (don't delete original for safety — rename it out of the way
+  // instead, so the migration cannot run again and resurrect a since-deleted key)
   if (!fs.existsSync(newKeysFile)) {
     fs.copyFileSync(oldKeysFile, newKeysFile);
-    console.log('  Migrate: keys.json -> data/coinbase-keys.json');
+    fs.chmodSync(newKeysFile, 0o600);
+    fs.renameSync(oldKeysFile, `${oldKeysFile}.migrated`);
+    console.log('  Migrate: keys.json -> data/coinbase-keys.json (root file renamed to keys.json.migrated)');
     return true;
   }
 
