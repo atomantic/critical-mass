@@ -4024,12 +4024,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               ? ((summary.avgPrice - body.avgPrice) / body.avgPrice) * 100
               : 0;
             recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
+            // Capture before resetCycle() zeroes cycleBuys, and run the
+            // optimizer's real-balance fetch (issue #694) AFTER resetCycle()
+            // flips the fill-ledger's cycle boundary (fillLedger.startNewCycle())
+            // — not before it — so the network round-trip never widens the
+            // window where a concurrent entry evaluation (gated only by
+            // isEntryInProgress(), not isMutatingPosition()) could land a buy
+            // fill still attributed to the closing cycle (Claude review).
+            const cycleBuysAtClose = positionState.cycleBuys;
+            await resetCycle();
             await recordCycleForSizeOptimizer({
-              stepsUsed: positionState.cycleBuys,
+              stepsUsed: cycleBuysAtClose,
               capitalDeployed: body.costBasis,
             });
-
-            await resetCycle();
           }
         }
 
@@ -4172,6 +4179,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // fillLedger.startNewCycle(), landing twice on a genuine retry
           // only costs a spare cycle-number boundary — cosmetic, never a
           // P&L figure) — so they stay UNGATED below and always run.
+          // Captured here (claim-gated, same reasoning as tp_filled below) and
+          // fed to the size optimizer AFTER resetCycle() runs — not inline —
+          // so the optimizer's real-balance network fetch (issue #694) never
+          // sits between the capital credit and resetCycle()'s
+          // fillLedger.startNewCycle() cycle-boundary flip. Widening that gap
+          // with an awaited round-trip would let a concurrent entry
+          // evaluation (gated only by isEntryInProgress(), not
+          // isMutatingPosition() — unlike refreshDrawdownGuard/
+          // consolidateDustBodies) land a buy fill that gets attributed to
+          // the closing cycle instead of the new one (Claude review).
+          let sizeOptimizerCycleData = null;
           if (!fillLedger.claimCapitalCredit(fillData.orderId)) {
             logger.info(
               `ℹ️ [${exchange}] Untracked sell ${fillData.orderId.slice(0, 8)} capital already credited — skipping re-apply, still completing the cycle close`,
@@ -4213,10 +4231,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               newMaxUsdcDeployed: config.maxUsdcDeployed,
             });
             recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
-            await recordCycleForSizeOptimizer({
+            sizeOptimizerCycleData = {
               stepsUsed: positionState.cycleBuys,
               capitalDeployed: soldCostBasis,
-            });
+            };
           }
 
           // Link current-cycle buy fills to this sell order for buy→sell display linkage (skip body-owned)
@@ -4255,6 +4273,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           });
 
           await resetCycle();
+          if (sizeOptimizerCycleData) {
+            await recordCycleForSizeOptimizer(sizeOptimizerCycleData);
+          }
           saveLiveState();
           fillLedger.persist();
         }
@@ -6145,12 +6166,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const optimalTpPct = lastCycle?.optimalTpPct || actualTpPct;
 
           recordCycleForOptimizer({ optimalTpPct, actualTpPct });
+          // Capture before resetCycle() zeroes cycleBuys; run the optimizer's
+          // real-balance fetch (issue #694) AFTER resetCycle() flips the
+          // cycle boundary — see the live-mode call site's comment for why.
+          const cycleBuysAtClose = positionState.cycleBuys;
+          await resetCycle();
           await recordCycleForSizeOptimizer({
-            stepsUsed: positionState.cycleBuys,
+            stepsUsed: cycleBuysAtClose,
             capitalDeployed: body.costBasis,
           });
-
-          await resetCycle();
         }
       } else {
         // Fallback: untracked sell (legacy core TP or unknown)
@@ -6171,12 +6195,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const actualTpPct = positionState.avgCostBasis > 0
           ? ((price - positionState.avgCostBasis) / positionState.avgCostBasis) * 100 : 0;
         recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
-        await recordCycleForSizeOptimizer({
-          stepsUsed: positionState.cycleBuys,
-          capitalDeployed: positionState.totalCostBasis,
-        });
-
+        // Capture before resetCycle() zeroes cycleBuys/totalCostBasis; run the
+        // optimizer's real-balance fetch (issue #694) AFTER resetCycle() flips
+        // the cycle boundary — see the live-mode call site's comment for why.
+        const cycleBuysAtClose = positionState.cycleBuys;
+        const totalCostBasisAtClose = positionState.totalCostBasis;
         await resetCycle();
+        await recordCycleForSizeOptimizer({
+          stepsUsed: cycleBuysAtClose,
+          capitalDeployed: totalCostBasisAtClose,
+        });
       }
 
       saveDryRunState();

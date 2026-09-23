@@ -159,4 +159,35 @@ describe('issue #694 — recordCycleForSizeOptimizer feeds the real adapter bala
     );
     assert.notEqual(sizeOptimizer.lastKnownBalance, configMaxUsdcDeployed, 'must never fall back to feeding the cap as the balance');
   });
+
+  it('an adapter with no getAccountBalance method at all does not throw and does not feed the cap back in', async () => {
+    // Distinct from the "fetch throws" case above: here the adapter simply
+    // never HAS the method (some test/legacy adapters), so
+    // `typeof adapter.getAccountBalance === 'function'` must gate the call —
+    // calling `adapter.getAccountBalance(...)` when it's undefined throws a
+    // synchronous TypeError that would otherwise escape recordCycleForSizeOptimizer
+    // and abort the whole fill-handling call (verified against a prior version
+    // of this fix, which broke tests/offline-fill-recovery.test.js exactly this way).
+    const orderId = 'balance-feed-no-method';
+    const eng = makeEngine({
+      adapter: {
+        getOrder: async () => ({ status: 'FILLED', filledSize: 0.009, averageFilledPrice: 51000 }),
+        getOrderFills: async () => sellFill(orderId, 0.009, 51000),
+        getAccountBalance: undefined,
+      },
+    });
+    setupLegacyTp(eng, orderId);
+    Object.assign(eng._getConfig(), { sizeAutoManaged: true });
+    const configMaxUsdcDeployed = eng._getConfig().maxUsdcDeployed;
+
+    await assert.doesNotReject(
+      eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false }),
+      'a missing getAccountBalance method must not throw out of fill handling'
+    );
+
+    const { sizeOptimizer } = eng.getState();
+    assert.equal(sizeOptimizer.totalCycleCount, 1, 'the cycle is still recorded for stats even with no balance method');
+    assert.equal(sizeOptimizer.lastKnownBalance, 0, 'no balance method available — lastKnownBalance stays at its unset (0) value');
+    assert.notEqual(sizeOptimizer.lastKnownBalance, configMaxUsdcDeployed, 'must never fall back to feeding the cap as the balance');
+  });
 });
