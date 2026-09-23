@@ -344,6 +344,47 @@ describe('buy commit after a mid-pass cycle turnover (#711, concurrent framing)'
     await eng._test.handleOrderFill({ orderId: 'buy-d', side: 'buy', status: 'FILLED', filledSize: 0.003, averageFilledPrice: 45000 });
     assert.equal(ledger.getFillsForOrder('buy-d')[0].cycleId, cycle);
   });
+
+  it('fresh ledger (no live cycle yet): moves the null-stamped rows into the cycle the buy commits in (#774)', async () => {
+    // The fund's first-ever cycle close: buy-f is ingested (stamped null —
+    // no cycle exists yet) before the sweep, waits inside the merge path,
+    // and a nested TP close's resetCycle runs the first-ever cycle while
+    // this pass is between ingest and commit — mirroring the "moves the
+    // rows it books into the cycle it commits in" case above, but starting
+    // from a null ingestCycleId instead of an already-live one.
+    const eng = makeEngine({
+      fillsByOrder: { 'buy-f': [rawFill('buy', 'buy-f', 't-buy-f', 0.003, 45000)] },
+    });
+    const ledger = eng.getFillLedger();
+    assert.equal(ledger.getCurrentCycleId(), null, 'no cycle started yet');
+    const pos = eng._getPositionState();
+
+    // Turn the cycle over between ingest and commit — the first-ever
+    // resetCycle, exactly as a nested TP close would trigger it.
+    let newCycle = null;
+    const realAggregate = ledger.aggregateFills;
+    ledger.aggregateFills = (rows) => {
+      if (!newCycle) newCycle = ledger.startNewCycle();
+      return realAggregate(rows);
+    };
+    try {
+      await eng._test.handleOrderFill({ orderId: 'buy-f', side: 'buy', status: 'FILLED', filledSize: 0.003, averageFilledPrice: 45000 });
+    } finally {
+      ledger.aggregateFills = realAggregate;
+    }
+
+    assert.ok(newCycle, 'the first-ever cycle started mid-pass');
+    assert.equal(pos.celestialBodies.length, 1);
+    assert.equal(pos.cycleBuys, 1);
+    assert.equal(ledger.getFillsForOrder('buy-f')[0].cycleId, newCycle,
+      'the null-stamped row follows the commit into the live cycle, not left null');
+    // Restart's ledger auto-correct reconstructs cycleBuys from rows whose
+    // cycleId matches the live cycle — it must read the same count as the
+    // live in-memory counter, or cycleBuys silently drifts after a restart
+    // (the bug: the row stayed null, so this read 0 while pos.cycleBuys was 1).
+    assert.equal(ledger.getCurrentCycleAllBuysCount(), pos.cycleBuys,
+      'a restart\'s ledger auto-correct reads the same count as the live counter');
+  });
 });
 
 describe('rebuildLadder — budget after a fill during the cancel (#711)', () => {
