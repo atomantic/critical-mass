@@ -213,6 +213,15 @@ const createManualTradeStore = (exchange, pair) => {
    * @returns {ManualTrade}
    */
   const addPairedTrade = (buyData, sellData, note) => {
+    // Idempotent by (buyOrderId, sellOrderId) — a retry returns the existing
+    // record instead of creating a second paired-trade row for the same fills
+    // (issue #691; mirrors addManualBuy/addManualSell's per-order idempotency).
+    for (const t of trades.values()) {
+      if (t.buyOrderId === buyData.buyOrderId && t.sellOrderId === sellData.sellOrderId) {
+        return t;
+      }
+    }
+
     const now = Date.now();
     /** @type {ManualTrade} */
     const trade = {

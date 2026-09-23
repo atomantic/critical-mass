@@ -305,6 +305,21 @@ const createManualTradeImporter = ({
       note: note || '',
     });
 
+    // Retry guard (issue #691, mirrors importSell's #423 guard): addManualBuy
+    // is idempotent at the STORE layer, but a retry that reaches this point
+    // would still create and inject a SECOND body for the same fill, placing
+    // a second live TP sell that eats into other bodies' inventory. A body
+    // was already created for this trade iff bodyId is set (markTpPlaced
+    // stamps it right after the first successful injectBody/persistBodyToDisk
+    // below) or the status already advanced to TP_PENDING.
+    if (trade.bodyId || trade.status === STATUS.TP_PENDING) {
+      log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} already has body ${trade.bodyId} — skipping duplicate body creation`, {
+        bodyId: trade.bodyId,
+        buyOrderId,
+      });
+      return ok({ trade: store.getById(trade.id), alreadyImported: true });
+    }
+
     if (!createBody) return ok({ trade: store.getById(trade.id) });
 
     const totalFees = buyFills.reduce((sum, f) => sum + (f.commission || f.totalCommission || 0), 0);

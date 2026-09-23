@@ -369,6 +369,25 @@ describe('Manual Trade Import', () => {
       assert.deepEqual(result, { success: false, error: 'Both buyOrderId and sellOrderId are required' });
       assert.deepEqual(adapter.calls.getOrderFills, []);
     });
+
+    // Issue #691: store.addPairedTrade had no idempotency check, so a retried
+    // importPair (e.g. operator double-clicks after a slow IPC response)
+    // created a second paired-trade record for the same (buyOrderId,
+    // sellOrderId) fills.
+    it('is idempotent on a retried import of the same buy/sell pair', async () => {
+      const adapter = createFakeAdapter({
+        fillsByOrder: { 'buy-1': buyFills, 'sell-1': sellFills },
+      });
+      const importer = createImporter({ adapter });
+
+      const first = await importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' });
+      const second = await importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' });
+
+      assert.equal(first.success, true);
+      assert.equal(second.success, true);
+      assert.equal(second.trade.id, first.trade.id);
+      assert.equal(store.getAll().length, 1, 'only one paired trade must exist across the retry');
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -558,6 +577,51 @@ describe('Manual Trade Import', () => {
       assert.equal(second.trade.id, first.trade.id);
       assert.equal(store.getAll().length, 1);
       assert.equal(fillLedger.getFillCount(), 2);
+    });
+
+    // Issue #691: addManualBuy is idempotent at the STORE layer, but a retry
+    // (IPC timeout, or injectBody throwing after the ledger/store writes) that
+    // reached body creation would create a SECOND body for the same fill and
+    // place a second live TP sell against it. A retried createBody:true import
+    // must create/inject exactly one body.
+    it('creates and injects exactly one body across a retried import (createBody:true, engine running)', async () => {
+      const injected = [];
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      const importer = createImporter({
+        adapter,
+        injectBody: async (body) => {
+          injected.push(body);
+          return { tpPlaced: true };
+        },
+      });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(first.success, true);
+      assert.equal(second.success, true);
+      assert.equal(injected.length, 1, 'injectBody must be called exactly once across the retry');
+      assert.equal(second.trade.bodyId, first.trade.bodyId);
+      assert.equal(second.trade.bodyId, injected[0].id);
+      assert.equal(second.alreadyImported, true);
+      assert.equal(store.getAll().length, 1);
+    });
+
+    it('persists exactly one body to regime-state.json across a retried import (createBody:true, engine not running)', async () => {
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      const importer = createImporter({ adapter, injectBody: null });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(first.success, true);
+      assert.equal(second.success, true);
+      assert.equal(second.trade.bodyId, first.trade.bodyId);
+      assert.equal(second.alreadyImported, true);
+
+      const saved = readRegimeStateFile();
+      assert.ok(saved, 'regime-state.json was written');
+      assert.equal(saved.position.celestialBodies.length, 1, 'only one body must be persisted across the retry');
     });
 
     it('requires a buyOrderId', async () => {
