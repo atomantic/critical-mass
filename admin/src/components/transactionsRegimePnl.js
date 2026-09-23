@@ -40,6 +40,7 @@ export function computeFillsWithPnL(fills) {
     const fillValue = fill.quoteAmount || fill.size * fill.price
     const annotatedPnl = fill.bodyPnl ?? fill.satellitePnl
     const annotatedHoldback = fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset
+    const annotatedReservesSold = Number(fill.bodyReservesSoldAsset) > 0 ? Number(fill.bodyReservesSoldAsset) : 0
     const annotatedCostBasis = fill.bodyCostBasis ?? fill.satelliteCostBasis
     const prev = sellTotalsByOrderId.get(fill.orderId)
     if (prev) {
@@ -47,6 +48,7 @@ export function computeFillsWithPnL(fills) {
       prev.totalFee += fill.netFee || fill.fee || 0
       if (prev.annotatedPnl == null && annotatedPnl != null) prev.annotatedPnl = annotatedPnl
       if (prev.annotatedHoldback == null && annotatedHoldback != null) prev.annotatedHoldback = annotatedHoldback
+      if (!(prev.annotatedReservesSold > 0) && annotatedReservesSold > 0) prev.annotatedReservesSold = annotatedReservesSold
       if (prev.annotatedCostBasis == null && annotatedCostBasis != null) prev.annotatedCostBasis = annotatedCostBasis
     } else {
       sellTotalsByOrderId.set(fill.orderId, {
@@ -54,6 +56,7 @@ export function computeFillsWithPnL(fills) {
         totalFee: fill.netFee || fill.fee || 0,
         annotatedPnl: annotatedPnl ?? null,
         annotatedHoldback: annotatedHoldback ?? null,
+        annotatedReservesSold,
         annotatedCostBasis: annotatedCostBasis ?? null,
       })
     }
@@ -112,11 +115,13 @@ export function computeFillsWithPnL(fills) {
     }
 
     // Holdback is likewise annotated once per orderId — prorate across partials.
+    // Net of reserves a stale TP sold beyond its body (#770), so this page's
+    // holdback total matches the server's realizedAssetPnL; negative when the
+    // sale drew reserves down.
     const annotatedHoldbackTotal = orderTotals?.annotatedHoldback
-    const holdbackAsset = annotatedHoldbackTotal != null && annotatedHoldbackTotal > 0
-      ? annotatedHoldbackTotal * fillShare
-      : null
-    const holdbackValue = holdbackAsset != null ? holdbackAsset * fill.price : 0
+    const netHoldbackTotal = (annotatedHoldbackTotal > 0 ? annotatedHoldbackTotal : 0) - (orderTotals?.annotatedReservesSold || 0)
+    const holdbackAsset = netHoldbackTotal !== 0 ? netHoldbackTotal * fillShare : null
+    const holdbackValue = holdbackAsset != null ? holdbackAsset * fill.price : null
 
     // Update running position for non-body sells without linkage (core TP)
     if (!isBody && !buysBySellId.has(fill.orderId)) {
@@ -131,7 +136,7 @@ export function computeFillsWithPnL(fills) {
       }
     }
 
-    pnlMap.set(i, { pnl, holdbackAsset, holdbackValue: holdbackValue > 0 ? holdbackValue : null, avgCost: totalBtc > 0 ? totalCost / totalBtc : 0 })
+    pnlMap.set(i, { pnl, holdbackAsset, holdbackValue, avgCost: totalBtc > 0 ? totalCost / totalBtc : 0 })
   }
 
   return chronological.map((fill, i) => ({ ...fill, ...pnlMap.get(i) }))

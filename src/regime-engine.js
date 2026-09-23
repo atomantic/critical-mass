@@ -4378,7 +4378,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         recordBodyConsumption({
           entries: mergeSnapshot.buyOrders,
           bodyQty: mergeSnapshot.assetQty,
-          qty: snapshotClosed ? Math.max(mergeSnapshot.assetQty, summary.totalSize) : summary.totalSize,
+          // A closing sale consumes exactly the snapshot's own quantity; any
+          // excess came out of reserves (issue #770).
+          qty: snapshotClosed ? mergeSnapshot.assetQty : summary.totalSize,
           closesBody: snapshotClosed,
           sellOrderId: fillData.orderId,
           bodyId: mergeSnapshot.id,
@@ -4407,10 +4409,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // body out entirely. Deducting only the sold qty there left the
           // holdback in the live body as well as in reserves, so it was
           // counted twice and re-listed for sale (issue #718). Only a fold-in
-          // the snapshot's TP never covered stays behind.
-          const removedQty = snapshotClosed
-            ? Math.max(mergeSnapshot.assetQty, summary.totalSize)
-            : summary.totalSize;
+          // the snapshot's TP never covered stays behind. A sale beyond the
+          // snapshot's own quantity drew the excess from reserves
+          // (bodyReservesSoldAsset, issue #770), so it must not ALSO come out
+          // of the fold-in.
+          const removedQty = snapshotClosed ? mergeSnapshot.assetQty : summary.totalSize;
           const removedCost = snapshotClosed ? mergeSnapshot.costBasis : proratedCostBasis;
           const liveConsumedRatio = liveMerged.costBasis > 0
             ? Math.min(removedCost / liveMerged.costBasis, 1)
@@ -4646,7 +4649,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         recordBodyConsumption({
           entries: body.buyOrders,
           bodyQty: body.assetQty,
-          qty: isPartial ? summary.totalSize : Math.max(body.assetQty, summary.totalSize),
+          // A closing sale consumes exactly the body; any excess came out of
+          // reserves (bodyReservesSoldAsset, issue #770).
+          qty: isPartial ? summary.totalSize : body.assetQty,
           closesBody: !isPartial,
           sellOrderId: fillData.orderId,
           bodyId: body.id,

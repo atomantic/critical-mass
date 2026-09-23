@@ -953,4 +953,40 @@ describe('#770 a stale TP that sells the whole body is never booked as a partial
     assert.equal(row.bodyHoldbackAsset, 0);
     assert.ok(Math.abs(row.bodyReservesSoldAsset - 0.002) < 1e-12, `0.002 drawn from reserves, got ${row.bodyReservesSoldAsset}`);
   });
+
+  it('a late snapshot sale beyond the snapshot draws only on reserves, leaving the fold-in intact', async () => {
+    // A clean merge folds buy-new (0.01) onto b1 and leaves tp-old's snapshot
+    // (b1 at 0.01). tp-old then turns out to have sold 0.012: the snapshot
+    // closes, the extra 0.002 came from reserves, and the fold-in keeps 0.01.
+    const pair = '__test770snapfold__';
+    let cancelCalls = 0;
+    const { eng } = makeEngine({
+      pair,
+      cancelResult: null,
+      adapter: {
+        getOrder: async (orderId) => (orderId === 'tp-old' && cancelCalls === 0
+          ? { status: 'OPEN', filledSize: 0 }
+          : { status: 'CANCELLED', filledSize: 0.012, filledValue: 606, averageFilledPrice: 50500, totalFees: 0.02 }),
+        getOrderFills: async (orderId) => (orderId === 'buy-new' ? buyFill(orderId) : sellFill(orderId, '0.012')),
+      },
+      executor: {
+        cancelBodyTpOrder: async () => { cancelCalls += 1; return { cancelled: true, filled: false, filledSize: 0 }; },
+        getPendingCounts: () => ({ total: 1_000_000 }),
+      },
+    });
+    seedBuy(eng);
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+    assert.ok(eng._test.getMergeTpSnapshots().completed.has('tp-old'));
+
+    await eng._test.handleOrderFill({ orderId: 'tp-old', side: 'sell', status: 'CANCELLED', filledSize: 0.012, filledValue: 606, averageFilledPrice: 50500 });
+
+    const b1 = eng._getPositionState().celestialBodies.find(b => b.id === 'b1');
+    assert.ok(b1, 'the fold-in keeps the live body');
+    assert.ok(Math.abs(b1.assetQty - 0.01) < 1e-9, `only the snapshot's 0.01 leaves the body, got ${b1.assetQty}`);
+    const row = readSellRow('tp-old', pair);
+    assert.ok(Math.abs(row.bodyReservesSoldAsset - 0.002) < 1e-12, `0.002 drawn from reserves, got ${row.bodyReservesSoldAsset}`);
+    const derived = eng.getFillLedger().getDerivedRealizedPnL();
+    assert.ok(Math.abs(derived.ledgerNetAsset - (derived.heldOpenAssetQty + derived.realizedAssetPnL)) < 1e-12,
+      `ledgerNetAsset ${derived.ledgerNetAsset} == held ${derived.heldOpenAssetQty} + reserves ${derived.realizedAssetPnL}`);
+  });
 });
