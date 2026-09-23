@@ -228,6 +228,50 @@ describe('PUT/GET /api/:exchange/regime/config dryRun round-trip', () => {
     assert.equal(res.body.applied, false);
     assert.equal(coinbaseCalls, 0, 'a Crypto.com request must never execute against Coinbase');
   });
+
+  it('rejects productId mismatches that would change a fund\'s traded asset (issue #685)', async () => {
+    setupFsMocks(BASE_CONFIG);
+    const writes = mock.method(fs, 'writeFileSync', () => {});
+    let ipcCalls = 0;
+    const app = createFakeApp();
+    registerRegimeRoutes(app, {
+      exchangeIPCMap: { cryptocom: { request: () => { ipcCalls += 1; return Promise.resolve({ success: true }); } } },
+    });
+
+    // BTC_USD has a different base asset (BTC) than CRO_USD (CRO) — must reject
+    const res = await invoke(app, 'PUT /api/:exchange/regime/config', reqFor({ productId: 'BTC_USD' }));
+
+    assert.equal(res.statusCode, 400, `cross-asset productId must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+    assert.equal(res.body.success, false);
+    assert.match(res.body.errors.join('; '), /productId.*does not match fund/);
+    assert.equal(ipcCalls, 0, 'a rejected productId must never reach the live engine');
+    assert.equal(writes.mock.callCount(), 0, 'a rejected productId must never be persisted');
+
+    // Verify the fund retained its original productId
+    const getRes = await invoke(app, 'GET /api/:exchange/regime/config', reqFor({}));
+    assert.equal(getRes.body.config.productId, 'CRO_USD', 'productId must be unchanged after a rejected write');
+  });
+
+  it('accepts productId quote-only changes that keep the same base asset', async () => {
+    setupFsMocks(BASE_CONFIG);
+    const app = createFakeApp();
+    let ipcPayload;
+    registerRegimeRoutes(app, {
+      exchangeIPCMap: { cryptocom: { request: (_op, payload) => { ipcPayload = payload; return Promise.resolve({ success: true }); } } },
+    });
+
+    // CRO_USDT has the same base asset (CRO) as CRO_USD — must accept
+    const res = await invoke(app, 'PUT /api/:exchange/regime/config', reqFor({ productId: 'CRO_USDT' }));
+
+    assert.equal(res.statusCode, 200, `same-base productId must 200 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.config.productId, 'CRO_USDT', 'quote-only productId change must persist');
+    assert.deepStrictEqual(ipcPayload, { productId: 'CRO_USDT' }, 'quote-only change must reach the IPC layer');
+
+    // Verify the fund retained the new productId
+    const getRes = await invoke(app, 'GET /api/:exchange/regime/config', reqFor({}));
+    assert.equal(getRes.body.config.productId, 'CRO_USDT', 'productId must reflect the accepted update');
+  });
 });
 
 describe('POST /api/:exchange/regime/reset-cycle (#232)', () => {
