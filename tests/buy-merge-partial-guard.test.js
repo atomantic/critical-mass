@@ -237,19 +237,30 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
     );
   });
 
-  it('prices consumedCostFraction off the CURRENT live pool, not the frozen snapshot, when another buy folds onto the same body during the cancel race (issue #669 review finding)', async () => {
+  it('prices consumedCostFraction off the DOLLAR cost actually removed, not a quantity ratio, when a fold-in buy prices differently than the body (issue #669 review finding)', async () => {
     // Same #227-follow-up shape as above, except a SECOND buy successfully
     // folds onto the SAME live target body (via the ordinary merge path,
-    // simulated directly here) while this buy's own merge attempt is awaiting
-    // the target TP cancel. mergeSnapshot.assetQty is a frozen scalar (0.01,
+    // simulated directly here) — AT A DIFFERENT PRICE than the original body
+    // — while this buy's own merge attempt is awaiting the target TP cancel.
+    // mergeSnapshot.assetQty/costBasis are frozen scalars (0.01 BTC / $500,
     // as of snapshot time) but mergeSnapshot.sourceOrderIds/buyOrders are the
     // SAME array references as the live body's (celestial-hierarchy.js pushes
     // in place), so the fold-in buy is indistinguishable from the original
-    // buys by the time the merge-snapshot sell is booked. consumedCostFraction
-    // must be priced against the live body's GROWN pre-deduction assetQty
-    // (0.01 + 0.006 fold-in = 0.016), not the stale 0.01 snapshot value — the
-    // latter would overstate the consumed fraction and silently zero
-    // heldOpenBuyCostBasis for the folded-in buy, which this sale never sold.
+    // buys by the time the merge-snapshot sell is booked.
+    //
+    // A QUANTITY ratio (sold-size / live-qty = 0.004/0.016 = 0.25) would
+    // overstate/understate consumedCostFraction whenever the fold-in's price
+    // differs from the original body's avg price, because the DOLLAR amount
+    // actually deducted from costBasis (proratedCostBasis, below) is priced
+    // off the frozen snapshot, not the live pool. consumedCostFraction must
+    // instead be priced as proratedCostBasis / pre-deduction liveMerged.costBasis
+    // so that Σ buy.cost*(1-consumedCostFraction) reconciles EXACTLY to the
+    // live body's post-deduction costBasis regardless of the price mix:
+    //   original: 0.01 BTC @ $50,000 = $500 cost
+    //   fold-in:  0.006 BTC @ $55,000 = $330 cost  (pool: 0.016 BTC / $830)
+    //   sold 0.004 BTC — proratedCostBasis = $500 * (0.004/0.01) = $200 (frozen-snapshot-priced)
+    //   liveConsumedRatio = $200 / $830 = 0.2409638...  (NOT 0.004/0.016 = 0.25)
+    //   post-deduction costBasis = $830 - $200 = $630 = $830 * (1 - 0.2409638...)
     const target = makeBody('target', 50000, 0.01, 'tp-target');
     let getOrderCalls = 0;
     const eng = makeEngine({
@@ -264,6 +275,20 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
         getOpenOrders: async () => [],
         getOrderFills: async (orderId) => {
           if (orderId === 'tp-target') {
+            // handleOrderFillImpl awaits getOrderFills to build the sell's
+            // `summary` BEFORE it looks up `liveMerged` from
+            // positionState.celestialBodies — this is the genuine async gap a
+            // real concurrent fold-in interleaves through (the buy-merge path
+            // has already frozen mergeSnapshot into completedMergeTpOrders by
+            // this point, synchronously, right after cancelBodyTpOrder
+            // resolved). Mutate the live body's asset/cost HERE, AT A
+            // DIFFERENT PRICE than the original body, to simulate that
+            // fold-in landing after the snapshot was taken — mutates in place
+            // exactly as celestial-hierarchy.js's real fold-in does
+            // (target.sourceOrderIds.push).
+            target.assetQty = target.assetQty + 0.006;
+            target.costBasis += 0.006 * 55000;
+            target.sourceOrderIds.push('buy-foldin');
             return [{
               tradeId: 'tp-target-t1', orderId: 'tp-target', side: 'sell', price: '50500', size: '0.004',
               totalCommission: '0.02', rebate: '0', liquidityIndicator: 'MAKER', tradeTime: new Date().toISOString(),
@@ -274,15 +299,7 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
       },
       executor: {
         placeBodyTpOrder: async () => ({ success: true, orderId: `tp-new-${Math.random()}` }),
-        cancelBodyTpOrder: async () => {
-          // Simulate a concurrent successful fold-in landing on the SAME live
-          // body while this cancel is in flight — mutates in place exactly as
-          // celestial-hierarchy.js's real fold-in does (target.sourceOrderIds.push).
-          target.assetQty = target.assetQty + 0.006;
-          target.costBasis += 0.006 * 50000;
-          target.sourceOrderIds.push('buy-foldin');
-          return { cancelled: true, filled: false, filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 };
-        },
+        cancelBodyTpOrder: async () => ({ cancelled: true, filled: false, filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 }),
       },
     });
 
@@ -290,9 +307,19 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
 
     const liveTarget = eng._getPositionState().celestialBodies.find(b => b.id === 'target');
     assert.ok(liveTarget, 'target body survives');
-    // Pre-deduction pool was 0.01 (original) + 0.006 (fold-in) = 0.016; sold
-    // 0.004 of it => 0.25, NOT 0.004/0.01=0.4 (the stale-snapshot-denominator bug).
-    assert.ok(Math.abs(liveTarget.consumedCostFraction - 0.25) < 1e-9, `consumedCostFraction must use the live pre-deduction pool, got ${liveTarget.consumedCostFraction}`);
+    assert.ok(Math.abs(liveTarget.costBasis - 630) < 1e-6, `post-deduction costBasis is the dollar remainder, got ${liveTarget.costBasis}`);
+    const expectedRatio = 200 / 830;
+    assert.ok(
+      Math.abs(liveTarget.consumedCostFraction - expectedRatio) < 1e-9,
+      `consumedCostFraction must be the dollar-cost ratio (${expectedRatio}), not the quantity ratio (0.25), got ${liveTarget.consumedCostFraction}`,
+    );
+    // The reconciliation invariant this ratio exists to preserve: the total
+    // pool cost times (1 - consumedCostFraction) must equal the live body's
+    // actual post-deduction costBasis, regardless of the fold-in's price.
+    assert.ok(
+      Math.abs(830 * (1 - liveTarget.consumedCostFraction) - liveTarget.costBasis) < 1e-6,
+      'Σ buy.cost*(1-consumedCostFraction) must reconcile to the live body costBasis',
+    );
   });
 
   it('DOES merge when the target TP has no partial fill (guard is specific)', async () => {

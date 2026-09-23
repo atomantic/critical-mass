@@ -3024,11 +3024,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // zero-cost holdback annotation (the unsold remainder stays in the live
         // body, not as reserves), no bodiesCompleted increment, and
         // consumedCostFraction tracking so heldOpenBuyCostBasis doesn't double-count
-        // the still-held remainder (issue #617).
-        const liveOwnsRemainder = !!liveMerged;
-
+        // the still-held remainder (issue #617). This branch never splices a body
+        // out of celestialBodies (unlike the normal-path FULL FILL branch), so
+        // `liveMerged` can still be found at exactly zero qty/cost after a sell
+        // that fully drains it — that IS a completed cycle, so the "still open"
+        // decision below is made AFTER the deduction, on the resulting qty, not
+        // on object presence alone.
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
-        if (!liveOwnsRemainder) cs.bodiesCompleted += 1;
         positionState.celestialState = cs;
 
         const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
@@ -3036,20 +3038,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         orderExecutor.removeBodyTracking(fillData.orderId);
 
         if (liveMerged) {
-          // consumedCostFraction must reflect what fraction of the CURRENT live
-          // pool this sale just closed — NOT `soldRatio` above, which is scoped
-          // to `mergeSnapshot.assetQty` (a frozen scalar) and correctly prices
-          // the sold tranche's own cost/pnl against the snapshot. If another buy
-          // folded onto this SAME live body in the Race-3 window (the scenario
-          // the surrounding comment already accounts for when deducting qty/cost
-          // below — mergeSnapshot's array fields are shallow-copied, so
-          // sourceOrderIds/buyOrders are the SAME shared references as
-          // liveMerged's and reflect the fold-in too), `liveMerged.assetQty` here
-          // is larger than the frozen `mergeSnapshot.assetQty`. Using `soldRatio`
-          // would overstate the consumed fraction and silently zero
-          // heldOpenBuyCostBasis for a folded-in buy this sale never touched.
-          const liveSoldRatio = liveMerged.assetQty > 0
-            ? Math.min(summary.totalSize / liveMerged.assetQty, 1)
+          // consumedCostFraction must reflect what FRACTION OF THE DOLLAR COST
+          // this sale actually removed from the live pool — NOT a quantity
+          // ratio. `proratedCostBasis` (below) is priced off the frozen
+          // `mergeSnapshot.costBasis`, so when a buy folded onto this SAME live
+          // body in the Race-3 window at a DIFFERENT price than the original
+          // body's avg price (mergeSnapshot's array fields are shallow-copied,
+          // so sourceOrderIds/buyOrders are the SAME shared references as
+          // liveMerged's and reflect the fold-in too), a quantity-based ratio
+          // (sold-size / live-qty) diverges from the dollar fraction actually
+          // deducted, and Σ buy.cost*(1-consumedCostFraction) would no longer
+          // reconcile to liveMerged.costBasis. Pricing the ratio directly off
+          // the dollar amount removed (proratedCostBasis / pre-deduction
+          // liveMerged.costBasis) makes that reconciliation exact by
+          // construction, regardless of the fold-in's price.
+          const liveConsumedRatio = liveMerged.costBasis > 0
+            ? Math.min(proratedCostBasis / liveMerged.costBasis, 1)
             : 1;
 
           liveMerged.assetQty = roundAsset(Math.max(0, liveMerged.assetQty - summary.totalSize));
@@ -3061,7 +3065,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // full buy cost as still-open while the sold tranche's prorated cost
           // is simultaneously realized via bodyPnl above — double-counting it.
           const prevConsumed = liveMerged.consumedCostFraction || 0;
-          liveMerged.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - liveSoldRatio);
+          liveMerged.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - liveConsumedRatio);
           for (const srcId of new Set([
             ...(liveMerged.sourceOrderIds || []),
             ...((liveMerged.buyOrders || []).map(b => b.orderId)),
@@ -3105,6 +3109,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             }
           }
         }
+
+        // Decide AFTER the deduction above: the live body object can still be
+        // found at exactly zero qty (this branch never splices it out of
+        // celestialBodies), which is a completed cycle, not an open one —
+        // object presence alone (`!!liveMerged`) is not sufficient.
+        const liveOwnsRemainder = !!liveMerged && liveMerged.assetQty > 0;
+        if (!liveOwnsRemainder) cs.bodiesCompleted += 1;
 
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 

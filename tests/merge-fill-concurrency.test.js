@@ -975,9 +975,12 @@ describe('#368 _mergeBodyImpl — execution-bearing cancellation during roll-up'
     assert.equal(liveSource.tpOrderId, null, 'no TP is re-armed on a zero-qty body');
     assert.equal(placeCalls, 0, 'placeBodyTpOrder is never called for a fully-consumed body');
 
-    // Issue #617: the body OBJECT is still present in celestialBodies (just at
-    // zero qty) — per the fix, "no live body remains" means the object is gone,
-    // not merely empty, so this must not be counted as a completed body either.
-    assert.equal(eng._getPositionState().celestialState.bodiesCompleted, 0, 'the lingering zero-qty body object is not counted as completed');
+    // Issue #669 (review finding on #617): the body OBJECT is still present in
+    // celestialBodies (this branch never splices it out — just at zero qty),
+    // but a sale that fully drains it to zero IS a completed cycle — object
+    // presence alone must not gate "still open." Counting it as still-open
+    // would leave a permanent zero-qty ghost body that's never re-armed and
+    // never counted.
+    assert.equal(eng._getPositionState().celestialState.bodiesCompleted, 1, 'a sale that fully drains the body to zero IS counted as completed, even though the object lingers');
   });
 });
