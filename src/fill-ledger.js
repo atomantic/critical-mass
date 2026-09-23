@@ -1232,15 +1232,29 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
     // Auto-link buys to sells within completed cycles only (fixes orphaned buys display).
     // Skip active cycles to avoid linking unsold buys to early partial sells.
+    //
+    // This is legacy-core-only (#677): body/satellite buy linkage is owned by
+    // TP placement (regime-engine.js) and boot annotation, not this heuristic.
+    // In celestial mode a cycle can hold many bodies and is marked "completed"
+    // once the sell ratio crosses CYCLE_COMPLETE_SELL_RATIO while other bodies
+    // in the SAME cycle are still open with no TP placed yet (their buy has no
+    // sellOrderId for a legitimate reason, not a crash to repair). Stamping
+    // those open buys with an unrelated body's sell falsely closes them and
+    // zeroes their heldOpenBuyCostBasis. Also never auto-link inside the
+    // ledger's current (still-live) cycle — a body there may not even have
+    // attempted its TP placement yet.
     let linkedCount = 0;
     const completedCycleIds = new Set(cycleDetails.map(d => d.cycleId));
-    const cycleSellIds = new Map(); // cycleId -> first sell orderId
+    const cycleSellIds = new Map(); // cycleId -> first LEGACY (non-body/satellite) sell orderId
     for (const fill of fills.values()) {
+      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
       if (fill.side === 'sell' && fill.cycleId && completedCycleIds.has(fill.cycleId) && !cycleSellIds.has(fill.cycleId)) {
         cycleSellIds.set(fill.cycleId, fill.orderId);
       }
     }
     for (const fill of fills.values()) {
+      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+      if (fill.cycleId && fill.cycleId === currentCycleId) continue;
       if (fill.side === 'buy' && fill.cycleId && !fill.sellOrderId && completedCycleIds.has(fill.cycleId)) {
         const sellId = cycleSellIds.get(fill.cycleId);
         if (sellId) {
