@@ -168,8 +168,18 @@ const createRiskManager = (exchange, config, productId) => {
    * @returns {{drawdownPercent: number, isPaused: boolean, peakEquity: number, drawdownPausedAt: number|null}}
    */
   const updateDrawdown = (currentEquity, capitalBase) => {
-    // Depleted equity against a known positive peak is a 100% drawdown — it
-    // must pause, not fall through to the "nothing to track" skip below.
+    // Depleted equity against a known positive peak — or, on a first sample
+    // with no peak yet, against a funded capital base — is a 100% drawdown: it
+    // must pause (fail closed), not fall through to the "nothing to track" skip
+    // below. The drawdownResetHours auto-reset deliberately does not apply
+    // here: it re-bases the peak to current equity, and a non-positive peak is
+    // meaningless, so a depleted fund stays paused until equity recovers or
+    // the operator intervenes.
+    if (Number.isFinite(currentEquity) && currentEquity <= 0 && (peakEquity === null || peakEquity <= 0)
+        && Number.isFinite(capitalBase) && capitalBase > 0) {
+      peakEquity = capitalBase;
+      lastCapitalBase = capitalBase;
+    }
     if (Number.isFinite(currentEquity) && currentEquity <= 0 && peakEquity !== null && peakEquity > 0) {
       lastDrawdownPercent = 100;
       maxDrawdownSeen = 100;

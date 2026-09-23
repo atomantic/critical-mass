@@ -433,6 +433,13 @@ describe('risk-manager drawdown capital re-basing / persistence (issue #693)', (
     assert.match(riskManager.canPlaceEntry(makePosition(), 0, 0).reason, /drawdown_paused/);
   });
 
+  it('a depleted first sample with a funded capital base fails closed', (t) => {
+    const riskManager = setup(t, { maxDrawdownPercent: 10 });
+    const result = riskManager.updateDrawdown(-5, 1000);
+    assert.equal(result.isPaused, true);
+    assert.equal(result.peakEquity, 1000);
+  });
+
   it('forceResume records the capital base so a deposit is not re-applied on the next tick', (t) => {
     const riskManager = setup(t, { maxDrawdownPercent: 10 });
     riskManager.updateDrawdown(1000, 1000);
