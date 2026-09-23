@@ -11,8 +11,9 @@
 //      ledger auto-correct agrees with the live counter;
 //   3. a cycle turnover while a buy is between ingest and commit (a TP close
 //      racing a concurrent booking) moves the rows to the cycle it commits in;
-//   4. rebuildLadder's exchange-balance clamp subtracts the quote the
-//      mid-cancel fills spent;
+//   4. rebuildLadder's budget accounts for quote spent by fills during the
+//      cancel (a post-cancel balance re-read, and a reserve for rungs that
+//      filled completely and polling has yet to book);
 //   5. rebuildLadder/cancelLadder refuse to sweep mid-fill/merge/reconcile.
 //
 // Disk safety: throwaway pairs under a disposable temp data root.
@@ -126,6 +127,7 @@ const sweepBooking = (getEng, rungs) => async () => {
     partialFills: rungs.length,
     partialFillOrderIds: rungs.map(r => r.orderId),
     partialFillsCost: cost,
+    unbookedFills: [],
   };
 };
 
@@ -284,17 +286,28 @@ describe('buy commit after a mid-pass cycle turnover (#711, concurrent framing)'
   });
 });
 
-describe('rebuildLadder — budget after a mid-cancel fill (#711)', () => {
-  const setupLadderEngine = ({ available, maxUsdc, rungs }) => {
+describe('rebuildLadder — budget after a fill during the cancel (#711)', () => {
+  /**
+   * `balances` is the sequence getAccountBalance returns: [pre-cancel, post-cancel].
+   * An Error entry models a failed fetch. `cancel` overrides the sweep result.
+   */
+  const setupLadderEngine = ({ balances, maxUsdc, rungs = [], cancel }) => {
     let eng;
     const placed = [];
     const fillsByOrder = {};
     for (const r of rungs) fillsByOrder[r.orderId] = [rawFill('buy', r.orderId, `t-${r.orderId}`, r.size, r.price)];
+    let call = 0;
     eng = makeEngine({
       fillsByOrder,
-      adapter: { getAccountBalance: async () => ({ available: String(available) }) },
+      adapter: {
+        getAccountBalance: async () => {
+          const b = balances[Math.min(call++, balances.length - 1)];
+          if (b instanceof Error) throw b;
+          return { available: String(b) };
+        },
+      },
       executor: {
-        cancelAllLadderOrders: sweepBooking(() => eng, rungs),
+        cancelAllLadderOrders: cancel ? () => cancel(eng) : sweepBooking(() => eng, rungs),
         placeLadderOrders: async (levels) => {
           placed.push(...levels);
           return { orders: levels.map((l, i) => ({ orderId: `new-rung-${i}`, ...l })), failedCount: 0 };
@@ -311,31 +324,60 @@ describe('rebuildLadder — budget after a mid-cancel fill (#711)', () => {
     m.ask = 50000.01;
     eng.getFillLedger().startNewCycle();
     eng._getPositionState().ladderActive = true;
-    return { eng, placed };
+    return { eng, placed, balanceCalls: () => call };
   };
+  const placedTotal = (placed) => placed.reduce((sum, l) => sum + l.sizeUsdc, 0);
+  const RUNG_300 = [{ orderId: 'rung-r', size: 0.006, price: 50000 }]; // $300 bought mid-cancel
 
-  it('sizes the new ladder against the cash left after the mid-cancel fill when cash binds', async () => {
-    // Deployed cap is far away; the exchange balance is the binding term.
-    const { eng, placed } = setupLadderEngine({
-      available: 1000,
-      maxUsdc: 100000,
-      rungs: [{ orderId: 'rung-r', size: 0.006, price: 50000 }], // $300 spent mid-cancel
-    });
+  it('sizes against the post-cancel balance when the exchange does not hold quote for resting orders', async () => {
+    // Cash binds (the cap is far away); the fresh read reflects the $300 spend.
+    const { eng, placed, balanceCalls } = setupLadderEngine({ balances: [1000, 700], maxUsdc: 100000, rungs: RUNG_300 });
 
     const res = await eng.rebuildLadder();
 
     assert.equal(res.success, true, res.message);
-    const total = placed.reduce((sum, l) => sum + l.sizeUsdc, 0);
+    assert.equal(balanceCalls(), 2, 'balance re-read after a fill during the cancel');
+    const total = placedTotal(placed);
     assert.ok(total > 0, 'a ladder was placed');
-    assert.ok(total <= 700 + 1e-6, `new ladder must fit the $700 left after the $300 mid-cancel fill, got $${total.toFixed(2)}`);
+    assert.ok(total <= 700 + 1e-6, `must fit the $700 left after the $300 fill, got $${total.toFixed(2)}`);
   });
 
-  it('aborts gracefully when the mid-cancel fill leaves less than a min order of cash', async () => {
-    const { eng, placed } = setupLadderEngine({
-      available: 305,
+  it('is not starved when the fill was paid from the resting-order hold', async () => {
+    // Pre-cancel $1000 already excluded the ladder's hold; the cancel released
+    // the rest of it. Subtracting $300 from the snapshot would wrongly shrink it.
+    const { eng, placed } = setupLadderEngine({ balances: [1000, 1400], maxUsdc: 100000, rungs: RUNG_300 });
+
+    const res = await eng.rebuildLadder();
+
+    assert.equal(res.success, true, res.message);
+    const total = placedTotal(placed);
+    assert.ok(total > 700 + 1e-6, `the hold-paid fill must not come off the snapshot again, got $${total.toFixed(2)}`);
+    assert.ok(total <= 1000 + 1e-6, `capped at the pre-cancel snapshot — released holds are not newly counted, got $${total.toFixed(2)}`);
+  });
+
+  it('falls back to subtracting the spend when the re-read fails', async () => {
+    const { eng, placed } = setupLadderEngine({ balances: [1000, new Error('rate limited')], maxUsdc: 100000, rungs: RUNG_300 });
+
+    const res = await eng.rebuildLadder();
+
+    assert.equal(res.success, true, res.message);
+    const total = placedTotal(placed);
+    assert.ok(total > 0 && total <= 700 + 1e-6, `conservative fallback, got $${total.toFixed(2)}`);
+  });
+
+  it('does not re-read the balance when nothing filled during the cancel', async () => {
+    const { eng, balanceCalls } = setupLadderEngine({
+      balances: [1000],
       maxUsdc: 100000,
-      rungs: [{ orderId: 'rung-s', size: 0.006, price: 50000 }], // $300 spent → $5 left < $10 min
+      cancel: async () => ({ cancelled: 3, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [] }),
     });
+    const res = await eng.rebuildLadder();
+    assert.equal(res.success, true, res.message);
+    assert.equal(balanceCalls(), 1);
+  });
+
+  it('aborts gracefully when the fill leaves less than a min order of cash', async () => {
+    const { eng, placed } = setupLadderEngine({ balances: [305, 5], maxUsdc: 100000, rungs: RUNG_300 });
 
     const res = await eng.rebuildLadder();
 
@@ -343,39 +385,40 @@ describe('rebuildLadder — budget after a mid-cancel fill (#711)', () => {
     assert.match(res.message, /below min order size after a fill landed during ladder cancel/);
     assert.equal(placed.length, 0, 'no rung is sized against cash that is gone');
   });
-});
 
-describe('rebuildLadder — a rung that filled completely during the cancel (#711 review)', () => {
-  it('reserves its unbooked spend in both the deployed-cap and the cash terms', async () => {
-    const placed = [];
-    const eng = makeEngine({
-      adapter: { getAccountBalance: async () => ({ available: '100000' }) },
-      executor: {
-        // Left for polling: no body yet, so getAllocatedCapital() can't see it.
-        cancelAllLadderOrders: async () => ({ cancelled: 2, remainingTracked: 1, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFillsCost: 400 }),
-        placeLadderOrders: async (levels) => {
-          placed.push(...levels);
-          return { orders: levels.map((l, i) => ({ orderId: `new-rung-${i}`, ...l })), failedCount: 0 };
-        },
-      },
+  it('reserves a completely-filled rung polling has yet to book against the deployed cap', async () => {
+    const { eng, placed } = setupLadderEngine({
+      balances: [100000],
+      maxUsdc: 1000, // the deployed cap binds, not cash
+      cancel: async () => ({ cancelled: 2, remainingTracked: 1, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [{ orderId: 'rung-u', cost: 400 }] }),
     });
-    const config = eng._getConfig();
-    config.entryMode = 'ladder';
-    config.maxUsdcDeployed = 1000; // the deployed cap binds, not cash
-    config.baseSizeUsdc = 10;
-    const m = eng._getMarketState();
-    m.lastPrice = 50000;
-    m.bid = 49999.99;
-    m.ask = 50000.01;
-    eng.getFillLedger().startNewCycle();
-    eng._getPositionState().ladderActive = true;
 
     const res = await eng.rebuildLadder();
 
     assert.equal(res.success, true, res.message);
-    const total = placed.reduce((sum, l) => sum + l.sizeUsdc, 0);
+    const total = placedTotal(placed);
     assert.ok(total > 0);
-    assert.ok(total <= 600 + 1e-6, `new ladder must leave room for the $400 fill polling has yet to book, got $${total.toFixed(2)}`);
+    assert.ok(total <= 600 + 1e-6, `must leave room for the $400 polling has yet to book, got $${total.toFixed(2)}`);
+  });
+
+  it('does not count a completely-filled rung twice once polling booked it during the sweep', async () => {
+    // Polling committed rung-u to a body while the sweep awaited: its $400 is
+    // in getAllocatedCapital() now, so it must not be added again.
+    const { eng, placed } = setupLadderEngine({
+      balances: [100000],
+      maxUsdc: 1000,
+      cancel: async (e) => {
+        e._getPositionState().celestialBodies = [makeBody('body-uuuuuuuu', 'rung-u', 0.008, 50000, 'tp-u')];
+        return { cancelled: 2, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [{ orderId: 'rung-u', cost: 400 }] };
+      },
+    });
+
+    const res = await eng.rebuildLadder();
+
+    assert.equal(res.success, true, res.message);
+    const total = placedTotal(placed);
+    assert.ok(total > 200 + 1e-6, `the booked rung counts once ($600 left), got $${total.toFixed(2)}`);
+    assert.ok(total <= 600 + 1e-6, `got $${total.toFixed(2)}`);
   });
 });
 

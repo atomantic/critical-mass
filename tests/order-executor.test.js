@@ -945,6 +945,7 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
     assert.equal(result.partialFills, 0);
     assert.deepEqual(result.partialFillOrderIds, []);
     assert.equal(result.partialFillsCost, 0);
+    assert.deepEqual(result.unbookedFills, []);
     assert.equal(captured.length, 0);
   });
 
@@ -993,9 +994,31 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
     assert.equal(result.cancelled, 0);
     assert.equal(result.partialFills, 0);
     assert.equal(result.partialFillsCost, 0, 'nothing was booked during the sweep');
-    assert.ok(Math.abs(result.unbookedFillsCost - 510.5) < 1e-9, `unbooked spend = filledValue + fees, got ${result.unbookedFillsCost}`);
+    assert.equal(result.unbookedFills.length, 1);
+    assert.equal(result.unbookedFills[0].orderId, 'ladder-full');
+    assert.ok(Math.abs(result.unbookedFills[0].cost - 510.5) < 1e-9, `unbooked spend = filledValue + fees, got ${result.unbookedFills[0].cost}`);
     assert.equal(result.remainingTracked, 1, 'left tracked for polling to book');
     assert.equal(captured.length, 0);
+    exec.clearTimers();
+  });
+
+  it('costs only the part of a cancel-time fill not already booked as a polled partial (issue #711)', async () => {
+    // Polling already saw (and booked) 0.004 of this rung; the cancel reports
+    // the cumulative 0.006. Only the new 0.002 tranche is spend the caller's
+    // balance/allocation snapshots have not seen.
+    const adapter = {
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => ({ status: 'PARTIALLY_FILLED', filledSize: 0.004, filledValue: 204, averageFilledPrice: 51000, totalFees: 0, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', { onFillDetected: async () => {} });
+    restoreLadder(exec, 'ladder-prorate');
+    await exec.checkPendingOrderFills();
+    adapter.getOrder = async () => ({ status: 'CANCELLED', filledSize: 0.006, filledValue: 306, averageFilledPrice: 51000, totalFees: 0.6, side: 'BUY' });
+
+    const result = await exec.cancelAllLadderOrders();
+
+    assert.equal(result.partialFills, 1);
+    assert.ok(Math.abs(result.partialFillsCost - 306.6 / 3) < 1e-9, `only the unbooked third, got ${result.partialFillsCost}`);
     exec.clearTimers();
   });
 

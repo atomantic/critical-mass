@@ -7855,7 +7855,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Cancel existing ladder orders
     let midCancelSpend = 0;
-    let unbookedSpend = 0;
+    let unbookedFills = [];
     if (positionState.ladderActive) {
       const cancelResult = await orderExecutor.cancelAllLadderOrders();
       // Booked mid-cancel partials already sit in a body's costBasis
@@ -7863,8 +7863,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // that filled completely are left for polling to book, so neither term
       // sees them yet.
       midCancelSpend = Number(cancelResult.partialFillsCost) || 0;
-      unbookedSpend = Number(cancelResult.unbookedFillsCost) || 0;
-      const spendNote = midCancelSpend + unbookedSpend > 0 ? ` ($${(midCancelSpend + unbookedSpend).toFixed(2)} filled during the cancel)` : '';
+      unbookedFills = Array.isArray(cancelResult.unbookedFills) ? cancelResult.unbookedFills : [];
+      const filledDuringCancel = midCancelSpend + unbookedFills.reduce((sum, u) => sum + (Number(u.cost) || 0), 0);
+      const spendNote = filledDuringCancel > 0 ? ` ($${filledDuringCancel.toFixed(2)} filled during the cancel)` : '';
       logger.info(`🧹 [${exchange}] Cancelled ${cancelResult.cancelled} existing ladder orders${spendNote}`);
     }
 
@@ -7879,20 +7880,35 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // cancelAllLadderOrders (issue #674) — re-derive the budget from the
     // CURRENT allocation before sizing the new ladder, so a fill discovered
     // mid-cancel isn't missing from the math and the new ladder can't push
-    // deployed capital past maxUsdcDeployed. The exchange-balance clamp reuses
-    // the pre-cancel snapshot, so take the quote those fills spent off it too
-    // (issue #711): otherwise, when cash rather than the deployed cap binds,
-    // rungs get sized against money that is gone. Where the exchange holds
-    // quote for resting orders the fill came out of that hold, so this errs
-    // conservative (a smaller ladder), never toward an insufficient-funds
-    // rejection.
+    // deployed capital past maxUsdcDeployed. A rung that filled completely is
+    // reserved here until polling books it into a body — unless polling
+    // already did while the sweep ran, in which case the body's costBasis
+    // counts it and adding it again would undersize the ladder.
+    const unbookedSpend = unbookedFills
+      .filter(u => !isBuyAlreadyCommitted(positionState.celestialBodies, u.orderId))
+      .reduce((sum, u) => sum + (Number(u.cost) || 0), 0);
     const postCancelAllocated = getAllocatedCapital() + unbookedSpend;
-    const postCancelQuote = Math.max(0, availableQuote - midCancelSpend - unbookedSpend);
+    // The cash clamp must not size rungs against quote those fills spent
+    // (issue #711). Where filling happened, re-read the balance: on exchanges
+    // that hold quote for resting orders the fill was paid from the hold, so
+    // the pre-cancel snapshot already excludes it and subtracting again would
+    // wrongly starve the rebuild; elsewhere the fresh read reflects the spend.
+    // Capped at the pre-cancel snapshot so a rebuild with a fill sizes the
+    // same as one without (released holds are not newly counted). If the
+    // re-read fails, fall back to subtracting the spend (conservative).
+    const cancelTimeSpend = midCancelSpend + unbookedFills.reduce((sum, u) => sum + (Number(u.cost) || 0), 0);
+    let postCancelQuote = availableQuote;
+    if (cancelTimeSpend > 0) {
+      const freshBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
+      postCancelQuote = freshBalance
+        ? Math.min(availableQuote, parseFloat(freshBalance.available) || 0)
+        : Math.max(0, availableQuote - cancelTimeSpend);
+    }
     remainingBudget = Math.min(config.maxUsdcDeployed - postCancelAllocated, postCancelQuote);
     if (remainingBudget < (config.baseSizeUsdc || 50)) {
       return { success: false, message: `Budget dropped below min order size after a fill landed during ladder cancel ($${remainingBudget.toFixed(2)} left — $${(config.maxUsdcDeployed - postCancelAllocated).toFixed(2)} under the deployed cap, $${postCancelQuote.toFixed(2)} ${quoteCurrency} available). The old ladder was cancelled but not rebuilt — call rebuildLadder again if appropriate.` };
     }
-    if (postCancelAllocated !== allocatedCapital || midCancelSpend > 0 || unbookedSpend > 0) {
+    if (postCancelAllocated !== allocatedCapital || postCancelQuote !== availableQuote) {
       logger.info(`🔄 [${exchange}] Re-derived ladder budget after a cancel-time fill: $${remainingBudget.toFixed(2)} (allocated=$${postCancelAllocated.toFixed(2)}, was $${allocatedCapital.toFixed(2)}; available ${quoteCurrency}=$${postCancelQuote.toFixed(2)}, was $${availableQuote.toFixed(2)})`);
     }
 
