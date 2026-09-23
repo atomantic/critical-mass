@@ -478,3 +478,77 @@ describe('risk-manager drawdown capital re-basing / persistence (issue #693)', (
     assert.equal(state.isDrawdownPaused, false);
   });
 });
+
+describe('risk-manager equity-depleted fail-closed state (issue #742)', () => {
+  it('flags equityDepleted on a depleted-equity pause and clears it on recovery', (t) => {
+    const riskManager = setup(t, { maxDrawdownPercent: 10 });
+    riskManager.updateDrawdown(1000, 1000);
+    const depleted = riskManager.updateDrawdown(-5, 1000);
+    assert.equal(depleted.isPaused, true);
+    assert.equal(riskManager.getState().equityDepleted, true);
+
+    // Equity recovers to positive but still below the resume threshold — no
+    // longer "depleted", though the drawdown pause itself may still be active.
+    const recovering = riskManager.updateDrawdown(500, 1000);
+    assert.equal(recovering.isPaused, true);
+    assert.equal(riskManager.getState().equityDepleted, false);
+  });
+
+  it('does not auto-reset a depleted-equity pause even after drawdownResetHours elapses (fail-closed by design)', (t) => {
+    const riskManager = setup(t, { maxDrawdownPercent: 10, drawdownResetHours: 2 }, 1_000_000);
+    riskManager.updateDrawdown(1000, 1000);
+    riskManager.updateDrawdown(-5, 1000); // paused, depleted
+    assert.equal(riskManager.getState().equityDepleted, true);
+
+    t.mock.timers.setTime(1_000_000 + HOUR_MS * 24);
+    const result = riskManager.updateDrawdown(-5, 1000);
+    assert.equal(result.isPaused, true, 'depleted equity must stay paused — drawdownResetHours does not apply');
+    assert.equal(riskManager.getState().equityDepleted, true);
+  });
+
+  it('forceResume clears equityDepleted along with the pause', (t) => {
+    const riskManager = setup(t, { maxDrawdownPercent: 10 });
+    riskManager.updateDrawdown(1000, 1000);
+    riskManager.updateDrawdown(-5, 1000); // paused, depleted
+    assert.equal(riskManager.getState().equityDepleted, true);
+
+    riskManager.forceResume(1000, 1000);
+    assert.equal(riskManager.getState().equityDepleted, false);
+    assert.equal(riskManager.getState().isDrawdownPaused, false);
+  });
+});
+
+describe('risk-manager resetDrawdown (issue #742)', () => {
+  it('clears peak, pause, max-seen, capital base and equityDepleted', (t) => {
+    const riskManager = setup(t, { maxDrawdownPercent: 10 });
+    riskManager.updateDrawdown(1000, 1000);
+    riskManager.updateDrawdown(-5, 1000); // paused, depleted, maxDrawdownSeen = 100
+    let state = riskManager.getState();
+    assert.equal(state.isDrawdownPaused, true);
+    assert.equal(state.equityDepleted, true);
+    assert.equal(state.maxDrawdownSeen, 100);
+
+    riskManager.resetDrawdown();
+    state = riskManager.getState();
+    assert.equal(state.peakEquity, null);
+    assert.equal(state.maxDrawdownSeen, 0);
+    assert.equal(state.isDrawdownPaused, false);
+    assert.equal(state.drawdownPausedAt, null);
+    assert.equal(state.equityDepleted, false);
+    assert.equal(state.currentDrawdownPercent, 0);
+
+    // Re-initializes cleanly from the next observation, as if brand new.
+    const result = riskManager.updateDrawdown(200, 200);
+    assert.equal(result.peakEquity, 200);
+    assert.equal(result.isPaused, false);
+  });
+
+  it('is safe to call when never paused', (t) => {
+    const riskManager = setup(t);
+    riskManager.updateDrawdown(100);
+    riskManager.resetDrawdown();
+    const state = riskManager.getState();
+    assert.equal(state.peakEquity, null);
+    assert.equal(state.isDrawdownPaused, false);
+  });
+});
