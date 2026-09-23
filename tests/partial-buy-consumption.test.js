@@ -467,3 +467,42 @@ describe('legacy buy order split across bodies (issue #607)', () => {
     assert.ok(Math.abs(derived.heldOpenBuyCostBasis - 4000) < 0.01);
   });
 });
+
+describe('late fill of a rolled-up source TP (issue #607)', () => {
+  it('does not close tranches the surviving target body now carries', async () => {
+    const sells = {};
+    const eng = makeEngine({
+      getOrder: async () => ({ filledSize: 0, status: 'OPEN' }),
+      getOpenOrders: async () => [],
+      getOrderFills: async (orderId) => sells[orderId] || [],
+    }, {
+      // Both cancels report clean — the source TP fills anyway afterwards.
+      cancelBodyTpOrder: async () => ({ cancelled: true, filled: false, filledSize: 0 }),
+    });
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-src', 'buy-src-t1', 0.01, 50000));
+    ledger.ingestFill(rawFill('buy', 'buy-tgt', 'buy-tgt-t1', 0.02, 51000));
+    const source = makeBody('src', 'buy-src', 0.01, 50000, 'tp-src');
+    source.assetOnOrder = 0.0099;
+    const target = makeBody('tgt', 'buy-tgt', 0.02, 51000, 'tp-tgt');
+    const pos = eng._getPositionState();
+    pos.celestialBodies = [source, target];
+
+    const result = await eng.manualMergeBody('src', { targetId: 'tgt' });
+    assert.equal(result.success, true, `roll-up completes: ${result.message}`);
+    assert.deepEqual(pos.celestialBodies.map(b => b.id), ['tgt']);
+
+    // The "cancelled" source TP turns out to have filled 0.004.
+    sells['tp-src'] = [rawFill('sell', 'tp-src', 'tp-src-t1', 0.004, 52000)];
+    await eng._test.handleOrderFill(sellFill('tp-src', 0.004, 52000));
+
+    assert.deepEqual(ledger.getBuyOrderConsumption('buy-src').consumedBy, { 'tp-src': 0.004 },
+      'only the sold qty is consumed — the target still carries the rest');
+    const derived = ledger.getDerivedRealizedPnL();
+    const bodyCost = pos.celestialBodies.reduce((sum, b) => sum + b.costBasis, 0);
+    assert.ok(derived.heldOpenBuyCostBasis >= bodyCost - 0.01 - 0.004 * 50000,
+      `held cost ${derived.heldOpenBuyCostBasis} must not drop the whole source (bodies ${bodyCost})`);
+    assert.ok(Math.abs(derived.heldOpenAssetQty - (0.03 - 0.004)) < EPS, `held qty ${derived.heldOpenAssetQty}`);
+  });
+});

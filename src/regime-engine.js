@@ -3240,9 +3240,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // held cost keeps matching the bodies. On a complete fill that body
         // still holds the holdback it also books as reserves — a model double
         // count tracked in issue #718, which the ledger coverage reading then
-        // shows instead of hiding. With no live body the snapshot body closed:
-        // sold + booked holdback, every tranche in full (issue #607).
-        const snapshotClosed = !liveMerged;
+        // shows instead of hiding. Only when no live body holds its tranches
+        // did the snapshot body close: sold + booked holdback, every tranche in
+        // full (issue #607).
+        // A roll-up moves the snapshot's tranche objects into the surviving
+        // target, so "the snapshot body's id is gone" does not mean its asset
+        // left the model: a late fill of the source's old TP (the
+        // completedMergeTpOrders window) must not close tranches a live body
+        // still carries.
+        const snapshotTranches = new Set(mergeSnapshot.buyOrders || []);
+        const heldElsewhere = (positionState.celestialBodies || [])
+          .some(b => (b.buyOrders || []).some(e => snapshotTranches.has(e)));
+        const snapshotClosed = !liveMerged && !heldElsewhere;
         recordBodyConsumption({
           entries: mergeSnapshot.buyOrders,
           bodyQty: mergeSnapshot.assetQty,
