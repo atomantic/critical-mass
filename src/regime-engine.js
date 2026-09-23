@@ -2842,11 +2842,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         throw new Error(`Partial TP ${fillData.orderId} cancellation unresolved; retry reconciliation`);
       }
       // The sell may have advanced or fully filled while cancellation was in flight.
+      const knownFilledSize = fillData.filledSize || 0;
       fillData = buildPartialFillData(fillData.orderId, 'sell', cancellation.order, {
         isPartialFill: !isFilledStatus(cancellation.order),
         totalFees: cancellation.order.totalFees,
         source: fillData.source,
       });
+      // Some exchanges omit cumulative filledSize on a CANCELLED status (the
+      // executor then reports its polled high-water mark instead). Filled size
+      // only grows, so never let the frozen status undercut a size the caller
+      // already knew — the trade-level fill check below still has to match it.
+      if (!(fillData.filledSize >= knownFilledSize)) fillData.filledSize = knownFilledSize;
       // Require the final fill set before accounting; never synthesize a stale
       // partial from the pre-cancel poll while the fills endpoint catches up.
       const finalFills = await adapter.getOrderFills(fillData.orderId);

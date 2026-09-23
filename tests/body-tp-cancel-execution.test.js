@@ -341,4 +341,19 @@ describe('#670 TP cancel-for-replace books executions during cancel', () => {
     assert.ok(Math.abs(sell.bodyHoldbackAsset - 0.005) < 1e-9, `holdback booked as reserves, got ${sell.bodyHoldbackAsset}`);
     assert.equal(sell.partialFill, undefined, 'not annotated as a partial fill');
   });
+  it('books the sale when the exchange omits filledSize from the CANCELLED status', async () => {
+    // cancelBodyTpOrder knows 0.004 sold (its polled high-water mark), but the
+    // exchange's CANCELLED status carries no cumulative size.
+    const { eng, placed } = makeEngine({
+      cancelResult: EXECUTION,
+      adapter: { getOrder: async () => ({ status: 'CANCELLED' }) },
+      pair: '__test670nosize__',
+    });
+    seedBuy(eng);
+
+    const result = await eng.setBodyTpPercent('b1', 2);
+
+    assert.match(result.message, /sold during cancel — sale booked/);
+    assertBookedAndResized(eng, placed, 'tp-old', '__test670nosize__');
+  });
 });
