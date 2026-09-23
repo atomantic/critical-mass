@@ -495,7 +495,7 @@ const buyFill = (orderId, size = '0.01') => [{
  * fill. The merge-snapshot branch deducts it and cancels the live body's
  * now-oversized tp-new-1 — the cancel under test.
  */
-const runMergeSnapshotStaleCancel = async ({ pair, staleCancel, adapter = {} }) => {
+const runMergeSnapshotStaleCancel = async ({ pair, staleCancel, adapter = {}, executor = {} }) => {
   let cancelCalls = 0;
   const { eng, placed } = makeEngine({
     pair,
@@ -515,6 +515,7 @@ const runMergeSnapshotStaleCancel = async ({ pair, staleCancel, adapter = {} }) 
       cancelBodyTpOrder: async () => (++cancelCalls === 1 ? { cancelled: true, filled: false, filledSize: 0 } : staleCancel),
       // Force findMergeTarget to pick the single existing body.
       getPendingCounts: () => ({ total: 1_000_000 }),
+      ...executor,
     },
   });
   seedBuy(eng);
@@ -553,6 +554,27 @@ describe('#744 merge-snapshot stale-TP cancel books an execution during the canc
 
     assert.equal(placedAfter.length, 1, 'exactly one replacement TP — the booking path re-armed it, the snapshot branch did not add another');
     assert.ok(placedAfter[0][0] <= 0.014 + 1e-12, `replacement TP ${placedAfter[0][0]} must not exceed the 0.014 the body still holds`);
+  });
+
+  it('closes the live body when the oversized stale TP sold more than the body still holds', async () => {
+    // tp-new-1 was sized for the pre-deduction 0.02 body; after the 0.002
+    // snapshot tranche the body holds 0.018, and the stale TP sold 0.019 of
+    // its larger order before the cancel landed.
+    const pair = '__test744snapover__';
+    const staleCancel = { cancelled: true, filled: false, filledSize: 0.019, filledValue: 959.5, averageFilledPrice: 50500, totalFees: 0.1 };
+    const { eng, placedAfter } = await runMergeSnapshotStaleCancel({
+      pair,
+      staleCancel,
+      executor: { cancelAllLadderOrders: async () => {}, cancelAllEntries: async () => {} },
+    });
+
+    const bodies = eng._getPositionState().celestialBodies;
+    assert.equal(bodies.find(b => b.id === 'b1'), undefined, 'the body is closed, not left with a negative quantity');
+    for (const b of bodies) assert.ok(b.assetQty >= 0, `no negative body, got ${b.assetQty}`);
+    assert.equal(placedAfter.length, 0, 'nothing is re-listed for a closed body');
+    const staleSell = readSellRow('tp-new-1', pair);
+    assert.ok(staleSell && Number.isFinite(staleSell.bodyPnl), 'the sale was booked');
+    assert.equal(staleSell.partialFill, undefined, 'booked as the body-closing sale, not a partial');
   });
 
   it('keeps the stale TP identity and a retry marker when booking the execution fails', async () => {

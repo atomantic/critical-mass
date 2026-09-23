@@ -3998,6 +3998,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 `⚠️ [${exchange}] Merge-snapshot: body ${liveMerged.id.slice(-8)} TP ${staleTp.slice(0, 8)} sold ${cancelResult.filledSize} ${baseCurrency} during its stale-size cancel — booking before re-place (#744)`,
                 { bodyId: liveMerged.id, orderId: staleTp, filledSize: cancelResult.filledSize }
               );
+              // The stale TP was sized for the PRE-deduction body, so its
+              // assetOnOrder can exceed what the live body still holds. Cap it
+              // at the body before booking: the sell handler classifies
+              // full-vs-partial against assetOnOrder, and a sale covering the
+              // whole remaining body must close it — as a partial it would
+              // drive assetQty negative.
+              if (liveMerged.assetOnOrder > liveMerged.assetQty) liveMerged.assetOnOrder = liveMerged.assetQty;
               await bookTpCancelExecution(liveMerged, staleTp, cancelResult, 'Merge-snapshot stale-size', { nested: true });
             } else if (cancelResult) {
               logger.error(
