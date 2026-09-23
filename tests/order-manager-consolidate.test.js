@@ -1,8 +1,13 @@
 // @ts-check
-const { describe, it } = require('node:test');
+const { describe, it, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const { consolidatePendingOrders } = require('../src/order-manager');
+const migration = require('../src/migration');
+const stateTracker = require('../src/state-tracker');
 
 const baseConfig = () => ({ productId: 'BTC-USD' });
 
@@ -473,5 +478,75 @@ describe('consolidatePendingOrders — placement-throw recovery (issue #676)', (
     assert.deepEqual(result.cancelledOrderIds, ['a', 'b']);
     assert.deepEqual(result.restoredOrders, []);
     assert.deepEqual(result.failedRestoreOrderIds, ['a', 'b']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #676 review follow-up — a fund that already has an unresolved placement
+// intent (from an earlier ambiguous DCA buy, Fibonacci sell, etc.) must refuse
+// consolidation BEFORE cancelling anything. Checking the guard only inside the
+// consolidated placeWithUnknownReconcile call (i.e. after
+// cancelOrdersForConsolidation already ran) cancels every healthy sell first,
+// then refuses the consolidated placement for a reason that has nothing to do
+// with those sells, and recovery wrongly marks them sell_failed/naked.
+// ---------------------------------------------------------------------------
+describe('consolidatePendingOrders — refuses to cancel while a placement intent is already blocking (issue #676 follow-up)', () => {
+  const EXCHANGE = 'coinbase';
+  const PAIR = 'BTC-USD';
+  let tmpRoot;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'consolidate-blocking-intent-'));
+    mock.method(migration, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
+  });
+
+  afterEach(() => {
+    mock.restoreAll();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('refuses without cancelling any order when the fund already has a blocking intent', async () => {
+    const recorded = stateTracker.recordPlacementIntent({
+      exchange: EXCHANGE, pair: PAIR, action: 'dca_buy', side: 'buy', price: 100, size: 0.5, sizeUsdc: 50,
+    });
+    // A freshly recorded intent is only "dispatching" and owned by THIS process,
+    // which is deliberately non-blocking (a placement this same process has in
+    // flight right now) — mark it unresolved to model the real blocking case: an
+    // earlier ambiguous placement no one has reconciled yet.
+    const blocking = stateTracker.markPlacementIntentUnresolved(EXCHANGE, PAIR, recorded.id, { reason: 'ambiguous outcome' });
+
+    const orders = [order('a', 0.1, 2400), order('b', 0.2, 2500)];
+    let cancelCalls = 0;
+    let placeCalls = 0;
+    const adapter = {
+      // The up-front partial-fill check (read-only) is harmless and still runs —
+      // the guard must be checked before any MUTATING call (cancel/place).
+      getOrder: async () => ({ completionPercentage: 0 }),
+      cancelOrder: async () => { cancelCalls += 1; return { success: true }; },
+      placeLimitSell: async () => { placeCalls += 1; return { success: true, orderId: 'should-not-place' }; },
+    };
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter, { exchange: EXCHANGE, pair: PAIR });
+
+    assert.equal(cancelCalls, 0, 'must not cancel any resting sell while a blocking intent exists');
+    assert.equal(placeCalls, 0, 'must not place anything while a blocking intent exists');
+    assert.equal(result.success, false);
+    assert.equal(result.pending, true);
+    assert.match(result.error, new RegExp(blocking.id));
+    assert.equal(result.cancelledOrderIds, undefined, 'nothing was cancelled');
+  });
+
+  it('proceeds normally once no blocking intent exists (no scope regression)', async () => {
+    const orders = [order('a', 0.1, 2400), order('b', 0.2, 2500)];
+    const adapter = {
+      getOrder: async () => ({ completionPercentage: 0 }),
+      cancelOrder: async () => ({ success: true }),
+      placeLimitSell: async () => ({ success: true, orderId: 'consolidated-1' }),
+    };
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter, { exchange: EXCHANGE, pair: PAIR });
+
+    assert.equal(result.success, true);
+    assert.equal(result.newOrderId, 'consolidated-1');
   });
 });

@@ -760,6 +760,33 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter, scope = 
 
   const baseCurrency = getBaseCurrency(config.productId);
 
+  // Refuse to cancel anything while this fund already has an unresolved
+  // placement intent from an earlier ambiguous placement (#676 review
+  // follow-up). Without this check, cancelOrdersForConsolidation below would
+  // still cancel every one of these healthy sells, only for
+  // placeWithUnknownReconcile's own guard to immediately refuse the
+  // consolidated placement for a reason unrelated to it — leaving those
+  // just-cancelled, perfectly healthy orders marked failed-to-restore. Checked
+  // here, before anything is cancelled, so a blocked fund's resting sells are
+  // left exactly as they are until an operator reconciles the earlier intent.
+  if (scope?.exchange) {
+    const blocking = getBlockingPlacementIntents(scope.exchange, scope.pair);
+    if (blocking.length > 0) {
+      const [oldest] = blocking;
+      logger.error(`🚫 Consolidation refused — ${blocking.length} unresolved placement intent(s) on this fund; oldest is ${oldest.action ?? 'order'} ${oldest.id}`, {
+        blockedByIntentId: oldest.id,
+        blockedByAction: oldest.action ?? null,
+        pendingIntents: blocking.length,
+      });
+      return {
+        success: false,
+        pending: true,
+        error: `Consolidation refused: unresolved placement intent ${oldest.id} (${oldest.action ?? 'order'}) must be reconciled by an operator before this fund places another order`,
+        skippedOrderIds,
+      };
+    }
+  }
+
   const cancellation = await cancelOrdersForConsolidation(eligibleOrders, skippedOrderIds, adapter, logger);
   if (cancellation.failure) return cancellation.failure;
   const { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds } = cancellation;

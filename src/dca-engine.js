@@ -193,7 +193,15 @@ const executeConsolidation = async (exchange = 'coinbase', pair, orderIds = null
     // tracked state at the new IDs and flag any sell that couldn't be re-placed,
     // then persist so the engine doesn't keep tracking the cancelled orders.
     if (result.restoredOrders?.length || result.failedRestoreOrderIds?.length) {
-      stateTracker.applyConsolidationRecovery(state, result.restoredOrders, result.failedRestoreOrderIds);
+      // A `pending` result never attempted a restore at all (the consolidated
+      // order's outcome is unknown and it may already be live — restoring would
+      // risk a double-sell), so the generic "could not be re-placed" reason
+      // would be actively misleading to an operator deciding what to do next
+      // (#676 review follow-up).
+      const failReason = result.pending
+        ? 'consolidated placement outcome unknown — not re-placed because the consolidated order may already be live; awaiting operator reconciliation'
+        : undefined;
+      stateTracker.applyConsolidationRecovery(state, result.restoredOrders, result.failedRestoreOrderIds, failReason);
       stateTracker.saveState(state, exchange, pair);
       if (result.failedRestoreOrderIds?.length) {
         cycleLogger.error(`❌ [${exchange}] ${result.failedRestoreOrderIds.length} sell(s) left naked after failed consolidation — operator action needed: ${result.failedRestoreOrderIds.join(', ')}`, {
