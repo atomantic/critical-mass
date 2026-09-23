@@ -28,6 +28,16 @@ const regimeActionModalsSource = fs.readFileSync(
   'utf8',
 )
 
+const regimeDashboardSource = fs.readFileSync(
+  path.join(__dirname, '..', 'admin', 'src', 'components', 'RegimeDashboard.jsx'),
+  'utf8',
+)
+
+const backupRestoreSource = fs.readFileSync(
+  path.join(__dirname, '..', 'admin', 'src', 'components', 'BackupRestore.jsx'),
+  'utf8',
+)
+
 describe('ModalDialog shared wrapper (issue #434)', () => {
   it('is a native <dialog> that opens modally and restores invoker focus on close', () => {
     assert.match(modalDialogSource, /<dialog[\s\S]*ref={dialogRef}/)
@@ -99,8 +109,21 @@ describe('App.jsx fund lifecycle dialogs use ModalDialog (issue #434)', () => {
     )
   })
 
-  it('renders exactly two ModalDialog usages in App.jsx', () => {
-    assert.equal(dialogUsages(appSource).length, 2)
+  it('renders Reset Dry-Run as a labelled, pending-aware ModalDialog with Cancel focused first', () => {
+    assert.match(
+      appSource,
+      /resetDryRunConfirm && \(\s*<ModalDialog\s+onClose={\(\) => setResetDryRunConfirm\(false\)}\s+dismissible={!resetting}\s+labelledBy="reset-dry-run-title"\s+describedBy="reset-dry-run-description"/,
+    )
+    assert.match(appSource, /<h3 id="reset-dry-run-title"/)
+    assert.match(appSource, /<p id="reset-dry-run-description"/)
+    assert.match(
+      appSource,
+      /onClick={\(\) => setResetDryRunConfirm\(false\)}\s+disabled={resetting}\s+autoFocus/,
+    )
+  })
+
+  it('renders exactly three ModalDialog usages in App.jsx', () => {
+    assert.equal(dialogUsages(appSource).length, 3)
   })
 })
 
@@ -114,11 +137,12 @@ describe('RegimeActionModals.jsx body/regime dialogs use ModalDialog (issue #434
     assert.doesNotMatch(regimeActionModalsSource, /fixed inset-0/)
   })
 
-  it('renders exactly seven ModalDialog usages', () => {
-    assert.equal(dialogUsages(regimeActionModalsSource).length, 7)
+  it('renders exactly eight ModalDialog usages', () => {
+    assert.equal(dialogUsages(regimeActionModalsSource).length, 8)
   })
 
   const confirmations = [
+    { name: 'Cancel Ladder', titleId: 'cancel-ladder-title', descId: 'cancel-ladder-description', dismissible: '!cancellingLadder', cancelDisabled: 'cancellingLadder' },
     { name: 'Collapse All', titleId: 'collapse-all-title', descId: 'collapse-all-description', dismissible: '!collapsingAll', cancelDisabled: 'collapsingAll' },
     { name: 'Reset Cycle', titleId: 'reset-cycle-title', descId: 'reset-cycle-description', dismissible: '!resettingCycle', cancelDisabled: 'resettingCycle' },
     { name: 'Roll Up', titleId: 'roll-up-title', descId: 'roll-up-description', dismissible: '!rollingUp', cancelDisabled: 'rollingUp' },
@@ -157,5 +181,121 @@ describe('RegimeActionModals.jsx body/regime dialogs use ModalDialog (issue #434
     // Both mode inputs carry autoFocus (only one is ever mounted at a time,
     // per the pct/price mode branch), while Cancel in this dialog does not.
     assert.equal((regimeActionModalsSource.match(/onKeyDown={\(e\) => e\.key === 'Enter' && onExecuteSetTp\('(pct|price)'\)}\s*\n\s*autoFocus/g) || []).length, 2)
+  })
+})
+
+describe('No window.confirm in admin/src (issue #699)', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+
+  it('admin/src contains no window.confirm calls', () => {
+    const adminSrcDir = path.join(__dirname, '..', 'admin', 'src')
+    const getAllJsxFiles = (dir) => {
+      let files = []
+      const entries = fs.readdirSync(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          files = files.concat(getAllJsxFiles(fullPath))
+        } else if (entry.isFile() && (entry.name.endsWith('.jsx') || entry.name.endsWith('.js'))) {
+          files.push(fullPath)
+        }
+      }
+      return files
+    }
+
+    const jsxFiles = getAllJsxFiles(adminSrcDir)
+    for (const file of jsxFiles) {
+      const content = fs.readFileSync(file, 'utf8')
+      assert.doesNotMatch(
+        content,
+        /window\.confirm\s*\(/,
+        `Found window.confirm in ${path.relative(adminSrcDir, file)} — use ModalDialog confirmation dialogs instead (issue #699)`,
+      )
+    }
+  })
+})
+
+// Issue #699: Cancel Ladder, Backup Delete, Reset dry-run and the fund-state
+// restore all fire an irreversible/destructive request. Each one is split
+// into an "open" handler (sets confirm state, wired to the visible button)
+// and an "execute" handler (does the fetch, wired only inside the resulting
+// ModalDialog). These tests assert that split holds: the execute handler's
+// identifier appears in its source file only at its own definition plus its
+// dialog-confirm-button usage(s) — never at the originating button — and that
+// the originating button calls the open handler, not the executor.
+describe('Destructive executors are reachable only from a dialog confirm action (issue #699)', () => {
+  const countOccurrences = (source, identifier) =>
+    (source.match(new RegExp(`\\b${identifier}\\b`, 'g')) || []).length
+
+  it('handleExecuteResetDryRun (App.jsx) is defined once and invoked only as the Reset Dry-Run dialog confirm action', () => {
+    assert.equal(countOccurrences(appSource, 'handleExecuteResetDryRun'), 2)
+    assert.match(
+      appSource,
+      /resetDryRunConfirm && \([\s\S]*?onClick={handleExecuteResetDryRun}[\s\S]*?<\/ModalDialog>/,
+    )
+  })
+
+  it('the Reset button in App.jsx only opens the confirm dialog (calls handleResetDryRun, not the executor)', () => {
+    assert.match(appSource, /onClick={handleResetDryRun}/)
+    assert.doesNotMatch(appSource, /onClick={handleResetDryRun}[\s\S]{0,400}handleExecuteResetDryRun\(\)/)
+  })
+
+  it("handleExecuteCancelLadder (RegimeDashboard.jsx) is defined once and passed only to the Cancel Ladder dialog's confirm prop", () => {
+    assert.equal(countOccurrences(regimeDashboardSource, 'handleExecuteCancelLadder'), 2)
+    assert.match(regimeDashboardSource, /onExecuteCancelLadder={handleExecuteCancelLadder}/)
+  })
+
+  it('RegimeActionModals.jsx invokes onExecuteCancelLadder only as the Cancel Ladder dialog confirm action', () => {
+    assert.equal(countOccurrences(regimeActionModalsSource, 'onExecuteCancelLadder'), 2)
+    assert.match(
+      regimeActionModalsSource,
+      /cancelLadderConfirm && \([\s\S]*?onClick={onExecuteCancelLadder}[\s\S]*?<\/ModalDialog>/,
+    )
+  })
+
+  it('the Cancel Ladder button in RegimeDashboard.jsx only opens the confirm dialog (calls handleCancelLadder, not the executor)', () => {
+    assert.match(regimeDashboardSource, /onClick={handleCancelLadder}/)
+    assert.doesNotMatch(regimeDashboardSource, /onClick={handleCancelLadder}[\s\S]{0,400}handleExecuteCancelLadder\(\)/)
+  })
+
+  it('handleExecuteDelete (BackupRestore.jsx) is defined once and invoked only as the Delete Backup dialog confirm action', () => {
+    assert.equal(countOccurrences(backupRestoreSource, 'handleExecuteDelete'), 2)
+    assert.match(
+      backupRestoreSource,
+      /deleteConfirm && \([\s\S]*?onClick={handleExecuteDelete}[\s\S]*?<\/ModalDialog>/,
+    )
+  })
+
+  it('the Delete button in BackupRestore.jsx only opens the confirm dialog (calls handleDelete, not the executor)', () => {
+    assert.match(backupRestoreSource, /onClick={\(\) => handleDelete\(backup\.filename\)}/)
+    assert.doesNotMatch(backupRestoreSource, /onClick={\(\) => handleDelete\(backup\.filename\)}[\s\S]{0,400}handleExecuteDelete\(\)/)
+  })
+
+  it("handleExecuteFundStateRestore (BackupRestore.jsx) is defined once and invoked only from the fund-state restore dialog's Restore/Retry and Force buttons", () => {
+    assert.equal(countOccurrences(backupRestoreSource, 'handleExecuteFundStateRestore'), 3)
+    assert.match(
+      backupRestoreSource,
+      /fundStateRestoreConfirm && \([\s\S]*?onClick={\(\) => handleExecuteFundStateRestore\(\)}[\s\S]*?onClick={\(\) => handleExecuteFundStateRestore\({ force: true }\)}[\s\S]*?<\/ModalDialog>/,
+    )
+  })
+
+  it('the Restore Fund State button in BackupRestore.jsx only opens the confirm dialog (calls handleRestoreFundState, not the executor)', () => {
+    assert.match(
+      backupRestoreSource,
+      /onClick={\(\) => handleRestoreFundState\(snapshot\.snapshotId, fund\.exchange, fund\.pair\)}/,
+    )
+    assert.doesNotMatch(
+      backupRestoreSource,
+      /onClick={\(\) => handleRestoreFundState\(snapshot\.snapshotId, fund\.exchange, fund\.pair\)}[\s\S]{0,400}handleExecuteFundStateRestore\(/,
+    )
+  })
+
+  it("BackupRestore.jsx's fund-state restore handles the 409 writers-not-quiesced response with the same blockedBy/Retry/Force UI as the full restore", () => {
+    assert.match(backupRestoreSource, /res\.status === 409 && data\.code === 'writers-not-quiesced'/)
+    assert.match(backupRestoreSource, /setFundStateBlockedBy\(blocked\)/)
+    assert.match(backupRestoreSource, /fundStateBlockedBy \? 'Retry Restore' : 'Restore Fund State'/)
+    assert.match(backupRestoreSource, /Force Restore Anyway/)
+    assert.match(backupRestoreSource, /body: JSON\.stringify\({ force }\)/)
   })
 })

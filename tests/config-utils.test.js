@@ -15,7 +15,6 @@ const {
   DEFAULT_AGGRESSIVENESS_PRESETS,
   isMultiExchangeConfig,
   normalizeToMultiExchange,
-  validateExchangeConfig,
   validateRegimeConfig,
   loadRawConfig,
   loadConfig,
@@ -28,15 +27,20 @@ const {
   getNotificationConfig,
   getAggressivenessPresets,
   getBackupConfig,
+  getSentinelConfig,
+  SENTINEL_DEFAULTS,
   updateExchangeConfig,
   addFund,
   updateGlobalConfig,
   updateRegimeConfig,
+  updateExchangeRegimeConfig,
   updateNotificationConfig,
   updateAggressivenessPresets,
   updateBackupConfig,
   setExchangeEnabled,
   setExchangeDryRun,
+  setFundEnabled,
+  setFundDryRun,
   getFundConfig,
   maskSecret,
   isMaskedSecret,
@@ -242,113 +246,6 @@ describe('GLOBAL_DEFAULTS', () => {
 
   it('has simpleDcaEnabled defaulting to false', () => {
     assert.equal(GLOBAL_DEFAULTS.simpleDcaEnabled, false);
-  });
-});
-
-// ============================================================================
-// validateExchangeConfig
-// ============================================================================
-
-describe('validateExchangeConfig', () => {
-  it('validates a complete valid config', () => {
-    const result = validateExchangeConfig({ ...DEFAULTS });
-    assert.equal(result.valid, true);
-    assert.equal(result.errors.length, 0);
-  });
-
-  it('reports missing productId', () => {
-    const cfg = { ...DEFAULTS, productId: '' };
-    const result = validateExchangeConfig(cfg);
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some(e => e.includes('productId')));
-  });
-
-  it('reports non-positive totalAllocation', () => {
-    const result = validateExchangeConfig({ ...DEFAULTS, totalAllocation: 0 });
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some(e => e.includes('totalAllocation')));
-  });
-
-  it('reports negative totalAllocation', () => {
-    const result = validateExchangeConfig({ ...DEFAULTS, totalAllocation: -100 });
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some(e => e.includes('totalAllocation')));
-  });
-
-  it('reports non-positive intervalsToSpread', () => {
-    const result = validateExchangeConfig({ ...DEFAULTS, intervalsToSpread: 0 });
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some(e => e.includes('intervalsToSpread')));
-  });
-
-  it('reports negative sellMarkupPercent', () => {
-    const result = validateExchangeConfig({ ...DEFAULTS, sellMarkupPercent: -1 });
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some(e => e.includes('sellMarkupPercent')));
-  });
-
-  it('accepts zero sellMarkupPercent', () => {
-    const result = validateExchangeConfig({ ...DEFAULTS, sellMarkupPercent: 0 });
-    assert.equal(result.valid, true);
-  });
-
-  it('reports holdbackPercent outside 0-100 range', () => {
-    const over = validateExchangeConfig({ ...DEFAULTS, holdbackPercent: 101 });
-    assert.equal(over.valid, false);
-    assert.ok(over.errors.some(e => e.includes('holdbackPercent')));
-
-    const under = validateExchangeConfig({ ...DEFAULTS, holdbackPercent: -1 });
-    assert.equal(under.valid, false);
-  });
-
-  it('reports non-positive minOrderSize', () => {
-    const result = validateExchangeConfig({ ...DEFAULTS, minOrderSize: 0 });
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some(e => e.includes('minOrderSize')));
-  });
-
-  it('reports non-positive maxBuyPrice', () => {
-    const result = validateExchangeConfig({ ...DEFAULTS, maxBuyPrice: -1 });
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some(e => e.includes('maxBuyPrice')));
-  });
-
-  it('reports invalid dcaStrategy value', () => {
-    const result = validateExchangeConfig({ ...DEFAULTS, dcaStrategy: 'martingale' });
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some(e => e.includes('dcaStrategy')));
-  });
-
-  it('accepts valid dcaStrategy values', () => {
-    assert.equal(validateExchangeConfig({ ...DEFAULTS, dcaStrategy: 'fixed' }).valid, true);
-    assert.equal(validateExchangeConfig({ ...DEFAULTS, dcaStrategy: 'fibonacci' }).valid, true);
-  });
-
-  it('reports non-positive fibBaseAmount when fibonacci strategy', () => {
-    const result = validateExchangeConfig({ ...DEFAULTS, dcaStrategy: 'fibonacci', fibBaseAmount: 0 });
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some(e => e.includes('fibBaseAmount')));
-  });
-
-  it('allows missing fibBaseAmount when fixed strategy', () => {
-    const cfg = { ...DEFAULTS, dcaStrategy: 'fixed', fibBaseAmount: 0 };
-    const result = validateExchangeConfig(cfg);
-    // fibBaseAmount validation only triggers for fibonacci strategy
-    assert.equal(result.valid, true);
-  });
-
-  it('collects multiple errors at once', () => {
-    const result = validateExchangeConfig({
-      productId: '',
-      totalAllocation: -1,
-      intervalsToSpread: 0,
-      sellMarkupPercent: -1,
-      holdbackPercent: 200,
-      minOrderSize: 0,
-      maxBuyPrice: 0,
-    });
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.length >= 5);
   });
 });
 
@@ -1011,6 +908,66 @@ describe('setExchangeDryRun', () => {
 });
 
 // ============================================================================
+// setFundEnabled / setFundDryRun (issue #689 explicit-pair siblings)
+// ============================================================================
+
+describe('setFundEnabled', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('enables a specific fund without touching the exchange default', () => {
+    const baseConfig = {
+      exchanges: {
+        coinbase: {
+          pairs: {
+            'BTC-USDC': { productId: 'BTC-USDC', enabled: false },
+            'ETH-USDC': { productId: 'ETH-USDC', enabled: false },
+          },
+        },
+      },
+      global: {},
+    };
+    setupFsMocks({ base: baseConfig, user: null });
+    const result = setFundEnabled('coinbase', 'ETH-USDC', true);
+    assert.equal(result.exchanges.coinbase.pairs['ETH-USDC'].enabled, true);
+    assert.equal(result.exchanges.coinbase.pairs['BTC-USDC'].enabled, false);
+  });
+
+  it('throws a TypeError when pair is not a non-empty string', () => {
+    setupFsMocks({ base: { exchanges: { coinbase: {} }, global: {} }, user: null });
+    assert.throws(() => setFundEnabled('coinbase', undefined, true), TypeError);
+    assert.throws(() => setFundEnabled('coinbase', '', true), TypeError);
+  });
+});
+
+describe('setFundDryRun', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('sets dry-run mode for a specific fund without touching the exchange default', () => {
+    const baseConfig = {
+      exchanges: {
+        coinbase: {
+          pairs: {
+            'BTC-USDC': { productId: 'BTC-USDC', dryRun: true },
+            'ETH-USDC': { productId: 'ETH-USDC', dryRun: true },
+          },
+        },
+      },
+      global: {},
+    };
+    setupFsMocks({ base: baseConfig, user: null });
+    const result = setFundDryRun('coinbase', 'ETH-USDC', false);
+    assert.equal(result.exchanges.coinbase.pairs['ETH-USDC'].dryRun, false);
+    assert.equal(result.exchanges.coinbase.pairs['BTC-USDC'].dryRun, true);
+  });
+
+  it('throws a TypeError when pair is not a non-empty string', () => {
+    setupFsMocks({ base: { exchanges: { coinbase: {} }, global: {} }, user: null });
+    assert.throws(() => setFundDryRun('coinbase', undefined, false), TypeError);
+    assert.throws(() => setFundDryRun('coinbase', '', false), TypeError);
+  });
+});
+
+// ============================================================================
 // updateGlobalConfig
 // ============================================================================
 
@@ -1116,28 +1073,48 @@ describe('getRegimeConfig', () => {
 describe('updateRegimeConfig', () => {
   afterEach(() => mock.restoreAll());
 
-  it('updates regime config for existing exchange', () => {
+  it('updates regime config for existing exchange (default-fund alias)', () => {
     const baseConfig = {
       exchanges: { coinbase: { regime: { enabled: false } } },
       global: {},
     };
     const mocks = setupFsMocks({ base: baseConfig, user: null });
-    const result = updateRegimeConfig('coinbase', { enabled: true, baseSizeUsdc: 200 });
+    const result = updateExchangeRegimeConfig('coinbase', { enabled: true, baseSizeUsdc: 200 });
     assert.equal(result.exchanges.coinbase.regime.enabled, true);
     assert.equal(result.exchanges.coinbase.regime.baseSizeUsdc, 200);
     assert.ok(mocks.written() !== null);
   });
 
-  it('creates exchange with DEFAULTS and sets regime for new exchange', () => {
+  it('creates exchange with DEFAULTS and sets regime for new exchange (default-fund alias)', () => {
     const baseConfig = {
       exchanges: { coinbase: { enabled: true } },
       global: {},
     };
     setupFsMocks({ base: baseConfig, user: null });
-    const result = updateRegimeConfig('kraken', { enabled: true });
+    const result = updateExchangeRegimeConfig('kraken', { enabled: true });
     assert.ok(result.exchanges.kraken);
     assert.equal(result.exchanges.kraken.regime.enabled, true);
     assert.equal(result.exchanges.kraken.dryRun, DEFAULTS.dryRun);
+  });
+
+  // Issue #689: the old typeof-dispatched overload let an unresolved `pair`
+  // (e.g. undefined) silently fall through to the legacy 2-arg
+  // interpretation, reading `updates` from the wrong argument and dropping
+  // it on the floor. The explicit 3-arg signature throws instead.
+  it('throws a TypeError when pair is not a non-empty string', () => {
+    const baseConfig = {
+      exchanges: { coinbase: { regime: { enabled: false } } },
+      global: {},
+    };
+    setupFsMocks({ base: baseConfig, user: null });
+    assert.throws(
+      () => updateRegimeConfig('coinbase', undefined, { kFactor: 2 }),
+      TypeError,
+    );
+    assert.throws(
+      () => updateRegimeConfig('coinbase', '', { kFactor: 2 }),
+      TypeError,
+    );
   });
 
   // Issue #416: a failed disk write must not leave the in-process config
@@ -1161,7 +1138,7 @@ describe('updateRegimeConfig', () => {
     });
 
     assert.throws(
-      () => updateRegimeConfig('coinbase', { baseSizeUsdc: 999 }),
+      () => updateExchangeRegimeConfig('coinbase', { baseSizeUsdc: 999 }),
       /ENOSPC/,
     );
 
@@ -1437,6 +1414,65 @@ describe('updateBackupConfig', () => {
   });
 });
 
+// Issue #687: PUT /api/sentinel/config never value-checked pollIntervalMs
+// or maxAlerts, so a hand-edited or pre-fix on-disk value could turn the
+// poll timer into a ~1ms loop (same defect getBackupConfig already guards
+// against for the backup timers) or hand `alerts.slice(-maxAlerts)` a value
+// that keeps the wrong tail.
+describe('getSentinelConfig', () => {
+  afterEach(() => mock.restoreAll());
+
+  for (const unsafe of [0, -1, 59999, 86400001, null, '300000']) {
+    it(`uses the safe default for a hand-edited pollIntervalMs: ${JSON.stringify(unsafe)}`, () => {
+      setupFsMocks({
+        base: { exchanges: {}, global: { sentinel: { pollIntervalMs: unsafe } } },
+        user: null,
+      });
+      const result = getSentinelConfig();
+      assert.equal(result.pollIntervalMs, SENTINEL_DEFAULTS.pollIntervalMs);
+    });
+  }
+
+  for (const unsafe of [0, -5, 5001, 12.5, null, '200']) {
+    it(`uses the safe default for a hand-edited maxAlerts: ${JSON.stringify(unsafe)}`, () => {
+      setupFsMocks({
+        base: { exchanges: {}, global: { sentinel: { maxAlerts: unsafe } } },
+        user: null,
+      });
+      const result = getSentinelConfig();
+      assert.equal(result.maxAlerts, SENTINEL_DEFAULTS.maxAlerts);
+    });
+  }
+
+  it('preserves both supported bounds from stored config', () => {
+    setupFsMocks({
+      base: { exchanges: {}, global: { sentinel: { pollIntervalMs: 60000, maxAlerts: 5000 } } },
+      user: null,
+    });
+    const result = getSentinelConfig();
+    assert.equal(result.pollIntervalMs, 60000);
+    assert.equal(result.maxAlerts, 5000);
+  });
+
+  it('preserves the other bound too', () => {
+    setupFsMocks({
+      base: { exchanges: {}, global: { sentinel: { pollIntervalMs: 86400000, maxAlerts: 1 } } },
+      user: null,
+    });
+    const result = getSentinelConfig();
+    assert.equal(result.pollIntervalMs, 86400000);
+    assert.equal(result.maxAlerts, 1);
+  });
+
+  it('returns SENTINEL_DEFAULTS when none stored', () => {
+    setupFsMocks({ base: { exchanges: {}, global: {} }, user: null });
+    const result = getSentinelConfig();
+    assert.equal(result.enabled, SENTINEL_DEFAULTS.enabled);
+    assert.equal(result.pollIntervalMs, SENTINEL_DEFAULTS.pollIntervalMs);
+    assert.equal(result.maxAlerts, SENTINEL_DEFAULTS.maxAlerts);
+  });
+});
+
 // ============================================================================
 // Deep Merge (tested indirectly through loadRawConfig)
 // ============================================================================
@@ -1611,6 +1647,27 @@ describe('fund deletion tombstones', () => {
     configUtils.updateFundConfig('coinbase', 'BTC-USDC', { dryRun: true });
     assert.ok(!JSON.stringify(mocks.user()).includes('deletedPairs'),
       'ordinary saves must not introduce a tombstone key');
+  });
+
+  // Issue #689: updateRegimeConfig used to re-implement the write topology
+  // independently of updateFundConfig and never called clearDeletedPair, so
+  // a regime update on a tombstoned pair wrote into pairs[pair].regime while
+  // normalizeExchangeBlock kept hiding that pair on every read. Both writers
+  // now share mutateFundBlock, so they must agree here.
+  it('clears the tombstone when updateRegimeConfig targets a deleted pair (matches updateFundConfig)', () => {
+    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+    configUtils.removeFund('coinbase', 'ETH-USDC');
+    mocks.restart();
+    assert.ok(!configUtils.getFundsForExchange('coinbase').includes('ETH-USDC'));
+
+    configUtils.updateRegimeConfig('coinbase', 'ETH-USDC', { kFactor: 2 });
+    assert.deepStrictEqual(mocks.user().exchanges.coinbase.deletedPairs, [],
+      'a regime update on a re-added pair must clear the tombstone, same as updateFundConfig');
+
+    mocks.restart();
+    assert.ok(configUtils.getFundsForExchange('coinbase').includes('ETH-USDC'),
+      'the pair must be visible again after the tombstone is cleared');
+    assert.equal(configUtils.getRegimeConfig('coinbase', 'ETH-USDC').kFactor, 2);
   });
 
   it('refuses to change an existing fund\'s traded asset (#685 defence in depth)', () => {

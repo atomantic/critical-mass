@@ -61,10 +61,10 @@ staleMs = clamp( 4min × (offsetBps / ATRbps)²,  orderStaleMs,  maxIntervalMs )
 - If ATR/price are unavailable (startup), falls back to `orderStaleMs`
   (previous behavior).
 
-Both executors honor the per-order value: the live executor's `setTimeout`
-path and `refreshStaleOrders` sweep (`order.staleMs ?? effectiveStaleMs`), and
-the dry-run executor's `checkEntryFills` / `refreshStaleOrders`, so backtests
-and dry-run match live behavior.
+Both executors honor the per-order value: the live executor's
+`scheduleStaleOrderTimeout` `setTimeout` path (`order.staleMs ?? effectiveStaleMs`),
+and the dry-run executor's `checkEntryFills` (`order.staleMs ?? config.orderStaleMs`),
+so backtests and dry-run match live behavior.
 
 ## Preset changes
 

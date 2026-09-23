@@ -285,6 +285,57 @@ describe('POST /api/:exchange/consolidate fund routing (issue #546)', () => {
   });
 });
 
+describe('POST /api/:exchange/consolidate simpleDcaEnabled + orderIds validation (issue #686)', () => {
+  it('returns 400 and calls executeConsolidation zero times when simpleDcaEnabled is false', async () => {
+    seedPendingOrders(DEFAULT_PAIR, 3);
+    BASE_CONFIG.global.simpleDcaEnabled = false;
+    try {
+      const res = await invoke(app, 'POST /api/:exchange/consolidate', {
+        params: { exchange: 'coinbase' },
+        body: {},
+      });
+
+      assert.equal(res.statusCode, 400);
+      assert.equal(res.body.success, false);
+      assert.equal(res.body.error, 'Simple DCA is disabled. Use Regime engine.');
+      assert.deepEqual(engineCalls, []);
+    } finally {
+      BASE_CONFIG.global.simpleDcaEnabled = true;
+    }
+  });
+
+  it('rejects a non-array orderIds (e.g. a string) with 400 instead of substring-matching it', async () => {
+    seedPendingOrders(DEFAULT_PAIR, 3);
+
+    const res = await invoke(app, 'POST /api/:exchange/consolidate', {
+      params: { exchange: 'coinbase' },
+      body: { orderIds: 'abc' },
+    });
+
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body.success, false);
+    assert.equal(res.body.error, 'orderIds must be an array of order id strings');
+    assert.deepEqual(engineCalls, []);
+  });
+
+  it('forwards a valid orderIds array unchanged', async () => {
+    seedPendingOrders(DEFAULT_PAIR, 3);
+
+    const res = await invoke(app, 'POST /api/:exchange/consolidate', {
+      params: { exchange: 'coinbase' },
+      body: { orderIds: [`sell-${DEFAULT_PAIR}-0`, `sell-${DEFAULT_PAIR}-1`] },
+    });
+
+    assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+    assert.deepEqual(engineCalls, [{
+      fn: 'executeConsolidation',
+      exchange: 'coinbase',
+      pair: DEFAULT_PAIR,
+      orderIds: [`sell-${DEFAULT_PAIR}-0`, `sell-${DEFAULT_PAIR}-1`],
+    }]);
+  });
+});
+
 describe('POST /api/:exchange/reconcile-placement-intent fund routing (issue #546)', () => {
   it('reconciles against the named fund (intents are stored per fund)', async () => {
     const res = await invoke(app, 'POST /api/:exchange/reconcile-placement-intent', {

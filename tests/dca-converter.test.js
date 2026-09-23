@@ -135,6 +135,7 @@ describe('dca-converter fund routing (issue #414)', () => {
       getFundConfig: configUtils.getFundConfig,
       getRegimeConfig: configUtils.getRegimeConfig,
       setExchangeEnabled: configUtils.setExchangeEnabled,
+      setFundEnabled: configUtils.setFundEnabled,
       loadRawConfig: configUtils.loadRawConfig,
     };
 
@@ -146,11 +147,16 @@ describe('dca-converter fund routing (issue #414)', () => {
     configUtils.getDefaultPair = () => DEFAULT_PAIR;
     configUtils.getFundConfig = (_exchange, pair) => ({ productId: pair || DEFAULT_PAIR });
     configUtils.getRegimeConfig = () => ({ maxUsdcDeployed: 500 });
-    // Never touch the real config.json from a test.
-    configUtils.setExchangeEnabled = (exchange, enabledOrPair, maybeEnabled) => {
-      enabledCalls.push(typeof enabledOrPair === 'string'
-        ? { exchange, pair: enabledOrPair, enabled: maybeEnabled }
-        : { exchange, pair: undefined, enabled: enabledOrPair });
+    // Never touch the real config.json from a test. dca-converter's local
+    // setFundEnabled (issue #689) forwards to configUtils.setFundEnabled when
+    // it has a pair, and to the 2-arg configUtils.setExchangeEnabled alias
+    // (default fund) when it doesn't — stub both to keep tracking calls.
+    configUtils.setExchangeEnabled = (exchange, enabled) => {
+      enabledCalls.push({ exchange, pair: undefined, enabled });
+      return {};
+    };
+    configUtils.setFundEnabled = (exchange, pair, enabled) => {
+      enabledCalls.push({ exchange, pair, enabled });
       return {};
     };
     configUtils.loadRawConfig = () => ({ totalAllocation: 0 });
@@ -167,6 +173,7 @@ describe('dca-converter fund routing (issue #414)', () => {
     configUtils.getFundConfig = originals.getFundConfig;
     configUtils.getRegimeConfig = originals.getRegimeConfig;
     configUtils.setExchangeEnabled = originals.setExchangeEnabled;
+    configUtils.setFundEnabled = originals.setFundEnabled;
     configUtils.loadRawConfig = originals.loadRawConfig;
     for (const mod of [STATE_TRACKER, FILL_LEDGER, DCA_CONVERTER]) delete require.cache[mod];
     fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -5543,6 +5543,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       tpMinPercent: config.tpMinPercent,
       tpMaxPercent: config.tpMaxPercent,
       holdbackRatio: config.holdbackRatio,
+      // Same fee the engine actually budgets when sizing/gating a TP (placeBodyTp's
+      // feeFloorPct) — exposed so the dashboard's Open Orders "est." columns never
+      // hard-code a fee guess of their own. See issue #698.
+      feeRatePerSide: config.feeRate || 0.001,
       entryMode: config.entryMode || 'reactive',
       ladderAutoSwitch: config.ladderAutoSwitch || false,
       ladderMaxAthDropPct: config.ladderMaxAthDropPct || 80,
@@ -6579,6 +6583,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     positionState.ladderPlacedAt = null;
     positionState.ladderLowerBound = 0;
     positionState.pendingLadderOrders = [];
+
+    // A rung can partially fill in the race window before the cancel above
+    // took, and that fill is now booked into a body synchronously as part of
+    // cancelAllLadderOrders (issue #674) — re-derive the budget from the
+    // CURRENT allocation before sizing the new ladder, so a fill discovered
+    // mid-cancel isn't missing from the math and the new ladder can't push
+    // deployed capital past maxUsdcDeployed. Clamp against the same exchange
+    // balance already fetched above (unaffected by an in-fund reallocation).
+    const postCancelAllocated = getAllocatedCapital();
+    remainingBudget = Math.min(config.maxUsdcDeployed - postCancelAllocated, availableQuote);
+    if (remainingBudget < (config.baseSizeUsdc || 50)) {
+      return { success: false, message: `Budget dropped below min order size after a fill landed during ladder cancel ($${remainingBudget.toFixed(2)} of $${config.maxUsdcDeployed.toFixed(2)} deployed budget remaining). The old ladder was cancelled but not rebuilt — call rebuildLadder again if appropriate.` };
+    }
+    if (postCancelAllocated !== allocatedCapital) {
+      logger.info(`🔄 [${exchange}] Re-derived ladder budget after a cancel-time fill: $${remainingBudget.toFixed(2)} (allocated=$${postCancelAllocated.toFixed(2)}, was $${allocatedCapital.toFixed(2)})`);
+    }
 
     // Build new ladder
     const ladder = ladderCalculator.buildLadder(

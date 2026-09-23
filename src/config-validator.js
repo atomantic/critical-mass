@@ -6,7 +6,7 @@
 
 const { validateConfigUpdate } = require('./config-validation');
 const { PRESET_FIELD_RULES, LEGACY_PRESET_FIELD_RULES } = require('./regime-preset-contract');
-const { REGIME_DEFAULTS, validateRegimeConfig, BACKUP_INTERVAL_BOUNDS } = require('./config-utils');
+const { REGIME_DEFAULTS, validateRegimeConfig, BACKUP_INTERVAL_BOUNDS, SENTINEL_POLL_INTERVAL_BOUNDS, SENTINEL_MAX_ALERTS_BOUNDS } = require('./config-utils');
 
 const REGIME_ALLOWED_KEYS = new Set(Object.keys(REGIME_DEFAULTS));
 
@@ -129,6 +129,17 @@ const BACKUP_CONFIG_SCHEMA = {
   includePriceCache: { type: 'boolean' },
 };
 
+// ── Sentinel config schema ───────────────────────────────────────
+// Mirrors SENTINEL_DEFAULTS (src/config-utils.js). Only the flat top-level
+// fields go through `validateConfigUpdate` here — `aiClassification`,
+// `feeds`, and `keywords` are nested/array shapes it can't check, so
+// `validateSentinelConfigUpdate` below covers those (issue #687).
+const SENTINEL_CONFIG_SCHEMA = {
+  enabled: { type: 'boolean' },
+  pollIntervalMs: { type: 'number', ...SENTINEL_POLL_INTERVAL_BOUNDS, integer: true },
+  maxAlerts: { type: 'number', ...SENTINEL_MAX_ALERTS_BOUNDS, integer: true },
+};
+
 // ── Notification config validation ───────────────────────────────
 const isIntegerInRange = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
 
@@ -177,6 +188,80 @@ const validateNotificationConfigUpdate = (updates) => {
   return { errors };
 };
 
+const SENTINEL_KEYWORD_CATEGORIES = ['critical', 'warning', 'info'];
+
+/**
+ * Validate the `aiClassification`/`feeds`/`keywords` sub-objects of a
+ * `PUT /api/sentinel/config` body. The route's top-level allowlist admits
+ * these as a unit, but nothing checked their internal shape (issue #687):
+ * a non-boolean `aiClassification.enabled`, an unbounded `maxPerHour`, a
+ * non-array `feeds` (which also silently skipped the SSRF check), or a
+ * `keywords` category that isn't an array of strings could all reach
+ * `updateSentinelConfig` verbatim. Like `validateNotificationConfigUpdate`,
+ * this only reports errors — it never strips fields — because the caller
+ * still needs the raw sub-objects to run the SSRF check and to forward to
+ * `updateSentinelConfig`'s shallow merge.
+ * @param {unknown} updates - Sanitized (allowlisted top-level keys only) update body
+ * @returns {{ errors: string[] }}
+ */
+const validateSentinelConfigUpdate = (updates) => {
+  const errors = [];
+  if (typeof updates !== 'object' || updates === null || Array.isArray(updates)) {
+    return { errors: ['update must be an object'] };
+  }
+
+  if (updates.aiClassification !== undefined) {
+    const ai = updates.aiClassification;
+    if (typeof ai !== 'object' || ai === null || Array.isArray(ai)) {
+      errors.push('aiClassification: must be an object');
+    } else {
+      if (ai.enabled !== undefined && typeof ai.enabled !== 'boolean') {
+        errors.push('aiClassification.enabled: expected boolean');
+      }
+      if (ai.maxPerHour !== undefined && !isIntegerInRange(ai.maxPerHour, 0, 1000)) {
+        errors.push('aiClassification.maxPerHour: must be an integer between 0 and 1000');
+      }
+    }
+  }
+
+  if (updates.feeds !== undefined) {
+    if (!Array.isArray(updates.feeds)) {
+      errors.push('feeds: must be an array');
+    } else if (updates.feeds.length > 50) {
+      errors.push('feeds: must contain at most 50 entries');
+    } else {
+      updates.feeds.forEach((feed, i) => {
+        if (!feed || typeof feed !== 'object' || Array.isArray(feed)) {
+          errors.push(`feeds[${i}]: must be an object`);
+          return;
+        }
+        if (typeof feed.name !== 'string') errors.push(`feeds[${i}].name: expected string`);
+        if (typeof feed.url !== 'string') errors.push(`feeds[${i}].url: expected string`);
+        if (feed.enabled !== undefined && typeof feed.enabled !== 'boolean') {
+          errors.push(`feeds[${i}].enabled: expected boolean`);
+        }
+      });
+    }
+  }
+
+  if (updates.keywords !== undefined) {
+    const keywords = updates.keywords;
+    if (typeof keywords !== 'object' || keywords === null || Array.isArray(keywords)) {
+      errors.push('keywords: must be an object');
+    } else {
+      for (const category of SENTINEL_KEYWORD_CATEGORIES) {
+        if (keywords[category] === undefined) continue;
+        const list = keywords[category];
+        if (!Array.isArray(list) || !list.every((entry) => typeof entry === 'string')) {
+          errors.push(`keywords.${category}: must be an array of strings`);
+        }
+      }
+    }
+  }
+
+  return { errors };
+};
+
 module.exports = {
   validateConfigUpdate,
   sanitizeRegimeConfig,
@@ -185,4 +270,6 @@ module.exports = {
   AGGRESSIVENESS_SCHEMA,
   BACKUP_CONFIG_SCHEMA,
   validateNotificationConfigUpdate,
+  SENTINEL_CONFIG_SCHEMA,
+  validateSentinelConfigUpdate,
 };

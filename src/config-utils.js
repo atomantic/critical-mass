@@ -961,15 +961,23 @@ const getConfiguredExchanges = () => {
 };
 
 /**
- * Update fund-level configuration for a specific (exchange, pair).
- * Auto-converts the exchange's block from legacy flat → nested if needed.
+ * Load → seed/normalize → mutate a single fund block → clear its deletion
+ * tombstone → save. The shared write topology behind `updateFundConfig` and
+ * `updateRegimeConfig` (issue #689) — before this helper existed the two
+ * re-implemented `isNew` / seed-DEFAULTS / `isLegacy && pair === legacyPair` /
+ * `normalizeExchangeBlock` independently and had already diverged: only
+ * `updateFundConfig` cleared a fund's deletion tombstone (#441), so a regime
+ * update on a tombstoned pair wrote into `pairs[pair].regime` while
+ * `normalizeExchangeBlock` kept hiding that pair on every read.
  *
  * @param {string} exchange
  * @param {string} pair - Pair name
- * @param {Partial<ExchangeConfig>} updates - Fund-level config updates
+ * @param {(fundBlock: Object, isNewExchange: boolean) => Object} mutator -
+ *   Receives the current fund block (DEFAULTS-seeded when the exchange entry
+ *   is brand-new) and returns its full replacement.
  * @returns {MultiExchangeConfig} Updated full configuration
  */
-const updateFundConfig = (exchange, pair, updates) => {
+const mutateFundBlock = (exchange, pair, mutator) => {
   const config = loadConfig();
   if (!config.exchanges) config.exchanges = {};
 
@@ -977,17 +985,6 @@ const updateFundConfig = (exchange, pair, updates) => {
   // updateExchangeConfig('kraken', {...}) used to start from DEFAULTS).
   const isNew = !config.exchanges[exchange];
   const block = isNew ? { ...DEFAULTS } : config.exchanges[exchange];
-
-  // Defence in depth (#685): a save to an EXISTING fund can never change its
-  // traded asset. A brand-new exchange entry has no asset to protect yet
-  // (updateExchangeConfig seeds it under the default pair name), so it is exempt;
-  // addFund and the config routes validate new funds themselves.
-  if (!isNew && updates.productId) {
-    const { ok, pairBase, incomingBase } = productIdMatchesPair(pair, updates.productId);
-    if (!ok) {
-      throw new Error(`productId "${updates.productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}) — a config save cannot change a fund's traded asset`);
-    }
-  }
 
   // If the block is in legacy flat form AND the target pair is the legacy
   // pair (or no pairs map exists yet), update in place to avoid converting
@@ -997,12 +994,12 @@ const updateFundConfig = (exchange, pair, updates) => {
 
   if (isLegacy && pair === legacyPair) {
     // Update flat fields directly — keep legacy layout
-    config.exchanges[exchange] = { ...block, ...updates };
+    config.exchanges[exchange] = mutator(block, isNew);
   } else {
     // Convert to nested form (idempotent if already nested)
     const normalized = normalizeExchangeBlock(block);
     const fundBlock = normalized.pairs[pair] || {};
-    normalized.pairs[pair] = { ...fundBlock, ...updates };
+    normalized.pairs[pair] = mutator(fundBlock, isNew);
     config.exchanges[exchange] = normalized;
   }
 
@@ -1013,6 +1010,29 @@ const updateFundConfig = (exchange, pair, updates) => {
   saveConfig(config);
   return config;
 };
+
+/**
+ * Update fund-level configuration for a specific (exchange, pair).
+ * Auto-converts the exchange's block from legacy flat → nested if needed.
+ *
+ * @param {string} exchange
+ * @param {string} pair - Pair name
+ * @param {Partial<ExchangeConfig>} updates - Fund-level config updates
+ * @returns {MultiExchangeConfig} Updated full configuration
+ */
+const updateFundConfig = (exchange, pair, updates) => mutateFundBlock(exchange, pair, (block, isNew) => {
+  // Defence in depth (#685): a save to an EXISTING fund can never change its
+  // traded asset. A brand-new exchange entry has no asset to protect yet
+  // (updateExchangeConfig seeds it under the default pair name), so it is exempt;
+  // addFund and the config routes validate new funds themselves.
+  if (!isNew && updates.productId) {
+    const { ok, pairBase, incomingBase } = productIdMatchesPair(pair, updates.productId);
+    if (!ok) {
+      throw new Error(`productId "${updates.productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}) — a config save cannot change a fund's traded asset`);
+    }
+  }
+  return { ...block, ...updates };
+});
 
 /**
  * Update configuration for a specific exchange (legacy single-fund alias).
@@ -1137,85 +1157,63 @@ const updateGlobalConfig = (updates) => {
 };
 
 /**
- * Enable or disable a fund (or the default fund of an exchange).
- * @param {string} exchange - Exchange name
- * @param {boolean|string} enabledOrPair - 2-arg form: enabled. 3-arg form: pair name.
- * @param {boolean} [maybeEnabled] - 3-arg form: enabled
- * @returns {MultiExchangeConfig} Updated configuration
+ * Guard shared by every explicit-pair fund writer (issue #689): a caller that
+ * resolves `pair` first (as every current caller does — see
+ * `resolveConfiguredPair`) can never trip this, but a bare `undefined` no
+ * longer silently falls through to a 2-arg legacy-dispatch interpretation —
+ * it throws immediately instead of writing the wrong fund or dropping the
+ * update on the floor.
+ * @param {string} fnName - Name to quote in the thrown message
+ * @param {unknown} pair
+ * @throws {TypeError} When `pair` is not a non-empty string
  */
-const setExchangeEnabled = (exchange, enabledOrPair, maybeEnabled) => {
-  if (typeof enabledOrPair === 'string') {
-    return updateFundConfig(exchange, enabledOrPair, { enabled: maybeEnabled });
+const requirePairString = (fnName, pair) => {
+  if (typeof pair !== 'string' || !pair) {
+    throw new TypeError(`${fnName} requires a non-empty string pair — got ${JSON.stringify(pair)}. Use the exchange-level alias for the default fund instead.`);
   }
-  return updateExchangeConfig(exchange, { enabled: enabledOrPair });
 };
 
 /**
- * Set dry-run mode for a fund (or the default fund of an exchange).
+ * Enable or disable a specific fund.
  * @param {string} exchange - Exchange name
- * @param {boolean|string} dryRunOrPair - 2-arg form: dryRun. 3-arg form: pair name.
- * @param {boolean} [maybeDryRun] - 3-arg form: dryRun
+ * @param {string} pair - Pair name
+ * @param {boolean} enabled
  * @returns {MultiExchangeConfig} Updated configuration
+ * @throws {TypeError} When `pair` is not a non-empty string
  */
-const setExchangeDryRun = (exchange, dryRunOrPair, maybeDryRun) => {
-  if (typeof dryRunOrPair === 'string') {
-    return updateFundConfig(exchange, dryRunOrPair, { dryRun: maybeDryRun });
-  }
-  return updateExchangeConfig(exchange, { dryRun: dryRunOrPair });
+const setFundEnabled = (exchange, pair, enabled) => {
+  requirePairString('setFundEnabled', pair);
+  return updateFundConfig(exchange, pair, { enabled });
 };
 
 /**
- * Validate exchange configuration
- * @param {Partial<ExchangeConfig>} config - Exchange configuration to validate
- * @returns {ValidationResult}
+ * Enable or disable the default fund of an exchange (legacy single-fund alias).
+ * @param {string} exchange - Exchange name
+ * @param {boolean} enabled
+ * @returns {MultiExchangeConfig} Updated configuration
  */
-const validateExchangeConfig = (config) => {
-  const errors = [];
+const setExchangeEnabled = (exchange, enabled) => updateExchangeConfig(exchange, { enabled });
 
-  if (!config.productId) {
-    errors.push('productId is required');
-  }
-
-  if (typeof config.totalAllocation !== 'number' || config.totalAllocation <= 0) {
-    errors.push('totalAllocation must be a positive number');
-  }
-
-  if (typeof config.intervalsToSpread !== 'number' || config.intervalsToSpread <= 0) {
-    errors.push('intervalsToSpread must be a positive number');
-  }
-
-  if (typeof config.sellMarkupPercent !== 'number' || config.sellMarkupPercent < 0) {
-    errors.push('sellMarkupPercent must be a non-negative number');
-  }
-
-  if (typeof config.holdbackPercent !== 'number' || config.holdbackPercent < 0 || config.holdbackPercent > 100) {
-    errors.push('holdbackPercent must be between 0 and 100');
-  }
-
-  if (typeof config.minOrderSize !== 'number' || config.minOrderSize <= 0) {
-    errors.push('minOrderSize must be a positive number');
-  }
-
-  if (typeof config.maxBuyPrice !== 'number' || config.maxBuyPrice <= 0) {
-    errors.push('maxBuyPrice must be a positive number');
-  }
-
-  // Fibonacci strategy validation
-  if (config.dcaStrategy !== undefined && !['fixed', 'fibonacci'].includes(config.dcaStrategy)) {
-    errors.push('dcaStrategy must be "fixed" or "fibonacci"');
-  }
-
-  if (config.dcaStrategy === 'fibonacci') {
-    if (typeof config.fibBaseAmount !== 'number' || config.fibBaseAmount <= 0) {
-      errors.push('fibBaseAmount must be a positive number when using Fibonacci strategy');
-    }
-  }
-
-  return {
-    valid: errors.length === 0,
-    errors,
-  };
+/**
+ * Set dry-run mode for a specific fund.
+ * @param {string} exchange - Exchange name
+ * @param {string} pair - Pair name
+ * @param {boolean} dryRun
+ * @returns {MultiExchangeConfig} Updated configuration
+ * @throws {TypeError} When `pair` is not a non-empty string
+ */
+const setFundDryRun = (exchange, pair, dryRun) => {
+  requirePairString('setFundDryRun', pair);
+  return updateFundConfig(exchange, pair, { dryRun });
 };
+
+/**
+ * Set dry-run mode for the default fund of an exchange (legacy single-fund alias).
+ * @param {string} exchange - Exchange name
+ * @param {boolean} dryRun
+ * @returns {MultiExchangeConfig} Updated configuration
+ */
+const setExchangeDryRun = (exchange, dryRun) => updateExchangeConfig(exchange, { dryRun });
 
 /**
  * Get global configuration
@@ -1247,49 +1245,42 @@ const getRegimeConfig = (exchange, pair) => {
 
 /**
  * Update regime configuration for a specific fund (exchange + pair).
- * If pair is omitted, updates the exchange's default fund.
+ *
+ * Explicit 3-arg signature only (issue #689) — the old `typeof pairOrUpdates
+ * === 'string'` overload let an unresolved `pair` (e.g. `undefined`) silently
+ * fall through to the legacy 2-arg interpretation, which read `updates` from
+ * the wrong argument and wrote to the wrong fund. Every current caller
+ * already resolves `pair` first (`resolvePairParam`/`resolveConfiguredPair`),
+ * so this only turns a latent trap for a future caller into an immediate
+ * `TypeError`. Use `updateExchangeRegimeConfig` for the legacy default-fund
+ * form.
  *
  * @param {string} exchange - Exchange name
- * @param {string|Partial<RegimeStrategyConfig>} pairOrUpdates - Pair name (3-arg form) or updates (legacy 2-arg form)
- * @param {Partial<RegimeStrategyConfig>} [maybeUpdates] - Regime config updates (3-arg form)
+ * @param {string} pair - Pair name
+ * @param {Partial<RegimeStrategyConfig>} updates - Regime config updates
+ * @returns {MultiExchangeConfig} Updated full configuration
+ * @throws {TypeError} When `pair` is not a non-empty string
+ */
+const updateRegimeConfig = (exchange, pair, updates) => {
+  requirePairString('updateRegimeConfig', pair);
+  return mutateFundBlock(exchange, pair, (block) => ({
+    ...block,
+    regime: { ...(block.regime || {}), ...(updates || {}) },
+  }));
+};
+
+/**
+ * Update regime configuration for the default fund of an exchange (legacy
+ * single-fund alias). New code should resolve a pair and call
+ * `updateRegimeConfig` directly.
+ *
+ * @param {string} exchange - Exchange name
+ * @param {Partial<RegimeStrategyConfig>} updates - Regime config updates
  * @returns {MultiExchangeConfig} Updated full configuration
  */
-const updateRegimeConfig = (exchange, pairOrUpdates, maybeUpdates) => {
-  let pair;
-  let updates;
-  if (typeof pairOrUpdates === 'string') {
-    pair = pairOrUpdates;
-    updates = maybeUpdates || {};
-  } else {
-    pair = getDefaultPair(exchange) || DEFAULTS.productId;
-    updates = pairOrUpdates || {};
-  }
-
-  const config = loadConfig();
-  if (!config.exchanges) config.exchanges = {};
-
-  // Seed DEFAULTS for brand-new exchange entries (legacy behavior).
-  const isNew = !config.exchanges[exchange];
-  const block = isNew ? { ...DEFAULTS } : config.exchanges[exchange];
-  const isLegacy = !block.pairs || typeof block.pairs !== 'object';
-  const legacyPair = block.productId || DEFAULTS.productId;
-
-  if (isLegacy && pair === legacyPair) {
-    // Update flat regime in place
-    const merged = { ...(block.regime || {}), ...updates };
-    config.exchanges[exchange] = { ...block, regime: merged };
-  } else {
-    // Convert to nested form (idempotent if already nested)
-    const normalized = normalizeExchangeBlock(block);
-    if (!normalized.pairs[pair]) normalized.pairs[pair] = {};
-    const merged = { ...(normalized.pairs[pair].regime || {}), ...updates };
-    normalized.pairs[pair].regime = merged;
-    config.exchanges[exchange] = normalized;
-  }
-
-  saveConfig(config);
-  return config;
-};
+const updateExchangeRegimeConfig = (exchange, updates) => (
+  updateRegimeConfig(exchange, getDefaultPair(exchange) || DEFAULTS.productId, updates)
+);
 
 /** Primitive contract for every supported regime setting; preset bounds stay shared. */
 const REGIME_FIELD_RULES = {
@@ -1733,6 +1724,16 @@ const SENTINEL_DEFAULTS = {
   },
 };
 
+// Same "~1ms setInterval" clamp risk as BACKUP_INTERVAL_BOUNDS (#547): a
+// 60s floor keeps a bad pollIntervalMs from hammering every configured RSS
+// feed back-to-back, a 24h ceiling keeps it from effectively never running.
+// Shared with SENTINEL_CONFIG_SCHEMA (config-validator.js) so the PUT-time
+// bound and the on-disk clamp below never drift apart (issue #687).
+const SENTINEL_POLL_INTERVAL_BOUNDS = { min: 60000, max: 86400000 };
+// alerts.slice(-maxAlerts) (sentinel-service.js) needs a small positive
+// integer — 0/negative/non-finite would keep the wrong tail (or none).
+const SENTINEL_MAX_ALERTS_BOUNDS = { min: 1, max: 5000 };
+
 /**
  * Get sentinel configuration with defaults
  * @returns {Object} Sentinel config
@@ -1740,13 +1741,24 @@ const SENTINEL_DEFAULTS = {
 const getSentinelConfig = () => {
   const config = loadConfig();
   const sentinel = config.global?.sentinel || {};
-  return {
+  const result = {
     ...SENTINEL_DEFAULTS,
     ...sentinel,
     aiClassification: { ...SENTINEL_DEFAULTS.aiClassification, ...sentinel.aiClassification },
     keywords: { ...SENTINEL_DEFAULTS.keywords, ...sentinel.keywords },
     feeds: sentinel.feeds || SENTINEL_DEFAULTS.feeds,
   };
+  // Files edited by hand (or saved before #687 added PUT-time validation)
+  // bypass the API schema. Never hand an out-of-range value to the poll
+  // timer or the alert-history trim — clamp back to the default the same
+  // way getBackupConfig does for the backup timers.
+  if (!Number.isFinite(result.pollIntervalMs) || result.pollIntervalMs < SENTINEL_POLL_INTERVAL_BOUNDS.min || result.pollIntervalMs > SENTINEL_POLL_INTERVAL_BOUNDS.max) {
+    result.pollIntervalMs = SENTINEL_DEFAULTS.pollIntervalMs;
+  }
+  if (!Number.isInteger(result.maxAlerts) || result.maxAlerts < SENTINEL_MAX_ALERTS_BOUNDS.min || result.maxAlerts > SENTINEL_MAX_ALERTS_BOUNDS.max) {
+    result.maxAlerts = SENTINEL_DEFAULTS.maxAlerts;
+  }
+  return result;
 };
 
 /**
@@ -2161,7 +2173,8 @@ module.exports = {
   updateGlobalConfig,
   setExchangeEnabled,
   setExchangeDryRun,
-  validateExchangeConfig,
+  setFundEnabled,
+  setFundDryRun,
   getGlobalConfig,
   isMultiExchangeConfig,
   normalizeToMultiExchange,
@@ -2179,6 +2192,7 @@ module.exports = {
   // Regime strategy
   getRegimeConfig,
   updateRegimeConfig,
+  updateExchangeRegimeConfig,
   validateRegimeConfig,
   // Notifications
   getNotificationConfig,
@@ -2194,6 +2208,8 @@ module.exports = {
   getSentinelConfig,
   updateSentinelConfig,
   SENTINEL_DEFAULTS,
+  SENTINEL_POLL_INTERVAL_BOUNDS,
+  SENTINEL_MAX_ALERTS_BOUNDS,
   DEFAULTS,
   GLOBAL_DEFAULTS,
   REGIME_DEFAULTS,

@@ -171,6 +171,7 @@ function AppContent() {
   const [stopping, setStopping] = useState(false)
   const [starting, setStarting] = useState(false)
   const [resetting, setResetting] = useState(false)
+  const [resetDryRunConfirm, setResetDryRunConfirm] = useState(false)
   const [closing, setClosing] = useState(false)
   const [reopening, setReopening] = useState(false)
   const [closeFundDialogOpen, setCloseFundDialogOpen] = useState(false)
@@ -499,7 +500,11 @@ function AppContent() {
   }
 
   // Reset dry-run state
-  const handleResetDryRun = async () => {
+  const handleResetDryRun = () => {
+    setResetDryRunConfirm(true)
+  }
+
+  const handleExecuteResetDryRun = async () => {
     const actionGeneration = beginFundAction(setResetting)
     try {
       const res = await fetch(`/api/${currentExchange}/regime/dry-run/reset${pairQuery()}`, { method: 'POST' })
@@ -515,7 +520,10 @@ function AppContent() {
       if (!isCurrentFundAction(actionGeneration)) return
       addToast({ type: 'error', title: 'Failed to reset dry-run state', message: err.message || 'Network error' })
     } finally {
-      if (isCurrentFundAction(actionGeneration)) setResetting(false)
+      if (isCurrentFundAction(actionGeneration)) {
+        setResetting(false)
+        setResetDryRunConfirm(false)
+      }
     }
   }
 
@@ -974,6 +982,41 @@ function AppContent() {
                 disabled={reopening}
               >
                 {reopening ? 'Reopening...' : 'Reopen Fund'}
+              </button>
+            </div>
+          </ModalDialog>
+        )}
+
+        {/* Reset Dry-Run confirmation dialog */}
+        {resetDryRunConfirm && (
+          <ModalDialog
+            onClose={() => setResetDryRunConfirm(false)}
+            dismissible={!resetting}
+            labelledBy="reset-dry-run-title"
+            describedBy="reset-dry-run-description"
+          >
+            <h3 id="reset-dry-run-title" className="text-white text-lg font-medium mb-3">Reset Dry-Run State</h3>
+            <p id="reset-dry-run-description" className="text-gray-300 text-sm mb-4">
+              Clear simulated trading history for <span className="font-mono text-purple-400">{currentExchange}/{currentPair}</span>?
+            </p>
+            <p className="text-gray-400 text-xs mb-4">
+              This wipes the in-memory dry-run history. Live positions and fills are not affected.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                onClick={() => setResetDryRunConfirm(false)}
+                disabled={resetting}
+                autoFocus
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 text-sm text-white bg-purple-600 hover:bg-purple-700 rounded transition-colors disabled:opacity-50"
+                onClick={handleExecuteResetDryRun}
+                disabled={resetting}
+              >
+                {resetting ? 'Resetting…' : 'Reset Dry-Run'}
               </button>
             </div>
           </ModalDialog>
