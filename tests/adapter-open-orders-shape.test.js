@@ -112,6 +112,44 @@ describe('adapter getOpenOrders() shape parity (issue #684)', () => {
     }
   });
 
+  it('Coinbase never yields NaN for size when filled_size is present but unparseable (Math.max(0, NaN) is still NaN)', async () => {
+    const { privateKey } = crypto.generateKeyPairSync('ec', {
+      namedCurve: 'prime256v1',
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    });
+    const keysPath = path.join(os.tmpdir(), `coinbase-open-orders-shape-nan-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(keysPath, JSON.stringify({ name: 'organizations/test/apiKeys/test-key', privateKey }));
+    try {
+      const adapter = createCoinbaseAdapter(keysPath);
+      global.fetch = async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          orders: [{
+            order_id: 'CB-3',
+            product_id: 'BTC-USDC',
+            side: 'SELL',
+            status: 'OPEN',
+            filled_size: 'N/A', // truthy but unparseable — parseFloat gives NaN, and Math.max(0, NaN) is still NaN
+            created_time: '2026-01-01T00:00:00Z',
+            order_configuration: {
+              limit_limit_gtc: { base_size: String(ORIGINAL), limit_price: String(PRICE) },
+            },
+          }],
+        }),
+      });
+
+      const orders = await adapter.getOpenOrders('BTC-USDC');
+      assert.equal(orders.length, 1);
+      assert.ok(Number.isFinite(orders[0].size), `size must be a finite number, got ${orders[0].size}`);
+      assert.equal(orders[0].size, ORIGINAL, 'an unparseable filled_size must be treated as 0 filled, not NaN');
+    } finally {
+      fs.rmSync(keysPath, { force: true });
+    }
+  });
+
   it('Gemini reports the remaining unfilled size, plus originalSize and price', async () => {
     const keysPath = path.join(os.tmpdir(), `gemini-open-orders-shape-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
     fs.writeFileSync(keysPath, JSON.stringify({ apiKey: 'test-api-key-123', apiSecret: 'test-api-secret-456' }));

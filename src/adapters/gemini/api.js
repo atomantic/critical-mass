@@ -5,7 +5,7 @@ const WebSocket = require('ws');
 const crypto = require('crypto');
 const { getWebSocketAuthHeaders, getRestAuthHeaders } = require('./auth');
 const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
-const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
+const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
 /**
@@ -642,12 +642,14 @@ const createGeminiAdapter = (keysPath = null) => {
     return orders
       .filter(order => toGeminiSymbol(productId) === order.symbol.toLowerCase())
       .map(order => {
-        const originalSize = parseFloat(order.original_amount || 0);
-        const filledSize = parseFloat(order.executed_amount || 0);
+        // finiteFloat (not a bare `parseFloat(x || 0)`) guards a TRUTHY but
+        // non-numeric field too — e.g. original_amount: "N/A" — which would
+        // otherwise parse to NaN and poison the fallback subtraction below.
+        const originalSize = finiteFloat(order.original_amount);
+        const filledSize = finiteFloat(order.executed_amount);
         // Gemini's /v1/orders response carries remaining_amount directly when
-        // present; fall back to originalSize - filledSize (both already
-        // NaN-guarded via `|| 0` above) so a payload that omits it — or an
-        // older API shape — still yields a real number rather than NaN.
+        // present; fall back to originalSize - filledSize so a payload that
+        // omits it — or an older API shape — still yields a real number.
         // NaN would defeat this exact fix: the orphan-sell detector's
         // `o.size > 0` check treats `NaN > 0` as false, same as `undefined >
         // 0`, so Gemini's untracked-sell warning would silently never fire
@@ -669,7 +671,7 @@ const createGeminiAdapter = (keysPath = null) => {
           status: order.is_live ? 'OPEN' : 'CLOSED',
           size,
           originalSize,
-          price: parseFloat(order.price || 0),
+          price: finiteFloat(order.price),
           filledSize,
           createdTime: new Date(order.timestampms).toISOString(),
         };
