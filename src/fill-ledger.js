@@ -227,7 +227,9 @@ const linkedOrderIdsOf = (fill) => {
  *   3. otherwise, when it has NO linkage to any cycled fill, timestamp: a
  *      BUY-ONLY component folds into the live cycle only if every fill in it
  *      is at/after the live cycle's start boundary (a buy the engine missed
- *      during downtime inside the live cycle). A component holding a sell
+ *      during downtime inside the live cycle) AND no orphan sell left
+ *      unplaced by linkage follows it (that sell would close it in a
+ *      recovered cycle — e.g. an unlinked manual round trip). A component holding a sell
  *      never folds by time: the engine's own TP sells reach their cycle via
  *      linkage above, so an unlinked sell (e.g. a manual-trade import pair)
  *      is not the live cycle's buy(n) → sell(1) close and must not complete
@@ -293,10 +295,9 @@ const attributeOrphanFills = ({ cycleMap, orphanFills, liveCycleId, liveStartTs 
     components.get(root).push(fill);
   });
 
-  const hasLiveBoundary = Boolean(liveCycleId) && Number.isFinite(liveStartTs);
-  const attributed = [];
-  const remaining = [];
-  let liveCount = 0;
+  // Pass 1: linkage (same order, then buy↔sell links) against cycled fills.
+  /** @type {Array<{members: Fill[], target: string|null, reason: 'order'|'link'|'timeframe', linked: boolean}>} */
+  const decisions = [];
   for (const members of components.values()) {
     const strong = new Set();
     const weak = new Set();
@@ -314,10 +315,40 @@ const attributeOrphanFills = ({ cycleMap, orphanFills, liveCycleId, liveStartTs 
     } else if (weak.size > 0) {
       if (weak.size === 1) target = [...weak][0];
       reason = 'link';
-    } else if (hasLiveBoundary && members.every(f => f.side === 'buy' && Number(f.timestamp) >= /** @type {number} */ (liveStartTs))) {
-      target = liveCycleId;
-      reason = 'timeframe';
     }
+    decisions.push({ members, target, reason, linked: strong.size > 0 || weak.size > 0 });
+  }
+
+  // Timestamps of orphan sells that linkage could not place. They go on to
+  // recovered-cycle splitting, which pairs a sell with the unlinked buys
+  // before it — so a buy followed by such a sell (a manual round trip that
+  // sync-fills re-imported without links) must stay with it rather than fold
+  // into the live cycle, or the pair would be split across cycles.
+  const unplacedSellTs = [];
+  for (const { members, target } of decisions) {
+    if (target) continue;
+    for (const fill of members) {
+      if (fill.side === 'sell') unplacedSellTs.push(Number(fill.timestamp));
+    }
+  }
+
+  // Pass 2: fold wholly-unlinked, buy-only components that sit entirely
+  // inside the live cycle's timeframe with no unplaced sell after them.
+  const hasLiveBoundary = Boolean(liveCycleId) && Number.isFinite(liveStartTs);
+  const attributed = [];
+  const remaining = [];
+  let liveCount = 0;
+  for (const decision of decisions) {
+    const { members, linked } = decision;
+    if (!decision.target && !linked && hasLiveBoundary
+      && members.every(f => f.side === 'buy' && Number(f.timestamp) >= /** @type {number} */ (liveStartTs))) {
+      const earliest = Math.min(...members.map(f => Number(f.timestamp)));
+      if (!unplacedSellTs.some(ts => ts >= earliest)) {
+        decision.target = liveCycleId;
+        decision.reason = 'timeframe';
+      }
+    }
+    const { target, reason } = decision;
     if (target) {
       for (const fill of members) attributed.push({ fill, cycleId: target, reason });
       if (target === liveCycleId) liveCount += members.length;

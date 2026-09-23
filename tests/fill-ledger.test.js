@@ -2008,6 +2008,28 @@ describe('Fill Ledger', () => {
       assert.equal(preview.cyclesCompleted, result.cyclesCompleted);
     });
 
+    it('keeps an unlinked buy with the unlinked sell after it instead of folding the buy alone', () => {
+      const ledger = createTestLedger('fold-roundtrip');
+      seedCompletedCycle1(ledger);
+      // A manual round trip sync-fills re-imported without links, then a
+      // genuinely missed engine buy after it.
+      ledger.ingestFill(buy('rt-b', 'rt-buy', 31), null, { cycleId: null });
+      ledger.ingestFill(sell('rt-s', 'rt-sell', 32), null, { cycleId: null });
+      ledger.ingestFill(buy('miss-b', 'miss-buy', 33), null, { cycleId: null });
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      assert.equal(cycleOf(ledger, 'rt-b'), cycleOf(ledger, 'rt-s'), 'the round trip is not split across cycles');
+      assert.notEqual(cycleOf(ledger, 'rt-s'), ledger.getCurrentCycleId());
+      assert.deepStrictEqual(currentTradeIds(ledger), ['miss-b'], 'a buy after the unplaced sell still folds');
+      assert.equal(result.liveCycleOrphansAttributed, 1);
+      assert.equal(preview.liveCycleOrphansAttributed, result.liveCycleOrphansAttributed);
+      assert.equal(preview.cyclesCompleted, result.cyclesCompleted);
+      assert.ok(result.cycleDetails.some(d => d.cycleId === cycleOf(ledger, 'rt-s')), 'the round trip is a completed cycle');
+    });
+
     it('leaves an orphan whose order spans two cycles unattributed (ambiguous)', () => {
       const ledger = createTestLedger('fold-ambiguous');
       seedCompletedCycle1(ledger);
