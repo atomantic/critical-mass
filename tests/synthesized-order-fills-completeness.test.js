@@ -26,18 +26,24 @@ const { createCryptocomAdapter } = require('../src/adapters/cryptocom/api');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
 
 let originalFetch;
+let keysPaths;
 
 beforeEach(() => {
   originalFetch = global.fetch;
+  keysPaths = [];
 });
 
 afterEach(() => {
   global.fetch = originalFetch;
+  for (const keysPath of keysPaths) {
+    fs.rmSync(keysPath, { force: true });
+  }
 });
 
 const writeKeys = (prefix) => {
   const keysPath = path.join(os.tmpdir(), `${prefix}-keys-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
   fs.writeFileSync(keysPath, JSON.stringify({ apiKey: 'test-api-key-123', apiSecret: 'test-api-secret-456' }));
+  keysPaths.push(keysPath);
   return keysPath;
 };
 
