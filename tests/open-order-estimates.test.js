@@ -104,6 +104,25 @@ test('non-body (legacy/core) TP falls back to the ratio formula with tier scale 
   assert.ok(Math.abs(estHoldback - holdbackQty) < 1e-6, `estHoldback=${estHoldback} holdbackQty=${holdbackQty}`);
 });
 
+test('body TP sold at full qty with zero holdback (exchange-minimum guard) reports exact 0, not a ratio-formula guess', async () => {
+  // Mirrors src/regime-engine.js placeBodyTp's exchange-minimum fallback: when the
+  // holdback-reduced sellQty rounds below the exchange minimum, the engine sells the
+  // FULL body with zero holdback (sellQty = fullQty = body.assetQty, holdbackQty = 0),
+  // so assetOnOrder === body.assetQty exactly. bodyData.assetQty and order.size are
+  // therefore equal, not assetQty > order.size — the estimate must still report 0.
+  const { computeOpenOrderEstimate } = await load();
+
+  const totalAsset = 0.0003; // dust body, fully sold per the exchange-minimum guard
+  const avgPrice = 50000;
+  const tpPrice = 51500;
+
+  const bodyData = { assetQty: totalAsset, avgPrice, costBasis: totalAsset * avgPrice, tier: 'planet' };
+  const order = { type: 'body_tp', orderId: 'tp-dust', size: totalAsset, price: tpPrice };
+
+  const { estHoldback } = computeOpenOrderEstimate(order, bodyData, { holdbackRatio: 0.5 });
+  assert.equal(estHoldback, 0);
+});
+
 test('TIER_HOLDBACK_SCALE stays in sync with src/celestial-hierarchy.js TIERS', async () => {
   const { TIER_HOLDBACK_SCALE } = await load();
   for (const tier of TIERS) {

@@ -78,9 +78,13 @@ export const computeOpenOrderEstimate = (order, bodyData, ctx = {}) => {
   // Exact planned holdback for body TPs: body.assetQty is the body's total asset
   // (pre-TP), order.size is the TP's assetOnOrder (post-holdback) — no ratio algebra
   // needed. Only fall back to the ratio formula when we lack that exact figure.
+  // Use >= (not >), clamped at 0: when the exchange-minimum guard in placeBodyTp
+  // (regime-engine.js) sells the full body with zero holdback, assetQty === order.size
+  // exactly, and that must report an exact 0 rather than falling through to the ratio
+  // formula's nonzero guess.
   let estHoldback = null
-  if (bodyData && typeof bodyData.assetQty === 'number' && bodyData.assetQty > order.size) {
-    estHoldback = bodyData.assetQty - order.size
+  if (bodyData && typeof bodyData.assetQty === 'number' && bodyData.assetQty >= order.size) {
+    estHoldback = Math.max(bodyData.assetQty - order.size, 0)
   } else if (isTpOrder && profitPerAsset > 0) {
     const tierScale = (bodyData?.tier && TIER_HOLDBACK_SCALE[bodyData.tier]) || 1.0
     const scaledHoldbackRatio = Math.min(holdbackRatio * tierScale, 0.95)
