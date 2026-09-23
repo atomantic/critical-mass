@@ -4893,6 +4893,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           bodyId: body.id,
         });
 
+        let closesCycle = false;
         if (isPartial) {
           // PARTIAL FILL: reduce body size, keep body active, re-place TP for remaining
           const remainingAsset = roundAsset(body.assetQty - summary.totalSize);
@@ -4967,51 +4968,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             newMaxUsdcDeployed: config.maxUsdcDeployed,
           });
 
-          // If no bodies remain, do a full cycle reset
-          if (positionState.celestialBodies.length === 0) {
-            positionState.cyclesCompleted += 1;
-
-            const actualTpPct = body.avgPrice > 0
-              ? ((summary.avgPrice - body.avgPrice) / body.avgPrice) * 100
-              : 0;
-            recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
-            // Capture before resetCycle() zeroes cycleBuys, and run the
-            // optimizer's real-balance fetch (issue #694) AFTER resetCycle()
-            // flips the fill-ledger's cycle boundary (fillLedger.startNewCycle())
-            // — not before it — so the network round-trip never widens the
-            // window where a concurrent entry evaluation (gated only by
-            // isEntryInProgress(), not isMutatingPosition()) could land a buy
-            // fill still attributed to the closing cycle (Claude review).
-            const cycleBuysAtClose = positionState.cycleBuys;
-            // try/finally: resetCycle()'s only network call (ladder cancel)
-            // runs before any state mutation, so a throw there means nothing
-            // else in resetCycle() ran either — but capitalDeployed/stepsUsed
-            // above are already committed facts about this fill, independent
-            // of whether the ladder cleanup succeeds. Recording them in
-            // `finally` means a resetCycle() failure (which retries on its
-            // own via the outer dedup-clear/retry path) can never permanently
-            // drop this cycle from the optimizer's stats (codex review round 1).
-            // Deliberately NOT awaited: the caller's own saveLiveState()/
-            // fillLedger.persist() (below) durably persist this already-
-            // completed sell/cycle-close before the optimizer's balance-fetch
-            // (up to a 30s exchange timeout) gets a chance to delay them — a
-            // crash during that fetch loses only this one best-effort
-            // optimizer stats sample, never the P&L-critical state (codex
-            // review round 2). recordCycleForSizeOptimizer never rejects (its
-            // own body is try/caught), so no unhandled-rejection risk. Once
-            // it DOES resolve, re-save so the recorded sample/balance isn't
-            // left ONLY in memory until some unrelated future save happens to
-            // pick it up (codex review round 3) — cheap and idempotent, same
-            // as the periodic save timer already does.
-            try {
-              await resetCycle();
-            } finally {
-              recordCycleForSizeOptimizer({
-                stepsUsed: cycleBuysAtClose,
-                capitalDeployed: body.costBasis,
-              }).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
-            }
-          }
+          // No bodies left: the cycle closes. The reset runs below, after this
+          // sell's P&L annotation and closed-trade record are committed (#766).
+          closesCycle = positionState.celestialBodies.length === 0;
         }
 
         // Annotate fills with body metadata
@@ -5065,6 +5024,59 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           buyOrderIds: [...(body.sourceOrderIds || []), ...(body.buyOrders || []).map(b => b.orderId)].filter(id => id !== 'core-migration'),
           source: 'live',
         });
+
+        // If no bodies remain, do a full cycle reset — AFTER the bookkeeping
+        // above, persisted first: resetCycle can wait on the ladder lock behind
+        // an in-flight rebuild (#766), and a crash during that wait must not
+        // lose this sell's bodyPnl/holdback annotation (the realized-P&L source
+        // of truth) with the body it came from already gone.
+        if (closesCycle) {
+          positionState.cyclesCompleted += 1;
+
+          const actualTpPct = body.avgPrice > 0
+            ? ((summary.avgPrice - body.avgPrice) / body.avgPrice) * 100
+            : 0;
+          recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
+          saveLiveState();
+          fillLedger.persist();
+          // Capture before resetCycle() zeroes cycleBuys, and run the
+          // optimizer's real-balance fetch (issue #694) AFTER resetCycle()
+          // flips the fill-ledger's cycle boundary (fillLedger.startNewCycle())
+          // — not before it — so the network round-trip never widens the
+          // window where a concurrent entry evaluation (gated only by
+          // isEntryInProgress(), not isMutatingPosition()) could land a buy
+          // fill still attributed to the closing cycle (Claude review).
+          const cycleBuysAtClose = positionState.cycleBuys;
+          // try/finally: resetCycle()'s only network call (ladder cancel)
+          // runs before any state mutation, so a throw there means nothing
+          // else in resetCycle() ran either — but capitalDeployed/stepsUsed
+          // above are already committed facts about this fill, independent
+          // of whether the ladder cleanup succeeds. Recording them in
+          // `finally` means a resetCycle() failure (the sell itself is
+          // already booked and persisted above, so it is never re-booked)
+          // can never permanently drop this cycle from the optimizer's stats
+          // (codex review round 1).
+          // Deliberately NOT awaited: the caller's own saveLiveState()/
+          // fillLedger.persist() (below) durably persist this already-
+          // completed sell/cycle-close before the optimizer's balance-fetch
+          // (up to a 30s exchange timeout) gets a chance to delay them — a
+          // crash during that fetch loses only this one best-effort
+          // optimizer stats sample, never the P&L-critical state (codex
+          // review round 2). recordCycleForSizeOptimizer never rejects (its
+          // own body is try/caught), so no unhandled-rejection risk. Once
+          // it DOES resolve, re-save so the recorded sample/balance isn't
+          // left ONLY in memory until some unrelated future save happens to
+          // pick it up (codex review round 3) — cheap and idempotent, same
+          // as the periodic save timer already does.
+          try {
+            await resetCycle();
+          } finally {
+            recordCycleForSizeOptimizer({
+              stepsUsed: cycleBuysAtClose,
+              capitalDeployed: body.costBasis,
+            }).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
+          }
+        }
 
         saveLiveState();
         fillLedger.persist();
@@ -7273,9 +7285,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Buys that landed during the sweep — ingested under the closing cycle
     // (ingestFill stamps the cycle live at ingest time) but not in the
     // pre-sweep snapshot. Sells stay put: a sell landing in that window closes
-    // buys of the cycle it was ingested under.
+    // buys of the cycle it was ingested under — so a window buy whose own TP
+    // already sold (possible across a queued reset's wait, #766) stays with
+    // that sell in the closing cycle rather than splitting the pair. A TP only
+    // placed (sellOrderId is stamped at placement) does not count as sold.
+    const soldBy = (f) => f.sellOrderId && fillLedger.getRecordedSizeForOrder(f.sellOrderId) > 0;
     const sweepBuys = preSweepTradeIds
-      ? closingCycleFills().filter(f => f.side === 'buy' && !preSweepTradeIds.has(f.tradeId))
+      ? closingCycleFills().filter(f => f.side === 'buy' && !preSweepTradeIds.has(f.tradeId) && !soldBy(f))
       : [];
 
     // Persist the boundary in regime-state.json with the other operator-owned
@@ -8541,6 +8557,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // silently erase a real buy step (issue #232 follow-up).
     if (engineLocks.isMutatingPosition()) {
       return { success: false, message: engineLocks.describeBusy('position') };
+    }
+    // An operator reset must not queue behind (or, after the wait bound, run
+    // alongside) a ladder rebuild/cancel/reset in flight (#766) — refuse like
+    // rebuildLadder/cancelLadder. Uncontended, resetCycle below takes the
+    // ladder lock synchronously, so nothing can slip in between.
+    if (engineLocks.isLadderBusy()) {
+      return { success: false, message: engineLocks.describeBusy('ladder') };
     }
     // resetCycle() treats a DRAINING lifecycle as "this cycle boundary is the
     // close trigger" and transitions straight to CLOSED (stopping the engine

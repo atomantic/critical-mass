@@ -102,11 +102,15 @@ const createEngineLocks = (opts = {}) => {
 
   /**
    * Operator-facing busy reason. `structure` matches merge/rollup refusals;
-   * `position` matches cycle-reset refusals (includes in-flight fills).
-   * @param {'structure' | 'position'} [scope='structure']
+   * `position` matches cycle-reset refusals (includes in-flight fills);
+   * `ladder` matches refusals while a ladder sweep holds the ladder lock.
+   * @param {'structure' | 'position' | 'ladder'} [scope='structure']
    */
-  const describeBusy = (scope = 'structure') =>
-    scope === 'position' ? BUSY_POSITION : BUSY_STRUCTURE;
+  const describeBusy = (scope = 'structure') => {
+    if (scope === 'position') return BUSY_POSITION;
+    if (scope === 'ladder') return BUSY_LADDER;
+    return BUSY_STRUCTURE;
+  };
 
   /**
    * Acquire the merge lock for `fn`. Reentrant: a nested call from the same

@@ -39,6 +39,7 @@ describe('createEngineLocks — named predicates', () => {
     assert.equal(locks.describeBusy(), 'A merge or reconcile is already in progress');
     assert.equal(locks.describeBusy('structure'), 'A merge or reconcile is already in progress');
     assert.equal(locks.describeBusy('position'), 'A merge, reconcile, or fill is in progress — try again');
+    assert.equal(locks.describeBusy('ladder'), 'A ladder rebuild, cancel, or cycle reset is in progress — try again');
   });
 });
 
