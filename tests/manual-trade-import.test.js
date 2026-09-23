@@ -369,6 +369,25 @@ describe('Manual Trade Import', () => {
       assert.deepEqual(result, { success: false, error: 'Both buyOrderId and sellOrderId are required' });
       assert.deepEqual(adapter.calls.getOrderFills, []);
     });
+
+    // Issue #691: store.addPairedTrade had no idempotency check, so a retried
+    // importPair (e.g. operator double-clicks after a slow IPC response)
+    // created a second paired-trade record for the same (buyOrderId,
+    // sellOrderId) fills.
+    it('is idempotent on a retried import of the same buy/sell pair', async () => {
+      const adapter = createFakeAdapter({
+        fillsByOrder: { 'buy-1': buyFills, 'sell-1': sellFills },
+      });
+      const importer = createImporter({ adapter });
+
+      const first = await importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' });
+      const second = await importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' });
+
+      assert.equal(first.success, true);
+      assert.equal(second.success, true);
+      assert.equal(second.trade.id, first.trade.id);
+      assert.equal(store.getAll().length, 1, 'only one paired trade must exist across the retry');
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -558,6 +577,261 @@ describe('Manual Trade Import', () => {
       assert.equal(second.trade.id, first.trade.id);
       assert.equal(store.getAll().length, 1);
       assert.equal(fillLedger.getFillCount(), 2);
+    });
+
+    // Issue #691: addManualBuy is idempotent at the STORE layer, but a retry
+    // (IPC timeout, or injectBody throwing after the ledger/store writes) that
+    // reached body creation would create a SECOND body for the same fill and
+    // place a second live TP sell against it. A retried createBody:true import
+    // must create/inject exactly one body.
+    it('creates and injects exactly one body across a retried import (createBody:true, engine running)', async () => {
+      const injected = [];
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      const importer = createImporter({
+        adapter,
+        injectBody: async (body) => {
+          injected.push(body);
+          return { tpPlaced: true };
+        },
+      });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(first.success, true);
+      assert.equal(second.success, true);
+      assert.equal(injected.length, 1, 'injectBody must be called exactly once across the retry');
+      assert.equal(second.trade.bodyId, first.trade.bodyId);
+      assert.equal(second.trade.bodyId, injected[0].id);
+      assert.equal(second.alreadyImported, true);
+      assert.equal(store.getAll().length, 1);
+    });
+
+    // Issue #691 review follow-up: the top-of-function retry guard (trade.bodyId
+    // / STATUS.TP_PENDING) only fires once a PRIOR call reached store.markTpPlaced.
+    // If an earlier call's injectBody actually pushed the real body and placed its
+    // TP, but the call then rejected before markTpPlaced ran (e.g. saveLiveState()
+    // throwing), the trade store never learns about that body — so a retry falls
+    // through the guard, creates a second phantom body, and calls injectBody again.
+    // regime-engine's own injectBody refuses that as a duplicate of the real body;
+    // importBuy must honor the refusal and re-link the trade/ledger to the real
+    // body, never to the phantom it just (correctly) failed to inject.
+    it('re-links the trade to the existing body when injectBody refuses a retried duplicate', async () => {
+      const engineBodies = [];
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      const importer = createImporter({
+        adapter,
+        injectBody: async (body) => {
+          const duplicate = engineBodies.find((b) => b.sourceOrderIds[0] === body.sourceOrderIds[0]);
+          if (duplicate) {
+            return { success: false, error: 'duplicate body', bodyId: duplicate.id, tpPlaced: true };
+          }
+          // Real regime-engine behavior: push + place TP happen BEFORE the
+          // final saveLiveState() call, so a throw there still leaves the
+          // body live in the engine.
+          engineBodies.push(body);
+          throw new Error('saveLiveState failed (simulated)');
+        },
+      });
+
+      await assert.rejects(
+        importer.importBuy({ buyOrderId: 'buy-1', createBody: true }),
+        /saveLiveState failed/,
+      );
+      assert.equal(engineBodies.length, 1, 'the real body was pushed into the engine despite the later throw');
+      const realBodyId = engineBodies[0].id;
+
+      const beforeRetry = store.getAll();
+      assert.equal(beforeRetry.length, 1);
+      assert.equal(beforeRetry[0].bodyId, null, 'the trade store never learned about the real body');
+
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.alreadyImported, true);
+      assert.equal(engineBodies.length, 1, 'no second body was ever pushed into the engine');
+      assert.equal(second.trade.bodyId, realBodyId, 'the trade must link to the real, live body — not the refused phantom');
+
+      const rows = fillLedger.getFillsForOrder('buy-1');
+      assert.ok(rows.length > 0);
+      for (const row of rows) {
+        assert.equal(row.bodyId, realBodyId, 'fill-ledger rows must point at the real body, not the phantom');
+      }
+    });
+
+    it('persists exactly one body to regime-state.json across a retried import (createBody:true, engine not running)', async () => {
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      const importer = createImporter({ adapter, injectBody: null });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(first.success, true);
+      assert.equal(second.success, true);
+      assert.equal(second.trade.bodyId, first.trade.bodyId);
+      assert.equal(second.alreadyImported, true);
+
+      const saved = readRegimeStateFile();
+      assert.ok(saved, 'regime-state.json was written');
+      assert.equal(saved.position.celestialBodies.length, 1, 'only one body must be persisted across the retry');
+    });
+
+    // Issue #691 review follow-up (codex): injectBody can fail for a reason
+    // OTHER than a confirmed duplicate — e.g. {success:false, error:'Engine
+    // not running'} from a race with regime:start/stop. Before this fix,
+    // importBuy unconditionally called store.markTpPlaced regardless of the
+    // injection outcome, marking the trade TP_PENDING against a body that
+    // was never actually pushed into the engine. Combined with the new
+    // top-of-function retry guard, that permanently short-circuited every
+    // future retry on the same buyOrderId, orphaning the fill for good.
+    it('leaves the trade retryable when injectBody fails without a confirmed duplicate', async () => {
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      let calls = 0;
+      const importer = createImporter({
+        adapter,
+        injectBody: async () => {
+          calls++;
+          if (calls === 1) return { success: false, error: 'Engine not running' };
+          return { success: true, tpPlaced: true };
+        },
+      });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, false);
+      assert.match(first.error, /Engine not running/);
+
+      const afterFirst = store.getAll();
+      assert.equal(afterFirst.length, 1);
+      assert.equal(afterFirst[0].bodyId, null, 'a failed injection must never be linked to the trade');
+      assert.notEqual(afterFirst[0].status, STATUS.TP_PENDING, 'the trade must stay retryable, not TP_PENDING');
+      // The optimistic ledger annotation from before the (failed) injection
+      // attempt must be rolled back too.
+      const rowAfterFirst = fillLedger.getFillsForOrder('buy-1')[0];
+      assert.equal(rowAfterFirst.bodyId, null);
+      assert.equal(rowAfterFirst.isBodyOwned, false);
+
+      // A retry (e.g. once the engine finishes starting) must actually try
+      // again — the top-of-function guard must not silently treat this as
+      // already imported.
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(second.success, true);
+      assert.equal(calls, 2, 'the retry must call injectBody again, not skip it');
+      assert.equal(second.trade.status, STATUS.TP_PENDING);
+      assert.ok(second.trade.bodyId);
+      assert.equal(fillLedger.getFillsForOrder('buy-1')[0].bodyId, second.trade.bodyId);
+    });
+
+    // Issue #691 review follow-up (codex, rounds 3-4): a body that fully
+    // closes (its TP completely fills) is spliced out of
+    // positionState.celestialBodies, so injectBody's in-memory duplicate
+    // check can't see it on a later retry. The fill ledger still can:
+    // placeBodyTp stamps BOTH `bodyId` and `sellOrderId` onto a body's buy
+    // fills the moment its TP is PLACED (crash-resilient linkage, CLAUDE.md),
+    // before the sell ever fills, and that stamp survives the body's later
+    // removal. A retry must consult `bodyId` specifically (round 4: a bare
+    // `sellOrderId` alone is NOT safe — recalculateCycles' generic
+    // cycle-completion auto-link stamps that onto every buy in a >=50%-sold
+    // cycle for display, without a bodyId) and refuse to create a second
+    // body — otherwise it would fabricate a live position (and place a real
+    // second TP sell) for an asset that was already sold.
+    it('refuses to create a second body once the buy fills are already linked to a body in the ledger', async () => {
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      let calls = 0;
+      const importer = createImporter({
+        adapter,
+        injectBody: async () => {
+          calls++;
+          // Mimic placeBodyTp's real side effect: stamp bodyId + sellOrderId
+          // onto the buy fills at TP PLACEMENT time, then fail before
+          // returning — the crash-resilient ledger linkage survives the
+          // failure even though the trade store update never runs.
+          fillLedger.annotateFillsByOrderId('buy-1', { bodyId: 'body-live-1', sellOrderId: 'tp-order-1' });
+          fillLedger.persist();
+          throw new Error('saveLiveState failed (simulated)');
+        },
+      });
+
+      await assert.rejects(importer.importBuy({ buyOrderId: 'buy-1', createBody: true }));
+      assert.equal(calls, 1);
+
+      // Simulates the window in which that TP goes on to fully fill and its
+      // body is removed from the engine's live position before the operator
+      // retries — exactly what makes the in-memory duplicate check blind.
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.alreadyImported, true);
+      assert.equal(calls, 1, 'injectBody must never be called again once the buy is already linked to a body');
+      assert.equal(store.getAll().length, 1);
+      // The trade record must be linked to the REAL body the ledger already
+      // knows about — not left orphaned, and never a fresh id of its own.
+      assert.equal(store.getAll()[0].bodyId, 'body-live-1');
+      assert.equal(store.getAll()[0].status, STATUS.TP_PENDING);
+    });
+
+    it('does not skip body creation merely because a cycle-completion sellOrderId is present without a bodyId', async () => {
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      const importer = createImporter({ adapter, injectBody: null });
+
+      // Ledger-only import first (createBody:false) — the fills exist in the
+      // ledger but no body/TP has ever been created for them.
+      await importer.importBuy({ buyOrderId: 'buy-1', createBody: false });
+
+      // Simulate recalculateCycles' "auto-link buys to sells within
+      // completed cycles" step (fill-ledger.js) blanket-stamping sellOrderId
+      // onto this buy purely because its cycle crossed the 50%-sold
+      // heuristic — NOT proof this specific buy's own quantity was sold, and
+      // critically WITHOUT a bodyId (that field is only ever set by an
+      // actual body-creation flow).
+      fillLedger.annotateFillsByOrderId('buy-1', { sellOrderId: 'unrelated-cycle-sell' });
+      fillLedger.persist();
+
+      const result = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(result.success, true);
+      assert.notEqual(result.alreadyImported, true, 'a bare cycle-linkage sellOrderId must not be treated as already-imported');
+      assert.ok(result.trade.bodyId, 'a body must still be created for this genuinely-unmanaged buy');
+      const saved = readRegimeStateFile();
+      assert.equal(saved.position.celestialBodies.length, 1);
+    });
+
+    it('detects an engine-stopped body already persisted to disk even if markTpPlaced never completes (crash window)', async () => {
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      const importer = createImporter({ adapter, injectBody: null });
+
+      // Simulate a process crash between persistBodyToDisk succeeding and
+      // store.markTpPlaced ever completing — the fill-ledger bodyId
+      // annotation (stamped and persisted BEFORE persistBodyToDisk even
+      // runs) must survive this window even though the trade store's
+      // bodyId/status update does not.
+      const realMarkTpPlaced = store.markTpPlaced;
+      let markCalls = 0;
+      store.markTpPlaced = (...args) => {
+        markCalls++;
+        if (markCalls === 1) throw new Error('process crashed (simulated)');
+        return realMarkTpPlaced.apply(store, args);
+      };
+      try {
+        await assert.rejects(importer.importBuy({ buyOrderId: 'buy-1', createBody: true }));
+      } finally {
+        store.markTpPlaced = realMarkTpPlaced;
+      }
+
+      const beforeRetry = store.getAll();
+      assert.equal(beforeRetry.length, 1);
+      assert.equal(beforeRetry[0].bodyId, null, 'the trade store never learned about the persisted body');
+      const savedBefore = readRegimeStateFile();
+      assert.ok(savedBefore, 'the body was persisted to regime-state.json despite the later crash');
+      assert.equal(savedBefore.position.celestialBodies.length, 1);
+
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.alreadyImported, true);
+      const savedAfter = readRegimeStateFile();
+      assert.equal(savedAfter.position.celestialBodies.length, 1, 'no second body may be persisted');
+      assert.equal(second.trade.bodyId, savedBefore.position.celestialBodies[0].id, 'the retry must link the trade record to the already-persisted body');
+      assert.equal(second.trade.status, STATUS.TP_PENDING);
     });
 
     it('requires a buyOrderId', async () => {

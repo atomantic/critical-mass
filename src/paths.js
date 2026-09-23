@@ -6,9 +6,10 @@
 
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const APP_ROOT = path.join(__dirname, '..');
+const DATA_DIR = path.join(APP_ROOT, 'data');
 const UPDOWN_DATA_DIR = path.join(DATA_DIR, 'updown');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
-const KEYS_DIR = path.join(__dirname, '..', 'keys');
+const KEYS_DIR = path.join(APP_ROOT, 'keys');
 
-module.exports = { DATA_DIR, UPDOWN_DATA_DIR, BACKUP_DIR, KEYS_DIR };
+module.exports = { APP_ROOT, DATA_DIR, UPDOWN_DATA_DIR, BACKUP_DIR, KEYS_DIR };
