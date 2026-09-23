@@ -796,6 +796,25 @@ describe('an unowned entry whose every row a closed body stamped (issue #772)', 
     assertNothingBooked((await boot(pair)).eng);
   });
 
+  it('books nothing when a row names a body no closed trade lists', async () => {
+    const pair = '__teststartupunowned772_k__';
+    writeGoneFund(pair, {
+      ledgerExtra: (seed) => {
+        const row = seed.getFillsForOrder(ORDER_ID).find(f => f.tradeId === T2.tradeId);
+        row.bodyId = 'body-unrecorded';
+      },
+    });
+    recordTrades(pair, [goneTrade()]);
+    assertNothingBooked((await boot(pair)).eng);
+  });
+
+  it('books nothing when a live body\'s sale lists the order', async () => {
+    const pair = '__teststartupunowned772_l__';
+    writeGoneFund(pair);
+    recordTrades(pair, [goneTrade(), goneTrade({ sellOrderId: 'tp-other-old', bodyId: 'body-other', qtySold: 0.0005, holdbackAsset: 0, isPartial: true })]);
+    assertNothingBooked((await boot(pair)).eng);
+  });
+
   it('books nothing when post-#607 consumption disagrees with the closed trades', async () => {
     const pair = '__teststartupunowned772_j__';
     writeGoneFund(pair, { ledgerExtra: (seed) => seed.recordBuyConsumption(ORDER_ID, GONE_TP, 0.003) });
