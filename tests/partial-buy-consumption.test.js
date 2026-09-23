@@ -385,11 +385,12 @@ describe('merge-snapshot partial sale (issue #607)', () => {
   });
 });
 
-describe('merge-snapshot complete sale with the live body still present (issue #607)', () => {
-  it('consumes only what left the body, so held cost keeps matching the bodies', async () => {
+describe('merge-snapshot complete sale with the live body still present (issues #607, #718)', () => {
+  it('closes the whole snapshot body, leaving only the fold-in, so bodies + reserves match the ledger', async () => {
     // The target TP fills its FULL planned size (0.0099 of a 0.01 body; 0.0001
     // is designed holdback) during a buy-merge cancel, while a fold-in lands
-    // on the same live body. The live body is deducted only the sold 0.0099.
+    // on the same live body. The snapshot body closed: the live body loses
+    // the whole snapshot (sold + holdback) and keeps only the fold-in.
     let target;
     let getOrderCalls = 0;
     const eng = makeEngine({
@@ -423,17 +424,29 @@ describe('merge-snapshot complete sale with the live body still present (issue #
 
     await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
 
-    assert.deepEqual(ledger.getBuyOrderConsumption('buy-o').consumedBy, { 'tp-full': 0.0099 });
+    assert.deepEqual(ledger.getBuyOrderConsumption('buy-o').consumedBy, { 'tp-full': 0.01 },
+      'the snapshot buy is consumed in full: sold + booked holdback');
+    assert.equal(ledger.getBuyOrderConsumption('buy-f').consumedBy, null, 'the fold-in was not part of the sold TP');
+
+    const live = pos.celestialBodies.find(b => b.id === 'body-ffffffff');
+    assert.ok(live, 'the live body survives, holding only the fold-in');
+    assert.ok(Math.abs(live.assetQty - 0.006) < EPS, `fold-in qty only, got ${live.assetQty}`);
+    assert.ok(Math.abs(live.costBasis - 330) < 0.01, `fold-in cost only, got ${live.costBasis}`);
+    assert.ok(Math.abs(live.avgPrice - 55000) < 0.01, `fold-in price, got ${live.avgPrice}`);
+    assert.deepEqual(live.buyOrders.map(e => e.orderId), ['buy-f'], 'the closed snapshot tranche left the live body');
+    assert.ok(!live.sourceOrderIds.includes('buy-o'), 'the closed snapshot buy is no longer a source of the live body');
+    assert.ok(live.sourceOrderIds.includes('buy-f'));
+
     const derived = ledger.getDerivedRealizedPnL();
     const inBodies = pos.celestialBodies.reduce((sum, b) => sum + b.assetQty, 0);
     const bodyCost = pos.celestialBodies.reduce((sum, b) => sum + b.costBasis, 0);
     assert.ok(Math.abs(derived.heldOpenAssetQty - inBodies) < EPS, `held ${derived.heldOpenAssetQty} vs bodies ${inBodies}`);
     assert.ok(Math.abs(derived.heldOpenBuyCostBasis - bodyCost) < 0.01, `held cost ${derived.heldOpenBuyCostBasis} vs bodies ${bodyCost}`);
-    // Issue #718: the holdback is both booked as reserves and still in the
-    // live body. The ledger identity exposes it rather than hiding it.
+    // Issue #718: the holdback is booked as reserves and NOT also kept in the
+    // live body, so the ledger identity holds exactly.
     assert.ok(Math.abs(derived.realizedAssetPnL - 0.0001) < EPS);
-    assert.ok(Math.abs((inBodies + derived.realizedAssetPnL) - derived.ledgerNetAsset - 0.0001) < EPS,
-      'bodies + reserves exceed the ledger by exactly the double-counted holdback');
+    assert.ok(Math.abs((inBodies + derived.realizedAssetPnL) - derived.ledgerNetAsset) < EPS,
+      `bodies ${inBodies} + reserves ${derived.realizedAssetPnL} vs ledger ${derived.ledgerNetAsset}`);
   });
 });
 

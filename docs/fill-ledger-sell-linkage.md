@@ -164,9 +164,11 @@ buy fill rows of order "abc123"
 
 - **What counts as consumed:** sold quantity plus the holdback the sale books
   as reserves (`bodyHoldbackAsset`). A partial books no reserve and consumes
-  only what sold. (One exception, issue #718: a merge-snapshot fill whose
-  live body survives consumes only the sold qty, matching what that body
-  deducts.) So for sells booked this way,
+  only what sold. A complete merge-snapshot fill whose live body object
+  survives closes the snapshot body the same way: it consumes sold +
+  holdback and removes that whole snapshot from the live body, leaving only
+  a fold-in the snapshot's TP never covered (issue #718). So for sells booked
+  this way,
   `Σ buy size − Σ sell size == heldOpenAssetQty + realizedAssetPnL` holds by
   construction: the coverage identity from the ledger alone.
 - **How it is attributed:** each `body.buyOrders` entry is a tranche with its
