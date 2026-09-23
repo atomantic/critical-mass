@@ -1645,6 +1645,139 @@ describe('Fill Ledger', () => {
   });
 
   // =======================================================================
+  // Orphan recovery must not move the live cycle (issue #675)
+  // =======================================================================
+  describe('recalculateCycles orphan recovery preserves the live cycle (issue #675)', () => {
+    const HOUR = 60 * 60 * 1000;
+    const T0 = Date.parse('2026-01-01T00:00:00.000Z');
+    const at = (ms) => new Date(T0 + ms).toISOString();
+
+    // Completed cycle-1 at t=10h, active cycle-2 (two buy orders) at t=20h.
+    const seedLiveCycles = (ledger) => {
+      ledger.ingestFill(makeBuyFill({ tradeId: 'c1-b', orderId: 'c1-buy', tradeTime: at(10 * HOUR) }), null, { cycleId: 'cycle-1' });
+      ledger.ingestFill(makeSellFill({ tradeId: 'c1-s', orderId: 'c1-sell', tradeTime: at(11 * HOUR) }), null, { cycleId: 'cycle-1' });
+      ledger.ingestFill(makeBuyFill({ tradeId: 'c2-b1', orderId: 'c2-buy-1', tradeTime: at(20 * HOUR) }), null, { cycleId: 'cycle-2' });
+      ledger.ingestFill(makeBuyFill({ tradeId: 'c2-b2', orderId: 'c2-buy-2', tradeTime: at(21 * HOUR) }), null, { cycleId: 'cycle-2' });
+      ledger.setCurrentCycleId('cycle-2');
+    };
+    const currentTradeIds = (ledger) => ledger.getCurrentCycleFills().map(f => f.tradeId).sort();
+
+    it('a single historical orphan buy does not replace the active cycle', () => {
+      const ledger = createTestLedger('orphan-buy');
+      seedLiveCycles(ledger);
+      ledger.ingestFill(makeBuyFill({ tradeId: 'o1-b', orderId: 'o1-buy', tradeTime: at(0) }), null, { cycleId: null });
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.orphansFixed, 1);
+      assert.deepStrictEqual(currentTradeIds(ledger), ['c2-b1', 'c2-b2'],
+        'the live cycle must still hold the t=20h buys, not the historical orphan');
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 2);
+      assert.equal(result.activeCycleId, ledger.getCurrentCycleId());
+      // The orphan sits in its own recovered cycle, distinct from the live one.
+      const orphan = ledger.getAllFills().find(f => f.tradeId === 'o1-b');
+      assert.ok(orphan.cycleId, 'orphan got a cycle');
+      assert.notEqual(orphan.cycleId, ledger.getCurrentCycleId());
+      // Preview and apply agree on the live cycle and the rename map.
+      assert.equal(preview.activeCycleId, result.activeCycleId);
+      assert.deepStrictEqual(preview.idMap, result.idMap);
+      // A later fill stamps into the live cycle, not a completed one.
+      ledger.ingestFill(makeBuyFill({ tradeId: 'c2-b3', orderId: 'c2-buy-3', tradeTime: at(22 * HOUR) }));
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 3);
+    });
+
+    it('returns an idMap that re-points a persisted activeCycleId after an orphan pair renumbers cycles', () => {
+      const ledger = createTestLedger('orphan-pair');
+      seedLiveCycles(ledger);
+      ledger.ingestFill(makeBuyFill({ tradeId: 'o1-b', orderId: 'o1-buy', tradeTime: at(0) }), null, { cycleId: null });
+      ledger.ingestFill(makeSellFill({ tradeId: 'o1-s', orderId: 'o1-sell', tradeTime: at(1 * HOUR) }), null, { cycleId: null });
+
+      const persistedActiveCycleId = 'cycle-2';
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.orphansFixed, 2);
+      assert.equal(result.cyclesCompleted, 2, 'orphan pair + cycle-1 are completed');
+      assert.deepStrictEqual(currentTradeIds(ledger), ['c2-b1', 'c2-b2']);
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 2);
+      // The live cycle was renamed; the map carries the persisted ID to it.
+      assert.ok(Object.prototype.hasOwnProperty.call(result.idMap, persistedActiveCycleId),
+        'idMap must include the renamed live cycle');
+      assert.equal(result.idMap[persistedActiveCycleId], ledger.getCurrentCycleId());
+      assert.equal(result.activeCycleId, ledger.getCurrentCycleId());
+      assert.equal(preview.activeCycleId, result.activeCycleId);
+      assert.deepStrictEqual(preview.idMap, result.idMap);
+
+      // Simulated restart: restoring the RE-POINTED ID selects the live buys;
+      // restoring the stale one would select the completed cycle.
+      const repointed = result.idMap[persistedActiveCycleId] ?? persistedActiveCycleId;
+      ledger.setCurrentCycleId(repointed);
+      assert.deepStrictEqual(currentTradeIds(ledger), ['c2-b1', 'c2-b2']);
+      ledger.setCurrentCycleId(persistedActiveCycleId);
+      assert.notDeepStrictEqual(currentTradeIds(ledger), ['c2-b1', 'c2-b2'],
+        'sanity: the stale persisted ID now names a different cycle');
+    });
+
+    it('keeps an empty post-reset live cycle last so renumbering cannot collide with it', () => {
+      const ledger = createTestLedger('orphan-fresh');
+      ledger.ingestFill(makeBuyFill({ tradeId: 'c1-b', orderId: 'c1-buy', tradeTime: at(10 * HOUR) }), null, { cycleId: 'cycle-1' });
+      ledger.ingestFill(makeSellFill({ tradeId: 'c1-s', orderId: 'c1-sell', tradeTime: at(11 * HOUR) }), null, { cycleId: 'cycle-1' });
+      ledger.ingestFill(makeBuyFill({ tradeId: 'c2-b', orderId: 'c2-buy', tradeTime: at(20 * HOUR) }), null, { cycleId: 'cycle-2' });
+      ledger.ingestFill(makeSellFill({ tradeId: 'c2-s', orderId: 'c2-sell', tradeTime: at(21 * HOUR) }), null, { cycleId: 'cycle-2' });
+      ledger.setCurrentCycleId('cycle-3'); // reset: no fills yet
+      ledger.ingestFill(makeBuyFill({ tradeId: 'o1-b', orderId: 'o1-buy', tradeTime: at(0) }), null, { cycleId: null });
+      ledger.ingestFill(makeSellFill({ tradeId: 'o1-s', orderId: 'o1-sell', tradeTime: at(1 * HOUR) }), null, { cycleId: null });
+
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.cyclesCompleted, 3);
+      assert.deepStrictEqual(currentTradeIds(ledger), [], 'the fresh live cycle must not inherit a completed cycle');
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 0);
+      const completedIds = new Set(result.cycleDetails.map(d => d.cycleId));
+      assert.ok(!completedIds.has(ledger.getCurrentCycleId()), 'live cycle ID must not name a completed cycle');
+      // The next reset must also produce a fresh, unused ID.
+      const next = ledger.startNewCycle();
+      assert.ok(!completedIds.has(next));
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 0);
+    });
+
+    it('keeps a newer incomplete orphan group in its own cycle without displacing the live one', () => {
+      const ledger = createTestLedger('orphan-newer');
+      seedLiveCycles(ledger);
+      // A buy re-imported with cycleId null that postdates the live cycle's
+      // start. Attributing it is out of scope for recovery (it may be linked
+      // to fills on either side); what matters is that it never replaces
+      // the live cycle.
+      ledger.ingestFill(makeBuyFill({ tradeId: 'late-b', orderId: 'late-buy', tradeTime: at(22 * HOUR) }), null, { cycleId: null });
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.orphansFixed, 1);
+      assert.deepStrictEqual(currentTradeIds(ledger), ['c2-b1', 'c2-b2']);
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 2);
+      const late = ledger.getAllFills().find(f => f.tradeId === 'late-b');
+      assert.notEqual(late.cycleId, ledger.getCurrentCycleId());
+      assert.equal(preview.activeCycleId, result.activeCycleId);
+      assert.deepStrictEqual(preview.idMap, result.idMap);
+    });
+
+    it('still adopts an incomplete orphan group when there is no live cycle', () => {
+      const ledger = createTestLedger('orphan-no-live');
+      ledger.ingestFill(makeBuyFill({ tradeId: 'o1-b', orderId: 'o1-buy', tradeTime: at(0) }), null, { cycleId: null });
+      assert.equal(ledger.getCurrentCycleId(), null);
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.activeCycleId, 'cycle-1');
+      assert.equal(ledger.getCurrentCycleId(), 'cycle-1');
+      assert.equal(preview.activeCycleId, result.activeCycleId);
+    });
+  });
+
+  // =======================================================================
   // Cycle recalculation parity & shared rules (issue #582)
   // =======================================================================
   describe('previewRecalculateCycles and recalculateCycles parity (issue #582)', () => {

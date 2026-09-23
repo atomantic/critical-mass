@@ -1033,6 +1033,41 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * After fillLedger.recalculateCycles(), re-point the durable
+   * positionState.activeCycleId at the ledger's live cycle. Orphan recovery
+   * can renumber every cycle (returned as `idMap`), and the persisted
+   * boundary is otherwise only written by resetCycle — so without this the
+   * next restart's restorePersistedCycleId would select whatever cycle now
+   * holds the old name, possibly a completed one (#675).
+   *
+   * An existing marker is only translated through the rename map — never
+   * replaced by the ledger's own guess. After a SIGUSR1 reload the ledger's
+   * current cycle comes from load()'s "most recent unsold cycle" heuristic,
+   * and overwriting the operator's post-reset boundary with it would undo the
+   * #606 fix on the next restart. Legacy state files without the marker only
+   * gain one when the recalc actually renamed cycles.
+   * @param {{idMap?: Object<string, string>}} recalc
+   * @returns {boolean} Whether activeCycleId changed (caller should persist)
+   */
+  const syncActiveCycleIdAfterRecalc = (recalc) => {
+    const idMap = recalc?.idMap || {};
+    const previous = positionState.activeCycleId;
+    let next;
+    if (typeof previous === 'string') {
+      next = Object.prototype.hasOwnProperty.call(idMap, previous) ? idMap[previous] : previous;
+    } else if (Object.keys(idMap).length > 0) {
+      next = fillLedger.getCurrentCycleId();
+    }
+    if (!next || next === previous) return false;
+    logger.info(`🔢 [${exchange}] Re-pointing persisted active cycle after recalc: ${previous ?? 'none'} → ${next}`, {
+      previousCycleId: previous ?? null,
+      cycleId: next,
+    });
+    positionState.activeCycleId = next;
+    return true;
+  };
+
+  /**
    * Save live state to disk (for faster recovery on restarts)
    */
   const saveLiveState = () => {
@@ -1126,6 +1161,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Also reload fill ledger from disk (a live reload keeps in-memory fills
       // on a corrupt file rather than throwing — see fill-ledger.js load()).
       fillLedger.load();
+      // load() re-derives the current cycle from its "most recent unsold
+      // cycle" heuristic; re-apply the operator's durable boundary (#606/#675).
+      restorePersistedCycleId(fillLedger, positionState, logger, exchange);
       logger.info(`✅ [${exchange}] State reloaded from disk in ${Date.now() - startedAt}ms`);
       saveLiveStateGuarded('sigusr1-reload');
       return true;
@@ -1798,6 +1836,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       // Recalculate cycles from fill ledger for cycle counting and per-cycle details.
       const recalcResult = fillLedger.recalculateCycles();
+      // Orphan recovery may renumber cycles. Re-point the durable boundary
+      // (#606) at the ledger's live cycle and persist it now, or the next
+      // restart restores a stale ID that names a different cycle (#675).
+      if (syncActiveCycleIdAfterRecalc(recalcResult)) saveLiveState();
       if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0) {
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         refreshRealizedFromCyclePairs();
@@ -5708,7 +5750,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {{cyclesCompleted:number, realizedPnL:number, realizedAssetPnL:number, cycleDetails:any[], orphansFixed:number, activeCycleId:string|null}}
    */
   const recalculateAndRefresh = () => {
+    // Anchor the ledger on the durable boundary first so renumbering keeps
+    // THAT cycle last and reports its rename in idMap (#675).
+    restorePersistedCycleId(fillLedger, positionState, logger, exchange);
     const recalc = fillLedger.recalculateCycles();
+    syncActiveCycleIdAfterRecalc(recalc);
     positionState.cyclesCompleted = recalc.cyclesCompleted;
     // Source of truth — cycle pairs, NOT FIFO/closed-trades. Also updates
     // realizedAssetPnL and heldAssetCostBasis and persists.
