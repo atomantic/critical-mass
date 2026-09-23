@@ -1569,6 +1569,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         positionState.cycleBuys = actualCycleBuys;
       }
 
+      // Seal legacy closure into per-buy consumption records while the
+      // sellOrderId links still say which orders were closed (issue #607).
+      // Must run BEFORE anything that can place a body TP — offline fill
+      // recovery, TP repricing — because placeBodyTp re-stamps sellOrderId
+      // on every row of the order, erasing the evidence.
+      const sealedLegacy = sealLegacyClosure();
+      if (sealedLegacy > 0) {
+        fillLedger.persist();
+        logger.info(`🔒 [${exchange}] Sealed legacy closure of ${sealedLegacy} buy order(s) into consumption records`);
+      }
+
       // Check for orders that filled while we were offline (non-critical, continue on error)
       const offlineFills = await checkOfflineOrderFills().catch(err => {
         logger.warn(`⚠️ [${exchange}] Failed to check offline fills: ${err.message}`, { error: err.message });
@@ -1852,15 +1863,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // (#606) at the ledger's live cycle and persist it now, or the next
       // restart restores a stale ID that names a different cycle (#675).
       if (syncActiveCycleIdAfterRecalc(recalcResult)) saveLiveState();
-
-      // Seal legacy closure into per-buy consumption records while the
-      // sellOrderId links still say which orders were closed (issue #607) —
-      // the next TP placed for a later tranche would re-stamp them.
-      const sealedLegacy = sealLegacyClosure();
-      if (sealedLegacy > 0) {
-        fillLedger.persist();
-        logger.info(`🔒 [${exchange}] Sealed legacy closure of ${sealedLegacy} buy order(s) into consumption records`);
-      }
       if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0 || sealedLegacy > 0) {
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         refreshRealizedFromCyclePairs();
@@ -2592,20 +2594,30 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const sealLegacyClosure = () => {
     const openQtyByOrder = new Map();
+    // Orders a live body references through something it cannot measure — a
+    // tranche with no positive assetQty (bodies from before buyOrders tracked
+    // quantities) or a sourceOrderId with no tranche at all. Their open qty is
+    // unknown, so they are left unsealed rather than marked fully closed.
+    const unmeasured = new Set();
     const seen = new Set();
     for (const body of (positionState.celestialBodies || [])) {
+      const measured = new Set();
       for (const entry of (body.buyOrders || [])) {
-        if (!entry || !entry.orderId || seen.has(entry)) continue;
+        if (!entry || !entry.orderId || entry.orderId === 'core-migration' || seen.has(entry)) continue;
         seen.add(entry);
         const size = Number(entry.assetQty) || 0;
-        if (!(size > 0)) continue;
+        if (!(size > 0)) { unmeasured.add(entry.orderId); continue; }
+        measured.add(entry.orderId);
         const prior = Number.isFinite(entry.consumedQty)
           ? entry.consumedQty
           : size * Math.min(Math.max(fillLedger.getBuyOrderConsumption(entry.orderId)?.consumedCostFraction ?? 0, 0), 1);
         openQtyByOrder.set(entry.orderId, (openQtyByOrder.get(entry.orderId) || 0) + Math.max(0, size - prior));
       }
+      for (const id of (body.sourceOrderIds || [])) {
+        if (id && id !== 'core-migration' && !measured.has(id)) unmeasured.add(id);
+      }
     }
-    return fillLedger.sealLegacyClosedBuys(openQtyByOrder);
+    return fillLedger.sealLegacyClosedBuys(openQtyByOrder, unmeasured);
   };
 
   /**

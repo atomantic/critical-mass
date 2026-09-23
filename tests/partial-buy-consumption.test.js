@@ -564,3 +564,85 @@ describe('legacy order closed before deploy, continued after (issue #607)', () =
     assert.deepEqual(ledger.getBuyOrderConsumption('buy-l').consumedBy, { __legacy__: 0 }, 'the live tranche stays open');
   });
 });
+
+describe('legacy seal ordering at boot (issue #607)', () => {
+  it('seals before offline-fill recovery re-stamps the order onto a new body TP', async () => {
+    // Pre-deploy: 0.004 of buy-p went into body A, whose TP tp-a closed it.
+    // During the deploy downtime the rest of buy-p (0.006) filled; boot's
+    // offline recovery books it into a new body B and places B's TP, which
+    // re-stamps sellOrderId on every row of buy-p.
+    const sells = {};
+    let sealedWhenOfflineCheckRan = null;
+    let eng;
+    eng = makeEngine({
+      getProductDetails: async () => PRODUCT_DETAILS,
+      getOpenOrders: async () => {
+        sealedWhenOfflineCheckRan = eng.getFillLedger().getBuyOrderConsumption('buy-p').consumedBy;
+        return [];
+      },
+      getOrder: async (orderId) => (orderId === 'buy-p'
+        ? { status: 'FILLED', side: 'BUY', filledSize: 0.01, averageFilledPrice: 50000 }
+        : { status: 'OPEN', filledSize: 0 }),
+      getOrderFills: async (orderId) => {
+        if (orderId === 'buy-p') {
+          return [rawFill('buy', 'buy-p', 'buy-p-t1', 0.004, 50000), rawFill('buy', 'buy-p', 'buy-p-t2', 0.006, 50000)];
+        }
+        return sells[orderId] || [];
+      },
+      getAccountBalance: async () => ({ total: 0, available: 0, hold: 0 }),
+    }, {
+      getPendingEntries: () => new Map([['buy-p', { type: 'entry' }]]),
+      getPendingOrdersList: () => [],
+      setPriceIncrement: () => {},
+      placeBodyTpOrder: async () => ({ success: true, orderId: 'tp-b' }),
+    });
+    eng._test.setRunning(false);
+    eng._test.setRecoveryModule({
+      recoverState: async () => ({ position: { totalAsset: 0, totalCostBasis: 0, avgCostBasis: 0, cycleBuys: 0 } }),
+    });
+    const pos = eng._getPositionState();
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-p', 'buy-p-t1', 0.004, 50000));
+    ledger.annotateFillsByOrderId('buy-p', { sellOrderId: 'tp-a' });
+    ledger.ingestFill(rawFill('sell', 'tp-a', 'tp-a-t1', 0.004, 52000));
+    ledger.annotateFillsByOrderId('tp-a', { bodyPnl: 8, bodyHoldbackAsset: 0, isBodyOwned: true });
+    pos.celestialBodies = [];
+
+    await eng.start().catch(() => {}); // later boot stages are not under test
+
+    assert.deepEqual(sealedWhenOfflineCheckRan, { __legacy__: 0.004 }, 'sealed before offline fill recovery ran');
+    const bodyB = pos.celestialBodies.find(b => b.buyOrders.some(e => e.orderId === 'buy-p'));
+    assert.ok(bodyB, 'offline recovery booked the downtime tranche into a body');
+    assert.equal(ledger.getFillsForOrder('buy-p')[0].sellOrderId, bodyB.tpOrderId, "B's TP re-stamped the order");
+
+    // B sells: A's long-sold share must not come back as held.
+    sells[bodyB.tpOrderId] = [rawFill('sell', bodyB.tpOrderId, 'tp-b-t1', bodyB.assetOnOrder, 52000)];
+    await eng._test.handleOrderFill(sellFill(bodyB.tpOrderId, bodyB.assetOnOrder, 52000));
+    const derived = ledger.getDerivedRealizedPnL();
+    assert.ok(Math.abs(derived.heldOpenAssetQty) < EPS, `nothing of buy-p is held, got ${derived.heldOpenAssetQty}`);
+    assert.ok(Math.abs(derived.heldOpenBuyCostBasis) < 0.01, `no phantom cost, got ${derived.heldOpenBuyCostBasis}`);
+  });
+
+  it('leaves an order unsealed when a live body references it through a tranche it cannot measure', () => {
+    const eng = makeEngine({});
+    const pos = eng._getPositionState();
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-u', 'buy-u-t1', 0.02, 50000));
+    ledger.ingestFill(rawFill('buy', 'buy-s', 'buy-s-t1', 0.01, 50000));
+    ledger.ingestFill(rawFill('sell', 'tp-stale', 'tp-stale-t1', 0.001, 52000));
+    ledger.annotateFillsByOrderId('buy-u', { sellOrderId: 'tp-stale' });
+    ledger.annotateFillsByOrderId('buy-s', { sellOrderId: 'tp-stale' });
+    // Pre-quantity-tracking body: backfilled tranche with assetQty 0.
+    const legacy = makeBody('body-uuuuuuuu', 'buy-u', 0.02, 50000, 'tp-u');
+    legacy.buyOrders = [{ orderId: 'buy-u', price: 50000, assetQty: 0, sizeUsdc: 0, filledAt: 0 }];
+    // A body that knows buy-s only by sourceOrderId.
+    const noTranche = { ...makeBody('body-ssssssss', 'buy-x', 0.01, 50000, 'tp-s'), sourceOrderIds: ['buy-s'], buyOrders: [] };
+    pos.celestialBodies = [legacy, noTranche];
+
+    assert.equal(eng._test.sealLegacyClosure(), 0);
+    assert.equal(ledger.getBuyOrderConsumption('buy-u').consumedBy, null);
+    assert.equal(ledger.getBuyOrderConsumption('buy-s').consumedBy, null);
+  });
+});

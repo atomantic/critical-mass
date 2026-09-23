@@ -1474,9 +1474,10 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    *
    * Idempotent: orders that already carry a consumedBy record are skipped.
    * @param {Map<string, number>} openQtyByOrder - orderId → open qty held by live tranches
+   * @param {Set<string>} [skipOrderIds] - orders whose open qty is unknown; left unsealed
    * @returns {number} buy orders sealed
    */
-  const sealLegacyClosedBuys = (openQtyByOrder = new Map()) => {
+  const sealLegacyClosedBuys = (openQtyByOrder = new Map(), skipOrderIds = new Set()) => {
     const sellOrderIdsWithFills = new Set();
     for (const f of fills.values()) if (f.side === 'sell' && f.orderId) sellOrderIdsWithFills.add(f.orderId);
     const byOrder = new Map();
@@ -1491,7 +1492,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     }
     let sealed = 0;
     for (const [orderId, agg] of byOrder) {
-      if (agg.hasRecord || !agg.legacyClosed) continue;
+      if (agg.hasRecord || !agg.legacyClosed || skipOrderIds.has(orderId)) continue;
       const seed = roundAsset(Math.max(0, agg.size - (openQtyByOrder.get(orderId) || 0)));
       for (const f of agg.rows) f.consumedBy = { [LEGACY_CONSUMPTION_KEY]: seed };
       sealed += 1;

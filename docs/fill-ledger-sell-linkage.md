@@ -190,7 +190,10 @@ buy fill rows of order "abc123"
   `sellOrderId` names a sell with fills (closed under the legacy rule) is
   sealed as `consumedBy: { __legacy__: size − open qty in live tranches }`.
   The link must be read while it still says so: the next TP placed for a
-  later tranche of the same order re-stamps `sellOrderId` on every row.
+  later tranche of the same order re-stamps `sellOrderId` on every row, so
+  the seal runs before offline fill recovery or any boot-time TP placement.
+  An order a live body references through a tranche it cannot measure (no
+  positive `assetQty`, or a `sourceOrderId` with no tranche) is left unsealed.
 - **Legacy:** orders no sell has recorded against keep the boolean rule, and
   `consumedCostFraction` is now only stamped on those (composed per order,
   issue #704). The first record on a pre-#607 order seeds `__legacy__` with
