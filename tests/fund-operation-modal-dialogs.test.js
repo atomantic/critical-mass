@@ -99,8 +99,21 @@ describe('App.jsx fund lifecycle dialogs use ModalDialog (issue #434)', () => {
     )
   })
 
-  it('renders exactly two ModalDialog usages in App.jsx', () => {
-    assert.equal(dialogUsages(appSource).length, 2)
+  it('renders Reset Dry-Run as a labelled, pending-aware ModalDialog with Cancel focused first', () => {
+    assert.match(
+      appSource,
+      /resetDryRunConfirm && \(\s*<ModalDialog\s+onClose={\(\) => setResetDryRunConfirm\(false\)}\s+dismissible={!resetting}\s+labelledBy="reset-dry-run-title"\s+describedBy="reset-dry-run-description"/,
+    )
+    assert.match(appSource, /<h3 id="reset-dry-run-title"/)
+    assert.match(appSource, /<p id="reset-dry-run-description"/)
+    assert.match(
+      appSource,
+      /onClick={\(\) => setResetDryRunConfirm\(false\)}\s+disabled={resetting}\s+autoFocus/,
+    )
+  })
+
+  it('renders exactly three ModalDialog usages in App.jsx', () => {
+    assert.equal(dialogUsages(appSource).length, 3)
   })
 })
 
@@ -114,11 +127,12 @@ describe('RegimeActionModals.jsx body/regime dialogs use ModalDialog (issue #434
     assert.doesNotMatch(regimeActionModalsSource, /fixed inset-0/)
   })
 
-  it('renders exactly seven ModalDialog usages', () => {
-    assert.equal(dialogUsages(regimeActionModalsSource).length, 7)
+  it('renders exactly eight ModalDialog usages', () => {
+    assert.equal(dialogUsages(regimeActionModalsSource).length, 8)
   })
 
   const confirmations = [
+    { name: 'Cancel Ladder', titleId: 'cancel-ladder-title', descId: 'cancel-ladder-description', dismissible: '!cancellingLadder', cancelDisabled: 'cancellingLadder' },
     { name: 'Collapse All', titleId: 'collapse-all-title', descId: 'collapse-all-description', dismissible: '!collapsingAll', cancelDisabled: 'collapsingAll' },
     { name: 'Reset Cycle', titleId: 'reset-cycle-title', descId: 'reset-cycle-description', dismissible: '!resettingCycle', cancelDisabled: 'resettingCycle' },
     { name: 'Roll Up', titleId: 'roll-up-title', descId: 'roll-up-description', dismissible: '!rollingUp', cancelDisabled: 'rollingUp' },
@@ -157,5 +171,37 @@ describe('RegimeActionModals.jsx body/regime dialogs use ModalDialog (issue #434
     // Both mode inputs carry autoFocus (only one is ever mounted at a time,
     // per the pct/price mode branch), while Cancel in this dialog does not.
     assert.equal((regimeActionModalsSource.match(/onKeyDown={\(e\) => e\.key === 'Enter' && onExecuteSetTp\('(pct|price)'\)}\s*\n\s*autoFocus/g) || []).length, 2)
+  })
+})
+
+describe('No window.confirm in admin/src (issue #699)', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+
+  it('admin/src contains no window.confirm calls', () => {
+    const adminSrcDir = path.join(__dirname, '..', 'admin', 'src')
+    const getAllJsxFiles = (dir) => {
+      let files = []
+      const entries = fs.readdirSync(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          files = files.concat(getAllJsxFiles(fullPath))
+        } else if (entry.isFile() && (entry.name.endsWith('.jsx') || entry.name.endsWith('.js'))) {
+          files.push(fullPath)
+        }
+      }
+      return files
+    }
+
+    const jsxFiles = getAllJsxFiles(adminSrcDir)
+    for (const file of jsxFiles) {
+      const content = fs.readFileSync(file, 'utf8')
+      assert.doesNotMatch(
+        content,
+        /window\.confirm\s*\(/,
+        `Found window.confirm in ${path.relative(adminSrcDir, file)} — use ModalDialog confirmation dialogs instead (issue #699)`,
+      )
+    }
   })
 })
