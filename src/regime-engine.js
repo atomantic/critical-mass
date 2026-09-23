@@ -29,7 +29,7 @@ const { createTailEventsMonitor } = require('./tail-events');
 const { createWebSocketFeed } = require('./websocket-feed');
 const { createRegimeDetector } = require('./regime-detector');
 const { createPositionSizer } = require('./position-sizer');
-const { createRiskManager } = require('./risk-manager');
+const { createRiskManager, computeFundEquity } = require('./risk-manager');
 const { createOrderExecutor } = require('./order-executor');
 const { classifyBodyTpCancellation } = require('./cancellation-result');
 const { createDryRunExecutor } = require('./dry-run-executor');
@@ -4121,6 +4121,53 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Seed the risk manager's drawdown tracker from the persisted snapshot once
+   * per engine instance, so a restart keeps an active pause and the peak.
+   */
+  let drawdownStateHydrated = false;
+  const hydrateDrawdownState = () => {
+    if (drawdownStateHydrated) return;
+    drawdownStateHydrated = true;
+    riskManager.restoreState(positionState.drawdownGuard);
+  };
+
+  /** Mirror the tracker into positionState (persisted with regime-state.json). */
+  const persistDrawdownState = () => {
+    const snapshot = riskManager.getPersistedState();
+    positionState.drawdownGuard = snapshot;
+    positionState.maxDrawdownSeen = snapshot.maxDrawdownSeen;
+  };
+
+  /**
+   * Evaluate the maxDrawdownPercent guard (issue #693). Runs once per metrics
+   * tick, independent of candle fetches (it needs only the live mark price).
+   * checkAllCaps / canPlaceEntry and the ladder guard read the resulting pause
+   * on every subsequent entry evaluation. Equity unit: computeFundEquity.
+   * @returns {Object|null} updateDrawdown result, or null when no price yet
+   */
+  const refreshDrawdownGuard = () => {
+    hydrateDrawdownState();
+    const price = marketState.lastPrice;
+    if (!(price > 0)) return null;
+    // A fill / merge / reset mid-flight can leave bodies and the ledger out of
+    // step (e.g. a TP's body already removed but its sell not yet paired),
+    // which would read as a transient equity drop. Skip this sample; the
+    // previous pause state stands until the next tick.
+    if (engineLocks.isMutatingPosition()) return null;
+    // realizedPnL / realizedAssetPnL are derived lazily from the ledger; refresh
+    // them so a just-filled TP's proceeds and holdback are in the equity.
+    refreshRealizedFromCyclePairs();
+    const { equity, capitalBase } = computeFundEquity(positionState, config, price);
+    const wasPaused = riskManager.getState().isDrawdownPaused;
+    const result = riskManager.updateDrawdown(equity, capitalBase);
+    persistDrawdownState();
+    // Flush a pause-state transition to disk now, so a crash before the
+    // 5-minute save timer cannot restart the engine without the pause.
+    if (result.isPaused !== wasPaused && !isDryRun) saveLiveStateGuarded('drawdown-guard');
+    return result;
+  };
+
+  /**
    * Update volatility metrics via REST API
    */
   const updateMetrics = async () => {
@@ -4128,6 +4175,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // open-order count so a flat engine is exempt from the stale-orders check
     // (issue #211-A) — nothing can go stale when there are no resting orders.
     healthMonitor.checkHealth({ openOrderCount: orderExecutor.getPendingCounts().total });
+
+    // Drawdown guard first — before the candle fetch can early-return, so a
+    // candle-endpoint outage never silently disables it.
+    refreshDrawdownGuard();
 
     const now = Math.floor(Date.now() / 1000);
     const oneHourAgo = now - 3600;
@@ -4839,6 +4890,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Skip tail events check — ladder IS the flash event strategy,
     // orders should stay in place regardless of spread/depth/flash conditions
+
+    // Fund drawdown pause blocks NEW ladders too (the reactive path gets it via
+    // canPlaceEntry). Already-resting rungs are left alone.
+    if (riskManager.getState().isDrawdownPaused) return;
 
     // Check regime allows entries
     if (!regimeDetector.allowsEntries()) return;
@@ -6296,16 +6351,35 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {{success: boolean, message: string}}
    */
   const forceResumeDrawdown = () => {
+    hydrateDrawdownState();
     const riskState = riskManager.getState();
     if (!riskState.isDrawdownPaused) {
       return { success: false, message: 'Not in drawdown pause' };
     }
 
-    // Calculate current equity to set as new peak
-    const currentValue = positionState.totalAsset * marketState.lastPrice;
-    const currentEquity = currentValue - positionState.totalCostBasis;
+    // New peak = current fund equity, in the SAME unit updateDrawdown compares
+    // against (computeFundEquity). The old P&L-unit value (market value − cost)
+    // would re-base the peak to a number unrelated to the tracked equity.
+    // Without a mark price there is no equity to re-base to, and clearing the
+    // pause alone would just re-pause on the next tick.
+    const price = marketState.lastPrice;
+    if (!(price > 0)) {
+      return { success: false, message: 'No market price yet — try again once the price feed is live' };
+    }
+    // Same reason refreshDrawdownGuard skips mid-mutation samples: a fill or
+    // merge in flight can leave bodies and ledger momentarily inconsistent.
+    if (engineLocks.isMutatingPosition()) {
+      return { success: false, message: 'Position update in progress — try again in a moment' };
+    }
+    refreshRealizedFromCyclePairs();
+    const { equity: currentEquity, capitalBase } = computeFundEquity(positionState, config, price);
+    if (!(currentEquity > 0)) {
+      return { success: false, message: `Fund equity is depleted ($${currentEquity.toFixed(2)}) — cannot re-base the drawdown peak` };
+    }
 
-    riskManager.forceResume(currentEquity);
+    riskManager.forceResume(currentEquity, capitalBase);
+    persistDrawdownState();
+    if (!isDryRun) saveLiveStateGuarded('drawdown-resume');
     logger.info(`▶️ [${exchange}] Drawdown pause manually cleared, peak reset to $${currentEquity.toFixed(2)}`);
 
     return { success: true, message: `Resumed, peak reset to $${currentEquity.toFixed(2)}` };
@@ -6861,6 +6935,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if ((config.entryMode || 'reactive') !== 'ladder') {
       return { success: false, message: 'Entry mode is not ladder' };
     }
+    // A manual rebuild places fresh buy rungs — the drawdown pause (#693)
+    // applies; the operator clears it explicitly via Resume first.
+    if (riskManager.getState().isDrawdownPaused) {
+      return { success: false, message: 'Drawdown pause active — resume from the drawdown pause before rebuilding the ladder' };
+    }
 
     const allocatedCapital = getAllocatedCapital();
     let remainingBudget = config.maxUsdcDeployed - allocatedCapital;
@@ -7110,6 +7189,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       clearTimers: () => { for (const t of ttlTimers) clearTimeout(t); ttlTimers.clear(); },
       updateMetrics,
       ensureTakeProfitPlaced,
+      refreshDrawdownGuard,
+      getOrderExecutor: () => orderExecutor,
+      checkAllCaps: () => riskManager.checkAllCaps(positionState),
     },
   };
 };

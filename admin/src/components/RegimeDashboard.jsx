@@ -1986,16 +1986,25 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     </>
                   })()}
                 </div>
-                <div className="text-center">
-                  <div className="text-[10px] text-gray-400 mb-1">Drawdown</div>
-                  <div className={`text-xs font-mono ${position.maxDrawdownSeen > config?.maxDrawdownPercent * 0.8 ? 'text-yellow-400' : 'text-white'}`}>
-                    {position.maxDrawdownSeen?.toFixed(1) || 0}%
-                  </div>
-                  <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
-                    <div className="h-full bg-red-500 transition-all" style={{ width: `${Math.min(100, ((position.maxDrawdownSeen || 0) / (config?.maxDrawdownPercent || 20)) * 100)}%` }} />
-                  </div>
-                  <div className="text-[9px] text-gray-400">/ {config?.maxDrawdownPercent || 20}%</div>
-                </div>
+                {(() => {
+                  // Live fund drawdown from peak (risk manager); the persisted
+                  // worst-seen value is shown as a secondary label.
+                  const dd = risk.currentDrawdownPercent || 0
+                  const maxSeen = position.maxDrawdownSeen || 0
+                  const limit = config?.maxDrawdownPercent || 20
+                  return (
+                    <div className="text-center">
+                      <div className="text-[10px] text-gray-400 mb-1">Drawdown</div>
+                      <div className={`text-xs font-mono ${dd > limit * 0.8 ? 'text-yellow-400' : 'text-white'}`}>
+                        {dd.toFixed(1)}%
+                      </div>
+                      <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
+                        <div className="h-full bg-red-500 transition-all" style={{ width: `${Math.min(100, (dd / limit) * 100)}%` }} />
+                      </div>
+                      <div className="text-[9px] text-gray-400">/ {limit}%{maxSeen > 0 ? ` · max ${maxSeen.toFixed(1)}%` : ''}</div>
+                    </div>
+                  )
+                })()}
               </div>
             </div>
           </div>
