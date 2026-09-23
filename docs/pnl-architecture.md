@@ -292,6 +292,13 @@ When reviewing changes that touch P&L code, verify:
    value, reset every refresh.
 3. **bodyPnl/bodyHoldbackAsset/bodyReservesSoldAsset are read ONCE per orderId**, not summed across
    partial-fill rows of the same order. Summing multiplies the value by N.
+   The accumulation for a SECOND booking of the same sell order (a partial
+   then its remainder, a cancel-race execution beyond an in-flight fill)
+   happens at annotation-write time instead — `fillLedger.commitSellBooking`
+   adds it onto the order's committed values and advances the per-order
+   `bodyBookedSize` commit marker; `consumedBy[sell]` and the capital credit
+   (`claimCapitalCredit(orderId, bookedSize)`) add the same way (issue #777).
+   A pass that ingested no new rows (a crash replay) still replaces.
 4. **Exchange balance is never used to compute bot metrics.** Only for
    reality-check logging or by rectification scripts.
 5. **`closed-trades.json` writes are append-only at sell time** (in the

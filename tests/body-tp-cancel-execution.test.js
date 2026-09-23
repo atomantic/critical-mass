@@ -876,6 +876,7 @@ describe('#770 buy-merge #227 cancel-with-execution after an in-flight snapshot 
       },
     }));
     seedBuy(eng);
+    eng._getConfig().maxUsdcDeployed = 1000;
 
     await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
 
@@ -884,14 +885,33 @@ describe('#770 buy-merge #227 cancel-with-execution after an in-flight snapshot 
     assert.ok(b1, 'a partial sale keeps the seed body');
     assert.ok(Math.abs(b1.assetQty - 0.007) < 1e-9, `both tranches deducted exactly once, got ${b1.assetQty}`);
     const ledger = JSON.parse(fs.readFileSync(path.join(isolatedData.fundDir('coinbase', pair), 'fill-ledger.json'), 'utf8'));
-    assert.equal(ledger.filter(f => f.orderId === 'tp-old').length, 2, 'both trades reached the ledger once');
+    const sellRows = ledger.filter(f => f.orderId === 'tp-old');
+    assert.equal(sellRows.length, 2, 'both trades reached the ledger once');
     assert.ok(b1.tpOrderId && b1.tpOrderId !== 'tp-old', 'the seed body is re-armed');
     assert.ok(placed.every(([size]) => size > 0), 'no empty TP placed');
+
+    // The second booking ADDS to the first (issue #777). Tranche 1: 0.002 for
+    // 101 − 0.02 fee against 100 of the 500 body cost = 0.98. Tranche 2: 0.001
+    // for 50.5 − 0.02 against 50 of the remaining 400 = 0.48.
+    const expectedPnl = 0.98 + 0.48;
+    for (const row of sellRows) {
+      assert.ok(Math.abs(row.bodyPnl - expectedPnl) < 1e-6, `bodyPnl sums both tranches on every row, got ${row.bodyPnl}`);
+      assert.ok(Math.abs(row.bodyCostBasis - 150) < 1e-6, `bodyCostBasis sums both tranches, got ${row.bodyCostBasis}`);
+      assert.ok(Math.abs(row.bodyBtcQty - 0.003) < 1e-12, `bodyBtcQty is the order's total, got ${row.bodyBtcQty}`);
+      assert.ok(Math.abs(row.bodyBookedSize - 0.003) < 1e-12, `commit marker covers both tranches, got ${row.bodyBookedSize}`);
+      assert.equal(row.partialFill, true, 'still a partial of the live body');
+    }
+    const seedRow = ledger.find(f => f.orderId === 'seed-b1');
+    assert.ok(Math.abs(seedRow.consumedBy['tp-old'] - 0.003) < 1e-12, `consumedBy adds both tranches, got ${JSON.stringify(seedRow.consumedBy)}`);
+    assert.ok(Math.abs(eng._getConfig().maxUsdcDeployed - (1000 + expectedPnl)) < 1e-2,
+      `both tranches' P&L credited, got ${eng._getConfig().maxUsdcDeployed}`);
+    const realized = eng.getFillLedger().computeRealizedFromCyclePairs();
+    assert.ok(Math.abs(realized.realizedPnL - expectedPnl) < 1e-6, `realizedPnL counts both tranches, got ${realized.realizedPnL}`);
   });
 
-  it('does not treat a consumed snapshot as booked when the in-flight handler never annotated the sale', async () => {
+  it('does not treat a consumed snapshot as booked when the in-flight handler never committed the sale', async () => {
     // The in-flight handler consumed the snapshot but (simulated) threw before
-    // its bodyPnl annotation, so nothing was booked: the #227 booking must run.
+    // its booking-commit marker, so nothing was booked: the #227 booking must run.
     const pair = '__test770unbooked__';
     const sold = 0.002;
     const execution = { status: 'CANCELLED', filledSize: sold, filledValue: sold * 50500, averageFilledPrice: 50500, totalFees: 0.01 };
@@ -909,7 +929,8 @@ describe('#770 buy-merge #227 cancel-with-execution after an in-flight snapshot 
           cancelCalls += 1;
           if (cancelCalls === 1) {
             await eng._test.handleOrderFill({ orderId: 'tp-old', side: 'sell', ...execution });
-            for (const f of eng.getFillLedger().getFillsForOrder('tp-old')) delete f.bodyPnl;
+            // No booking-commit marker (issue #777): the booking never committed.
+            for (const f of eng.getFillLedger().getFillsForOrder('tp-old')) delete f.bodyBookedSize;
             return { cancelled: true, filled: false, filledSize: sold, filledValue: sold * 50500, averageFilledPrice: 50500, totalFees: 0.01 };
           }
           return { cancelled: true, filled: false, filledSize: 0 };
@@ -923,6 +944,7 @@ describe('#770 buy-merge #227 cancel-with-execution after an in-flight snapshot 
 
     const rows = eng.getFillLedger().getFillsForOrder('tp-old');
     assert.ok(rows.length > 0 && rows.every(f => Number.isFinite(f.bodyPnl)), 'the #227 booking ran and annotated the sale');
+    assert.ok(rows.every(f => Math.abs(f.bodyBookedSize - sold) < 1e-12), 'the #227 booking committed its marker');
   });
 });
 
