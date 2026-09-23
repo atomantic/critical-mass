@@ -978,15 +978,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       : null;
     const availableBalance = quoteBalance ? (parseFloat(quoteBalance.available) || 0) : 0;
 
-    const adjustment = sizeOptimizer.recordCycle({
-      stepsUsed: cycleData.stepsUsed || 0,
-      capitalDeployed: cycleData.capitalDeployed || 0,
-      completedAt: Date.now(),
-      availableBalance,
-    });
+    // This now runs AFTER resetCycle() at every call site (issue #694 review
+    // round 2), so an uncaught throw here (sizeOptimizer.recordCycle()'s own
+    // bookkeeping, or handleSizeAdjustment()'s updateRegimeConfig disk write)
+    // would abort handleOrderFillImpl after resetCycle()'s exchange-side
+    // effects and fillLedger.startNewCycle() cycle-boundary flip already
+    // committed, but before the caller's saveLiveState()/fillLedger.persist()
+    // run — leaving persisted state briefly stale relative to what already
+    // happened. The size adjustment is a best-effort optimizer side-effect,
+    // not part of the cycle-close itself, so a failure here is logged and
+    // swallowed rather than allowed to threaten the caller's own saves.
+    try {
+      const adjustment = sizeOptimizer.recordCycle({
+        stepsUsed: cycleData.stepsUsed || 0,
+        capitalDeployed: cycleData.capitalDeployed || 0,
+        completedAt: Date.now(),
+        availableBalance,
+      });
 
-    if (adjustment) {
-      handleSizeAdjustment(adjustment);
+      if (adjustment) {
+        handleSizeAdjustment(adjustment);
+      }
+    } catch (err) {
+      logger.warn(`⚠️ [${exchange}] Size optimizer recording failed (non-fatal): ${err.message}`, { error: err.message });
     }
   };
 
