@@ -10,7 +10,8 @@
  * Features:
  * - Calculates optimal baseSizeUsdc for target utilization
  * - Optionally adjusts maxCycleBuys based on historical buy depth
- * - Tracks USDC balance changes and triggers recalculation
+ * - Evaluates for a new size adjustment at cycle-completion boundaries
+ *   (recordCycle()), fed the real adapter balance
  * - Rate-limited adjustments with safety bounds
  * - State persistence for continuity across restarts
  */
@@ -45,7 +46,6 @@ const { createContextLogger } = require('./logger');
  */
 
 const MAX_RECENT_CYCLES = 50;
-const BALANCE_CHANGE_THRESHOLD = 0.10; // 10% balance change triggers re-evaluation
 
 /**
  * Calculate the total ladder multiplier for a given number of steps
@@ -117,31 +117,6 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
 
     // Check if evaluation is needed
     return evaluate();
-  };
-
-  /**
-   * Update balance and check for significant change
-   * @param {number} currentBalance - Current available USDC balance
-   * @returns {SizeAdjustment|null} Adjustment if triggered
-   */
-  const updateBalance = (currentBalance) => {
-    if (currentBalance <= 0) return null;
-
-    const previousBalance = lastKnownBalance;
-    lastKnownBalance = currentBalance;
-
-    // Check for significant balance change
-    if (previousBalance > 0) {
-      const changeRatio = Math.abs(currentBalance - previousBalance) / previousBalance;
-      if (changeRatio >= BALANCE_CHANGE_THRESHOLD) {
-        logger.info(`📊 [${exchange}] Balance changed ${(changeRatio * 100).toFixed(1)}%: $${previousBalance.toFixed(2)} → $${currentBalance.toFixed(2)}`, {
-          previousBalance, currentBalance, changeRatio,
-        });
-        return evaluateForBalance(currentBalance);
-      }
-    }
-
-    return null;
   };
 
   /**
@@ -236,42 +211,6 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
       });
 
       // Keep history manageable
-      if (adjustmentHistory.length > 50) {
-        adjustmentHistory.shift();
-      }
-
-      if (callbacks.onAdjustment) {
-        callbacks.onAdjustment(adjustment);
-      }
-    }
-
-    return adjustment;
-  };
-
-  /**
-   * Evaluate specifically for balance change
-   * @param {number} currentBalance - Current balance
-   * @returns {SizeAdjustment|null}
-   */
-  const evaluateForBalance = (currentBalance) => {
-    if (!config.sizeAutoManaged) {
-      return null;
-    }
-
-    const adjustment = calculateAdjustment(currentBalance);
-
-    if (adjustment) {
-      const now = Date.now();
-      lastEvaluationTime = now;
-
-      adjustmentHistory.push({
-        timestamp: now,
-        baseSizeUsdc: adjustment.baseSizeUsdc,
-        maxUsdcDeployed: adjustment.maxUsdcDeployed,
-        maxCycleBuys: adjustment.maxCycleBuys,
-        reason: adjustment.reason,
-      });
-
       if (adjustmentHistory.length > 50) {
         adjustmentHistory.shift();
       }
@@ -504,7 +443,6 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
 
   return {
     recordCycle,
-    updateBalance,
     invalidateBalance,
     evaluate,
     previewSizing,

@@ -21,11 +21,10 @@ const { roundUSDC } = require('../src/volatility-utils');
 
 /**
  * Baseline config mirroring src/size-optimizer.js's defaults.
- * `sizeAutoManaged` is off by default so recordCycle()/updateBalance()'s
- * internal evaluate() calls never fire unexpectedly while seeding cycle
- * data — clamp behavior is asserted via the exposed `_calculateAdjustment`
- * test hook instead, isolating it from the (separately tested) balance/
- * evaluation-trigger gating.
+ * `sizeAutoManaged` is off by default so recordCycle()'s internal evaluate()
+ * calls never fire unexpectedly while seeding cycle data — clamp behavior is
+ * asserted via the exposed `_calculateAdjustment` test hook instead,
+ * isolating it from the (separately tested) evaluation-trigger gating.
  */
 const defaultConfig = () => ({
   sizeAutoManaged: false,
@@ -145,29 +144,32 @@ describe('size-optimizer sizeAutoManaged off-switch', () => {
     assert.notEqual(enabled.recordCycle(cycleData), null, 'sizeAutoManaged:true must be able to produce an adjustment');
     assert.equal(disabled.recordCycle(cycleData), null, 'sizeAutoManaged:false must never write an adjustment');
   });
-
-  it('updateBalance()/evaluateForBalance() only ever propose an adjustment when sizeAutoManaged is true', () => {
-    const enabled = makeOptimizer({ sizeAutoManaged: true });
-    const disabled = makeOptimizer({ sizeAutoManaged: false });
-
-    enabled.updateBalance(1000); // seed lastKnownBalance; first call never evaluates (no prior balance)
-    disabled.updateBalance(1000);
-
-    assert.notEqual(enabled.updateBalance(1_000_000), null, 'a >=10% balance swing with sizeAutoManaged:true must be able to propose');
-    assert.equal(disabled.updateBalance(1_000_000), null, 'a >=10% balance swing with sizeAutoManaged:false must never write an adjustment');
-  });
 });
 
 // ============================================================================
 // adjustmentHistory cap
 // ============================================================================
 describe('size-optimizer adjustmentHistory cap', () => {
-  it('never grows past 50 entries even after many triggering balance swings', () => {
-    const optimizer = makeOptimizer({ sizeAutoManaged: true, sizeMaxChangePercent: 25 });
-    optimizer.updateBalance(500); // seed; distinct from both alternating values below so every loop iteration swings >=10%
+  it('never grows past 50 entries even after many triggering cycle completions', () => {
+    // sizeEvaluationCycles/sizeMinSampleSize:1 make every recordCycle() call
+    // eligible to evaluate; config.baseSizeUsdc is never written back here,
+    // so each alternating availableBalance recomputes against the same fixed
+    // current base (100) and rate-limits to a different value every time —
+    // guaranteeing a non-null adjustment on every iteration.
+    const optimizer = makeOptimizer({
+      sizeAutoManaged: true,
+      sizeMaxChangePercent: 25,
+      sizeEvaluationCycles: 1,
+      sizeMinSampleSize: 1,
+    });
 
     for (let i = 0; i < 60; i++) {
-      const result = optimizer.updateBalance(i % 2 === 0 ? 100 : 1_000_000);
+      const result = optimizer.recordCycle({
+        stepsUsed: 5,
+        capitalDeployed: 100,
+        completedAt: 1_700_000_000_000 + i * 60_000,
+        availableBalance: i % 2 === 0 ? 100 : 1_000_000,
+      });
       assert.notEqual(result, null, `iteration ${i} was expected to trigger an adjustment`);
     }
 
