@@ -12,7 +12,7 @@
 const { roundAsset, roundPrice } = require('./volatility-utils');
 const { createMutex } = require('./async-mutex');
 const { getBaseCurrency } = require('./config-utils');
-const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, isFilledStatus } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, isFilledStatus, isCancelledStatus } = require('./shared-utils');
 const { placeWithUnknownReconcile } = require('./order-manager');
 const { createContextLogger } = require('./logger');
 
@@ -30,7 +30,7 @@ const { createContextLogger } = require('./logger');
  * @param {string} productId - Product to trade
  * @param {Object} [callbacks] - Event callbacks
  * @param {Function} [callbacks.onFillDetected] - Called when fill is detected via polling: (orderId, orderStatus)
- * @param {Function} [callbacks.onEntryCancelled] - Called when an entry order is cancelled (stale timeout, refresh, etc.): (orderId)
+ * @param {Function} [callbacks.onEntryCancelled] - Called when an entry order is cancelled (stale timeout, refresh, etc.): (orderId, {filledSize})
  * @param {string} [pair] - Fund pair name (the `data/<exchange>/<pair>/` directory), used to scope durable placement intents; defaults to productId
  * @returns {Object} Order executor instance
  */
@@ -686,7 +686,14 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     // never awaited the callback and so always cleared immediately.
     pendingOrders.delete(orderId);
     partialFillTracker.delete(orderId);
-    if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId);
+    // Pass filledSize along so a consumer (regime-engine.js) can tell a
+    // genuinely empty cancel (safe to retire immediately) apart from one that
+    // is about to be routed through onFillDetected below — issue #673: the
+    // regime engine's own retry for that fill can still fail, and a consumer
+    // that purges its saved-order bookkeeping unconditionally here would
+    // orphan a real fill before its outcome is even known, with nothing left
+    // to rediscover it.
+    if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId, { filledSize });
     if (filledSize > 0 && callbacks.onFillDetected) {
       markSettled(orderId, order.type);
       // Await the fill callback (async in live mode) before returning. Most
@@ -847,7 +854,15 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             callbacks.onFillDetected(orderId, { ...status, placedAt, isPartialFill: true });
           }
         }
-      } else if (normalizedStatus === 'CANCELLED') {
+      } else if (isCancelledStatus(status)) {
+        // Match isCancelledStatus's full CANCELLED/CANCELED/EXPIRED/FAILED
+        // set, not a literal 'CANCELLED' string — Gemini normalizes any
+        // off-book, not-explicitly-cancelled order to EXPIRED (see
+        // shared-utils.js). A narrower check here left an order the reconcile
+        // sweep re-armed via restorePendingOrder() after a failed catch-up
+        // (issue #673) permanently unpolled once its status came back
+        // EXPIRED/FAILED: tracked (so the sweep no longer saw it as an
+        // orphan) but never revisited by this loop either.
         handleCancelledOrder(orderId, order, status, 'Fill check');
         cancelled++;
       }
