@@ -2,15 +2,17 @@ import React, { useId, useState } from 'react'
 import { formatPriceByMagnitude, formatCurrency } from '../charts/chartUtils'
 
 /**
- * RegimeDashboard "Rebuild Ladder" toggle + settings/preview panel, inside
- * the Open Orders card header. Owns its own expand state, draft edits and
- * in-flight flags; the parent only supplies fetched config/status and the
- * shared refetch/toast/socket-status callbacks.
+ * RegimeDashboard "Rebuild Ladder" toggle + settings/preview panel. Owns its
+ * own expand state, draft edits and in-flight flags; the parent only
+ * supplies fetched config/status and the shared refetch/toast/socket-status
+ * callbacks.
  *
- * Rendered as a single unit (toggle button + panel) so the panel state stays
- * colocated with its toggle — the surrounding button row is marked
- * `flex-wrap` so the full-width panel wraps onto its own line rather than
- * squeezing in next to the other header buttons.
+ * Rendered as a single unit (toggle button + panel) on its own line below
+ * the Open Orders header, above `<OpenOrdersTable>` — deliberately NOT
+ * inside the header's buttons row, so opening it never shifts the Cancel
+ * Ladder / Collapse All / order-filter controls that stay in that row. Only
+ * the toggle button is gated by `entryMode === 'ladder' && isRunning`; the
+ * settings/preview panel's own visibility is independent of that guard.
  */
 function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfig, setSocketStatus }) {
   const athDropId = useId()
