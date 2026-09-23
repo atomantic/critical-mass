@@ -694,6 +694,58 @@ const createCryptocomAdapter = (keysPath = null) => {
   };
 
   /**
+   * Walk `private/get-trades` backward from `endNs` to `startNs`, in
+   * nanosecond-precision windows, halving any window that saturates the
+   * API's 100-row response cap and throwing rather than silently accepting
+   * an under-sampled bucket. Shared by `getOrderFills` (bounded to one
+   * order's own lifetime) and `getReconciliationFills` (bounded to a
+   * reconciliation start time) so the two walkers can no longer drift apart
+   * on acceptance thresholds (issue #679).
+   * @param {Object} params
+   * @param {string} [params.instrument] - instrument_name filter, or every product when omitted
+   * @param {bigint} params.startNs - lower bound, nanoseconds
+   * @param {bigint} params.endNs - upper bound, nanoseconds
+   * @returns {Promise<any[]>} Raw trade rows in the window, deduped by trade_id
+   */
+  const walkTrades = async ({ instrument, startNs, endNs }) => {
+    const NS_PER_MS = 1_000_000n;
+    const DAY_NS = 24n * 60n * 60n * 1000n * NS_PER_MS;
+    const baseParams = instrument ? { instrument_name: instrument } : {};
+    const seen = new Set();
+    const rawFills = [];
+    let cursor = endNs;
+
+    while (cursor > startNs) {
+      let span = cursor - startNs < DAY_NS ? cursor - startNs : DAY_NS;
+      let trades = [];
+      while (true) {
+        const ws = cursor - span;
+        const result = await makePrivateRequest('private/get-trades', {
+          ...baseParams,
+          start_time: String(ws),
+          end_time: String(cursor),
+          limit: 100,
+        });
+        trades = result?.data || [];
+        if (trades.length < 100) break;
+        if (span <= 1n) {
+          throw new Error(`Crypto.com trade scan is still saturated at 1ns for ${instrument || 'all instruments'} in [${ws}, ${cursor}]; refusing to return incomplete fills`);
+        }
+        span /= 2n;
+      }
+      for (const t of trades) {
+        const tid = String(t.trade_id);
+        if (seen.has(tid)) continue;
+        seen.add(tid);
+        rawFills.push(t);
+      }
+      cursor -= span;
+    }
+
+    return rawFills;
+  };
+
+  /**
    * Get fills for an order.
    *
    * Crypto.com has no per-order trades endpoint. `private/get-trades` returns
@@ -705,73 +757,91 @@ const createCryptocomAdapter = (keysPath = null) => {
    *
    * Fix: look up the order to bound the trade scan to its actual lifetime
    * (create_time → update_time, padded), scope by instrument_name, and walk
-   * the window in 24h buckets with halving if a bucket hits the 100-trade cap.
+   * the window (via the shared `walkTrades`) in 24h buckets with halving if a
+   * bucket hits the 100-trade cap — throwing rather than accepting a
+   * still-saturated bucket. The scan is bounded by the order's own
+   * `create_time`, not an artificial lookback cap, so a GTC order that rests
+   * for weeks is still scanned in full (issue #679).
+   *
+   * A failed order-detail lookup, or a matched-fill total short of the
+   * order's own `cumulative_quantity`, throws `{ incompleteFills: true }`
+   * instead of returning a partial set with no error — callers already treat
+   * a throw here as retryable (see `ingestNewFillsForOrder`).
    *
    * @param {string} orderId - Order ID
    * @returns {Promise<OrderFill[]>} List of fills
    */
   adapter.getOrderFills = async (orderId) => {
-    // Step 1: locate the order so we can bound the scan
-    let orderInfo = {};
+    // Step 1: locate the order so we can bound the scan and verify
+    // completeness. A lookup failure means we can do neither — rethrow
+    // instead of degrading to a short, instrument-agnostic fallback scan
+    // that would silently under-report a fully-filled sell.
+    let detail;
     try {
-      const detail = await makePrivateRequest('private/get-order-detail', { order_id: orderId });
-      orderInfo = detail?.order_info || detail || {};
+      detail = await makePrivateRequest('private/get-order-detail', { order_id: orderId });
     } catch (err) {
-      logger.warn(`⚠️ Crypto.com getOrderFills: order-detail lookup failed for ${orderId}: ${err.message}`, {
-        orderId,
-        fallbackWindowMs: 60 * 60 * 1000,
-        error: err.message,
-      });
+      // Prefix the message on the SAME error object rather than throwing a
+      // fresh plain Error — makePrivateRequest attaches `status`/`code`/
+      // `responseData` that health-monitor's isAuthDeniedError relies on to
+      // route an auth rejection into non-self-healing AUTH_DENIED instead of
+      // treating it as a retryable REST error; a new Error() would silently
+      // discard that metadata.
+      err.message = `Crypto.com getOrderFills: order-detail lookup failed for ${orderId}: ${err.message}`;
+      throw err;
     }
+    const orderInfo = detail?.order_info || detail || {};
     const instrument = orderInfo.instrument_name;
     const createTime = Number(orderInfo.create_time || 0);
     const updateTime = Number(orderInfo.update_time || 0);
+    const cumulativeQuantity = parseFloat(orderInfo.cumulative_quantity || orderInfo.filled_quantity || 0);
 
-    // Pad the window to absorb clock skew + late-arriving cancel/fill events.
-    // Cap historical lookback at 7d so an old orderId can't fan out into an
-    // unbounded scan.
-    const MAX_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
-    const now = Date.now();
-    let windowEnd, windowStart;
-    if (createTime > 0) {
-      windowStart = Math.max(createTime - 60_000, now - MAX_LOOKBACK_MS);
-      windowEnd = Math.min(Math.max(updateTime, createTime) + 5 * 60_000, now);
-    } else {
-      // Order-detail unavailable — fall back to last hour, instrument-agnostic.
-      windowStart = now - 60 * 60 * 1000;
-      windowEnd = now;
+    if (!(createTime > 0)) {
+      throw new Error(`Crypto.com getOrderFills: order-detail for ${orderId} has no create_time — cannot bound the trade scan`);
     }
 
-    // Step 2: walk the window in 24h buckets, halving on 100-cap hits.
-    const baseParams = instrument ? { instrument_name: instrument } : {};
-    const seen = new Set();
-    const matching = [];
-    let cursor = windowEnd;
-    let pages = 0;
-    while (cursor > windowStart && pages < 50) {
-      pages++;
-      let span = Math.min(24 * 60 * 60 * 1000, cursor - windowStart);
-      let trades = [];
-      let halvings = 0;
-      while (true) {
-        const ws = cursor - span;
-        const result = await makePrivateRequest('private/get-trades', {
-          ...baseParams,
-          start_time: String(ws),
-          end_time: String(cursor),
-        });
-        trades = result?.data || [];
-        if (trades.length < 100 || span <= 60_000 || halvings >= 10) break;
-        span = Math.floor(span / 2);
-        halvings++;
-      }
-      for (const t of trades) {
-        const tid = String(t.trade_id);
-        if (seen.has(tid)) continue;
-        seen.add(tid);
-        if (String(t.order_id) === String(orderId)) matching.push(t);
-      }
-      cursor -= span;
+    // Pad the window to absorb clock skew + late-arriving cancel/fill events.
+    const now = Date.now();
+    const windowStartMs = createTime - 60_000;
+    const windowEndMs = Math.min(Math.max(updateTime, createTime) + 5 * 60_000, now);
+    const NS_PER_MS = 1_000_000n;
+
+    // Step 2: walk the window, then filter to this order.
+    // Step 3: verify the matched fills actually account for everything the
+    // exchange says filled — a short sum is the "partial fill" case worth
+    // guarding against (distinct from designed holdback, which is computed
+    // downstream from the fills this function returns). The most common
+    // cause of a short match right after a fill is Crypto.com's own
+    // trade-history indexing lag (the fill just landed and
+    // private/get-trades hasn't surfaced it yet), which normally clears
+    // within a couple of seconds — retry briefly before rejecting. The
+    // window itself does not need to move: updateTime already bounds it
+    // past the trade's own timestamp, so a retry only needs to re-poll for
+    // a record the backend hasn't indexed yet. This matters beyond this
+    // call alone: order-executor's polling-based fill detection
+    // (checkPendingOrderFills) removes a terminal order from tracking
+    // BEFORE invoking its fill callback, so a reject here on a merely
+    // transient gap can strand that fill with no automatic retry path.
+    const FILL_SCAN_RETRIES = 2;
+    const FILL_SCAN_RETRY_DELAY_MS = 750;
+    let matching;
+    let totalMatched;
+    for (let attempt = 0; ; attempt++) {
+      const rawTrades = await walkTrades({
+        instrument,
+        startNs: BigInt(Math.trunc(windowStartMs)) * NS_PER_MS,
+        endNs: BigInt(Math.trunc(windowEndMs)) * NS_PER_MS,
+      });
+      matching = rawTrades.filter(t => String(t.order_id) === String(orderId));
+      totalMatched = matching.reduce((sum, t) => sum + parseFloat(t.traded_quantity || t.quantity || 0), 0);
+      if (totalMatched >= cumulativeQuantity - 1e-9 || attempt >= FILL_SCAN_RETRIES) break;
+      await new Promise(resolve => setTimeout(resolve, FILL_SCAN_RETRY_DELAY_MS));
+    }
+
+    if (totalMatched < cumulativeQuantity - 1e-9) {
+      throw Object.assign(
+        new Error(`Crypto.com getOrderFills: fills incomplete for ${orderId}: ${totalMatched} of ${cumulativeQuantity}`),
+        { incompleteFills: true }
+      );
     }
 
     return matching.map(trade => {
@@ -802,7 +872,8 @@ const createCryptocomAdapter = (keysPath = null) => {
   /**
    * Fetch and normalize every fill used by the ledger reconciliation tools.
    * Crypto.com's trade endpoint caps responses at 100 rows, so walk backward
-   * in daily windows and halve any saturated window before accepting it.
+   * in daily windows (via the shared `walkTrades`) and halve any saturated
+   * window before accepting it.
    * @param {string|undefined} productId
    * @param {number} startTimestampMs
    * @returns {Promise<import('../../types').ReconciliationFill[]>}
@@ -811,32 +882,10 @@ const createCryptocomAdapter = (keysPath = null) => {
     const normalizedProductId = productId || 'BTC_USDT';
     const instrument = toCryptocomSymbol(normalizedProductId);
     const NS_PER_MS = 1_000_000n;
-    const DAY_NS = 24n * 60n * 60n * 1000n * NS_PER_MS;
     const startTimestampNs = BigInt(Math.trunc(startTimestampMs)) * NS_PER_MS;
     const endTimestampNs = BigInt(Date.now()) * NS_PER_MS;
-    const rawFills = [];
-    let cursor = endTimestampNs;
 
-    while (cursor > startTimestampNs) {
-      let span = cursor - startTimestampNs < DAY_NS ? cursor - startTimestampNs : DAY_NS;
-      let trades = [];
-      while (true) {
-        const result = await makePrivateRequest('private/get-trades', {
-          instrument_name: instrument,
-          start_time: String(cursor - span),
-          end_time: String(cursor),
-          limit: 100,
-        });
-        trades = result?.data || [];
-        if (trades.length < 100) break;
-        if (span <= 1n) {
-          throw new Error(`Crypto.com reconciliation window is still saturated at 1ns for ${instrument}; refusing to return incomplete fills`);
-        }
-        span /= 2n;
-      }
-      rawFills.push(...trades);
-      cursor -= span;
-    }
+    const rawFills = await walkTrades({ instrument, startNs: startTimestampNs, endNs: endTimestampNs });
 
     const seenTrades = new Set();
     return rawFills.flatMap(raw => {

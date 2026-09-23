@@ -227,31 +227,70 @@ describe('gemini getOrderFills', () => {
     assert.equal(fills[0].tradeId, bigTid);
   });
 
-  it('falls back to a 1h all-symbol scan when the order-status lookup fails', async () => {
+  it('rejects instead of falling back to a 1h all-symbol scan when the order-status lookup fails (issue #679)', async () => {
+    // A failed order-status lookup means the window can't be bounded AND
+    // completeness can't be verified against executed_amount — silently
+    // scanning the last hour risks booking a fully-filled sell with only
+    // part of its proceeds. The call must reject instead.
     const adapter = createGeminiAdapter(keysPath);
-    const before = Date.now();
-    const { calls } = installFetchMock((endpoint) => {
+    let mytradesCalled = false;
+    installFetchMock((endpoint) => {
       if (endpoint === '/v1/order/status') {
         return { __error: true, status: 400 };
       }
       if (endpoint === '/v1/mytrades') {
+        mytradesCalled = true;
         return [makeTrade({ tid: 5, order_id: 555 })];
       }
       throw new Error(`unexpected endpoint ${endpoint}`);
     });
 
-    const fills = await adapter.getOrderFills('555');
+    await assert.rejects(adapter.getOrderFills('555'), (err) => {
+      assert.match(err.message, /order-status lookup failed/);
+      // The wrapped error must still carry the original HTTP status —
+      // health-monitor's isAuthDeniedError reads err.status directly, and a
+      // fresh plain Error() here would silently discard it.
+      assert.equal(err.status, 400);
+      return true;
+    });
+    assert.equal(mytradesCalled, false, 'must not fall back to scanning trades when the order lookup failed');
+  });
 
-    const mt = mytradesCalls(calls);
-    assert.equal(mt.length, 1);
-    assert.equal(mt[0].payload.symbol, undefined); // no hardcoded btcusd
-    // Bound ~ now - 1h (in seconds)
-    const expectedMin = Math.floor((before - 60 * 60 * 1000) / 1000);
-    assert.ok(mt[0].payload.timestamp >= expectedMin);
-    assert.ok(mt[0].payload.timestamp <= Math.floor(Date.now() / 1000));
+  it('preserves the original error\'s status/responseData when rethrowing an order-status lookup failure, so auth denials are still detectable (issue #679)', async () => {
+    const adapter = createGeminiAdapter(keysPath);
+    installFetchMock((endpoint) => {
+      if (endpoint === '/v1/order/status') {
+        return { __error: true, status: 401 };
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`);
+    });
 
-    assert.equal(fills.length, 1);
-    assert.equal(fills[0].orderId, '555');
+    await assert.rejects(adapter.getOrderFills('555'), (err) => {
+      assert.equal(err.status, 401, 'status must survive the rethrow so isAuthDeniedError can classify it');
+      assert.match(err.message, /order-status lookup failed/);
+      return true;
+    });
+  });
+
+  it('rejects when matched fills fall short of the order\'s own executed_amount (issue #679)', async () => {
+    const adapter = createGeminiAdapter(keysPath);
+    const createdMs = Date.now() - 3 * 60 * 60 * 1000;
+    installFetchMock((endpoint) => {
+      if (endpoint === '/v1/order/status') {
+        return { order_id: 555, symbol: 'ETHUSD', timestampms: createdMs, executed_amount: '1.5' };
+      }
+      if (endpoint === '/v1/mytrades') {
+        // Only 0.5 of the 1.5 executed_amount is represented in trade history.
+        return [makeTrade({ tid: 1, order_id: 555, amount: '0.5' })];
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`);
+    });
+
+    await assert.rejects(adapter.getOrderFills('555'), (err) => {
+      assert.match(err.message, /fills incomplete for 555: 0\.5 of 1\.5/);
+      assert.equal(err.incompleteFills, true);
+      return true;
+    });
   });
 });
 

@@ -220,6 +220,40 @@ describe('engine-lifecycle-handlers', () => {
       assert.equal(firstIndex(h.calls, 'stopMarketDataService'), -1);
     });
 
+    it('does not strand a registered engine when engine.start() throws instead of resolving (issue #679 follow-up)', async () => {
+      // engine.start() is expected to resolve { success: false, error } on a
+      // handled failure (the sibling test above), but an unguarded async call
+      // deep in startup recovery (e.g. issue #679 hardened getOrderFills to
+      // reject rather than silently return a partial fill set) can still
+      // escape it as a genuine rejection. The engine was already registered
+      // in regimeEngines before start() was awaited (so regime:stop can find
+      // it mid-start) — the handler must still unregister it on a throw, or
+      // it is stranded as "already running" forever with no orders watched.
+      const h = createHarness();
+      h.engineFactories.set(fundKey(EXCHANGE, PAIR_A), () => ({
+        start: async () => { throw new Error('getOrderFills: fills incomplete for order-1: 0.5 of 1.5'); },
+        stop: async () => ({}),
+        getStatus: () => ({ mode: 'RUNNING' }),
+        getFillLedger: () => ({ marker: 'fill-ledger', exchange: EXCHANGE, pair: PAIR_A }),
+      }));
+
+      const result = await h.start({}, EXCHANGE, PAIR_A);
+
+      assert.equal(result.success, false);
+      assert.match(result.error, /Engine startup failed for coinbase\/BTC-USD/);
+      assert.doesNotMatch(result.error, /fills incomplete/); // internals stay out of the IPC response
+      assert.equal(h.regimeEngines.has(fundKey(EXCHANGE, PAIR_A)), false, 'a thrown start() must not leave the engine registered');
+      assert.equal(firstIndex(h.calls, 'saveRegimeRunningFlag'), -1);
+      assert.equal(firstIndex(h.calls, 'stopMarketDataService'), -1);
+
+      // A second start attempt must be able to proceed — it must NOT see
+      // "already running" from the stranded registration.
+      h.engineFactories.set(fundKey(EXCHANGE, PAIR_A), () =>
+        createFakeEngine(h.calls, EXCHANGE, PAIR_A, { startResult: { success: true } }));
+      const retryResult = await h.start({}, EXCHANGE, PAIR_A);
+      assert.equal(retryResult.success, true);
+    });
+
     it('does not claim a running fund when the start auto-closes a drained fund', async () => {
       const h = createHarness();
       h.engineFactories.set(fundKey(EXCHANGE, PAIR_A), () =>
