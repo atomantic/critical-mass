@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createRiskManager } = require('../src/risk-manager');
+const { createRiskManager, computeFundEquity, resolveDrawdownCapitalBase } = require('../src/risk-manager');
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -154,7 +154,7 @@ describe('risk-manager checkCycleBuysLimit', () => {
 describe('risk-manager updateDrawdown', () => {
   it('initializes peak equity on the first observed position', (t) => {
     const riskManager = setup(t);
-    const result = riskManager.updateDrawdown(1, 100, 100);
+    const result = riskManager.updateDrawdown(100);
     assert.equal(result.peakEquity, 100);
     assert.equal(result.drawdownPercent, 0);
     assert.equal(result.isPaused, false);
@@ -162,55 +162,55 @@ describe('risk-manager updateDrawdown', () => {
 
   it('tracks a rising peak as price rises', (t) => {
     const riskManager = setup(t);
-    riskManager.updateDrawdown(1, 100, 100);
-    const result = riskManager.updateDrawdown(1, 110, 100);
+    riskManager.updateDrawdown(100);
+    const result = riskManager.updateDrawdown(110);
     assert.equal(result.peakEquity, 110);
     assert.equal(result.drawdownPercent, 0);
   });
 
   it('activates the pause once drawdown reaches maxDrawdownPercent', (t) => {
     const riskManager = setup(t, { maxDrawdownPercent: 10 });
-    riskManager.updateDrawdown(1, 100, 100); // peak = 100
-    riskManager.updateDrawdown(1, 110, 100); // peak = 110
-    const result = riskManager.updateDrawdown(1, 99, 100); // (110-99)/110*100 = 10%
+    riskManager.updateDrawdown(100); // peak = 100
+    riskManager.updateDrawdown(110); // peak = 110
+    const result = riskManager.updateDrawdown(99); // (110-99)/110*100 = 10%
     assert.equal(result.drawdownPercent, 10);
     assert.equal(result.isPaused, true);
   });
 
   it('does not pause while drawdown stays under the threshold', (t) => {
     const riskManager = setup(t, { maxDrawdownPercent: 10 });
-    riskManager.updateDrawdown(1, 100, 100);
-    const result = riskManager.updateDrawdown(1, 95, 100); // 5% drawdown
+    riskManager.updateDrawdown(100);
+    const result = riskManager.updateDrawdown(95); // 5% drawdown
     assert.equal(result.isPaused, false);
   });
 
   it('resumes automatically once drawdown recovers to <= 50% of the threshold', (t) => {
     const riskManager = setup(t, { maxDrawdownPercent: 10 });
-    riskManager.updateDrawdown(1, 100, 100); // peak = 100
-    const paused = riskManager.updateDrawdown(1, 89, 100); // 11% drawdown -> paused
+    riskManager.updateDrawdown(100); // peak = 100
+    const paused = riskManager.updateDrawdown(89); // 11% drawdown -> paused
     assert.equal(paused.isPaused, true);
 
-    const stillPaused = riskManager.updateDrawdown(1, 96, 100); // 4% drawdown, below 5% (50% of 10) -> resume
+    const stillPaused = riskManager.updateDrawdown(96); // 4% drawdown, below 5% (50% of 10) -> resume
     assert.equal(stillPaused.isPaused, false);
     assert.equal(stillPaused.drawdownPercent, 4);
   });
 
   it('stays paused while drawdown recovery has not yet crossed the 50% threshold', (t) => {
     const riskManager = setup(t, { maxDrawdownPercent: 10 });
-    riskManager.updateDrawdown(1, 100, 100);
-    riskManager.updateDrawdown(1, 89, 100); // paused, 11% drawdown
-    const result = riskManager.updateDrawdown(1, 94, 100); // 6% drawdown, still >= 5%
+    riskManager.updateDrawdown(100);
+    riskManager.updateDrawdown(89); // paused, 11% drawdown
+    const result = riskManager.updateDrawdown(94); // 6% drawdown, still >= 5%
     assert.equal(result.isPaused, true);
   });
 
   it('auto-resets the peak after drawdownResetHours of being paused', (t) => {
     const riskManager = setup(t, { maxDrawdownPercent: 10, drawdownResetHours: 2 }, 1_000_000);
-    riskManager.updateDrawdown(1, 100, 100); // peak = 100
-    const paused = riskManager.updateDrawdown(1, 89, 100); // paused at t=1_000_000
+    riskManager.updateDrawdown(100); // peak = 100
+    const paused = riskManager.updateDrawdown(89); // paused at t=1_000_000
     assert.equal(paused.isPaused, true);
 
     t.mock.timers.setTime(1_000_000 + HOUR_MS * 2);
-    const result = riskManager.updateDrawdown(1, 89, 100); // still depressed price
+    const result = riskManager.updateDrawdown(89); // still depressed price
     assert.equal(result.isPaused, false);
     assert.equal(result.peakEquity, 89); // peak reset to current equity
     assert.equal(result.drawdownPercent, 0);
@@ -218,17 +218,17 @@ describe('risk-manager updateDrawdown', () => {
 
   it('does not auto-reset before drawdownResetHours has elapsed', (t) => {
     const riskManager = setup(t, { maxDrawdownPercent: 10, drawdownResetHours: 2 }, 1_000_000);
-    riskManager.updateDrawdown(1, 100, 100);
-    riskManager.updateDrawdown(1, 89, 100); // paused
+    riskManager.updateDrawdown(100);
+    riskManager.updateDrawdown(89); // paused
 
     t.mock.timers.setTime(1_000_000 + HOUR_MS * 2 - 1);
-    const result = riskManager.updateDrawdown(1, 89, 100);
+    const result = riskManager.updateDrawdown(89);
     assert.equal(result.isPaused, true);
   });
 
-  it('skips drawdown tracking entirely when there is no position', (t) => {
+  it('skips drawdown tracking entirely when equity is not positive', (t) => {
     const riskManager = setup(t);
-    const result = riskManager.updateDrawdown(0, 100, 0);
+    const result = riskManager.updateDrawdown(0);
     assert.equal(result.drawdownPercent, 0);
     assert.equal(result.isPaused, false);
     assert.equal(result.peakEquity, 0);
@@ -247,8 +247,8 @@ describe('risk-manager canPlaceEntry / checkAllCaps', () => {
     });
 
     // Trigger a drawdown pause first.
-    riskManager.updateDrawdown(1, 100, 100);
-    riskManager.updateDrawdown(1, 85, 100); // 15% drawdown -> paused
+    riskManager.updateDrawdown(100);
+    riskManager.updateDrawdown(85); // 15% drawdown -> paused
 
     const position = makePosition({ totalAsset: 0.9, totalCostBasis: 90, cycleBuys: 2 });
     const result = riskManager.canPlaceEntry(position, 0.5, 50);
@@ -284,8 +284,8 @@ describe('risk-manager canPlaceEntry / checkAllCaps', () => {
 describe('risk-manager forceResume', () => {
   it('clears the pause and resets peak equity to the supplied current equity', (t) => {
     const riskManager = setup(t, { maxDrawdownPercent: 10 });
-    riskManager.updateDrawdown(1, 100, 100); // peak = 100
-    riskManager.updateDrawdown(1, 85, 100); // paused
+    riskManager.updateDrawdown(100); // peak = 100
+    riskManager.updateDrawdown(85); // paused
     assert.equal(riskManager.getState().isDrawdownPaused, true);
 
     riskManager.forceResume(120);
@@ -298,8 +298,8 @@ describe('risk-manager forceResume', () => {
 
   it('clears the pause without touching peak equity when called with no argument', (t) => {
     const riskManager = setup(t, { maxDrawdownPercent: 10 });
-    riskManager.updateDrawdown(1, 100, 100); // peak = 100
-    riskManager.updateDrawdown(1, 85, 100); // paused
+    riskManager.updateDrawdown(100); // peak = 100
+    riskManager.updateDrawdown(85); // paused
 
     riskManager.forceResume();
 
@@ -310,7 +310,7 @@ describe('risk-manager forceResume', () => {
 
   it('is a no-op when not currently paused', (t) => {
     const riskManager = setup(t, { maxDrawdownPercent: 10 });
-    riskManager.updateDrawdown(1, 100, 100); // peak = 100, not paused
+    riskManager.updateDrawdown(100); // peak = 100, not paused
     riskManager.forceResume(999);
 
     const state = riskManager.getState();
@@ -320,19 +320,22 @@ describe('risk-manager forceResume', () => {
 });
 
 describe('risk-manager resetCycleTracking', () => {
-  it('resets peak equity to uninitialized without clearing an active pause', (t) => {
+  // Fund equity is continuous across a TP / cycle reset (issue #693), so the
+  // cycle boundary no longer wipes the drawdown baseline.
+  it('keeps the peak and an active pause across a cycle reset', (t) => {
     const riskManager = setup(t, { maxDrawdownPercent: 10 });
-    riskManager.updateDrawdown(1, 100, 100);
-    riskManager.updateDrawdown(1, 85, 100); // paused, peak = 100
+    riskManager.updateDrawdown(100);
+    riskManager.updateDrawdown(85); // paused, peak = 100
 
     riskManager.resetCycleTracking();
 
     const stateAfterReset = riskManager.getState();
-    assert.equal(stateAfterReset.peakEquity, null);
+    assert.equal(stateAfterReset.peakEquity, 100);
+    assert.equal(stateAfterReset.isDrawdownPaused, true);
 
-    // Next observation re-initializes peak from scratch.
-    const result = riskManager.updateDrawdown(1, 50, 50);
-    assert.equal(result.peakEquity, 50);
+    const result = riskManager.updateDrawdown(88);
+    assert.equal(result.peakEquity, 100);
+    assert.equal(result.isPaused, true);
   });
 });
 
@@ -340,14 +343,107 @@ it('rejected regime updates cannot replace the drawdown safety threshold (#495)'
   const { validateAndSanitizeRegimeConfig } = require('../src/config-validator');
   const config = makeConfig({ maxDrawdownPercent: 20 });
   const risk = createRiskManager('coinbase', config, 'BTC-USDC');
-  assert.equal(risk.updateDrawdown(1, 100, 100).isPaused, false);
+  assert.equal(risk.updateDrawdown(100).isPaused, false);
   for (const maxDrawdownPercent of ['oops', '20', {}, [], true, null, NaN, Infinity]) {
     const result = validateAndSanitizeRegimeConfig({ maxDrawdownPercent }, config);
     if (result.valid) Object.assign(config, result.value);
     assert.equal(result.valid, false);
     assert.equal(config.maxDrawdownPercent, 20);
   }
-  const drawdown = risk.updateDrawdown(1, 50, 100);
+  const drawdown = risk.updateDrawdown(50);
   assert.equal(drawdown.drawdownPercent, 50);
   assert.equal(drawdown.isPaused, true);
+});
+
+describe('risk-manager fund equity (issue #693)', () => {
+  it('equity = capital − open cost + realized + (body asset + reserves) × price', () => {
+    const { equity, capitalBase } = computeFundEquity(
+      { depositedCapital: 1000, totalCostBasis: 300, realizedPnL: 20, totalAsset: 3, realizedAssetPnL: 0.5 },
+      { maxUsdcDeployed: 5000 },
+      100,
+    );
+    assert.equal(capitalBase, 1000);
+    assert.equal(equity, 1000 - 300 + 20 + 3.5 * 100);
+  });
+
+  it('capital base prefers explicit deposits and falls back to the budget, never the realized-derived value', () => {
+    assert.equal(resolveDrawdownCapitalBase({ depositedCapital: 500 }, { depositedCapital: 800, maxUsdcDeployed: 1000 }), 800);
+    assert.equal(resolveDrawdownCapitalBase({ depositedCapital: 500 }, { maxUsdcDeployed: 1000 }), 500);
+    assert.equal(resolveDrawdownCapitalBase({ originalCapital: 400 }, { maxUsdcDeployed: 1000 }), 400);
+    // realizedPnL must not leak into the base (APY auto-derive would give 900)
+    assert.equal(resolveDrawdownCapitalBase({ realizedPnL: 100 }, { maxUsdcDeployed: 1000 }), 1000);
+  });
+
+  it('does not drop when a body TP converts asset to quote (holdback retained)', () => {
+    const config = { maxUsdcDeployed: 1000 };
+    // One body: 1 asset bought for $100. Mark = $110.
+    const before = computeFundEquity(
+      { totalAsset: 1, totalCostBasis: 100, realizedPnL: 0, realizedAssetPnL: 0 }, config, 110,
+    ).equity;
+    // TP sells 0.95 @ 110 (proceeds 104.5), keeps 0.05 holdback. Prorated cost
+    // = 100 × 0.95 = 95 → bodyPnl 9.5. Body closes: cost + qty leave the body.
+    const after = computeFundEquity(
+      { totalAsset: 0, totalCostBasis: 0, realizedPnL: 9.5, realizedAssetPnL: 0.05 }, config, 110,
+    ).equity;
+    assert.ok(after >= before, `equity fell across a TP: ${before} -> ${after}`);
+    // The difference is exactly the holdback's prorated cost (booked zero-cost).
+    assert.ok(Math.abs(after - before - 5) < 1e-9);
+  });
+
+  it('a TP does not trip the guard even when it is most of the position', (t) => {
+    const riskManager = setup(t, { maxDrawdownPercent: 10 });
+    const config = { maxUsdcDeployed: 100 };
+    const pre = computeFundEquity({ totalAsset: 1, totalCostBasis: 100 }, config, 110);
+    riskManager.updateDrawdown(pre.equity, pre.capitalBase);
+    const post = computeFundEquity({ totalAsset: 0, totalCostBasis: 0, realizedPnL: 9.5, realizedAssetPnL: 0.05 }, config, 110);
+    const result = riskManager.updateDrawdown(post.equity, post.capitalBase);
+    assert.equal(result.drawdownPercent, 0);
+    assert.equal(result.isPaused, false);
+  });
+});
+
+describe('risk-manager drawdown capital re-basing / persistence (issue #693)', () => {
+  it('a withdrawal re-bases the peak instead of reading as a drawdown', (t) => {
+    const riskManager = setup(t, { maxDrawdownPercent: 10 });
+    riskManager.updateDrawdown(1000, 1000);
+    const result = riskManager.updateDrawdown(500, 500); // operator withdrew $500
+    assert.equal(result.peakEquity, 500);
+    assert.equal(result.drawdownPercent, 0);
+    assert.equal(result.isPaused, false);
+  });
+
+  it('a deposit re-bases the peak so later losses are measured against the new capital', (t) => {
+    const riskManager = setup(t, { maxDrawdownPercent: 10 });
+    riskManager.updateDrawdown(1000, 1000);
+    riskManager.updateDrawdown(1500, 1500); // +$500 deposit
+    const result = riskManager.updateDrawdown(1350, 1500); // −$150 = 10% of 1500
+    assert.equal(result.peakEquity, 1500);
+    assert.equal(result.drawdownPercent, 10);
+    assert.equal(result.isPaused, true);
+  });
+
+  it('round-trips an active pause and the peak through getPersistedState / restoreState', (t) => {
+    const a = setup(t, { maxDrawdownPercent: 10 });
+    a.updateDrawdown(1000, 1000);
+    a.updateDrawdown(850, 1000); // 15% → paused
+    const snapshot = JSON.parse(JSON.stringify(a.getPersistedState()));
+
+    const b = createRiskManager('coinbase', makeConfig({ maxDrawdownPercent: 10 }), 'BTC-USDC');
+    b.restoreState(snapshot);
+    const state = b.getState();
+    assert.equal(state.isDrawdownPaused, true);
+    assert.equal(state.peakEquity, 1000);
+    assert.equal(state.maxDrawdownSeen, 15);
+    assert.match(b.canPlaceEntry(makePosition(), 0, 0).reason, /drawdown_paused/);
+  });
+
+  it('restoreState ignores missing / malformed snapshots', () => {
+    const rm = createRiskManager('coinbase', makeConfig(), 'BTC-USDC');
+    rm.restoreState(null);
+    rm.restoreState({ peakEquity: 'x', maxDrawdownSeen: NaN, isDrawdownPaused: 'yes' });
+    const state = rm.getState();
+    assert.equal(state.peakEquity, null);
+    assert.equal(state.maxDrawdownSeen, 0);
+    assert.equal(state.isDrawdownPaused, false);
+  });
 });

@@ -764,6 +764,7 @@ const createInitialRegimePositionState = () => ({
   realizedAssetPnL: 0,
   assetOnOrder: 0,
   maxDrawdownSeen: 0,
+  drawdownGuard: null,      // risk-manager drawdown tracker snapshot (peak, pause) — survives restarts
   scalingDisabled: false,
   scalingDisabledReason: null,
   // APY tracking fields

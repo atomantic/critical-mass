@@ -29,7 +29,7 @@ const { createTailEventsMonitor } = require('./tail-events');
 const { createWebSocketFeed } = require('./websocket-feed');
 const { createRegimeDetector } = require('./regime-detector');
 const { createPositionSizer } = require('./position-sizer');
-const { createRiskManager } = require('./risk-manager');
+const { createRiskManager, computeFundEquity } = require('./risk-manager');
 const { createOrderExecutor } = require('./order-executor');
 const { classifyBodyTpCancellation } = require('./cancellation-result');
 const { createDryRunExecutor } = require('./dry-run-executor');
@@ -4123,11 +4123,50 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   /**
    * Update volatility metrics via REST API
    */
+  /**
+   * Seed the risk manager's drawdown tracker from the persisted snapshot once
+   * per engine instance, so a restart keeps an active pause and the peak.
+   */
+  let drawdownStateHydrated = false;
+  const hydrateDrawdownState = () => {
+    if (drawdownStateHydrated) return;
+    drawdownStateHydrated = true;
+    riskManager.restoreState(positionState.drawdownGuard);
+  };
+
+  /** Mirror the tracker into positionState (persisted with regime-state.json). */
+  const persistDrawdownState = () => {
+    const snapshot = riskManager.getPersistedState();
+    positionState.drawdownGuard = snapshot;
+    positionState.maxDrawdownSeen = snapshot.maxDrawdownSeen;
+  };
+
+  /**
+   * Evaluate the maxDrawdownPercent guard (issue #693). Runs once per metrics
+   * tick, independent of candle fetches (it needs only the live mark price).
+   * checkAllCaps / canPlaceEntry and the ladder guard read the resulting pause
+   * on every subsequent entry evaluation. Equity unit: computeFundEquity.
+   * @returns {Object|null} updateDrawdown result, or null when no price yet
+   */
+  const refreshDrawdownGuard = () => {
+    hydrateDrawdownState();
+    const price = marketState.lastPrice;
+    if (!(price > 0)) return null;
+    const { equity, capitalBase } = computeFundEquity(positionState, config, price);
+    const result = riskManager.updateDrawdown(equity, capitalBase);
+    persistDrawdownState();
+    return result;
+  };
+
   const updateMetrics = async () => {
     // Check health status (allows auto-recovery from SAFE mode). Pass the live
     // open-order count so a flat engine is exempt from the stale-orders check
     // (issue #211-A) — nothing can go stale when there are no resting orders.
     healthMonitor.checkHealth({ openOrderCount: orderExecutor.getPendingCounts().total });
+
+    // Drawdown guard first — before the candle fetch can early-return, so a
+    // candle-endpoint outage never silently disables it.
+    refreshDrawdownGuard();
 
     const now = Math.floor(Date.now() / 1000);
     const oneHourAgo = now - 3600;
@@ -4839,6 +4878,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Skip tail events check — ladder IS the flash event strategy,
     // orders should stay in place regardless of spread/depth/flash conditions
+
+    // Fund drawdown pause blocks NEW ladders too (the reactive path gets it via
+    // canPlaceEntry). Already-resting rungs are left alone.
+    if (riskManager.getState().isDrawdownPaused) return;
 
     // Check regime allows entries
     if (!regimeDetector.allowsEntries()) return;
@@ -6296,16 +6339,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {{success: boolean, message: string}}
    */
   const forceResumeDrawdown = () => {
+    hydrateDrawdownState();
     const riskState = riskManager.getState();
     if (!riskState.isDrawdownPaused) {
       return { success: false, message: 'Not in drawdown pause' };
     }
 
-    // Calculate current equity to set as new peak
-    const currentValue = positionState.totalAsset * marketState.lastPrice;
-    const currentEquity = currentValue - positionState.totalCostBasis;
+    // New peak = current fund equity, in the SAME unit updateDrawdown compares
+    // against (computeFundEquity). The old P&L-unit value (market value − cost)
+    // would re-base the peak to a number unrelated to the tracked equity.
+    const price = marketState.lastPrice;
+    if (!(price > 0)) {
+      riskManager.forceResume();
+      persistDrawdownState();
+      logger.info(`▶️ [${exchange}] Drawdown pause manually cleared (no mark price — peak unchanged)`);
+      return { success: true, message: 'Resumed (no mark price — peak unchanged)' };
+    }
+    const { equity: currentEquity } = computeFundEquity(positionState, config, price);
 
     riskManager.forceResume(currentEquity);
+    persistDrawdownState();
     logger.info(`▶️ [${exchange}] Drawdown pause manually cleared, peak reset to $${currentEquity.toFixed(2)}`);
 
     return { success: true, message: `Resumed, peak reset to $${currentEquity.toFixed(2)}` };
@@ -7110,6 +7163,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       clearTimers: () => { for (const t of ttlTimers) clearTimeout(t); ttlTimers.clear(); },
       updateMetrics,
       ensureTakeProfitPlaced,
+      refreshDrawdownGuard,
+      getOrderExecutor: () => orderExecutor,
+      checkAllCaps: () => riskManager.checkAllCaps(positionState),
     },
   };
 };
