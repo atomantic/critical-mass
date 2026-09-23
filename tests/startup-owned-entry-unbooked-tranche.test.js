@@ -808,6 +808,23 @@ describe('an unowned entry whose every row a closed body stamped (issue #772)', 
     assertNothingBooked((await boot(pair)).eng);
   });
 
+  it('does not recover from closed trades when a row is marked owned but names no body', async () => {
+    const pair = '__teststartupunowned772_m__';
+    writeGoneFund(pair, {
+      // Owned, but no row names the body (annotation repair would copy a
+      // sibling's bodyId, so none carries one).
+      ledgerExtra: (seed) => {
+        for (const row of seed.getFillsForOrder(ORDER_ID)) delete row.bodyId;
+      },
+    });
+    recordTrades(pair, [goneTrade()]);
+    // (Rows that name no body read as orphans to the later orphan-buy
+    // recovery, which adopts them into an existing body; this recovery
+    // itself must not create one.)
+    const { eng } = await boot(pair);
+    assert.deepEqual(eng._getPositionState().celestialBodies.map(b => b.id), ['body-other'], 'no recovered body is created');
+  });
+
   it('books nothing when a live body\'s sale lists the order', async () => {
     const pair = '__teststartupunowned772_l__';
     writeGoneFund(pair);

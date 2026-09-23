@@ -3451,7 +3451,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
      *   - each such body closed (a full, non-partial sale) and every record is
      *     `source: 'live'` — the migration backfill writes holdbackAsset 0
      *     because it cannot know it, so its figure is not a held quantity;
-     *   - every row of the order that names a body names one of them;
+     *   - every row of the order names one of them (a row marked owned
+     *     without a bodyId could be another gone body's);
      *   - every body sale since the order started filling — a live body's
      *     too — is one of theirs or is recorded as excluding the order (a
      *     merge-snapshot sale writes no closed-trade record, and a live body
@@ -3496,9 +3497,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
         if (!closed) return { reason: `body ${String(bodyId).slice(-8)} has no closing sale on record` };
       }
+      // Every row must be attributable to a proven body: a row marked owned
+      // (isBodyOwned / isSatellite / sellOrderId) without a bodyId could be
+      // another gone body's whose share no record here accounts for.
       const strayRow = fillLedger.getFillsForOrder(orderId)
-        .find(f => f.side === 'buy' && f.bodyId && !bodyIds.has(f.bodyId));
-      if (strayRow) return { reason: `body ${String(strayRow.bodyId).slice(-8)} stamped it but has no sale on record listing it` };
+        .find(f => f.side === 'buy' && !bodyIds.has(f.bodyId));
+      if (strayRow) {
+        return { reason: strayRow.bodyId
+          ? `body ${String(strayRow.bodyId).slice(-8)} stamped it but has no sale on record listing it`
+          : 'a row of it names no body, so which body held it is unknown' };
+      }
       const sale = unprovenBodySale(orderId, { skipLiveBodies: false, provenBodyIds: bodyIds });
       if (sale) return { reason: `sale ${String(sale.orderId).slice(0, 8)} since it started filling is not proven to exclude it` };
       if (ledger.consumedBy && Math.abs((Number(ledger.consumedQty) || 0) - heldQty) > HOLDING_TOLERANCE) {
