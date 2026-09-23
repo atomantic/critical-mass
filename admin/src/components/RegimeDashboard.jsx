@@ -8,6 +8,7 @@ import { createRequestOwner } from '../utils/requestOwner.mjs'
 import { deriveRegimeFillGroups, searchRegimeFillGroups, visibleOrphanBuys } from '../utils/regimeFillGroups.mjs'
 import { resolveElapsedDisplay } from '../utils/liveTimerElapsed.mjs'
 import { computeOpenOrderEstimate, DEFAULT_FEE_RATE_PER_SIDE } from '../utils/openOrderEstimates.mjs'
+import { computeCapitalAdjustment } from '../utils/capitalAdjustment.mjs'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
@@ -1276,25 +1277,16 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
   const handleCapitalAdjust = async () => {
     const newAvailable = parseFloat(capitalAdjustValue)
-    if (isNaN(newAvailable) || newAvailable < 0) {
-      addToast({ type: 'error', title: 'Invalid Amount', message: 'Enter a valid positive number' })
+    const adjustment = computeCapitalAdjustment(apy, newAvailable)
+    if (!adjustment.ok) {
+      addToast({ type: 'error', title: 'Invalid Amount', message: adjustment.error })
       return
     }
-    const currentAvailable = apy.availableCapital || 0
-    const delta = newAvailable - currentAvailable
-    if (Math.abs(delta) < 0.01) {
+    if (adjustment.noop) {
       setCapitalAdjustMode(false)
       return
     }
-    const currentDeposited = apy.depositedCapital || apy.originalCapital || apy.initialCapital || 0
-    const currentMax = apy.maxUsdcDeployed || apy.currentCapital || 0
-    // Clamp to valid minimums: depositedCapital must be 0 or >= 100, maxUsdcDeployed must be >= 1000
-    const rawDeposited = currentDeposited + delta
-    const rawMax = currentMax + delta
-    const updates = {
-      depositedCapital: rawDeposited < 100 ? 0 : rawDeposited,
-      maxUsdcDeployed: Math.max(1000, rawMax),
-    }
+    const { delta, updates } = adjustment
     setCapitalAdjusting(true)
     try {
       const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
@@ -1304,7 +1296,15 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
       })
       const data = await res.json()
       if (data.success) {
-        addToast({ type: 'success', title: 'Capital Adjusted', message: `${delta >= 0 ? '+' : ''}$${delta.toLocaleString()} applied to deposited & max` })
+        // Report the values the server actually applied (data.config), not
+        // just what we sent — the source of truth after persistence (#701).
+        const appliedDeposited = data.config?.depositedCapital ?? updates.depositedCapital
+        const appliedMax = data.config?.maxUsdcDeployed ?? updates.maxUsdcDeployed
+        addToast({
+          type: 'success',
+          title: 'Capital Adjusted',
+          message: `${delta >= 0 ? '+' : ''}$${delta.toLocaleString()} applied — deposited: $${appliedDeposited.toLocaleString()}, max: $${appliedMax.toLocaleString()}`,
+        })
         await Promise.all([fetchConfig(), fetchStatus()])
       } else {
         addToast({ type: 'error', title: 'Adjust Failed', message: data.errors?.join(', ') || 'Unknown error' })
