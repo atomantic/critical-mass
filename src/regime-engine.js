@@ -1969,23 +1969,34 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
        * @returns {Promise<void>}
        */
       const bookStartupOpenEntryPartial = async (order, placedAt, label) => {
-        // Current-cycle ledger rows for this order that no body owns were
-        // ingested by the pre-#671 startup path, and the cycleBuys
-        // auto-correct above already counted the order from them —
-        // handleOrderFill's first commit for an unowned order would count it
-        // a second time.
-        const alreadyCounted = !isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)
-          && fillLedger.getCurrentCycleFills().some(f => f.side === 'buy' && f.orderId === order.orderId);
-        const cycleBuysBefore = positionState.cycleBuys;
+        const fillArgs = { status: order.status || 'OPEN', isPartialFill: true, placedAt };
+        // Ledger rows for this order that no body owns were ingested by the
+        // pre-#671 startup path. The normal pass below would dedup them away
+        // and build the body from only the newer tranches, so commit them
+        // into a body first, on their own. If they are in the current cycle,
+        // the cycleBuys auto-correct above already counted the order from
+        // them, and handleOrderFill's first commit would count it again.
+        const legacyRows = isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)
+          ? []
+          : fillLedger.getFillsForOrder(order.orderId).filter(f => f.side === 'buy');
         try {
-          await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, {
-            status: order.status || 'OPEN',
-            isPartialFill: true,
-            placedAt,
-          }));
-          if (alreadyCounted && positionState.cycleBuys === cycleBuysBefore + 1) {
-            positionState.cycleBuys = cycleBuysBefore;
+          if (legacyRows.length > 0) {
+            const alreadyCounted = fillLedger.getCurrentCycleFills()
+              .some(f => f.side === 'buy' && f.orderId === order.orderId);
+            const cycleBuysBefore = positionState.cycleBuys;
+            try {
+              await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, {
+                ...fillArgs,
+                filledSize: legacyRows.reduce((sum, f) => sum + Number(f.size || 0), 0),
+                confirmedFills: legacyRows,
+              }));
+            } finally {
+              if (alreadyCounted && positionState.cycleBuys === cycleBuysBefore + 1) {
+                positionState.cycleBuys = cycleBuysBefore;
+              }
+            }
           }
+          await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, fillArgs));
         } catch (err) {
           logger.error(`❌ [${exchange}] Could not book offline partial fills for ${label} ${order.orderId}: ${err.message} — will pick them up on the next reconcile/poll`, {
             orderId: order.orderId,
