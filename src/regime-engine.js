@@ -7334,6 +7334,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     logger.info(`🔄 [${exchange}] Position updated externally: buys=${positionState.cycleBuys}, cycles=${positionState.cyclesCompleted}, ${baseCurrency} reserves=${positionState.realizedAssetPnL}`);
   };
 
+  /** Tail of the serialized extendBodiesFromRecoveredBuyRows runs. */
+  let recoveredGrowthChain = Promise.resolve();
+
   /**
    * Running-engine counterpart of growBodiesFromRecoveredBuyRows (#752):
    * grow each body that owns recovered partial rows of its own buy order via
@@ -7345,18 +7348,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {Promise<void>}
    */
   const extendBodiesFromRecoveredBuyRows = () => {
-    const { plans, skipped } = planBodyGrowthFromRecoveredBuyRows({ fillLedger, celestialBodies: positionState.celestialBodies });
-    for (const { buyOrderId, reason } of skipped) {
-      logger.warn(`⚠️ [${exchange}] Recovered buy rows of ${String(buyOrderId).slice(0, 8)} not merged into a body (${reason}) — manual review`, { buyOrderId, reason });
-    }
-    return plans.reduce((chain, { body, buyOrderId, totals }) => chain
-      .then(() => extendBody(body.id, totals, buyOrderId))
-      .then((res) => {
-        if (!res.success) logger.warn(`⚠️ [${exchange}] Could not grow body ${body.id.slice(-8)} from recovered rows of buy ${String(buyOrderId).slice(0, 8)}: ${res.error}`, { bodyId: body.id, buyOrderId, error: res.error });
-      })
-      .catch((err) => {
-        logger.error(`❌ [${exchange}] Growing body ${body.id.slice(-8)} from recovered rows of buy ${String(buyOrderId).slice(0, 8)} failed: ${err.message}`, { bodyId: body.id, buyOrderId, error: err.message });
-      }), Promise.resolve());
+    // Chain onto any earlier run so back-to-back recalcs never overlap; each
+    // run plans against the bodies as they are when it starts.
+    recoveredGrowthChain = recoveredGrowthChain.then(async () => {
+      const { plans, skipped } = planBodyGrowthFromRecoveredBuyRows({ fillLedger, celestialBodies: positionState.celestialBodies });
+      for (const { buyOrderId, reason } of skipped) {
+        logger.warn(`⚠️ [${exchange}] Recovered buy rows of ${String(buyOrderId).slice(0, 8)} not merged into a body (${reason}) — manual review`, { buyOrderId, reason });
+      }
+      for (const { body, buyOrderId, totals } of plans) {
+        try {
+          const res = await extendBody(body.id, totals, buyOrderId);
+          if (!res.success) logger.warn(`⚠️ [${exchange}] Could not grow body ${body.id.slice(-8)} from recovered rows of buy ${String(buyOrderId).slice(0, 8)}: ${res.error}`, { bodyId: body.id, buyOrderId, error: res.error });
+        } catch (err) {
+          logger.error(`❌ [${exchange}] Growing body ${body.id.slice(-8)} from recovered rows of buy ${String(buyOrderId).slice(0, 8)} failed: ${err.message}`, { bodyId: body.id, buyOrderId, error: err.message });
+        }
+      }
+    }).catch((err) => {
+      logger.error(`❌ [${exchange}] Recovered-row body growth failed: ${err.message}`, { error: err.message });
+    });
+    return recoveredGrowthChain;
   };
 
   /**
@@ -8079,6 +8089,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     return { success: true, bodyId: body.id, tpPlaced: !!tpResult };
   };
 
+  /** Body ids with an extendBody in progress. */
+  const extendInFlight = new Set();
+
   /**
    * Extend an already-live body with fills for its OWN buy order that
    * arrived after the body was first created (issue #726): the buy order
@@ -8128,6 +8141,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (!isRunning) return { success: false, error: 'Engine not running' };
     const body = (positionState.celestialBodies || []).find((b) => b.id === bodyId);
     if (!body) return { success: false, error: 'Body not found' };
+    // One extend per body at a time (#752): a second caller (a recalc's
+    // recovered-row growth, a manual import) would compute the same shortfall
+    // before the first merged it, then merge it again after its own cancel —
+    // and its cancel could null a TP the first had just re-placed.
+    if (extendInFlight.has(body.id)) {
+      return { success: false, error: 'Extend already in progress for this body — retry once it settles' };
+    }
+    extendInFlight.add(body.id);
+    try {
+      return await extendBodyLocked(body, totals, buyOrderId);
+    } finally {
+      extendInFlight.delete(body.id);
+    }
+  };
+
+  /**
+   * extendBody's work, run while the body holds its extendInFlight slot.
+   * @param {Object} body
+   * @param {{assetQty:number, costBasis:number, avgPrice:number}} totals
+   * @param {string} buyOrderId
+   * @returns {Promise<{success: boolean, error?: string, bodyId?: string, tier?: string, alreadyApplied?: boolean, tpPlaced?: boolean}>}
+   */
+  const extendBodyLocked = async (body, totals, buyOrderId) => {
     const { recordedQty, shortfall } = celestialHierarchy.computeBuyOrderShortfall(body, totals, buyOrderId);
     if (!shortfall) {
       logger.info(`📦 [${exchange}] Extend for body ${body.id} / buy ${buyOrderId} already applied (${recordedQty} >= ${totals.assetQty}) — no-op retry`);

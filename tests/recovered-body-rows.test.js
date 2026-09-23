@@ -165,8 +165,12 @@ describe('growBodiesFromRecoveredBuyRows — boot path (#752)', () => {
 });
 
 describe('recalculateAndRefresh — running engine (#752)', () => {
-  it('grows the body through extendBody, cancelling its TP before growing it', async () => {
-    const pair = '__test752run__';
+  /**
+   * @param {string} name
+   * @returns {{ eng: any, body: any, cancelled: Array<{bodyId: string, tpOrderId: string}> }}
+   */
+  const makeRunningEngine = (name) => {
+    const pair = `__test752${name}__`;
     PAIRS.push(pair);
     const eng = createRegimeEngine('coinbase', pair, { dryRun: false, productId: pair, maxCycleBuys: 5 }, {});
     engines.push(eng);
@@ -184,12 +188,30 @@ describe('recalculateAndRefresh — running engine (#752)', () => {
       isLadderOrder: () => false,
       getOrderPlacedAt: () => null,
     });
-    const ledger = eng.getFillLedger();
-    const body = seed(ledger);
+    const body = seed(eng.getFillLedger());
     const pos = eng._getPositionState();
     pos.celestialBodies = [body];
     pos.activeCycleId = 'cycle-1';
     pos.activeCycleStartedAt = T0;
+    return { eng, body, cancelled };
+  };
+
+  it('never runs two extends of one body at once (no double growth, no clobbered TP)', async () => {
+    const { eng, body } = makeRunningEngine('concurrent');
+    const totals = { assetQty: 0.015, costBasis: 750, avgPrice: 50000 };
+    const [first, second] = await Promise.all([
+      eng.extendBody('body-A', totals, 'a-buy'),
+      eng.extendBody('body-A', totals, 'a-buy'),
+    ]);
+    assert.equal(first.success, true);
+    assert.equal(second.success, false, 'the overlapping extend is refused, not merged twice');
+    assert.equal(body.assetQty, 0.015);
+    const retry = await eng.extendBody('body-A', totals, 'a-buy');
+    assert.equal(retry.alreadyApplied, true, 'a retry after it settles converges');
+  });
+
+  it('grows the body through extendBody, cancelling its TP before growing it', async () => {
+    const { eng, body, cancelled } = makeRunningEngine('run');
 
     eng.recalculateAndRefresh();
     for (let i = 0; i < 200 && body.assetQty === 0.01; i++) await new Promise(r => setImmediate(r));
