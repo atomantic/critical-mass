@@ -1005,6 +1005,18 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   const getActiveTpOrderId = () => activeTpOrderId;
 
   /**
+   * Whether `orderId` is the legacy core take-profit this executor placed
+   * (interface parity with the live executor — issue #672).
+   * @param {string} orderId
+   * @returns {boolean}
+   */
+  const isTrackedTpOrder = (orderId) => {
+    if (!orderId) return false;
+    if (orderId === activeTpOrderId) return true;
+    return pendingOrders.get(orderId)?.type === 'take_profit';
+  };
+
+  /**
    * Restore pending order (for recovery - no-op in dry-run)
    * @param {string} orderId - Order ID
    * @param {PendingOrder} order - Order details
@@ -1305,6 +1317,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     getPendingCounts,
     getPendingEntries,
     getActiveTpOrderId,
+    isTrackedTpOrder,
     clearTimers,
     restorePendingOrder,
 
