@@ -175,39 +175,6 @@ const splitOrphansIntoCycles = (orphanFills) => {
 };
 
 /**
- * Earliest fill timestamp of the live cycle, or undefined when it has no fills
- * (e.g. a fresh post-reset cycle) or there is no live cycle.
- * @param {Map<string, Fill[]>} cycleMap - Map of cycleId -> fills
- * @param {string|null} liveCycleId - The engine's live cycle ID
- * @returns {number|undefined}
- */
-const getLiveCycleStartTs = (cycleMap, liveCycleId) => {
-  const liveFills = liveCycleId ? cycleMap.get(liveCycleId) : null;
-  if (!liveFills || liveFills.length === 0) return undefined;
-  return Math.min(...liveFills.map(f => Number(f.timestamp) || 0));
-};
-
-/**
- * Split an INCOMPLETE orphan group at the live cycle's first fill. Fills at or
- * after it belong to the live cycle (e.g. a buy the engine missed during
- * downtime, re-imported by sync-fills with cycleId null) — the same timeframe
- * rule repairHistoricalFillAnnotations uses for -recovered- fills. Older fills
- * are historical and stay in their own recovered cycle (#675). Splitting per
- * fill (not per group) matters because splitOrphansIntoCycles ignores the
- * non-orphan fills in between, so one group can straddle the boundary.
- * @param {Fill[]} groupFills - Fills of one orphan group
- * @param {number|undefined} liveStartTs - From getLiveCycleStartTs
- * @returns {{ live: Fill[], older: Fill[] }}
- */
-const splitOrphanGroupAtLiveStart = (groupFills, liveStartTs) => {
-  if (liveStartTs === undefined) return { live: [], older: groupFills };
-  const live = [];
-  const older = [];
-  for (const f of groupFills) ((Number(f.timestamp) || 0) >= liveStartTs ? live : older).push(f);
-  return { live, older };
-};
-
-/**
  * Build mapping from old cycle IDs to sequential cycle-1, cycle-2... IDs.
  * Completed cycles are ordered first by timestamp, followed by active cycles.
  * The live cycle (`currentId`) is always numbered LAST, even when it has no
@@ -1164,12 +1131,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // A sell ends a cycle, the next buy starts a new cycle
     let orphansFixed = 0;
     const hadCurrentCycle = Boolean(currentCycleId);
-    const liveStartTs = getLiveCycleStartTs(cycleMap, currentCycleId);
     const orphanCycles = splitOrphansIntoCycles(orphanFills);
-    // Orphan groups that keep their own (recovered) cycle ID — excludes groups
-    // folded into the live cycle, so renumbering never reserves a number for
-    // an ID that no longer holds any fills.
-    const standaloneOrphanCycles = [];
     if (orphanCycles.length > 0) {
       logger.info(`🔧 [${exchange}] Split ${orphanFills.length} orphan fills into ${orphanCycles.length} cycles`, {
         orphanFillCount: orphanFills.length,
@@ -1178,30 +1140,22 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
       // Assign cycle IDs and calculate P&L for completed orphan cycles
       for (const { cycleId, fills: cycleFills } of orphanCycles) {
-        // An incomplete orphan group never displaces the engine's live cycle
-        // (#675). Sync-fills / manual-trade-import null-stamp historical fills
-        // on purpose (#108): groups that predate the live cycle keep their own
-        // recovered cycle, and groups inside its timeframe join it.
-        const completed = isCompletedCycle(cycleFills, cycleCompletionRatio);
-        const { live, older } = !completed && hadCurrentCycle
-          ? splitOrphanGroupAtLiveStart(cycleFills, liveStartTs)
-          : { live: [], older: cycleFills };
-        if (older.length > 0) standaloneOrphanCycles.push({ cycleId, fills: older });
-
-        // Assign cycle IDs to the group's fills
-        const assign = (fill, targetId) => {
-          if (!cycleIndex.has(targetId)) cycleIndex.set(targetId, new Set());
-          fill.cycleId = targetId;
+        // Assign cycle ID to all fills in this cycle
+        if (!cycleIndex.has(cycleId)) cycleIndex.set(cycleId, new Set());
+        for (const fill of cycleFills) {
+          fill.cycleId = cycleId;
           fills.set(fill.tradeId, fill);
-          cycleIndex.get(targetId).add(fill.tradeId);
+          cycleIndex.get(cycleId).add(fill.tradeId);
           orphansFixed++;
           dirtySinceLastPersist = true;
           bumpLedgerVersion();
-        };
-        for (const fill of older) assign(fill, cycleId);
-        for (const fill of live) assign(fill, currentCycleId);
+        }
 
-        if (completed) {
+        // Check if this is a completed cycle. An incomplete orphan group stays
+        // in its own recovered cycle — sync-fills / manual-trade-import
+        // null-stamp historical fills on purpose (#108) — and must NEVER
+        // displace the engine's live cycle (#675).
+        if (isCompletedCycle(cycleFills, cycleCompletionRatio)) {
           const { cycleDetail, pnl, holdbackAsset } = computeCycleStats(cycleId, cycleFills);
           cycleDetails.push(cycleDetail);
           totalRealizedPnL += pnl;
@@ -1226,7 +1180,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // sequential numbering. Skip renumbering otherwise to preserve stable IDs.
     const cycleIdMap = {};
     if (orphansFixed > 0) {
-      const cycleTimestamps = collectCycleTimestamps(cycleMap, standaloneOrphanCycles);
+      const cycleTimestamps = collectCycleTimestamps(cycleMap, orphanCycles);
       const completedIds = new Set(cycleDetails.map(d => d.cycleId));
       const { idMap, nextCycleNumber: cycleNum, renumbered } = buildCycleRenumberingMap(cycleTimestamps, completedIds, currentCycleId);
       for (const [oldId, newId] of idMap) {
@@ -1343,19 +1297,11 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     let orphansFixed = 0;
     let previewActiveCycleId = currentCycleId;
     const hadCurrentCycle = Boolean(currentCycleId);
-    const liveStartTs = getLiveCycleStartTs(cycleMap, currentCycleId);
     const orphanCycles = splitOrphansIntoCycles(orphanFills);
-    const standaloneOrphanCycles = [];
     if (orphanCycles.length > 0) {
       for (const { cycleId, fills: cycleFills } of orphanCycles) {
         orphansFixed += cycleFills.length;
-        const completed = isCompletedCycle(cycleFills, cycleCompletionRatio);
-        // Same placement rule as recalculateCycles (#675).
-        const { older } = !completed && hadCurrentCycle
-          ? splitOrphanGroupAtLiveStart(cycleFills, liveStartTs)
-          : { older: cycleFills };
-        if (older.length > 0) standaloneOrphanCycles.push({ cycleId, fills: older });
-        if (completed) {
+        if (isCompletedCycle(cycleFills, cycleCompletionRatio)) {
           cycleDetails.push(computeCycleStats(cycleId, cycleFills).cycleDetail);
         } else if (!hadCurrentCycle) {
           // Same rule as recalculateCycles: an orphan group only becomes the
@@ -1369,7 +1315,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // mirroring the renumbering in recalculateCycles without mutating fills.
     const cycleIdMap = {};
     if (orphansFixed > 0) {
-      const cycleTimestamps = collectCycleTimestamps(cycleMap, standaloneOrphanCycles);
+      const cycleTimestamps = collectCycleTimestamps(cycleMap, orphanCycles);
       const completedIds = new Set(cycleDetails.map(d => d.cycleId));
       const { idMap } = buildCycleRenumberingMap(cycleTimestamps, completedIds, previewActiveCycleId);
       for (const [oldId, newId] of idMap) {

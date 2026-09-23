@@ -352,6 +352,8 @@ describe('engine-recalculate-handler', () => {
       assert.equal(firstIndex(mine, 'recalculateCycles'), -1, 'stopped preview must not run the mutating recalc');
       assert.ok(firstIndex(mine, 'previewRecalculateCycles') >= 0);
       assert.deepEqual(result.cycleDetails, [{ id: 'preview-cycle-5' }]);
+      const invalidations = mine.filter((c) => c.op === 'invalidateStandaloneLedger').length;
+      assert.equal(invalidations, 2, 'cache dropped again after the preview so the anchored pointer does not leak');
     });
 
     it('translateActiveCycleId keeps an unrenamed marker and upgrades legacy state only on rename', () => {

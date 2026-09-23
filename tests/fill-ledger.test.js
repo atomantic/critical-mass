@@ -1742,41 +1742,23 @@ describe('Fill Ledger', () => {
       assert.equal(ledger.getCurrentCycleAllBuysCount(), 0);
     });
 
-    it('folds an incomplete orphan group inside the live cycle timeframe into the live cycle', () => {
+    it('keeps a newer incomplete orphan group in its own cycle without displacing the live one', () => {
       const ledger = createTestLedger('orphan-newer');
       seedLiveCycles(ledger);
-      // A buy the engine missed during downtime, re-imported with cycleId null.
+      // A buy re-imported with cycleId null that postdates the live cycle's
+      // start. Attributing it is out of scope for recovery (it may be linked
+      // to fills on either side); what matters is that it never replaces
+      // the live cycle.
       ledger.ingestFill(makeBuyFill({ tradeId: 'late-b', orderId: 'late-buy', tradeTime: at(22 * HOUR) }), null, { cycleId: null });
-      const liveBefore = ledger.getCurrentCycleId();
 
       const preview = ledger.previewRecalculateCycles();
       const result = ledger.recalculateCycles();
 
       assert.equal(result.orphansFixed, 1);
-      assert.equal(ledger.getCurrentCycleId(), liveBefore, 'no renumbering: no standalone cycle was created');
-      assert.deepStrictEqual(result.idMap, {});
-      assert.deepStrictEqual(currentTradeIds(ledger), ['c2-b1', 'c2-b2', 'late-b']);
-      assert.equal(ledger.getCurrentCycleAllBuysCount(), 3, 'the missed buy counts toward the cycle-buy limit');
-      assert.equal(preview.activeCycleId, result.activeCycleId);
-      assert.deepStrictEqual(preview.idMap, result.idMap);
-    });
-
-    it('splits an orphan group that straddles the live cycle start', () => {
-      const ledger = createTestLedger('orphan-straddle');
-      seedLiveCycles(ledger);
-      // Old orphan buy at t=0 and a missed buy at t=22h form ONE orphan group
-      // (no orphan sell between them).
-      ledger.ingestFill(makeBuyFill({ tradeId: 'old-b', orderId: 'old-buy', tradeTime: at(0) }), null, { cycleId: null });
-      ledger.ingestFill(makeBuyFill({ tradeId: 'late-b', orderId: 'late-buy', tradeTime: at(22 * HOUR) }), null, { cycleId: null });
-
-      const preview = ledger.previewRecalculateCycles();
-      const result = ledger.recalculateCycles();
-
-      assert.equal(result.orphansFixed, 2);
-      assert.deepStrictEqual(currentTradeIds(ledger), ['c2-b1', 'c2-b2', 'late-b']);
-      assert.equal(ledger.getCurrentCycleAllBuysCount(), 3);
-      const old = ledger.getAllFills().find(f => f.tradeId === 'old-b');
-      assert.notEqual(old.cycleId, ledger.getCurrentCycleId(), 'the historical buy keeps its own cycle');
+      assert.deepStrictEqual(currentTradeIds(ledger), ['c2-b1', 'c2-b2']);
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 2);
+      const late = ledger.getAllFills().find(f => f.tradeId === 'late-b');
+      assert.notEqual(late.cycleId, ledger.getCurrentCycleId());
       assert.equal(preview.activeCycleId, result.activeCycleId);
       assert.deepStrictEqual(preview.idMap, result.idMap);
     });

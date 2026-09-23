@@ -156,6 +156,10 @@ const registerEngineRecalculateHandler = (registry, deps) => {
         currentCycleFills: cycleFills.length,
       };
 
+      // The boundary anchor above moved the cached ledger's current cycle;
+      // drop the cache so a preview leaves no trace for later readers.
+      if (!apply) invalidateStandaloneLedger(exchange, resolvedPair);
+
       if (apply) {
         // Persist ONLY the cycle-derived P&L fields onto the existing
         // position — do not rebuild/overwrite order tracking, lifecycle,
