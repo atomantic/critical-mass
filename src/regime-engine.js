@@ -1798,9 +1798,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (expiredBodies > 0) logger.warn(`⚠️ [${exchange}] ${expiredBodies} body TP orders need re-placement`);
 
         // Reprice any restored body TPs whose TP% exceeds the effective max
-        // (fixes bodies that were placed with uncapped holdback floor)
-        // Cancel directly via adapter since executor map may not be populated yet
-        for (const body of savedBodies) {
+        // (fixes bodies that were placed with uncapped holdback floor).
+        // Every body that still carries a tpOrderId here had its executor
+        // tracking restored just above, so cancel through the executor —
+        // cancelBodyTpForReplace books any tranche sold during the cancel
+        // instead of re-listing it (issue #670).
+        for (const body of [...savedBodies]) {
           if (!body.tpOrderId || body.avgPrice <= 0) continue;
           // Skip bodies with a manual TP override — user intentionally set this price
           if (body.manualTpPct != null) continue;
@@ -1809,23 +1812,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const bEffectiveMax = config.tpMaxPercent * (bTierCfg.tpMaxScale || 1);
           if (currentTpPct > bEffectiveMax * 1.01) {
             logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP% ${currentTpPct.toFixed(2)}% exceeds max ${bEffectiveMax.toFixed(2)}% — cancelling and repricing`);
-            const cancelResult = await adapter.cancelOrder(body.tpOrderId);
-            if (cancelResult.success) {
-              orderExecutor.removeBodyTracking(body.tpOrderId);
-              body.tpOrderId = null;
-              body.tpPrice = 0;
-              body.assetOnOrder = 0;
+            const oldTp = body.tpOrderId;
+            const outcome = await cancelBodyTpForReplace(body, 'Startup reprice');
+            if (outcome === 'cancelled') {
               await placeBodyTp(body);
-            } else {
-              const status = await adapter.getOrder(body.tpOrderId).catch(() => null);
-              if (isFilledStatus(status)) {
-                logger.info(`📋 [${exchange}] Overpriced body TP ${body.tpOrderId.slice(0, 8)} already filled — polling will process`);
-              } else {
-                logger.warn(
-                  `⚠️ [${exchange}] Failed to cancel overpriced body TP ${body.tpOrderId}: ${cancelResult.errorMessage || 'unknown'}`,
-                  { bodyId: body.id, orderId: body.tpOrderId, error: cancelResult.errorMessage || 'unknown' }
-                );
-              }
+            } else if (outcome === 'filled') {
+              logger.info(`📋 [${exchange}] Overpriced body TP ${oldTp.slice(0, 8)} already filled — polling will process`);
+            } else if (outcome === 'unresolved') {
+              logger.warn(
+                `⚠️ [${exchange}] Failed to cancel overpriced body TP ${oldTp}`,
+                { bodyId: body.id, orderId: oldTp }
+              );
             }
           }
         }
@@ -3307,12 +3304,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           );
           if (Math.abs(sellQty - merged.assetOnOrder) > 0.00000001) {
             logger.warn(`⚠️ [${exchange}] Stale TP detected for body ${merged.id.slice(-8)}: onOrder=${merged.assetOnOrder}, expected=${sellQty} — cancelling for re-place`);
-            const cancelResult = await orderExecutor.cancelBodyTpOrder(merged.id, merged.tpOrderId);
-            if (cancelResult.cancelled) {
-              orderExecutor.removeBodyTracking(merged.tpOrderId);
-              merged.tpOrderId = null;
-              merged.tpPrice = 0;
-              merged.assetOnOrder = 0;
+            if (await cancelBodyTpForReplace(merged, 'Post-merge stale-size') === 'cancelled') {
               await placeBodyTp(merged);
             }
           }
@@ -4006,6 +3998,71 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Cancel a body's TP so the caller can re-place it (operator TP edit,
+   * reconcile stale-size, post-merge stale-size, startup reprice) — issue #670.
+   *
+   * A TP can sell a tranche WHILE it is being cancelled; cancelBodyTpOrder
+   * still reports `cancelled: true` (with filledSize > 0) and has already
+   * dropped all executor tracking for the order, so no poll will ever find
+   * that sale. Re-placing for the full, un-reduced body would then list asset
+   * the body no longer holds. classifyBodyTpCancellation tells the outcomes
+   * apart:
+   * - `cancelled`: clears the body's TP fields → returns 'cancelled' (the
+   *   only outcome on which the caller re-places).
+   * - `cancelled_with_execution`: books the sale immediately through the
+   *   normal body-TP sell path — the body still carries `tpOrderId = oldTp`,
+   *   so the sell handler finds it, records per-buy consumption, prorates
+   *   qty/cost, credits capital, and re-places a right-sized TP itself (or
+   *   closes the body on a full-size fill) → returns 'booked', or
+   *   'booking_failed' if the booking threw. The caller must NOT re-place.
+   * - `filled` / `unresolved`: leaves the TP untouched → returned as-is.
+   *
+   * Books through the handleOrderFill wrapper so an operator edit waits out
+   * an in-flight merge like any other fill (none of the callers hold the
+   * merge lock, so this cannot self-stall), and a failed booking releases its
+   * dedup key. If booking fails, the body keeps `tpOrderId = oldTp` so the
+   * reconcile loop re-discovers the CANCELLED order's partial and books it on
+   * a later tick.
+   * @param {Object} body - Celestial body whose TP is being replaced
+   * @param {string} context - Log label for the calling path
+   * @returns {Promise<'cancelled'|'booked'|'booking_failed'|'filled'|'unresolved'>}
+   */
+  const cancelBodyTpForReplace = async (body, context) => {
+    const oldTp = body.tpOrderId;
+    if (!oldTp) return 'cancelled';
+    const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id, oldTp);
+    const outcome = classifyBodyTpCancellation(cancelResult);
+    if (outcome === 'cancelled') {
+      orderExecutor.removeBodyTracking(oldTp);
+      body.tpOrderId = null;
+      body.tpPrice = 0;
+      body.assetOnOrder = 0;
+      return 'cancelled';
+    }
+    if (outcome !== 'cancelled_with_execution') return outcome;
+
+    logger.warn(
+      `⚠️ [${exchange}] ${context}: body ${body.id.slice(-8)} TP ${oldTp.slice(0, 8)} sold ${cancelResult.filledSize} ${baseCurrency} during cancel — booking before re-place (#670)`,
+      { bodyId: body.id, orderId: oldTp, filledSize: cancelResult.filledSize, context }
+    );
+    try {
+      await handleOrderFill(buildPartialFillData(oldTp, 'sell', {
+        status: 'CANCELLED',
+        filledSize: cancelResult.filledSize,
+        filledValue: cancelResult.filledValue,
+        averageFilledPrice: cancelResult.averageFilledPrice,
+      }, { totalFees: cancelResult.totalFees || 0 }));
+    } catch (err) {
+      logger.warn(
+        `⚠️ [${exchange}] ${context}: failed to book body ${body.id.slice(-8)} TP ${oldTp.slice(0, 8)} execution during cancel: ${err.message} — keeping TP identity for reconciliation`,
+        { bodyId: body.id, orderId: oldTp, error: err.message, context }
+      );
+      return 'booking_failed';
+    }
+    return 'booked';
+  };
+
+  /**
    * Update trade imbalance from recent trades
    */
   const updateTradeImbalance = () => {
@@ -4669,12 +4726,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                   );
                   if (Math.abs(sellQty - body.assetOnOrder) > 0.00000001) {
                     logger.warn(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP stale (onOrder=${body.assetOnOrder}, expected=${sellQty}) — cancelling for re-place`);
-                    const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id, body.tpOrderId);
-                    if (cancelResult.cancelled) {
-                      orderExecutor.removeBodyTracking(body.tpOrderId);
-                      body.tpOrderId = null;
-                      body.tpPrice = 0;
-                      body.assetOnOrder = 0;
+                    if (await cancelBodyTpForReplace(body, 'Reconcile stale-size') === 'cancelled') {
                       saveLiveState();
                       await placeBodyTp(body);
                     }
@@ -6785,14 +6837,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (!body) return { success: false, message: `Body ${bodyId.slice(-8)} not found` };
 
     if (body.tpOrderId) {
-      const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id, body.tpOrderId);
-      if (!cancelResult.cancelled) {
-        const reason = cancelResult.filled ? 'already filled' : 'cancel failed';
-        return { success: false, message: `Existing TP ${reason}` };
+      const outcome = await cancelBodyTpForReplace(body, 'Manual TP edit');
+      if (outcome !== 'cancelled') {
+        // A tranche that sold during the cancel was booked by the helper,
+        // which also re-placed a right-sized TP — the operator can retry the
+        // edit against the reduced body.
+        const reason = {
+          filled: 'already filled',
+          unresolved: 'cancel failed',
+          booked: 'sold during cancel — sale booked and the TP re-sized to what the body still holds; retry to apply the new TP',
+          booking_failed: 'sold during cancel — booking deferred to reconciliation',
+        }[outcome];
+        saveLiveState();
+        const state = getState();
+        if (callbacks.onStatusUpdate) callbacks.onStatusUpdate(state);
+        return { success: false, message: `Existing TP ${reason}`, status: state };
       }
-      body.tpOrderId = null;
-      body.tpPrice = 0;
-      body.assetOnOrder = 0;
     }
 
     body.manualTpPct = tpPct;
