@@ -39,9 +39,15 @@ after(() => {
 
 const PRODUCT_DETAILS = { baseMinSize: '0.0001', baseIncrement: '0.00000001' };
 
+// Every test shares TEST_PAIR's persisted fill ledger. Scope trade ids per
+// engine so a later test's buy is a NEW trade, not a duplicate of the row an
+// earlier test already booked into a (since discarded) body — handleOrderFill
+// refuses to rebook such settled rows (issue #671).
+let engineSeq = 0;
+
 /** One buy fill for the incoming order, returned by getOrderFills. */
 const buyFills = (orderId, size, price) => [{
-  tradeId: `${orderId}-t1`,
+  tradeId: `${orderId}-t1-e${engineSeq}`,
   orderId,
   side: 'buy',
   price: String(price),
@@ -84,6 +90,7 @@ const makeBody = (id, avgPrice, qty, tpOrderId) => ({
 });
 
 const makeEngine = ({ bodies, adapter, executor }) => {
+  engineSeq++;
   const eng = createRegimeEngine('coinbase', TEST_PAIR, { dryRun: false, productId: TEST_PAIR }, {});
   eng._test.setRunning(true);
   eng._test.setProductDetails(PRODUCT_DETAILS);
