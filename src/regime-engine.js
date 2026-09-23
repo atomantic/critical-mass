@@ -3616,8 +3616,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // the NEW cycle, so the rows it books must too; left under the closed
         // cycle, a restart's ledger auto-correct would undo the step and the
         // buy would sit in a cycle whose sell never consumed it (#711).
+        //
+        // A null ingestCycleId (a fresh ledger, no live cycle yet at ingest
+        // time — the fund's first-ever cycle close) is a turnover too: the
+        // truthy check below used to require BOTH ids, so this pass fell
+        // through, the rows stayed stamped null, and a restart's ledger
+        // auto-correct (folding by timestamp against activeCycleStartedAt)
+        // never folds them in because they predate the cycle boundary —
+        // cycleBuys silently drops by one and maxCycleBuys loosens (#774).
+        // Comparing `f.cycleId === ingestCycleId` below already matches
+        // null-tagged rows correctly when ingestCycleId is null, so only the
+        // guard needed the `ingestCycleId &&` requirement dropped.
         const liveCycleId = fillLedger.getCurrentCycleId();
-        if (ingestCycleId && liveCycleId && liveCycleId !== ingestCycleId) {
+        if (liveCycleId && liveCycleId !== ingestCycleId) {
           // An advancing partial of an already-owned order skipped the
           // increment above (counted in the closed cycle); if the new cycle
           // has no row of it yet, this move makes it one of that cycle's buy
