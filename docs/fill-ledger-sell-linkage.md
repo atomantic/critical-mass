@@ -149,3 +149,67 @@ so polling that map is the sole detector of an order completing. Losing the entr
 orphaned the unfilled remainder permanently — 61 buy fills / 1.204 ETH between May
 and September 2026. Both removals are now gated on `!fillData.isPartialFill`;
 `tests/partial-entry-tracking.test.js` pins it.
+
+## Per-buy consumption records (issue #607)
+
+`sellOrderId` still links a buy to its sell for display and for the fallback
+P&L of unannotated sells, but it no longer decides whether a buy is *closed*.
+Every body sale — full TP fill, partial TP fill, merge-snapshot fill — now
+records what it consumed from each buy order:
+
+```
+buy fill rows of order "abc123"
+  → consumedBy: { "<sellOrderId>": 0.86, ... }   (base quantity per sell)
+```
+
+- **What counts as consumed:** sold quantity plus the holdback the sale books
+  as reserves (`bodyHoldbackAsset`). A partial books no reserve and consumes
+  only what sold. (One exception, issue #718: a merge-snapshot fill whose
+  live body survives consumes only the sold qty, matching what that body
+  deducts.) So for sells booked this way,
+  `Σ buy size − Σ sell size == heldOpenAssetQty + realizedAssetPnL` holds by
+  construction: the coverage identity from the ledger alone.
+- **How it is attributed:** each `body.buyOrders` entry is a tranche with its
+  own `consumedQty`. A sale is spread over the tranches in proportion to their
+  open quantity, the same proration the body applies to its `costBasis`
+  (`celestialHierarchy.planBodyConsumption`). A tranche folded in after an
+  earlier sale starts at 0, so it never inherits that sale's consumption
+  (issue #704). Merge snapshots copy `buyOrders`, so a Race-3 fold-in is not
+  charged for a TP it was never part of.
+- **Held open:** an order with a `consumedBy` record holds
+  `size − Σ consumedBy` open, at `cost × open / size`. The unsold remainder of
+  a partly-sold order — including ledger quantity no body ever attributed,
+  like the 1.14 ETH above — stays in `heldOpenBuyCostBasis` /
+  `heldOpenAssetQty` instead of vanishing.
+- **Idempotent:** entries are keyed by sell order, so re-booking the same sell
+  (crash replay) overwrites rather than double-consumes.
+- **Full close:** a sale that closes the body consumes every tranche it
+  covered in full, so an approximate legacy seed can never strand a sliver of
+  a closed body open.
+- **Boot seal:** on engine start, every buy order with no record whose
+  `sellOrderId` names a sell with fills (closed under the legacy rule) is
+  sealed as `consumedBy: { __legacy__: size − open qty in live tranches }`.
+  The link must be read while it still says so: the next TP placed for a
+  later tranche of the same order re-stamps `sellOrderId` on every row, so
+  the seal runs before offline fill recovery or any boot-time TP placement.
+  An order a live body references through a tranche it cannot measure (no
+  positive `assetQty`, or a `sourceOrderId` with no tranche) is left unsealed.
+- **Legacy:** orders no sell has recorded against keep the boolean rule, and
+  `consumedCostFraction` is now only stamped on those (composed per order,
+  issue #704). The first record on a pre-#607 order seeds `__legacy__` with
+  everything the order had already lost: its ledger size minus what its live
+  tranches (in any body) still hold open. An order filled in advancing
+  partials can be split across bodies, one of them closed long ago under
+  `sellOrderId` closure, and that sold part must not come back as open. Orders
+  whose tranches were all created under #607 are never seeded this way —
+  quantity no tranche holds is genuinely unsold and stays visible. When a
+  body holds quantity no tranche accounts for (an adopted body merged in,
+  tranches from before `buyOrders` tracked quantities), that share of each
+  sale is left unrecorded rather than loaded onto the other tranches, and the
+  engine logs the tranche coverage.
+
+`positionCoverage.ledger` on `getState()` reports the ledger-only reading of
+the coverage identity (`unmodelled = net − inBodies − reserves`) and the open
+buy inventory no body tracks (`untrackedOpen = heldOpen − inBodies`). The drift
+sweep warns on the ledger gap (`⚖️ Ledger coverage gap`) when it cannot read
+an account balance for the fund.

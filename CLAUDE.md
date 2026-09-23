@@ -16,7 +16,7 @@ This engine flips buy orders profitably. The accounting unit is the **cycle**, s
 **Source of truth (`refreshRealizedFromCyclePairs` in regime-engine.js)** is per-sell `bodyPnl`/`satellitePnl` annotations on the fill ledger, summed once per `orderId` (annotations are written to every partial-fill row of the same orderId — taking the value once, not summing across partials, is essential):
 - `realizedPnL` = Σ per-sell `bodyPnl` (= sell proceeds − prorated cost)
 - `realizedAssetPnL` = Σ per-sell `bodyHoldbackAsset` (zero-cost reserves)
-- `heldOpenBuyCostBasis` = Σ cost over buys whose `sellOrderId` is absent **or has no sell fills in the ledger** (open positions in active bodies — `sellOrderId` is stamped at TP *placement* for crash-resilient linkage, so a stamp alone doesn't mean the buy closed)
+- `heldOpenBuyCostBasis` = per buy order, the unconsumed remainder `cost × (size − Σ consumedBy) / size`, where `consumedBy` is the per-sell consumption record (sold + booked holdback) that every body sale writes, keyed by sell order. Orders with no record fall back to the old rule: cost over buys whose `sellOrderId` is absent **or has no sell fills in the ledger**.
 
 **Total P&L display** = `realizedPnL` (USD) + `realizedAssetPnL × current_price` (reserves marked-to-market). Reserves are treated as zero-cost: their cost basis was attributed to the paired sell, and going forward they are pure profit-in-asset. The UI's per-cycle rows and the grand-total header are both derived from this same pairing, so they always agree.
 
