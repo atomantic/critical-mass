@@ -651,9 +651,12 @@ const createGeminiAdapter = (keysPath = null) => {
         // NaN would defeat this exact fix: the orphan-sell detector's
         // `o.size > 0` check treats `NaN > 0` as false, same as `undefined >
         // 0`, so Gemini's untracked-sell warning would silently never fire
-        // (issue #684).
-        const size = order.remaining_amount != null
-          ? parseFloat(order.remaining_amount)
+        // (issue #684). Validate the parsed value is finite, not just that
+        // the raw field is non-null — a present-but-unparseable value (e.g.
+        // "", "N/A") would otherwise take this branch and still yield NaN.
+        const remainingParsed = parseFloat(order.remaining_amount);
+        const size = Number.isFinite(remainingParsed)
+          ? remainingParsed
           : originalSize - filledSize;
         return {
           orderId: order.order_id?.toString(),

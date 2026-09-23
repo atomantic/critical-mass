@@ -549,8 +549,11 @@ const createCoinbaseAdapter = (keysPath = null) => {
       // size is the REMAINING unfilled quantity, not the size the order was
       // originally placed for (issue #684 — a caller like the orphan-sell
       // detector wants "how much is still on the book," and reporting the
-      // original size on a partial fill misrepresents it).
-      const size = originalSize - filledSize;
+      // original size on a partial fill misrepresents it). Clamp at zero: an
+      // unrecognized order_configuration shape can leave originalSize at its
+      // 0 fallback while filled_size is still reported nonzero, which would
+      // otherwise yield a negative size.
+      const size = Math.max(0, originalSize - filledSize);
 
       return {
         orderId: order.order_id,
