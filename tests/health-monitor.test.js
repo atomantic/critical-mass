@@ -1,8 +1,12 @@
 // @ts-check
-const { describe, it, beforeEach, mock } = require('node:test');
+const { describe, it, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const { createHealthMonitor, createInitialHealthState, instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/health-monitor');
+const { createGeminiAdapter } = require('../src/adapters/gemini/api');
 
 /**
  * Build a minimal config with sensible defaults, overridable per-test
@@ -706,5 +710,70 @@ describe('Adapter instrumentation', () => {
     const monitor = createHealthMonitor('test', createTestConfig());
     const wrapped = instrumentAdapterForHealth(null, monitor);
     assert.equal(wrapped, null);
+  });
+});
+
+// ============================================================================
+// instrumentAdapterForHealth + Gemini REST throttle — queue wait excluded
+// from recorded latency (issue #680)
+// ============================================================================
+describe('instrumentAdapterForHealth + Gemini REST throttle (issue #680)', () => {
+  let keysPath;
+  let originalFetch;
+
+  beforeEach(() => {
+    keysPath = path.join(os.tmpdir(), `gemini-throttle-test-keys-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(keysPath, JSON.stringify({ apiKey: 'test-api-key-123', apiSecret: 'test-api-secret-456' }));
+    originalFetch = global.fetch;
+    // Zero-latency network stub — every /v1/order/status call resolves
+    // instantly. Any latency recorded below therefore comes ONLY from
+    // Gemini's own client-side throttle spacing (REST_MIN_INTERVAL_MS), not
+    // from simulated network time.
+    global.fetch = async (url) => {
+      const endpoint = new URL(url).pathname;
+      if (endpoint === '/v1/order/status') {
+        const body = JSON.stringify({
+          order_id: 555,
+          symbol: 'ETHUSD',
+          side: 'buy',
+          is_live: true,
+          executed_amount: '0',
+          original_amount: '1',
+          avg_execution_price: '0',
+          timestampms: Date.now(),
+        });
+        return { ok: true, status: 200, statusText: 'OK', text: async () => body };
+      }
+      throw new Error(`unexpected endpoint in test stub: ${endpoint}`);
+    };
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    fs.rmSync(keysPath, { force: true });
+  });
+
+  it('a burst of concurrent getOrder calls does not trip SAFE mode on queue-wait-as-latency', async () => {
+    const monitor = createHealthMonitor('gemini-test', createTestConfig({ maxLatencyMs: 5000 }));
+    // The stale-order/websocket checks are orthogonal to this test's concern
+    // (queue wait miscounted as REST latency) — satisfy them so checkHealth()
+    // reflects only the latency condition under test.
+    monitor.recordWsStatus(true);
+
+    const adapter = createGeminiAdapter(keysPath);
+    const wrapped = instrumentAdapterForHealth(adapter, monitor);
+
+    // 40 concurrent private calls — enough to push the tail of Gemini's
+    // 200ms-spaced throttle queue past config.maxLatencyMs (5000ms) if queue
+    // wait were still counted as latency (issue #680's reported repro: 40
+    // calls produced avgLatencyMs 5901 and tripped SAFE).
+    await Promise.all(Array.from({ length: 40 }, () => wrapped.getOrder('555')));
+
+    const state = monitor.getState();
+    assert.ok(
+      state.healthChecks.avgLatencyMs < 1000,
+      `expected avgLatencyMs < 1000 (queue wait excluded), got ${state.healthChecks.avgLatencyMs}`
+    );
+    assert.equal(monitor.checkHealth().mode, 'ACTIVE');
   });
 });
