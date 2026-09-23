@@ -1507,11 +1507,46 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * same `handleCancelledOrder` path the other cancel call sites use, which
    * books the fill via `onFillDetected` before dropping tracking. Ladder
    * entries are always buy-side.
-   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number}>} Cancel results
+   *
+   * `partialFillOrderIds` / `partialFillsCost` report what those mid-cancel
+   * bookings bought (issue #711): the quote spent (filledValue + fees, the
+   * same cost the body's costBasis carries) lets rebuildLadder keep its
+   * exchange-balance clamp honest without re-fetching, and the order IDs let
+   * callers reason about which buys landed inside their own sweep.
+   * `unbookedFills` lists the rungs that filled COMPLETELY before their
+   * cancel took: those stay tracked for polling to book later, so no body
+   * carries their cost yet — the caller must reserve it itself. Each entry
+   * carries the cumulative `filledSize` and a per-unit `unitCost` bound, so
+   * the caller can reserve exactly what its persisted fill ledger does not
+   * hold yet (this executor's tracker is empty after a restart).
+   * `partialFillsCost` and each entry's `cost` cover only what was not
+   * already booked as an earlier partial (the tracker's high-water mark): an
+   * earlier tranche is already in a body's costBasis and in the caller's
+   * balance snapshot.
+   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number, partialFillOrderIds: string[], partialFillsCost: number, unbookedFills: Array<{orderId: string, filledSize: number, unitCost: number, cost: number}>}>} Cancel results
    */
   const cancelAllLadderOrders = async () => {
     let cancelled = 0;
     let partialFills = 0;
+    const partialFillOrderIds = [];
+    let partialFillsCost = 0;
+    const unbookedFills = [];
+
+    // Quote spent by the part of a cancel-time fill not already booked as a
+    // partial. Read before handleCancelledOrder, which clears the tracker.
+    // Prorating the cumulative value by size assumes every tranche filled at
+    // the same price; a rung is a buy LIMIT, so no tranche can fill above
+    // `order.price` — never report less than the new size at that price.
+    const newFillCost = (orderId, order, result) => {
+      const filledSize = Number(result.filledSize) || 0;
+      const alreadyBooked = Math.min(partialFillTracker.get(orderId) || 0, filledSize);
+      const newSize = filledSize - alreadyBooked;
+      const newShare = filledSize > 0 ? newSize / filledSize : 1;
+      const fees = (Number(result.totalFees) || 0) * newShare;
+      const prorated = (Number(result.filledValue) || 0) * newShare + fees;
+      const limitBound = newSize * (Number(order.price) || 0) + fees;
+      return Math.max(prorated, limitBound);
+    };
 
     const ladderOrders = Array.from(pendingOrders.entries())
       .filter(([, order]) => order.type === 'ladder_entry');
@@ -1520,6 +1555,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       const result = await safeCancelOrder(orderId).catch(() => ({ cancelled: false, filled: false }));
       if (result.cancelled) {
         if (result.filledSize > 0) {
+          const cost = newFillCost(orderId, order, result);
           // Await the booking. resetCycle/rebuildLadder/cancelLadder all
           // await this whole function then immediately reset cycle state and
           // call fillLedger.startNewCycle() — an un-awaited fire-and-forget
@@ -1542,12 +1578,20 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             totalFees: result.totalFees || 0,
           }, 'Ladder cancel');
           partialFills++;
+          partialFillOrderIds.push(orderId);
+          partialFillsCost += cost;
         } else {
           pendingOrders.delete(orderId);
           partialFillTracker.delete(orderId);
         }
         cancelled++;
       } else if (result.filled) {
+        const filledSize = Number(result.filledSize) || 0;
+        // Upper-bound quote per unit: a buy limit never fills above
+        // order.price, plus the order's average fee per unit.
+        const unitCost = Math.max(filledSize > 0 ? (Number(result.filledValue) || 0) / filledSize : 0, Number(order.price) || 0)
+          + (filledSize > 0 ? (Number(result.totalFees) || 0) / filledSize : 0);
+        unbookedFills.push({ orderId, filledSize, unitCost, cost: newFillCost(orderId, order, result) });
         logger.info(`📋 [${exchange}] Ladder order ${orderId.slice(0, 8)} filled during cancel — polling will process`, {
           orderId,
           orderType: 'ladder_entry',
@@ -1561,7 +1605,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const remainingTracked = Array.from(pendingOrders.values())
       .filter(o => o.type === 'ladder_entry').length;
 
-    return { cancelled, remainingTracked, partialFills };
+    return { cancelled, remainingTracked, partialFills, partialFillOrderIds, partialFillsCost, unbookedFills };
   };
 
   /**
