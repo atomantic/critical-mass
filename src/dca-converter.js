@@ -10,7 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const { loadState, saveState, loadRegimeState, saveRegimeState } = require('./state-tracker');
-const { createFillLedger } = require('./fill-ledger');
+const { createFillLedger, isCompletedCycle } = require('./fill-ledger');
 const { createNewBody, classifyTier, syncPositionState } = require('./celestial-hierarchy');
 const { setFundEnabled: setConfigFundEnabled, setExchangeEnabled, getRegimeConfig, getFundConfig } = require('./config-utils');
 const { resolveFundDataDir } = require('./migration');
@@ -158,6 +158,235 @@ const previewConversion = (exchange, pair) => {
 };
 
 /**
+ * Ground-truth "is any buy in this cycle still genuinely open" check —
+ * the SAME buy→sell pairing computeRealizedFromCyclePairs uses (a buy is
+ * open when its sellOrderId is absent, or names a sell that isn't actually
+ * in the ledger), not a sell/buy SIZE ratio. isCompletedCycle's ratio
+ * heuristic misjudges a fully-closed but legitimately high-holdback trade
+ * (config.holdbackPercent > 50, so sold size < half bought size) as
+ * "incomplete" — which matters here because a merge candidate cycle
+ * inferred from load()'s own heuristic (no persisted position.activeCycleId
+ * to trust outright) could be exactly such an already-closed trade, from
+ * THIS import or an earlier one.
+ *
+ * Known limitation, deliberately accepted: like computeRealizedFromCyclePairs
+ * itself (see its "sellOrderId is stamped at TP placement... a stamp alone
+ * doesn't mean the buy closed" note), presence of ANY sell fill for a buy's
+ * sellOrderId counts it as paired — a buy whose TP is still genuinely
+ * mid-fill (not a designed holdback, just not fully executed yet) can read
+ * as "closed" here too. Distinguishing that case would require live
+ * exchange order state this offline import has no access to; the fallback
+ * this guards is already narrow (only reached with no persisted
+ * position.activeCycleId at all — effectively pre-#675 state files), and
+ * misjudging it costs a cycle-grouping nicety, not P&L correctness
+ * (computeRealizedFromCyclePairs stays correct regardless of cycle
+ * grouping).
+ * @param {Array<Object>} cycleFills - fills already assigned to the candidate cycle
+ * @param {Array<Object>} allFills - every fill in the ledger (sellOrderId may point outside the cycle)
+ * @returns {boolean}
+ */
+const cycleHasOpenBuy = (cycleFills, allFills) => {
+  const sellOrderIdsPresent = new Set(
+    allFills.filter((f) => f.side === 'sell' && f.orderId).map((f) => f.orderId),
+  );
+  return cycleFills.some((f) => f.side === 'buy' && (!f.sellOrderId || !sellOrderIdsPresent.has(f.sellOrderId)));
+};
+
+/**
+ * Ingest DCA "filled" and "pending" orders into a fill ledger as synthetic
+ * fills. Shared by executeConversion and mergeToRegime so the two loops
+ * cannot drift apart again (issue #692) — before this helper existed,
+ * mergeToRegime never stamped sellOrderId on a filled order's buy fill and
+ * never opened a fresh cycle for the pending block, so a completed DCA
+ * trade's buy and sell landed in the SAME cycle as the still-open pending
+ * buys. Per CLAUDE.md's P&L model, cycles are atomic buy(n)->sell(1): mixing
+ * a closed pair into the live cycle left the sell unpaired (realized P&L
+ * zeroed) and the cycle's low sell ratio meant recalculateCycles() restored
+ * it as the active cycle on the next engine start.
+ *
+ * @param {ReturnType<typeof createFillLedger>} fillLedger
+ * @param {Array<Object>} filled - completed DCA buy+sell order pairs
+ * @param {Array<Object>} pending - still-open DCA buys
+ * @param {{ linkPendingSells: boolean, mergeActiveCycleId?: string|null }} options
+ *   `linkPendingSells: true` (executeConversion, always a fresh ledger):
+ *   stamp each pending buy's sellOrderId with its still-open exchange sell
+ *   order, and always start a brand-new cycle for the pending block.
+ *   `linkPendingSells: false` (mergeToRegime, an existing regime run):
+ *   leave sellOrderId unset — the caller annotates isBodyOwned/bodyId once
+ *   celestial bodies exist — and reuse the fund's genuine live cycle for
+ *   the pending block while that cycle is not yet completed (per
+ *   isCompletedCycle's sell-ratio threshold, not merely "zero sells so
+ *   far", and NEVER a cycle this same call just created for a completed
+ *   DCA pair — see below), so open positions merged in land in the
+ *   engine's real in-progress cycle — including one with a partial TP
+ *   fill already on it — instead of a new cycle that would orphan it.
+ *   The live cycle is `mergeActiveCycleId` (#675's positionState.
+ *   activeCycleId) when the caller has one, else whichever cycle the
+ *   ledger itself already considered live before this call touched
+ *   anything (older state files without the persisted marker fall back
+ *   to the ledger's own heuristic, mirroring restorePersistedCycleId in
+ *   regime-engine.js). Restoring `mergeActiveCycleId` also reserves its
+ *   cycle NUMBER (setCurrentCycleId bumps nextCycleNumber), so the filled
+ *   loop above can never coincidentally reassign that same reserved-but-
+ *   fill-less cycle ID to an unrelated completed DCA pair.
+ * @returns {{ filledIngested: number, pendingIngested: number }}
+ */
+const ingestDcaOrdersIntoLedger = (fillLedger, filled, pending, { linkPendingSells, mergeActiveCycleId = null }) => {
+  // Capture whatever cycle the ledger considered "live" BEFORE this import
+  // touches anything — either restored from genuine pre-existing fills on
+  // disk (real regime-engine trading activity), or null on a fresh/just-
+  // reset ledger. This is the merge-mode fallback candidate below for when
+  // there is no persisted position.activeCycleId to restore. It MUST be
+  // captured now, before the filled loop runs: every completed order in
+  // that loop calls its own startNewCycle(), and a cycle it creates must
+  // never be mistaken for a pre-existing live one.
+  const originalActiveCycleId = fillLedger.getCurrentCycleId();
+
+  // Reserve the persisted live cycle's NUMBER (if any) before assigning any
+  // cycle to the imported orders, so nextCycleNumber can never let the
+  // filled loop's own startNewCycle() calls below coincidentally reissue
+  // that same reserved-but-fill-less cycle ID to an unrelated completed
+  // DCA pair — see the options doc above.
+  if (mergeActiveCycleId) {
+    fillLedger.setCurrentCycleId(mergeActiveCycleId);
+  }
+
+  let filledIngested = 0;
+  for (const order of filled) {
+    fillLedger.startNewCycle();
+
+    // Synthetic buy fill
+    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
+    const buyResult = fillLedger.ingestFill({
+      tradeId: buyTradeId,
+      orderId: order.buyOrderId,
+      side: 'buy',
+      price: order.buyPrice,
+      size: order.buyQuantity,
+      totalCommission: order.buyFees || 0,
+      rebate: order.buyRebates || 0,
+      liquidityIndicator: 'TAKER',
+      tradeTime: order.createdAt,
+    });
+
+    // Synthetic sell fill
+    const sellTradeId = `dca-convert-sell-${order.orderId}`;
+    fillLedger.ingestFill({
+      tradeId: sellTradeId,
+      orderId: order.orderId,
+      side: 'sell',
+      price: order.sellPrice,
+      size: order.sellQuantity,
+      totalCommission: order.sellFees || 0,
+      rebate: order.sellRebates || 0,
+      liquidityIndicator: 'MAKER',
+      tradeTime: order.filledAt || order.createdAt,
+    });
+
+    // Link the buy to its sell so computeRealizedFromCyclePairs pairs them
+    // directly instead of relying on a later recalculateCycles() auto-link
+    // pass (which only links buys within cycles it judges "completed" —
+    // never guaranteed to run, e.g. mergeToRegime doesn't call it at all).
+    // A no-op if the buy trade wasn't actually appended (duplicate re-run).
+    fillLedger.annotateFillsByOrderId(order.buyOrderId, { sellOrderId: order.orderId });
+
+    if (buyResult.ingested) filledIngested++;
+  }
+
+  // Open (or reuse) the cycle that will hold the still-open pending buys.
+  if (linkPendingSells) {
+    // executeConversion always starts from a clean cycle boundary — it just
+    // (re)built the ledger, so there is no pre-existing active cycle worth
+    // preserving.
+    fillLedger.startNewCycle();
+  } else {
+    // mergeToRegime preserves an existing regime run. Decide which
+    // pre-existing cycle (if any) is the fund's genuine live boundary for
+    // the pending block — prefer the persisted boundary
+    // (mergeActiveCycleId / position.activeCycleId, #675) when present;
+    // otherwise fall back to originalActiveCycleId, the cycle the ledger
+    // itself considered live BEFORE this import touched anything (older
+    // state files without the persisted marker fall back to the ledger's
+    // own heuristic, exactly as restorePersistedCycleId in regime-engine.js
+    // does). Restore that candidate (not "wherever the filled loop above
+    // happened to leave the cursor" — each completed order there calls its
+    // own startNewCycle()) and reuse it only while NOT yet completed, per
+    // the SAME completion test (isCompletedCycle / CYCLE_COMPLETE_SELL_RATIO)
+    // recalculateCycles() and every other cycle-boundary decision in the
+    // engine uses.
+    //
+    // Never fall back to "whatever cycle the filled loop just created" —
+    // a completed DCA order can legitimately hold back more than half its
+    // bought asset (config.holdbackPercent > 50), which would read as
+    // "incomplete" under the 0.5 sell-ratio threshold despite being a
+    // fully closed trade; mistaking it for a live cycle here would mix the
+    // pending buys into it and reintroduce this issue's original bug.
+    //
+    // A partially-filled TP (sell ratio below the completion threshold) on
+    // a genuine pre-existing/persisted boundary still leaves that cycle
+    // "live": positionState.activeCycleId keeps naming it, and the engine
+    // restores that same boundary on restart. Starting a new cycle here
+    // anyway would silently orphan that boundary from the buys just merged
+    // in — a brand-new cycle is only warranted once the boundary has
+    // actually closed, or there was no pre-existing boundary at all.
+    //
+    // Trust level differs by source: `mergeActiveCycleId` is an EXPLICIT
+    // boundary the engine itself persisted (including a freshly reserved,
+    // still-empty one right after an operator cycle reset) — reuse it via
+    // the same lenient ratio test the rest of the engine uses, unless its
+    // own fills already show it closed. `originalActiveCycleId` is only
+    // load()'s own INFERRED guess (no persisted marker to trust outright),
+    // which can land on an already-closed high-holdback trade the ratio
+    // test alone would misjudge as open (isCompletedCycle above, and see
+    // cycleHasOpenBuy's docstring) — require ground-truth buy/sell pairing
+    // for that guess instead of trusting the ratio.
+    const candidateCycleId = mergeActiveCycleId || originalActiveCycleId;
+    if (candidateCycleId) {
+      fillLedger.setCurrentCycleId(candidateCycleId);
+      const candidateFills = fillLedger.getCurrentCycleFills();
+      const candidateStillOpen = mergeActiveCycleId
+        ? !isCompletedCycle(candidateFills)
+        : cycleHasOpenBuy(candidateFills, fillLedger.getAllFills());
+      if (!candidateStillOpen) {
+        fillLedger.startNewCycle();
+      }
+    } else {
+      fillLedger.startNewCycle();
+    }
+  }
+
+  let pendingIngested = 0;
+  for (const order of pending) {
+    // Synthetic buy fill for the open position
+    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
+    const buyResult = fillLedger.ingestFill({
+      tradeId: buyTradeId,
+      orderId: order.buyOrderId,
+      side: 'buy',
+      price: order.buyPrice,
+      size: order.buyQuantity,
+      totalCommission: order.buyFees || 0,
+      rebate: order.buyRebates || 0,
+      liquidityIndicator: 'TAKER',
+      tradeTime: order.createdAt,
+    });
+
+    if (linkPendingSells && buyResult.ingested && buyResult.fill) {
+      // Link the buy fill to its still-open sell order on the exchange.
+      // markDirty after direct field mutation: ingestFill auto-persisted
+      // and cleared the dirty flag, so a trailing persist() would
+      // otherwise no-op and lose this sellOrderId on restart.
+      buyResult.fill.sellOrderId = order.orderId;
+      fillLedger.markDirty();
+    }
+
+    if (buyResult.ingested) pendingIngested++;
+  }
+
+  return { filledIngested, pendingIngested };
+};
+
+/**
  * Execute DCA-to-Regime conversion
  * @param {string} exchange
  * @param {string} [pair] - Fund pair; defaults to the exchange's default pair
@@ -199,72 +428,13 @@ const executeConversion = (exchange, pair) => {
     throw new Error(`Fill ledger init failed for ${fundLabel(exchange, pair)} during DCA conversion — see engine logs for details`);
   }
 
-  // Ingest filled (completed) DCA orders as completed cycles
-  let filledIngested = 0;
-  for (const order of filled) {
-    fillLedger.startNewCycle();
-
-    // Synthetic buy fill
-    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
-    const buyResult = fillLedger.ingestFill({
-      tradeId: buyTradeId,
-      orderId: order.buyOrderId,
-      side: 'buy',
-      price: order.buyPrice,
-      size: order.buyQuantity,
-      totalCommission: order.buyFees || 0,
-      rebate: order.buyRebates || 0,
-      liquidityIndicator: 'TAKER',
-      tradeTime: order.createdAt,
-    });
-
-    // Synthetic sell fill
-    const sellTradeId = `dca-convert-sell-${order.orderId}`;
-    fillLedger.ingestFill({
-      tradeId: sellTradeId,
-      orderId: order.orderId,
-      side: 'sell',
-      price: order.sellPrice,
-      size: order.sellQuantity,
-      totalCommission: order.sellFees || 0,
-      rebate: order.sellRebates || 0,
-      liquidityIndicator: 'MAKER',
-      tradeTime: order.filledAt || order.createdAt,
-    });
-
-    if (buyResult.ingested) filledIngested++;
-  }
-
-  // Start active cycle for pending orders
-  fillLedger.startNewCycle();
-
-  let pendingIngested = 0;
-  for (const order of pending) {
-    // Synthetic buy fill for the open position
-    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
-    const buyResult = fillLedger.ingestFill({
-      tradeId: buyTradeId,
-      orderId: order.buyOrderId,
-      side: 'buy',
-      price: order.buyPrice,
-      size: order.buyQuantity,
-      totalCommission: order.buyFees || 0,
-      rebate: order.buyRebates || 0,
-      liquidityIndicator: 'TAKER',
-      tradeTime: order.createdAt,
-    });
-
-    // Link the buy fill to its existing sell order on exchange.
-    // markDirty after direct field mutation: ingestFill auto-persisted
-    // and cleared the dirty flag, so the trailing persist() below would
-    // otherwise no-op and lose this sellOrderId on restart.
-    if (buyResult.ingested && buyResult.fill) {
-      buyResult.fill.sellOrderId = order.orderId;
-      fillLedger.markDirty();
-    }
-
-    if (buyResult.ingested) pendingIngested++;
-  }
+  // Ingest filled (completed) DCA orders as completed cycles, then start a
+  // fresh cycle for the still-open pending orders and link each pending
+  // buy to its still-resting exchange sell order (shared with mergeToRegime
+  // via ingestDcaOrdersIntoLedger — see its docstring, issue #692).
+  const { filledIngested, pendingIngested } = ingestDcaOrdersIntoLedger(fillLedger, filled, pending, {
+    linkPendingSells: true,
+  });
 
   fillLedger.persist();
   log('INFO', `📝 [${fundLabel(exchange, pair)}] Fill ledger: ${filledIngested} filled + ${pendingIngested} pending orders ingested`);
@@ -413,66 +583,49 @@ const mergeToRegime = (exchange, pair) => {
     throw new Error(`Fill ledger init failed for ${fundLabel(exchange, pair)} during DCA merge — see engine logs for details`);
   }
 
-  // Ingest filled (completed) DCA orders as completed cycle fills
-  let filledIngested = 0;
-  for (const order of filled) {
-    fillLedger.startNewCycle();
+  // Ingest filled (completed) DCA orders as their own closed cycles, then
+  // ingest the still-open pending buys into the ledger's live active cycle
+  // (reused when open, per ingestDcaOrdersIntoLedger's merge-mode branch)
+  // instead of the filled orders' cycle — keeps cycles atomic (buy(n)->
+  // sell(1), per CLAUDE.md) so a completed DCA trade's realized P&L is
+  // never zeroed by an unrelated open position sharing its cycle (#692).
+  // isBodyOwned/bodyId for the pending buys is annotated below in step 4b,
+  // once their celestial bodies exist.
+  //
+  // Pass the persisted live-cycle boundary (#675's positionState.
+  // activeCycleId) through: a fresh fillLedger instance here only knows the
+  // live cycle from fills already on disk, so without this a just-reserved
+  // (fill-less) boundary — e.g. right after an operator cycle reset — is
+  // invisible to it, and the import could coincidentally reassign that
+  // exact cycle ID to an unrelated completed DCA pair.
+  const persistedCycleId = position?.activeCycleId;
+  const mergeActiveCycleId = typeof persistedCycleId === 'string' && /^cycle-\d+$/.test(persistedCycleId)
+    ? persistedCycleId
+    : null;
+  const { filledIngested, pendingIngested } = ingestDcaOrdersIntoLedger(fillLedger, filled, pending, {
+    linkPendingSells: false,
+    mergeActiveCycleId,
+  });
 
-    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
-    fillLedger.ingestFill({
-      tradeId: buyTradeId,
-      orderId: order.buyOrderId,
-      side: 'buy',
-      price: order.buyPrice,
-      size: order.buyQuantity,
-      totalCommission: order.buyFees || 0,
-      rebate: order.buyRebates || 0,
-      liquidityIndicator: 'TAKER',
-      tradeTime: order.createdAt,
-    });
-
-    const sellTradeId = `dca-convert-sell-${order.orderId}`;
-    fillLedger.ingestFill({
-      tradeId: sellTradeId,
-      orderId: order.orderId,
-      side: 'sell',
-      price: order.sellPrice,
-      size: order.sellQuantity,
-      totalCommission: order.sellFees || 0,
-      rebate: order.sellRebates || 0,
-      liquidityIndicator: 'MAKER',
-      tradeTime: order.filledAt || order.createdAt,
-    });
-
-    filledIngested++;
-  }
-
-  // Ingest pending order buy fills into the current active cycle
-  let pendingIngested = 0;
-  for (const order of pending) {
-    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
-    const buyResult = fillLedger.ingestFill({
-      tradeId: buyTradeId,
-      orderId: order.buyOrderId,
-      side: 'buy',
-      price: order.buyPrice,
-      size: order.buyQuantity,
-      totalCommission: order.buyFees || 0,
-      rebate: order.buyRebates || 0,
-      liquidityIndicator: 'TAKER',
-      tradeTime: order.createdAt,
-    });
-
-    // Mark as body-owned so these fills don't conflict with core position tracking.
-    // markDirty: ingestFill auto-persisted and cleared the dirty flag,
-    // so the trailing persist() below would otherwise no-op and lose
-    // this isBodyOwned flag on restart.
-    if (buyResult.ingested && buyResult.fill) {
-      buyResult.fill.isBodyOwned = true;
-      fillLedger.markDirty();
-    }
-
-    if (buyResult.ingested) pendingIngested++;
+  // Re-point the persisted boundary at wherever the ledger's live cycle
+  // actually ended up (mirrors syncActiveCycleIdAfterRecalc in
+  // regime-engine.js): the import above may have started a fresh cycle
+  // (no persisted boundary to restore, or the restored one turned out to
+  // already be completed) or reused the persisted one as-is. Leaving
+  // position.activeCycleId stale would point the next engine restart's
+  // restorePersistedCycleId at the wrong — or now-completed — cycle.
+  const liveCycleId = fillLedger.getCurrentCycleId();
+  if (liveCycleId && liveCycleId !== position.activeCycleId) {
+    position.activeCycleId = liveCycleId;
+    // Persist the corrected boundary NOW, before any further mutation.
+    // ingestDcaOrdersIntoLedger already wrote the new cycle's fills to
+    // fill-ledger.json (ingestFill/annotateFillsByOrderId auto-persist) —
+    // without an immediate save here, a crash between that write and the
+    // comprehensive saveRegimeState() call near the end of this function
+    // would leave regime-state.json still naming the OLD boundary, and the
+    // next engine start's restorePersistedCycleId would trust that stale
+    // marker over the ledger's own fills.
+    saveRegimeState(position, existingState.regime, exchange, existingState.tpOptimizer, existingState.sizeOptimizer, pair);
   }
 
   fillLedger.persist();
