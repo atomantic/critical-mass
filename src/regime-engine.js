@@ -1161,6 +1161,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Also reload fill ledger from disk (a live reload keeps in-memory fills
       // on a corrupt file rather than throwing — see fill-ledger.js load()).
       fillLedger.load();
+      // load() re-derives the current cycle from its "most recent unsold
+      // cycle" heuristic; re-apply the operator's durable boundary (#606/#675).
+      restorePersistedCycleId(fillLedger, positionState, logger, exchange);
       logger.info(`✅ [${exchange}] State reloaded from disk in ${Date.now() - startedAt}ms`);
       saveLiveStateGuarded('sigusr1-reload');
       return true;
@@ -5678,6 +5681,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {{cyclesCompleted:number, realizedPnL:number, realizedAssetPnL:number, cycleDetails:any[], orphansFixed:number, activeCycleId:string|null}}
    */
   const recalculateAndRefresh = () => {
+    // Anchor the ledger on the durable boundary first so renumbering keeps
+    // THAT cycle last and reports its rename in idMap (#675).
+    restorePersistedCycleId(fillLedger, positionState, logger, exchange);
     const recalc = fillLedger.recalculateCycles();
     syncActiveCycleIdAfterRecalc(recalc);
     positionState.cyclesCompleted = recalc.cyclesCompleted;

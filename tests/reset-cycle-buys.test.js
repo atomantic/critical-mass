@@ -291,6 +291,34 @@ describe('#675 recalculateAndRefresh re-points the persisted activeCycleId', () 
     assert.equal(ledger.getCurrentCycleAllBuysCount(), 2);
   });
 
+  it('anchors recalc on the persisted boundary when the ledger guessed a different cycle', () => {
+    const PAIR = '__test675b__';
+    after(() => fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', PAIR), { recursive: true, force: true }));
+    const eng = createRegimeEngine('coinbase', PAIR, { dryRun: false, productId: PAIR, maxCycleBuys: 3 }, {});
+    engines.push(eng);
+    const ledger = eng.getFillLedger();
+    const at = (h) => new Date(Date.parse('2026-01-01T00:00:00.000Z') + h * 3600_000).toISOString();
+    const fill = (tradeId, orderId, side, h, cycleId, size = '0.01') => ledger.ingestFill(
+      { tradeId, orderId, side, price: '50000', size, tradeTime: at(h) }, null, { cycleId, skipPersist: true });
+    fill('g-c1b', 'g-c1-buy', 'buy', 10, 'cycle-1');
+    fill('g-c1s', 'g-c1-sell', 'sell', 11, 'cycle-1');
+    // cycle-2 completed with holdback (sellRatio < 1) — load()'s heuristic guess.
+    fill('g-c2b', 'g-c2-buy', 'buy', 20, 'cycle-2');
+    fill('g-c2s', 'g-c2-sell', 'sell', 21, 'cycle-2', '0.009');
+    fill('g-o1b', 'g-o1-buy', 'buy', 0, null);
+    fill('g-o1s', 'g-o1-sell', 'sell', 1, null);
+    ledger.setCurrentCycleId('cycle-2'); // what a SIGUSR1 reload's load() would guess
+    eng._getPositionState().activeCycleId = 'cycle-3'; // operator reset: no fills yet
+
+    eng.recalculateAndRefresh();
+
+    const marker = eng._getPositionState().activeCycleId;
+    assert.equal(marker, ledger.getCurrentCycleId());
+    assert.equal(ledger.getCurrentCycleAllBuysCount(), 0, 'the post-reset boundary must not name a completed cycle');
+    const completedIds = new Set(ledger.getAllFills().map(f => f.cycleId));
+    assert.ok(!completedIds.has(marker), 'marker names no historical cycle');
+  });
+
   it('never replaces an existing boundary with the ledger\'s guess when nothing was renamed', () => {
     const eng = createRegimeEngine('coinbase', PAIR_675, { dryRun: false, productId: PAIR_675, maxCycleBuys: 3 }, {});
     engines.push(eng);

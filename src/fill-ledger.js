@@ -188,17 +188,24 @@ const getLiveCycleStartTs = (cycleMap, liveCycleId) => {
 };
 
 /**
- * Whether an INCOMPLETE orphan group belongs to the live cycle: every fill is
- * at or after the live cycle's first fill (e.g. a buy the engine missed during
- * downtime, re-imported by sync-fills with cycleId null). Same timeframe rule
- * repairHistoricalFillAnnotations uses for -recovered- fills; older groups are
- * historical and stay in their own recovered cycle (#675).
+ * Split an INCOMPLETE orphan group at the live cycle's first fill. Fills at or
+ * after it belong to the live cycle (e.g. a buy the engine missed during
+ * downtime, re-imported by sync-fills with cycleId null) — the same timeframe
+ * rule repairHistoricalFillAnnotations uses for -recovered- fills. Older fills
+ * are historical and stay in their own recovered cycle (#675). Splitting per
+ * fill (not per group) matters because splitOrphansIntoCycles ignores the
+ * non-orphan fills in between, so one group can straddle the boundary.
  * @param {Fill[]} groupFills - Fills of one orphan group
  * @param {number|undefined} liveStartTs - From getLiveCycleStartTs
- * @returns {boolean}
+ * @returns {{ live: Fill[], older: Fill[] }}
  */
-const orphanGroupJoinsLiveCycle = (groupFills, liveStartTs) =>
-  liveStartTs !== undefined && groupFills.every(f => (Number(f.timestamp) || 0) >= liveStartTs);
+const splitOrphanGroupAtLiveStart = (groupFills, liveStartTs) => {
+  if (liveStartTs === undefined) return { live: [], older: groupFills };
+  const live = [];
+  const older = [];
+  for (const f of groupFills) ((Number(f.timestamp) || 0) >= liveStartTs ? live : older).push(f);
+  return { live, older };
+};
 
 /**
  * Build mapping from old cycle IDs to sequential cycle-1, cycle-2... IDs.
@@ -1176,20 +1183,23 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         // on purpose (#108): groups that predate the live cycle keep their own
         // recovered cycle, and groups inside its timeframe join it.
         const completed = isCompletedCycle(cycleFills, cycleCompletionRatio);
-        const joinsLive = !completed && hadCurrentCycle && orphanGroupJoinsLiveCycle(cycleFills, liveStartTs);
-        const targetId = joinsLive ? currentCycleId : cycleId;
-        if (!joinsLive) standaloneOrphanCycles.push({ cycleId, fills: cycleFills });
+        const { live, older } = !completed && hadCurrentCycle
+          ? splitOrphanGroupAtLiveStart(cycleFills, liveStartTs)
+          : { live: [], older: cycleFills };
+        if (older.length > 0) standaloneOrphanCycles.push({ cycleId, fills: older });
 
-        // Assign cycle ID to all fills in this cycle
-        if (!cycleIndex.has(targetId)) cycleIndex.set(targetId, new Set());
-        for (const fill of cycleFills) {
+        // Assign cycle IDs to the group's fills
+        const assign = (fill, targetId) => {
+          if (!cycleIndex.has(targetId)) cycleIndex.set(targetId, new Set());
           fill.cycleId = targetId;
           fills.set(fill.tradeId, fill);
           cycleIndex.get(targetId).add(fill.tradeId);
           orphansFixed++;
           dirtySinceLastPersist = true;
           bumpLedgerVersion();
-        }
+        };
+        for (const fill of older) assign(fill, cycleId);
+        for (const fill of live) assign(fill, currentCycleId);
 
         if (completed) {
           const { cycleDetail, pnl, holdbackAsset } = computeCycleStats(cycleId, cycleFills);
@@ -1341,9 +1351,10 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         orphansFixed += cycleFills.length;
         const completed = isCompletedCycle(cycleFills, cycleCompletionRatio);
         // Same placement rule as recalculateCycles (#675).
-        if (completed || !hadCurrentCycle || !orphanGroupJoinsLiveCycle(cycleFills, liveStartTs)) {
-          standaloneOrphanCycles.push({ cycleId, fills: cycleFills });
-        }
+        const { older } = !completed && hadCurrentCycle
+          ? splitOrphanGroupAtLiveStart(cycleFills, liveStartTs)
+          : { older: cycleFills };
+        if (older.length > 0) standaloneOrphanCycles.push({ cycleId, fills: older });
         if (completed) {
           cycleDetails.push(computeCycleStats(cycleId, cycleFills).cycleDetail);
         } else if (!hadCurrentCycle) {

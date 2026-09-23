@@ -1761,6 +1761,26 @@ describe('Fill Ledger', () => {
       assert.deepStrictEqual(preview.idMap, result.idMap);
     });
 
+    it('splits an orphan group that straddles the live cycle start', () => {
+      const ledger = createTestLedger('orphan-straddle');
+      seedLiveCycles(ledger);
+      // Old orphan buy at t=0 and a missed buy at t=22h form ONE orphan group
+      // (no orphan sell between them).
+      ledger.ingestFill(makeBuyFill({ tradeId: 'old-b', orderId: 'old-buy', tradeTime: at(0) }), null, { cycleId: null });
+      ledger.ingestFill(makeBuyFill({ tradeId: 'late-b', orderId: 'late-buy', tradeTime: at(22 * HOUR) }), null, { cycleId: null });
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.orphansFixed, 2);
+      assert.deepStrictEqual(currentTradeIds(ledger), ['c2-b1', 'c2-b2', 'late-b']);
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 3);
+      const old = ledger.getAllFills().find(f => f.tradeId === 'old-b');
+      assert.notEqual(old.cycleId, ledger.getCurrentCycleId(), 'the historical buy keeps its own cycle');
+      assert.equal(preview.activeCycleId, result.activeCycleId);
+      assert.deepStrictEqual(preview.idMap, result.idMap);
+    });
+
     it('still adopts an incomplete orphan group when there is no live cycle', () => {
       const ledger = createTestLedger('orphan-no-live');
       ledger.ingestFill(makeBuyFill({ tradeId: 'o1-b', orderId: 'o1-buy', tradeTime: at(0) }), null, { cycleId: null });
