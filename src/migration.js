@@ -148,6 +148,13 @@ const migrateData = (exchange = 'coinbase') => {
  * `data/coinbase-keys.json`. `chmodSync`ing the copy to 0600 matters
  * because `fs.copyFileSync` preserves the source file's mode, and a root
  * `keys.json` is commonly 0644.
+ *
+ * The copy/chmod/rename sequence is wrapped in try/catch: this function is
+ * invoked uncaught at process startup (`server.js`, `index.js`), so an
+ * unexpected filesystem error (a chmod unsupported on the mount, a stale
+ * `keys.json.migrated` from an interrupted prior run) must degrade to "try
+ * again next startup" rather than crash-loop the app. A failure here leaves
+ * `oldKeysFile` in place, so nothing is lost and the next call retries.
  * @returns {boolean} True if migration happened
  */
 const migrateKeys = () => {
@@ -167,15 +174,42 @@ const migrateKeys = () => {
   // Copy keys (don't delete original for safety — rename it out of the way
   // instead, so the migration cannot run again and resurrect a since-deleted key)
   if (!fs.existsSync(newKeysFile)) {
-    fs.copyFileSync(oldKeysFile, newKeysFile);
-    fs.chmodSync(newKeysFile, 0o600);
-    fs.renameSync(oldKeysFile, `${oldKeysFile}.migrated`);
-    console.log('  Migrate: keys.json -> data/coinbase-keys.json (root file renamed to keys.json.migrated)');
-    return true;
+    try {
+      fs.copyFileSync(oldKeysFile, newKeysFile);
+      fs.chmodSync(newKeysFile, 0o600);
+      fs.renameSync(oldKeysFile, `${oldKeysFile}.migrated`);
+      console.log('  Migrate: keys.json -> data/coinbase-keys.json (root file renamed to keys.json.migrated)');
+      return true;
+    } catch (err) {
+      console.log(`  ⚠️  Keys migration failed, will retry next startup: ${err.message}`);
+      return false;
+    }
   }
 
   console.log('  Skip: data/coinbase-keys.json already exists');
   return false;
+};
+
+/**
+ * Back-fill `data/coinbase-keys.json` to mode 0600 for an install that was
+ * migrated by a pre-#688 build, which copied the key with `fs.copyFileSync`
+ * and no `chmodSync` — the source file's mode (commonly 0644) carried
+ * straight through and was never corrected on later startups, since
+ * `needsKeysMigration()` (and so `migrateKeys()`) never re-runs once
+ * `data/coinbase-keys.json` exists. Runs unconditionally, independent of the
+ * migration gate, so it reaches an already-migrated install; a no-op when
+ * the file doesn't exist yet, and best-effort — a chmod failure (e.g. an
+ * unsupported filesystem) must never block startup.
+ * @returns {void}
+ */
+const backfillKeysFilePermissions = () => {
+  const newKeysFile = path.join(KEYS_DIR, 'coinbase-keys.json');
+  if (!fs.existsSync(newKeysFile)) return;
+  try {
+    fs.chmodSync(newKeysFile, 0o600);
+  } catch {
+    // ignore — permissions may not be settable on this filesystem
+  }
 };
 
 /**
@@ -215,6 +249,10 @@ const runMigrationIfNeeded = () => {
     migrateKeys();
     result.keysMigrated = true;
   }
+
+  // Independent of the gate above — reaches an install already migrated by
+  // a pre-#688 build (issue #688, finding 3).
+  backfillKeysFilePermissions();
 
   return result;
 };
@@ -896,6 +934,7 @@ module.exports = {
   needsKeysMigration,
   migrateData,
   migrateKeys,
+  backfillKeysFilePermissions,
   createExchangeDirectories,
   runMigrationIfNeeded,
   getExchangeDataDir,

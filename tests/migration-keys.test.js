@@ -1,5 +1,5 @@
 // @ts-check
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
@@ -45,6 +45,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  mock.restoreAll();
   pathsModule.APP_ROOT = originalAppRoot;
   pathsModule.DATA_DIR = originalDataDir;
   delete require.cache[migrationPath];
@@ -124,5 +125,57 @@ describe('runMigrationIfNeeded — deleting a migrated key must not resurrect it
     const second = migration.runMigrationIfNeeded();
     assert.equal(second.keysMigrated, false, 'a second run must not re-migrate');
     assert.ok(!fs.existsSync(newKeysFile()), 'data/coinbase-keys.json must stay deleted');
+  });
+});
+
+describe('migrateKeys — degrades gracefully on a mid-sequence filesystem failure (issue #688)', () => {
+  it('returns false and does not throw when the rename step fails, leaving the root file in place for a retry', () => {
+    fs.writeFileSync(rootKeysFile(), FAKE_KEYS);
+
+    mock.method(fs, 'renameSync', () => {
+      throw new Error('EPERM: simulated rename failure');
+    });
+
+    assert.doesNotThrow(() => {
+      const migrated = migration.migrateKeys();
+      assert.equal(migrated, false);
+    });
+
+    // The copy already landed before the simulated failure — that's fine,
+    // the root file staying in place is what makes the next call retry.
+    assert.ok(fs.existsSync(newKeysFile()), 'the copy should have completed before the rename failed');
+    assert.ok(fs.existsSync(rootKeysFile()), 'root keys.json must stay in place after a failed rename, for the next retry');
+    assert.ok(!fs.existsSync(migratedKeysFile()), 'keys.json.migrated must not exist when the rename failed');
+  });
+});
+
+describe('backfillKeysFilePermissions (issue #688)', () => {
+  it('chmods an already-migrated data/coinbase-keys.json to 0600, even from a pre-#688 install', () => {
+    fs.mkdirSync(path.join(tmpDir, 'data'), { recursive: true });
+    fs.writeFileSync(newKeysFile(), FAKE_KEYS);
+    fs.chmodSync(newKeysFile(), 0o644); // simulates the old copyFileSync-with-no-chmod behavior
+
+    migration.backfillKeysFilePermissions();
+
+    const mode = fs.statSync(newKeysFile()).mode & 0o777;
+    assert.equal(mode, 0o600, `expected mode 0600, got ${mode.toString(8)}`);
+  });
+
+  it('is a no-op when data/coinbase-keys.json does not exist', () => {
+    assert.doesNotThrow(() => migration.backfillKeysFilePermissions());
+    assert.ok(!fs.existsSync(newKeysFile()));
+  });
+
+  it('runMigrationIfNeeded backfills permissions on an already-migrated install without re-migrating', () => {
+    fs.mkdirSync(path.join(tmpDir, 'data'), { recursive: true });
+    fs.writeFileSync(newKeysFile(), FAKE_KEYS);
+    fs.chmodSync(newKeysFile(), 0o644);
+    // No root keys.json — this install was already migrated.
+
+    const result = migration.runMigrationIfNeeded();
+
+    assert.equal(result.keysMigrated, false, 'must not report a re-migration');
+    const mode = fs.statSync(newKeysFile()).mode & 0o777;
+    assert.equal(mode, 0o600, 'existing key file must be backfilled to 0600');
   });
 });
