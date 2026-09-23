@@ -580,3 +580,40 @@ describe('a ladder rung a live body owns (issue #756)', () => {
     assert.ok(rung && near(rung.assetQty, 0.01), `the rung shrinks to its remainder (got ${rung && rung.assetQty})`);
   });
 });
+
+describe('codex review coverage (issue #756)', () => {
+  it('a gone body\'s sale known only by its closed-trade record still blocks booking', async () => {
+    const pair = '__teststartupowned756_o__';
+    writePreFixFund(pair, {
+      ledger: (seed) => {
+        seed.ingestFill(T1, Date.now() - 60000);
+        // The sell carries no body annotation yet.
+        seed.ingestFill({ tradeId: 'tp-gone-1', orderId: 'tp-gone', side: 'sell', size: 0.004, price: 51000, netFee: 0, tradeTime: new Date(Date.now() - 42000).toISOString() });
+        seed.ingestFill(T2, Date.now() - 60000);
+        seed.annotateFillsByOrderId(ORDER_ID, { isBodyOwned: true, bodyId: 'body-b-756', sellOrderId: BODY_TP });
+      },
+      bodies: [legacyBody(0.006)],
+      entry: { orderId: ORDER_ID, price: PRICE, assetQty: 0.014, sizeUsdc: 700, placedAt: Date.now() - 60000 },
+    });
+    createClosedTrades(EXCHANGE, pair).record({ sellOrderId: 'tp-gone', timestamp: Date.now() - 42000, qtySold: 0.004, bodyId: 'body-gone', buyOrderIds: [ORDER_ID], source: 'live' });
+    const { eng } = await bootEngine(pair, { openOrders: [OPEN_ENTRY], orders: {}, fills: [T1, T2] });
+    assert.ok(near(bookedQty(eng._getPositionState()), 0.006), 'the sold tranche is not rebooked');
+  });
+
+  it('the recovered tranche carries its own cost, not the order average', async () => {
+    const pair = '__teststartupowned756_p__';
+    const T2CHEAP = { ...T2, price: 49000 };
+    writePreFixFund(pair, {
+      ledger: (seed) => {
+        seed.ingestFill(T1, Date.now() - 60000);
+        seed.annotateFillsByOrderId(ORDER_ID, { isBodyOwned: true, bodyId: 'body-b-756', sellOrderId: BODY_TP });
+        seed.ingestFill(T2CHEAP);
+      },
+      bodies: [legacyBody(0.004)],
+      entry: { orderId: ORDER_ID, price: PRICE, assetQty: 0.016, sizeUsdc: 800, placedAt: Date.now() - 60000 },
+    });
+    const { eng } = await bootEngine(pair, { openOrders: [OPEN_ENTRY], orders: {}, fills: [T1, T2CHEAP] });
+    const recovered = eng._getPositionState().celestialBodies.find(b => b.id !== 'body-b-756');
+    assert.ok(recovered && near(recovered.costBasis, 294), `basis is t2's own 0.006 × 49000 (got ${recovered && recovered.costBasis})`);
+  });
+});

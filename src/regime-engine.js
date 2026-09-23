@@ -211,7 +211,7 @@ const isUnsettledBuyRow = (f) => f.side === 'buy' && !(f.bodyId || f.isBodyOwned
  * @param {Array<Object>} bodies - positionState.celestialBodies
  * @param {string} orderId - Buy order id
  * @param {{size: number, consumedQty?: number, consumedCostFraction?: number}} ledger - fillLedger.getBuyOrderConsumption(orderId)
- * @returns {{owned: boolean, measurable: boolean, trancheQty: number, shortfall: number}}
+ * @returns {{owned: boolean, measurable: boolean, trancheQty: number, trancheCost: number, shortfall: number}}
  *   `measurable` is false when a body references the order through something
  *   without a quantity (a tranche with no assetQty, or a sourceOrderId with
  *   no tranche) — its share is then unknown.
@@ -221,6 +221,7 @@ const measureUnbookedOrderQty = (bodies, orderId, ledger) => {
   let owned = false;
   let measurable = true;
   let trancheQty = 0;
+  let trancheCost = 0;
   let trancheConsumed = 0;
   const seen = new Set();
   for (const body of (bodies || [])) {
@@ -233,6 +234,7 @@ const measureUnbookedOrderQty = (bodies, orderId, ledger) => {
       if (!(size > 0)) { measurable = false; continue; }
       measured = true;
       trancheQty += size;
+      trancheCost += Number(entry.sizeUsdc) || 0;
       trancheConsumed += Number.isFinite(entry.consumedQty)
         ? Math.min(Math.max(entry.consumedQty, 0), size)
         : size * legacyFraction;
@@ -244,7 +246,7 @@ const measureUnbookedOrderQty = (bodies, orderId, ledger) => {
   }
   const consumedElsewhere = Math.max(0, (Number(ledger?.consumedQty) || 0) - trancheConsumed);
   const shortfall = (Number(ledger?.size) || 0) - trancheQty - consumedElsewhere;
-  return { owned, measurable, trancheQty, shortfall };
+  return { owned, measurable, trancheQty, trancheCost, shortfall };
 };
 
 /**
@@ -3065,8 +3067,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * tranche the entry never shrank for, so an order is also skipped when any
    * gone body's sale since it started filling is not proven (by its
    * closed-trade record) to exclude it.
-   * The missing quantity becomes a body of its own at the order's average
-   * ledger cost, and the entry shrinks by it (both saved together, so a
+   * The missing quantity becomes a body of its own at the cost the ledger
+   * shows beyond the tranches bodies hold, and the entry shrinks by it (both saved together, so a
    * restart finds nothing missing). A new body, not a merge: this runs before
    * offline TP fills are booked, and a body whose TP sold offline would
    * report the unsold tranche folded into it as holdback profit. Its TP is
@@ -3138,9 +3140,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
       const firstFillAt = Math.min(...fillLedger.getFillsForOrder(orderId).filter(f => f.side === 'buy').map(f => f.timestamp || 0));
       for (const f of fillLedger.getAllFills()) {
-        if (f.side !== 'sell' || !f.orderId || !(f.bodyId || f.isBodyOwned || f.isSatellite)) continue;
-        if ((f.bodyId && liveBodyIds.has(f.bodyId)) || (f.timestamp || 0) < firstFillAt) continue;
+        if (f.side !== 'sell' || !f.orderId || (f.timestamp || 0) < firstFillAt) continue;
+        // A body sale is known by its annotation or, where annotation repair
+        // has not run yet, by its closed-trade record.
         const trade = tradeBySell.get(f.orderId);
+        const bodyId = f.bodyId || trade?.bodyId;
+        if (!trade && !(f.bodyId || f.isBodyOwned || f.isSatellite)) continue;
+        if (bodyId && liveBodyIds.has(bodyId)) continue;
         if (Array.isArray(trade?.buyOrderIds) && !trade.buyOrderIds.includes(orderId)) continue;
         return true;
       }
@@ -3188,7 +3194,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         continue;
       }
 
-      const costBasis = roundUSDC(ledger.cost * (qty / ledger.size));
+      // The missed tranche's cost is what the order cost beyond the tranches
+      // bodies hold — unless the tranche records are off, when the order's
+      // average stands in (a fill-price spread bounds any sane residual).
+      const rowUnitCosts = fillLedger.getFillsForOrder(orderId)
+        .filter(f => f.side === 'buy' && f.size > 0)
+        .map(f => ((f.quoteAmount || 0) + (f.netFee || 0)) / f.size);
+      const residualQty = ledger.size - measure.trancheQty;
+      const residualUnit = residualQty > EPS ? (ledger.cost - measure.trancheCost) / residualQty : NaN;
+      const unitCost = residualUnit >= Math.min(...rowUnitCosts) * (1 - 1e-6) && residualUnit <= Math.max(...rowUnitCosts) * (1 + 1e-6)
+        ? residualUnit
+        : ledger.cost / ledger.size;
+      const costBasis = roundUSDC(unitCost * qty);
       const body = celestialHierarchy.createNewBody({ assetQty: qty, costBasis, avgPrice: costBasis / qty }, orderId);
       positionState.celestialBodies = positionState.celestialBodies || [];
       positionState.celestialBodies.push(body);
