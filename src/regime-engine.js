@@ -2856,6 +2856,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // CANCELLED-with-execution is terminal even when isPartialFill is true.
     const keepEntryTracked = fillData.isPartialFill
       && fillData.side?.toLowerCase() === 'buy' && !isTerminalStatus(fillData);
+    // Snapshot the legacy core TP id BEFORE any await (issue #672): a
+    // concurrent fill's resetCycle() nulls positionState.activeTpOrderId, and
+    // the untracked-sell branch below must still recognise this order as the
+    // engine's own TP when deciding whether it may close the cycle.
+    const entryCoreTpOrderId = positionState.activeTpOrderId;
     // Freeze a partially-filled sell before resizing — see cancelPartialFillOrder.
     if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'sell') {
       const cancellation = await cancelPartialFillOrder({ adapter, exchange, pair: productId }, fillData.orderId);
@@ -3885,12 +3890,35 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           return;
         }
 
+        // Guard (issue #672): only the engine's OWN legacy core TP may close
+        // the cycle. The exchange user channel delivers every sell on the
+        // product — a manual sale of reserves, the DCA/manual-trades tooling,
+        // scripts — and between celestial cycles there are no bodies, so
+        // without this a foreign sell was booked as a cycle close crediting
+        // its full proceeds to maxUsdcDeployed. Ownership is proven by:
+        //  - the core TP id snapshotted before any await, or still current;
+        //  - the executor tracking it as `take_profit` (pending, active, or
+        //    recently settled — covers polling-backstop / cancel-race paths);
+        //  - a prior pass having already claimed its capital credit — a
+        //    retry of a close whose resetCycle() already nulled
+        //    activeTpOrderId must still finish closing idempotently.
+        const sellOrderId = fillData.orderId;
+        const isOwnCoreTp = !!sellOrderId && (
+          sellOrderId === entryCoreTpOrderId
+          || sellOrderId === positionState.activeTpOrderId
+          || (typeof orderExecutor.isTrackedTpOrder === 'function' && orderExecutor.isTrackedTpOrder(sellOrderId))
+          || existingFills.some(f => f.capitalCredited)
+        );
+
         // Guard: if celestial bodies still exist, this is NOT a legitimate cycle-closing TP.
         // It's likely a duplicate/untracked satellite sell. Log and annotate but don't complete the cycle.
         const remainingBodies = (positionState.celestialBodies || []).length;
-        if (remainingBodies > 0) {
-          logger.warn(`⚠️ [${exchange}] Untracked sell ${fillData.orderId.slice(0,8)} (${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}) — ${remainingBodies} celestial bodies still active, skipping cycle completion`);
-          fillLedger.annotateFillsByOrderId(fillData.orderId, { untrackedSell: true });
+        if (remainingBodies > 0 || !isOwnCoreTp) {
+          const reason = remainingBodies > 0
+            ? `${remainingBodies} celestial bodies still active`
+            : 'not the engine\'s take-profit order (manual/external sell?)';
+          logger.warn(`⚠️ [${exchange}] Untracked sell ${String(sellOrderId).slice(0,8)} (${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}) — ${reason}, skipping cycle completion`);
+          fillLedger.annotateFillsByOrderId(sellOrderId, { untrackedSell: true });
           saveLiveState();
           fillLedger.persist();
         } else {

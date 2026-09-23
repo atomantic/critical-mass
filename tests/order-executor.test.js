@@ -945,3 +945,25 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
     assert.equal(trackedDuringCallback, 0, 'order must already be untracked while the fill callback is still in flight');
   });
 });
+
+describe('isTrackedTpOrder — legacy core TP ownership (issue #672)', () => {
+  it('is true for the active/pending take_profit and stays true after the fill settles it', async () => {
+    const exec = createOrderExecutor('gemini', baseConfig(), makeAdapter({ status: 'OPEN' }), 'ETH-USD', {});
+    exec.restorePendingOrder('tp-core', { type: 'take_profit', price: 2400, size: 0.1, sizeUsdc: 240, placedAt: Date.now() });
+    assert.equal(exec.isTrackedTpOrder('tp-core'), true);
+    exec.handleOrderFill('tp-core');
+    assert.equal(exec.getActiveTpOrderId(), null, 'fill cleared the active TP');
+    assert.equal(exec.isTrackedTpOrder('tp-core'), true, 'recently-settled take_profit still counts as the engine\'s own TP');
+  });
+
+  it('is false for foreign orders, body TPs, and entries', () => {
+    const exec = createOrderExecutor('gemini', baseConfig(), makeAdapter({ status: 'OPEN' }), 'ETH-USD', {});
+    exec.restorePendingOrder('body-tp', { type: 'body_tp', price: 2400, size: 0.1, sizeUsdc: 240, placedAt: Date.now() });
+    exec.handleOrderFill('body-tp');
+    exec.markSettled('entry-1', 'entry');
+    assert.equal(exec.isTrackedTpOrder('manual-1'), false);
+    assert.equal(exec.isTrackedTpOrder('body-tp'), false);
+    assert.equal(exec.isTrackedTpOrder('entry-1'), false);
+    assert.equal(exec.isTrackedTpOrder(null), false);
+  });
+});
