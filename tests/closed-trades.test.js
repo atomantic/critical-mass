@@ -68,6 +68,14 @@ describe('Closed Trades dedup key (issue #108)', () => {
     assert.equal(ct.getTotalPnL(), 5, 'totalPnl must not double-count the same sell');
   });
 
+  it('nets a stale-TP reserves drawdown out of the total holdback (#770)', () => {
+    const { createClosedTrades } = freshModule();
+    const ct = createClosedTrades('test-exchange');
+    ct.record(baseTrade({ sellOrderId: 'sell-1', holdbackAsset: 0.0003 }));
+    ct.record(baseTrade({ sellOrderId: 'sell-2', holdbackAsset: 0, reservesSoldAsset: 0.0001 }));
+    assert.equal(ct.getTotalHoldback(), 0.0002);
+  });
+
   it('still records two genuinely different sells', () => {
     const { createClosedTrades } = freshModule();
     const ct = createClosedTrades('test-exchange');

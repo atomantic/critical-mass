@@ -26,7 +26,12 @@
  *     nor linked buys has no pnl (null) and counts toward unpairedSellQty.
  *   - Per-sell holdback: the bodyHoldbackAsset/satelliteHoldbackAsset
  *     annotation whenever it is non-null (regardless of isBodyOwned), else
- *     max(0, linked size − sold).
+ *     max(0, linked size − sold). A negative annotation is clamped to 0.
+ *   - Per-sell reserves sold: the bodyReservesSoldAsset annotation (issue
+ *     #770), taken once per orderId. A stale TP that sold more than its body
+ *     still held drew the excess out of the zero-cost reserves; its proceeds
+ *     are already in the sell's pnl, so it is subtracted from
+ *     realizedAssetPnL — never booked as a negative holdback.
  *
  * Pure: never mutates its input. Held-open cost (consumedBy / legacy closure)
  * is a server concern and stays in fill-ledger.js.
@@ -90,13 +95,14 @@ export const sellFillProceeds = (fill) => quoteOf(fill) - feeOf(fill);
  * @property {number} linkedSize
  * @property {number} linkedCost
  * @property {number|null} pnl - null when unannotated and unpaired
- * @property {number} holdback
+ * @property {number} holdback - reserves this sale booked (≥ 0)
+ * @property {number} reservesSold - reserves this sale drew down (≥ 0, #770)
  *
  * @typedef {Object} CyclePairing
  * @property {Map<string, PairedBuy>} buys - by buyPairKey, in ledger order
  * @property {Map<string, PairedSell>} sells - by orderId, in ledger order
  * @property {number} realizedPnL - Σ per-sell pnl (unrounded)
- * @property {number} realizedAssetPnL - Σ per-sell holdback (unrounded)
+ * @property {number} realizedAssetPnL - Σ per-sell (holdback − reservesSold) (unrounded)
  * @property {number} unpairedSellQty - Σ size of sells with no pnl
  */
 
@@ -135,6 +141,7 @@ export function pairCycleFills(fills) {
     } else if (f.side === 'sell') {
       const annotatedPnl = f.bodyPnl ?? f.satellitePnl;
       const annotatedHoldback = f.bodyHoldbackAsset ?? f.satelliteHoldbackAsset;
+      const annotatedReservesSold = Number(f.bodyReservesSoldAsset) > 0 ? Number(f.bodyReservesSoldAsset) : 0;
       const ts = f.timestamp || 0;
       const ex = sells.get(f.orderId);
       if (ex) {
@@ -150,6 +157,8 @@ export function pairCycleFills(fills) {
           ex.annotatedHoldback = annotatedHoldback;
           ex.hasHoldbackAnnotation = true;
         }
+        // Order-level, like bodyPnl: take it once, never sum across partials.
+        if (!(ex.reservesSold > 0) && annotatedReservesSold > 0) ex.reservesSold = annotatedReservesSold;
       } else {
         sells.set(f.orderId, {
           orderId: f.orderId,
@@ -166,6 +175,7 @@ export function pairCycleFills(fills) {
           linkedCost: 0,
           pnl: null,
           holdback: 0,
+          reservesSold: annotatedReservesSold,
         });
       }
     }
@@ -231,7 +241,7 @@ export function pairCycleFills(fills) {
       sell.holdback = Math.max(0, sell.linkedSize - sell.size);
     }
     if (sell.pnl != null) realizedPnL += sell.pnl;
-    realizedAssetPnL += sell.holdback;
+    realizedAssetPnL += sell.holdback - sell.reservesSold;
   }
 
   return { buys, sells, realizedPnL, realizedAssetPnL, unpairedSellQty };

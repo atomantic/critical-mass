@@ -372,7 +372,7 @@ const ORDER_LEVEL_FIELDS = {
   buy: ['isBodyOwned', 'bodyId', 'bodyTier', 'isSatellite', 'sellOrderId', 'consumedBy', 'consumedCostFraction'],
   sell: [
     'isBodyOwned', 'bodyId', 'bodyTier', 'isSatellite',
-    'bodyCostBasis', 'bodyAvgPrice', 'bodyBtcQty', 'bodyHoldbackAsset', 'bodyPnl',
+    'bodyCostBasis', 'bodyAvgPrice', 'bodyBtcQty', 'bodyHoldbackAsset', 'bodyReservesSoldAsset', 'bodyPnl',
     'satellitePnl', 'satelliteHoldbackAsset', 'partialFill', 'mergeSnapshot', 'untrackedSell',
   ],
 };
@@ -2025,6 +2025,9 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    *   realizedPnL          = Σ per-sell pnl
    *   realizedAssetPnL     = Σ holdback per sell (server annotation when present,
    *                          else max(0, Σ paired_buy_size − sell_size))
+   *                          − Σ bodyReservesSoldAsset (a stale TP that sold
+   *                          more than its body held drew the excess out of
+   *                          reserves — issue #770)
    *   heldOpenBuyCostBasis = per buy order:
    *                          - with a `consumedBy` record (issue #607):
    *                            cost × (size − Σ consumedBy) / size — the

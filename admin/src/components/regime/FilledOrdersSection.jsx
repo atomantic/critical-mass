@@ -186,6 +186,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                     }`}>
                       {sellPnl !== null ? `${sellPnl >= 0 ? '+' : ''}${formatCurrency(sellPnl)}` : '—'}
                       {sellHoldback > 0 && <span className="ml-1 text-cyan-400" title={`Holdback ${asset}`}>+{sellHoldback.toFixed(8)}</span>}
+                      {!isDryRun && sell.reservesSold > 0 && <span className="ml-1 text-amber-400" title={`Sold beyond the body's holdings — drawn from ${asset} reserves`}>−{sell.reservesSold.toFixed(8)}</span>}
                     </td>
                     <td className="text-right py-1.5 font-mono text-gray-400 text-xs">
                       {formatTimestamp(sellTime)}

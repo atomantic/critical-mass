@@ -16,9 +16,10 @@
  * exchange processes (gemini, cryptocom) keeps working unmodified.
  *
  * P&L source of truth is the cycle-pair derivation (realizedPnL = Σ per-sell
- * bodyPnl; realizedAssetPnL = Σ bodyHoldbackAsset). NOT FIFO globals and NOT
- * closed-trades — both over-count (closed-trades prorates buy cost by sold
- * qty, leaving holdback cost unattributed; FIFO ignores cycle boundaries).
+ * bodyPnl; realizedAssetPnL = Σ bodyHoldbackAsset − Σ bodyReservesSoldAsset).
+ * NOT FIFO globals and NOT closed-trades — both over-count (closed-trades
+ * prorates buy cost by sold qty, leaving holdback cost unattributed; FIFO
+ * ignores cycle boundaries).
  * See docs/pnl-architecture.md.
  */
 

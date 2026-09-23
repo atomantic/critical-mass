@@ -276,3 +276,18 @@ test('#697 parity: a realistic fully-annotated ledger keeps its pre-#697 realize
   assert.equal(server.heldOpenAssetQty, 0.0025);
   assert.equal(server.unpairedSellQty, 0);
 });
+
+test('Filled Orders reserves net a stale-TP reserves drawdown, matching the server (#770)', async () => {
+  const { deriveRegimeFillGroups } = await load();
+  const { pairCycleFills } = require('../shared/cycle-pairing.mjs');
+  const fills = [
+    sell('a', { bodyPnl: 5, bodyHoldbackAsset: 0.7 }),
+    sell('b', { bodyPnl: 2, bodyHoldbackAsset: 0, bodyReservesSoldAsset: 0.2, timestamp: 4 }),
+  ];
+  const result = deriveRegimeFillGroups(fills);
+  const row = result.sellGroups.find(g => g.sell.orderId === 'b').sell;
+  assert.equal(row.holdback, 0);
+  assert.equal(row.reservesSold, 0.2);
+  assert.ok(Math.abs(result.totalHoldback - 0.5) < 1e-12, `0.7 − 0.2, got ${result.totalHoldback}`);
+  assert.ok(Math.abs(result.totalHoldback - pairCycleFills(fills).realizedAssetPnL) < 1e-12, 'UI reserves equal the server realizedAssetPnL');
+});
