@@ -337,6 +337,16 @@ const createManualTradeImporter = ({
     fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: body.id, isBodyOwned: true, isSatellite: true, bodyTier: body.tier });
     fillLedger.persist();
 
+    // The fill-ledger rows above are annotated optimistically, before we know
+    // whether the body actually ends up tracked anywhere. If it doesn't
+    // (engine-not-running race, no position state on disk), undo that
+    // annotation — an untracked bodyId on the ledger is worse than none,
+    // since it looks body-owned without a body anywhere to close it.
+    const clearBodyAnnotation = () => {
+      fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: null, isBodyOwned: false, isSatellite: false, bodyTier: null });
+      fillLedger.persist();
+    };
+
     if (injectBody) {
       const injectResult = await injectBody(body);
       // injectBody's own defense-in-depth (regime-engine.js) refuses a body
@@ -360,6 +370,24 @@ const createManualTradeImporter = ({
         });
         return ok({ trade: store.getById(trade.id), alreadyImported: true });
       }
+      // Any other failure (codex review: e.g. `{success:false, error:'Engine
+      // not running'}` from a race with regime:start/stop) means the body was
+      // NEVER pushed into the engine and has no live TP. Do not call
+      // markTpPlaced here — doing so unconditionally (as before this fix)
+      // marked the trade TP_PENDING against a phantom body that manages
+      // nothing, and the new top-of-function retry guard would then
+      // permanently short-circuit every future retry on that same
+      // buyOrderId, orphaning the fill for good. Leave the trade at its
+      // current (non-TP_PENDING) status and fail the call so the caller can,
+      // and is expected to, retry.
+      if (injectResult && injectResult.success === false) {
+        clearBodyAnnotation();
+        log.warn(`⚠️ [${exchange}] Manual buy import: injectBody failed for buy ${buyOrderId} (${injectResult.error || 'unknown error'}) — leaving the trade retryable`, {
+          buyOrderId,
+          error: injectResult.error,
+        });
+        return fail(`Failed to inject body: ${injectResult.error || 'unknown error'}`);
+      }
       log.info(`ℹ️ 📦 [${exchange}] Manual buy import: injected body ${body.id} into running engine (TP placed: ${injectResult?.tpPlaced})`, {
         bodyId: body.id,
         buyOrderId,
@@ -371,10 +399,16 @@ const createManualTradeImporter = ({
         buyOrderId,
       });
     } else {
-      log.warn(`⚠️ [${exchange}] Manual buy import: no position state for body ${body.id} — TP will not be placed`, {
+      // No position state to persist into at all — the body was never saved
+      // anywhere. Same reasoning as the injectBody failure above: don't mark
+      // TP_PENDING against a body nothing is tracking, and don't trip the
+      // top-of-function retry guard on the next attempt.
+      clearBodyAnnotation();
+      log.warn(`⚠️ [${exchange}] Manual buy import: no position state for body ${body.id} — leaving the trade retryable`, {
         bodyId: body.id,
         buyOrderId,
       });
+      return fail(`Failed to persist body: no position state for ${exchange}/${pair}`);
     }
 
     store.markTpPlaced(trade.id, body.id);

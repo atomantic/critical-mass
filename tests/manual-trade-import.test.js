@@ -676,6 +676,51 @@ describe('Manual Trade Import', () => {
       assert.equal(saved.position.celestialBodies.length, 1, 'only one body must be persisted across the retry');
     });
 
+    // Issue #691 review follow-up (codex): injectBody can fail for a reason
+    // OTHER than a confirmed duplicate — e.g. {success:false, error:'Engine
+    // not running'} from a race with regime:start/stop. Before this fix,
+    // importBuy unconditionally called store.markTpPlaced regardless of the
+    // injection outcome, marking the trade TP_PENDING against a body that
+    // was never actually pushed into the engine. Combined with the new
+    // top-of-function retry guard, that permanently short-circuited every
+    // future retry on the same buyOrderId, orphaning the fill for good.
+    it('leaves the trade retryable when injectBody fails without a confirmed duplicate', async () => {
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      let calls = 0;
+      const importer = createImporter({
+        adapter,
+        injectBody: async () => {
+          calls++;
+          if (calls === 1) return { success: false, error: 'Engine not running' };
+          return { success: true, tpPlaced: true };
+        },
+      });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, false);
+      assert.match(first.error, /Engine not running/);
+
+      const afterFirst = store.getAll();
+      assert.equal(afterFirst.length, 1);
+      assert.equal(afterFirst[0].bodyId, null, 'a failed injection must never be linked to the trade');
+      assert.notEqual(afterFirst[0].status, STATUS.TP_PENDING, 'the trade must stay retryable, not TP_PENDING');
+      // The optimistic ledger annotation from before the (failed) injection
+      // attempt must be rolled back too.
+      const rowAfterFirst = fillLedger.getFillsForOrder('buy-1')[0];
+      assert.equal(rowAfterFirst.bodyId, null);
+      assert.equal(rowAfterFirst.isBodyOwned, false);
+
+      // A retry (e.g. once the engine finishes starting) must actually try
+      // again — the top-of-function guard must not silently treat this as
+      // already imported.
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(second.success, true);
+      assert.equal(calls, 2, 'the retry must call injectBody again, not skip it');
+      assert.equal(second.trade.status, STATUS.TP_PENDING);
+      assert.ok(second.trade.bodyId);
+      assert.equal(fillLedger.getFillsForOrder('buy-1')[0].bodyId, second.trade.bodyId);
+    });
+
     it('requires a buyOrderId', async () => {
       const result = await createImporter({ adapter: createFakeAdapter() }).importBuy({});
       assert.deepEqual(result, { success: false, error: 'buyOrderId is required' });
