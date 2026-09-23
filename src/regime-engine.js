@@ -1428,6 +1428,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             body.tpOrderId = null;
           body.tpPrice = 0;
           body.assetOnOrder = 0;
+          // The old TP is already gone — whatever fresh TP gets placed next
+          // (ensureTakeProfitPlaced, sized from the CURRENT assetQty) is
+          // already correct. Clear needsTpReprice here too, or the later
+          // savedBodies reprice pass (issue #726) would skip this body
+          // entirely on THIS startup (its guard requires a tpOrderId), and a
+          // future restart would needlessly cancel+replace the
+          // freshly-placed, already-correctly-sized TP (codex delta review,
+          // round 5).
+          if (body.needsTpReprice) body.needsTpReprice = false;
           continue;
         }
 
@@ -1856,6 +1865,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             // happy path; engine-side recovery is deferred.
             body.tpOrderId = null;
             expiredBodies++;
+            // The old TP is already gone — whatever fresh TP gets placed
+            // below (ensureTakeProfitPlaced, or the reprice pass below for
+            // an overpriced %) will size against the CURRENT (already-grown)
+            // assetQty. Nothing left for the reprice pass to cancel, so
+            // clear the flag here too; otherwise a needless cancel+re-place
+            // of the freshly-placed, already-correctly-sized TP would fire
+            // on the NEXT restart (codex delta review, round 5).
+            if (body.needsTpReprice) body.needsTpReprice = false;
           }
         }
 
@@ -1874,12 +1891,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // instead of re-listing it (issue #670).
         for (const body of [...savedBodies]) {
           if (!body.tpOrderId || body.avgPrice <= 0) continue;
-          // Skip bodies with a manual TP override — user intentionally set this price
-          if (body.manualTpPct != null) continue;
           const currentTpPct = ((body.tpPrice - body.avgPrice) / body.avgPrice) * 100;
           const bTierCfg = celestialHierarchy.getTierConfig(body.tier);
           const bEffectiveMax = config.tpMaxPercent * (bTierCfg.tpMaxScale || 1);
-          const overpriced = currentTpPct > bEffectiveMax * 1.01;
+          // A manual TP override means the operator intentionally set this
+          // PERCENTAGE — never second-guess it via the overpriced-vs-max
+          // check below. But needsTpReprice is about SIZE, not price:
+          // placeBodyTp reapplies body.manualTpPct whenever it re-places
+          // (~line 5452), so a manual-TP body extended while the engine was
+          // stopped must still go through this cancel+replace — skipping it
+          // here left its TP undersized forever and the flag never cleared
+          // (codex delta review, round 5).
+          const overpriced = body.manualTpPct == null && currentTpPct > bEffectiveMax * 1.01;
           if (overpriced || body.needsTpReprice) {
             const reason = overpriced
               ? `TP% ${currentTpPct.toFixed(2)}% exceeds max ${bEffectiveMax.toFixed(2)}%`
