@@ -2415,6 +2415,7 @@ module.exports = {
   collectCycleTimestamps,
   buildCycleRenumberingMap,
   setCycleCompleteSellRatioForTest,
+  LEGACY_CONSUMPTION_KEY,
 };
 
 Object.defineProperty(module.exports, 'CYCLE_COMPLETE_SELL_RATIO', {

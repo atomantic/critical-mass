@@ -647,3 +647,195 @@ describe('an adopted orphan entry the orphan-buy recovery already booked (issue 
     assert.ok(near(entryOf(pos).assetQty, 0.006), `the adopted order tracks only its unfilled 0.006 (got ${entryOf(pos).assetQty})`);
   });
 });
+
+describe('an unowned entry whose every row a closed body stamped (issue #772)', () => {
+  const GONE = 'body-gone';
+  const GONE_TP = 'tp-gone';
+  const OTHER_BODY = () => legacyBody(0.001, {
+    id: 'body-other', tpOrderId: 'tp-other', sourceOrderIds: ['other-buy'],
+    buyOrders: [{ orderId: 'other-buy', price: PRICE, assetQty: 0.001, sizeUsdc: 50, filledAt: Date.now() }],
+  });
+  /** The gone body's sale of `size`, annotated as its full TP. */
+  const goneSale = (seed, { orderId = GONE_TP, size = 0.0035, holdback = 0.0005, ageMs = 30000, partial = false } = {}) => {
+    seed.ingestFill({ tradeId: `${orderId}-1`, orderId, side: 'sell', size, price: 51000, netFee: 0, tradeTime: new Date(Date.now() - ageMs).toISOString() });
+    seed.annotateFillsByOrderId(orderId, { isBodyOwned: true, bodyId: GONE, bodyPnl: 3.5, bodyHoldbackAsset: partial ? 0 : holdback, ...(partial && { partialFill: true }) });
+  };
+  /**
+   * Gone body G held t1 (0.004), sold 0.0035 and kept 0.0005 as reserves;
+   * the pre-#671 restart ingested t2 (0.006) alone, and G's stamp covers
+   * every row of the order. The live path shrank the entry for t1 only.
+   */
+  const writeGoneFund = (pair, { ledgerExtra = () => {}, entryQty = 0.016, sales = (seed) => goneSale(seed) } = {}) => {
+    writePreFixFund(pair, {
+      ledger: (seed) => {
+        seed.ingestFill(T1, Date.now() - 60000);
+        seed.ingestFill(T2);
+        seed.annotateFillsByOrderId(ORDER_ID, { isBodyOwned: true, bodyId: GONE, sellOrderId: GONE_TP });
+        sales(seed);
+        ledgerExtra(seed);
+      },
+      bodies: [OTHER_BODY()],
+      entry: { orderId: ORDER_ID, price: PRICE, assetQty: entryQty, sizeUsdc: entryQty * PRICE, placedAt: Date.now() - 60000 },
+    });
+  };
+  const goneTrade = (overrides = {}) => ({
+    sellOrderId: GONE_TP, timestamp: Date.now() - 30000, qtySold: 0.0035, holdbackAsset: 0.0005, isPartial: false,
+    bodyId: GONE, buyOrderIds: [ORDER_ID], source: 'live', ...overrides,
+  });
+  const recordTrades = (pair, trades) => {
+    const ledger = createClosedTrades(EXCHANGE, pair);
+    for (const t of trades) ledger.record(t);
+  };
+  const boot = (pair) => bootEngine(pair, { openOrders: [OPEN_ENTRY], orders: {}, fills: [T1, T2] });
+
+  it('books the tranche the closed body never held, credits it open in the seal, and is idempotent', async () => {
+    const pair = '__teststartupunowned772_a__';
+    writeGoneFund(pair);
+    recordTrades(pair, [goneTrade()]);
+    const exchange = { openOrders: [OPEN_ENTRY], orders: {}, fills: [T1, T2] };
+    const { eng, placedTps } = await bootEngine(pair, exchange);
+    let pos = eng._getPositionState();
+    const recovered = pos.celestialBodies.find(b => (b.buyOrders || []).some(bo => bo.orderId === ORDER_ID));
+    assert.ok(recovered, 'the unbooked t2 becomes a body');
+    assert.ok(near(recovered.assetQty, 0.006), `got ${recovered.assetQty}`);
+    assert.ok(near(recovered.costBasis, 300));
+    assert.equal(recovered.buyOrders[0].consumedQty, 0);
+    assert.ok(placedTps.some(t => t.bodyId === recovered.id), 'the recovered body gets its own TP');
+    assert.ok(near(entryOf(pos).assetQty, 0.01), `entry shrinks to the exchange remainder (got ${entryOf(pos).assetQty})`);
+    const consumption = eng.getFillLedger().getBuyOrderConsumption(ORDER_ID);
+    assert.ok(near(consumption.consumedQty, 0.004), `the seal consumes only what G held (got ${consumption.consumedQty})`);
+    const pnl = eng.getFillLedger().computeRealizedFromCyclePairs();
+    assert.ok(near(pnl.heldOpenAssetQty, 0.006), `the ledger holds t2 open (got ${pnl.heldOpenAssetQty})`);
+
+    await shutdown(eng);
+    const second = await bootEngine(pair, exchange);
+    pos = second.eng._getPositionState();
+    assert.ok(near(bookedQty(pos), 0.006), `a restart books nothing again (got ${bookedQty(pos)})`);
+    assert.ok(near(entryOf(pos).assetQty, 0.01));
+  });
+
+  it('sums a closed body\'s partial and closing sales', async () => {
+    const pair = '__teststartupunowned772_b__';
+    writeGoneFund(pair, {
+      sales: (seed) => {
+        goneSale(seed, { orderId: 'tp-gone-partial', size: 0.001, partial: true, ageMs: 35000 });
+        goneSale(seed, { size: 0.0025, holdback: 0.0005 });
+      },
+    });
+    recordTrades(pair, [
+      goneTrade({ sellOrderId: 'tp-gone-partial', timestamp: Date.now() - 35000, qtySold: 0.001, holdbackAsset: 0, isPartial: true }),
+      goneTrade({ qtySold: 0.0025 }),
+    ]);
+    const { eng } = await boot(pair);
+    assert.ok(near(bookedQty(eng._getPositionState()), 0.006), `t2 is booked (got ${bookedQty(eng._getPositionState())})`);
+  });
+
+  it('books when post-#607 consumption agrees with the closed trades', async () => {
+    const pair = '__teststartupunowned772_c__';
+    writeGoneFund(pair, { ledgerExtra: (seed) => seed.recordBuyConsumption(ORDER_ID, GONE_TP, 0.004) });
+    recordTrades(pair, [goneTrade()]);
+    const { eng } = await boot(pair);
+    assert.ok(near(bookedQty(eng._getPositionState()), 0.006));
+    assert.ok(near(eng.getFillLedger().getBuyOrderConsumption(ORDER_ID).consumedQty, 0.004));
+  });
+
+  /** Each case leaves the order unbooked and the entry untouched. */
+  const assertNothingBooked = (eng) => {
+    const pos = eng._getPositionState();
+    assert.equal(bookedQty(pos), 0, 'reported for manual review, never booked');
+    assert.ok(near(entryOf(pos).assetQty, 0.016), 'the entry is untouched');
+  };
+
+  it('books nothing when the closed body also held another order', async () => {
+    const pair = '__teststartupunowned772_d__';
+    writeGoneFund(pair);
+    recordTrades(pair, [goneTrade({ buyOrderIds: [ORDER_ID, 'other-old-buy'] })]);
+    assertNothingBooked((await boot(pair)).eng);
+  });
+
+  it('books nothing on a migration-backfilled record (no real holdback)', async () => {
+    const pair = '__teststartupunowned772_e__';
+    writeGoneFund(pair);
+    recordTrades(pair, [goneTrade({ source: 'migration', holdbackAsset: 0 })]);
+    assertNothingBooked((await boot(pair)).eng);
+  });
+
+  it('books nothing when the closed trades and the entry disagree', async () => {
+    const pair = '__teststartupunowned772_f__';
+    writeGoneFund(pair);
+    // The record says G held 0.003; the entry says 0.004 was booked.
+    recordTrades(pair, [goneTrade({ qtySold: 0.0025 })]);
+    assertNothingBooked((await boot(pair)).eng);
+  });
+
+  it('books nothing when the closed body has no closing sale on record', async () => {
+    const pair = '__teststartupunowned772_g__';
+    writeGoneFund(pair);
+    recordTrades(pair, [goneTrade({ isPartial: true, qtySold: 0.004, holdbackAsset: 0 })]);
+    assertNothingBooked((await boot(pair)).eng);
+  });
+
+  it('books nothing when another body sale since the order started filling is unrecorded', async () => {
+    const pair = '__teststartupunowned772_h__';
+    writeGoneFund(pair, {
+      ledgerExtra: (seed) => {
+        // A merge-snapshot sale writes no closed-trade record.
+        seed.ingestFill({ tradeId: 'tp-snap-1', orderId: 'tp-snap', side: 'sell', size: 0.001, price: 51000, netFee: 0, tradeTime: new Date(Date.now() - 20000).toISOString() });
+        seed.annotateFillsByOrderId('tp-snap', { isBodyOwned: true, bodyId: 'body-other', bodyPnl: 1, bodyHoldbackAsset: 0 });
+      },
+    });
+    recordTrades(pair, [goneTrade()]);
+    assertNothingBooked((await boot(pair)).eng);
+  });
+
+  it('books nothing when the order was already sealed as a legacy lump', async () => {
+    const pair = '__teststartupunowned772_i__';
+    // A previous upgraded boot sealed the whole order (t2 included) as sold.
+    writeGoneFund(pair, { ledgerExtra: (seed) => seed.sealLegacyClosedBuys(new Map()) });
+    recordTrades(pair, [goneTrade()]);
+    assertNothingBooked((await boot(pair)).eng);
+  });
+
+  it('books nothing when a row names a body no closed trade lists', async () => {
+    const pair = '__teststartupunowned772_k__';
+    writeGoneFund(pair, {
+      ledgerExtra: (seed) => {
+        const row = seed.getFillsForOrder(ORDER_ID).find(f => f.tradeId === T2.tradeId);
+        row.bodyId = 'body-unrecorded';
+      },
+    });
+    recordTrades(pair, [goneTrade()]);
+    assertNothingBooked((await boot(pair)).eng);
+  });
+
+  it('does not recover from closed trades when a row is marked owned but names no body', async () => {
+    const pair = '__teststartupunowned772_m__';
+    writeGoneFund(pair, {
+      // Owned, but no row names the body (annotation repair would copy a
+      // sibling's bodyId, so none carries one).
+      ledgerExtra: (seed) => {
+        for (const row of seed.getFillsForOrder(ORDER_ID)) delete row.bodyId;
+      },
+    });
+    recordTrades(pair, [goneTrade()]);
+    // (Rows that name no body read as orphans to the later orphan-buy
+    // recovery, which adopts them into an existing body; this recovery
+    // itself must not create one.)
+    const { eng } = await boot(pair);
+    assert.deepEqual(eng._getPositionState().celestialBodies.map(b => b.id), ['body-other'], 'no recovered body is created');
+  });
+
+  it('books nothing when a live body\'s sale lists the order', async () => {
+    const pair = '__teststartupunowned772_l__';
+    writeGoneFund(pair);
+    recordTrades(pair, [goneTrade(), goneTrade({ sellOrderId: 'tp-other-old', bodyId: 'body-other', qtySold: 0.0005, holdbackAsset: 0, isPartial: true })]);
+    assertNothingBooked((await boot(pair)).eng);
+  });
+
+  it('books nothing when post-#607 consumption disagrees with the closed trades', async () => {
+    const pair = '__teststartupunowned772_j__';
+    writeGoneFund(pair, { ledgerExtra: (seed) => seed.recordBuyConsumption(ORDER_ID, GONE_TP, 0.003) });
+    recordTrades(pair, [goneTrade()]);
+    assertNothingBooked((await boot(pair)).eng);
+  });
+});
