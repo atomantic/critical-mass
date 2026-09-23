@@ -2696,6 +2696,20 @@ describe('Fill Ledger', () => {
       assert.ok(Math.abs(ledger.getDerivedRealizedPnL().realizedPnL - 4.48) < 1e-9, 'realizedPnL counts both tranches once');
     });
 
+    it('stamps the rows a booking covered, so a row that arrived another way reads as unbooked', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A', size: '0.002' }));
+      assert.equal(ledger.getUnbookedSellFills('sell-A'), null, 'no committed booking: caller keeps its own selection');
+      ledger.ingestFill(makeSellFill({ tradeId: 's2', orderId: 'sell-A', size: '0.001' }));
+      ledger.commitSellBooking('sell-A', tranche1, { soldSize: 0.002, bookedTradeIds: ['s1'] });
+      const unbooked = ledger.getUnbookedSellFills('sell-A');
+      assert.deepEqual(unbooked.map(f => f.tradeId), ['s2'], 's2 got the order-level annotation but no booking covered it');
+      ledger.commitSellBooking('sell-A', { ...tranche1, bodyPnl: 0.48 }, { additive: true, soldSize: 0.001, bookedTradeIds: ['s2'] });
+      assert.deepEqual(ledger.getUnbookedSellFills('sell-A'), []);
+      assert.equal(ledger.getSellBooking('sell-A').bookedSize, 0.003);
+    });
+
     it('without additive (a replay re-aggregating every row) it replaces', () => {
       const ledger = createTestLedger();
       ledger.startNewCycle();

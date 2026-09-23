@@ -4558,9 +4558,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const t1 = setTimeout(() => { recentlyProcessedSellFills.delete(dedupKey); ttlTimers.delete(t1); }, 5 * 60 * 1000);
       ttlTimers.add(t1);
 
+      // An order that already committed a booking books only the rows no
+      // booking covered yet (issue #777): whatever this pass ingested, plus
+      // any row that reached the ledger another way (startup recovery, a
+      // dedup-skipped delivery) — so that execution is booked, and added to
+      // the committed booking, instead of re-booking every row of the order
+      // as a replay. With nothing unbooked this IS a replay: all rows, as before.
+      let sellRowsAreNew = ingestedFills.length > 0;
+      const unbookedSellFills = fillLedger.getUnbookedSellFills(fillData.orderId);
+      if (unbookedSellFills && unbookedSellFills.length > 0) {
+        fillsToAggregate = unbookedSellFills;
+        sellRowsAreNew = true;
+      }
+      const bookedTradeIds = fillsToAggregate.map(f => f.tradeId);
+
       // UNIFIED BODY TP FILL — find matching celestial body by TP order ID
       const summary = fillLedger.aggregateFills(fillsToAggregate);
-      const booking = planSellBooking(fillData.orderId, summary.totalSize, ingestedFills.length > 0);
+      const booking = planSellBooking(fillData.orderId, summary.totalSize, sellRowsAreNew);
 
       // Race 3: check merge-snapshot maps first (fill arrived for body removed during merge)
       const mergeSnapshot = pendingMergeTpOrders.get(fillData.orderId)
@@ -4754,7 +4768,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           bodyPnl: pnl,
           mergeSnapshot: true,
           ...(liveOwnsRemainder && { partialFill: true }),
-        }, { additive: booking.additive, soldSize: summary.totalSize });
+        }, { additive: booking.additive, soldSize: summary.totalSize, bookedTradeIds });
 
         if (liveMerged) {
           if (liveMerged.tpOrderId && liveMerged.tpOrderId === fillData.orderId) {
@@ -4957,7 +4971,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           ...(!isPartial && reservesSoldAsset > 0 && { bodyReservesSoldAsset: reservesSoldAsset }),
           bodyPnl: pnl,
           ...(isPartial && { partialFill: true }),
-        }, { additive: booking.additive, soldSize: summary.totalSize });
+        }, { additive: booking.additive, soldSize: summary.totalSize, bookedTradeIds });
 
         if (isPartial) {
           // PARTIAL FILL: reduce body size, keep body active, re-place TP for remaining

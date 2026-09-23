@@ -1923,13 +1923,20 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    *
    * `partialFill` reflects the LATEST booking: a remainder that closes the
    * body clears the earlier partial's flag.
+   *
+   * The rows this booking covered are stamped `bodyBooked` (row-level, unlike
+   * the order-level annotation every row receives), so a row that reached the
+   * ledger through another path (startup recovery, a dedup-skipped delivery)
+   * is still recognisable as unbooked execution — see getUnbookedSellFills.
    * @param {string} orderId - Sell order id
    * @param {Object} annotation - Order-level fields for this booking alone
-   * @param {{additive?: boolean, soldSize: number}} opts - `soldSize` is the
-   *   base quantity this booking sold
+   * @param {{additive?: boolean, soldSize: number, bookedTradeIds?: Iterable<string>}} opts -
+   *   `soldSize` is the base quantity this booking sold; `bookedTradeIds` the
+   *   rows it aggregated (default: every row of the order)
    * @returns {number} the order's cumulative booked size after the commit
    */
-  const commitSellBooking = (orderId, annotation, { additive = false, soldSize } = /** @type {any} */ ({})) => {
+  const commitSellBooking = (orderId, annotation, { additive = false, soldSize, bookedTradeIds } = /** @type {any} */ ({})) => {
+    const booked = bookedTradeIds ? new Set(bookedTradeIds) : null;
     const prior = additive ? getSellBooking(orderId) : null;
     const sold = Number(soldSize) || 0;
     const merged = { ...annotation };
@@ -1951,6 +1958,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       if (fill.orderId !== orderId) continue;
       Object.assign(fill, merged);
       if (!merged.partialFill) delete fill.partialFill;
+      if (!booked || booked.has(fill.tradeId)) fill.bodyBooked = true;
       matched = true;
     }
     if (matched) {
@@ -1958,6 +1966,21 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       bumpLedgerVersion();
     }
     return merged.bodyBookedSize;
+  };
+
+  /**
+   * The rows of a sell order no committed booking covered (issue #777) —
+   * execution still to book. Only meaningful once the order carries the
+   * booking-commit marker (commitSellBooking stamps `bodyBooked` on the rows
+   * it covers); for an order booked before the marker existed, or never
+   * booked, returns null and the caller keeps its own row selection.
+   * @param {string} orderId - Sell order id
+   * @returns {Array<Object>|null}
+   */
+  const getUnbookedSellFills = (orderId) => {
+    const booking = getSellBooking(orderId);
+    if (!booking || !booking.hasMarker) return null;
+    return getFillsForOrder(orderId).filter(f => f.side === 'sell' && !f.bodyBooked);
   };
 
   /**
@@ -2436,6 +2459,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     annotateFillsByOrderId,
     annotateFillsByOrderIds,
     getSellBooking,
+    getUnbookedSellFills,
     commitSellBooking,
     claimCapitalCredit,
     persist,

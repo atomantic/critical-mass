@@ -909,6 +909,64 @@ describe('#770 buy-merge #227 cancel-with-execution after an in-flight snapshot 
     assert.ok(Math.abs(realized.realizedPnL - expectedPnl) < 1e-6, `realizedPnL counts both tranches, got ${realized.realizedPnL}`);
   });
 
+  it('books execution another path already put in the ledger as new, not as a replay of the whole order', async () => {
+    // Same race as above, but the second trade reached the ledger through
+    // another path (startup recovery, a dedup-skipped delivery) before the
+    // #227 booking ran, so that booking ingests nothing new. It must book
+    // only the row no booking covered, adding to the first (issue #777).
+    const pair = '__test777recovered__';
+    const first = { status: 'CANCELLED', filledSize: 0.002, filledValue: 101, averageFilledPrice: 50500 };
+    const t2 = { ...sellFill('tp-old', '0.001')[0], tradeId: 'tp-old-t2' };
+    let cancelCalls = 0;
+    let eng;
+    ({ eng } = makeEngine({
+      pair,
+      cancelResult: null,
+      adapter: {
+        getOrder: async (orderId) => (orderId === 'tp-old' && cancelCalls === 0
+          ? { status: 'OPEN', filledSize: 0 }
+          : { status: 'CANCELLED', filledSize: 0.003, filledValue: 151.5, averageFilledPrice: 50500 }),
+        getOrderFills: async (orderId) => {
+          if (orderId === 'buy-new') return buyFill(orderId);
+          return cancelCalls === 1 && !eng._test.getMergeTpSnapshots().pending.has('tp-old')
+            ? [...sellFill(orderId, '0.002'), t2]
+            : sellFill(orderId, '0.002');
+        },
+      },
+      executor: {
+        cancelBodyTpOrder: async () => {
+          cancelCalls += 1;
+          if (cancelCalls === 1) {
+            await eng._test.handleOrderFill({ orderId: 'tp-old', side: 'sell', ...first });
+            eng.getFillLedger().ingestFill(t2);
+            return { cancelled: true, filled: false, filledSize: 0.003, filledValue: 151.5, averageFilledPrice: 50500, totalFees: 0.03 };
+          }
+          return { cancelled: true, filled: false, filledSize: 0 };
+        },
+        getPendingCounts: () => ({ total: 1_000_000 }),
+      },
+    }));
+    seedBuy(eng);
+    eng._getConfig().maxUsdcDeployed = 1000;
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+
+    const b1 = eng._getPositionState().celestialBodies.find(b => b.id === 'b1');
+    assert.ok(b1 && Math.abs(b1.assetQty - 0.007) < 1e-9, `both tranches deducted exactly once, got ${b1 && b1.assetQty}`);
+    const rows = eng.getFillLedger().getFillsForOrder('tp-old');
+    assert.equal(rows.length, 2);
+    const expectedPnl = 0.98 + 0.48;
+    for (const row of rows) {
+      assert.ok(Math.abs(row.bodyPnl - expectedPnl) < 1e-6, `bodyPnl sums both tranches, got ${row.bodyPnl}`);
+      assert.ok(Math.abs(row.bodyBookedSize - 0.003) < 1e-12, `commit marker covers both tranches, got ${row.bodyBookedSize}`);
+      assert.equal(row.bodyBooked, true, 'every row is covered by a booking');
+    }
+    const seed = eng.getFillLedger().getBuyOrderConsumption('seed-b1');
+    assert.ok(Math.abs(seed.consumedBy['tp-old'] - 0.003) < 1e-12, `consumedBy adds both tranches, got ${JSON.stringify(seed.consumedBy)}`);
+    assert.ok(Math.abs(eng._getConfig().maxUsdcDeployed - (1000 + expectedPnl)) < 1e-2,
+      `both tranches' P&L credited, got ${eng._getConfig().maxUsdcDeployed}`);
+  });
+
   it('does not treat a consumed snapshot as booked when the in-flight handler never committed the sale', async () => {
     // The in-flight handler consumed the snapshot but (simulated) threw before
     // its booking-commit marker, so nothing was booked: the #227 booking must run.

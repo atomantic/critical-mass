@@ -298,7 +298,9 @@ When reviewing changes that touch P&L code, verify:
    adds it onto the order's committed values and advances the per-order
    `bodyBookedSize` commit marker; `consumedBy[sell]` and the capital credit
    (`claimCapitalCredit(orderId, bookedSize)`) add the same way (issue #777).
-   A pass that ingested no new rows (a crash replay) still replaces.
+   Rows a booking covered are stamped `bodyBooked` (row-level), so a row that
+   reached the ledger another way (startup recovery) is booked as new
+   execution; a pass with no unbooked rows (a crash replay) still replaces.
 4. **Exchange balance is never used to compute bot metrics.** Only for
    reality-check logging or by rectification scripts.
 5. **`closed-trades.json` writes are append-only at sell time** (in the
