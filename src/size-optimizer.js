@@ -191,6 +191,18 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
       return null;
     }
 
+    // No real balance has ever been observed yet (every recordCycle() call so
+    // far arrived with availableBalance <= 0 — e.g. a failed/unavailable
+    // exchange balance fetch — so lastKnownBalance is still its 0 initial
+    // value, never a verified reading). Evaluating against 0 here would floor
+    // baseSizeUsdc to sizeAbsoluteMinBase and (unlike the deliberate,
+    // explicit balance=0 case covered by calculateAdjustment's own tests)
+    // slash maxUsdcDeployed to 0 with no real signal behind it. Skip this
+    // evaluation and wait for a verified balance instead (issue #694 item 2).
+    if (lastKnownBalance <= 0) {
+      return null;
+    }
+
     const adjustment = calculateAdjustment(lastKnownBalance);
 
     if (adjustment) {

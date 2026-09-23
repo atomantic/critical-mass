@@ -951,17 +951,38 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   /**
    * Record cycle completion for Size optimizer
+   *
+   * Feeds the optimizer the REAL available quote balance (the same
+   * adapter.getAccountBalance() reading the ladder/entry preflight below use)
+   * rather than config.maxUsdcDeployed. Passing the cap back in makes
+   * calculateAdjustment() treat the cap itself as "spare" balance and ratchet
+   * maxUsdcDeployed down toward zero on every evaluation, compounding across
+   * cycles (issue #694) — the optimizer's own maxUsdcDeployed formula is
+   * deliberately unbounded/un-rate-limited (see tests/size-optimizer.test.js),
+   * so it trusted whatever balance it was given completely.
+   *
    * @param {Object} cycleData - Data about the completed cycle
-   * @param {number} availableBalance - Current available USDC balance
+   * @returns {Promise<void>}
    */
-  const recordCycleForSizeOptimizer = (cycleData, availableBalance) => {
+  const recordCycleForSizeOptimizer = async (cycleData) => {
     if (!config.sizeAutoManaged) return;
+
+    // A failed/unavailable fetch (including an adapter with no
+    // getAccountBalance at all — some test/legacy adapters) passes 0, which
+    // sizeOptimizer.recordCycle() already treats as "no fresh reading" — it
+    // leaves lastKnownBalance (and therefore any deferred evaluation) on the
+    // last verified balance instead of evaluating against 0 or the stale cap.
+    const quoteCurrency = getQuoteCurrency(productId);
+    const quoteBalance = typeof adapter.getAccountBalance === 'function'
+      ? await adapter.getAccountBalance(quoteCurrency).catch(() => null)
+      : null;
+    const availableBalance = quoteBalance ? (parseFloat(quoteBalance.available) || 0) : 0;
 
     const adjustment = sizeOptimizer.recordCycle({
       stepsUsed: cycleData.stepsUsed || 0,
       capitalDeployed: cycleData.capitalDeployed || 0,
       completedAt: Date.now(),
-      availableBalance: availableBalance || 0,
+      availableBalance,
     });
 
     if (adjustment) {
@@ -4003,10 +4024,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               ? ((summary.avgPrice - body.avgPrice) / body.avgPrice) * 100
               : 0;
             recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
-            recordCycleForSizeOptimizer({
+            await recordCycleForSizeOptimizer({
               stepsUsed: positionState.cycleBuys,
               capitalDeployed: body.costBasis,
-            }, config.maxUsdcDeployed);
+            });
 
             await resetCycle();
           }
@@ -4192,10 +4213,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               newMaxUsdcDeployed: config.maxUsdcDeployed,
             });
             recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
-            recordCycleForSizeOptimizer({
+            await recordCycleForSizeOptimizer({
               stepsUsed: positionState.cycleBuys,
               capitalDeployed: soldCostBasis,
-            }, config.maxUsdcDeployed);
+            });
           }
 
           // Link current-cycle buy fills to this sell order for buy→sell display linkage (skip body-owned)
@@ -6124,10 +6145,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const optimalTpPct = lastCycle?.optimalTpPct || actualTpPct;
 
           recordCycleForOptimizer({ optimalTpPct, actualTpPct });
-          recordCycleForSizeOptimizer({
+          await recordCycleForSizeOptimizer({
             stepsUsed: positionState.cycleBuys,
             capitalDeployed: body.costBasis,
-          }, config.maxUsdcDeployed);
+          });
 
           await resetCycle();
         }
@@ -6150,10 +6171,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const actualTpPct = positionState.avgCostBasis > 0
           ? ((price - positionState.avgCostBasis) / positionState.avgCostBasis) * 100 : 0;
         recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
-        recordCycleForSizeOptimizer({
+        await recordCycleForSizeOptimizer({
           stepsUsed: positionState.cycleBuys,
           capitalDeployed: positionState.totalCostBasis,
-        }, config.maxUsdcDeployed);
+        });
 
         await resetCycle();
       }
