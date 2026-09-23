@@ -2765,10 +2765,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // retired the order as "already owned, nothing new" without ever
     // booking the remainder — the exchange's larger filledSize never
     // reached the position model.
-    const ledgerTotalForOrder = fillLedger.getFillsForOrder(fillData.orderId)
-      .reduce((sum, f) => sum + Number(f.size || 0), 0);
+    // Gate gap synthesis to TERMINAL fills only (Claude convergence review,
+    // round 4): a still-live partial (keepEntryTracked) must stay
+    // retryable, never synthesized. Without this gate, an advancing
+    // partial whose getOrderFills failed would synthesize the gap as a
+    // phantom row under a fixed tradeId; once a LATER poll succeeds and
+    // ingests the real trade (a genuinely different tradeId), the phantom
+    // row is never retired, and the body/ledger over-state by the
+    // phantom's size. A terminal fill has no "later real poll" to
+    // reconcile against — this is the final word on that order — so
+    // synthesizing its gap is safe (and is exactly the case this fallback
+    // exists for: no more retries will ever arrive to supersede it).
+    const isTerminalFill = isTerminalStatus(fillData);
+    const existingFillsForOrder = fillLedger.getFillsForOrder(fillData.orderId);
+    const ledgerTotalForOrder = existingFillsForOrder.reduce((sum, f) => sum + Number(f.size || 0), 0);
     const fillGap = fillData.filledSize > 0 ? fillData.filledSize - ledgerTotalForOrder : 0;
-    if (fillGap > 1e-9 && fillData.averageFilledPrice > 0) {
+    if (isTerminalFill && fillGap > 1e-9 && fillData.averageFilledPrice > 0) {
       logger.warn(
         `⚠️ [${exchange}] Using order status data as fallback for ${fillData.orderId}: gap ${fillGap} of ${fillData.filledSize} @ ${fmtPrice(fillData.averageFilledPrice)}`,
         {
@@ -2780,34 +2792,63 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           averageFilledPrice: fillData.averageFilledPrice,
         }
       );
+      // fillData.totalFees is CUMULATIVE for the whole order (Coinbase's
+      // getOrder() reports the running total, not a per-poll delta) — the
+      // fee owed on JUST this gap is that cumulative figure minus whatever
+      // fee prior fills for this order already booked, never the whole
+      // cumulative figure again (codex convergence review, round 5: the
+      // prior version zeroed the fee whenever ledgerTotalForOrder > 0,
+      // silently dropping the new tranche's fee to $0 instead of crediting
+      // the unbooked delta). When there is no prior partial, this
+      // collapses to the full cumulative fee, matching the original
+      // no-prior-fills case.
+      const alreadyBookedFees = existingFillsForOrder.reduce((sum, f) => sum + Number(f.netFee || 0), 0);
+      const feeDelta = Math.max(0, (fillData.totalFees || 0) - alreadyBookedFees);
       const syntheticFill = {
-        tradeId: `synthetic-${fillData.orderId}`,
+        // Suffixed with the cumulative filledSize (not a bare per-orderId
+        // id): a later pass computing a DIFFERENT (larger) gap for the
+        // same order must ingest as a genuinely new row, not silently
+        // no-op as a duplicate of an earlier, smaller gap.
+        tradeId: `synthetic-${fillData.orderId}-${fillData.filledSize}`,
         orderId: fillData.orderId,
         side: fillData.side.toLowerCase(),
         price: fillData.averageFilledPrice,
         size: fillGap,
         quoteAmount: fillGap * fillData.averageFilledPrice,
         // Carry the known fee in BOTH fee and netFee so ingestFill persists it
-        // instead of defaulting to 0 (issue #210-C). Only attributed once —
-        // an already-recorded prior partial already carries its own fee.
-        totalFees: ledgerTotalForOrder <= 1e-9 ? (fillData.totalFees || 0) : 0,
-        netFee: ledgerTotalForOrder <= 1e-9 ? (fillData.totalFees || 0) : 0,
+        // instead of defaulting to 0 (issue #210-C).
+        totalFees: feeDelta,
+        netFee: feeDelta,
         timestamp: Date.now(),
       };
-      // Ingest synthetic fill into ledger so it's not lost. fillsToAggregate
-      // becomes JUST this gap fill (never old-rows-plus-gap): downstream
-      // "advancing partial" handling ADDS summary.totalSize onto the
-      // EXISTING body's assetQty, mirroring the success path where
-      // ingestedFills already contains only the NEW delta — aggregating
-      // the stale rows too would double-count what they already
-      // contributed when first ingested. Also count it in ingestedFills —
-      // gates shouldSkipBuyRecommit below, so an order a body already owns
-      // is not treated as "nothing new" when this gap fill is exactly the
-      // new thing.
+      // Ingest synthetic fill into ledger. result.fill is null when
+      // ingestFill treats this exact tradeId as an already-seen duplicate
+      // (e.g. a retry that re-computed the identical gap) — in that case
+      // NOTHING new actually landed in the ledger this pass, so
+      // fillsToAggregate/ingestedFills must NOT be credited with it either:
+      // doing so (as an earlier round of this fix did, falling back to the
+      // raw un-ingested syntheticFill object) let the body absorb the gap
+      // every such pass while the ledger only ever recorded it once —
+      // codex convergence review, round 4. When it DOES ingest, this
+      // becomes fillsToAggregate's ONLY entry (never old-rows-plus-gap):
+      // downstream "advancing partial" handling ADDS summary.totalSize
+      // onto the EXISTING body's assetQty, mirroring the success path
+      // where ingestedFills already contains only the NEW delta —
+      // aggregating the stale rows too would double-count what they
+      // already contributed when first ingested. Also count it in
+      // ingestedFills — gates shouldSkipBuyRecommit below, so an order a
+      // body already owns is not treated as "nothing new" when this gap
+      // fill is exactly the new thing.
       const result = fillLedger.ingestFill(syntheticFill, orderPlacedAt);
-      const ingestedSynthetic = result.fill || syntheticFill;
-      fillsToAggregate = [ingestedSynthetic];
-      ingestedFills.push(ingestedSynthetic);
+      if (result.fill) {
+        fillsToAggregate = [result.fill];
+        ingestedFills.push(result.fill);
+      } else {
+        logger.info(
+          `ℹ️ [${exchange}] Gap fill for ${fillData.orderId} already ingested — nothing new to aggregate this pass`,
+          { orderId: fillData.orderId, fillGap }
+        );
+      }
     }
 
     // Determine if buy or sell
@@ -3571,23 +3612,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           fillLedger.annotateFillsByOrderId(fillData.orderId, { untrackedSell: true });
           saveLiveState();
           fillLedger.persist();
-        } else if (!fillLedger.claimCapitalCredit(fillData.orderId)) {
-          // Idempotency guard (issue #679 follow-up, codex convergence
-          // review): handleOrderFill's wrapper clears the sell dedup key
-          // above on ANY throw so a retry (this engine's own bounded
-          // incompleteFills retry, or a genuine reconcile re-poll once the
-          // key is gone) can re-process the fill — but cyclesCompleted++ and
-          // resetCycle() below are NOT idempotent the way ingestFill/capital
-          // credit are. A throw AFTER this point on a prior attempt (e.g.
-          // during resetCycle/persist) would otherwise let a retry double-
-          // bump cyclesCompleted and start a second new ledger cycle,
-          // breaking the atomic-cycle invariant. Gate the WHOLE block —
-          // not just the capital application creditCapitalGrowth used to
-          // gate alone — on the ledger's own one-shot per-sellOrderId claim.
-          logger.info(
-            `ℹ️ [${exchange}] Untracked sell ${fillData.orderId.slice(0, 8)} cycle-close already applied — skipping re-apply (retry after a prior attempt got this far)`,
-            { orderId: fillData.orderId }
-          );
         } else {
           const proceeds = summary2.totalValue - summary2.totalFees;
           const soldCostBasis = summary2.totalSize * positionState.avgCostBasis;
@@ -3595,17 +3619,40 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const holdbackAsset = roundAsset(positionState.totalAsset - summary2.totalSize);
 
           positionState.assetOnOrder = 0;
-          positionState.cyclesCompleted += 1;
 
-          // Capital was already claimed (fillLedger.claimCapitalCredit)
-          // above as the idempotency gate for this whole block — apply it
-          // directly rather than calling creditCapitalGrowth, which would
-          // re-claim and (seeing it already claimed) skip applying pnl.
-          const prevMaxUsdc = config.maxUsdcDeployed;
-          config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-          updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
+          // Idempotency guard (issue #679 follow-up, codex convergence
+          // review round 4) — scoped to ONLY the two truly non-idempotent
+          // counter bumps (cyclesCompleted++, capital credit), not the
+          // whole block. An earlier round of this fix gated resetCycle()
+          // and closedTrades.record behind this SAME claim, which
+          // stranded an in-progress cycle close forever whenever
+          // resetCycle()'s own network cancel call failed afterward: the
+          // claim was already persisted by claimCapitalCredit, so a retry
+          // never got back into the block to finish closing. Both of
+          // those retry safely on their own — closedTrades.record dedupes
+          // by sellOrderId+qtySold, and resetCycle's state resets are
+          // already state-gated/idempotent (its one non-idempotent step,
+          // fillLedger.startNewCycle(), landing twice on a genuine retry
+          // only costs a spare cycle-number boundary — cosmetic, never a
+          // P&L figure) — so they stay UNGATED below and always run.
+          if (!fillLedger.claimCapitalCredit(fillData.orderId)) {
+            logger.info(
+              `ℹ️ [${exchange}] Untracked sell ${fillData.orderId.slice(0, 8)} capital already credited — skipping re-apply, still completing the cycle close`,
+              { orderId: fillData.orderId }
+            );
+          } else {
+            positionState.cyclesCompleted += 1;
 
-          logger.info(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+            // Capital was already claimed (fillLedger.claimCapitalCredit)
+            // above as the idempotency gate — apply it directly rather
+            // than calling creditCapitalGrowth, which would re-claim and
+            // (seeing it already claimed) skip applying pnl.
+            const prevMaxUsdc = config.maxUsdcDeployed;
+            config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
+            updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
+
+            logger.info(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+          }
 
           // Link current-cycle buy fills to this sell order for buy→sell display linkage (skip body-owned)
           const cycleFills = fillLedger.getCurrentCycleFills();
@@ -3617,7 +3664,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             }
           }
 
-          // Preserve the legacy audit record before resetCycle clears its cost basis.
+          // Preserve the legacy audit record before resetCycle clears its
+          // cost basis. Safe to call every pass — record() dedupes by
+          // sellOrderId+qtySold, so a retry after the capital credit was
+          // already claimed still re-attempts this (and resetCycle below)
+          // without duplicating the audit entry.
           closedTrades.record({
             sellOrderId: fillData.orderId,
             ...sellTradeStamp(summary2),

@@ -136,6 +136,166 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
       `the body must reflect the FULL 0.03 (the gap must be booked, not dropped or double-counted) — got ${afterTerminal.assetQty}`,
     );
   });
+
+  it('books the unbooked FEE DELTA on the synthesized gap, not zero, when a prior partial already booked its own fee (codex convergence review, round 5)', async () => {
+    // fillData.totalFees is CUMULATIVE for the whole order (Coinbase's
+    // getOrder() reports the running total, not a per-poll delta). The
+    // prior version zeroed the synthetic gap's fee whenever a prior
+    // partial already existed in the ledger ("already carries its own
+    // fee"), which silently dropped the NEW tranche's fee to $0 instead
+    // of crediting the unbooked delta (cumulative minus what's already
+    // booked).
+    const orderId = 'gap-fee-1';
+    let getOrderFillsCalls = 0;
+    const adapter = {
+      getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
+      getOrderFills: async () => {
+        getOrderFillsCalls++;
+        if (getOrderFillsCalls === 1) {
+          // First tranche: 0.01 @ 2000, fee 0.02 already booked for real.
+          return [{ tradeId: 'gap-fee-t1', orderId, side: 'buy', size: 0.01, price: 2000, tradeTime: new Date().toISOString(), netFee: 0.02 }];
+        }
+        throw new Error('trade scan unavailable');
+      },
+    };
+    const eng = makeEngine(adapter);
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [];
+
+    await eng._test.handleOrderFill({
+      orderId, side: 'buy', status: 'PARTIALLY_FILLED',
+      filledSize: 0.01, filledValue: 20, averageFilledPrice: 2000, isPartialFill: true,
+    });
+
+    // Terminal poll: order status now reports the full 0.03 filled with a
+    // CUMULATIVE totalFees of 0.06 (0.02 already booked + 0.04 for the new
+    // 0.02 tranche) — every getOrderFills call from here on fails.
+    await eng._test.handleOrderFill({
+      orderId, side: 'buy', status: 'FILLED',
+      filledSize: 0.03, filledValue: 60, averageFilledPrice: 2000, totalFees: 0.06, isPartialFill: false,
+    });
+
+    const ledgerFills = eng.getFillLedger().getFillsForOrder(orderId);
+    const syntheticFill = ledgerFills.find(f => f.tradeId.startsWith('synthetic-'));
+    assert.ok(syntheticFill, 'the synthetic gap fill must have been ingested');
+    assert.ok(
+      Math.abs(syntheticFill.netFee - 0.04) < 1e-8,
+      `the synthetic gap must book the unbooked fee DELTA (0.06 cumulative - 0.02 already booked = 0.04), not zero — got ${syntheticFill.netFee}`,
+    );
+    const totalNetFee = ledgerFills.reduce((sum, f) => sum + Number(f.netFee || 0), 0);
+    assert.ok(Math.abs(totalNetFee - 0.06) < 1e-8, `the ledger's total fee for this order must equal the order's own cumulative 0.06 — got ${totalNetFee}`);
+  });
+
+  it('does NOT synthesize a gap fill for a still-live (non-terminal) advancing partial, and stays correct once the real trade arrives (Claude convergence review, round 4)', async () => {
+    // A still-open partial has no "final word" the way a terminal fill
+    // does — a LATER poll can still bring the real trade with a genuinely
+    // different tradeId. Synthesizing a phantom gap fill for it (as an
+    // earlier round of this fix did, gating only on the SIZE gap, not on
+    // terminal status) creates a row nothing ever retires: once the real
+    // trade lands under its own tradeId, the body/ledger over-state by
+    // the phantom's size, since ingestFill's tradeId dedup can't know the
+    // synthetic row and the real trade represent the same underlying fill.
+    const orderId = 'gap-nonterminal-1';
+    let getOrderFillsCalls = 0;
+    const adapter = {
+      getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
+      getOrderFills: async () => {
+        getOrderFillsCalls++;
+        if (getOrderFillsCalls === 1) {
+          // Poll 1: first tranche, real trade.
+          return [{ tradeId: 'real-t1', orderId, side: 'buy', size: 0.01, price: 2000, tradeTime: new Date().toISOString(), netFee: 0 }];
+        }
+        if (getOrderFillsCalls <= 3) {
+          // Poll 2 (still PARTIALLY_FILLED — non-terminal): both attempts fail.
+          throw new Error('trade scan unavailable');
+        }
+        // Poll 3: the real second tranche finally shows up, under its own tradeId.
+        return [
+          { tradeId: 'real-t1', orderId, side: 'buy', size: 0.01, price: 2000, tradeTime: new Date().toISOString(), netFee: 0 },
+          { tradeId: 'real-t2', orderId, side: 'buy', size: 0.01, price: 2000, tradeTime: new Date().toISOString(), netFee: 0 },
+        ];
+      },
+    };
+    const eng = makeEngine(adapter);
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [];
+
+    await eng._test.handleOrderFill({
+      orderId, side: 'buy', status: 'PARTIALLY_FILLED',
+      filledSize: 0.01, filledValue: 20, averageFilledPrice: 2000, isPartialFill: true,
+    });
+    const bodyId = () => eng._getPositionState().celestialBodies.find(b => (b.sourceOrderIds || []).includes(orderId));
+    assert.ok(Math.abs(bodyId().assetQty - 0.01) < 1e-8, 'after poll 1 the body holds the real 0.01 tranche');
+
+    // Poll 2: order advanced to 0.02 (STILL PARTIALLY_FILLED — not
+    // terminal), but getOrderFills fails both attempts. Must NOT synthesize.
+    await eng._test.handleOrderFill({
+      orderId, side: 'buy', status: 'PARTIALLY_FILLED',
+      filledSize: 0.02, filledValue: 40, averageFilledPrice: 2000, isPartialFill: true,
+    });
+    assert.ok(
+      Math.abs(bodyId().assetQty - 0.01) < 1e-8,
+      `a non-terminal partial whose rescan failed must stay retryable, not synthesize a phantom gap — got ${bodyId().assetQty}`,
+    );
+
+    // Poll 3: still 0.02, getOrderFills now succeeds with the real trades.
+    await eng._test.handleOrderFill({
+      orderId, side: 'buy', status: 'FILLED',
+      filledSize: 0.02, filledValue: 40, averageFilledPrice: 2000, isPartialFill: false,
+    });
+    assert.ok(
+      Math.abs(bodyId().assetQty - 0.02) < 1e-8,
+      `once the real trade arrives the body must reflect the true 0.02, not be over-stated by a phantom gap — got ${bodyId().assetQty}`,
+    );
+  });
+
+  it('does not credit the body for a gap fill whose ingest reports an already-seen duplicate (Claude convergence review, round 4)', async () => {
+    // Defensive coverage for handleOrderFillImpl's own bookkeeping: if
+    // fillLedger.ingestFill reports the synthetic gap row as an
+    // already-seen duplicate (result.fill === null — e.g. a race with
+    // another pass that landed the identical row first), the gap fill
+    // must NOT be credited to fillsToAggregate/ingestedFills, since
+    // nothing new actually entered the ledger this pass. An earlier round
+    // of this fix fell back to the raw, never-ingested syntheticFill
+    // object in that case, letting the body absorb size the ledger never
+    // recorded.
+    const orderId = 'gap-dup-1';
+    const adapter = {
+      getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
+      getOrderFills: async () => { throw new Error('trade scan unavailable'); },
+    };
+    const eng = makeEngine(adapter);
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [];
+
+    const ledger = eng.getFillLedger();
+    const originalIngestFill = ledger.ingestFill;
+    let syntheticIngestAttempts = 0;
+    ledger.ingestFill = (fill, placedAt) => {
+      if (typeof fill.tradeId === 'string' && fill.tradeId.startsWith('synthetic-')) {
+        syntheticIngestAttempts++;
+        return { fill: null, ingested: false };
+      }
+      return originalIngestFill(fill, placedAt);
+    };
+
+    try {
+      await eng._test.handleOrderFill({
+        orderId, side: 'buy', status: 'FILLED',
+        filledSize: 100, filledValue: 200000, averageFilledPrice: 2000, isPartialFill: false,
+      });
+    } finally {
+      ledger.ingestFill = originalIngestFill;
+    }
+
+    assert.ok(syntheticIngestAttempts >= 1, 'must have attempted to ingest the synthetic gap fill');
+    // A body may still be created from the empty aggregate (a separate,
+    // pre-existing quirk unrelated to this fix), but it must NOT be
+    // credited with the phantom 100 the ledger never actually recorded —
+    // that is what this fix guards against.
+    const body = eng._getPositionState().celestialBodies.find(b => (b.sourceOrderIds || []).includes(orderId));
+    assert.equal(body?.assetQty || 0, 0, 'a gap fill whose ingest reports a duplicate must NOT credit assetQty the ledger never actually recorded');
+  });
 });
 
 describe('incompleteFills engine-level retry (issue #679 follow-up)', () => {

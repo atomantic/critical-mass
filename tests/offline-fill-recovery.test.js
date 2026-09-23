@@ -452,18 +452,23 @@ describe('#367 canonical legacy sell audit', () => {
     assert.equal(eng._getPositionState().celestialBodies.length, 1);
   });
 
-  it('does not double-complete the cycle on a retry after the capital credit was already claimed (codex convergence review)', async () => {
+  it('does not double-credit capital on a retry after the claim was already made, but still completes the cycle close (codex convergence review, round 4)', async () => {
     // handleOrderFill's wrapper clears the outer sell dedup key on ANY
     // throw (so a genuine failure can retry), and this engine's own
     // bounded incompleteFills retry (issue #679 follow-up) can also
-    // re-invoke a terminal fill callback. If a prior attempt got past
-    // fillLedger.claimCapitalCredit (which marks this sellOrderId's fills
-    // as credited) before throwing later — e.g. during resetCycle/persist —
-    // a naive retry would re-run cyclesCompleted++ and resetCycle() a
-    // second time, breaking the atomic-cycle invariant. Simulate exactly
-    // that: claim the capital credit directly (standing in for "an earlier
-    // attempt already got this far"), then drive the SAME sell through
-    // handleOrderFill and confirm cycle completion is skipped, not redone.
+    // re-invoke a terminal fill callback. Two invariants must both hold on
+    // a retry that finds the capital credit already claimed (e.g. a prior
+    // attempt got past claimCapitalCredit but then resetCycle()'s network
+    // cancel call threw):
+    //   1. cyclesCompleted/capital must NOT be re-applied a second time
+    //      (claim-gated, tested directly against fillLedger.claimCapitalCredit
+    //      below).
+    //   2. resetCycle() and the closed-trade record must NOT be stranded —
+    //      an earlier round of this fix gated the WHOLE block on the same
+    //      claim, so a retry that found it already claimed skipped
+    //      resetCycle entirely and the cycle never actually finished
+    //      closing. Verify the cycle boundary (fillLedger's current cycle
+    //      id) actually advances even when the claim was pre-made.
     const orderId = 'legacy-retry';
     const eng = makeEngine({
       bodies: [],
@@ -475,14 +480,20 @@ describe('#367 canonical legacy sell audit', () => {
     ledger.startNewCycle();
     // Pre-ingest the sell's own fill so claimCapitalCredit has a matching
     // row to mark (mirrors what the ingest loop inside handleOrderFillImpl
-    // would already have done on the earlier, throwing attempt).
+    // would already have done on the earlier, throwing attempt), then
+    // claim it directly — standing in for "an earlier attempt already got
+    // this far before resetCycle threw".
     ledger.ingestFill(sellFill(orderId, 0.009, 51000)[0]);
     assert.equal(ledger.claimCapitalCredit(orderId), true, 'the simulated earlier attempt successfully claims it once');
 
     const cyclesBefore = eng._getPositionState().cyclesCompleted;
+    const capitalBefore = eng._getConfig().maxUsdcDeployed;
+    const cycleIdBefore = ledger.getCurrentCycleId();
     await eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false });
 
     assert.equal(eng._getPositionState().cyclesCompleted, cyclesBefore, 'a retry past the claim point must not re-increment cyclesCompleted');
-    assert.equal(eng.getState().closedTradesSummary.count, 0, 'a retry past the claim point must not re-record a closed trade');
+    assert.equal(eng._getConfig().maxUsdcDeployed, capitalBefore, 'a retry past the claim point must not re-credit capital');
+    assert.equal(eng.getState().closedTradesSummary.count, 1, 'the closed-trade record is NOT gated by the capital claim — it must still be written (dedupes on its own)');
+    assert.notEqual(ledger.getCurrentCycleId(), cycleIdBefore, 'resetCycle must still run (and actually start a new cycle) even when the capital claim was already made — the close must not be stranded');
   });
 });
