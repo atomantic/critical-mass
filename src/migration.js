@@ -15,12 +15,12 @@
  *   data/coinbase/transactions.tsv
  *   data/coinbase/btc-price-cache-*.json
  *   data/*.backup (originals)
- *   keys/coinbase.json
+ *   data/coinbase-keys.json (root keys.json renamed to keys.json.migrated)
  */
 
 const fs = require('fs');
 const path = require('path');
-const { DATA_DIR } = require('./paths');
+const { DATA_DIR, APP_ROOT } = require('./paths');
 const { upsertCandles } = require('./candle-utils');
 
 const KEYS_DIR = DATA_DIR; // Keys stored alongside data
@@ -39,11 +39,19 @@ const needsMigration = () => {
 
 /**
  * Check if keys migration is needed
- * @returns {boolean} True if old keys.json exists
+ *
+ * Checks for the exact file `migrateKeys` writes (`data/coinbase-keys.json`),
+ * not a differently-named file (issue #688 — a mismatched filename here made
+ * this return `true` forever, so deleting `data/coinbase-keys.json` after
+ * migration caused the next startup to silently recreate it from the root
+ * `keys.json`). `migrateKeys` renames the root file away on a successful
+ * migration, so once that has happened this returns `false` even if the
+ * copied key is later deleted — the migration is one-shot by design.
+ * @returns {boolean} True if a root keys.json exists and hasn't been migrated yet
  */
 const needsKeysMigration = () => {
-  const oldKeysFile = path.join(__dirname, '..', 'keys.json');
-  const newKeysFile = path.join(KEYS_DIR, 'coinbase.json');
+  const oldKeysFile = path.join(APP_ROOT, 'keys.json');
+  const newKeysFile = path.join(KEYS_DIR, 'coinbase-keys.json');
 
   return fs.existsSync(oldKeysFile) && !fs.existsSync(newKeysFile);
 };
@@ -133,10 +141,28 @@ const migrateData = (exchange = 'coinbase') => {
 
 /**
  * Migrate keys.json to data/coinbase-keys.json
+ *
+ * Renames the root file to `keys.json.migrated` on success (issue #688) —
+ * once renamed, `needsKeysMigration` can never see it again, so a
+ * subsequent startup cannot resurrect a key the operator deleted from
+ * `data/coinbase-keys.json`. `chmodSync`ing the copy to 0600 matters
+ * because `fs.copyFileSync` preserves the source file's mode, and a root
+ * `keys.json` is commonly 0644.
+ *
+ * The copy/chmod/rename sequence is wrapped in try/catch: this function is
+ * invoked uncaught at process startup (`server.js`, `index.js`), so an
+ * unexpected filesystem error (a chmod unsupported on the mount, a stale
+ * `keys.json.migrated` from an interrupted prior run) must degrade to "try
+ * again next startup" rather than crash-loop the app. A failure here leaves
+ * `oldKeysFile` in place; a copy that succeeded before the failure is
+ * cleaned up on the next startup by `retireLegacyKeysFileIfAlreadyMigrated`
+ * below — `needsKeysMigration()` (and so this function) will not run again
+ * on its own once `newKeysFile` exists, so that separate, unconditional
+ * step is what actually retries the stranded rename.
  * @returns {boolean} True if migration happened
  */
 const migrateKeys = () => {
-  const oldKeysFile = path.join(__dirname, '..', 'keys.json');
+  const oldKeysFile = path.join(APP_ROOT, 'keys.json');
   const newKeysFile = path.join(KEYS_DIR, 'coinbase-keys.json');
 
   if (!fs.existsSync(oldKeysFile)) {
@@ -149,15 +175,81 @@ const migrateKeys = () => {
     fs.mkdirSync(KEYS_DIR, { recursive: true });
   }
 
-  // Copy keys (don't delete original for safety)
+  // Copy keys (don't delete original for safety — rename it out of the way
+  // instead, so the migration cannot run again and resurrect a since-deleted key)
   if (!fs.existsSync(newKeysFile)) {
-    fs.copyFileSync(oldKeysFile, newKeysFile);
-    console.log('  Migrate: keys.json -> data/coinbase-keys.json');
-    return true;
+    try {
+      fs.copyFileSync(oldKeysFile, newKeysFile);
+      fs.chmodSync(newKeysFile, 0o600);
+      fs.renameSync(oldKeysFile, `${oldKeysFile}.migrated`);
+      console.log('  Migrate: keys.json -> data/coinbase-keys.json (root file renamed to keys.json.migrated)');
+      return true;
+    } catch (err) {
+      console.log(`  ⚠️  Keys migration failed, will retry next startup: ${err.message}`);
+      return false;
+    }
   }
 
   console.log('  Skip: data/coinbase-keys.json already exists');
   return false;
+};
+
+/**
+ * Retire a root `keys.json` that is still sitting next to an already-copied
+ * `data/coinbase-keys.json` (codex review finding on issue #688).
+ *
+ * `needsKeysMigration()` treats `newKeysFile` EXISTING as proof the root
+ * copy is retired — true for a migration `migrateKeys()` itself performed
+ * (it renames the root file away as its last step), but NOT true for an
+ * install migrated by a pre-#688 build, which copied the key and
+ * deliberately left the original in place ("don't delete original for
+ * safety"). On such an install both files exist side by side; if an
+ * operator later deletes `data/coinbase-keys.json`, the still-present root
+ * file makes `needsKeysMigration()` true again on the very next startup,
+ * and `migrateKeys()` copies the legacy secret straight back — reproducing
+ * the exact bug this issue fixes, just from a different starting state.
+ *
+ * Runs unconditionally on every startup, independent of the migration
+ * gate, so it closes this window immediately: the moment both files are
+ * ever observed together, the root file is retired right then, before an
+ * operator gets the chance to delete the copy. It is also what actually
+ * retries a `migrateKeys()` run that copied successfully but failed at the
+ * rename step (see the note on `migrateKeys` above) — best-effort, since a
+ * rename failure here must never block startup.
+ * @returns {void}
+ */
+const retireLegacyKeysFileIfAlreadyMigrated = () => {
+  const oldKeysFile = path.join(APP_ROOT, 'keys.json');
+  const newKeysFile = path.join(KEYS_DIR, 'coinbase-keys.json');
+  if (!fs.existsSync(oldKeysFile) || !fs.existsSync(newKeysFile)) return;
+  try {
+    fs.renameSync(oldKeysFile, `${oldKeysFile}.migrated`);
+    console.log('  Retired already-migrated root keys.json -> keys.json.migrated');
+  } catch (err) {
+    console.log(`  ⚠️  Could not retire already-migrated keys.json: ${err.message}`);
+  }
+};
+
+/**
+ * Back-fill `data/coinbase-keys.json` to mode 0600 for an install that was
+ * migrated by a pre-#688 build, which copied the key with `fs.copyFileSync`
+ * and no `chmodSync` — the source file's mode (commonly 0644) carried
+ * straight through and was never corrected on later startups, since
+ * `needsKeysMigration()` (and so `migrateKeys()`) never re-runs once
+ * `data/coinbase-keys.json` exists. Runs unconditionally, independent of the
+ * migration gate, so it reaches an already-migrated install; a no-op when
+ * the file doesn't exist yet, and best-effort — a chmod failure (e.g. an
+ * unsupported filesystem) must never block startup.
+ * @returns {void}
+ */
+const backfillKeysFilePermissions = () => {
+  const newKeysFile = path.join(KEYS_DIR, 'coinbase-keys.json');
+  if (!fs.existsSync(newKeysFile)) return;
+  try {
+    fs.chmodSync(newKeysFile, 0o600);
+  } catch {
+    // ignore — permissions may not be settable on this filesystem
+  }
 };
 
 /**
@@ -194,9 +286,20 @@ const runMigrationIfNeeded = () => {
 
   if (needsKeysMigration()) {
     console.log('\n[Migration] Migrating API keys to new location...');
-    migrateKeys();
-    result.keysMigrated = true;
+    // Reflect migrateKeys()'s real outcome (issue #688, codex review finding)
+    // — it can now return false on a caught filesystem error mid-sequence,
+    // and a caller told keysMigrated: true when no key was actually copied
+    // would wrongly believe the credential is in place.
+    result.keysMigrated = migrateKeys();
   }
+
+  // Independent of the gate above — reconciles an install already migrated
+  // by a pre-#688 build (issue #688, finding 3 and the codex P1 finding).
+  // Retire runs first: it's what makes needsKeysMigration() permanently
+  // false going forward for such an install, closing the resurrection
+  // window before the backfill (or anything else) runs.
+  retireLegacyKeysFileIfAlreadyMigrated();
+  backfillKeysFilePermissions();
 
   return result;
 };
@@ -878,6 +981,8 @@ module.exports = {
   needsKeysMigration,
   migrateData,
   migrateKeys,
+  retireLegacyKeysFileIfAlreadyMigrated,
+  backfillKeysFilePermissions,
   createExchangeDirectories,
   runMigrationIfNeeded,
   getExchangeDataDir,

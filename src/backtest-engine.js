@@ -29,15 +29,17 @@ const DEFAULT_PRODUCT_IDS = {
 };
 
 /**
- * Load API credentials from keys.json
+ * Load API credentials for the Coinbase backtest client.
+ *
+ * Delegates to the Coinbase adapter's own `loadCredentials()` instead of a
+ * hardcoded `require('../keys.json')` — issue #688: `src/migration.js` now
+ * renames the root `keys.json` to `keys.json.migrated` after a one-time
+ * migration, so a direct require here would throw `MODULE_NOT_FOUND` on every
+ * migrated install and silently break Coinbase backtests. The adapter reads
+ * from `data/coinbase-keys.json` (the migration's target), the single source
+ * of truth for this credential everywhere else in the app.
  */
-const loadCredentials = () => {
-  const keys = require('../keys.json');
-  return {
-    apiKey: keys.name || keys.apiKey,
-    apiSecret: keys.privateKey || keys.apiSecret
-  };
-};
+const loadCredentials = () => getAdapter('coinbase').loadCredentials();
 
 /**
  * Make authenticated request to Coinbase API
@@ -873,5 +875,7 @@ module.exports = {
   // Exported for unit testing of the caching/aggregation invariants (#206, #213A)
   aggregateCandles,
   isCompleteBucket,
-  upsertCandles
+  upsertCandles,
+  // Exported for unit testing of the credential source-of-truth (#688)
+  loadCredentials
 };
