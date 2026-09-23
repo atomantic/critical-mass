@@ -277,16 +277,30 @@ const createManualTradeImporter = ({
    * running) with fills that arrived after it was first written (issue
    * #726 — mirrors regime-engine's own extendBody for the running-engine
    * case, but with no live TP to worry about since none was ever placed).
+   *
+   * Idempotent the same way regime-engine's extendBody is (codex review): a
+   * crash between this write and the caller's own ledger-linkage write must
+   * not let a retry double-apply the same delta. `expectedTotalQty` — the
+   * buy order's full current fill size across ALL its fills — is checked
+   * against what the body's own `buyOrders` bookkeeping already recorded
+   * for that orderId before merging anything.
    * @param {string} bodyId - Body to extend, as previously written by persistBodyToDisk
    * @param {{assetQty:number, costBasis:number, avgPrice:number}} extra - New fill totals to merge in
    * @param {string} buyOrderId - The buy order the extra fills belong to
-   * @returns {boolean} Whether a matching persisted body was found and extended
+   * @param {number} expectedTotalQty - buyOrderId's full current fill size (all fills, not just the delta in `extra`)
+   * @returns {{success: boolean, bodyId?: string, tier?: string, error?: string}}
    */
-  const extendPersistedBody = (bodyId, extra, buyOrderId) => {
+  const extendPersistedBody = (bodyId, extra, buyOrderId, expectedTotalQty) => {
     const saved = loadRegimeState(exchange, pair);
-    if (!saved.position) return false;
+    if (!saved.position) return { success: false, error: 'No position state on disk' };
     const body = (saved.position.celestialBodies || []).find((b) => b.id === bodyId);
-    if (!body) return false;
+    if (!body) return { success: false, error: 'Body not found' };
+    const alreadyRecordedQty = (body.buyOrders || [])
+      .filter((bo) => bo.orderId === buyOrderId)
+      .reduce((sum, bo) => sum + (bo.assetQty || 0), 0);
+    if (typeof expectedTotalQty === 'number' && alreadyRecordedQty >= expectedTotalQty - 0.00000001) {
+      return { success: true, bodyId: body.id, tier: body.tier }; // Already applied by a prior attempt.
+    }
     // maxUsdcDeployed lives in the regime config (adjusted at cycle-completion
     // time), not fundConfig — fetch it fresh rather than trusting a
     // constructor-time snapshot, since the engine (persisting its own
@@ -296,7 +310,7 @@ const createManualTradeImporter = ({
     mergeIntoBody(body, extra, maxUsdcDeployed, buyOrderId, log);
     syncPositionState(saved.position, saved.position.celestialBodies);
     saveRegimeState(saved.position, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, pair);
-    return true;
+    return { success: true, bodyId: body.id, tier: body.tier };
   };
 
   /**
@@ -397,6 +411,14 @@ const createManualTradeImporter = ({
       const extraQuote = unlinkedRows.reduce((sum, r) => sum + r.quoteAmount, 0);
       const extraCostBasis = unlinkedRows.reduce((sum, r) => sum + r.quoteAmount + r.netFee, 0);
       const extra = { assetQty: extraSize, costBasis: extraCostBasis, avgPrice: averagePrice(extraQuote, extraSize) };
+      // The buy order's FULL current fill size (every row, linked or not) —
+      // passed through so extendBody/extendPersistedBody can verify a retry
+      // wasn't already applied (codex review): a crash between one of those
+      // succeeding and the ledger-linkage write just below would otherwise
+      // let a retry re-run mergeIntoBody on the identical delta and
+      // double-count it, since the ledger would still show these rows
+      // unlinked with nothing to tell the retry "this already happened."
+      const expectedTotalQty = orderRows.reduce((sum, r) => sum + r.size, 0);
 
       // Attempt the extend BEFORE linking anything (codex review): linking
       // the ledger rows to currentBodyId unconditionally, win or lose, would
@@ -406,8 +428,8 @@ const createManualTradeImporter = ({
       // never trying again even after the underlying problem (e.g. the body
       // no longer exists) is fixed.
       const extended = extendBody
-        ? extendBody(currentBodyId, extra, buyOrderId)
-        : { success: extendPersistedBody(currentBodyId, extra, buyOrderId), bodyId: currentBodyId };
+        ? extendBody(currentBodyId, extra, buyOrderId, expectedTotalQty)
+        : extendPersistedBody(currentBodyId, extra, buyOrderId, expectedTotalQty);
 
       if (!extended.success) {
         // The body no longer exists to extend — most likely its TP fully
@@ -435,7 +457,7 @@ const createManualTradeImporter = ({
       // every fill fetched this call) instead of leaving them stuck at
       // whatever partial amount was known when the trade was first created
       // (issue #726 codex review).
-      fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: currentBodyId, isBodyOwned: true, isSatellite: true });
+      fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: currentBodyId, isBodyOwned: true, isSatellite: true, bodyTier: extended.tier });
       fillLedger.persist();
       if (currentBodyId !== trade.bodyId) store.markTpPlaced(trade.id, currentBodyId);
       store.refreshBuyTotals(trade.id, {

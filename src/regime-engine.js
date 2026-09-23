@@ -7420,20 +7420,38 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * larger holdback reserve. No live order is cancelled or resized, which
    * means no new fill-during-cancel race is introduced by this path.
    *
+   * Idempotent across a crash between this call succeeding (saveLiveState
+   * below) and the caller's own fill-ledger linkage write (codex review): a
+   * retry that reaches here again for the SAME buyOrderId, before the
+   * ledger ever recorded the link, would otherwise call mergeIntoBody a
+   * second time and double-count the same delta. `expectedTotalQty` — the
+   * buy order's full, current known size across ALL its fills (linked or
+   * not) — is compared against what this body's own `buyOrders` bookkeeping
+   * already recorded for that orderId; if it's already caught up, this is a
+   * verified no-op rather than a second merge.
+   *
    * @param {string} bodyId - Body to extend (must still be live in this engine)
    * @param {{assetQty:number, costBasis:number, avgPrice:number}} extra - New fill totals to merge in
    * @param {string} buyOrderId - The buy order the extra fills belong to
-   * @returns {{success: boolean, error?: string, bodyId?: string}}
+   * @param {number} expectedTotalQty - buyOrderId's full current fill size (all fills, not just the delta in `extra`)
+   * @returns {{success: boolean, error?: string, bodyId?: string, alreadyApplied?: boolean}}
    */
-  const extendBody = (bodyId, extra, buyOrderId) => {
+  const extendBody = (bodyId, extra, buyOrderId, expectedTotalQty) => {
     if (!isRunning) return { success: false, error: 'Engine not running' };
     const body = (positionState.celestialBodies || []).find((b) => b.id === bodyId);
     if (!body) return { success: false, error: 'Body not found' };
+    const alreadyRecordedQty = (body.buyOrders || [])
+      .filter((bo) => bo.orderId === buyOrderId)
+      .reduce((sum, bo) => sum + (bo.assetQty || 0), 0);
+    if (typeof expectedTotalQty === 'number' && alreadyRecordedQty >= expectedTotalQty - 0.00000001) {
+      logger.info(`📦 [${exchange}] Extend for body ${body.id} / buy ${buyOrderId} already applied (${alreadyRecordedQty} >= ${expectedTotalQty}) — no-op retry`);
+      return { success: true, bodyId: body.id, tier: body.tier, alreadyApplied: true };
+    }
     celestialHierarchy.mergeIntoBody(body, extra, config.maxUsdcDeployed, buyOrderId, logger);
     celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
     saveLiveState();
     logger.info(`📦 [${exchange}] Extended body ${body.id} (${body.tier}) with ${extra.assetQty} additional ${baseCurrency} from buy ${buyOrderId} (now ${body.assetQty} ${baseCurrency} total)`);
-    return { success: true, bodyId: body.id };
+    return { success: true, bodyId: body.id, tier: body.tier };
   };
 
   return {

@@ -550,4 +550,55 @@ describe('extendBody (issue #726)', () => {
     assert.equal(result.success, false);
     assert.equal(result.error, 'Engine not running');
   });
+
+  // codex review: a crash between extendBody's own saveLiveState() and the
+  // caller's fill-ledger linkage write must not let a retry for the SAME
+  // buyOrderId re-run mergeIntoBody on the identical delta and double-count
+  // it. expectedTotalQty (the buy order's full current fill size) lets a
+  // retry verify the delta was already folded in via the body's own
+  // buyOrders bookkeeping, and skip re-merging.
+  it('is idempotent across a retry for the same buyOrderId once expectedTotalQty is already covered', () => {
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    engine._test.setRunning(true);
+    const pos = engine._getPositionState();
+    pos.celestialBodies = [
+      {
+        id: 'body-1',
+        tier: 'satellite',
+        assetQty: 0.005,
+        avgPrice: 90000,
+        costBasis: 450,
+        tpOrderId: 'tp-existing',
+        tpPrice: 95000,
+        assetOnOrder: 0.004,
+        sourceOrderIds: ['buy-1'],
+        buyOrders: [{ orderId: 'buy-1', price: 90000, assetQty: 0.005, sizeUsdc: 450 }],
+        mergeCount: 0,
+      },
+    ];
+
+    const extra = { assetQty: 0.001, costBasis: 92, avgPrice: 92000 };
+    // buy-1's full current fill size across ALL its fills is 0.006 (0.005
+    // already recorded + this 0.001 delta).
+    const first = engine.extendBody('body-1', extra, 'buy-1', 0.006);
+    assert.equal(first.success, true);
+    assert.notEqual(first.alreadyApplied, true);
+    const afterFirst = pos.celestialBodies[0].assetQty;
+    assert.ok(Math.abs(afterFirst - 0.006) < 1e-9);
+
+    // Retry with the IDENTICAL delta and expectedTotalQty — simulating a
+    // crash right after the first call's saveLiveState() but before the
+    // ledger was ever marked linked, so a real caller would retry here.
+    const second = engine.extendBody('body-1', extra, 'buy-1', 0.006);
+    assert.equal(second.success, true);
+    assert.equal(second.alreadyApplied, true, 'a retry that is already covered must be a verified no-op');
+    assert.ok(
+      Math.abs(pos.celestialBodies[0].assetQty - 0.006) < 1e-9,
+      'the delta must not be double-counted on retry'
+    );
+    assert.ok(
+      Math.abs(pos.celestialBodies[0].costBasis - 542) < 1e-9,
+      'costBasis must not be double-counted on retry either'
+    );
+  });
 });

@@ -831,6 +831,53 @@ describe('Manual Trade Import', () => {
       assert.equal(second.trade.buySize, buyFills[0].size + buyFills[1].size);
     });
 
+    // Codex review: a crash between extendPersistedBody's own
+    // saveRegimeState() and this file's ledger-linkage write must not let a
+    // retry double-count the same delta. Simulates that exact crash window
+    // by hand-editing regime-state.json to already reflect the extension
+    // (as extendPersistedBody would have left it) while the ledger still
+    // shows the new fill unlinked — the state a process crash right between
+    // those two writes would leave behind.
+    it('does not double-count a body extension when regime-state.json was already updated but the ledger link never landed (crash window)', async () => {
+      const fillsByOrder = { 'buy-1': [buyFills[0]] };
+      const adapter = createFakeAdapter({ fillsByOrder });
+      const importer = createImporter({ adapter, injectBody: null });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, true);
+      const bodyId = first.trade.bodyId;
+
+      // Simulate the crash: apply the SAME growth extendPersistedBody would
+      // (mergeIntoBody's exact bookkeeping) directly to regime-state.json,
+      // but leave the fill-ledger row for buy-fill-2 unlinked — exactly as
+      // if the process died right after saveRegimeState() but before
+      // fillLedger.persist() ran.
+      const preCrash = readRegimeStateFile();
+      const body = preCrash.position.celestialBodies.find((b) => b.id === bodyId);
+      body.assetQty += buyFills[1].size;
+      body.costBasis += buyFills[1].price * buyFills[1].size + buyFills[1].commission;
+      body.buyOrders.push({ orderId: 'buy-1', price: buyFills[1].price, assetQty: buyFills[1].size, sizeUsdc: buyFills[1].price * buyFills[1].size + buyFills[1].commission });
+      fs.writeFileSync(path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json'), JSON.stringify(preCrash, null, 2));
+
+      fillsByOrder['buy-1'] = buyFills;
+
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.extended, true);
+      const saved = readRegimeStateFile();
+      assert.equal(saved.position.celestialBodies.length, 1);
+      assert.ok(
+        Math.abs(saved.position.celestialBodies[0].assetQty - (buyFills[0].size + buyFills[1].size)) < 1e-9,
+        'the second fill must be counted exactly once, not twice'
+      );
+      // The ledger link that was actually missing before this retry is now
+      // present — the whole point of retrying at all.
+      for (const row of fillLedger.getFillsForOrder('buy-1')) {
+        assert.equal(row.bodyId, bodyId);
+      }
+    });
+
     // A retry can find new fills for a body that no longer exists anywhere
     // live — e.g. its TP fully closed between the first import and this
     // retry, splicing it out of the engine's position. There is nothing to
