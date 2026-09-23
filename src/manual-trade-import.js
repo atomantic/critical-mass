@@ -64,7 +64,16 @@ const ingestAdapterFills = (fillLedger, fills, orderId, defaultSide) => {
       totalCommission: raw.totalCommission || raw.commission || 0,
       commission: raw.commission || 0,
       rebate: raw.rebate || 0,
-      netFee: raw.netFee || raw.commission || 0,
+      // Pass raw.netFee through AS-IS (no `|| raw.commission` fallback) —
+      // codex delta review, round 4: falling back to the GROSS commission
+      // here short-circuited fillLedger.ingestFill's own rebate-aware
+      // default (`commission - rebate`), which only applies when `netFee`
+      // is `undefined`/`null` on the input. That silently made every
+      // manually-imported buy's ledger-row `netFee` equal gross commission
+      // regardless of any rebate — invisible until a rebated fill's cost
+      // basis was compared against a later reconciliation computed the
+      // same (now-correct) way.
+      netFee: raw.netFee,
       liquidityIndicator: raw.liquidityIndicator || 'TAKER',
       tradeTime: raw.tradeTime,
       fee_asset: 'USDC',
@@ -93,11 +102,14 @@ const legTimestamp = (fills) => new Date(fills[0].tradeTime).getTime();
  * @param {((body: Object) => Promise<Object>)|null} [deps.injectBody] - Injects a
  *   new celestial body into the running engine; null when no engine is up, in
  *   which case the body is persisted to regime-state.json instead.
- * @param {((bodyId: string, extra: Object, buyOrderId: string) => Object)|null} [deps.extendBody] -
+ * @param {((bodyId: string, totals: Object, buyOrderId: string) => Promise<Object>)|null} [deps.extendBody] -
  *   Grows an already-live body with fills that arrived after it was created
- *   (issue #726 — a retried import of a still-filling buy order); null when
- *   no engine is up, in which case the persisted body on regime-state.json is
- *   extended directly instead.
+ *   (issue #726 — a retried import of a still-filling buy order) and
+ *   re-places its TP sized to the grown assetQty; takes the buy order's
+ *   FULL current totals, not a delta. Null when no engine is up, in which
+ *   case the persisted body on regime-state.json is extended directly
+ *   instead (synchronously, and flagged `needsTpReprice` rather than
+ *   touched if it already carries a live TP from before the engine stopped).
  * @returns {Object} importSell / importBuy / importPair / checkPendingBuy
  */
 const createManualTradeImporter = ({
@@ -277,7 +289,20 @@ const createManualTradeImporter = ({
    * Extend a body already persisted to regime-state.json (engine not
    * running) with fills that arrived after it was first written (issue
    * #726 — mirrors regime-engine's own extendBody for the running-engine
-   * case, but with no live TP to worry about since none was ever placed).
+   * case). Unlike that case, this path has no adapter/executor to safely
+   * cancel a resting TP with — a persisted body CAN already carry a real
+   * `tpOrderId` (placed while the engine was running, before it was
+   * stopped) — so instead of touching it directly, a body that already has
+   * one is flagged `needsTpReprice: true`. The engine's existing "startup
+   * reprice" pass (regime-engine.js, cancelBodyTpForReplace / issue #670)
+   * picks that flag up on next start and cancels+re-places through the
+   * adapter it has there, exactly as it already does for an overpriced TP%
+   * (codex delta review — leaving a stale TP in place would otherwise
+   * silently understate its assetOnOrder relative to the grown assetQty
+   * beyond the system's planned holdback fraction, per CLAUDE.md). A body
+   * with no tpOrderId yet needs no flag — the engine's normal
+   * ensureTakeProfitPlaced pass places one fresh, already sized correctly
+   * from the grown assetQty.
    *
    * Idempotent the same way regime-engine's extendBody is, INCLUDING across
    * compounding retries where more of the order fills again before the
@@ -293,7 +318,7 @@ const createManualTradeImporter = ({
    * @param {string} bodyId - Body to extend, as previously written by persistBodyToDisk
    * @param {{assetQty:number, costBasis:number, avgPrice:number}} totals - buyOrderId's FULL current fill totals (not a delta)
    * @param {string} buyOrderId - The buy order `totals` describes
-   * @returns {{success: boolean, bodyId?: string, tier?: string, error?: string, alreadyApplied?: boolean}}
+   * @returns {{success: boolean, bodyId?: string, tier?: string, error?: string, alreadyApplied?: boolean, needsTpReprice?: boolean}}
    */
   const extendPersistedBody = (bodyId, totals, buyOrderId) => {
     const saved = loadRegimeState(exchange, pair);
@@ -305,7 +330,7 @@ const createManualTradeImporter = ({
       .reduce((acc, bo) => ({ qty: acc.qty + (bo.assetQty || 0), cost: acc.cost + (bo.sizeUsdc || 0) }), { qty: 0, cost: 0 });
     const shortfallQty = roundAsset(totals.assetQty - recorded.qty);
     if (shortfallQty <= 0.00000001) {
-      return { success: true, bodyId: body.id, tier: body.tier, alreadyApplied: true };
+      return { success: true, bodyId: body.id, tier: body.tier, alreadyApplied: true, needsTpReprice: !!body.needsTpReprice };
     }
     const shortfall = {
       assetQty: shortfallQty,
@@ -319,9 +344,11 @@ const createManualTradeImporter = ({
     // this path.
     const { maxUsdcDeployed } = getRegimeConfig(exchange, pair);
     mergeIntoBody(body, shortfall, maxUsdcDeployed, buyOrderId, log);
+    const hadTp = !!body.tpOrderId;
+    if (hadTp) body.needsTpReprice = true;
     syncPositionState(saved.position, saved.position.celestialBodies);
     saveRegimeState(saved.position, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, pair);
-    return { success: true, bodyId: body.id, tier: body.tier };
+    return { success: true, bodyId: body.id, tier: body.tier, needsTpReprice: hadTp };
   };
 
   /**
@@ -379,30 +406,31 @@ const createManualTradeImporter = ({
     if (trade.bodyId || trade.status === STATUS.TP_PENDING) {
       // The buy order may have still been FILLING when the body above was
       // created — ingestAdapterFills already wrote any fills that arrived
-      // since into the ledger (it runs unconditionally, before this guard),
-      // but the PRIOR call's fillLedger.annotateFillsByOrderId only reached
-      // the rows that existed at that time. Detect and reconcile that gap
-      // instead of silently dropping it (issue #726) — the additional asset
-      // is real and owned; leaving it unlinked makes it invisible to the
-      // position model and to every future retry, which would keep
-      // re-detecting the identical gap forever.
+      // since into the ledger (it runs unconditionally, before this guard).
+      // Detect and reconcile that gap instead of silently dropping it
+      // (issue #726) — the additional asset is real and owned; leaving it
+      // out makes it invisible to the position model and to every future
+      // retry, which would keep re-detecting the identical gap forever.
       //
-      // "Unlinked" means no bodyId at all — NOT "bodyId !== trade.bodyId".
-      // An operator-triggered Collapse-All merge re-stamps every constituent
-      // buy order's ledger rows onto the SURVIVOR body's id (regime-engine.js
-      // mergeBodies path) without ever updating this trade record's bodyId,
-      // so trade.bodyId can be stale relative to the ledger's own bodyId
-      // after a merge. Comparing against it directly would treat every
-      // already-accounted-for row as "new" and stamp them back onto the
-      // stale, now-defunct body id, corrupting otherwise-correct linkage.
-      // The ledger's own bodyId (when any row already carries one) is the
-      // authoritative "current" body — fall back to trade.bodyId only when
-      // the ledger has no signal yet.
+      // Gate on the DURABLE bookkeeping — trade.buySize (refreshed below,
+      // on every successful reconciliation) vs the ledger's current full
+      // fill total — NOT on a ledger row's bodyId (codex delta review,
+      // round 4). A row's bodyId is not a reliable "already reconciled"
+      // signal on its own: placeBodyTp's TP-placement annotation, the
+      // startup re-annotator, and Collapse-All's re-stamp (regime-engine.js)
+      // all blanket-stamp bodyId onto EVERY row for an orderId once a body
+      // exists for it — including a fill that arrived AFTER the body's
+      // assetQty was last grown (a slow sync-fills ingest, or a crash
+      // between this fill's ingest+persist and a PRIOR extend's own save).
+      // Such a row would already show a bodyId despite the body never
+      // having actually absorbed it, and the old unlinked-row check would
+      // have taken the fast path below and hidden the gap for good.
       const orderRows = trade.bodyId ? fillLedger.getFillsForOrder(buyOrderId) : [];
-      const unlinkedRows = orderRows.filter((r) => !r.bodyId);
       const currentBodyId = orderRows.find((r) => r.bodyId)?.bodyId || trade.bodyId;
+      const fullQty = orderRows.reduce((sum, r) => sum + r.size, 0);
+      const priorRecordedQty = trade.buySize || 0;
 
-      if (unlinkedRows.length === 0) {
+      if (fullQty <= priorRecordedQty + 0.00000001) {
         log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} already has body ${currentBodyId} — skipping duplicate body creation`, {
           bodyId: currentBodyId,
           buyOrderId,
@@ -410,60 +438,56 @@ const createManualTradeImporter = ({
         return ok({ trade: store.getById(trade.id), alreadyImported: true });
       }
 
-      // Ledger rows carry `quoteAmount` (price × size) and `netFee` (fee net
-      // of rebate) — NOT the raw adapter field names `totalCommission` /
-      // `commission` that ingestAdapterFills maps INTO those on ingest
-      // (fill-ledger.js:637-644). Mirror the same `quoteAmount + netFee`
-      // cost-basis convention every other ledger-row reducer in this codebase
-      // uses (e.g. fill-ledger.js:811) — reading the raw-fill field names off
-      // an already-ingested row would silently read `undefined` and drop the
-      // fee from cost basis on every reconciliation.
-      const extraSize = unlinkedRows.reduce((sum, r) => sum + r.size, 0); // for logging only
-
       // extendBody/extendPersistedBody take the buy order's FULL current
-      // totals (every row, linked or not) rather than a delta — a
-      // delta-only idempotency check still double-counts an already-applied
-      // portion when MORE fills arrive before a crashed extend's retry
-      // (codex review, round 3: extend #1 applies d1 but crashes before the
-      // ledger link; if d2 arrives before the retry, a delta of d1+d2 would
-      // re-add the already-applied d1). Both functions compute the exact
-      // shortfall themselves — `totals` minus what the body's own
-      // `buyOrders` bookkeeping already recorded for this orderId — so
-      // however many times this runs for the same buyOrderId, the body
-      // converges to exactly `totals`, never more.
-      const fullQty = orderRows.reduce((sum, r) => sum + r.size, 0);
+      // totals (every row) rather than a delta — a delta-only idempotency
+      // check still double-counts an already-applied portion when MORE
+      // fills arrive before a crashed extend's retry (codex review, round
+      // 3: extend #1 applies d1 but crashes before the ledger link; if d2
+      // arrives before the retry, a delta of d1+d2 would re-add the
+      // already-applied d1). Both functions compute the exact shortfall
+      // themselves — `totals` minus what the body's own `buyOrders`
+      // bookkeeping already recorded for this orderId — so however many
+      // times this runs for the same buyOrderId, the body converges to
+      // exactly `totals`, never more.
+      //
+      // Ledger rows carry `quoteAmount` (price × size) and `netFee` (fee
+      // net of rebate) — the SAME convention the body-creation path below
+      // now also sources its initial costBasis from (codex delta review:
+      // the two used to disagree — creation summed gross adapter commission
+      // while this summed net-of-rebate ledger fee — so a shortfall
+      // computed as `totals.costBasis - recorded.cost` could absorb that
+      // mismatch and go negative on a tiny extra fill).
       const fullQuote = orderRows.reduce((sum, r) => sum + r.quoteAmount, 0);
       const fullCostBasis = orderRows.reduce((sum, r) => sum + r.quoteAmount + r.netFee, 0);
       const totals = { assetQty: fullQty, costBasis: fullCostBasis, avgPrice: averagePrice(fullQuote, fullQty) };
+      const growthQty = fullQty - priorRecordedQty; // for logging only
 
       // Attempt the extend BEFORE linking anything (codex review): linking
       // the ledger rows to currentBodyId unconditionally, win or lose, would
-      // make a FAILED extend permanently unrecoverable — the next retry
-      // would find these same rows already "linked" and skip straight past
-      // this whole block via the unlinkedRows.length === 0 fast path above,
-      // never trying again even after the underlying problem (e.g. the body
-      // no longer exists) is fixed.
+      // make a FAILED extend permanently unrecoverable.
       const extended = extendBody
-        ? extendBody(currentBodyId, totals, buyOrderId)
+        ? await extendBody(currentBodyId, totals, buyOrderId)
         : extendPersistedBody(currentBodyId, totals, buyOrderId);
 
       if (!extended.success) {
-        // The body no longer exists to extend — most likely its TP fully
+        // The body couldn't absorb the growth — most likely its TP fully
         // closed and it was spliced out of the live position between the
-        // first import and this retry. Leave the new fill rows UNLINKED (not
-        // pointed at a body that couldn't absorb them) so a future retry
-        // keeps re-detecting this exact gap and can try again once it's
-        // fixable, and fail the call outright rather than reporting success
-        // — the caller (the admin import UI) treats `success: true` as
-        // "done, remove this order from the unaccounted list," which would
-        // permanently hide an asset that ended up nowhere.
-        log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} has ${extraSize} new fill(s) beyond body ${currentBodyId}, but that body could not be extended (${extended.error || 'not found'}) — leaving the fills unlinked and the import retryable`, {
+        // first import and this retry, or (engine running) its existing TP
+        // sold a tranche during the cancel-for-replace race and needs to
+        // settle before another attempt. Leave the ledger and trade record
+        // exactly as they were — trade.buySize is the gate above, so a
+        // future retry re-detects this same gap and tries again once it's
+        // fixable — and fail the call outright rather than reporting
+        // success: the caller (the admin import UI) treats `success: true`
+        // as "done, remove this order from the unaccounted list," which
+        // would permanently hide an asset that ended up nowhere.
+        log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} has ${growthQty} new fill(s) beyond body ${currentBodyId}, but that body could not be extended (${extended.error || 'not found'}) — leaving the import retryable`, {
           bodyId: currentBodyId,
           buyOrderId,
-          extraSize,
+          growthQty,
           error: extended.error,
         });
-        return fail(`Failed to extend body ${currentBodyId} with ${extraSize} additional fill(s) for buy ${buyOrderId}: ${extended.error || 'body not found'}`);
+        return fail(`Failed to extend body ${currentBodyId} with ${growthQty} additional fill(s) for buy ${buyOrderId}: ${extended.error || 'body not found'}`);
       }
 
       // Extend succeeded — NOW link the new rows to the body's current
@@ -472,7 +496,8 @@ const createManualTradeImporter = ({
       // set (totalSize/totalQuote/avgBuyPrice/tradeIds, computed above from
       // every fill fetched this call) instead of leaving them stuck at
       // whatever partial amount was known when the trade was first created
-      // (issue #726 codex review).
+      // (issue #726 codex review). Refreshing buySize is also what makes
+      // the durable gate above work on the NEXT retry.
       fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: currentBodyId, isBodyOwned: true, isSatellite: true, bodyTier: extended.tier });
       fillLedger.persist();
       if (currentBodyId !== trade.bodyId) store.markTpPlaced(trade.id, currentBodyId);
@@ -482,13 +507,14 @@ const createManualTradeImporter = ({
         buyQuoteAmount: totalQuote,
         buyFillTradeIds: tradeIds,
       });
-      log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} extended body ${currentBodyId} with ${extraSize} additional fill(s) instead of creating a duplicate`, {
+      log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} extended body ${currentBodyId} with ${growthQty} additional fill(s) instead of creating a duplicate${extended.needsTpReprice ? ' (TP reprice deferred to next engine start)' : ''}`, {
         bodyId: currentBodyId,
         buyOrderId,
-        extraSize,
+        growthQty,
+        needsTpReprice: !!extended.needsTpReprice,
       });
 
-      return ok({ trade: store.getById(trade.id), alreadyImported: true, extended: true });
+      return ok({ trade: store.getById(trade.id), alreadyImported: true, extended: true, needsTpReprice: !!extended.needsTpReprice });
     }
 
     // Durable close-check (issue #691, codex review, refined across two
@@ -535,10 +561,19 @@ const createManualTradeImporter = ({
 
     if (!createBody) return ok({ trade: store.getById(trade.id) });
 
-    const totalFees = buyFills.reduce((sum, f) => sum + (f.commission || f.totalCommission || 0), 0);
+    // Source cost basis from the ledger's own `quoteAmount + netFee` rows —
+    // NOT gross adapter commission summed from raw buyFills — to match the
+    // exact convention the retry-guard's extend path above (and every other
+    // ledger-row reducer in this codebase, e.g. fill-ledger.js:811) uses. A
+    // mismatched convention here (gross vs net-of-rebate) would make a later
+    // extend's `shortfall.costBasis = totals.costBasis - recorded.cost`
+    // absorb the gross/net difference on these very first fills, and could
+    // go negative on a small extra fill (codex delta review).
+    const createdRows = fillLedger.getFillsForOrder(buyOrderId);
+    const costBasis = createdRows.reduce((sum, r) => sum + r.quoteAmount + r.netFee, 0);
     const body = createNewBody({
       assetQty: totalSize,
-      costBasis: totalQuote + totalFees,
+      costBasis,
       avgPrice: avgBuyPrice,
     }, buyOrderId);
 

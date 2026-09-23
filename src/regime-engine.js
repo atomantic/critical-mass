@@ -1863,7 +1863,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (expiredBodies > 0) logger.warn(`⚠️ [${exchange}] ${expiredBodies} body TP orders need re-placement`);
 
         // Reprice any restored body TPs whose TP% exceeds the effective max
-        // (fixes bodies that were placed with uncapped holdback floor).
+        // (fixes bodies that were placed with uncapped holdback floor), OR
+        // that a manual buy extend flagged needsTpReprice while this engine
+        // was stopped (issue #726 — extendPersistedBody grew the body's
+        // assetQty but had no adapter/executor to safely cancel the live TP
+        // itself, so it left a marker for this pass to pick up instead).
         // Every body that still carries a tpOrderId here had its executor
         // tracking restored just above, so cancel through the executor —
         // cancelBodyTpForReplace books any tranche sold during the cancel
@@ -1875,20 +1879,33 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const currentTpPct = ((body.tpPrice - body.avgPrice) / body.avgPrice) * 100;
           const bTierCfg = celestialHierarchy.getTierConfig(body.tier);
           const bEffectiveMax = config.tpMaxPercent * (bTierCfg.tpMaxScale || 1);
-          if (currentTpPct > bEffectiveMax * 1.01) {
-            logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP% ${currentTpPct.toFixed(2)}% exceeds max ${bEffectiveMax.toFixed(2)}% — cancelling and repricing`);
+          const overpriced = currentTpPct > bEffectiveMax * 1.01;
+          if (overpriced || body.needsTpReprice) {
+            const reason = overpriced
+              ? `TP% ${currentTpPct.toFixed(2)}% exceeds max ${bEffectiveMax.toFixed(2)}%`
+              : 'extended by a manual buy import while stopped';
+            logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} needs TP reprice (${reason}) — cancelling and repricing`);
             const oldTp = body.tpOrderId;
             const outcome = await cancelBodyTpForReplace(body, 'Startup reprice');
             if (outcome === 'cancelled') {
+              body.needsTpReprice = false;
               await placeBodyTp(body);
+            } else if (outcome === 'booked') {
+              // cancelBodyTpForReplace already booked the tranche that sold
+              // during the cancel and re-placed a right-sized TP for the
+              // body's new (reduced) shape itself — nothing left to do.
+              body.needsTpReprice = false;
             } else if (outcome === 'filled') {
-              logger.info(`📋 [${exchange}] Overpriced body TP ${oldTp.slice(0, 8)} already filled — polling will process`);
+              logger.info(`📋 [${exchange}] Body TP ${oldTp.slice(0, 8)} needing reprice already filled — polling will process`);
             } else if (outcome === 'unresolved') {
               logger.warn(
-                `⚠️ [${exchange}] Failed to cancel overpriced body TP ${oldTp}`,
+                `⚠️ [${exchange}] Failed to cancel body TP ${oldTp} needing reprice`,
                 { bodyId: body.id, orderId: oldTp }
               );
             }
+            // 'booking_failed': leave needsTpReprice set — the reconcile
+            // loop retries the booking independently, and a future startup
+            // retries this pass too.
           }
         }
       }
@@ -7413,12 +7430,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * this function exists to close).
    *
    * Grows assetQty/costBasis/avgPrice via the same celestialHierarchy.
-   * mergeIntoBody a live DCA-buy-fill merge uses, but deliberately does NOT
-   * touch the body's existing TP order. Per CLAUDE.md, `assetQty -
-   * assetOnOrder` is the DESIGNED holdback (zero-cost-basis reserve), not a
-   * partial fill needing repair — so the extra asset simply becomes a
-   * larger holdback reserve. No live order is cancelled or resized, which
-   * means no new fill-during-cancel race is introduced by this path.
+   * mergeIntoBody a live DCA-buy-fill merge uses, then cancels and
+   * re-places the body's TP (mirrors setBodyTpPercent/the startup reprice
+   * pass, via cancelBodyTpForReplace — issue #670) so it covers the grown
+   * assetQty. Per CLAUDE.md, `assetQty - assetOnOrder` IS the designed
+   * holdback — but only for the BOUNDED, PLANNED fraction
+   * calculateTakeProfitSize computes at TP-placement time. Leaving a stale
+   * TP in place after growing assetQty would silently balloon that fraction
+   * past what was ever planned: at sell time `proratedCostBasis` shrinks
+   * (it's `costBasis × soldQty/assetQty`, and assetQty just grew) while the
+   * unsold remainder grows, so the new fill's real cost basis is never
+   * charged to `bodyPnl` and the fill's whole value leaks into
+   * `bodyHoldbackAsset` as fabricated zero-cost profit — inflating Total
+   * P&L (codex delta review).
    *
    * Idempotent across a crash between this call succeeding (saveLiveState
    * below) and the caller's own fill-ledger linkage write, AND across
@@ -7440,9 +7464,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @param {string} bodyId - Body to extend (must still be live in this engine)
    * @param {{assetQty:number, costBasis:number, avgPrice:number}} totals - buyOrderId's FULL current fill totals (not a delta)
    * @param {string} buyOrderId - The buy order `totals` describes
-   * @returns {{success: boolean, error?: string, bodyId?: string, tier?: string, alreadyApplied?: boolean}}
+   * @returns {Promise<{success: boolean, error?: string, bodyId?: string, tier?: string, alreadyApplied?: boolean, tpPlaced?: boolean}>}
    */
-  const extendBody = (bodyId, totals, buyOrderId) => {
+  const extendBody = async (bodyId, totals, buyOrderId) => {
     if (!isRunning) return { success: false, error: 'Engine not running' };
     const body = (positionState.celestialBodies || []).find((b) => b.id === bodyId);
     if (!body) return { success: false, error: 'Body not found' };
@@ -7459,11 +7483,32 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       costBasis: roundUSDC(totals.costBasis - recorded.cost),
       avgPrice: totals.avgPrice,
     };
+
+    // Cancel the existing TP BEFORE growing the body, so the re-place below
+    // sizes against the grown assetQty, not the stale one.
+    if (body.tpOrderId) {
+      const cancelOutcome = await cancelBodyTpForReplace(body, 'Manual buy extend');
+      if (cancelOutcome !== 'cancelled') {
+        // 'booked' / 'booking_failed': a tranche sold during the cancel —
+        // cancelBodyTpForReplace already booked that sale (or deferred it
+        // to reconciliation) and re-placed a right-sized TP for the body's
+        // NEW (reduced) shape itself, through the normal sell path. Merging
+        // this extend on top now would race whatever that path just did.
+        // 'filled' / 'unresolved': nothing was touched. Either way, fail
+        // this attempt so the caller's ledger rows stay unlinked and
+        // retryable (its contract) rather than silently dropping the fill
+        // or double-booking against a body that just changed underneath us.
+        saveLiveState();
+        return { success: false, error: `Existing TP ${cancelOutcome} — retry the extend once reconciled` };
+      }
+    }
+
     celestialHierarchy.mergeIntoBody(body, shortfall, config.maxUsdcDeployed, buyOrderId, logger);
     celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+    const tpResult = await placeBodyTpWithRetry(body, 'ManualExtend');
     saveLiveState();
-    logger.info(`📦 [${exchange}] Extended body ${body.id} (${body.tier}) with ${shortfall.assetQty} additional ${baseCurrency} from buy ${buyOrderId} (now ${body.assetQty} ${baseCurrency} total)`);
-    return { success: true, bodyId: body.id, tier: body.tier };
+    logger.info(`📦 [${exchange}] Extended body ${body.id} (${body.tier}) with ${shortfall.assetQty} additional ${baseCurrency} from buy ${buyOrderId} (now ${body.assetQty} ${baseCurrency} total, TP re-placed: ${!!tpResult})`);
+    return { success: true, bodyId: body.id, tier: body.tier, tpPlaced: !!tpResult };
   };
 
   return {

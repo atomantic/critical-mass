@@ -824,6 +824,149 @@ describe('Manual Trade Import', () => {
       assert.equal(second.trade.buySize, buyFills[0].size + buyFills[1].size);
     });
 
+    // Codex delta review (round 4): a ledger row's bodyId is NOT a durable
+    // "already reconciled" signal on its own — placeBodyTp's TP-placement
+    // annotation, the startup re-annotator, and Collapse-All's re-stamp
+    // (regime-engine.js) all blanket-stamp bodyId onto EVERY row for an
+    // orderId once a body exists for it, including a fill that arrived
+    // AFTER the body's assetQty was last actually grown (a slow out-of-band
+    // ingest, e.g. sync-fills). The OLD "unlinked ledger rows" gate would
+    // have taken the fast path here and hidden the gap for good. The gate
+    // must instead be trade.buySize (refreshed only on a CONFIRMED
+    // reconciliation) vs the ledger's current full fill total.
+    it('detects growth even when every ledger row already carries a bodyId from an unrelated process', async () => {
+      const bodies = [];
+      const fillsByOrder = { 'buy-1': [buyFills[0]] };
+      const adapter = createFakeAdapter({ fillsByOrder });
+      const importer = createImporter({
+        adapter,
+        injectBody: async (body) => {
+          bodies.push(body);
+          return { tpPlaced: true };
+        },
+        extendBody: (bodyId, totals) => {
+          const body = bodies.find((b) => b.id === bodyId);
+          if (!body) return { success: false, error: 'Body not found' };
+          body.assetQty = totals.assetQty;
+          body.costBasis = totals.costBasis;
+          return { success: true, bodyId, tier: body.tier };
+        },
+      });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, true);
+      const bodyId = first.trade.bodyId;
+      assert.equal(bodies[0].assetQty, buyFills[0].size);
+
+      // Simulate the second fill arriving out-of-band (e.g. a sync-fills
+      // sweep) — ingested directly into the ledger, NOT through this
+      // importer's own ingestAdapterFills.
+      fillLedger.ingestFill({
+        tradeId: buyFills[1].tradeId,
+        orderId: 'buy-1',
+        side: 'buy',
+        price: buyFills[1].price,
+        size: buyFills[1].size,
+        totalCommission: buyFills[1].commission,
+        commission: buyFills[1].commission,
+        rebate: 0,
+        tradeTime: buyFills[1].tradeTime,
+      }, null, { skipPersist: true, cycleId: null });
+
+      // Simulate an UNRELATED process blanket-stamping bodyId onto EVERY
+      // row for this order — including the new one above — without the
+      // body ever actually absorbing it.
+      fillLedger.annotateFillsByOrderId('buy-1', { bodyId, isBodyOwned: true, isSatellite: true });
+      fillLedger.persist();
+      assert.equal(bodies[0].assetQty, buyFills[0].size, 'the body has NOT actually absorbed the new fill yet, despite the row now carrying a bodyId');
+
+      fillsByOrder['buy-1'] = buyFills; // this call's own ingest is a no-op (tradeId already present)
+
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.extended, true, 'the gap must still be detected despite every row already carrying a bodyId');
+      assert.ok(Math.abs(bodies[0].assetQty - (buyFills[0].size + buyFills[1].size)) < 1e-9);
+      assert.equal(second.trade.buySize, buyFills[0].size + buyFills[1].size);
+    });
+
+    // Codex delta review (round 4): createNewBody's cost basis used to sum
+    // GROSS adapter commission from raw buyFills, while the extend path
+    // sums `quoteAmount + netFee` (net of rebate) from ledger rows. A
+    // rebated first fill would then make a later shortfall computation
+    // (`totals.costBasis - recorded.cost`) absorb that gross/net mismatch —
+    // both sides must use the identical, net-of-rebate convention.
+    it('uses net-of-rebate fee consistently between body creation and extend', async () => {
+      const rebatedFill = makeFill({ tradeId: 'imp-buy-rebate', side: 'buy', price: 90000, size: 0.002, commission: 0.5, totalCommission: 0.5, rebate: 0.1 });
+      const secondFill = makeFill({ tradeId: 'imp-buy-second', side: 'buy', price: 92000, size: 0.001, commission: 0.25, totalCommission: 0.25, rebate: 0 });
+      const fillsByOrder = { 'buy-1': [rebatedFill] };
+      const adapter = createFakeAdapter({ fillsByOrder });
+      const importer = createImporter({ adapter, injectBody: null });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, true);
+      const netFee0 = rebatedFill.commission - rebatedFill.rebate; // 0.4, not the gross 0.5
+      const expectedFirstCostBasis = rebatedFill.price * rebatedFill.size + netFee0;
+      const firstSaved = readRegimeStateFile();
+      assert.ok(
+        Math.abs(firstSaved.position.celestialBodies[0].costBasis - expectedFirstCostBasis) < 1e-9,
+        'body creation must use NET (rebate-adjusted) fee, not gross commission'
+      );
+
+      fillsByOrder['buy-1'] = [rebatedFill, secondFill];
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(second.success, true);
+      assert.equal(second.extended, true);
+
+      const expectedSecondCostBasis = expectedFirstCostBasis + (secondFill.price * secondFill.size + secondFill.commission);
+      const saved = readRegimeStateFile();
+      assert.ok(
+        Math.abs(saved.position.celestialBodies[0].costBasis - expectedSecondCostBasis) < 1e-9,
+        'the shortfall must not be corrupted by a gross/net fee mismatch between the two fills'
+      );
+      assert.ok(saved.position.celestialBodies[0].costBasis > 0, 'costBasis must never go negative from the convention mismatch');
+    });
+
+    // Codex delta review (round 4): extendPersistedBody has no
+    // adapter/executor to safely cancel a resting TP with — a persisted
+    // body CAN already carry a real tpOrderId (placed while the engine was
+    // running, before it was stopped). It must flag needsTpReprice for the
+    // engine's startup reprice pass instead of touching that live order.
+    it('flags needsTpReprice instead of touching a persisted body\'s existing tpOrderId (engine not running)', async () => {
+      const fillsByOrder = { 'buy-1': [buyFills[0]] };
+      const adapter = createFakeAdapter({ fillsByOrder });
+      const importer = createImporter({ adapter, injectBody: null });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, true);
+      const bodyId = first.trade.bodyId;
+
+      // Simulate the engine having been running long enough to place a REAL
+      // TP for this body, then getting stopped.
+      const preStop = readRegimeStateFile();
+      const body = preStop.position.celestialBodies.find((b) => b.id === bodyId);
+      body.tpOrderId = 'tp-live-on-exchange';
+      body.tpPrice = 95000;
+      body.assetOnOrder = buyFills[0].size;
+      fs.writeFileSync(path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json'), JSON.stringify(preStop, null, 2));
+
+      fillsByOrder['buy-1'] = buyFills;
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.extended, true);
+      assert.equal(second.needsTpReprice, true);
+
+      const saved = readRegimeStateFile();
+      const savedBody = saved.position.celestialBodies.find((b) => b.id === bodyId);
+      assert.equal(savedBody.tpOrderId, 'tp-live-on-exchange', 'the real, still-resting exchange order must not be touched or orphaned');
+      assert.equal(savedBody.needsTpReprice, true, 'flagged for the engine\'s startup reprice pass to pick up');
+      assert.ok(
+        Math.abs(savedBody.assetQty - (buyFills[0].size + buyFills[1].size)) < 1e-9,
+        'the body still grows to include the new fill'
+      );
+    });
+
     it('extends the persisted body on regime-state.json with fills that arrived since it was created (engine not running)', async () => {
       const fillsByOrder = { 'buy-1': [buyFills[0]] };
       const adapter = createFakeAdapter({ fillsByOrder });
