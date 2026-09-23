@@ -270,6 +270,31 @@ const isFullTpExecution = (body, filledSize) => {
 };
 
 /**
+ * Split a body TP's net holdback (`body.assetQty − sold`) into what the sale
+ * adds to reserves and what it draws out of them (issue #770).
+ *
+ * A healthy TP sells `assetOnOrder < assetQty`, and the rest is booked as
+ * zero-cost reserves. A stale TP sized for a larger, pre-deduction body can
+ * sell MORE than the body still holds (the #744 merge-snapshot oversell). The
+ * extra asset came out of the account's reserves: bodyPnl already charges the
+ * whole remaining body cost against the full proceeds, so that asset's
+ * proceeds are in realized USD at zero cost, and reserves must shrink by the
+ * same quantity or it counts twice (as USD and as reserves still held).
+ *
+ * The drawdown is recorded as its own non-negative quantity rather than as a
+ * negative holdback: the cycle pairing clamps negative holdback annotations
+ * (legacy corrupt rows), and the startup annotation repair re-pairs any sell
+ * carrying one. `bodyReservesSoldAsset` is subtracted from realizedAssetPnL
+ * by shared/cycle-pairing.mjs.
+ * @param {number} netHoldback - body.assetQty − sold qty, already rounded
+ * @returns {{holdbackAsset: number, reservesSoldAsset: number}} both ≥ 0
+ */
+const splitTpHoldback = (netHoldback) => ({
+  holdbackAsset: netHoldback > 0 ? netHoldback : 0,
+  reservesSoldAsset: netHoldback < 0 ? -netHoldback : 0,
+});
+
+/**
  * Drop a persisted `pendingTpCancelExecution` marker once the body's TP has
  * moved off the order it was recorded for (issue #744). The marker is only
  * ever honoured while `body.tpOrderId === marker.orderId` (see
@@ -4251,7 +4276,33 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // target and re-places a correctly-sized TP.
           logger.warn(`⚠️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP filled ${cancelResult.filledSize} ${baseCurrency} during cancel — routing buy to its own body (issue #227)`);
           const soldTp = mergeTarget.tpOrderId;
-          if (soldTp) {
+          // A WS/poll fill for soldTp that landed while this cancel was in
+          // flight is handled by the merge-snapshot branch, which consumes the
+          // pending snapshot and deducts the tranche from mergeTarget (issue
+          // #770). Everything that handler ingested for soldTp is booked, so
+          // the immediate booking below must only run for execution beyond
+          // it: re-booking the same cumulative size against a fresh snapshot
+          // of the already-deducted body double-counts the sale whenever the
+          // two deliveries' dedup keys differ (a terminal event keys on the
+          // bare orderId, this booking on orderId:size).
+          // "Booked" means the handler got as far as its per-order bodyPnl
+          // annotation (written to every row of the order at the end of a
+          // successful booking) — not merely that the snapshot left the map:
+          // a handler that threw after consuming it booked nothing.
+          const snapshotConsumed = !!soldTp && !pendingMergeTpOrders.has(soldTp);
+          const soldTpRows = snapshotConsumed ? fillLedger.getFillsForOrder(soldTp) : [];
+          const alreadyBookedSize = soldTpRows.length > 0 && soldTpRows.every(f => f.bodyPnl != null)
+            ? soldTpRows.reduce((sum, f) => sum + Number(f.size || 0), 0)
+            : 0;
+          const skipImmediateBooking = snapshotConsumed
+            && !((cancelResult.filledSize || 0) > alreadyBookedSize + 1e-9);
+          if (skipImmediateBooking) {
+            logger.info(
+              `ℹ️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP ${soldTp.slice(0, 8)} execution (${cancelResult.filledSize} ${baseCurrency}) was already booked by its in-flight fill — not re-booking (#770)`,
+              { orderId: soldTp, filledSize: cancelResult.filledSize, alreadyBookedSize }
+            );
+          }
+          if (soldTp && !skipImmediateBooking) {
             pendingMergeTpOrders.delete(soldTp);
             completedMergeTpOrders.set(soldTp, snapshotBody(mergeTarget));
             const t = setTimeout(() => { completedMergeTpOrders.delete(soldTp); ttlTimers.delete(t); }, 300000);
@@ -4272,7 +4323,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // immediately instead of hoping a WS event arrives (issue #227
           // follow-up). handleOrderFill's own dedup guard makes this safe even
           // if a WS/poll event for the same fill also arrives independently.
-          if (soldTp) {
+          if (soldTp && !skipImmediateBooking) {
             await handleOrderFill(buildPartialFillData(soldTp, 'sell', {
               status: 'CANCELLED',
               filledSize: cancelResult.filledSize,
@@ -4284,6 +4335,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 { orderId: soldTp, error: err.message }
               );
             });
+          } else if (skipImmediateBooking && mergeTarget.assetQty > 0
+            && (positionState.celestialBodies || []).includes(mergeTarget)) {
+            // The in-flight fill's snapshot handler left the cancel and the
+            // re-place to this continuation (it saw the body still pointing at
+            // soldTp), and no booking will run to re-arm the deducted body.
+            await placeBodyTp(mergeTarget);
           }
           mergeTarget = null;
         } else {
@@ -4483,7 +4540,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const soldRatio = mergeSnapshot.assetQty > 0 ? Math.min(summary.totalSize / mergeSnapshot.assetQty, 1) : 1;
         const proratedCostBasis = roundUSDC(mergeSnapshot.costBasis * soldRatio);
         const pnl = proceeds - proratedCostBasis;
-        const holdbackAsset = roundAsset(mergeSnapshot.assetQty - summary.totalSize);
+        const { holdbackAsset, reservesSoldAsset } = splitTpHoldback(roundAsset(mergeSnapshot.assetQty - summary.totalSize));
 
         // Detect a TRUE partial fill of the snapshot's own TP — NOT "does the
         // live body still hold asset" (a healthy 100%-of-assetOnOrder fill
@@ -4501,9 +4558,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // whether the fill was actually partial, so it is not a usable signal
         // here (unlike the normal path's other callers).
         const onOrder = mergeSnapshot.assetOnOrder || 0;
-        const isPartialSnapshotFill = onOrder > 0
-          ? summary.totalSize < onOrder * 0.99
-          : soldRatio < 0.95;
+        // Same whole-inventory rule as the normal path (issue #770).
+        const isPartialSnapshotFill = !(mergeSnapshot.assetQty > 0 && summary.totalSize >= mergeSnapshot.assetQty)
+          && (onOrder > 0
+            ? summary.totalSize < onOrder * 0.99
+            : soldRatio < 0.95);
 
         // Deduct the sold tranche from the LIVE merged body (issue #201). If a buy
         // folded onto this body in the Race-3 window (between the partial-fill
@@ -4554,7 +4613,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         recordBodyConsumption({
           entries: mergeSnapshot.buyOrders,
           bodyQty: mergeSnapshot.assetQty,
-          qty: snapshotClosed ? Math.max(mergeSnapshot.assetQty, summary.totalSize) : summary.totalSize,
+          // A closing sale consumes exactly the snapshot's own quantity; any
+          // excess came out of reserves (issue #770).
+          qty: snapshotClosed ? mergeSnapshot.assetQty : summary.totalSize,
           closesBody: snapshotClosed,
           sellOrderId: fillData.orderId,
           bodyId: mergeSnapshot.id,
@@ -4583,10 +4644,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // body out entirely. Deducting only the sold qty there left the
           // holdback in the live body as well as in reserves, so it was
           // counted twice and re-listed for sale (issue #718). Only a fold-in
-          // the snapshot's TP never covered stays behind.
-          const removedQty = snapshotClosed
-            ? Math.max(mergeSnapshot.assetQty, summary.totalSize)
-            : summary.totalSize;
+          // the snapshot's TP never covered stays behind. A sale beyond the
+          // snapshot's own quantity drew the excess from reserves
+          // (bodyReservesSoldAsset, issue #770), so it must not ALSO come out
+          // of the fold-in.
+          const removedQty = snapshotClosed ? mergeSnapshot.assetQty : summary.totalSize;
           const removedCost = snapshotClosed ? mergeSnapshot.costBasis : proratedCostBasis;
           const liveConsumedRatio = liveMerged.costBasis > 0
             ? Math.min(removedCost / liveMerged.costBasis, 1)
@@ -4744,6 +4806,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           bodyAvgPrice: mergeSnapshot.avgPrice,
           bodyBtcQty: liveOwnsRemainder ? summary.totalSize : mergeSnapshot.assetQty,
           bodyHoldbackAsset: liveOwnsRemainder ? 0 : holdbackAsset,
+          ...(!liveOwnsRemainder && reservesSoldAsset > 0 && { bodyReservesSoldAsset: reservesSoldAsset }),
           bodyPnl: pnl,
           mergeSnapshot: true,
           ...(liveOwnsRemainder && { partialFill: true }),
@@ -4754,6 +4817,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           price: summary.avgPrice,
           pnl,
           holdbackAsset: liveOwnsRemainder ? 0 : holdbackAsset,
+          ...(!liveOwnsRemainder && reservesSoldAsset > 0 && { reservesSoldAsset }),
           bodyId: mergeSnapshot.id,
           bodyTier: mergeSnapshot.tier,
           mergeSnapshot: true,
@@ -4782,7 +4846,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const soldRatio = body.assetQty > 0 ? Math.min(summary.totalSize / body.assetQty, 1) : 1;
         const proratedCostBasis = roundUSDC(body.costBasis * soldRatio);
         const pnl = proceeds - proratedCostBasis;
-        const holdbackAsset = roundAsset(body.assetQty - summary.totalSize);
+        const { holdbackAsset, reservesSoldAsset } = splitTpHoldback(roundAsset(body.assetQty - summary.totalSize));
 
         // Detect a TRUE partial fill: the TP was placed for body.assetOnOrder
         // but the exchange filled less than that. This is distinct from
@@ -4793,10 +4857,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Fall back to the soldRatio heuristic only when assetOnOrder is
         // missing (legacy bodies / migration) so behavior degrades safely.
         const onOrder = body.assetOnOrder || 0;
-        const isPartial = fillData.isPartialFill ||
+        // A sale that took the body's whole inventory is never a partial, even
+        // when a stale TP's assetOnOrder (sized for a larger, pre-deduction
+        // body) says it filled less than planned: nothing is left to re-list,
+        // and the partial path would drive assetQty negative. Designed
+        // holdback keeps a healthy fill strictly below assetQty (issue #770).
+        const soldWholeBody = body.assetQty > 0 && summary.totalSize >= body.assetQty;
+        const isPartial = !soldWholeBody && (fillData.isPartialFill ||
           (onOrder > 0
             ? summary.totalSize < onOrder * 0.99 // 1% tolerance for rounding/fees
-            : soldRatio < 0.95);
+            : soldRatio < 0.95));
 
         // Update celestial state
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
@@ -4814,7 +4884,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         recordBodyConsumption({
           entries: body.buyOrders,
           bodyQty: body.assetQty,
-          qty: isPartial ? summary.totalSize : Math.max(body.assetQty, summary.totalSize),
+          // A closing sale consumes exactly the body; any excess came out of
+          // reserves (bodyReservesSoldAsset, issue #770).
+          qty: isPartial ? summary.totalSize : body.assetQty,
           closesBody: !isPartial,
           sellOrderId: fillData.orderId,
           bodyId: body.id,
@@ -4879,13 +4951,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
           const remaining = positionState.celestialBodies.length;
-          logger.info(`${tierCfg.emoji} [${exchange}] Body TP filled (${body.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} ${baseCurrency}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed} (${remaining} remaining)`);
+          logger.info(`${tierCfg.emoji} [${exchange}] Body TP filled (${body.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} ${baseCurrency}${reservesSoldAsset > 0 ? ` (sold ${reservesSoldAsset.toFixed(6)} ${baseCurrency} beyond the body — drawn from reserves, #770)` : ''}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed} (${remaining} remaining)`);
 
           tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
             assetAmount: summary.totalSize,
             price: summary.avgPrice,
             pnl,
             holdbackAsset,
+            ...(reservesSoldAsset > 0 && { reservesSoldAsset }),
             bodyId: body.id,
             bodyTier: body.tier,
             bodiesRemaining: remaining,
@@ -4949,6 +5022,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           bodyAvgPrice: body.avgPrice,
           bodyBtcQty: isPartial ? summary.totalSize : body.assetQty,
           bodyHoldbackAsset: isPartial ? 0 : holdbackAsset,
+          ...(!isPartial && reservesSoldAsset > 0 && { bodyReservesSoldAsset: reservesSoldAsset }),
           bodyPnl: pnl,
           ...(isPartial && { partialFill: true }),
         });
@@ -4983,6 +5057,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           buyAvgPrice: roundUSDC(body.avgPrice),
           pnl: roundUSDC(pnl),
           holdbackAsset: isPartial ? 0 : holdbackAsset,
+          ...(!isPartial && reservesSoldAsset > 0 && { reservesSoldAsset }),
           isPartial,
           bodyId: body.id,
           bodyTier: body.tier,

@@ -258,8 +258,8 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
             </div>
             <div>
               <span className="text-gray-400">{baseCurrency} Holdback:</span>
-              <span className="ml-2 text-cyan-400 font-mono" title={`≈${formatCurrency(totalHoldbackValue)}`}>
-                +{formatAsset(totalHoldbackBtc)}
+              <span className={`ml-2 font-mono ${totalHoldbackBtc < 0 ? 'text-amber-400' : 'text-cyan-400'}`} title={`≈${formatCurrency(totalHoldbackValue)}`}>
+                {totalHoldbackBtc < 0 ? '−' : '+'}{formatAsset(Math.abs(totalHoldbackBtc))}
               </span>
             </div>
             <div>
@@ -390,8 +390,11 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                     </td>
                     <td className="px-4 py-3">
                       {fill.holdbackAsset !== null ? (
-                        <span className="text-cyan-400" title={`≈${formatCurrency(fill.holdbackValue)}`}>
-                          +{formatAsset(fill.holdbackAsset)}
+                        <span
+                          className={fill.holdbackAsset < 0 ? 'text-amber-400' : 'text-cyan-400'}
+                          title={fill.holdbackAsset < 0 ? `Sold beyond the body's holdings — drawn from reserves (≈${formatCurrency(fill.holdbackValue)})` : `≈${formatCurrency(fill.holdbackValue)}`}
+                        >
+                          {fill.holdbackAsset < 0 ? '−' : '+'}{formatAsset(Math.abs(fill.holdbackAsset))}
                         </span>
                       ) : (
                         <span className="text-gray-400">—</span>

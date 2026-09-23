@@ -111,4 +111,25 @@ describe('transactionsRegimePnl.computeFillsWithPnL', () => {
     // proceeds (60) - buy cost (50) = 10
     assert.ok(Math.abs(sell.pnl - 10) < 1e-9, `expected linked-buy pnl ~10, got ${sell.pnl}`);
   });
+
+  it('nets a stale-TP reserves drawdown into the holdback, once per order (#770)', async () => {
+    const { computeFillsWithPnL } = await import(modulePath);
+    const row = (extra) => ({
+      orderId: 'tp-over', side: 'sell', bodyId: 'body-1', isBodyOwned: true,
+      size: 0.5, price: 120, quoteAmount: 60, netFee: 0,
+      bodyPnl: 10, bodyHoldbackAsset: 0, bodyReservesSoldAsset: 0.02, ...extra,
+    });
+    const fills = [
+      { orderId: 'tp-ok', side: 'sell', bodyId: 'body-0', isBodyOwned: true, size: 1, price: 120, quoteAmount: 120, netFee: 0, bodyPnl: 5, bodyHoldbackAsset: 0.05, timestamp: 900 },
+      row({ timestamp: 1000 }),
+      row({ timestamp: 1001 }),
+    ];
+    const enriched = computeFillsWithPnL(fills);
+    const total = enriched.reduce((sum, f) => sum + (f.holdbackAsset ?? 0), 0);
+    assert.ok(Math.abs(total - 0.03) < 1e-12, `0.05 booked − 0.02 drawn down, got ${total}`);
+    for (const f of enriched.filter(x => x.orderId === 'tp-over')) {
+      assert.ok(Math.abs(f.holdbackAsset - (-0.01)) < 1e-12, `each partial shows its share of the drawdown, got ${f.holdbackAsset}`);
+    }
+  });
 });
+

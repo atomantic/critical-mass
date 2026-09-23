@@ -63,7 +63,7 @@ const STATE_PATH = path.join(fundDir, 'regime-state.json');
 
 // Annotations that live only on a pseudo row and must survive its removal.
 const ANNOTATION_KEYS = [
-  'bodyPnl', 'bodyHoldbackAsset', 'bodyCostBasis', 'bodyAvgPrice', 'bodyBtcQty',
+  'bodyPnl', 'bodyHoldbackAsset', 'bodyReservesSoldAsset', 'bodyCostBasis', 'bodyAvgPrice', 'bodyBtcQty',
   'bodyTier', 'bodyId', 'satellitePnl', 'satelliteHoldbackAsset', 'satelliteCostBasis',
   'satelliteAvgPrice', 'satelliteBtcQty', 'isBodyOwned', 'isSatellite', 'sellOrderId',
   'consumedCostFraction', 'consumedBy',
@@ -291,8 +291,13 @@ async function main() {
 
   const beforePnl = sumOncePerOrder(ledger, 'bodyPnl');
   const afterPnl = sumOncePerOrder(repaired, 'bodyPnl');
-  const beforeHold = sumOncePerOrder(ledger, 'bodyHoldbackAsset');
-  const afterHold = sumOncePerOrder(repaired, 'bodyHoldbackAsset');
+  // Net reserves: booked holdback minus reserves a stale TP sold beyond its
+  // body (#770), the same net realizedAssetPnL uses.
+  const netReserves = (rows) => ({
+    total: sumOncePerOrder(rows, 'bodyHoldbackAsset').total - sumOncePerOrder(rows, 'bodyReservesSoldAsset').total,
+  });
+  const beforeHold = netReserves(ledger);
+  const afterHold = netReserves(repaired);
 
   const recoveredBuys = recovered.filter(f => f.side === 'buy');
   const recoveredSells = recovered.filter(f => f.side === 'sell');

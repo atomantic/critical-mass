@@ -575,6 +575,29 @@ describe('#744 merge-snapshot stale-TP cancel books an execution during the canc
     const staleSell = readSellRow('tp-new-1', pair);
     assert.ok(staleSell && Number.isFinite(staleSell.bodyPnl), 'the sale was booked');
     assert.equal(staleSell.partialFill, undefined, 'booked as the body-closing sale, not a partial');
+
+    // Issue #770 decision: the 0.001 sold beyond the body came out of the
+    // account's zero-cost reserves. Its proceeds are already in bodyPnl (the
+    // whole remaining body cost is charged, nothing more), so reserves must
+    // shrink by 0.001 or it counts twice (as USD and as reserves still held).
+    // It is booked as an explicit reserves drawdown, not a negative holdback:
+    // the pairing clamps negative holdback annotations to 0 (which silently
+    // double-counted it) and the startup repair re-pairs sells carrying one.
+    assert.equal(staleSell.bodyHoldbackAsset, 0, 'no reserves booked by a sale that exceeded its body');
+    assert.ok(Math.abs(staleSell.bodyReservesSoldAsset - 0.001) < 1e-12, `reserves drawn down by the oversold 0.001, got ${staleSell.bodyReservesSoldAsset}`);
+    // proceeds (0.019 × 50500 − 0.02 fee) − the 0.018 body's whole remaining cost (1000.05 − 100).
+    assert.ok(Math.abs(staleSell.bodyPnl - (959.48 - 900.05)) < 1e-6, `bodyPnl charges only the body's cost, got ${staleSell.bodyPnl}`);
+    const closed = JSON.parse(fs.readFileSync(path.join(isolatedData.fundDir('coinbase', pair), 'closed-trades.json'), 'utf8'))
+      .find(t => t.sellOrderId === 'tp-new-1');
+    assert.equal(closed?.holdbackAsset, 0, 'the closed-trade record shows no negative holdback');
+    assert.ok(Math.abs(closed?.reservesSoldAsset - 0.001) < 1e-12, `the closed-trade record carries the drawdown, got ${closed?.reservesSoldAsset}`);
+    const derived = eng.getFillLedger().getDerivedRealizedPnL();
+    assert.ok(Math.abs(derived.realizedAssetPnL - (-0.001)) < 1e-12, `realizedAssetPnL nets the reserves sold, got ${derived.realizedAssetPnL}`);
+    // Position-coverage identity: every buy is consumed, and the ledger is
+    // 0.001 short (0.02 bought, 0.021 sold) — exactly the reserves drawn down.
+    assert.ok(Math.abs(derived.heldOpenAssetQty) < 1e-12, `nothing left held open, got ${derived.heldOpenAssetQty}`);
+    assert.ok(Math.abs(derived.ledgerNetAsset - (derived.heldOpenAssetQty + derived.realizedAssetPnL)) < 1e-12,
+      `ledgerNetAsset ${derived.ledgerNetAsset} == held ${derived.heldOpenAssetQty} + reserves ${derived.realizedAssetPnL}`);
   });
 
   for (const { label, sold, status, firstCancel, secondCancel, expectedTotal } of [
@@ -755,5 +778,215 @@ describe('#744 stale pendingTpCancelExecution marker', () => {
     assert.equal(isFullTpExecution({ assetOnOrder: 0, assetQty: 0.01 }, 0.009), false);
     assert.equal(isFullTpExecution(undefined, 1), false);
     assert.equal(isFullTpExecution({ assetOnOrder: 0.005 }, 0), false);
+  });
+});
+
+describe('#770 buy-merge #227 cancel-with-execution after an in-flight snapshot fill', () => {
+  // The buy-merge snapshots tp-old and cancels it. While that cancel is in
+  // flight, tp-old's own fill is delivered and handled by the merge-snapshot
+  // branch (it consumes the pending snapshot and deducts the tranche). The
+  // cancel then returns cancelled_with_execution for that SAME cumulative
+  // size, and the #227 branch books it immediately. The two deliveries only
+  // share a dedup key when both are partial events of the same size.
+  for (const { label, event } of [
+    { label: 'terminal CANCELLED event', event: { status: 'CANCELLED' } },
+    { label: 'partial event of the same size', event: { status: 'OPEN', isPartialFill: true } },
+  ]) it(`books the sale once (${label})`, async () => {
+    const pair = `__test770race_${event.status}__`;
+    const sold = 0.002;
+    const execution = { status: 'CANCELLED', filledSize: sold, filledValue: sold * 50500, averageFilledPrice: 50500, totalFees: 0.01 };
+    let cancelCalls = 0;
+    let eng;
+    let placed;
+    ({ eng, placed } = makeEngine({
+      pair,
+      cancelResult: null,
+      adapter: {
+        getOrder: async (orderId) => (orderId === 'tp-old' && cancelCalls === 0 ? { status: 'OPEN', filledSize: 0 } : execution),
+        getOrderFills: async (orderId) => (orderId === 'buy-new' ? buyFill(orderId) : sellFill(orderId, String(sold))),
+      },
+      executor: {
+        cancelBodyTpOrder: async () => {
+          cancelCalls += 1;
+          if (cancelCalls === 1) {
+            await eng._test.handleOrderFill({ orderId: 'tp-old', side: 'sell', ...execution, ...event });
+            return { cancelled: true, filled: false, filledSize: sold, filledValue: sold * 50500, averageFilledPrice: 50500, totalFees: 0.01 };
+          }
+          return { cancelled: true, filled: false, filledSize: 0 };
+        },
+        getPendingCounts: () => ({ total: 1_000_000 }),
+      },
+    }));
+    seedBuy(eng);
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+
+    const bodies = eng._getPositionState().celestialBodies;
+    const b1 = bodies.find(b => b.id === 'b1');
+    assert.ok(b1, 'a partial sale keeps the seed body');
+    assert.ok(Math.abs(b1.assetQty - 0.008) < 1e-9, `the ${sold} sale is deducted once, got ${b1.assetQty}`);
+    assert.ok(Math.abs(b1.costBasis - 400) < 1e-6, `prorated cost deducted once, got ${b1.costBasis}`);
+    const total = bodies.reduce((sum, b) => sum + b.assetQty, 0);
+    assert.ok(Math.abs(total - 0.018) < 1e-9, `seed remainder + the buy's own body, got ${total}`);
+    const ledger = JSON.parse(fs.readFileSync(path.join(isolatedData.fundDir('coinbase', pair), 'fill-ledger.json'), 'utf8'));
+    const sells = ledger.filter(f => f.orderId === 'tp-old');
+    assert.equal(sells.length, 1, 'one sell row for tp-old');
+    // bodyPnl = proceeds (101 − 0.02 ledger fee) − prorated cost (500 × 0.2 = 100).
+    assert.ok(Math.abs(sells[0].bodyPnl - 0.98) < 1e-6, `bodyPnl reflects one booking, got ${sells[0].bodyPnl}`);
+    assert.equal(cancelCalls, 1, 'only the buy-merge cancel ran');
+    assert.ok(b1.tpOrderId && b1.tpOrderId !== 'tp-old', `the deducted seed body is re-armed, got ${b1.tpOrderId}`);
+    for (const b of bodies) assert.ok(b.tpOrderId, `every body has a live TP, ${b.id} has none`);
+    assert.equal(placed.length, bodies.length, 'one TP per body, no orphan');
+    assert.ok(placed.find(([size]) => size <= 0.008 + 1e-12), 'the seed body TP never lists more than it holds');
+  });
+
+  it('still books execution beyond what the in-flight fill booked', async () => {
+    // The in-flight event saw 0.002; another 0.001 traded before the cancel
+    // landed, so the cancel reports 0.003 cumulative. Only the 0.001 is new.
+    const pair = '__test770delta__';
+    const first = { status: 'CANCELLED', filledSize: 0.002, filledValue: 101, averageFilledPrice: 50500 };
+    const t2 = { ...sellFill('tp-old', '0.001')[0], tradeId: 'tp-old-t2' };
+    let cancelCalls = 0;
+    let eng;
+    let placed;
+    ({ eng, placed } = makeEngine({
+      pair,
+      cancelResult: null,
+      adapter: {
+        getOrder: async (orderId) => (orderId === 'tp-old' && cancelCalls === 0
+          ? { status: 'OPEN', filledSize: 0 }
+          : { status: 'CANCELLED', filledSize: 0.003, filledValue: 151.5, averageFilledPrice: 50500 }),
+        getOrderFills: async (orderId) => {
+          if (orderId === 'buy-new') return buyFill(orderId);
+          return cancelCalls === 1 && !eng._test.getMergeTpSnapshots().pending.has('tp-old')
+            ? [...sellFill(orderId, '0.002'), t2]
+            : sellFill(orderId, '0.002');
+        },
+      },
+      executor: {
+        cancelBodyTpOrder: async () => {
+          cancelCalls += 1;
+          if (cancelCalls === 1) {
+            await eng._test.handleOrderFill({ orderId: 'tp-old', side: 'sell', ...first });
+            return { cancelled: true, filled: false, filledSize: 0.003, filledValue: 151.5, averageFilledPrice: 50500, totalFees: 0.03 };
+          }
+          return { cancelled: true, filled: false, filledSize: 0 };
+        },
+        getPendingCounts: () => ({ total: 1_000_000 }),
+      },
+    }));
+    seedBuy(eng);
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+
+    const bodies = eng._getPositionState().celestialBodies;
+    const b1 = bodies.find(b => b.id === 'b1');
+    assert.ok(b1, 'a partial sale keeps the seed body');
+    assert.ok(Math.abs(b1.assetQty - 0.007) < 1e-9, `both tranches deducted exactly once, got ${b1.assetQty}`);
+    const ledger = JSON.parse(fs.readFileSync(path.join(isolatedData.fundDir('coinbase', pair), 'fill-ledger.json'), 'utf8'));
+    assert.equal(ledger.filter(f => f.orderId === 'tp-old').length, 2, 'both trades reached the ledger once');
+    assert.ok(b1.tpOrderId && b1.tpOrderId !== 'tp-old', 'the seed body is re-armed');
+    assert.ok(placed.every(([size]) => size > 0), 'no empty TP placed');
+  });
+
+  it('does not treat a consumed snapshot as booked when the in-flight handler never annotated the sale', async () => {
+    // The in-flight handler consumed the snapshot but (simulated) threw before
+    // its bodyPnl annotation, so nothing was booked: the #227 booking must run.
+    const pair = '__test770unbooked__';
+    const sold = 0.002;
+    const execution = { status: 'CANCELLED', filledSize: sold, filledValue: sold * 50500, averageFilledPrice: 50500, totalFees: 0.01 };
+    let cancelCalls = 0;
+    let eng;
+    ({ eng } = makeEngine({
+      pair,
+      cancelResult: null,
+      adapter: {
+        getOrder: async (orderId) => (orderId === 'tp-old' && cancelCalls === 0 ? { status: 'OPEN', filledSize: 0 } : execution),
+        getOrderFills: async (orderId) => (orderId === 'buy-new' ? buyFill(orderId) : sellFill(orderId, String(sold))),
+      },
+      executor: {
+        cancelBodyTpOrder: async () => {
+          cancelCalls += 1;
+          if (cancelCalls === 1) {
+            await eng._test.handleOrderFill({ orderId: 'tp-old', side: 'sell', ...execution });
+            for (const f of eng.getFillLedger().getFillsForOrder('tp-old')) delete f.bodyPnl;
+            return { cancelled: true, filled: false, filledSize: sold, filledValue: sold * 50500, averageFilledPrice: 50500, totalFees: 0.01 };
+          }
+          return { cancelled: true, filled: false, filledSize: 0 };
+        },
+        getPendingCounts: () => ({ total: 1_000_000 }),
+      },
+    }));
+    seedBuy(eng);
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+
+    const rows = eng.getFillLedger().getFillsForOrder('tp-old');
+    assert.ok(rows.length > 0 && rows.every(f => Number.isFinite(f.bodyPnl)), 'the #227 booking ran and annotated the sale');
+  });
+});
+
+describe('#770 a stale TP that sells the whole body is never booked as a partial', () => {
+  it('closes the body and books the excess as reserves sold when the sale is below the stale order size', async () => {
+    // assetOnOrder (0.02) is stale — larger than the 0.01 body. The TP sold
+    // 0.012: under 99% of its order, but more than the body holds.
+    const pair = '__test770partialover__';
+    const execution = { cancelled: true, filled: false, filledSize: 0.012, filledValue: 606, averageFilledPrice: 50500, totalFees: 0.02 };
+    const { eng, placed } = makeEngine({
+      pair,
+      cancelResult: execution,
+      adapter: {
+        getOrder: async () => ({ status: 'CANCELLED', filledSize: 0.012, filledValue: 606, averageFilledPrice: 50500, totalFees: 0.02 }),
+        getOrderFills: async (orderId) => sellFill(orderId, '0.012'),
+      },
+    });
+    eng._getPositionState().celestialBodies[0].assetOnOrder = 0.02;
+    seedBuy(eng);
+
+    await eng.setBodyTpPercent('b1', 2);
+
+    const bodies = eng._getPositionState().celestialBodies;
+    assert.equal(bodies.find(b => b.id === 'b1'), undefined, 'the body is closed, not left with a negative quantity');
+    assert.equal(placed.length, 0, 'nothing is re-listed');
+    const row = readSellRow('tp-old', pair);
+    assert.equal(row.partialFill, undefined, 'booked as the body-closing sale');
+    assert.equal(row.bodyHoldbackAsset, 0);
+    assert.ok(Math.abs(row.bodyReservesSoldAsset - 0.002) < 1e-12, `0.002 drawn from reserves, got ${row.bodyReservesSoldAsset}`);
+  });
+
+  it('a late snapshot sale beyond the snapshot draws only on reserves, leaving the fold-in intact', async () => {
+    // A clean merge folds buy-new (0.01) onto b1 and leaves tp-old's snapshot
+    // (b1 at 0.01). tp-old then turns out to have sold 0.012: the snapshot
+    // closes, the extra 0.002 came from reserves, and the fold-in keeps 0.01.
+    const pair = '__test770snapfold__';
+    let cancelCalls = 0;
+    const { eng } = makeEngine({
+      pair,
+      cancelResult: null,
+      adapter: {
+        getOrder: async (orderId) => (orderId === 'tp-old' && cancelCalls === 0
+          ? { status: 'OPEN', filledSize: 0 }
+          : { status: 'CANCELLED', filledSize: 0.012, filledValue: 606, averageFilledPrice: 50500, totalFees: 0.02 }),
+        getOrderFills: async (orderId) => (orderId === 'buy-new' ? buyFill(orderId) : sellFill(orderId, '0.012')),
+      },
+      executor: {
+        cancelBodyTpOrder: async () => { cancelCalls += 1; return { cancelled: true, filled: false, filledSize: 0 }; },
+        getPendingCounts: () => ({ total: 1_000_000 }),
+      },
+    });
+    seedBuy(eng);
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+    assert.ok(eng._test.getMergeTpSnapshots().completed.has('tp-old'));
+
+    await eng._test.handleOrderFill({ orderId: 'tp-old', side: 'sell', status: 'CANCELLED', filledSize: 0.012, filledValue: 606, averageFilledPrice: 50500 });
+
+    const b1 = eng._getPositionState().celestialBodies.find(b => b.id === 'b1');
+    assert.ok(b1, 'the fold-in keeps the live body');
+    assert.ok(Math.abs(b1.assetQty - 0.01) < 1e-9, `only the snapshot's 0.01 leaves the body, got ${b1.assetQty}`);
+    const row = readSellRow('tp-old', pair);
+    assert.ok(Math.abs(row.bodyReservesSoldAsset - 0.002) < 1e-12, `0.002 drawn from reserves, got ${row.bodyReservesSoldAsset}`);
+    const derived = eng.getFillLedger().getDerivedRealizedPnL();
+    assert.ok(Math.abs(derived.ledgerNetAsset - (derived.heldOpenAssetQty + derived.realizedAssetPnL)) < 1e-12,
+      `ledgerNetAsset ${derived.ledgerNetAsset} == held ${derived.heldOpenAssetQty} + reserves ${derived.realizedAssetPnL}`);
   });
 });

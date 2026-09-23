@@ -49,6 +49,7 @@ const applySellAnnotations = (target, fill) => {
     ['costBasis', numericAnnotation(fill, 'bodyCostBasis', 'satelliteCostBasis')],
     ['avgPrice', numericAnnotation(fill, 'bodyAvgPrice', 'satelliteAvgPrice')],
     ['holdback', numericAnnotation(fill, 'bodyHoldbackAsset', 'satelliteHoldbackAsset')],
+    ['reservesSold', numericAnnotation(fill, 'bodyReservesSoldAsset', 'satelliteReservesSoldAsset')],
   ];
   for (const [key, value] of annotations) {
     if (target[key] == null && value != null) target[key] = value;
@@ -87,6 +88,7 @@ const addSell = (fill) => {
     costBasis: null,
     avgPrice: null,
     holdback: null,
+    reservesSold: null,
   };
   sell.qty += Number(fill.size) || 0;
   sell.proceeds += proceeds;
@@ -170,6 +172,7 @@ for (const [sellOrderId, sell] of sellOrders) {
     buyAvgPrice,
     pnl,
     holdbackAsset: sell.holdback != null ? round8(sell.holdback) : 0,
+    ...(sell.reservesSold > 0 ? { reservesSoldAsset: round8(sell.reservesSold) } : {}),
     isPartial: sell.isPartial,
     bodyId: sell.bodyId,
     bodyTier: sell.tier,

@@ -45,7 +45,8 @@ const dedupKeyFor = (trade) =>
  * @property {number} costBasis
  * @property {number} buyAvgPrice
  * @property {number} pnl
- * @property {number} holdbackAsset
+ * @property {number} holdbackAsset - reserves booked (≥ 0)
+ * @property {number} [reservesSoldAsset] - reserves a stale TP sold beyond its body (#770)
  * @property {boolean} isPartial
  * @property {string|null} bodyId
  * @property {string|null} bodyTier
@@ -123,7 +124,9 @@ const createClosedTrades = (exchange, pair) => {
 
   const getAll = () => [...trades].sort((a, b) => a.timestamp - b.timestamp);
   const getTotalPnL = () => roundUSDC(trades.reduce((s, t) => s + (t.pnl || 0), 0));
-  const getTotalHoldback = () => roundAsset(trades.reduce((s, t) => s + (t.holdbackAsset || 0), 0));
+  // Net of reserves a stale TP sold beyond its body (#770): that asset left
+  // the reserves, and its proceeds are already in the trade's pnl.
+  const getTotalHoldback = () => roundAsset(trades.reduce((s, t) => s + (t.holdbackAsset || 0) - (t.reservesSoldAsset || 0), 0));
   const getCount = () => trades.length;
   const getByCycleId = (cycleId) => trades.filter(t => t.cycleId === cycleId);
 

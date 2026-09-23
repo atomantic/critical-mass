@@ -75,3 +75,18 @@ test('a consumedBy record limits the linked share, so an open remainder is not b
   assert.equal(p.sells.get('tp-partial')?.holdback, 0);
   assert.equal(p.sells.get('tp-partial')?.pnl, 10);
 });
+
+test('a reserves drawdown is subtracted from realizedAssetPnL once per order (#770)', () => {
+  // A stale TP sold 0.1 more than its body held: no reserves booked, 0.1 of
+  // existing reserves sold — its proceeds are already in bodyPnl.
+  const p = pairCycleFills([
+    sell('earlier', { bodyPnl: 1, bodyHoldbackAsset: 0.3 }),
+    sell('s', { bodyPnl: 3, bodyHoldbackAsset: 0, bodyReservesSoldAsset: 0.1 }),
+    sell('s', { bodyPnl: 3, bodyHoldbackAsset: 0, bodyReservesSoldAsset: 0.1 }),
+  ]);
+  assert.equal(p.sells.get('s')?.holdback, 0);
+  assert.equal(p.sells.get('s')?.reservesSold, 0.1);
+  assert.equal(p.sells.get('earlier')?.reservesSold, 0);
+  assert.equal(p.realizedPnL, 4);
+  assert.ok(Math.abs(p.realizedAssetPnL - 0.2) < 1e-12, `0.3 booked − 0.1 sold, got ${p.realizedAssetPnL}`);
+});

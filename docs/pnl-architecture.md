@@ -40,11 +40,28 @@ The "partial fill" case worth defending against is
 `summary.totalSize < body.assetOnOrder` (TP placed for X, exchange filled <X
 before something interrupted) — distinct from designed holdback.
 
+### Reserves sold by an oversized stale TP (issue #770)
+
+A stale TP sized for a larger, pre-deduction body (the #744 merge-snapshot
+race) can sell MORE than the body still holds, so
+`body.assetQty − summary.totalSize < 0`. The extra asset came out of the
+zero-cost reserves. `bodyPnl` already charges the body's whole remaining cost
+against the full proceeds, so those proceeds are realized USD at zero cost,
+and reserves must shrink by the same quantity or the asset is counted twice.
+
+The engine records this as `bodyHoldbackAsset: 0` plus a separate,
+non-negative `bodyReservesSoldAsset` (and `reservesSoldAsset` on the
+closed-trade record), never as a negative holdback: the pairing clamps
+negative holdback annotations to 0 (legacy corrupt rows), and the startup
+annotation repair re-pairs any sell carrying one. The position-coverage
+identity `ledgerNetAsset == heldOpenAssetQty + realizedAssetPnL` holds only
+with the drawdown subtracted.
+
 ## Single source of truth
 
 ```
 position.realizedPnL       ← Σ per-sell bodyPnl across the fill ledger
-position.realizedAssetPnL  ← Σ per-sell bodyHoldbackAsset
+position.realizedAssetPnL  ← Σ per-sell bodyHoldbackAsset − Σ bodyReservesSoldAsset
 position.heldAssetCostBasis ← per buy order: cost × (size − Σ consumedBy) / size
                               when sells recorded consumption against it;
                               otherwise (legacy) its cost when sellOrderId is
@@ -273,7 +290,7 @@ When reviewing changes that touch P&L code, verify:
    No other source. No `closedCount > 0` branching back to it.
 2. **`position.realizedAssetPnL` has no `+=` mutations.** It's a derived
    value, reset every refresh.
-3. **bodyPnl/bodyHoldbackAsset are read ONCE per orderId**, not summed across
+3. **bodyPnl/bodyHoldbackAsset/bodyReservesSoldAsset are read ONCE per orderId**, not summed across
    partial-fill rows of the same order. Summing multiplies the value by N.
 4. **Exchange balance is never used to compute bot metrics.** Only for
    reality-check logging or by rectification scripts.

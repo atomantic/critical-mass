@@ -60,7 +60,7 @@ export function deriveRegimeFillGroups(filteredFills) {
     const buys = linkedBuys.length > 0
       ? linkedBuys
       : (order.bodyId ? buysByBodyId.get(order.bodyId) || [] : [])
-    const sell = { ...order, pnl: priced?.pnl ?? null, holdback: priced?.holdback ?? 0 }
+    const sell = { ...order, pnl: priced?.pnl ?? null, holdback: priced?.holdback ?? 0, reservesSold: priced?.reservesSold ?? 0 }
     sellGroups.push({ sell, buys, key: `fill-${order.orderId}` })
   })
   sellGroups.reverse()
@@ -84,8 +84,9 @@ export function summarizeRegimeFillGroups(sellGroups) {
     entry.sells.push(group)
     entry.totalSize += group.sell.size || 0
     entry.totalPnl += group.sell.pnl || 0
-    // Sum live per-sell realized holdback.
-    entry.totalHoldback += group.sell.holdback || 0
+    // Sum live per-sell realized holdback, net of reserves a stale TP sold
+    // beyond its body (#770) — the same net the server's realizedAssetPnL uses.
+    entry.totalHoldback += (group.sell.holdback || 0) - (group.sell.reservesSold || 0)
     entry.buyCount += group.buys.length
     const sellTs = group.sell.timestamp || group.sell.filledAt || 0
     if (sellTs > 0) { entry.minTs = Math.min(entry.minTs, sellTs); entry.maxTs = Math.max(entry.maxTs, sellTs) }

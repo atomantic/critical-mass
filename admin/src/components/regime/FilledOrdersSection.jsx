@@ -186,6 +186,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                     }`}>
                       {sellPnl !== null ? `${sellPnl >= 0 ? '+' : ''}${formatCurrency(sellPnl)}` : '—'}
                       {sellHoldback > 0 && <span className="ml-1 text-cyan-400" title={`Holdback ${asset}`}>+{sellHoldback.toFixed(8)}</span>}
+                      {!isDryRun && sell.reservesSold > 0 && <span className="ml-1 text-amber-400" title={`Sold beyond the body's holdings — drawn from ${asset} reserves`}>−{sell.reservesSold.toFixed(8)}</span>}
                     </td>
                     <td className="text-right py-1.5 font-mono text-gray-400 text-xs">
                       {formatTimestamp(sellTime)}
@@ -287,7 +288,10 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                 {cycleGroups.length > 0 && (() => {
                   const reservesUsd = (totalHoldback || 0) * (market.lastPrice || 0)
                   const grandTotal = totalPnl + reservesUsd
-                  const showReserves = totalHoldback > 0
+                  // Signed: a stale-TP oversell can draw reserves below zero
+                  // net (#770), and the grand total must include it either way.
+                  const showReserves = totalHoldback !== 0
+                  const reservesClass = totalHoldback < 0 ? 'text-amber-400' : 'text-cyan-400'
                   return (
                     <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded text-xs">
                       <span className="text-gray-400">{sellGroups.length} sells across {cycleGroups.length} {cycleGroups.length === 1 ? 'cycle' : 'cycles'}</span>
@@ -297,10 +301,10 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                         </span>
                         {showReserves && (
                           <>
-                            <span className="ml-1 text-cyan-400">+{totalHoldback.toFixed(8)} {asset}</span>
-                            {reservesUsd > 0 && (
+                            <span className={`ml-1 ${reservesClass}`}>{totalHoldback < 0 ? '−' : '+'}{Math.abs(totalHoldback).toFixed(8)} {asset}</span>
+                            {reservesUsd !== 0 && (
                               <>
-                                <span className="ml-1 text-cyan-400/70">({formatCurrency(reservesUsd)})</span>
+                                <span className={`ml-1 ${totalHoldback < 0 ? 'text-amber-400/70' : 'text-cyan-400/70'}`}>({formatCurrency(reservesUsd)})</span>
                                 <span className={`ml-2 font-bold ${grandTotal >= 0 ? 'text-green-300' : 'text-red-300'}`}>
                                   = {grandTotal >= 0 ? '+' : ''}{formatCurrency(grandTotal)}
                                 </span>
@@ -422,7 +426,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                         </div>
                         <span className={`font-mono text-xs ${cycle.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}${formatCurrency(cycle.totalPnl)}` : '—'}
-                          {cycle.totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{cycle.totalHoldback.toFixed(8)}</span>}
+                          {cycle.totalHoldback !== 0 && <span className={`ml-1 ${cycle.totalHoldback < 0 ? 'text-amber-400' : 'text-cyan-400'}`}>{cycle.totalHoldback < 0 ? '−' : '+'}{Math.abs(cycle.totalHoldback).toFixed(8)}</span>}
                         </span>
                       </div>
                       {isCycleExpanded && (
@@ -442,7 +446,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                                   <td className="text-right py-1.5 pr-2"></td>
                                   <td className={`text-right py-1.5 pr-2 font-mono text-xs ${cycle.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                                     {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}${formatCurrency(cycle.totalPnl)}` : '—'}
-                                    {cycle.totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{cycle.totalHoldback.toFixed(8)}</span>}
+                                    {cycle.totalHoldback !== 0 && <span className={`ml-1 ${cycle.totalHoldback < 0 ? 'text-amber-400' : 'text-cyan-400'}`}>{cycle.totalHoldback < 0 ? '−' : '+'}{Math.abs(cycle.totalHoldback).toFixed(8)}</span>}
                                   </td>
                                   <td className="text-right py-1.5"></td>
                                 </tr>
