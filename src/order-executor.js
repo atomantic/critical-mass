@@ -653,7 +653,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @param {Object} status Adapter getOrder result
    * @param {string} context Log prefix label ('Stale check', 'Refresh', 'Fill check')
    */
-  const handleCancelledOrder = (orderId, order, status, context) => {
+  const handleCancelledOrder = async (orderId, order, status, context) => {
     const trackedPartial = partialFillTracker.get(orderId) || 0;
     const filledSize = status.filledSize || trackedPartial;
     logger.info(`⏰ [${exchange}] ${context} found cancelled ${order.type} order ${orderId}${filledSize > 0 ? ` (with ${filledSize} partial fill)` : ''}`, {
@@ -665,7 +665,17 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     });
     if (filledSize > 0 && callbacks.onFillDetected) {
       markSettled(orderId);
-      callbacks.onFillDetected(orderId, { ...status, filledSize, placedAt: order.placedAt, isPartialFill: true });
+      // Await the fill callback (async in live mode) before returning. Most
+      // callers fire-and-forget this (they have no synchronous continuation
+      // that depends on ledger state), but cancelAllLadderOrders is awaited
+      // directly by resetCycle/rebuildLadder/cancelLadder, which immediately
+      // reset cycle state and call fillLedger.startNewCycle() afterward — if
+      // the fill's ledger ingestion (which stamps the CURRENT cycleId at
+      // ingest time) hasn't completed yet, it would be silently attributed to
+      // the new cycle instead of the one it actually belongs to (issue #674
+      // review finding). Making this awaitable, while every existing
+      // fire-and-forget caller keeps working unchanged, closes that race.
+      await callbacks.onFillDetected(orderId, { ...status, filledSize, placedAt: order.placedAt, isPartialFill: true });
     }
     pendingOrders.delete(orderId);
     partialFillTracker.delete(orderId);
@@ -1664,7 +1674,14 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       const result = await safeCancelOrder(orderId).catch(() => ({ cancelled: false, filled: false }));
       if (result.cancelled) {
         if (result.filledSize > 0) {
-          handleCancelledOrder(orderId, order, {
+          // Await the booking. resetCycle/rebuildLadder/cancelLadder all
+          // await this whole function then immediately reset cycle state and
+          // call fillLedger.startNewCycle() — an un-awaited fire-and-forget
+          // here could let that cycle turnover race the fill's ledger
+          // ingestion (which stamps the CURRENT cycleId), silently
+          // attributing this buy to the new cycle instead of the one it
+          // actually belongs to (issue #674 review finding).
+          await handleCancelledOrder(orderId, order, {
             status: 'CANCELLED',
             side: 'buy',
             filledSize: result.filledSize,
