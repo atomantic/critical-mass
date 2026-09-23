@@ -14,7 +14,8 @@ const EMPTY = []
  * shared/cycle-pairing.mjs via deriveRegimeFillGroups; dry-run:
  * deriveDryRunFillGroups). Parent passes only fetched data.
  */
-function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled = EMPTY, pendingOrdersList, market, asset }) {
+function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledProp, pendingOrdersList, market, asset }) {
+  const dryRunFilled = dryRunFilledProp || EMPTY
   const [showAllCycles, setShowAllCycles] = useState(true)
   const [expandedFills, setExpandedFills] = useState(new Set())
   const [expandedCycles, setExpandedCycles] = useState(new Set())

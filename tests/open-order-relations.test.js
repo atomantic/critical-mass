@@ -149,3 +149,11 @@ test('deriveOpenOrderRows: open orders only, estimates + relations + age, sorted
   assert.equal(rows[1].estPnl, null);
   assert.deepEqual(pending, original);
 });
+
+test('missing fill snapshots (null/undefined) yield empty relations instead of throwing', async () => {
+  const { buildOpenOrderRelationIndex, relatedBuysForOrder } = await load();
+  for (const opts of [{ fills: null }, {}, { isDryRun: true, dryRunFilled: null }, { isDryRun: true }]) {
+    const index = buildOpenOrderRelationIndex(opts);
+    assert.deepEqual(relatedBuysForOrder(tp('tp-1'), { bodyLookup: new Map(), index }), []);
+  }
+});

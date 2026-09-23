@@ -90,17 +90,18 @@ const dryRunBuyRow = (o) => ({
  * @param {boolean} [opts.isDryRun]
  * @returns {{ isDryRun: boolean, buysBySellOrderId: Map<string, object[]>, fallbackBuys: object[] }}
  */
-export function buildOpenOrderRelationIndex({ fills = [], dryRunFilled = [], isDryRun = false } = {}) {
+export function buildOpenOrderRelationIndex({ fills, dryRunFilled, isDryRun = false } = {}) {
   if (isDryRun) {
     // The simulator stamps no sellOrderId, so only the chronological fallback applies.
     return {
       isDryRun: true,
       buysBySellOrderId: new Map(),
-      fallbackBuys: deriveDryRunFillGroups(dryRunFilled).pendingBuys.map(dryRunBuyRow),
+      fallbackBuys: deriveDryRunFillGroups(dryRunFilled || []).pendingBuys.map(dryRunBuyRow),
     }
   }
 
-  const buyFills = fills.filter(f => f.side === 'buy')
+  const ledger = fills || []
+  const buyFills = ledger.filter(f => f.side === 'buy')
   const rows = aggregateBuyRows(buyFills)
   const buysBySellOrderId = new Map()
   for (const buy of pairCycleFills(buyFills).buys.values()) {
@@ -110,7 +111,7 @@ export function buildOpenOrderRelationIndex({ fills = [], dryRunFilled = [], isD
     if (!buysBySellOrderId.has(buy.sellOrderId)) buysBySellOrderId.set(buy.sellOrderId, [])
     buysBySellOrderId.get(buy.sellOrderId).push(row)
   }
-  return { isDryRun: false, buysBySellOrderId, fallbackBuys: unconsumedCoreBuys(fills) }
+  return { isDryRun: false, buysBySellOrderId, fallbackBuys: unconsumedCoreBuys(ledger) }
 }
 
 /**

@@ -141,8 +141,8 @@ function summarizeDryRunSellGroups(sellGroups) {
 // simulator already priced every sell (pnl / holdbackAsset), so this only
 // groups rows. `pendingBuys` are the buys no core sell has consumed yet — the
 // buys an open core TP is resting against. Input is never mutated.
-export function deriveDryRunFillGroups(filledOrders = []) {
-  const sorted = [...filledOrders].sort((a, b) => dryRunTime(a) - dryRunTime(b))
+export function deriveDryRunFillGroups(filledOrders) {
+  const sorted = [...(filledOrders || [])].sort((a, b) => dryRunTime(a) - dryRunTime(b))
   const sellGroups = []
   let pendingBuys = []
   sorted.forEach(order => {
