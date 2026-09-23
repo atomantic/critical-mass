@@ -167,6 +167,19 @@ const previewConversion = (exchange, pair) => {
  * inferred from load()'s own heuristic (no persisted position.activeCycleId
  * to trust outright) could be exactly such an already-closed trade, from
  * THIS import or an earlier one.
+ *
+ * Known limitation, deliberately accepted: like computeRealizedFromCyclePairs
+ * itself (see its "sellOrderId is stamped at TP placement... a stamp alone
+ * doesn't mean the buy closed" note), presence of ANY sell fill for a buy's
+ * sellOrderId counts it as paired — a buy whose TP is still genuinely
+ * mid-fill (not a designed holdback, just not fully executed yet) can read
+ * as "closed" here too. Distinguishing that case would require live
+ * exchange order state this offline import has no access to; the fallback
+ * this guards is already narrow (only reached with no persisted
+ * position.activeCycleId at all — effectively pre-#675 state files), and
+ * misjudging it costs a cycle-grouping nicety, not P&L correctness
+ * (computeRealizedFromCyclePairs stays correct regardless of cycle
+ * grouping).
  * @param {Array<Object>} cycleFills - fills already assigned to the candidate cycle
  * @param {Array<Object>} allFills - every fill in the ledger (sellOrderId may point outside the cycle)
  * @returns {boolean}
