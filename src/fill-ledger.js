@@ -1245,8 +1245,9 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // attempted its TP placement yet.
     let linkedCount = 0;
     const completedCycleIds = new Set(cycleDetails.map(d => d.cycleId));
-    const cycleSellIds = new Map(); // cycleId -> first sell orderId
+    const cycleSellIds = new Map(); // cycleId -> first LEGACY (non-body/satellite) sell orderId
     for (const fill of fills.values()) {
+      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
       if (fill.side === 'sell' && fill.cycleId && completedCycleIds.has(fill.cycleId) && !cycleSellIds.has(fill.cycleId)) {
         cycleSellIds.set(fill.cycleId, fill.orderId);
       }

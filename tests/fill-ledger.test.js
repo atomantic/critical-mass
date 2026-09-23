@@ -1905,6 +1905,64 @@ describe('Fill Ledger', () => {
       assert.equal(derived.realizedPnL, 9.5,
         "body A's realizedPnL from the bodyPnl annotation is unaffected");
     });
+
+    it('never picks a body/satellite sell as the anchor for a legacy buy, even when it is the first sell recorded', () => {
+      const ledger = createTestLedger('autolink-sell-anchor');
+
+      // A body-owned sell lands in cycle-3 FIRST (insertion order), so a
+      // pre-fix `cycleSellIds` scan (no ownership check on the sell side)
+      // would anchor the cycle on it.
+      ledger.ingestFill(makeSellFill({
+        tradeId: 'x-body-sell', orderId: 'body-sell-x', price: '105', size: '0.3',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T00:00:00Z',
+      }), null, { cycleId: 'cycle-3' });
+      ledger.annotateFillsByOrderId('body-sell-x', { bodyId: 'body-X', isBodyOwned: true, bodyPnl: 1, bodyHoldbackAsset: 0 });
+
+      // A legacy (non-body) buy with no sellOrderId — the orphan this
+      // heuristic exists to repair.
+      ledger.ingestFill(makeBuyFill({
+        tradeId: 'x-legacy-buy', orderId: 'legacy-buy-x', price: '100', size: '1.0',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T01:00:00Z',
+      }), null, { cycleId: 'cycle-3' });
+
+      // A legacy sell arrives after the body sell. It is the only correct
+      // anchor for the legacy buy.
+      ledger.ingestFill(makeSellFill({
+        tradeId: 'x-legacy-sell', orderId: 'legacy-sell-x', price: '110', size: '0.3',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T02:00:00Z',
+      }), null, { cycleId: 'cycle-3' });
+
+      // Sell ratio: (0.3 + 0.3) / 1.0 = 0.6, crosses CYCLE_COMPLETE_SELL_RATIO.
+      ledger.recalculateCycles();
+
+      const legacyBuy = ledger.getFillsForOrder('legacy-buy-x')[0];
+      assert.equal(legacyBuy.sellOrderId, 'legacy-sell-x',
+        'the legacy buy must anchor to the legacy sell, never the body-owned sell that happened to be recorded first');
+    });
+
+    it("does not auto-link within the ledger's current (still-live) cycle, even after it crosses the completion ratio", () => {
+      const ledger = createTestLedger('autolink-livecycle');
+
+      ledger.ingestFill(makeBuyFill({
+        tradeId: 'lc-buy', orderId: 'lc-buy-order', price: '100', size: '1.0',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T00:00:00Z',
+      }), null, { cycleId: 'cycle-1' });
+      ledger.ingestFill(makeSellFill({
+        tradeId: 'lc-sell', orderId: 'lc-sell-order', price: '105', size: '0.6',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T01:00:00Z',
+      }), null, { cycleId: 'cycle-1' });
+      ledger.setCurrentCycleId('cycle-1');
+
+      // Sell ratio (0.6 / 1.0 = 0.6) already crosses CYCLE_COMPLETE_SELL_RATIO
+      // (0.5), but cycle-1 is still the LIVE cycle — more buys/sells can still
+      // land in it, so the buy must stay open rather than adopt a premature link.
+      const result = ledger.recalculateCycles();
+      assert.equal(result.activeCycleId, 'cycle-1');
+
+      const buy = ledger.getFillsForOrder('lc-buy-order')[0];
+      assert.equal(buy.sellOrderId, undefined,
+        'a buy inside the still-live cycle must not be auto-linked even though the ratio crosses the completion threshold');
+    });
   });
 
   // =======================================================================
