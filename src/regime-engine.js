@@ -2049,65 +2049,98 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       let restoredEntries = 0;
       let orphanedEntries = 0;
 
+      /**
+       * Book the already-filled tranche of an entry that is still open on the
+       * exchange through the standard fill pipeline (issue #671), so it joins
+       * a celestial body, gets a TP, and shrinks the tracked pending entry.
+       * A failure is logged, not thrown: the caller has already restored the
+       * order's executor tracking, so the live poll/WS path books the fills
+       * once the engine is running — and since nothing was ingested here,
+       * that later pass sees every row as new instead of a deduped remainder.
+       * @param {Object} order - Open order from getOpenOrders
+       * @param {number} placedAt - Order placement time (ms)
+       * @param {string} label - Log label for the calling branch
+       * @returns {Promise<void>}
+       */
+      const bookStartupOpenEntryPartial = async (order, placedAt, label) => {
+        const fillArgs = { status: order.status || 'OPEN', isPartialFill: true, placedAt };
+        // Rows no body ever booked were ingested by the pre-#671 startup path.
+        // The normal pass below would dedup them away and build the body from
+        // only the newer tranches, so commit them into a body first, on their
+        // own. Rows a body already booked are settled and never rebooked.
+        const legacyRows = isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)
+          ? []
+          : fillLedger.getFillsForOrder(order.orderId)
+            .filter(f => f.side === 'buy' && !(f.bodyId || f.isBodyOwned || f.isSatellite || f.sellOrderId));
+        let mainPassStarted = false;
+        try {
+          if (legacyRows.length > 0) {
+            // A current-cycle order was already counted by the cycleBuys
+            // auto-correct above; a first commit here would count it again.
+            const alreadyCounted = fillLedger.getCurrentCycleFills()
+              .some(f => f.side === 'buy' && f.orderId === order.orderId);
+            const cycleBuysBefore = positionState.cycleBuys;
+            try {
+              await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, {
+                ...fillArgs,
+                filledSize: legacyRows.reduce((sum, f) => sum + Number(f.size || 0), 0),
+                confirmedFills: legacyRows,
+              }));
+            } finally {
+              if (alreadyCounted && positionState.cycleBuys === cycleBuysBefore + 1) {
+                positionState.cycleBuys = cycleBuysBefore;
+              }
+            }
+          }
+          mainPassStarted = true;
+          await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, fillArgs));
+        } catch (err) {
+          logger.error(`❌ [${exchange}] Could not book offline partial fills for ${label} ${order.orderId}: ${err.message} — will pick them up on the next reconcile/poll`, {
+            orderId: order.orderId,
+            error: err.message,
+            incompleteFills: err.incompleteFills === true,
+          });
+          // A throw after a body took the tranche (but before the pending
+          // entry was shrunk) would leave the entry at its full notional
+          // beside that body, overstating deployed capital. The main pass
+          // books everything the exchange reported, so the exchange's own
+          // unfilled remainder (open-order `size`, issue #684) is the exact
+          // figure to keep. (Not after a legacy-row failure: tranches the
+          // ledger lacks are still unbooked, and the later pass that books
+          // them shrinks the entry itself.)
+          if (mainPassStarted && isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)) {
+            const remaining = Math.max(0, Number(order.size) || 0);
+            positionState.pendingEntryOrders = (positionState.pendingEntryOrders || []).map(e => (
+              e.orderId !== order.orderId ? e : { ...e, assetQty: remaining, sizeUsdc: remaining * Number(e.price || order.price || 0) }
+            ));
+          }
+        }
+      };
+
       for (const order of openEntries) {
         if (savedOrderIds.has(order.orderId)) {
           // This is our order - restore tracking instead of canceling
           const savedEntry = savedPendingEntries.find(e => e.orderId === order.orderId);
+          const restoredPlacedAt = order.createdTime ? new Date(order.createdTime).getTime() : (savedEntry.placedAt || Date.now());
           orderExecutor.restorePendingOrder(order.orderId, {
             type: 'entry',
             price: savedEntry.price,
             size: savedEntry.assetQty,
             sizeUsdc: savedEntry.sizeUsdc,
-            placedAt: order.createdTime ? new Date(order.createdTime).getTime() : (savedEntry.placedAt || Date.now()),
+            placedAt: restoredPlacedAt,
           });
           restoredEntries++;
           logger.info(`🔄 [${exchange}] Restored pending entry: ${order.orderId} @ ${fmtPrice(savedEntry.price)}`);
 
-          // Check if order has any fills while offline (partial fills)
+          // Check if order has any fills while offline (partial fills).
+          // Route them through the standard fill pipeline (issue #671) so the
+          // tranche lands in a celestial body (with a TP) and shrinks the
+          // tracked entry. Ingesting straight into the ledger here left the
+          // tranche in no body: the later terminal fill deduped those rows
+          // and built its body from the new tranche alone.
           if (order.filledSize && order.filledSize > 0) {
             logger.info(`✅ [${exchange}] Entry ${order.orderId} has partial fills (${order.filledSize})`);
-            // getOrderFills now rejects on a failed lookup or an incomplete
-            // match (issue #679) instead of silently returning a partial
-            // set. A throw here must not abort engine startup — the
-            // restore above already tracked the order, so the ordinary
-            // WS/poll fill path and periodic reconcile pick up these fills
-            // once the engine is running; losing this best-effort catch-up
-            // step is far safer than leaving the engine registered but
-            // never started (regime-engine.js's start() has no outer
-            // try/catch of its own).
-            let rawFills = [];
-            try {
-              rawFills = await adapter.getOrderFills(order.orderId);
-            } catch (err) {
-              logger.error(`❌ [${exchange}] Could not fetch offline partial fills for entry ${order.orderId}: ${err.message} — will pick them up on the next reconcile/poll`, {
-                orderId: order.orderId,
-                error: err.message,
-                incompleteFills: err.incompleteFills === true,
-              });
-            }
-            let orderHadNewFills = false;
-            let lastFillPrice = 0;
-            let lastFillTime = 0;
-            for (const fill of rawFills) {
-              const result = fillLedger.ingestFill(fill);
-              if (result.ingested) {
-                positionState.totalAsset = roundAsset(positionState.totalAsset + fill.size);
-                positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + (fill.size * fill.price) + fill.netFee);
-                positionState.avgCostBasis = positionState.totalAsset > 0
-                  ? positionState.totalCostBasis / positionState.totalAsset
-                  : 0;
-                orderHadNewFills = true;
-                lastFillPrice = fill.price;
-                lastFillTime = fill.timestamp;
-                logger.info(`📝 [${exchange}] Ingested partial fill: ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)}`);
-              }
-            }
-            // Increment step once per order, not per fill
-            if (orderHadNewFills) {
-              positionState.cycleBuys += 1;
-              positionState.lastEntryPrice = lastFillPrice;
-              positionState.lastEntryTime = lastFillTime;
-            }
+            await bookStartupOpenEntryPartial(order, restoredPlacedAt, 'entry');
           }
         } else if (correctiveBuyIds.has(order.orderId)) {
           logger.info(`📋 [${exchange}] Skipping corrective buy order ${order.orderId.slice(0, 8)} (tracked in pending-corrective-buys)`);
@@ -2122,51 +2155,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             // filledSize (RegimeDashboard.jsx: "X of Y filled"). order.size
             // is now the REMAINING unfilled quantity (issue #684); use
             // order.originalSize here to match the established convention.
+            const orphanPlacedAt = order.createdTime ? new Date(order.createdTime).getTime() : Date.now();
             orderExecutor.restorePendingOrder(order.orderId, {
               type: 'entry',
               price: order.price,
               size: order.originalSize,
               sizeUsdc: order.originalSize * order.price,
-              placedAt: order.createdTime ? new Date(order.createdTime).getTime() : Date.now(),
+              placedAt: orphanPlacedAt,
             });
-            // Ingest any fills we don't already have. See the sibling block
-            // above: a throw here (issue #679's rethrow-on-failure /
-            // incompleteFills contract) must not abort engine startup — the
-            // restore above already tracked the order, so the ordinary
-            // WS/poll fill path and periodic reconcile pick up these fills
-            // once the engine is running.
-            let rawFills = [];
-            try {
-              rawFills = await adapter.getOrderFills(order.orderId);
-            } catch (err) {
-              logger.error(`❌ [${exchange}] Could not fetch offline partial fills for orphan entry ${order.orderId}: ${err.message} — will pick them up on the next reconcile/poll`, {
+            // Keep the adopted order in the persisted pending list so it
+            // survives the next restart, then book its filled tranche through
+            // the standard pipeline (issue #671) — which also shrinks this
+            // entry from its original quantity to its unfilled remainder.
+            if (!positionState.pendingEntryOrders) positionState.pendingEntryOrders = [];
+            if (!positionState.pendingEntryOrders.some(e => e.orderId === order.orderId)) {
+              positionState.pendingEntryOrders.push({
                 orderId: order.orderId,
-                error: err.message,
-                incompleteFills: err.incompleteFills === true,
+                price: order.price,
+                assetQty: order.originalSize,
+                sizeUsdc: order.originalSize * order.price,
+                placedAt: orphanPlacedAt,
               });
             }
-            let orderHadNewFills = false;
-            let lastFillPrice = 0;
-            let lastFillTime = 0;
-            for (const fill of rawFills) {
-              const result = fillLedger.ingestFill(fill);
-              if (result.ingested) {
-                positionState.totalAsset = roundAsset(positionState.totalAsset + fill.size);
-                positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + (fill.size * fill.price) + fill.netFee);
-                positionState.avgCostBasis = positionState.totalAsset > 0
-                  ? positionState.totalCostBasis / positionState.totalAsset
-                  : 0;
-                orderHadNewFills = true;
-                lastFillPrice = fill.price;
-                lastFillTime = fill.timestamp;
-                logger.info(`📝 [${exchange}] Ingested partial fill from orphan: ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)}`);
-              }
-            }
-            if (orderHadNewFills) {
-              positionState.cycleBuys += 1;
-              positionState.lastEntryPrice = lastFillPrice;
-              positionState.lastEntryTime = lastFillTime;
-            }
+            await bookStartupOpenEntryPartial(order, orphanPlacedAt, 'orphan entry');
             restoredEntries++;
           } else {
             // Orphan entry with no fills — cancel it
@@ -2275,11 +2286,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // (filled or cancelled while engine was offline — fills already ingested above).
       // A failed catch-up (failedCatchUpIds) is retained even though it is
       // also not open on the exchange — it needs a retry, not a purge.
-      if (savedPendingEntries.length > 0) {
-        positionState.pendingEntryOrders = savedPendingEntries.filter(
+      // Filters the LIVE list, not the savedPendingEntries snapshot: the
+      // handleOrderFill calls above shrank partially-filled entries to their
+      // unfilled remainder and appended adopted orphans (issue #671), and
+      // re-filtering the stale snapshot would silently undo both. A failed
+      // catch-up may have thrown AFTER handleOrderFill already dropped its
+      // entry from the live list, so those are re-added from the snapshot.
+      const livePendingEntries = positionState.pendingEntryOrders || [];
+      const liveIds = new Set(livePendingEntries.map(e => e.orderId));
+      const currentPendingEntries = [
+        ...livePendingEntries,
+        ...savedPendingEntries.filter(e => failedCatchUpIds.has(e.orderId) && !liveIds.has(e.orderId)),
+      ];
+      if (currentPendingEntries.length > 0) {
+        positionState.pendingEntryOrders = currentPendingEntries.filter(
           e => allOpenIds.has(e.orderId) || failedCatchUpIds.has(e.orderId)
         );
-        const purged = savedPendingEntries.length - positionState.pendingEntryOrders.length;
+        const purged = currentPendingEntries.length - positionState.pendingEntryOrders.length;
         if (purged > 0) {
           logger.info(`🧹 [${exchange}] Purged ${purged} stale pending entry orders (filled/cancelled while offline)`);
         }
@@ -3204,6 +3227,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         return;
       }
 
+      // Every row we hold for this order was already booked by a body that is
+      // gone now (its TP sold it, or it was otherwise retired) while the entry
+      // kept resting — and this pass brought nothing new. Falling through
+      // would rebuild a body from those settled rows (the getFillsForOrder
+      // fallback above) and list a TP for asset that was already sold. The
+      // first poll after a restart lands here: the executor's partial-size
+      // tracker starts at 0, so the order's unchanged filledSize reads as an
+      // advance (issue #671).
+      // Rows no body booked yet (if any) are still booked on their own.
+      if (ingestedFills.length === 0
+        && !isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId)) {
+        const unsettled = fillsToAggregate.filter(f => !(f.bodyId || f.isBodyOwned || f.isSatellite || f.sellOrderId));
+        if (unsettled.length === 0) {
+          logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} holds only tranches a retired body already settled and no new fills — nothing to book`);
+          if (!keepEntryTracked) {
+            retireTrackedEntry(fillData.orderId);
+            orderExecutor.handleOrderFill(fillData.orderId);
+          }
+          return;
+        }
+        fillsToAggregate = unsettled;
+      }
+
       // Buy-fill dedup across WS vs polling. Without it, a buy detected by both
       // the polling path (which starts the multi-hundred-ms handleOrderFill
       // chain, incl. a possible 2s retry) and a late WS FILLED event for the
@@ -4063,6 +4109,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             ? `${remainingBodies} celestial bodies still active`
             : 'not the engine\'s take-profit order (manual/external sell?)';
           logger.warn(`⚠️ [${exchange}] Untracked sell ${String(sellOrderId).slice(0,8)} (${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}) — ${reason}, skipping cycle completion`);
+          // Position model is deliberately left untouched (issue #750). Which
+          // holding a foreign sell drew down — zero-cost reserves or the
+          // managed position — is unknowable from the fill, so any
+          // attribution to totalAsset/totalCostBasis (or realizedAssetPnL)
+          // would be a guess that corrupts P&L either way. The ledger keeps
+          // the fact instead: `untrackedSell` rows lower ledgerNetAsset and
+          // are broken out as `untrackedSellQty`, so the position-coverage
+          // sweep (positionCoverage.ledger.untrackedSold) shows the gap and
+          // its cause. Resolution is an operator action.
+          if (remainingBodies === 0 && positionState.totalAsset > 0) {
+            logger.warn(
+              `⚖️ [${exchange}] Untracked sell ${String(sellOrderId).slice(0,8)} may have consumed the held position (${positionState.totalAsset} ${baseCurrency}) — position left unchanged; see positionCoverage.ledger.untrackedSold, operator review required`,
+              { pair: productId, orderId: sellOrderId, soldQty: summary2.totalSize, totalAsset: positionState.totalAsset, reserves: positionState.realizedAssetPnL || 0 }
+            );
+          }
           fillLedger.annotateFillsByOrderId(sellOrderId, { untrackedSell: true });
           saveLiveState();
           fillLedger.persist();
@@ -4646,8 +4707,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    *   untrackedOpen = heldOpen − inBodies — open buy inventory no body tracks
    *                   (exact for sells booked with consumption records;
    *                   pre-#607 history still closes on sellOrderId)
+   * plus `untrackedSold`: Σ size of foreign (`untrackedSell`) sells (issue
+   * #750). They are already inside `net`, so they push `unmodelled` negative
+   * by their size; the field says how much of that gap they explain, since
+   * the engine does not guess whether they drew down reserves or position.
    * @param {number} inBodies - Σ body.assetQty
-   * @returns {{net: number, heldOpen: number, inBodies: number, reserves: number, unmodelled: number, untrackedOpen: number}}
+   * @returns {{net: number, heldOpen: number, inBodies: number, reserves: number, unmodelled: number, untrackedOpen: number, untrackedSold: number}}
    */
   const computeLedgerCoverage = (inBodies) => {
     const derived = fillLedger.getDerivedRealizedPnL();
@@ -4661,6 +4726,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       reserves: roundAsset(reserves),
       unmodelled: roundAsset(net - inBodies - reserves),
       untrackedOpen: roundAsset(heldOpen - inBodies),
+      untrackedSold: roundAsset(derived.untrackedSellQty || 0),
     };
   };
 
@@ -4690,7 +4756,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (Math.abs(ledger.unmodelled) <= tolerance) return;
       logger.warn(
         `⚖️ [${exchange}] Ledger coverage gap: ledger nets ${ledger.net} ${baseCurrency}, model accounts for ${roundAsset(ledger.inBodies + ledger.reserves)} `
-        + `(${ledger.inBodies} in bodies + ${ledger.reserves} reserves) — ${ledger.unmodelled} ${baseCurrency} untracked; ledger holds ${ledger.heldOpen} ${baseCurrency} of buys open`,
+        + `(${ledger.inBodies} in bodies + ${ledger.reserves} reserves) — ${ledger.unmodelled} ${baseCurrency} untracked; ledger holds ${ledger.heldOpen} ${baseCurrency} of buys open`
+        + (ledger.untrackedSold > 0 ? `; ${ledger.untrackedSold} ${baseCurrency} left via untracked (foreign) sells` : ''),
         { pair: productId, ...ledger }
       );
     };
@@ -4734,7 +4801,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     logger.warn(
       `⚖️ [${exchange}] Position coverage gap: exchange holds ${roundAsset(onExchange)} ${baseCurrency}, model accounts for ${roundAsset(inBodies + reserves)} `
-      + `(${roundAsset(inBodies)} in ${(positionState.celestialBodies || []).length} bodies + ${roundAsset(reserves)} reserves) — ${unmodelled} ${baseCurrency} untracked`,
+      + `(${roundAsset(inBodies)} in ${(positionState.celestialBodies || []).length} bodies + ${roundAsset(reserves)} reserves) — ${unmodelled} ${baseCurrency} untracked`
+      + (ledger.untrackedSold > 0 ? `; ${ledger.untrackedSold} ${baseCurrency} left via untracked (foreign) sells` : ''),
       { pair: productId, ...positionCoverage, bodies: (positionState.celestialBodies || []).length }
     );
   };
