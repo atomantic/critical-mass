@@ -2586,6 +2586,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * tranche was created under #607 (finite `consumedQty`) are not seeded this
    * way: for them, ledger quantity no tranche holds is genuinely unsold and
    * must stay visible.
+   *
+   * For pre-#607 orders this is deliberately the conservative reading: the
+   * ledger cannot tell a tranche another body sold from one no body ever
+   * attributed (the leaked 1.14 ETH), so both keep their legacy "closed"
+   * status. Resurrecting the second kind would double count inventory the
+   * operator already adopted into a body (scripts/adopt-untracked-asset.js,
+   * which is how that gap is repaired), and resurrecting the first would leave
+   * a permanent phantom. The exchange-balance coverage check still sees it.
    * @param {{orders: Map<string, Object>, entries: Array<{entry: Object}>}} plan
    * @param {(orderId: string) => (Object|null)} consumptionOf - Cached getBuyOrderConsumption
    * @param {(entry: Object) => number} legacyFraction
