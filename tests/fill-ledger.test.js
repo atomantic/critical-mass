@@ -1861,6 +1861,53 @@ describe('Fill Ledger', () => {
   });
 
   // =======================================================================
+  // recalculateCycles auto-link must not close still-open body buys (issue #677)
+  // =======================================================================
+  describe('recalculateCycles auto-link skips body/satellite buys (issue #677)', () => {
+    it("does not stamp an open body buy with another body's sell when the cycle crosses the completion ratio", () => {
+      const ledger = createTestLedger('autolink-body');
+
+      // Body A: buy 1.0, TP sell fills 0.95 with a bodyPnl annotation — the
+      // healthy holdback shape (CLAUDE.md "Holdback is the design").
+      ledger.ingestFill(makeBuyFill({
+        tradeId: 'ba-buy', orderId: 'bodyA-buy', price: '100', size: '1.0',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T00:00:00Z',
+      }), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('bodyA-buy', { sellOrderId: 'bodyA-sell', bodyId: 'body-A', isBodyOwned: true });
+      ledger.ingestFill(makeSellFill({
+        tradeId: 'ba-sell', orderId: 'bodyA-sell', price: '105', size: '0.95',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T01:00:00Z',
+      }), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('bodyA-sell', { bodyId: 'body-A', isBodyOwned: true, bodyPnl: 9.5, bodyHoldbackAsset: 0.05 });
+
+      // Body B: buy 0.5 in the SAME cycle. Its TP was never placed (min-size
+      // body / placement failure / crash), so it legitimately carries no
+      // sellOrderId — this is not a crash-repair case.
+      ledger.ingestFill(makeBuyFill({
+        tradeId: 'bb-buy', orderId: 'bodyB-buy', price: '90', size: '0.5',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T02:00:00Z',
+      }), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('bodyB-buy', { bodyId: 'body-B', isBodyOwned: true });
+
+      // The cycle's sell ratio (0.95 / 1.5 ≈ 0.63) crosses
+      // CYCLE_COMPLETE_SELL_RATIO (0.5), so recalculateCycles classifies
+      // cycle-1 as "completed" even though body B's buy is still open.
+      const result = ledger.recalculateCycles();
+      assert.ok(result.cyclesCompleted >= 1, 'cycle-1 must be classified as completed');
+
+      const buyB = ledger.getFillsForOrder('bodyB-buy')[0];
+      assert.equal(buyB.sellOrderId, undefined,
+        "body B's still-open buy must NOT be auto-linked to body A's sell");
+
+      const derived = ledger.computeRealizedFromCyclePairs();
+      assert.equal(derived.heldOpenBuyCostBasis, 45,
+        "body B's full cost (0.5 * 90) must stay held, not attributed to sellA");
+      assert.equal(derived.realizedPnL, 9.5,
+        "body A's realizedPnL from the bodyPnl annotation is unaffected");
+    });
+  });
+
+  // =======================================================================
   // Cycle recalculation parity & shared rules (issue #582)
   // =======================================================================
   describe('previewRecalculateCycles and recalculateCycles parity (issue #582)', () => {
