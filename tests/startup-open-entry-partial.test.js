@@ -51,9 +51,12 @@ const T1 = { tradeId: 'entry-1-t1', orderId: ORDER_ID, side: 'buy', size: 0.004,
 const T2 = { tradeId: 'entry-1-t2', orderId: ORDER_ID, side: 'buy', size: 0.006, price: 50000, netFee: 0 };
 const withTime = (f) => ({ ...f, tradeTime: new Date(Date.now() - 30000).toISOString() });
 
-/** The resting entry as getOpenOrders reports it: 0.004 of 0.01 filled. */
+/**
+ * The resting entry as getOpenOrders reports it: 0.004 of 0.01 filled.
+ * `size` is the unfilled remainder, `originalSize` the placed quantity (#684).
+ */
 const OPEN_PARTIAL = {
-  orderId: ORDER_ID, side: 'BUY', status: 'OPEN', price: 50000, size: 0.01,
+  orderId: ORDER_ID, side: 'BUY', status: 'OPEN', price: 50000, size: 0.006, originalSize: 0.01,
   filledSize: 0.004, filledValue: 200, averageFilledPrice: 50000,
   createdTime: new Date(Date.now() - 60000).toISOString(),
 };
@@ -186,7 +189,7 @@ describe('startup booking of partially-filled open entries (issue #671)', () => 
     const T2A = { tradeId: 'entry-1-t2a', orderId: ORDER_ID, side: 'buy', size: 0.002, price: 50000, netFee: 0 };
     const T3 = { tradeId: 'entry-1-t3', orderId: ORDER_ID, side: 'buy', size: 0.004, price: 50000, netFee: 0 };
     const fillSource = { fills: [T1, T2A] };
-    const { eng } = makeEngine(pair, fillSource, { ...OPEN_PARTIAL, filledSize: 0.006, filledValue: 300 });
+    const { eng } = makeEngine(pair, fillSource, { ...OPEN_PARTIAL, size: 0.004, filledSize: 0.006, filledValue: 300 });
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [{ orderId: ORDER_ID, price: 50000, assetQty: 0.01, sizeUsdc: 500, placedAt: Date.now() - 60000 }];
 
@@ -227,7 +230,7 @@ describe('startup booking of partially-filled open entries (issue #671)', () => 
 
     const T2A = { tradeId: 'entry-1-t2a', orderId: ORDER_ID, side: 'buy', size: 0.002, price: 50000, netFee: 0 };
     const fillSource = { fills: [T1, T2A] };
-    const { eng } = makeEngine(pair, fillSource, { ...OPEN_PARTIAL, filledSize: 0.006, filledValue: 300 });
+    const { eng } = makeEngine(pair, fillSource, { ...OPEN_PARTIAL, size: 0.004, filledSize: 0.006, filledValue: 300 });
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [{ orderId: ORDER_ID, price: 50000, assetQty: 0.006, sizeUsdc: 300, placedAt: Date.now() - 60000 }];
 
