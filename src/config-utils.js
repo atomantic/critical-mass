@@ -970,16 +970,6 @@ const getConfiguredExchanges = () => {
  * @returns {MultiExchangeConfig} Updated full configuration
  */
 const updateFundConfig = (exchange, pair, updates) => {
-  // Defence in depth: guard against cross-market contamination at the persist layer.
-  // Even if a route bypasses its own check, this assertion catches productId mismatches.
-  // addFund repeats the check for the same reason (see issue #453, #685).
-  if (updates.productId) {
-    const { ok, pairBase, incomingBase } = productIdMatchesPair(pair, updates.productId);
-    if (!ok) {
-      throw new Error(`productId "${updates.productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}) — a config save cannot change a fund's traded asset`);
-    }
-  }
-
   const config = loadConfig();
   if (!config.exchanges) config.exchanges = {};
 
@@ -987,6 +977,17 @@ const updateFundConfig = (exchange, pair, updates) => {
   // updateExchangeConfig('kraken', {...}) used to start from DEFAULTS).
   const isNew = !config.exchanges[exchange];
   const block = isNew ? { ...DEFAULTS } : config.exchanges[exchange];
+
+  // Defence in depth (#685): a save to an EXISTING fund can never change its
+  // traded asset. A brand-new exchange entry has no asset to protect yet
+  // (updateExchangeConfig seeds it under the default pair name), so it is exempt;
+  // addFund and the config routes validate new funds themselves.
+  if (!isNew && updates.productId) {
+    const { ok, pairBase, incomingBase } = productIdMatchesPair(pair, updates.productId);
+    if (!ok) {
+      throw new Error(`productId "${updates.productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}) — a config save cannot change a fund's traded asset`);
+    }
+  }
 
   // If the block is in legacy flat form AND the target pair is the legacy
   // pair (or no pairs map exists yet), update in place to avoid converting
