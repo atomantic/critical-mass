@@ -710,16 +710,48 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           } else if (normalizedStatus === 'CANCELLED') {
             handleCancelledOrder(orderId, order, status, 'Stale check');
           } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0) {
-            // Not filled at all, cancel
+            // Not filled at all (as of this snapshot) — cancel. Use safeCancelOrder
+            // instead of a raw adapter.cancelOrder: the exchange refuses a cancel
+            // when the order already filled, and a fill (full or partial) can also
+            // land while the cancel is in flight. Either race must be routed
+            // through the fill handlers instead of silently dropping the order
+            // from tracking (issue #674, mirrors handleCancelledOrder's other
+            // callers). Entry orders are always buy-side.
             logger.info(`⏰ [${exchange}] Stale order timeout, cancelling unfilled order ${orderId}`, {
               orderId,
               orderType: order.type,
               status: normalizedStatus,
               staleMs,
             });
-            return adapter.cancelOrder(orderId).then(() => {
-              pendingOrders.delete(orderId);
-              callbacks.onEntryCancelled?.(orderId);
+            return safeCancelOrder(orderId).then(result => {
+              const details = {
+                filledSize: result.filledSize || 0,
+                filledValue: result.filledValue || 0,
+                averageFilledPrice: result.averageFilledPrice || 0,
+                totalFees: result.totalFees || 0,
+              };
+              if (result.filled) {
+                logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled during stale-timeout cancel`, {
+                  orderId,
+                  orderType: order.type,
+                  filledSize: details.filledSize,
+                });
+                const placedAt = order.placedAt;
+                pendingOrders.delete(orderId);
+                markSettled(orderId);
+                if (callbacks.onFillDetected) {
+                  callbacks.onFillDetected(orderId, { status: 'FILLED', side: 'buy', ...details, placedAt });
+                }
+                return;
+              }
+              if (result.cancelled) {
+                handleCancelledOrder(orderId, order, { status: 'CANCELLED', side: 'buy', ...details }, 'Stale check');
+                return;
+              }
+              // Neither filled nor cancelled (ack'd but never settled, or the
+              // cancel call itself errored) — keep it tracked so the polling
+              // backstop (checkPendingOrderFills) can still catch it.
+              logger.warn(`⚠️ [${exchange}] Stale order cancel for ${orderId} left in unknown state — keeping tracked for polling backstop`, { orderId });
             }).catch(err => logger.error(`❌ [${exchange}] Stale order cancel failed for ${orderId}: ${err.message}`, { orderId, error: err.message }));
           }
           // Partially filled orders are left alone - WebSocket should handle incremental fills
@@ -773,12 +805,35 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           handleCancelledOrder(orderId, order, status, 'Refresh');
           refreshed++;
         } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0 && !isPersistentType(order.type)) {
-          // Only cancel stale reactive ENTRY orders — TP and ladder orders should persist until filled
-          await adapter.cancelOrder(orderId);
+          // Only cancel stale reactive ENTRY orders — TP and ladder orders should persist until filled.
+          // Use safeCancelOrder (not a raw adapter.cancelOrder): the exchange
+          // refuses a cancel when the order already filled, and a fill can also
+          // land while the cancel is in flight — either race must be routed
+          // through the fill handlers instead of silently dropping the order
+          // from tracking (issue #674). Only 'entry' orders reach this branch
+          // (isPersistentType excludes it), and entries are always buy-side.
+          const cancelResult = await safeCancelOrder(orderId).catch(() => ({ cancelled: false, filled: false }));
           lastCancelTime = now;
-          pendingOrders.delete(orderId);
-          callbacks.onEntryCancelled?.(orderId);
-          refreshed++;
+          const details = {
+            filledSize: cancelResult.filledSize || 0,
+            filledValue: cancelResult.filledValue || 0,
+            averageFilledPrice: cancelResult.averageFilledPrice || 0,
+            totalFees: cancelResult.totalFees || 0,
+          };
+          if (cancelResult.filled) {
+            const placedAt = order.placedAt;
+            pendingOrders.delete(orderId);
+            markSettled(orderId);
+            if (callbacks.onFillDetected) {
+              callbacks.onFillDetected(orderId, { status: 'FILLED', side: 'buy', ...details, placedAt });
+            }
+            refreshed++;
+          } else if (cancelResult.cancelled) {
+            handleCancelledOrder(orderId, order, { status: 'CANCELLED', side: 'buy', ...details }, 'Refresh');
+            refreshed++;
+          } else {
+            logger.warn(`⚠️ [${exchange}] Refresh cancel for ${orderId} left in unknown state — keeping tracked for polling backstop`, { orderId });
+          }
         }
       }
     }
@@ -1588,18 +1643,40 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
   /**
    * Cancel all unfilled ladder orders
-   * @returns {Promise<{cancelled: number, remainingTracked: number}>} Cancel results
+   *
+   * A cancel that the exchange honors (`result.cancelled`) can still carry a
+   * partial fill that landed in the race window before the cancel took
+   * (`result.filledSize > 0`) — a bare `pendingOrders.delete` would drop that
+   * bought asset with no body and no TP (issue #674). Route it through the
+   * same `handleCancelledOrder` path the other cancel call sites use, which
+   * books the fill via `onFillDetected` before dropping tracking. Ladder
+   * entries are always buy-side.
+   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number}>} Cancel results
    */
   const cancelAllLadderOrders = async () => {
     let cancelled = 0;
+    let partialFills = 0;
 
     const ladderOrders = Array.from(pendingOrders.entries())
       .filter(([, order]) => order.type === 'ladder_entry');
 
-    for (const [orderId] of ladderOrders) {
+    for (const [orderId, order] of ladderOrders) {
       const result = await safeCancelOrder(orderId).catch(() => ({ cancelled: false, filled: false }));
       if (result.cancelled) {
-        pendingOrders.delete(orderId);
+        if (result.filledSize > 0) {
+          handleCancelledOrder(orderId, order, {
+            status: 'CANCELLED',
+            side: 'buy',
+            filledSize: result.filledSize,
+            filledValue: result.filledValue || 0,
+            averageFilledPrice: result.averageFilledPrice || 0,
+            totalFees: result.totalFees || 0,
+          }, 'Ladder cancel');
+          partialFills++;
+        } else {
+          pendingOrders.delete(orderId);
+          partialFillTracker.delete(orderId);
+        }
         cancelled++;
       } else if (result.filled) {
         logger.info(`📋 [${exchange}] Ladder order ${orderId.slice(0, 8)} filled during cancel — polling will process`, {
@@ -1615,7 +1692,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const remainingTracked = Array.from(pendingOrders.values())
       .filter(o => o.type === 'ladder_entry').length;
 
-    return { cancelled, remainingTracked };
+    return { cancelled, remainingTracked, partialFills };
   };
 
   /**

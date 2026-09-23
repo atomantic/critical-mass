@@ -510,9 +510,19 @@ describe('order-executor placement paths — unknown-outcome reconciliation (iss
 describe('refreshStaleOrders — per-order adaptive stale timeout', () => {
   it('honors order.staleMs over the global regime-adjusted timeout', async () => {
     const cancelled = [];
+    // refreshStaleOrders now routes its cancel through safeCancelOrder (issue
+    // #674), so cancelOrder must return the {success} shape it expects, and
+    // getOrder must converge to CANCELLED once a cancel has been attempted —
+    // otherwise safeCancelOrder's ack'd-poll branch would spin for real
+    // seconds waiting for a status that never changes. Returning
+    // {success:false} takes the zero-delay refused-cancel branch instead,
+    // which reads getOrder once more immediately.
+    const cancelledIds = new Set();
     const adapter = {
-      getOrder: async () => ({ status: 'OPEN', filledSize: 0, completionPercentage: 0 }),
-      cancelOrder: async (orderId) => { cancelled.push(orderId); },
+      getOrder: async (orderId) => cancelledIds.has(orderId)
+        ? { status: 'CANCELLED', filledSize: 0, completionPercentage: 0 }
+        : { status: 'OPEN', filledSize: 0, completionPercentage: 0 },
+      cancelOrder: async (orderId) => { cancelledIds.add(orderId); cancelled.push(orderId); return { success: false }; },
       placeLimitBuy: async () => { throw new Error('placeLimitBuy should not be called'); },
       placeLimitSell: async () => { throw new Error('placeLimitSell should not be called'); },
       getOrderFills: async () => [],
@@ -548,5 +558,125 @@ describe('refreshStaleOrders — per-order adaptive stale timeout', () => {
     const secondPass = await exec.refreshStaleOrders();
     assert.equal(secondPass, 1);
     assert.deepStrictEqual(cancelled, ['default-entry', 'adaptive-entry']);
+  });
+});
+
+describe('scheduleStaleOrderTimeout — refused cancel during stale check (issue #674)', () => {
+  // scheduleStaleOrderTimeout is internal (scheduled by placeEntryBid); it is
+  // exercised here through the public placeEntryBid entry point with a short
+  // per-order staleMs, using a real (short) timer — same approach as the
+  // issue's own reproduction script.
+  it('routes a fill through onFillDetected — not onEntryCancelled — when the stale-timeout cancel is refused because the order already filled', async () => {
+    let getOrderCalls = 0;
+    const filledStatus = {
+      status: 'FILLED', filledSize: 0.01, completionPercentage: 100,
+      side: 'BUY', filledValue: 300, averageFilledPrice: 30000, totalFees: 0.5,
+    };
+    const adapter = {
+      placeLimitBuy: async () => ({ success: true, orderId: 'stale-entry-1' }),
+      // Cancel is refused — the canonical reason (per #209 A) is that the
+      // order already filled.
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => {
+        getOrderCalls++;
+        // First read is the stale-timeout's own snapshot (still resting).
+        // Every read after that (safeCancelOrder's refused-cancel check, and
+        // placeEntryBid's own immediate-cancel verify at +750ms) sees the fill.
+        return getOrderCalls === 1
+          ? { status: 'OPEN', filledSize: 0, completionPercentage: 0 }
+          : filledStatus;
+      },
+      getOrderFills: async () => [],
+      getBidAsk: async () => ({ bid: 30000, ask: 30010 }),
+    };
+
+    const captured = [];
+    const entryCancelled = [];
+    const exec = createOrderExecutor('coinbase', {
+      entryOffsetBps: 10,
+      entryMaxRetries: 3,
+      orderStaleMs: 60_000, // unused — staleMs is passed per-call below
+      cancelRateLimitMs: 0,
+    }, adapter, 'ZZZ-TEST-674', {
+      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+      onEntryCancelled: (orderId) => entryCancelled.push(orderId),
+    });
+
+    const staleMs = 60; // real timer, kept short so the test stays fast
+    const result = await exec.placeEntryBid(1000, 30000, 30010, 0, null, staleMs);
+    assert.equal(result.success, true);
+
+    // placeEntryBid's own fixed 750ms immediate-cancel verify delay is well
+    // past the 60ms stale timeout, so by the time it resolves the stale-timer
+    // callback (refused cancel → filled) has already run to completion.
+    assert.equal(captured.length, 1, 'the fill is routed through onFillDetected');
+    assert.equal(captured[0].orderId, 'stale-entry-1');
+    assert.equal(captured[0].status.side, 'buy');
+    assert.equal(captured[0].status.filledSize, 0.01);
+    assert.ok(captured[0].status.placedAt > 0, 'placedAt propagated for fill-time');
+    assert.deepEqual(entryCancelled, [], 'a filled order is not an entry-cancellation');
+    assert.equal(exec.getPendingCounts().entries, 0, 'order dropped from tracking after the fill was routed');
+
+    exec.clearTimers();
+  });
+});
+
+describe('cancelAllLadderOrders — partial fill during a successful cancel (issue #674)', () => {
+  const restoreLadder = (exec, orderId, ladderIndex = 0) =>
+    exec.restorePendingOrder(orderId, {
+      type: 'ladder_entry', price: 51000 - ladderIndex * 100, size: 0.01, sizeUsdc: 510,
+      ladderIndex, placedAt: Date.now(),
+    });
+
+  it('routes a partial fill through onFillDetected when the cancel is honored with filledSize > 0', async () => {
+    // A ladder rung cancels cleanly (the exchange honors it), but part of it
+    // filled in the race window before the cancel took. The old code checked
+    // only `result.cancelled` and dropped tracking with a bare delete,
+    // silently losing that bought asset (no body, no TP).
+    // cancelOrder resolves {success:false} (the refused-cancel fast path
+    // safeCancelOrder takes without any polling delay) with getOrder already
+    // reporting the terminal CANCELLED-with-partial state — the same shape a
+    // genuinely-honored cancel resolves to once safeCancelOrder verifies it.
+    const captured = [];
+    const entryCancelled = [];
+    const adapter = {
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => ({ status: 'CANCELLED', filledSize: 0.004, filledValue: 204, averageFilledPrice: 51000, totalFees: 0.01, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+      onEntryCancelled: (orderId) => entryCancelled.push(orderId),
+    });
+    restoreLadder(exec, 'ladder-partial');
+
+    const result = await exec.cancelAllLadderOrders();
+
+    assert.equal(result.cancelled, 1, 'a genuine cancel still counts as cancelled');
+    assert.equal(result.partialFills, 1, 'the partial fill is reported back to the caller');
+    assert.equal(result.remainingTracked, 0);
+    assert.equal(captured.length, 1, 'partial fill routed through onFillDetected before dropping tracking');
+    assert.equal(captured[0].orderId, 'ladder-partial');
+    assert.equal(captured[0].status.isPartialFill, true);
+    assert.equal(captured[0].status.filledSize, 0.004);
+    assert.equal(captured[0].status.side, 'buy');
+    assert.deepEqual(entryCancelled, ['ladder-partial'], 'entry-cancel callback still fires for the ladder rung');
+  });
+
+  it('skips onFillDetected on a clean cancel with zero fill (guard is specific)', async () => {
+    const captured = [];
+    const adapter = {
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => ({ status: 'CANCELLED', filledSize: 0, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+    });
+    restoreLadder(exec, 'ladder-clean');
+
+    const result = await exec.cancelAllLadderOrders();
+
+    assert.equal(result.cancelled, 1);
+    assert.equal(result.partialFills, 0);
+    assert.equal(captured.length, 0);
   });
 });
