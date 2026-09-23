@@ -536,11 +536,12 @@ const repairHistoricalFillAnnotations = ({
       if (merged.tpOrderId) annotation.sellOrderId = merged.tpOrderId;
       fillLedger.annotateFillsByOrderId(orderId, annotation);
 
-      // A still-tracked entry shrinks by what was just booked from it, as the
-      // live fill path does — its remainder is the evidence startup uses to
+      // A still-tracked entry (or ladder rung) shrinks by what was just booked
+      // from it, as the live fill path does — its remainder is the evidence startup uses to
       // prove a later tranche unbooked (issue #756).
-      if (positionState.pendingEntryOrders?.some(e => e.orderId === orderId)) {
-        positionState.pendingEntryOrders = positionState.pendingEntryOrders.map(e => (e.orderId !== orderId ? e : {
+      for (const list of ['pendingEntryOrders', 'pendingLadderOrders']) {
+        if (!positionState[list]?.some(e => e.orderId === orderId)) continue;
+        positionState[list] = positionState[list].map(e => (e.orderId !== orderId ? e : {
           ...e,
           assetQty: Math.max(0, (Number(e.assetQty) || 0) - newBuy.assetQty),
           sizeUsdc: Math.max(0, (Number(e.sizeUsdc) || 0) - newBuy.costBasis),
@@ -3022,12 +3023,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (id && id !== 'core-migration' && !measured.has(id)) unmeasured.add(id);
       }
     }
-    // A still-tracked entry no live body owns can hold rows the pre-#671
-    // startup path ingested without booking (issue #756). They are unsold —
-    // this boot books them into a body (bookStartupOpenEntryPartial, or the
-    // orphan-buy recovery) — so they are open, not part of what an earlier
-    // tranche's sale closed.
-    for (const orderId of new Set((positionState.pendingEntryOrders || []).map(e => e?.orderId).filter(Boolean))) {
+    // A still-tracked entry or ladder rung no live body owns can hold rows
+    // ingested at boot without booking (the pre-#671 startup path, the
+    // recovery module; issue #756). They are unsold — this boot books them
+    // into a body (bookStartupOpenEntryPartial, or the orphan-buy recovery)
+    // — so they are open, not part of what an earlier tranche's sale closed.
+    const trackedOrderIds = [...(positionState.pendingEntryOrders || []), ...(positionState.pendingLadderOrders || [])]
+      .map(e => e?.orderId).filter(Boolean);
+    for (const orderId of new Set(trackedOrderIds)) {
       if (isBuyAlreadyCommitted(positionState.celestialBodies, orderId)) continue;
       const unbooked = fillLedger.getFillsForOrder(orderId)
         .filter(isUnsettledBuyRow)
@@ -3079,7 +3082,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const EPS = 1e-8;
     const candidates = [];
     const seenOrders = new Set();
-    for (const entry of (positionState.pendingEntryOrders || [])) {
+    // Ladder rungs are tracked and shrunk exactly like entries.
+    const tracked = [
+      ...(positionState.pendingEntryOrders || []).map(entry => ({ entry, list: 'pendingEntryOrders' })),
+      ...(positionState.pendingLadderOrders || []).map(entry => ({ entry, list: 'pendingLadderOrders' })),
+    ];
+    for (const { entry, list } of tracked) {
       const orderId = entry?.orderId;
       if (!orderId || seenOrders.has(orderId)) continue;
       seenOrders.add(orderId);
@@ -3093,7 +3101,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // reported, never booked. Rows no body stamped are booked this boot by
         // bookStartupOpenEntryPartial / the orphan-buy recovery instead.
         if (!fillLedger.getFillsForOrder(orderId).some(isUnsettledBuyRow)) {
-          candidates.push({ entry, orderId, ledger, measure, reportOnly: true });
+          candidates.push({ entry, list, orderId, ledger, measure, reportOnly: true });
         }
         continue;
       }
@@ -3102,7 +3110,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         logger.warn(`⚠️ [${exchange}] Entry ${orderId.slice(0, 8)}: ledger holds ${roundAsset(measure.shortfall)} ${baseCurrency} more than its bodies record, but a body references it without a tranche quantity — manual review required`, { orderId });
         continue;
       }
-      candidates.push({ entry, orderId, ledger, measure });
+      candidates.push({ entry, list, orderId, ledger, measure });
     }
     if (candidates.length === 0) return 0;
 
@@ -3140,7 +3148,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     };
 
     let recovered = 0;
-    for (const { entry, orderId, ledger, measure, reportOnly } of candidates) {
+    for (const { entry, list, orderId, ledger, measure, reportOnly } of candidates) {
       let placedQty = 0;
       const open = (openOrders || []).find(o => o.orderId === orderId);
       if (open) {
@@ -3184,7 +3192,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const body = celestialHierarchy.createNewBody({ assetQty: qty, costBasis, avgPrice: costBasis / qty }, orderId);
       positionState.celestialBodies = positionState.celestialBodies || [];
       positionState.celestialBodies.push(body);
-      positionState.pendingEntryOrders = positionState.pendingEntryOrders.map(e => (e.orderId !== orderId ? e : {
+      positionState[list] = positionState[list].map(e => (e.orderId !== orderId ? e : {
         ...e,
         assetQty: Math.max(0, (Number(e.assetQty) || 0) - qty),
         sizeUsdc: Math.max(0, (Number(e.sizeUsdc) || 0) - costBasis),

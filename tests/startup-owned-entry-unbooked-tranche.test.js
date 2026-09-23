@@ -95,7 +95,7 @@ const legacyBody = (qty, extra = {}) => ({
  * @param {string} pair
  * @param {{ ledger: (seed: ReturnType<typeof createFillLedger>) => void, bodies: Object[], entry: Object }} spec
  */
-const writePreFixFund = (pair, { ledger, bodies, entry }) => {
+const writePreFixFund = (pair, { ledger, bodies, entry, rung = null }) => {
   const seed = createFillLedger(EXCHANGE, pair, pair, { quiet: true });
   seed.startNewCycle();
   ledger(seed);
@@ -115,7 +115,8 @@ const writePreFixFund = (pair, { ledger, bodies, entry }) => {
     lastEntryTime: Date.now() - 45000,
     activeCycleId: seed.getCurrentCycleId(),
     celestialBodies: bodies,
-    pendingEntryOrders: [entry],
+    pendingEntryOrders: entry ? [entry] : [],
+    ...(rung && { ladderActive: true, pendingLadderOrders: [rung] }),
   }, null, EXCHANGE, null, null, pair);
 };
 
@@ -556,5 +557,26 @@ describe('a closed body that may have held part of the order (issue #756)', () =
     trades.record({ sellOrderId: 'tp-gone', timestamp: Date.now() - 42000, qtySold: 0.004, bodyId: 'body-gone', buyOrderIds: ['other-buy'], source: 'live' });
     const { eng } = await bootEngine(pair, { openOrders: [OPEN_ENTRY], orders: {}, fills: [T1, T2] });
     assert.ok(near(bookedQty(eng._getPositionState()), 0.01), 'the unbooked t2 is recovered');
+  });
+});
+
+describe('a ladder rung a live body owns (issue #756)', () => {
+  it('books the rung\'s ledger-only tranche and shrinks the rung', async () => {
+    const pair = '__teststartupowned756_n__';
+    writePreFixFund(pair, {
+      ledger: (seed) => {
+        seed.ingestFill(T1, Date.now() - 60000);
+        seed.annotateFillsByOrderId(ORDER_ID, { isBodyOwned: true, bodyId: 'body-b-756', sellOrderId: BODY_TP });
+        seed.ingestFill(T2);
+      },
+      bodies: [legacyBody(0.004)],
+      entry: null,
+      rung: { orderId: ORDER_ID, ladderIndex: 0, price: PRICE, assetQty: 0.016, sizeUsdc: 800, placedAt: Date.now() - 60000 },
+    });
+    const { eng } = await bootEngine(pair, { openOrders: [OPEN_ENTRY], orders: {}, fills: [T1, T2] });
+    const pos = eng._getPositionState();
+    assert.ok(near(bookedQty(pos), 0.01), `t1 + t2 are booked (got ${bookedQty(pos)})`);
+    const rung = (pos.pendingLadderOrders || []).find(o => o.orderId === ORDER_ID);
+    assert.ok(rung && near(rung.assetQty, 0.01), `the rung shrinks to its remainder (got ${rung && rung.assetQty})`);
   });
 });
