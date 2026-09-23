@@ -214,6 +214,51 @@ describe('startup booking of partially-filled open entries (issue #671)', () => 
     assert.equal(p.cycleBuys, 1);
   });
 
+  it('a tranche whose body already sold is not rebooked; only trades the ledger lacks are', async () => {
+    const pair = '__teststartuppartial_f__';
+    // Live run: T1 was booked into a body, whose TP then sold it and closed
+    // the body — while the entry kept resting.
+    const seed = createFillLedger('coinbase', pair, pair, { quiet: true });
+    seed.startNewCycle();
+    seed.ingestFill(withTime(T1));
+    seed.annotateFillsByOrderId(ORDER_ID, { isBodyOwned: true, bodyId: 'body-old', sellOrderId: 'tp-old' });
+    seed.ingestFill(withTime({ tradeId: 'tp-old-t1', orderId: 'tp-old', side: 'sell', size: 0.004, price: 51000, netFee: 0 }));
+    seed.persist();
+
+    const T2A = { tradeId: 'entry-1-t2a', orderId: ORDER_ID, side: 'buy', size: 0.002, price: 50000, netFee: 0 };
+    const fillSource = { fills: [T1, T2A] };
+    const { eng } = makeEngine(pair, fillSource, { ...OPEN_PARTIAL, filledSize: 0.006, filledValue: 300 });
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [{ orderId: ORDER_ID, price: 50000, assetQty: 0.006, sizeUsdc: 300, placedAt: Date.now() - 60000 }];
+
+    const result = await eng.start();
+    assert.equal(result.success, true, `start() must succeed: ${result.error}`);
+    const p = eng._getPositionState();
+    const held = bodiesFor(p).reduce((sum, b) => sum + b.assetQty, 0);
+    assert.ok(Math.abs(held - 0.002) < 1e-9, `only the unsold new tranche is held (got ${held})`);
+  });
+
+  it('a settled tranche with nothing new since is left alone', async () => {
+    const pair = '__teststartuppartial_g__';
+    const seed = createFillLedger('coinbase', pair, pair, { quiet: true });
+    seed.startNewCycle();
+    seed.ingestFill(withTime(T1));
+    seed.annotateFillsByOrderId(ORDER_ID, { isBodyOwned: true, bodyId: 'body-old', sellOrderId: 'tp-old' });
+    seed.ingestFill(withTime({ tradeId: 'tp-old-t1', orderId: 'tp-old', side: 'sell', size: 0.004, price: 51000, netFee: 0 }));
+    seed.persist();
+
+    const fillSource = { fills: [T1] };
+    const { eng } = makeEngine(pair, fillSource);
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [{ orderId: ORDER_ID, price: 50000, assetQty: 0.006, sizeUsdc: 300, placedAt: Date.now() - 60000 }];
+
+    const result = await eng.start();
+    assert.equal(result.success, true, `start() must succeed: ${result.error}`);
+    const p = eng._getPositionState();
+    assert.equal(bodiesFor(p).length, 0, 'no body is created for asset that was already sold');
+    assert.ok((p.pendingEntryOrders || []).some(e => e.orderId === ORDER_ID), 'the resting entry stays tracked');
+  });
+
   it('adopted orphan entry: persisted to pendingEntryOrders and its tranche booked into a body', async () => {
     const fillSource = { fills: [T1] };
     const { eng, restored } = makeEngine('__teststartuppartial_c__', fillSource);

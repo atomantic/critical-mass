@@ -1970,15 +1970,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
        */
       const bookStartupOpenEntryPartial = async (order, placedAt, label) => {
         const fillArgs = { status: order.status || 'OPEN', isPartialFill: true, placedAt };
-        // Ledger rows for this order that no body owns were ingested by the
-        // pre-#671 startup path. The normal pass below would dedup them away
-        // and build the body from only the newer tranches, so commit them
-        // into a body first, on their own. If they are in the current cycle,
-        // the cycleBuys auto-correct above already counted the order from
-        // them, and handleOrderFill's first commit would count it again.
-        const legacyRows = isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)
+        const ownedByLiveBody = () => isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId);
+        const ledgerBuys = ownedByLiveBody()
           ? []
           : fillLedger.getFillsForOrder(order.orderId).filter(f => f.side === 'buy');
+        const wasBooked = (f) => Boolean(f.bodyId || f.isBodyOwned || f.isSatellite || f.sellOrderId);
+        // Rows no body ever owned were ingested by the pre-#671 startup path.
+        // The normal pass below would dedup them away and build the body from
+        // only the newer tranches, so commit them into a body first, on their
+        // own. If they are in the current cycle, the cycleBuys auto-correct
+        // above already counted the order from them, and handleOrderFill's
+        // first commit would count it again.
+        const legacyRows = ledgerBuys.filter(f => !wasBooked(f));
+        // Rows a body already booked while no live body owns the order: that
+        // body was closed by its TP (or otherwise retired) while the entry kept
+        // resting. Those tranches are settled and must not be re-committed.
+        const hasSettledRows = ledgerBuys.some(wasBooked);
         try {
           if (legacyRows.length > 0) {
             const alreadyCounted = fillLedger.getCurrentCycleFills()
@@ -1995,6 +2002,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 positionState.cycleBuys = cycleBuysBefore;
               }
             }
+          }
+          if (hasSettledRows && !ownedByLiveBody()) {
+            // handleOrderFill falls back to every ledger row of the order when
+            // nothing new is ingested — with no live owner that would rebook
+            // the settled tranches. Hand it only the trades the ledger lacks.
+            const freshFills = (await adapter.getOrderFills(order.orderId))
+              .filter(f => !fillLedger.hasProcessedTrade(f.tradeId || f.trade_id));
+            if (freshFills.length === 0) return;
+            await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, {
+              ...fillArgs,
+              confirmedFills: freshFills,
+            }));
+            return;
           }
           await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, fillArgs));
         } catch (err) {
