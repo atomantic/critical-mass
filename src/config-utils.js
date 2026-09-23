@@ -6,9 +6,7 @@
  * Supports backward compatibility with single-exchange config format.
  */
 
-const { DEFAULT_AGGRESSIVENESS_PRESETS, MERGE_PROXIMITY_BOUNDS, PRESET_FIELD_RULES } = require('./regime-preset-contract');
-const { validateConfigUpdate } = require('./config-validation');
-const { isDeepStrictEqual } = require('util');
+const { DEFAULT_AGGRESSIVENESS_PRESETS, MERGE_PROXIMITY_BOUNDS } = require('./regime-preset-contract');
 const fs = require('fs');
 const path = require('path');
 const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils');
@@ -17,6 +15,17 @@ const pathsModule = require('./paths');
 const { createContextLogger } = require('./logger');
 
 const configLogger = createContextLogger({ module: 'config-utils' });
+
+// Lazy back-edges — config-snapshot.js and config-validator.js (issue #727)
+// each require several of THIS module's exports (REGIME_DEFAULTS,
+// resolveFundConfig, computeDiff, BACKUP_INTERVAL_BOUNDS, …) at their own
+// module top level, so a top-level `require` of either one here would form a
+// genuine circular require and see config-utils.js's exports before this
+// module finishes initializing — the same trap the "logger imports
+// migration" comment above avoids for that pair. Deferring the require
+// until the wrapper is actually called sidesteps it.
+const getConfigSnapshot = () => require('./config-snapshot');
+const getConfigValidator = () => require('./config-validator');
 
 /**
  * @typedef {import('./types').ExchangeConfig} ExchangeConfig
@@ -1282,301 +1291,19 @@ const updateExchangeRegimeConfig = (exchange, updates) => (
   updateRegimeConfig(exchange, getDefaultPair(exchange) || DEFAULTS.productId, updates)
 );
 
-/** Primitive contract for every supported regime setting; preset bounds stay shared. */
-const REGIME_FIELD_RULES = {
-  enabled: { type: 'boolean' },
-  aggressiveness: { type: 'string', enum: ['conservative', 'moderate', 'aggressive', 'maximum'] },
-  atrPeriod: { type: 'number' },
-  kFactor: { type: 'number' },
-  minIntervalMs: { type: 'number' },
-  maxIntervalMs: { type: 'number' },
-  momentumMult: { type: 'number' },
-  volExpansionMult: { type: 'number' },
-  volContractionMult: { type: 'number' },
-  vwapPeriodHours: { type: 'number' },
-  trendConfirmationPeriods: { type: 'number' },
-  minOrderSizeUsdc: { type: 'number' },
-  baseSizeUsdc: { type: 'number' },
-  harvestScale: { type: 'number' },
-  cautionScale: { type: 'number' },
-  trendScale: { type: 'number' },
-  maxCycleBuys: { type: 'number' },
-  cycleResetHours: { type: 'number' },
-  liquidityFactorCap: { type: 'number' },
-  divergenceScalePct: { type: 'number' },
-  tpMult: { type: 'number' },
-  tpMinPercent: { type: 'number' },
-  tpMaxPercent: { type: 'number' },
-  tpUpdateThresholdPct: { type: 'number' },
-  holdbackRatio: { type: 'number' },
-  celestialEnabled: { type: 'boolean' },
-  maxCelestialBodies: { type: 'number' },
-  mergeProximityScale: { type: 'number' },
-  tpAutoManaged: { type: 'boolean' },
-  tpEvaluationCycles: { type: 'number' },
-  tpEvaluationMaxHours: { type: 'number' },
-  tpMinSampleSize: { type: 'number' },
-  tpAbsoluteMin: { type: 'number' },
-  tpAbsoluteMax: { type: 'number' },
-  tpMaxChangePercent: { type: 'number' },
-  sizeAutoManaged: { type: 'boolean' },
-  sizeEvaluationCycles: { type: 'number' },
-  sizeEvaluationMaxHours: { type: 'number' },
-  sizeMinSampleSize: { type: 'number' },
-  sizeAbsoluteMinBase: { type: 'number' },
-  sizeAbsoluteMaxBase: { type: 'number' },
-  sizeTargetUtilization: { type: 'number' },
-  sizeMaxChangePercent: { type: 'number' },
-  sizeAutoCycleBuys: { type: 'boolean' },
-  sizeMinCycleBuys: { type: 'number' },
-  sizeMaxCycleBuys: { type: 'number' },
-  maxAssetExposure: { type: 'number' },
-  depositedCapital: { type: 'number' },
-  maxUsdcDeployed: { type: 'number' },
-  maxDrawdownPercent: { type: 'number' },
-  drawdownResetHours: { type: 'number' },
-  entryOffsetBps: { type: 'number' },
-  entryOffsetUpBps: { type: 'number' },
-  entryOffsetDownBps: { type: 'number' },
-  entryMaxRetries: { type: 'number' },
-  cancelRateLimitMs: { type: 'number' },
-  orderStaleMs: { type: 'number' },
-  staleDataMs: { type: 'number' },
-  staleOrdersMs: { type: 'number' },
-  maxRestErrors: { type: 'number' },
-  maxRateLimits: { type: 'number' },
-  maxLatencyMs: { type: 'number' },
-  safeRecoveryMs: { type: 'number' },
-  maxOpenOrders: { type: 'number' },
-  reconcileIntervalMs: { type: 'number' },
-  fillDriftSweepMs: { type: 'number' },
-  maxSpreadBps: { type: 'number' },
-  spreadPauseMs: { type: 'number' },
-  minDepthUsdc: { type: 'number' },
-  depthPauseMs: { type: 'number' },
-  flashMoveMult: { type: 'number' },
-  flashCooldownMs: { type: 'number' },
-  cancelEntriesOnFlash: { type: 'boolean' },
-  macroEnabled: { type: 'boolean' },
-  macroUpdateIntervalMs: { type: 'number' },
-  macroHysteresis: { type: 'number' },
-  macroAccumulationThreshold: { type: 'number' },
-  macroDeclineThreshold: { type: 'number' },
-  macroMarkupThreshold: { type: 'number' },
-  macroAccumulationSizeMult: { type: 'number' },
-  macroAccumulationTpMult: { type: 'number' },
-  macroAccumulationOffsetMult: { type: 'number' },
-  macroMarkupSizeMult: { type: 'number' },
-  macroMarkupTpMult: { type: 'number' },
-  macroMarkupOffsetMult: { type: 'number' },
-  macroDeclineSizeMult: { type: 'number' },
-  macroDeclineTpMult: { type: 'number' },
-  macroDeclineOffsetMult: { type: 'number' },
-  longTermBiasEnabled: { type: 'boolean' },
-  longTermLookbackDays: { type: 'number' },
-  longTermUpdateIntervalMs: { type: 'number' },
-  autoAggressivenessEnabled: { type: 'boolean' },
-  entryMode: { type: 'string', enum: ['reactive', 'ladder'] },
-  ladderMaxAthDropPct: { type: 'number' },
-  ladderSpacingMode: { type: 'string', enum: ['linear', 'sqrt', 'exponential'] },
-  ladderSizeMode: { type: 'string', enum: ['flat', 'linear', 'sqrt', 'fibonacci'] },
-  ladderAutoSwitch: { type: 'boolean' },
-  ladderAutoSwitchVolMult: { type: 'number' },
-  ladderMinSpacingPct: { type: 'number' },
-  ...PRESET_FIELD_RULES,
-};
-
 /**
- * Prove the primitive and enum contract before any coercive comparisons.
- * @param {unknown} config
- * @returns {config is Partial<RegimeStrategyConfig>}
- */
-const hasRegimeFieldTypes = (config) => typeof config === 'object'
-  && config !== null && !Array.isArray(config)
-  && validateConfigUpdate(REGIME_FIELD_RULES, config).errors.length === 0;
-
-/**
- * Validate regime strategy configuration
+ * Backward-compatible re-export. `REGIME_FIELD_RULES`, `hasRegimeFieldTypes`,
+ * and the definition of `validateRegimeConfig` itself now live in
+ * `config-validator.js` (issue #727) — that module already requires several
+ * of THIS module's other exports (REGIME_DEFAULTS, BACKUP_INTERVAL_BOUNDS,
+ * …), so requiring it back here at module-load time would form a genuine
+ * circular require; `getConfigValidator()` (defined above) defers the
+ * require until this wrapper actually runs, the same pattern
+ * `getConfigSnapshot()` uses for the config-snapshot.js back-edge.
  * @param {unknown} config - Untrusted regime config to validate
  * @returns {import('./types').RegimeValidationResult}
  */
-const validateRegimeConfig = (config) => {
-  if (!hasRegimeFieldTypes(config)) {
-    return { valid: false, errors: validateConfigUpdate(REGIME_FIELD_RULES, config).errors };
-  }
-  const errors = [];
-
-  // Aggressiveness level validation
-  if (config.aggressiveness !== undefined) {
-    const validLevels = Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS);
-    if (!validLevels.includes(config.aggressiveness)) {
-      errors.push('aggressiveness must be one of: conservative, moderate, aggressive, maximum');
-    }
-  }
-
-  // Volatility Clock validation
-  if (config.atrPeriod !== undefined && (config.atrPeriod < 5 || config.atrPeriod > 30)) {
-    errors.push('atrPeriod must be between 5 and 30');
-  }
-  // Regime Detection validation
-  if (config.momentumMult !== undefined && (config.momentumMult < 1.0 || config.momentumMult > 2.5)) {
-    errors.push('momentumMult must be between 1.0 and 2.5');
-  }
-  if (config.volExpansionMult !== undefined && (config.volExpansionMult < 1.2 || config.volExpansionMult > 2.0)) {
-    errors.push('volExpansionMult must be between 1.2 and 2.0');
-  }
-
-  // Position Sizing validation
-  if (config.minOrderSizeUsdc !== undefined && (config.minOrderSizeUsdc < 1 || config.minOrderSizeUsdc > 100)) {
-    errors.push('minOrderSizeUsdc must be between 1 and 100');
-  }
-  if (config.baseSizeUsdc !== undefined && (config.baseSizeUsdc < 1 || config.baseSizeUsdc > 1000)) {
-    errors.push('baseSizeUsdc must be between 1 and 1000');
-  }
-  if (config.divergenceScalePct !== undefined && (config.divergenceScalePct < 0.5 || config.divergenceScalePct > 20)) {
-    errors.push('divergenceScalePct must be between 0.5 and 20');
-  }
-
-  // Take-Profit validation
-  if (config.tpMinPercent !== undefined && (config.tpMinPercent < 0.01 || config.tpMinPercent > 10.0)) {
-    errors.push('tpMinPercent must be between 0.01 and 10.0');
-  }
-  if (config.tpMaxPercent !== undefined && (config.tpMaxPercent < 0.1 || config.tpMaxPercent > 50.0)) {
-    errors.push('tpMaxPercent must be between 0.1 and 50.0');
-  }
-  if (config.holdbackRatio !== undefined && (config.holdbackRatio < 0.0 || config.holdbackRatio > 1.0)) {
-    errors.push('holdbackRatio must be between 0.0 and 1.0');
-  }
-
-  // TP Auto-Management validation
-  if (config.tpEvaluationCycles !== undefined && (config.tpEvaluationCycles < 1 || config.tpEvaluationCycles > 100)) {
-    errors.push('tpEvaluationCycles must be between 1 and 100');
-  }
-  if (config.tpEvaluationMaxHours !== undefined && (config.tpEvaluationMaxHours < 1 || config.tpEvaluationMaxHours > 168)) {
-    errors.push('tpEvaluationMaxHours must be between 1 and 168 (1 week)');
-  }
-  if (config.tpMinSampleSize !== undefined && (config.tpMinSampleSize < 3 || config.tpMinSampleSize > 100)) {
-    errors.push('tpMinSampleSize must be between 3 and 100');
-  }
-  if (config.tpAbsoluteMin !== undefined && (config.tpAbsoluteMin < 0.01 || config.tpAbsoluteMin > 1.0)) {
-    errors.push('tpAbsoluteMin must be between 0.01 and 1.0');
-  }
-  if (config.tpAbsoluteMax !== undefined && (config.tpAbsoluteMax < 1.0 || config.tpAbsoluteMax > 10.0)) {
-    errors.push('tpAbsoluteMax must be between 1.0 and 10.0');
-  }
-  if (config.tpMaxChangePercent !== undefined && (config.tpMaxChangePercent < 5 || config.tpMaxChangePercent > 50)) {
-    errors.push('tpMaxChangePercent must be between 5 and 50');
-  }
-
-  // Size Auto-Management validation
-  if (config.sizeEvaluationCycles !== undefined && (config.sizeEvaluationCycles < 1 || config.sizeEvaluationCycles > 100)) {
-    errors.push('sizeEvaluationCycles must be between 1 and 100');
-  }
-  if (config.sizeEvaluationMaxHours !== undefined && (config.sizeEvaluationMaxHours < 1 || config.sizeEvaluationMaxHours > 168)) {
-    errors.push('sizeEvaluationMaxHours must be between 1 and 168 (1 week)');
-  }
-  if (config.sizeMinSampleSize !== undefined && (config.sizeMinSampleSize < 1 || config.sizeMinSampleSize > 50)) {
-    errors.push('sizeMinSampleSize must be between 1 and 50');
-  }
-  if (config.sizeAbsoluteMinBase !== undefined && (config.sizeAbsoluteMinBase < 1 || config.sizeAbsoluteMinBase > 100)) {
-    errors.push('sizeAbsoluteMinBase must be between 1 and 100');
-  }
-  if (config.sizeAbsoluteMaxBase !== undefined && (config.sizeAbsoluteMaxBase < 50 || config.sizeAbsoluteMaxBase > 2000)) {
-    errors.push('sizeAbsoluteMaxBase must be between 50 and 2000');
-  }
-  if (config.sizeTargetUtilization !== undefined && (config.sizeTargetUtilization < 0.5 || config.sizeTargetUtilization > 0.99)) {
-    errors.push('sizeTargetUtilization must be between 0.5 and 0.99');
-  }
-  if (config.sizeMaxChangePercent !== undefined && (config.sizeMaxChangePercent < 5 || config.sizeMaxChangePercent > 50)) {
-    errors.push('sizeMaxChangePercent must be between 5 and 50');
-  }
-  if (config.sizeMinCycleBuys !== undefined && (config.sizeMinCycleBuys < 5 || config.sizeMinCycleBuys > 50)) {
-    errors.push('sizeMinCycleBuys must be between 5 and 50');
-  }
-  if (config.sizeMaxCycleBuys !== undefined && (config.sizeMaxCycleBuys < 20 || config.sizeMaxCycleBuys > 200)) {
-    errors.push('sizeMaxCycleBuys must be between 20 and 200');
-  }
-
-  // Legacy satellite config aliases silently accepted (mapped to celestial equivalents)
-
-  // Celestial Hierarchy validation
-  if (config.maxCelestialBodies !== undefined && (!Number.isInteger(config.maxCelestialBodies) || config.maxCelestialBodies < 1 || config.maxCelestialBodies > 15)) {
-    errors.push('maxCelestialBodies must be an integer between 1 and 15');
-  }
-
-  // Ladder / Entry Mode validation
-  if (config.entryMode !== undefined) {
-    const allowedEntryModes = ['reactive', 'ladder'];
-    if (!allowedEntryModes.includes(config.entryMode)) {
-      errors.push(`entryMode must be one of: ${allowedEntryModes.join(', ')}`);
-    }
-  }
-  if (config.ladderMaxAthDropPct !== undefined && (config.ladderMaxAthDropPct < 10 || config.ladderMaxAthDropPct > 95)) {
-    errors.push('ladderMaxAthDropPct must be between 10 and 95');
-  }
-  if (config.ladderSpacingMode !== undefined) {
-    const allowedSpacing = ['linear', 'sqrt', 'exponential'];
-    if (!allowedSpacing.includes(config.ladderSpacingMode)) {
-      errors.push(`ladderSpacingMode must be one of: ${allowedSpacing.join(', ')}`);
-    }
-  }
-  if (config.ladderSizeMode !== undefined) {
-    const allowedSizing = ['flat', 'linear', 'sqrt', 'fibonacci'];
-    if (!allowedSizing.includes(config.ladderSizeMode)) {
-      errors.push(`ladderSizeMode must be one of: ${allowedSizing.join(', ')}`);
-    }
-  }
-  if (config.ladderMinSpacingPct !== undefined && (config.ladderMinSpacingPct < 0.01 || config.ladderMinSpacingPct > 5.0)) {
-    errors.push('ladderMinSpacingPct must be between 0.01 and 5.0');
-  }
-
-  // Macro Regime validation
-  if (config.macroHysteresis !== undefined && (config.macroHysteresis < 1 || config.macroHysteresis > 20)) {
-    errors.push('macroHysteresis must be between 1 and 20');
-  }
-  if (config.macroDeclineThreshold !== undefined && config.macroAccumulationThreshold !== undefined
-    && config.macroDeclineThreshold >= config.macroAccumulationThreshold) {
-    errors.push('macroDeclineThreshold must be less than macroAccumulationThreshold');
-  }
-  if (config.macroAccumulationThreshold !== undefined && config.macroMarkupThreshold !== undefined
-    && config.macroAccumulationThreshold >= config.macroMarkupThreshold) {
-    errors.push('macroAccumulationThreshold must be less than macroMarkupThreshold');
-  }
-  if (config.macroUpdateIntervalMs !== undefined && (config.macroUpdateIntervalMs < 60000 || config.macroUpdateIntervalMs > 600000)) {
-    errors.push('macroUpdateIntervalMs must be between 60000 (1 min) and 600000 (10 min)');
-  }
-  const macroMultFields = [
-    'macroAccumulationSizeMult', 'macroAccumulationTpMult', 'macroAccumulationOffsetMult',
-    'macroMarkupSizeMult', 'macroMarkupTpMult', 'macroMarkupOffsetMult',
-    'macroDeclineSizeMult', 'macroDeclineTpMult', 'macroDeclineOffsetMult',
-  ];
-  for (const field of macroMultFields) {
-    if (config[field] !== undefined && (config[field] < 0.1 || config[field] > 3.0)) {
-      errors.push(`${field} must be between 0.1 and 3.0`);
-    }
-  }
-
-  // Risk Caps validation
-  if (config.maxAssetExposure !== undefined && config.maxAssetExposure !== 0 && (config.maxAssetExposure < 0.01 || config.maxAssetExposure > 10.0)) {
-    errors.push('maxAssetExposure must be 0 (uncapped) or between 0.01 and 10.0');
-  }
-  if (config.depositedCapital !== undefined && config.depositedCapital !== 0 && config.depositedCapital < 100) {
-    errors.push('depositedCapital must be 0 (auto-derive) or at least 100');
-  }
-  if (config.maxUsdcDeployed !== undefined && config.maxUsdcDeployed < 1000) {
-    errors.push('maxUsdcDeployed must be at least 1000');
-  }
-  if (config.maxDrawdownPercent !== undefined && (config.maxDrawdownPercent < 10 || config.maxDrawdownPercent > 30)) {
-    errors.push('maxDrawdownPercent must be between 10 and 30');
-  }
-  if (config.drawdownResetHours !== undefined && (config.drawdownResetHours < 0 || config.drawdownResetHours > 720)) {
-    errors.push('drawdownResetHours must be between 0 (disabled) and 720 (30 days)');
-  }
-
-  return errors.length > 0
-    ? { valid: false, errors }
-    : { valid: true, errors: [], value: config };
-};
+const validateRegimeConfig = (config) => getConfigValidator().validateRegimeConfig(config);
 
 /**
  * Get notification configuration with defaults
@@ -1786,379 +1513,6 @@ const updateSentinelConfig = (updates) => {
   return config;
 };
 
-// ============================================================================
-// Backup archive configuration snapshot (issue #430)
-//
-// data/config.json holds only the DIFF against the machine-local base
-// config.json (or, on a fresh clone, the shipped config.example.json). An
-// archive of the data directory alone therefore carries no fund identity at
-// all when the operator's funds are defined in the base file: restoring onto a
-// new machine silently adopts the destination's base — a different pair and a
-// different allocation — while the restored state files describe the original
-// fund.
-//
-// The archive fixes that by carrying a self-contained, schema-allowlisted
-// snapshot of the EFFECTIVE configuration (every value already materialized,
-// so it does not depend on any base file), which restore replays against
-// whatever base the destination has.
-// ============================================================================
-
-/**
- * Snapshot SHAPE version. Bump only for a breaking shape change — a field
- * removed, re-typed, or moved. Additive growth of the allowlists below does
- * NOT move it; that is what `CONFIG_SNAPSHOT_FIELD_REVISION` is for (#567).
- */
-const CONFIG_SNAPSHOT_VERSION = 1;
-
-/**
- * Fund-level fields carried by a snapshot. Allowlisted from the fund schema so
- * a stray/unknown key on disk — or a crafted archive — can never smuggle a
- * credential through the snapshot.
- */
-const SNAPSHOT_FUND_KEYS = Object.freeze(Object.keys(DEFAULTS));
-
-/** Regime (strategy) fields carried by a snapshot. */
-const SNAPSHOT_REGIME_KEYS = Object.freeze(Object.keys(REGIME_DEFAULTS));
-
-/**
- * Global fields carried by a snapshot.
- *
- * Deliberately EXCLUDES `notifications` and `sentinel`: those hold the Telegram
- * bot token and the AI-classification credentials. Restore leaves the
- * destination's own copies of both untouched.
- */
-const SNAPSHOT_GLOBAL_KEYS = Object.freeze([
-  ...Object.keys(GLOBAL_DEFAULTS),
-  'aggressivenessPresets',
-]);
-
-/**
- * Snapshot FIELD revision: how many fields the three allowlists above carry.
- *
- * The allowlists are derived from the live defaults objects, so they widen on
- * every ordinary feature commit while `CONFIG_SNAPSHOT_VERSION` deliberately
- * stays put. Without a second marker a reader cannot tell "a version-1 payload
- * written by a newer build" from "a version-1 payload it fully understands",
- * so it took the strict-rejection path meant for crafted archives and refused
- * the whole restore over one unknown knob (#567).
- *
- * Written as a literal, not computed from the lists, so the test that asserts
- * it equals `SNAPSHOT_FUND_KEYS.length + SNAPSHOT_REGIME_KEYS.length +
- * SNAPSHOT_GLOBAL_KEYS.length` fails CI the moment a field is added to
- * DEFAULTS / REGIME_DEFAULTS / GLOBAL_DEFAULTS without bumping it.
- */
-const CONFIG_SNAPSHOT_FIELD_REVISION = 115;
-
-/**
- * Copy only the allowlisted, defined keys of `source`, in allowlist order (so
- * two snapshots of equal content are structurally identical).
- * @param {Object|undefined} source
- * @param {ReadonlyArray<string>} keys
- * @returns {Object}
- */
-const pickAllowed = (source, keys) => {
-  const out = {};
-  for (const key of keys) {
-    if (source?.[key] !== undefined) out[key] = source[key];
-  }
-  return out;
-};
-
-const isPlainObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
-
-/**
- * Build a self-contained snapshot of the effective non-secret configuration.
- *
- * @param {Object} config - A full (already merged) configuration object
- * @returns {{version: number, fieldRevision: number, exchanges: Object, global: Object}} Snapshot
- */
-const buildConfigSnapshot = (config) => {
-  const normalized = normalizeToMultiExchange(isPlainObject(config) ? config : {});
-  const exchanges = {};
-  for (const [exchange, block] of Object.entries(normalized.exchanges || {})) {
-    const pairs = {};
-    for (const [pair, fundBlock] of Object.entries(normalizeExchangeBlock(block).pairs || {})) {
-      const fund = pickAllowed(resolveFundConfig(normalized.global, fundBlock), SNAPSHOT_FUND_KEYS);
-      // The pair key IS the fund identity; never let it drift from productId.
-      fund.productId = fundBlock?.productId ?? pair;
-      fund.regime = pickAllowed(resolveRegimeConfig(fundBlock), SNAPSHOT_REGIME_KEYS);
-      pairs[pair] = fund;
-    }
-    // An exchange with no live funds is represented by its absence, which is
-    // what reconstruction tombstones against the destination base.
-    if (Object.keys(pairs).length > 0) exchanges[exchange] = { pairs };
-  }
-  return {
-    version: CONFIG_SNAPSHOT_VERSION,
-    fieldRevision: CONFIG_SNAPSHOT_FIELD_REVISION,
-    exchanges,
-    global: pickAllowed(normalized.global, SNAPSHOT_GLOBAL_KEYS),
-  };
-};
-
-/**
- * Schema-validate a snapshot read back out of an archive.
- *
- * Two markers gate a cross-build read (#567). `version` is the SHAPE contract:
- * a mismatch is fatal because the reader cannot interpret the payload at all.
- * `fieldRevision` is the ALLOWLIST contract, and it moves on every ordinary
- * commit that adds a config field — so a payload whose revision is strictly
- * GREATER than this build's was written by a newer build, and a key this build
- * does not recognize is simply a setting that did not exist here yet: drop it
- * (the destination falls back to its own default for it) and report it in
- * `droppedFields`. That mirrors the round-trip tolerance `sanitizeRegimeConfig`
- * already applies to stored regime blocks. At an equal or older revision an
- * unknown key is still a crafted or corrupt archive, and still fatal.
- *
- * Dropped, never passed through: the returned `snapshot` is the sanitized copy
- * `reconstructConfigOverride` replays into data/config.json, so the allowlist's
- * secret-smuggling guard holds in the forward direction too.
- *
- * @param {*} snapshot - Untrusted snapshot from an archive manifest
- * @returns {{valid: true, snapshot: Object, droppedFields: Array<string>}
- *   | {valid: false, error: string}}
- */
-const validateConfigSnapshot = (snapshot) => {
-  if (!isPlainObject(snapshot)) {
-    return { valid: false, error: 'configuration snapshot is missing or is not an object' };
-  }
-  if (snapshot.version !== CONFIG_SNAPSHOT_VERSION) {
-    return {
-      valid: false,
-      error: `configuration snapshot version ${JSON.stringify(snapshot.version)} is not supported by this build (expected ${CONFIG_SNAPSHOT_VERSION}) — upgrade critical-mass before restoring this archive`,
-    };
-  }
-  if (!isPlainObject(snapshot.exchanges)) {
-    return { valid: false, error: 'configuration snapshot has no `exchanges` object' };
-  }
-  if (snapshot.global !== undefined && !isPlainObject(snapshot.global)) {
-    return { valid: false, error: 'configuration snapshot `global` is not an object' };
-  }
-
-  // A missing/non-integer marker is an archive from before this contract
-  // existed: revision 0, strict. Only a STRICTLY newer revision earns tolerance.
-  const payloadRevision = Number.isInteger(snapshot.fieldRevision) ? snapshot.fieldRevision : 0;
-  const fromNewerBuild = payloadRevision > CONFIG_SNAPSHOT_FIELD_REVISION;
-
-  const sanitized = structuredClone(snapshot);
-  /** @type {Array<string>} */
-  const droppedFields = [];
-  /**
-   * Handle one unknown key: drop it from the sanitized copy when the payload
-   * comes from a newer build, otherwise hand back the fatal error to return.
-   * @param {Object} container - Object in `sanitized` holding the key
-   * @param {string} key
-   * @param {string} fieldPath - Reporting path, e.g. `coinbase/BTC-USDC.regime.foo`
-   * @param {string} error - Fatal message when tolerance does not apply
-   * @returns {string|null}
-   */
-  const dropOrReject = (container, key, fieldPath, error) => {
-    if (!fromNewerBuild) return error;
-    delete container[key];
-    droppedFields.push(fieldPath);
-    return null;
-  };
-
-  for (const key of Object.keys(sanitized.global || {})) {
-    if (SNAPSHOT_GLOBAL_KEYS.includes(key)) continue;
-    const fatal = dropOrReject(sanitized.global, key, `global.${key}`, `configuration snapshot carries unsupported global field "${key}"`);
-    if (fatal) return { valid: false, error: fatal };
-  }
-  const allowedFundKeys = new Set([...SNAPSHOT_FUND_KEYS, 'regime']);
-  for (const [exchange, block] of Object.entries(sanitized.exchanges)) {
-    if (!isPlainObject(block) || !isPlainObject(block.pairs)) {
-      return { valid: false, error: `configuration snapshot entry for exchange "${exchange}" has no \`pairs\` object` };
-    }
-    for (const [pair, fund] of Object.entries(block.pairs)) {
-      if (!PAIR_RE.test(pair)) {
-        return { valid: false, error: `configuration snapshot has an invalid pair identifier "${exchange}/${pair}"` };
-      }
-      if (!isPlainObject(fund)) {
-        return { valid: false, error: `configuration snapshot fund "${exchange}/${pair}" is not an object` };
-      }
-      if (typeof fund.productId !== 'string' || !fund.productId) {
-        return { valid: false, error: `configuration snapshot fund "${exchange}/${pair}" has no productId` };
-      }
-      for (const key of Object.keys(fund)) {
-        if (allowedFundKeys.has(key)) continue;
-        const fatal = dropOrReject(fund, key, `${exchange}/${pair}.${key}`, `configuration snapshot fund "${exchange}/${pair}" carries unsupported field "${key}"`);
-        if (fatal) return { valid: false, error: fatal };
-      }
-      if (fund.regime !== undefined) {
-        if (!isPlainObject(fund.regime)) {
-          return { valid: false, error: `configuration snapshot fund "${exchange}/${pair}" has a non-object regime block` };
-        }
-        for (const key of Object.keys(fund.regime)) {
-          if (SNAPSHOT_REGIME_KEYS.includes(key)) continue;
-          const fatal = dropOrReject(fund.regime, key, `${exchange}/${pair}.regime.${key}`, `configuration snapshot fund "${exchange}/${pair}" carries unsupported regime field "${key}"`);
-          if (fatal) return { valid: false, error: fatal };
-        }
-      }
-    }
-  }
-  return { valid: true, snapshot: sanitized, droppedFields };
-};
-
-/**
- * Resolution a merged config would produce for one fund if the override
- * carried NOTHING for it. Used to drop redundant keys from the reconstructed
- * override so a restore doesn't freeze a fully-materialized copy of every
- * setting into data/config.json (which would then shadow later edits to the
- * base config.json).
- *
- * Note the base's LEGACY-FLAT fields are deliberately ignored: the
- * reconstructed block always carries a `pairs` map, and `normalizeExchangeBlock`
- * only synthesizes a fund from flat fields when there is no `pairs` map at all.
- *
- * @param {Object|null} baseBlock - Destination base block for the exchange
- * @param {string} pair
- * @param {Object} globalConfig - The reconstructed `global` block
- * @returns {{fund: Object, regime: Object}}
- */
-const resolveOverrideBaseline = (baseBlock, pair, globalConfig) => {
-  const basePair = isPlainObject(baseBlock?.pairs) ? baseBlock.pairs[pair] : undefined;
-  return {
-    fund: resolveFundConfig(globalConfig, basePair),
-    regime: resolveRegimeConfig(basePair),
-  };
-};
-
-/**
- * Strip fund/regime keys the destination would resolve to the same value
- * anyway. Verified by the caller — on any mismatch the unpruned target wins.
- * @param {Object} target - Full reconstructed configuration
- * @param {Object} base - Destination base configuration
- * @returns {Object} Pruned clone of `target`
- */
-const minimizeReconstructedTarget = (target, base) => {
-  const pruned = structuredClone(target);
-  for (const [exchange, block] of Object.entries(pruned.exchanges || {})) {
-    const baseBlock = isPlainObject(base.exchanges?.[exchange]) ? base.exchanges[exchange] : null;
-    for (const [pair, fund] of Object.entries(block.pairs || {})) {
-      const baseline = resolveOverrideBaseline(baseBlock, pair, pruned.global);
-      for (const key of Object.keys(fund)) {
-        if (key !== 'regime' && key !== 'productId' && isDeepStrictEqual(fund[key], baseline.fund[key])) delete fund[key];
-      }
-      for (const key of Object.keys(fund.regime || {})) {
-        if (isDeepStrictEqual(fund.regime[key], baseline.regime[key])) delete fund.regime[key];
-      }
-      if (fund.regime && Object.keys(fund.regime).length === 0) delete fund.regime;
-    }
-  }
-  return pruned;
-};
-
-/**
- * Rebuild the base-relative override file (data/config.json) that makes the
- * DESTINATION reproduce the archived configuration.
- *
- * Pure — computes and verifies the result in memory so the caller can abort
- * before mutating anything on the destination.
- *
- * @param {Object} args
- * @param {*} args.snapshot - Snapshot from the archive manifest (validated here)
- * @param {Object} [args.baseConfig] - Destination's raw base config.json contents
- * @param {Object} [args.destinationGlobal] - Destination's effective `global` block,
- *   read BEFORE the restore, so its credentials (Telegram, Sentinel) survive.
- * @returns {{ok: true, override: Object, droppedFields: Array<string>}
- *   | {ok: false, error: string}}
- */
-const reconstructConfigOverride = ({ snapshot: archivedSnapshot, baseConfig, destinationGlobal }) => {
-  const validation = validateConfigSnapshot(archivedSnapshot);
-  if (!validation.valid) return { ok: false, error: validation.error };
-  // Start with the sanitized archive and materialize this build's defaults
-  // for settings added since it was written. Older version-1 archives lack
-  // those keys; comparing them directly with a newly materialized snapshot
-  // otherwise rejects every restore after an additive default is introduced.
-  // Archived values still win, and unknown newer-build fields were already
-  // dropped above before any reconstruction can persist them (#567).
-  const { droppedFields } = validation;
-  const snapshot = buildConfigSnapshot(validation.snapshot);
-
-  const base = isPlainObject(baseConfig) ? baseConfig : {};
-  const target = structuredClone(base);
-  target.exchanges = { ...(base.exchanges || {}) };
-
-  const exchanges = new Set([...Object.keys(base.exchanges || {}), ...Object.keys(snapshot.exchanges)]);
-  for (const exchange of exchanges) {
-    const baseBlock = isPlainObject(base.exchanges?.[exchange]) ? base.exchanges[exchange] : null;
-    const snapshotPairs = snapshot.exchanges[exchange]?.pairs || {};
-    // computeDiff only emits keys present in the target, so a pair the base
-    // defines but the source did not would merge straight back in. Tombstone it
-    // instead — the same mechanism fund deletion uses (#441).
-    // Deliberately the RAW base pairs map, not diffSnapshotAgainstConfig below:
-    // an already-tombstoned pair must stay tombstoned even though normalized
-    // reads (and buildConfigSnapshot) filter it out, or this would silently
-    // undelete it the next time an archive lacking it is restored.
-    const basePairs = isPlainObject(baseBlock?.pairs) ? Object.keys(baseBlock.pairs) : [];
-    const tombstones = basePairs.filter((pair) => !(pair in snapshotPairs));
-    const block = { ...(baseBlock || {}), pairs: structuredClone(snapshotPairs) };
-    if (tombstones.length > 0 || (Array.isArray(baseBlock?.[DELETED_PAIRS_KEY]) && baseBlock[DELETED_PAIRS_KEY].length > 0)) {
-      block[DELETED_PAIRS_KEY] = tombstones;
-    } else {
-      delete block[DELETED_PAIRS_KEY];
-    }
-    target.exchanges[exchange] = block;
-  }
-
-  // Non-secret globals come from the archive; everything else (notifications,
-  // sentinel) stays on the destination's own effective values.
-  target.global = deepMerge(
-    isPlainObject(destinationGlobal) ? destinationGlobal : (base.global || {}),
-    snapshot.global || {},
-  );
-
-  // Prove the round trip before the caller writes anything: replay each
-  // candidate override through the exact merge+normalize path loadConfig uses
-  // and re-derive a snapshot from it. Any drift (a base pair that survived, a
-  // value the diff failed to carry) is caught here instead of silently trading
-  // the wrong fund. The minimized candidate is preferred so the override file
-  // stays a diff; the fully-materialized one is the fallback that always works.
-  const reproduces = (candidate) =>
-    isDeepStrictEqual(buildConfigSnapshot(deepMerge(base, candidate)).exchanges, snapshot.exchanges);
-
-  for (const candidate of [minimizeReconstructedTarget(target, base), target]) {
-    const override = computeDiff(base, candidate);
-    if (reproduces(override)) return { ok: true, override, droppedFields };
-  }
-
-  const describe = (entry) => Object.keys(entry || {}).sort().join(', ') || 'none';
-  const reproduced = buildConfigSnapshot(deepMerge(base, computeDiff(base, target)));
-  return {
-    ok: false,
-    error: `restored configuration would not reproduce the archived funds (archived: ${describe(snapshot.exchanges)}; reconstructed: ${describe(reproduced.exchanges)}) — destination config left unchanged`,
-  };
-};
-
-/**
- * Diff an archive snapshot against a full (already-merged) destination
- * configuration, returning every EFFECTIVE fund the destination currently
- * runs that the snapshot does not carry — i.e. what restoring `snapshot`
- * onto `effectiveConfig` would remove.
- *
- * Effective, not base-only: a fund defined only in the override
- * (data/config.json) disappears from a restore just as completely as a
- * base-defined one, because reconstructConfigOverride above replaces the
- * override's `pairs` map wholesale rather than merging it. Reporting must
- * cover both, or an override-only fund vanishes with no warning (issue #533).
- *
- * @param {Object} args
- * @param {*} args.snapshot - Snapshot from the archive manifest
- * @param {Object} args.effectiveConfig - Destination's full merged (base + override) configuration
- * @returns {Array<{exchange: string, pair: string, fund: Object}>}
- */
-const diffSnapshotAgainstConfig = ({ snapshot, effectiveConfig }) => {
-  const effectiveSnapshot = buildConfigSnapshot(effectiveConfig);
-  const removed = [];
-  for (const [exchange, block] of Object.entries(effectiveSnapshot.exchanges || {})) {
-    const snapshotPairs = isPlainObject(snapshot?.exchanges?.[exchange]?.pairs) ? snapshot.exchanges[exchange].pairs : {};
-    for (const [pair, fund] of Object.entries(block.pairs || {})) {
-      if (!(pair in snapshotPairs)) removed.push({ exchange, pair, fund });
-    }
-  }
-  return removed;
-};
-
 module.exports = {
   BACKUP_INTERVAL_BOUNDS,
   loadConfig,
@@ -2219,24 +1573,36 @@ module.exports = {
   getBaseCurrency,
   getQuoteCurrency,
   productIdMatchesPair,
-  // Backup archive config portability (#430)
-  CONFIG_SNAPSHOT_VERSION,
-  CONFIG_SNAPSHOT_FIELD_REVISION,
-  // Exported so a test can assert the field revision still matches the
-  // allowlists it describes (#567).
-  SNAPSHOT_FUND_KEYS,
-  SNAPSHOT_REGIME_KEYS,
-  SNAPSHOT_GLOBAL_KEYS,
-  buildConfigSnapshot,
-  validateConfigSnapshot,
-  reconstructConfigOverride,
-  diffSnapshotAgainstConfig,
-  writeUserConfigFile,
-  resolveBaseConfigFile,
   USER_CONFIG_FILE,
   deepMerge,
+  writeUserConfigFile,
+  resolveBaseConfigFile,
   // Secret handling
   GLOBAL_KEYS_EXCLUDED_FROM_FUND_CONFIG,
   maskSecret,
   isMaskedSecret,
+  // Internal helpers exported ONLY so config-snapshot.js (issue #727) can
+  // build its own snapshot/reconstruct logic without duplicating them. Not
+  // part of the documented public API.
+  computeDiff,
+  resolveFundConfig,
+  resolveRegimeConfig,
+  DELETED_PAIRS_KEY,
+  PAIR_RE,
+  // Backward-compatible re-exports — actual definitions now live in
+  // config-snapshot.js (issue #727). Lazy (via getConfigSnapshot()) so this
+  // module never forms a module-load-time circular require with
+  // config-snapshot.js, which requires DEFAULTS/REGIME_DEFAULTS/
+  // resolveFundConfig/etc. back from this module at ITS top level.
+  buildConfigSnapshot: (...args) => getConfigSnapshot().buildConfigSnapshot(...args),
+  validateConfigSnapshot: (...args) => getConfigSnapshot().validateConfigSnapshot(...args),
+  reconstructConfigOverride: (...args) => getConfigSnapshot().reconstructConfigOverride(...args),
+  diffSnapshotAgainstConfig: (...args) => getConfigSnapshot().diffSnapshotAgainstConfig(...args),
+  get CONFIG_SNAPSHOT_VERSION() { return getConfigSnapshot().CONFIG_SNAPSHOT_VERSION; },
+  get CONFIG_SNAPSHOT_FIELD_REVISION() { return getConfigSnapshot().CONFIG_SNAPSHOT_FIELD_REVISION; },
+  // Exported so a test can assert the field revision still matches the
+  // allowlists it describes (#567).
+  get SNAPSHOT_FUND_KEYS() { return getConfigSnapshot().SNAPSHOT_FUND_KEYS; },
+  get SNAPSHOT_REGIME_KEYS() { return getConfigSnapshot().SNAPSHOT_REGIME_KEYS; },
+  get SNAPSHOT_GLOBAL_KEYS() { return getConfigSnapshot().SNAPSHOT_GLOBAL_KEYS; },
 };
