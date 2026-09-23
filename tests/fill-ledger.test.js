@@ -1357,13 +1357,22 @@ describe('Fill Ledger', () => {
       'load() must backfill netFee from legacy fee field so direct fill.netFee reads work');
   });
 
-  it('createFillLedger repairs a legacy negative bodyHoldbackAsset into holdback 0 + bodyReservesSoldAsset on load, and persists the fix once (issue #779)', () => {
+  it('createFillLedger repairs a legacy negative bodyHoldbackAsset into holdback 0 + bodyReservesSoldAsset in memory on load, without writing it to disk (issue #779)', () => {
     // Between #769 and #770 (both unreleased) a stale-TP oversell could be
     // booked as a NEGATIVE bodyHoldbackAsset. #770 changed the engine to
     // record this as holdback 0 + a non-negative bodyReservesSoldAsset
     // instead — shared/cycle-pairing.mjs clamps a negative holdback to 0
     // rather than crediting the sold reserves, so an un-repaired row
     // silently overstates realizedAssetPnL by the oversold quantity.
+    //
+    // The repair must NOT auto-persist from load() itself (codex/claude
+    // review): `quiet`/no-quiet is a logging hint, not an ownership signal
+    // — several read-only scripts (scripts/analyze-unaccounted.js and
+    // friends) construct a non-quiet ledger purely to inspect it, so an
+    // unconditional persist() here would make any such caller a second,
+    // uncoordinated writer of a live fund's ledger file. It rides along
+    // on the same deferred-persist contract the netFee backfill above
+    // already uses.
     const exchange = 'test-negative-holdback-repair';
     const dir = path.join(tmpDir, exchange, 'default');
     fs.mkdirSync(dir, { recursive: true });
@@ -1386,22 +1395,27 @@ describe('Fill Ledger', () => {
 
     const ledger = createTestLedger(exchange);
     const [repaired] = ledger.getFillsForOrder('o-sell-1');
-    assert.equal(repaired.bodyHoldbackAsset, 0, 'negative holdback must be rewritten to 0');
-    assert.equal(repaired.bodyReservesSoldAsset, 0.05, 'the negative magnitude must move to bodyReservesSoldAsset');
+    assert.equal(repaired.bodyHoldbackAsset, 0, 'negative holdback must be rewritten to 0 in memory');
+    assert.equal(repaired.bodyReservesSoldAsset, 0.05, 'the negative magnitude must move to bodyReservesSoldAsset in memory');
 
-    // Persisted once, immediately — not deferred to some future dirtying
-    // mutation, unlike the netFee backfill above.
+    // Cold-start load() must NOT have written anything to disk on its own.
+    assert.equal(ledger._test.getWriteCount(), 0, 'load() must never call persist() on its own');
     const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    assert.equal(onDisk.length, 1);
-    assert.equal(onDisk[0].bodyHoldbackAsset, 0, 'the repair must be flushed to disk');
-    assert.equal(onDisk[0].bodyReservesSoldAsset, 0.05, 'the repair must be flushed to disk');
+    assert.equal(onDisk[0].bodyHoldbackAsset, -0.05, 'the on-disk file is untouched until some other persist happens');
+    assert.equal(onDisk[0].bodyReservesSoldAsset, undefined);
 
-    // Idempotent: reloading the now-repaired file must not write again or
-    // touch the fields a second time.
-    const writesBefore = ledger._test.getWriteCount();
+    // The repaired row rides along the next time ANYTHING dirties and
+    // persists this ledger instance — e.g. a normal fill ingestion.
+    ledger.ingestFill(makeBuyFill({ tradeId: 'unrelated-buy-1' }));
+    assert.ok(ledger._test.getWriteCount() > 0, 'the ordinary ingestFill persist must have written to disk');
+    const afterOrdinaryPersist = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const sellRow = afterOrdinaryPersist.find((f) => f.tradeId === 'legacy-sell-1');
+    assert.equal(sellRow.bodyHoldbackAsset, 0, 'the repair must have ridden along on the ordinary persist');
+    assert.equal(sellRow.bodyReservesSoldAsset, 0.05, 'the repair must have ridden along on the ordinary persist');
+
+    // Idempotent: reloading the now-repaired file must not touch the
+    // fields a second time.
     ledger.load();
-    assert.equal(ledger._test.getWriteCount(), writesBefore,
-      'a second load() over an already-repaired file must not persist again');
     const [reloaded] = ledger.getFillsForOrder('o-sell-1');
     assert.equal(reloaded.bodyHoldbackAsset, 0);
     assert.equal(reloaded.bodyReservesSoldAsset, 0.05);
@@ -1487,12 +1501,13 @@ describe('Fill Ledger', () => {
     assert.equal(sellFill.bodyReservesSoldAsset, undefined);
   });
 
-  it('createFillLedger repairs a negative holdback in memory under quiet:true, but never writes it to disk (must not turn a read-only gateway ledger into a writer)', () => {
+  it('createFillLedger repairs a negative holdback in memory under quiet:true too, and suppresses the routine repair log line the way it suppresses other routine load logs', () => {
     // getCachedFillLedger's per-request gateway instances are documented
-    // "read-only — do not mutate" and, before this change, nothing on the
-    // quiet path ever called persist(). The repair must not be what makes
-    // a dashboard poll silently start writing a live engine's ledger file.
-    const exchange = 'test-negative-holdback-quiet-no-persist';
+    // "read-only — do not mutate" and pass quiet:true purely to avoid
+    // spamming the gateway log on every dashboard poll (see opts.quiet's
+    // doc comment) — it is not a write/no-write switch (load() never
+    // persists this repair regardless of quiet; see the previous test).
+    const exchange = 'test-negative-holdback-quiet';
     const dir = path.join(tmpDir, exchange, 'default');
     fs.mkdirSync(dir, { recursive: true });
     const filePath = path.join(dir, 'fill-ledger.json');
@@ -1509,22 +1524,32 @@ describe('Fill Ledger', () => {
       bodyHoldbackAsset: -0.05,
     };
     fs.writeFileSync(filePath, JSON.stringify([legacyNegativeSell]));
-    const beforeMtime = fs.statSync(filePath).mtimeMs;
 
     const { createFillLedger } = freshFillLedgerModule();
-    const ledger = createFillLedger(exchange, undefined, undefined, { quiet: true });
 
-    // In-memory read is still correct...
-    const [repaired] = ledger.getFillsForOrder('o-sell-quiet-1');
-    assert.equal(repaired.bodyHoldbackAsset, 0);
-    assert.equal(repaired.bodyReservesSoldAsset, 0.05);
+    // The repair logs via logger.warn(), which src/logger.js routes to
+    // console.warn (stderr), not console.log — unlike the "Loaded N fills"
+    // routine info logs the issue-#183 quiet tests above capture.
+    const lines = [];
+    const orig = console.warn;
+    console.warn = (...a) => { lines.push(a.join(' ')); };
+    try {
+      const quietLedger = createFillLedger(exchange, undefined, undefined, { quiet: true });
+      const [repaired] = quietLedger.getFillsForOrder('o-sell-quiet-1');
+      assert.equal(repaired.bodyHoldbackAsset, 0, 'the in-memory fix must apply under quiet:true too');
+      assert.equal(repaired.bodyReservesSoldAsset, 0.05);
+      const quietRepairLines = lines.filter((l) => l.includes('Repaired') && l.includes('negative-holdback'));
+      assert.deepEqual(quietRepairLines, [], 'quiet load must not emit the routine repair log line');
 
-    // ...but the on-disk file (and its persist-write counter) must be untouched.
-    assert.equal(ledger._test.getWriteCount(), 0, 'a quiet/read-only load must never call persist()');
-    const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    assert.equal(onDisk[0].bodyHoldbackAsset, -0.05, 'the on-disk file must still carry the unrepaired legacy shape');
-    assert.equal(onDisk[0].bodyReservesSoldAsset, undefined);
-    assert.equal(fs.statSync(filePath).mtimeMs, beforeMtime, 'the file must not have been rewritten');
+      lines.length = 0;
+      delete require.cache[fillLedgerPath];
+      const { createFillLedger: createFillLedger2 } = require('../src/fill-ledger');
+      createFillLedger2(exchange); // default: not quiet
+      const loudRepairLines = lines.filter((l) => l.includes('Repaired') && l.includes('negative-holdback'));
+      assert.ok(loudRepairLines.length >= 1, 'non-quiet load should emit the repair log line');
+    } finally {
+      console.warn = orig;
+    }
   });
 
   it('createFillLedger throws on cold start when ledger contains duplicate tradeIds (Map dedup would silently undercount)', () => {

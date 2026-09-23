@@ -55,10 +55,15 @@ closed-trade record), never as a negative holdback: the pairing clamps
 negative holdback annotations to 0 (legacy corrupt rows), and
 `fill-ledger.js`'s `load()` rewrites any sell still carrying one — negative
 `bodyHoldbackAsset`/`satelliteHoldbackAsset` rows written between #769 and
-#770 (neither ever released) into holdback 0 + `bodyReservesSoldAsset`,
-once, the moment the ledger is loaded (issue #779). The position-coverage
-identity `ledgerNetAsset == heldOpenAssetQty + realizedAssetPnL` holds only
-with the drawdown subtracted.
+#770 (neither ever released) into holdback 0 + `bodyReservesSoldAsset` — in
+memory, on every load, so every reader (including a read-only diagnostic
+script) computes correct P&L immediately (issue #779). It does not persist
+the rewrite itself — same reasoning as the pre-existing `netFee` legacy
+backfill in the same function — so it never turns a read-only caller into a
+second, uncoordinated writer of a live fund's ledger file; the repaired
+rows reach disk via the owning engine's own next ordinary persist. The
+position-coverage identity `ledgerNetAsset == heldOpenAssetQty +
+realizedAssetPnL` holds only with the drawdown subtracted.
 
 ## Single source of truth
 

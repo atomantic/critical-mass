@@ -719,11 +719,22 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // the pairing (shared/cycle-pairing.mjs) clamps a negative holdback to
     // 0 rather than crediting the sold reserves — silently overstating
     // realizedAssetPnL by the oversold quantity. Rewrite in place, on
-    // every load, so this self-heals regardless of which engine process
-    // owns the repair. Idempotent: a fill already carrying a positive
+    // every load, so every reader (including a read-only diagnostic script
+    // or getCachedFillLedger's gateway instance) computes correct P&L
+    // immediately. Idempotent: a fill already carrying a positive
     // bodyReservesSoldAsset is left untouched (already repaired, or an
     // inconsistent state not ours to guess at), and a repaired row has a
     // non-negative holdback on the next load, so it is never touched twice.
+    // Deliberately NOT auto-persisted here — same reasoning as the netFee
+    // backfill just below: `quiet`/no-quiet is a logging hint, not an
+    // ownership signal (several read-only scripts, e.g.
+    // scripts/analyze-unaccounted.js, construct a non-quiet ledger purely
+    // to inspect it), so writing back from inside load() would make ANY
+    // caller — not just the owning engine — a second, uncoordinated writer
+    // of a live fund's ledger file, racing a running engine's own persists
+    // (codex/claude review, issue #779). The repair rides along on the
+    // owning engine's own next dirtying persist() instead, the same way
+    // the netFee backfill's in-memory-only fix eventually reaches disk.
     let negativeHoldbackRepairCount = 0;
     for (const fill of data) {
       // Legacy-ledger backfill: pre-rebate-split fills only had `fee`,
@@ -759,30 +770,10 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         cycleIndex.get(fill.cycleId).add(fill.tradeId);
       }
     }
-    if (negativeHoldbackRepairCount > 0) {
-      logger.warn(`🩹 [${exchange}] Repaired ${negativeHoldbackRepairCount} legacy negative-holdback fill(s) into bodyReservesSoldAsset (issue #779)`, {
+    if (negativeHoldbackRepairCount > 0 && !quiet) {
+      logger.warn(`🩹 [${exchange}] Repaired ${negativeHoldbackRepairCount} legacy negative-holdback fill(s) into bodyReservesSoldAsset in memory (issue #779) — not written to disk by this load; reaches disk whenever this ledger instance is next persisted`, {
         repairedCount: negativeHoldbackRepairCount,
       });
-      // Only the owning engine/script instance flushes the repair to disk.
-      // `quiet: true` marks a throwaway, documented-read-only instance
-      // (getCachedFillLedger's per-request gateway ledger — see its "do
-      // not mutate" contract above `createFillLedger`'s opts.quiet doc);
-      // nothing before this change ever called persist() from that path,
-      // and this repair must not be what turns it into a second,
-      // uncoordinated writer of a live engine's ledger file. The in-memory
-      // fix still applies unconditionally so a quiet reader's own P&L
-      // computation is correct for this request; the owning engine's next
-      // load() (or this same repair, next boot) performs the real, once-
-      // only persist.
-      if (!quiet) {
-        // Flush the repaired rows immediately, once — same contract as
-        // markDirty()'s external-mutation path, restricted to the same
-        // metadata-only fields (bodyHoldbackAsset / satelliteHoldbackAsset /
-        // bodyReservesSoldAsset feed no index), so a crash before the next
-        // natural persist can't lose the repair and redo it differently.
-        dirtySinceLastPersist = true;
-        persist();
-      }
     }
     // Rebuild orderSizeIndex from the canonical fills Map AFTER population.
     // load() can be called multiple times on a live ledger (regime-engine.js
