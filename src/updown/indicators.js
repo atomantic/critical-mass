@@ -259,9 +259,17 @@ const calculateOBV = (candles, lookback = 14) => {
   }
   const rawSlope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
 
-  // Normalize slope by average absolute OBV to get a -1 to +1 range
-  const avgAbsOBV = slice.reduce((s, v) => s + Math.abs(v), 0) / n;
-  const slope = avgAbsOBV > 0 ? Math.max(-1, Math.min(1, rawSlope / avgAbsOBV * n)) : 0;
+  // Normalize slope by recent average volume (NOT by the cumulative OBV level — issue
+  // #696). Normalizing by avgAbsOBV made the score depend on where the rolling candle
+  // buffer happened to start (and how much trend the now-discarded older history
+  // contained): a long prior uptrend inflates the OBV level and crushes the slope
+  // toward 0, while a level that has drifted near 0 saturates the slope to ±1, even
+  // when the last `lookback` candles carry identical recent volume flow. Average
+  // volume over the same window is local to the lookback and carries no such
+  // history dependency, so the same recent volume always produces the same slope.
+  const windowCandles = candles.slice(-n);
+  const avgVolume = windowCandles.reduce((s, c) => s + Math.abs(c.volume || 0), 0) / n;
+  const slope = avgVolume > 0 ? Math.max(-1, Math.min(1, rawSlope / avgVolume)) : 0;
 
   let direction = 'neutral';
   if (slope > 0.1) direction = 'up';

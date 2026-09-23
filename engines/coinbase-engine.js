@@ -48,6 +48,7 @@ const { guardIncompleteRestore } = require('../src/restore-apply');
 const { LIFECYCLE, loadRegimeState, loadRegimeStateSafe, saveRegimeState } = require('../src/state-tracker');
 const { getAdapter } = require('../src/adapters');
 const { registerProcessGuards } = require('../src/process-guard');
+const { resolveIpcPort } = require('../src/ipc-port-defaults');
 
 /**
  * Build a context logger for one engine operation.
@@ -69,7 +70,13 @@ const engineLogger = (exchange, pair) => createContextLogger({
 // ============ Configuration ============
 
 const EXCHANGE_NAME = process.env.EXCHANGE_NAME || 'coinbase';
-const IPC_PORT = parseInt(process.env.EXCHANGE_IPC_PORT || process.env.COINBASE_IPC_PORT) || 5570;
+// EXCHANGE_IPC_PORT is set by the thin per-exchange wrappers (gemini-engine.js,
+// cryptocom-engine.js) before they require this file; falling back to
+// resolveIpcPort(EXCHANGE_NAME) covers running this file directly (e.g. `node
+// engines/coinbase-engine.js` with no wrapper), using the ecosystem.config.cjs
+// PORTS default for whichever exchange is configured instead of a literal that
+// could collide with the gateway (5570) or the Vite dev server (5571) — issue #690.
+const IPC_PORT = parseInt(process.env.EXCHANGE_IPC_PORT, 10) || resolveIpcPort(EXCHANGE_NAME);
 const ENGINE_NAME = `cm-${EXCHANGE_NAME}`;
 
 // ============ IPC Server ============

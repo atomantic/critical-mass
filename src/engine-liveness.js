@@ -34,9 +34,9 @@ const RUNNING_FLAG = 'regime-engine-running.json';
  * Probing only the PM2 value fails OPEN — the dangerous direction — for an
  * engine started outside PM2 or with an env override, because the probe finds
  * nothing and the caller concludes "stopped". The engines resolve their own
- * port from env with their own built-in fallbacks
- * (`coinbase-engine.js:72`, `gemini-engine.js:3`, `cryptocom-engine.js:3`),
- * so check every port that resolution could land on.
+ * port from env via `resolveIpcPort` (`src/ipc-port-defaults.js`), falling
+ * back to the `ecosystem.config.cjs` PORTS default rather than a literal
+ * (issue #690), so check every port that resolution could land on.
  * @param {string} exchange
  * @returns {number[]} distinct candidate ports, empty for an unknown exchange
  */
@@ -44,9 +44,9 @@ const candidatePorts = (exchange) => {
   const env = process.env;
   const shared = Number(env.EXCHANGE_IPC_PORT) || 0;
   const perExchange = {
-    coinbase: [shared, Number(env.COINBASE_IPC_PORT) || 0, PORTS.COINBASE_IPC, 5570],
-    gemini: [shared, Number(env.GEMINI_IPC_PORT) || 0, PORTS.GEMINI_IPC, 5571],
-    cryptocom: [shared, Number(env.CRYPTOCOM_IPC_PORT) || 0, PORTS.CRYPTOCOM_IPC, 5574],
+    coinbase: [shared, Number(env.COINBASE_IPC_PORT) || 0, PORTS.COINBASE_IPC],
+    gemini: [shared, Number(env.GEMINI_IPC_PORT) || 0, PORTS.GEMINI_IPC],
+    cryptocom: [shared, Number(env.CRYPTOCOM_IPC_PORT) || 0, PORTS.CRYPTOCOM_IPC],
   }[exchange];
   if (!perExchange) return [];
   return [...new Set(perExchange.filter(port => Number.isInteger(port) && port > 0))];
