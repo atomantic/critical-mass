@@ -10,7 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const { loadState, saveState, loadRegimeState, saveRegimeState } = require('./state-tracker');
-const { createFillLedger } = require('./fill-ledger');
+const { createFillLedger, isCompletedCycle } = require('./fill-ledger');
 const { createNewBody, classifyTier, syncPositionState } = require('./celestial-hierarchy');
 const { setExchangeEnabled, getRegimeConfig, getFundConfig } = require('./config-utils');
 const { resolveFundDataDir } = require('./migration');
@@ -177,8 +177,12 @@ const previewConversion = (exchange, pair) => {
  *   the pending block. `false` (mergeToRegime, an existing regime run):
  *   leave sellOrderId unset — the caller annotates isBodyOwned/bodyId once
  *   celestial bodies exist — and reuse the ledger's current active cycle for
- *   the pending block when it has no sells yet, so open positions merged in
- *   land in the engine's real in-progress cycle instead of a new one.
+ *   the pending block while that cycle is not yet completed (per
+ *   isCompletedCycle's sell-ratio threshold, not merely "zero sells so
+ *   far"), so open positions merged in land in the engine's real
+ *   in-progress cycle — including one with a partial TP fill already on
+ *   it — instead of a new cycle that would orphan the persisted active-
+ *   cycle boundary (#675's positionState.activeCycleId).
  * @returns {{ filledIngested: number, pendingIngested: number }}
  */
 const ingestDcaOrdersIntoLedger = (fillLedger, filled, pending, { linkPendingSells }) => {
@@ -232,14 +236,22 @@ const ingestDcaOrdersIntoLedger = (fillLedger, filled, pending, { linkPendingSel
     fillLedger.startNewCycle();
   } else {
     // mergeToRegime preserves an existing regime run. If the ledger's
-    // active cycle is still open (no sells recorded against it), the merged
-    // pending buys belong there — not in a brand-new cycle that would split
-    // an already-tracked open position away from its own cycle.
+    // active cycle is not yet completed — the SAME completion test
+    // (isCompletedCycle / CYCLE_COMPLETE_SELL_RATIO) recalculateCycles()
+    // and every other cycle-boundary decision in the engine uses, not
+    // merely "zero sells so far" — the merged pending buys belong there.
+    // A partially-filled TP (sell ratio below the completion threshold)
+    // still leaves the cycle "live" per #675's active-cycle semantics:
+    // positionState.activeCycleId keeps naming it, and the engine restores
+    // that same boundary on restart. Starting a new cycle here anyway
+    // would silently orphan that persisted boundary from the buys just
+    // merged in. A brand-new cycle is only warranted once the active
+    // cycle has actually closed (sell ratio at/above threshold).
     const activeCycleId = fillLedger.getCurrentCycleId();
-    const activeCycleHasSells = activeCycleId
-      ? fillLedger.getCurrentCycleFills().some((fill) => fill.side === 'sell')
-      : false;
-    if (!activeCycleId || activeCycleHasSells) {
+    const activeCycleIsComplete = activeCycleId
+      ? isCompletedCycle(fillLedger.getCurrentCycleFills())
+      : true;
+    if (!activeCycleId || activeCycleIsComplete) {
       fillLedger.startNewCycle();
     }
   }

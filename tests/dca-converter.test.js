@@ -394,5 +394,51 @@ describe('dca-converter fund routing (issue #414)', () => {
       const second = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
       assert.equal(second.summary.filledOrders, 0, 'a duplicate merge must not recount already-ingested filled orders');
     });
+
+    // Codex review finding on the first version of this fix: the merge-mode
+    // cycle-reuse check must test whether the ledger's active cycle is
+    // actually COMPLETE (isCompletedCycle's sell-ratio threshold), not
+    // merely whether it has any sell fill at all. A live engine's active
+    // cycle with a partial TP fill (sell ratio well under the completion
+    // threshold) is still the cycle #675's positionState.activeCycleId
+    // names — starting a fresh cycle for merged-in pending buys would
+    // orphan that persisted boundary from the very position it's meant to
+    // track.
+    it('reuses the active cycle for merged pending buys when it only has a partial (incomplete) sell, not only when it has zero sells', () => {
+      seedFund(DEFAULT_PAIR, { orders: [] });
+
+      // A live regime cycle already in progress: one buy fully deployed,
+      // then a PARTIAL TP sell (10% of size) — well below isCompletedCycle's
+      // 0.5 sell-ratio threshold, so this cycle is still active/incomplete,
+      // exactly like a live engine's in-progress cycle with a partially
+      // filled resting TP.
+      const liveFills = [
+        {
+          tradeId: 'live-buy-1', orderId: 'live-buy-order-1', side: 'buy',
+          price: 50000, size: 1.0, quoteAmount: 50000, netFee: 0,
+          timestamp: Date.parse('2025-03-01T00:00:00.000Z'), cycleId: 'cycle-1',
+        },
+        {
+          tradeId: 'live-sell-1', orderId: 'live-sell-order-1', side: 'sell',
+          price: 51000, size: 0.1, quoteAmount: 5100, netFee: 0,
+          timestamp: Date.parse('2025-03-02T00:00:00.000Z'), cycleId: 'cycle-1',
+        },
+      ];
+      fs.writeFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), JSON.stringify(liveFills));
+
+      // One still-pending DCA order to merge in — no filled orders, so the
+      // cycle-boundary decision under test isn't entangled with the
+      // filled-loop's own startNewCycle() calls.
+      reseedOrders(DEFAULT_PAIR, [mergeOrders()[1]]);
+
+      const result = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(result.success, true);
+      assert.equal(result.summary.pendingOrders, 1);
+
+      const ledger = JSON.parse(fs.readFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), 'utf8'));
+      const mergedBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-open');
+      assert.ok(mergedBuy, 'the pending buy must be ingested');
+      assert.equal(mergedBuy.cycleId, 'cycle-1', 'a still-active (partially-sold) cycle must be reused, not abandoned for a new one');
+    });
   });
 });
