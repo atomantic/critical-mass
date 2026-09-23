@@ -475,3 +475,197 @@ describe('#670 TP cancel-for-replace books executions during cancel', () => {
     for (const [size] of placed) assert.ok(size <= 0.0055 + 1e-12, `re-placed TP ${size} fits the remaining body`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #744 follow-ups: the merge-snapshot stale-TP cancel, reconcile's partial
+// routes on a full planned-size execution, and the stale cancel-execution
+// marker.
+// ---------------------------------------------------------------------------
+
+const { isFullTpExecution, pruneStaleTpCancelMarkers } = require('../src/regime-engine');
+
+const buyFill = (orderId, size = '0.01') => [{
+  tradeId: `${orderId}-t1`, orderId, side: 'buy', price: '50000', size,
+  totalCommission: '0.05', rebate: '0', liquidityIndicator: 'MAKER', tradeTime: new Date().toISOString(),
+}];
+
+/**
+ * Drive a buy that merges into b1 (clean cancel of tp-old → Race-3 snapshot,
+ * merged body re-armed on tp-new-1), then deliver the snapshot's late 0.002
+ * fill. The merge-snapshot branch deducts it and cancels the live body's
+ * now-oversized tp-new-1 — the cancel under test.
+ */
+const runMergeSnapshotStaleCancel = async ({ pair, staleCancel, adapter = {} }) => {
+  let cancelCalls = 0;
+  const { eng, placed } = makeEngine({
+    pair,
+    cancelResult: null,
+    adapter: {
+      getOrder: async (orderId) => (orderId === 'tp-old'
+        ? { status: 'OPEN', filledSize: 0 }
+        : { status: 'CANCELLED', filledSize: staleCancel.filledSize, filledValue: staleCancel.filledValue, averageFilledPrice: 50500, totalFees: staleCancel.totalFees }),
+      getOrderFills: async (orderId) => {
+        if (orderId === 'buy-new') return buyFill(orderId);
+        if (orderId === 'tp-old') return sellFill(orderId, '0.002');
+        return sellFill(orderId, String(staleCancel.filledSize));
+      },
+      ...adapter,
+    },
+    executor: {
+      cancelBodyTpOrder: async () => (++cancelCalls === 1 ? { cancelled: true, filled: false, filledSize: 0 } : staleCancel),
+      // Force findMergeTarget to pick the single existing body.
+      getPendingCounts: () => ({ total: 1_000_000 }),
+    },
+  });
+  seedBuy(eng);
+
+  await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+  const merged = eng._getPositionState().celestialBodies.find(b => b.id === 'b1');
+  assert.equal(merged.tpOrderId, 'tp-new-1', 'merged body re-armed on a fresh TP');
+  assert.ok(eng._test.getMergeTpSnapshots().completed.has('tp-old'), 'the cancelled TP left a Race-3 snapshot');
+  const placedBeforeSnapshot = placed.length;
+
+  // The snapshot TP's late fill: a true partial (0.002 of its 0.005).
+  await eng._test.handleOrderFill({ orderId: 'tp-old', side: 'sell', status: 'CANCELLED', filledSize: 0.002, filledValue: 101, averageFilledPrice: 50500 });
+
+  return { eng, placed, placedAfter: placed.slice(placedBeforeSnapshot), cancelCalls: () => cancelCalls };
+};
+
+describe('#744 merge-snapshot stale-TP cancel books an execution during the cancel', () => {
+  it('books the stale TP tranche and re-lists only what the live body still holds', async () => {
+    const pair = '__test744snap__';
+    const staleCancel = { cancelled: true, filled: false, filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 };
+    const { eng, placedAfter, cancelCalls } = await runMergeSnapshotStaleCancel({ pair, staleCancel });
+
+    assert.equal(cancelCalls(), 2, 'merge cancel + merge-snapshot stale-TP cancel');
+    const body = eng._getPositionState().celestialBodies.find(b => b.id === 'b1');
+    assert.ok(body, 'a partial sale keeps the live body');
+    // 0.02 merged − 0.002 snapshot tranche − 0.004 sold during the stale cancel.
+    assert.ok(Math.abs(body.assetQty - 0.014) < 1e-9, `both tranches deducted, got ${body.assetQty}`);
+    assert.ok(body.tpOrderId && body.tpOrderId !== 'tp-new-1', 'body no longer points at the cancelled stale TP');
+    assert.equal(body.pendingTpCancelExecution, undefined, 'booked, no retry marker left behind');
+
+    const staleSell = readSellRow('tp-new-1', pair);
+    assert.ok(staleSell && Number.isFinite(staleSell.bodyPnl), 'the stale TP sale reached the ledger with bodyPnl');
+    assert.equal(staleSell.partialFill, true, 'booked as a partial of the live body');
+    assert.equal(staleSell.bodyHoldbackAsset, 0, 'a partial sale books no reserves');
+    assert.ok(readSellRow('tp-old', pair)?.mergeSnapshot, 'the snapshot sale itself was still booked');
+
+    assert.equal(placedAfter.length, 1, 'exactly one replacement TP — the booking path re-armed it, the snapshot branch did not add another');
+    assert.ok(placedAfter[0][0] <= 0.014 + 1e-12, `replacement TP ${placedAfter[0][0]} must not exceed the 0.014 the body still holds`);
+  });
+
+  it('keeps the stale TP identity and a retry marker when booking the execution fails', async () => {
+    const pair = '__test744snapfail__';
+    const staleCancel = { cancelled: true, filled: false, filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 };
+    const { eng, placedAfter } = await runMergeSnapshotStaleCancel({
+      pair,
+      staleCancel,
+      // The freeze cannot confirm tp-new-1 terminal → the nested booking throws.
+      adapter: { getOpenOrders: async () => [{ orderId: 'tp-new-1' }] },
+    });
+
+    const body = eng._getPositionState().celestialBodies.find(b => b.id === 'b1');
+    assert.equal(body.tpOrderId, 'tp-new-1', 'reconcile can still find the CANCELLED partial');
+    assert.equal(body.pendingTpCancelExecution?.orderId, 'tp-new-1');
+    assert.equal(body.pendingTpCancelExecution?.filledSize, 0.004, 'the known execution is kept for the retry');
+    assert.ok(Math.abs(body.assetQty - 0.018) < 1e-9, `only the snapshot tranche is deducted so far, got ${body.assetQty}`);
+    assert.equal(placedAfter.length, 0, 'no replacement TP over un-booked asset');
+  });
+});
+
+describe('#744 reconcile classifies a full planned-size execution as a completed TP', () => {
+  for (const [label, first, frozen] of [
+    ['CANCELLED status with no completionPercentage',
+      { status: 'CANCELLED', filledSize: 0.005, filledValue: 252.5, averageFilledPrice: 50500 },
+      { status: 'CANCELLED', filledSize: 0.005, filledValue: 252.5, averageFilledPrice: 50500 }],
+    ['OPEN status within 1% of the planned size',
+      { status: 'OPEN', filledSize: 0.00496, filledValue: 250.48, averageFilledPrice: 50500 },
+      { status: 'CANCELLED', filledSize: 0.00496, filledValue: 250.48, averageFilledPrice: 50500 }],
+  ]) {
+    it(`closes the body and books the holdback as reserves (${label})`, async () => {
+      const pair = `__test744rec_${first.status}__`;
+      let reads = 0;
+      const { eng, placed } = makeEngine({
+        pair,
+        cancelResult: null,
+        adapter: {
+          getOrder: async () => (++reads === 1 ? first : frozen),
+          getOrderFills: async (orderId) => sellFill(orderId, String(first.filledSize)),
+        },
+      });
+      seedBuy(eng);
+
+      await eng._test.reconcileTick();
+
+      assert.equal(eng._getPositionState().celestialBodies.length, 0, 'the completed TP closed its body');
+      assert.equal(placed.length, 0, 'the designed holdback is not re-listed');
+      const sell = readSellRow('tp-old', pair);
+      assert.ok(sell, 'the sale reached the fill ledger');
+      assert.ok(Math.abs(sell.bodyHoldbackAsset - (0.01 - first.filledSize)) < 1e-9, `holdback booked as reserves, got ${sell.bodyHoldbackAsset}`);
+      assert.equal(sell.partialFill, undefined, 'not annotated as a partial fill');
+    });
+  }
+
+  it('still books a genuine partial as a partial', async () => {
+    const pair = '__test744recpartial__';
+    const { eng, placed } = makeEngine({ pair, cancelResult: null });
+    seedBuy(eng);
+
+    await eng._test.reconcileTick();
+
+    assertBookedAndResized(eng, placed, 'tp-old', pair);
+  });
+});
+
+describe('#744 stale pendingTpCancelExecution marker', () => {
+  it('is dropped once reconcile books the sale through the plain status branch', async () => {
+    const pair = '__test744marker__';
+    const { eng, placed } = makeEngine({
+      pair,
+      cancelResult: null,
+      // The exchange reports MORE than the marker knew, so reconcile books
+      // from the status and the marker is never consumed by the retry path.
+      adapter: {
+        getOrder: async () => ({ status: 'CANCELLED', filledSize: 0.0045, filledValue: 227.25, averageFilledPrice: 50500, totalFees: 0.02 }),
+        getOrderFills: async (orderId) => sellFill(orderId, '0.0045'),
+      },
+    });
+    const body = eng._getPositionState().celestialBodies[0];
+    body.pendingTpCancelExecution = { orderId: 'tp-old', filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 };
+    seedBuy(eng);
+
+    await eng._test.reconcileTick();
+
+    const live = eng._getPositionState().celestialBodies.find(b => b.id === 'b1');
+    assert.ok(Math.abs(live.assetQty - 0.0055) < 1e-9, `status-reported sale booked, got ${live.assetQty}`);
+    assert.notEqual(live.tpOrderId, 'tp-old');
+    assert.ok(placed.length >= 1);
+    assert.equal(live.pendingTpCancelExecution, undefined, 'marker for the old order is gone');
+    const persisted = JSON.parse(fs.readFileSync(path.join(isolatedData.fundDir('coinbase', pair), 'regime-state.json'), 'utf8'));
+    const persistedBody = (persisted.position?.celestialBodies || persisted.celestialBodies || []).find(b => b.id === 'b1');
+    assert.ok(persistedBody, 'the body was persisted');
+    assert.equal(persistedBody.pendingTpCancelExecution, undefined, 'and is not persisted');
+  });
+
+  it('pruneStaleTpCancelMarkers keeps only markers for the current TP', () => {
+    const current = { tpOrderId: 'a', pendingTpCancelExecution: { orderId: 'a', filledSize: 1 } };
+    const moved = { tpOrderId: 'b', pendingTpCancelExecution: { orderId: 'a', filledSize: 1 } };
+    const cleared = { tpOrderId: null, pendingTpCancelExecution: { orderId: 'a', filledSize: 1 } };
+    const none = { tpOrderId: 'c' };
+    assert.equal(pruneStaleTpCancelMarkers([current, moved, cleared, none]), 2);
+    assert.ok(current.pendingTpCancelExecution);
+    assert.equal(moved.pendingTpCancelExecution, undefined);
+    assert.equal(cleared.pendingTpCancelExecution, undefined);
+    assert.equal(pruneStaleTpCancelMarkers(null), 0);
+  });
+
+  it('isFullTpExecution mirrors the sell handler classification', () => {
+    assert.equal(isFullTpExecution({ assetOnOrder: 0.005, assetQty: 0.01 }, 0.00495), true);
+    assert.equal(isFullTpExecution({ assetOnOrder: 0.005, assetQty: 0.01 }, 0.0049), false);
+    assert.equal(isFullTpExecution({ assetOnOrder: 0, assetQty: 0.01 }, 0.0095), true, 'legacy fallback');
+    assert.equal(isFullTpExecution({ assetOnOrder: 0, assetQty: 0.01 }, 0.009), false);
+    assert.equal(isFullTpExecution(undefined, 1), false);
+    assert.equal(isFullTpExecution({ assetOnOrder: 0.005 }, 0), false);
+  });
+});
