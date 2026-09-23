@@ -361,7 +361,9 @@ const restorePersistedCycleId = (fillLedger, positionState, logger, exchange) =>
       cycleId: persistedCycleId,
     });
   }
-  fillLedger.setCurrentCycleId(persistedCycleId);
+  // Carry the persisted start time (#705) so recalculateCycles has a live-
+  // cycle boundary even while the post-reset cycle holds no fills yet.
+  fillLedger.setCurrentCycleId(persistedCycleId, positionState.activeCycleStartedAt ?? null);
   return true;
 };
 
@@ -411,8 +413,13 @@ const repairHistoricalFillAnnotations = ({
       for (const oid of (body.sourceOrderIds || [])) knownBuyOrderIds.add(oid);
       for (const buy of (body.buyOrders || [])) if (buy.orderId) knownBuyOrderIds.add(buy.orderId);
     }
+    // Fills recalculateCycles folded into this cycle purely by timestamp
+    // (#705) are excluded: nothing links them to an engine order (sync-fills
+    // re-imports manual trades too), so adopting one into a body would place
+    // an automatic sell for it — manual review only (R2, pnl-architecture.md).
     const orphanBuyFills = cycleFills.filter(f =>
       f.side === 'buy' && !f.bodyId
+      && f.cycleAttribution !== 'timeframe'
       && !String(f.tradeId).startsWith('dca-convert')
       && !knownBuyOrderIds.has(f.orderId)
     );
@@ -1088,6 +1095,50 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       cycleId: next,
     });
     positionState.activeCycleId = next;
+    return true;
+  };
+
+  /**
+   * After a recalc that attributed null-cycle fills INTO the live cycle
+   * (#705), live-cycle membership changed, so the position counters derived
+   * from it at boot (cycleBuys, and the core totals) are stale — an
+   * under-counted cycleBuys would let the engine bypass its per-cycle entry
+   * limit. (Timestamp-folded buys raise cycleBuys only; rebuildPositionFromFills
+   * keeps them out of the core totals so no TP is auto-placed for them — R2.) Re-derive them from the ledger exactly as the reconcile path does:
+   * core totals from the current cycle's fills, body totals from bodies
+   * (authoritative in celestial mode), and cycleBuys from all current-cycle
+   * buy orders in celestial mode (issue #210-A).
+   * @param {{liveCycleOrphansAttributed?: number}} recalc
+   * @returns {boolean} Whether counters were resynced
+   */
+  const resyncLiveCycleCountersAfterRecalc = (recalc) => {
+    if (!(recalc?.liveCycleOrphansAttributed > 0)) return false;
+    const before = { cycleBuys: positionState.cycleBuys, totalAsset: positionState.totalAsset };
+    const rebuilt = fillLedger.rebuildPositionFromFills();
+    for (const field of ['totalAsset', 'totalCostBasis', 'avgCostBasis', 'cycleBuys']) {
+      if (rebuilt[field] !== undefined) positionState[field] = rebuilt[field];
+    }
+    // A recovered core buy that is newer than the entry clock moves it, so the
+    // min-interval / volatility entry triggers don't fire again too soon or
+    // against a stale anchor. Only ever forward: body-owned buys are absent
+    // from the core rebuild, whose lastEntryTime would otherwise regress it.
+    if (rebuilt.lastEntryTime > (positionState.lastEntryTime || 0)) {
+      positionState.lastEntryTime = rebuilt.lastEntryTime;
+      positionState.lastEntryPrice = rebuilt.lastEntryPrice;
+      positionState.anchorPrice = rebuilt.anchorPrice;
+    }
+    const bodies = positionState.celestialBodies || [];
+    if (bodies.length > 0) {
+      celestialHierarchy.syncPositionState(positionState, bodies);
+    }
+    if (config.celestialEnabled !== false) {
+      positionState.cycleBuys = fillLedger.getCurrentCycleAllBuysCount();
+    }
+    logger.info(`🔧 [${exchange}] Resynced live-cycle counters after attributing ${recalc.liveCycleOrphansAttributed} orphan fill(s): cycleBuys ${before.cycleBuys} → ${positionState.cycleBuys}, ${baseCurrency} ${before.totalAsset} → ${positionState.totalAsset}`, {
+      liveCycleOrphansAttributed: recalc.liveCycleOrphansAttributed,
+      cycleBuys: positionState.cycleBuys,
+      totalAsset: positionState.totalAsset,
+    });
     return true;
   };
 
@@ -1885,7 +1936,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Orphan recovery may renumber cycles. Re-point the durable boundary
       // (#606) at the ledger's live cycle and persist it now, or the next
       // restart restores a stale ID that names a different cycle (#675).
-      if (syncActiveCycleIdAfterRecalc(recalcResult)) saveLiveState();
+      // Folding null-cycle fills into the live cycle (#705) changes its
+      // membership, so the counters restored above must be re-derived too.
+      const cycleIdChanged = syncActiveCycleIdAfterRecalc(recalcResult);
+      if (resyncLiveCycleCountersAfterRecalc(recalcResult) || cycleIdChanged) saveLiveState();
       if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0 || sealedLegacy > 0) {
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         refreshRealizedFromCyclePairs();
@@ -3996,7 +4050,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const cycleFills = fillLedger.getCurrentCycleFills();
           const buyOrderIds = new Set();
           for (const fill of cycleFills) {
-            if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId) {
+            // Timestamp-folded buys (#705) are not in the core position this TP sold.
+            if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId && fill.cycleAttribution !== 'timeframe') {
               fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: fillData.orderId });
               buyOrderIds.add(fill.orderId);
             }
@@ -5687,7 +5742,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Link all current-cycle non-body buys to this sell order (skip body-owned buys)
       const cycleFills = fillLedger.getCurrentCycleFills();
       for (const fill of cycleFills) {
-        if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId) {
+        // Timestamp-folded buys (#705) are not in the core position this TP sells.
+        if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId && fill.cycleAttribution !== 'timeframe') {
           fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: result.orderId });
         }
       }
@@ -5757,6 +5813,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // position state. The fill ledger remains the fallback for legacy state
     // files that predate this marker.
     positionState.activeCycleId = fillLedger.startNewCycle();
+    // Persist WHEN the cycle began too: it is the boundary recalculateCycles
+    // uses to fold null-cycle fills the engine missed during downtime into
+    // this cycle, and an empty post-reset cycle has no fill to infer it from (#705).
+    positionState.activeCycleStartedAt = fillLedger.getCurrentCycleStartedAt();
     riskManager.resetCycleTracking();
 
     const bodyCount = bodies.length;
@@ -6377,7 +6437,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.lastTpPrice = intent.price ?? 0;
       positionState.assetOnOrder = intent.size ?? 0;
       const sourceIds = new Set(fillLedger.getCurrentCycleFills()
-        .filter(f => f.side === 'buy' && !f.isBodyOwned && !f.isSatellite && !f.bodyId)
+        .filter(f => f.side === 'buy' && !f.isBodyOwned && !f.isSatellite && !f.bodyId && f.cycleAttribution !== 'timeframe')
         .map(f => f.orderId));
       fillLedger.annotateFillsByOrderIds(sourceIds, { sellOrderId: found.orderId });
     }
@@ -6593,6 +6653,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     restorePersistedCycleId(fillLedger, positionState, logger, exchange);
     const recalc = fillLedger.recalculateCycles();
     syncActiveCycleIdAfterRecalc(recalc);
+    resyncLiveCycleCountersAfterRecalc(recalc);
     positionState.cyclesCompleted = recalc.cyclesCompleted;
     // Source of truth — cycle pairs, NOT FIFO/closed-trades. Also updates
     // realizedAssetPnL and heldAssetCostBasis and persists.
@@ -7387,6 +7448,7 @@ module.exports = {
   createInitialMarketState,
   createInitialPositionState,
   restorePersistedCycleId,
+  repairHistoricalFillAnnotations,
   cancelPartialFillOrder,
   buildPartialFillData,
   makeFillDedupKey,
