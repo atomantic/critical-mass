@@ -3195,18 +3195,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
 
       // The missed tranche's cost is what the order cost beyond the tranches
-      // bodies hold — unless the tranche records are off, when the order's
-      // average stands in (a fill-price spread bounds any sane residual).
-      const rowUnitCosts = fillLedger.getFillsForOrder(orderId)
-        .filter(f => f.side === 'buy' && f.size > 0)
-        .map(f => ((f.quoteAmount || 0) + (f.netFee || 0)) / f.size);
+      // bodies hold, when that residual is exactly the missed tranche (no
+      // gone body's share mixed in) and its tranche records are sane (a
+      // fill-price spread bounds the residual). Otherwise the order's average
+      // stands in.
+      const buyRows = fillLedger.getFillsForOrder(orderId).filter(f => f.side === 'buy' && f.size > 0);
+      const rowUnitCosts = buyRows.map(f => ((f.quoteAmount || 0) + (f.netFee || 0)) / f.size);
       const residualQty = ledger.size - measure.trancheQty;
-      const residualUnit = residualQty > EPS ? (ledger.cost - measure.trancheCost) / residualQty : NaN;
+      const residualUnit = Math.abs(residualQty - qty) <= EPS ? (ledger.cost - measure.trancheCost) / residualQty : NaN;
       const unitCost = residualUnit >= Math.min(...rowUnitCosts) * (1 - 1e-6) && residualUnit <= Math.max(...rowUnitCosts) * (1 + 1e-6)
         ? residualUnit
         : ledger.cost / ledger.size;
       const costBasis = roundUSDC(unitCost * qty);
       const body = celestialHierarchy.createNewBody({ assetQty: qty, costBasis, avgPrice: costBasis / qty }, orderId);
+      // Date the tranche by the order's latest fill (the missed tranche is
+      // not identifiable row by row), not by this startup.
+      const lastFillAt = Math.max(...buyRows.map(f => f.timestamp || 0));
+      if (lastFillAt > 0) {
+        body.lastMergedAt = lastFillAt;
+        body.buyOrders[0].filledAt = lastFillAt;
+      }
       positionState.celestialBodies = positionState.celestialBodies || [];
       positionState.celestialBodies.push(body);
       positionState[list] = positionState[list].map(e => (e.orderId !== orderId ? e : {

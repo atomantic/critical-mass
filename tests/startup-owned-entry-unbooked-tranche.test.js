@@ -615,5 +615,6 @@ describe('codex review coverage (issue #756)', () => {
     const { eng } = await bootEngine(pair, { openOrders: [OPEN_ENTRY], orders: {}, fills: [T1, T2CHEAP] });
     const recovered = eng._getPositionState().celestialBodies.find(b => b.id !== 'body-b-756');
     assert.ok(recovered && near(recovered.costBasis, 294), `basis is t2's own 0.006 × 49000 (got ${recovered && recovered.costBasis})`);
+    assert.equal(recovered.buyOrders[0].filledAt, new Date(T2CHEAP.tradeTime).getTime(), 'the tranche is dated by its fill, not by startup');
   });
 });
