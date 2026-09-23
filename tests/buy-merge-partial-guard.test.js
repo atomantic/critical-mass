@@ -216,10 +216,166 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
     assert.equal(sell.fee, 0.02);
     assert.ok(Math.abs(sell.bodyPnl - 1.98) < 1e-9, 'value and fees reach the booked sale');
 
+    // Issue #617: the body is still LIVE (liveTarget survives with 0.006 held) —
+    // the unsold remainder must NOT also be booked as zero-cost reserves, or
+    // realizedAssetPnL double-counts it (once as reserves, once still inside the
+    // live body's assetQty, and again when the body's replacement TP later fills).
+    assert.equal(sell.bodyHoldbackAsset, 0, 'no reserves booked — the remainder stays in the live body, not as holdback');
+    assert.equal(sell.partialFill, true, 'annotated as a partial fill, same as the normal body-TP partial path');
+    const cs = eng._getPositionState().celestialState;
+    assert.equal(cs.bodiesCompleted, 0, 'the body is still open — this sell did not complete a cycle');
+    assert.equal(eng._getPositionState().realizedAssetPnL, 0, 'realizedAssetPnL must not count the still-held remainder as reserves');
+    // No fold-in occurred in this scenario — mergeSnapshot.assetQty (0.01) equals
+    // the live body's pre-deduction assetQty, so consumedCostFraction should
+    // equal the plain sold/total ratio: 0.004/0.01 = 0.4.
+    assert.ok(Math.abs(liveTarget.consumedCostFraction - 0.4) < 1e-9, `consumedCostFraction tracks the sold fraction, got ${liveTarget.consumedCostFraction}`);
+
     const newBody = bodies.find(b => b.id !== 'target');
     assert.ok(
       (newBody.sourceOrderIds || []).includes('buy-new') || (newBody.buyOrders || []).some(o => o.orderId === 'buy-new'),
       'the new body owns the incoming buy order',
+    );
+  });
+
+  it('books reserves and completes the cycle (does NOT treat as partial) when the target TP fills its FULL planned size during the cancel race (codex review finding on #669)', async () => {
+    // Same shape as the #227-follow-up test above, except the cancel-race fill
+    // is for the TP's ENTIRE planned assetOnOrder (0.009 of the 0.01 body —
+    // the other 0.001 is the body's DESIGNED holdback, per makeBody's
+    // assetOnOrder: qty*0.9), not a true partial. A healthy 100%-of-assetOnOrder
+    // fill must be booked as a completed cycle — full reserves, bodiesCompleted
+    // incremented — exactly like the normal body-TP path, NOT as a partial fill
+    // just because the live body still holds its designed holdback afterward
+    // (summary.totalSize === body.assetQty is never true on a healthy fill;
+    // checking "does liveMerged still hold qty" would misclassify this).
+    const target = makeBody('target', 50000, 0.01, 'tp-target-full'); // assetOnOrder = 0.009
+    let getOrderCalls = 0;
+    const eng = makeEngine({
+      bodies: [target],
+      adapter: {
+        // Pre-check (1st call) is clean; the terminal-confirm call (2nd,
+        // inside cancelPartialFillOrder) reports the healthy full execution —
+        // same two-call shape the #227-follow-up test above uses.
+        getOrder: async () => {
+          getOrderCalls++;
+          return getOrderCalls === 1
+            ? { filledSize: 0, status: 'OPEN' }
+            : { filledSize: 0.009, status: 'CANCELLED', averageFilledPrice: 50500 };
+        },
+        getOpenOrders: async () => [],
+        getOrderFills: async (orderId) => {
+          if (orderId === 'tp-target-full') {
+            return [{
+              tradeId: 'tp-target-full-t1', orderId: 'tp-target-full', side: 'sell', price: '50500', size: '0.009',
+              totalCommission: '0.045', rebate: '0', liquidityIndicator: 'MAKER', tradeTime: new Date().toISOString(),
+            }];
+          }
+          return buyFills('buy-new', 0.01, 50000);
+        },
+      },
+      executor: {
+        placeBodyTpOrder: async () => ({ success: true, orderId: `tp-new-${Math.random()}` }),
+        // Fills the FULL planned assetOnOrder (0.009), not less — a healthy
+        // complete execution that merely raced the cancel, not a true partial.
+        cancelBodyTpOrder: async () => ({ cancelled: true, filled: false, filledSize: 0.009, filledValue: 454.5, averageFilledPrice: 50500, totalFees: 0.045 }),
+      },
+    });
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+
+    const ledger = JSON.parse(fs.readFileSync(path.join(JUNK_DIR, 'fill-ledger.json'), 'utf8'));
+    const sell = ledger.find(fill => fill.orderId === 'tp-target-full');
+    assert.ok(sell, 'the executed tranche was booked to the fill ledger');
+    assert.equal(sell.partialFill, undefined, 'a healthy full-of-assetOnOrder fill is NOT annotated as a partial fill');
+    // holdback = 0.01 - 0.009 = 0.001, booked as reserves (not withheld to 0).
+    assert.ok(Math.abs(sell.bodyHoldbackAsset - 0.001) < 1e-9, `full holdback is booked as reserves, got ${sell.bodyHoldbackAsset}`);
+    // soldRatio = 0.009/0.01 = 0.9 — bodyCostBasis is the prorated SOLD cost
+    // (450), not the full $500 snapshot cost.
+    assert.ok(Math.abs(sell.bodyCostBasis - 450) < 1e-6, `bodyCostBasis is the prorated sold cost, got ${sell.bodyCostBasis}`);
+    assert.equal(eng._getPositionState().celestialState.bodiesCompleted, 1, 'a healthy complete-of-assetOnOrder fill completes the cycle');
+  });
+
+  it('prices consumedCostFraction off the DOLLAR cost actually removed, not a quantity ratio, when a fold-in buy prices differently than the body (issue #669 review finding)', async () => {
+    // Same #227-follow-up shape as above, except a SECOND buy successfully
+    // folds onto the SAME live target body (via the ordinary merge path,
+    // simulated directly here) — AT A DIFFERENT PRICE than the original body
+    // — while this buy's own merge attempt is awaiting the target TP cancel.
+    // mergeSnapshot.assetQty/costBasis are frozen scalars (0.01 BTC / $500,
+    // as of snapshot time) but mergeSnapshot.sourceOrderIds/buyOrders are the
+    // SAME array references as the live body's (celestial-hierarchy.js pushes
+    // in place), so the fold-in buy is indistinguishable from the original
+    // buys by the time the merge-snapshot sell is booked.
+    //
+    // A QUANTITY ratio (sold-size / live-qty = 0.004/0.016 = 0.25) would
+    // overstate/understate consumedCostFraction whenever the fold-in's price
+    // differs from the original body's avg price, because the DOLLAR amount
+    // actually deducted from costBasis (proratedCostBasis, below) is priced
+    // off the frozen snapshot, not the live pool. consumedCostFraction must
+    // instead be priced as proratedCostBasis / pre-deduction liveMerged.costBasis
+    // so that Σ buy.cost*(1-consumedCostFraction) reconciles EXACTLY to the
+    // live body's post-deduction costBasis regardless of the price mix:
+    //   original: 0.01 BTC @ $50,000 = $500 cost
+    //   fold-in:  0.006 BTC @ $55,000 = $330 cost  (pool: 0.016 BTC / $830)
+    //   sold 0.004 BTC — proratedCostBasis = $500 * (0.004/0.01) = $200 (frozen-snapshot-priced)
+    //   liveConsumedRatio = $200 / $830 = 0.2409638...  (NOT 0.004/0.016 = 0.25)
+    //   post-deduction costBasis = $830 - $200 = $630 = $830 * (1 - 0.2409638...)
+    const target = makeBody('target', 50000, 0.01, 'tp-target');
+    let getOrderCalls = 0;
+    const eng = makeEngine({
+      bodies: [target],
+      adapter: {
+        getOrder: async () => {
+          getOrderCalls++;
+          return getOrderCalls === 1
+            ? { filledSize: 0, status: 'OPEN' }
+            : { filledSize: 0.004, status: 'CANCELLED', averageFilledPrice: 50500 };
+        },
+        getOpenOrders: async () => [],
+        getOrderFills: async (orderId) => {
+          if (orderId === 'tp-target') {
+            // handleOrderFillImpl awaits getOrderFills to build the sell's
+            // `summary` BEFORE it looks up `liveMerged` from
+            // positionState.celestialBodies — this is the genuine async gap a
+            // real concurrent fold-in interleaves through (the buy-merge path
+            // has already frozen mergeSnapshot into completedMergeTpOrders by
+            // this point, synchronously, right after cancelBodyTpOrder
+            // resolved). Mutate the live body's asset/cost HERE, AT A
+            // DIFFERENT PRICE than the original body, to simulate that
+            // fold-in landing after the snapshot was taken — mutates in place
+            // exactly as celestial-hierarchy.js's real fold-in does
+            // (target.sourceOrderIds.push).
+            target.assetQty = target.assetQty + 0.006;
+            target.costBasis += 0.006 * 55000;
+            target.sourceOrderIds.push('buy-foldin');
+            return [{
+              tradeId: 'tp-target-t1', orderId: 'tp-target', side: 'sell', price: '50500', size: '0.004',
+              totalCommission: '0.02', rebate: '0', liquidityIndicator: 'MAKER', tradeTime: new Date().toISOString(),
+            }];
+          }
+          return buyFills('buy-new', 0.01, 50000);
+        },
+      },
+      executor: {
+        placeBodyTpOrder: async () => ({ success: true, orderId: `tp-new-${Math.random()}` }),
+        cancelBodyTpOrder: async () => ({ cancelled: true, filled: false, filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 }),
+      },
+    });
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+
+    const liveTarget = eng._getPositionState().celestialBodies.find(b => b.id === 'target');
+    assert.ok(liveTarget, 'target body survives');
+    assert.ok(Math.abs(liveTarget.costBasis - 630) < 1e-6, `post-deduction costBasis is the dollar remainder, got ${liveTarget.costBasis}`);
+    const expectedRatio = 200 / 830;
+    assert.ok(
+      Math.abs(liveTarget.consumedCostFraction - expectedRatio) < 1e-9,
+      `consumedCostFraction must be the dollar-cost ratio (${expectedRatio}), not the quantity ratio (0.25), got ${liveTarget.consumedCostFraction}`,
+    );
+    // The reconciliation invariant this ratio exists to preserve: the total
+    // pool cost times (1 - consumedCostFraction) must equal the live body's
+    // actual post-deduction costBasis, regardless of the fold-in's price.
+    assert.ok(
+      Math.abs(830 * (1 - liveTarget.consumedCostFraction) - liveTarget.costBasis) < 1e-6,
+      'Σ buy.cost*(1-consumedCostFraction) must reconcile to the live body costBasis',
     );
   });
 

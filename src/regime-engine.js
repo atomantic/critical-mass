@@ -3011,13 +3011,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const pnl = proceeds - proratedCostBasis;
         const holdbackAsset = roundAsset(mergeSnapshot.assetQty - summary.totalSize);
 
-        const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
-        cs.bodiesCompleted += 1;
-        positionState.celestialState = cs;
-
-        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
-
-        orderExecutor.removeBodyTracking(fillData.orderId);
+        // Detect a TRUE partial fill of the snapshot's own TP — NOT "does the
+        // live body still hold asset" (a healthy 100%-of-assetOnOrder fill
+        // ALWAYS leaves designed holdback behind, per the holdback-vs-partial
+        // distinction this codebase treats as load-bearing: summary.totalSize
+        // === body.assetQty is never true on a healthy fill). Mirrors the
+        // normal partial-fill path's isPartial check (:~3210) using
+        // mergeSnapshot.assetOnOrder — the frozen size the cancelled/fired TP
+        // was actually placed for (snapshotted before assetOnOrder is cleared
+        // to 0 on cancel, both in the buy-merge race above and in
+        // bookExecutionDuringCancel's roll-up snapshots). Deliberately does
+        // NOT OR in `fillData.isPartialFill`: every caller that reaches this
+        // branch via buildPartialFillData (the #227/#368 immediate
+        // self-booking paths) hardcodes that flag to `true` regardless of
+        // whether the fill was actually partial, so it is not a usable signal
+        // here (unlike the normal path's other callers).
+        const onOrder = mergeSnapshot.assetOnOrder || 0;
+        const isPartialSnapshotFill = onOrder > 0
+          ? summary.totalSize < onOrder * 0.99
+          : soldRatio < 0.95;
 
         // Deduct the sold tranche from the LIVE merged body (issue #201). If a buy
         // folded onto this body in the Race-3 window (between the partial-fill
@@ -3026,9 +3038,60 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // the account no longer holds and the sold tranche's cost is double-counted
         // (once here via bodyPnl, once retained in the merged body's costBasis).
         const liveMerged = (positionState.celestialBodies || []).find(b => b.id === mergeSnapshot.id);
+        // The body is still OPEN only when `liveMerged` exists AND this was a
+        // true partial fill of its TP — a healthy complete-of-assetOnOrder
+        // fill closes the cycle (reserves booked, bodiesCompleted counted)
+        // exactly like the normal path, even though this branch never splices
+        // the now-empty-of-obligation body out of celestialBodies (issue
+        // #617/#669).
+        const liveOwnsRemainder = !!liveMerged && isPartialSnapshotFill;
+
+        const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
+        if (!liveOwnsRemainder) cs.bodiesCompleted += 1;
+        positionState.celestialState = cs;
+
+        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
+
+        orderExecutor.removeBodyTracking(fillData.orderId);
+
         if (liveMerged) {
+          // consumedCostFraction must reflect what FRACTION OF THE DOLLAR COST
+          // this sale actually removed from the live pool — NOT a quantity
+          // ratio. `proratedCostBasis` (below) is priced off the frozen
+          // `mergeSnapshot.costBasis`, so when a buy folded onto this SAME live
+          // body in the Race-3 window at a DIFFERENT price than the original
+          // body's avg price (mergeSnapshot's array fields are shallow-copied,
+          // so sourceOrderIds/buyOrders are the SAME shared references as
+          // liveMerged's and reflect the fold-in too), a quantity-based ratio
+          // (sold-size / live-qty) diverges from the dollar fraction actually
+          // deducted, and Σ buy.cost*(1-consumedCostFraction) would no longer
+          // reconcile to liveMerged.costBasis. Pricing the ratio directly off
+          // the dollar amount removed (proratedCostBasis / pre-deduction
+          // liveMerged.costBasis) makes that reconciliation exact by
+          // construction, regardless of the fold-in's price.
+          const liveConsumedRatio = liveMerged.costBasis > 0
+            ? Math.min(proratedCostBasis / liveMerged.costBasis, 1)
+            : 1;
+
           liveMerged.assetQty = roundAsset(Math.max(0, liveMerged.assetQty - summary.totalSize));
           liveMerged.costBasis = roundUSDC(Math.max(0, liveMerged.costBasis - proratedCostBasis));
+
+          // Track the cumulative fraction of the body's ORIGINAL cost basis
+          // already realized via partial sells (mirrors the normal partial-fill
+          // path at :3159-3168). Without this, heldOpenBuyCostBasis counts the
+          // full buy cost as still-open while the sold tranche's prorated cost
+          // is simultaneously realized via bodyPnl above — double-counting it.
+          const prevConsumed = liveMerged.consumedCostFraction || 0;
+          liveMerged.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - liveConsumedRatio);
+          for (const srcId of new Set([
+            ...(liveMerged.sourceOrderIds || []),
+            ...((liveMerged.buyOrders || []).map(b => b.orderId)),
+          ])) {
+            if (srcId && srcId !== 'core-migration') {
+              fillLedger.annotateFillsByOrderId(srcId, { consumedCostFraction: liveMerged.consumedCostFraction });
+            }
+          }
+
           // The resting TP was sized for the pre-deduction (oversized) qty — cancel
           // and clear it so a correctly-sized TP is re-placed for the remaining body.
           if (liveMerged.tpOrderId) {
@@ -3077,22 +3140,28 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           isBodyOwned: true,
           bodyId: mergeSnapshot.id,
           bodyTier: mergeSnapshot.tier,
-          bodyCostBasis: mergeSnapshot.costBasis,
+          // The prorated cost of the SOLD tranche, not the full snapshot cost —
+          // matches the normal partial-fill path (:~3318), which always records
+          // proratedCostBasis regardless of partial/complete (proratedCostBasis
+          // already equals the full cost when soldRatio is 1).
+          bodyCostBasis: proratedCostBasis,
           bodyAvgPrice: mergeSnapshot.avgPrice,
-          bodyBtcQty: mergeSnapshot.assetQty,
-          bodyHoldbackAsset: holdbackAsset,
+          bodyBtcQty: liveOwnsRemainder ? summary.totalSize : mergeSnapshot.assetQty,
+          bodyHoldbackAsset: liveOwnsRemainder ? 0 : holdbackAsset,
           bodyPnl: pnl,
           mergeSnapshot: true,
+          ...(liveOwnsRemainder && { partialFill: true }),
         });
 
         tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)} [merge-snapshot]`, {
           assetAmount: summary.totalSize,
           price: summary.avgPrice,
           pnl,
-          holdbackAsset,
+          holdbackAsset: liveOwnsRemainder ? 0 : holdbackAsset,
           bodyId: mergeSnapshot.id,
           bodyTier: mergeSnapshot.tier,
           mergeSnapshot: true,
+          ...(liveOwnsRemainder && { isPartialFill: true, remainingAsset: liveMerged.assetQty }),
         });
 
         saveLiveState();
