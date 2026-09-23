@@ -257,6 +257,16 @@ describe('startup booking of partially-filled open entries (issue #671)', () => 
     const p = eng._getPositionState();
     assert.equal(bodiesFor(p).length, 0, 'no body is created for asset that was already sold');
     assert.ok((p.pendingEntryOrders || []).some(e => e.orderId === ORDER_ID), 'the resting entry stays tracked');
+
+    // The first live poll after restart: the executor's partial tracker starts
+    // at 0, so the unchanged filledSize reads as an advance.
+    await eng._test.handleOrderFill({
+      orderId: ORDER_ID, side: 'buy', status: 'OPEN',
+      filledSize: 0.004, filledValue: 200, averageFilledPrice: 50000, isPartialFill: true,
+    });
+    const after = eng._getPositionState();
+    assert.equal(bodiesFor(after).length, 0, 'the first poll must not rebook the settled tranche either');
+    assert.ok((after.pendingEntryOrders || []).some(e => e.orderId === ORDER_ID), 'the resting entry stays tracked after the poll');
   });
 
   it('adopted orphan entry: persisted to pendingEntryOrders and its tranche booked into a body', async () => {

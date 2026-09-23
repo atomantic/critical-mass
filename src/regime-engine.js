@@ -1970,10 +1970,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
        */
       const bookStartupOpenEntryPartial = async (order, placedAt, label) => {
         const fillArgs = { status: order.status || 'OPEN', isPartialFill: true, placedAt };
-        const ownedByLiveBody = () => isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId);
-        const ledgerBuys = ownedByLiveBody()
+        const ledgerBuys = isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)
           ? []
           : fillLedger.getFillsForOrder(order.orderId).filter(f => f.side === 'buy');
+        // Rows a body already booked are settled — handleOrderFill refuses to
+        // rebook them once that body is gone.
         const wasBooked = (f) => Boolean(f.bodyId || f.isBodyOwned || f.isSatellite || f.sellOrderId);
         // Rows no body ever owned were ingested by the pre-#671 startup path.
         // The normal pass below would dedup them away and build the body from
@@ -1982,10 +1983,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // above already counted the order from them, and handleOrderFill's
         // first commit would count it again.
         const legacyRows = ledgerBuys.filter(f => !wasBooked(f));
-        // Rows a body already booked while no live body owns the order: that
-        // body was closed by its TP (or otherwise retired) while the entry kept
-        // resting. Those tranches are settled and must not be re-committed.
-        const hasSettledRows = ledgerBuys.some(wasBooked);
         try {
           if (legacyRows.length > 0) {
             const alreadyCounted = fillLedger.getCurrentCycleFills()
@@ -2002,19 +1999,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 positionState.cycleBuys = cycleBuysBefore;
               }
             }
-          }
-          if (hasSettledRows && !ownedByLiveBody()) {
-            // handleOrderFill falls back to every ledger row of the order when
-            // nothing new is ingested — with no live owner that would rebook
-            // the settled tranches. Hand it only the trades the ledger lacks.
-            const freshFills = (await adapter.getOrderFills(order.orderId))
-              .filter(f => !fillLedger.hasProcessedTrade(f.tradeId || f.trade_id));
-            if (freshFills.length === 0) return;
-            await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, {
-              ...fillArgs,
-              confirmedFills: freshFills,
-            }));
-            return;
           }
           await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, fillArgs));
         } catch (err) {
@@ -3121,6 +3105,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           `⏳ [${exchange}] No fills to aggregate yet for still-live buy ${fillData.orderId} (status shows ${fillData.filledSize} filled) — leaving retryable for the next poll/reconcile`,
           { orderId: fillData.orderId, filledSize: fillData.filledSize }
         );
+        return;
+      }
+
+      // Every row we hold for this order was already booked by a body that is
+      // gone now (its TP sold it, or it was otherwise retired) while the entry
+      // kept resting — and this pass brought nothing new. Falling through
+      // would rebuild a body from those settled rows (the getFillsForOrder
+      // fallback above) and list a TP for asset that was already sold. The
+      // first poll after a restart lands here: the executor's partial-size
+      // tracker starts at 0, so the order's unchanged filledSize reads as an
+      // advance (issue #671).
+      if (ingestedFills.length === 0
+        && !isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId)
+        && fillsToAggregate.some(f => f.bodyId || f.isBodyOwned || f.isSatellite || f.sellOrderId)) {
+        logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} holds only tranches a retired body already settled and no new fills — nothing to book`);
+        if (!keepEntryTracked) {
+          retireTrackedEntry(fillData.orderId);
+          orderExecutor.handleOrderFill(fillData.orderId);
+        }
         return;
       }
 
