@@ -399,4 +399,79 @@ describe('#670 TP cancel-for-replace books executions during cancel', () => {
     assert.equal(eng._getPositionState().celestialBodies.length, 0, 'the completed TP closed its body');
     assert.equal(placed.length, 0);
   });
+  for (const [label, status] of [
+    ['omits filledSize', { status: 'CANCELLED' }],
+    ['understates filledSize', { status: 'CANCELLED', filledSize: 0.002, filledValue: 101, averageFilledPrice: 50500 }],
+  ]) {
+    it(`startup recovery books a persisted cancel execution when the CANCELLED status ${label}`, async () => {
+      // A cancel-for-replace booking failed before a restart: the body still
+      // points at the cancelled TP and carries the known 0.004 sale.
+      const pair = `__test670restart_${label.split(' ')[0]}__`;
+      const { eng, placed } = makeEngine({
+        pair,
+        cancelResult: { cancelled: true, filled: false, filledSize: 0 },
+        adapter: {
+          getProductDetails: async () => ({ ...PRODUCT_DETAILS, quoteIncrement: '0.01' }),
+          getCurrentPrice: async () => 50000,
+          getAccountBalance: async () => ({ available: 0, hold: 0 }),
+          loadCredentials: () => ({ apiKey: 'test', apiSecret: 'test' }),
+          getOpenOrders: async () => [],
+          getOrder: async () => status,
+        },
+        executor: {
+          setPriceIncrement: () => {},
+          getPendingEntries: () => new Map(),
+          restorePendingOrder: () => {},
+          restoreBodyTpOrder: () => {},
+          exportState: () => ({}),
+          cancelAllEntries: async () => {},
+          cancelAllLadderOrders: async () => {},
+          cancelTpOrder: async () => ({ cancelled: true }),
+          handleOrderCancel: () => {},
+        },
+      });
+      eng._test.setRunning(false);
+      eng._test.setRecoveryModule({
+        recoverState: async () => ({
+          position: { totalAsset: 0, totalCostBasis: 0, avgCostBasis: 0, cycleBuys: 0, lastEntryPrice: 0, lastEntryTime: 0 },
+          openOrders: new Map(),
+          discrepancies: [],
+        }),
+      });
+      const body = eng._getPositionState().celestialBodies[0];
+      body.pendingTpCancelExecution = { orderId: 'tp-old', filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 };
+      seedBuy(eng);
+
+      started.add(eng);
+      const result = await eng.start();
+      assert.equal(result.success, true, `start() must succeed: ${result.error}`);
+
+      assertBookedAndResized(eng, placed, 'tp-old', pair);
+      const live = eng._getPositionState().celestialBodies.find(b => b.id === 'b1');
+      assert.equal(live.pendingTpCancelExecution, undefined, 'marker cleared once booked');
+    });
+  }
+
+  it('accepts the final trade-level fills over a stale high-water size when the CANCELLED status omits filledSize', async () => {
+    // The executor's polled high-water mark (0.004) lags the true final fill
+    // (0.0045); the exchange's CANCELLED status carries no size.
+    const { eng, placed } = makeEngine({
+      cancelResult: EXECUTION,
+      adapter: {
+        getOrder: async () => ({ status: 'CANCELLED' }),
+        getOrderFills: async (orderId) => sellFill(orderId, '0.0045'),
+      },
+      pair: '__test670stale__',
+    });
+    seedBuy(eng);
+
+    const result = await eng.setBodyTpPercent('b1', 2);
+
+    assert.match(result.message, /sold during cancel — sale booked/);
+    const body = eng._getPositionState().celestialBodies.find(b => b.id === 'b1');
+    assert.ok(Math.abs(body.assetQty - 0.0055) < 1e-9, `the true final fill is deducted, got ${body.assetQty}`);
+    assert.equal(body.pendingTpCancelExecution, undefined, 'booked, not left for an endless retry');
+    assert.ok(readSellRow('tp-old', '__test670stale__'), 'the sale reached the fill ledger');
+    for (const [size] of placed) assert.ok(size <= 0.0055 + 1e-12, `re-placed TP ${size} fits the remaining body`);
+  });
 });

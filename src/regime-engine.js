@@ -1323,6 +1323,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (body.tpOrderId && !openOrderIds.has(body.tpOrderId)) {
         const orderStatus = bodyStatusByOrderId.get(body.tpOrderId);
 
+        // A cancel-for-replace whose booking failed before the restart (#670)
+        // persisted the execution it knew about. Book from it rather than
+        // from a CANCELLED status that may omit (or understate) the filled
+        // size — otherwise the branches below would book too little, or clear
+        // the TP and re-place against the unreduced body, losing the sale.
+        const knownExecution = isCancelledStatus(orderStatus) ? knownTpCancelExecution(body, orderStatus) : null;
+        if (knownExecution) {
+          orderExecutor.markSettled(body.tpOrderId);
+          // bookTpCancelExecution contains its own failure (keeps the marker
+          // and the TP identity for the reconcile retry).
+          await bookTpCancelExecution(body, body.tpOrderId, knownExecution, 'Startup recovery');
+          continue;
+        }
+
         // Catch CANCELLED-with-partials at startup (Gemini heartbeat-cancels
         // open orders during downtime). The interval reconciler would catch
         // this too, but only after reconcileIntervalMs.
@@ -2852,11 +2866,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // executor then reports its polled high-water mark instead). Filled size
       // only grows, so never let the frozen status undercut a size the caller
       // already knew — the trade-level fill check below still has to match it.
+      const statusOmittedSize = !(parseFloat(cancellation.order.filledSize) > 0);
       if (!(fillData.filledSize >= knownFilledSize)) fillData.filledSize = knownFilledSize;
       // Require the final fill set before accounting; never synthesize a stale
       // partial from the pre-cancel poll while the fills endpoint catches up.
       const finalFills = await adapter.getOrderFills(fillData.orderId);
       const finalSize = finalFills.reduce((sum, fill) => sum + Number(fill.size || 0), 0);
+      // With no size on the status, the known size may be only the executor's
+      // polled high-water mark, below the true final fill. The trade-level
+      // fills are then the best evidence — accept them when they cover at
+      // least what was known, or the size check below throws on every retry.
+      if (statusOmittedSize && Number.isFinite(finalSize) && finalSize > 0 && finalSize >= knownFilledSize - 1e-8) {
+        fillData.filledSize = finalSize;
+      }
       if (!(fillData.filledSize > 0) || !Number.isFinite(finalSize) || Math.abs(finalSize - fillData.filledSize) > 1e-8) {
         throw new Error(`Partial TP ${fillData.orderId} final fills incomplete; retry reconciliation`);
       }
@@ -4070,6 +4092,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @param {string} context - Log label
    * @returns {Promise<'booked'|'booking_failed'>}
    */
+  /**
+   * The execution a failed cancel-for-replace booking recorded for this
+   * body's current TP (see bookTpCancelExecution), when the exchange's
+   * CANCELLED status does not report MORE than it — a status that omits the
+   * size, or reports a smaller one, must not override what we already knew.
+   * @param {Object} body
+   * @param {Object|null} status - Exchange order status for body.tpOrderId
+   * @returns {Object|null}
+   */
+  const knownTpCancelExecution = (body, status) => {
+    const known = body.pendingTpCancelExecution;
+    if (!known || !body.tpOrderId || known.orderId !== body.tpOrderId) return null;
+    return (parseFloat(status?.filledSize) || 0) > known.filledSize ? null : known;
+  };
+
   const bookTpCancelExecution = async (body, orderId, execution, context) => {
     // A TP that executed its whole planned size before the cancel landed
     // (the cancel-after-full-fill race) is a completed TP, not a partial:
@@ -4705,10 +4742,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 // A cancel-for-replace whose booking failed (#670) left the
                 // execution it knew about on the body; retry with it rather
                 // than trusting a status that may omit the filled size.
-                const knownExecution = body.pendingTpCancelExecution?.orderId === body.tpOrderId
-                  ? body.pendingTpCancelExecution
-                  : null;
-                if (knownExecution && !((parseFloat(bodyStatus.filledSize) || 0) > knownExecution.filledSize)) {
+                const knownExecution = knownTpCancelExecution(body, bodyStatus);
+                if (knownExecution) {
                   orderExecutor.markSettled(body.tpOrderId);
                   await bookTpCancelExecution(body, body.tpOrderId, knownExecution, 'Reconcile retry');
                 } else if (bodyStatus.filledSize > 0) {
