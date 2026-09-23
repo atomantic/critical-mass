@@ -967,13 +967,24 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const recordCycleForSizeOptimizer = async (cycleData) => {
     if (!config.sizeAutoManaged) return;
 
-    // A failed/unavailable fetch (including an adapter with no
+    // getAccountBalance is ACCOUNT-wide, not fund-scoped (same caveat as
+    // checkPositionCoverage above). With two+ funds on this exchange sharing
+    // a quote currency (e.g. BTC-USDC and ETH-USDC both settling in USDC),
+    // each fund's optimizer would otherwise see the WHOLE shared wallet and
+    // could independently ratchet its OWN maxUsdcDeployed up toward ~90% of
+    // that shared total — over-committing capital across sibling funds
+    // (codex review, issue #694). Skip the fetch in that case, the same way
+    // checkPositionCoverage skips its check, rather than act on unsound data.
+    const quoteCurrency = getQuoteCurrency(productId);
+    const sharingQuote = getConfiguredFunds()
+      .filter(f => f.exchange === exchange && getQuoteCurrency(f.pair) === quoteCurrency);
+
+    // A failed/unavailable/ambiguous fetch (including an adapter with no
     // getAccountBalance at all — some test/legacy adapters) passes 0, which
     // sizeOptimizer.recordCycle() already treats as "no fresh reading" — it
     // leaves lastKnownBalance (and therefore any deferred evaluation) on the
     // last verified balance instead of evaluating against 0 or the stale cap.
-    const quoteCurrency = getQuoteCurrency(productId);
-    const quoteBalance = typeof adapter.getAccountBalance === 'function'
+    const quoteBalance = (sharingQuote.length <= 1 && typeof adapter.getAccountBalance === 'function')
       ? await adapter.getAccountBalance(quoteCurrency).catch(() => null)
       : null;
     const availableBalance = quoteBalance ? (parseFloat(quoteBalance.available) || 0) : 0;
@@ -4046,11 +4057,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             // isEntryInProgress(), not isMutatingPosition()) could land a buy
             // fill still attributed to the closing cycle (Claude review).
             const cycleBuysAtClose = positionState.cycleBuys;
-            await resetCycle();
-            await recordCycleForSizeOptimizer({
-              stepsUsed: cycleBuysAtClose,
-              capitalDeployed: body.costBasis,
-            });
+            // try/finally: resetCycle()'s only network call (ladder cancel)
+            // runs before any state mutation, so a throw there means nothing
+            // else in resetCycle() ran either — but capitalDeployed/stepsUsed
+            // above are already committed facts about this fill, independent
+            // of whether the ladder cleanup succeeds. Recording them in
+            // `finally` means a resetCycle() failure (which retries on its
+            // own via the outer dedup-clear/retry path) can never permanently
+            // drop this cycle from the optimizer's stats (codex review round 1).
+            try {
+              await resetCycle();
+            } finally {
+              await recordCycleForSizeOptimizer({
+                stepsUsed: cycleBuysAtClose,
+                capitalDeployed: body.costBasis,
+              });
+            }
           }
         }
 
@@ -4286,9 +4308,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             source: fillData.source || 'live',
           });
 
-          await resetCycle();
-          if (sizeOptimizerCycleData) {
-            await recordCycleForSizeOptimizer(sizeOptimizerCycleData);
+          // try/finally: if resetCycle() throws (its only network call — the
+          // ladder cancel — runs before any state mutation, so a throw there
+          // means resetCycle() changed nothing), the outer dedup-clear/retry
+          // path retries this fill, but `claimCapitalCredit` will then return
+          // false and sizeOptimizerCycleData would never be set again —
+          // permanently dropping this cycle from the optimizer's stats
+          // (codex review round 1, P2). Recording it here regardless of
+          // resetCycle()'s outcome closes that gap; the underlying figures
+          // were already fixed, committed facts before resetCycle() ran.
+          try {
+            await resetCycle();
+          } finally {
+            if (sizeOptimizerCycleData) {
+              await recordCycleForSizeOptimizer(sizeOptimizerCycleData);
+            }
           }
           saveLiveState();
           fillLedger.persist();
@@ -6184,11 +6218,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // real-balance fetch (issue #694) AFTER resetCycle() flips the
           // cycle boundary — see the live-mode call site's comment for why.
           const cycleBuysAtClose = positionState.cycleBuys;
-          await resetCycle();
-          await recordCycleForSizeOptimizer({
-            stepsUsed: cycleBuysAtClose,
-            capitalDeployed: body.costBasis,
-          });
+          // try/finally: see the live-mode call site's comment — a
+          // resetCycle() failure must not permanently drop this cycle from
+          // the optimizer's stats on retry (codex review round 1, P2).
+          try {
+            await resetCycle();
+          } finally {
+            await recordCycleForSizeOptimizer({
+              stepsUsed: cycleBuysAtClose,
+              capitalDeployed: body.costBasis,
+            });
+          }
         }
       } else {
         // Fallback: untracked sell (legacy core TP or unknown)
@@ -6214,11 +6254,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // the cycle boundary — see the live-mode call site's comment for why.
         const cycleBuysAtClose = positionState.cycleBuys;
         const totalCostBasisAtClose = positionState.totalCostBasis;
-        await resetCycle();
-        await recordCycleForSizeOptimizer({
-          stepsUsed: cycleBuysAtClose,
-          capitalDeployed: totalCostBasisAtClose,
-        });
+        // try/finally: see the live-mode call site's comment — a resetCycle()
+        // failure must not permanently drop this cycle from the optimizer's
+        // stats on retry (codex review round 1, P2).
+        try {
+          await resetCycle();
+        } finally {
+          await recordCycleForSizeOptimizer({
+            stepsUsed: cycleBuysAtClose,
+            capitalDeployed: totalCostBasisAtClose,
+          });
+        }
       }
 
       saveDryRunState();

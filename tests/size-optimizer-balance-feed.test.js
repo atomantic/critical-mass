@@ -190,4 +190,38 @@ describe('issue #694 — recordCycleForSizeOptimizer feeds the real adapter bala
     assert.equal(sizeOptimizer.lastKnownBalance, 0, 'no balance method available — lastKnownBalance stays at its unset (0) value');
     assert.notEqual(sizeOptimizer.lastKnownBalance, configMaxUsdcDeployed, 'must never fall back to feeding the cap as the balance');
   });
+
+  it('a resetCycle() failure (e.g. ladder-cancel network error) does not drop this cycle from the optimizer stats (codex review round 1, P2)', async () => {
+    // resetCycle()'s only await is cancelling any resting ladder orders,
+    // BEFORE any positionState mutation — so a throw there means resetCycle()
+    // changed nothing, and the outer wrapper retries the fill later. On
+    // retry, fillLedger.claimCapitalCredit() would return false (already
+    // claimed on this attempt), so the size-optimizer recording must NOT
+    // depend on resetCycle() succeeding on THIS attempt, or the cycle's
+    // stats would be lost forever.
+    const orderId = 'balance-feed-resetcycle-fails';
+    const eng = makeEngine({
+      adapter: {
+        getOrder: async () => ({ status: 'FILLED', filledSize: 0.009, averageFilledPrice: 51000 }),
+        getOrderFills: async () => sellFill(orderId, 0.009, 51000),
+        getAccountBalance: async () => ({ available: '777.77' }),
+      },
+      executor: {
+        cancelAllLadderOrders: async () => { throw new Error('exchange unavailable — cannot cancel ladder'); },
+      },
+    });
+    setupLegacyTp(eng, orderId);
+    Object.assign(eng._getPositionState(), { ladderActive: true }); // forces resetCycle() to hit the throwing cancel
+    Object.assign(eng._getConfig(), { sizeAutoManaged: true });
+
+    await assert.rejects(
+      eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false }),
+      /exchange unavailable/,
+      'resetCycle()\'s failure must still propagate so the outer wrapper retries the fill'
+    );
+
+    const { sizeOptimizer } = eng.getState();
+    assert.equal(sizeOptimizer.totalCycleCount, 1, 'the cycle must still reach the optimizer even though resetCycle() itself failed');
+    assert.equal(sizeOptimizer.lastKnownBalance, 777.77, 'and with the real balance, not lost or zeroed');
+  });
 });
