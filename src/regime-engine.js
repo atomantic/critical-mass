@@ -2853,6 +2853,41 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Determine if buy or sell
     if (fillData.side.toLowerCase() === 'buy') {
+      // Nothing to book this pass — no new fills were ingested, nothing was
+      // already in the ledger for this orderId to fall back on, AND gap
+      // synthesis either didn't apply (gated to terminal fills only) or
+      // found no gap. Falling through would aggregateFills([]) into a
+      // ZERO-value summary and still commit a body off it below: assetQty/
+      // costBasis 0, cycleBuys incremented, lastEntryPrice set to 0,
+      // buy_filled emitted, and findMergeTarget free to cancel/re-place a
+      // REAL body's TP against a phantom candidate price of 0 (Claude delta
+      // review, round 6). fillsToAggregate falls back to
+      // getFillsForOrder(orderId) whenever nothing new was ingested, so an
+      // empty result here also guarantees ledgerTotalForOrder was 0 —
+      // i.e. this orderId owns no body yet, so bailing out cannot strand an
+      // advancing partial or duplicate an already-committed buy (that case
+      // is instead handled by shouldSkipBuyRecommit below, which only runs
+      // once fillsToAggregate/summary are known non-degenerate).
+      if (fillsToAggregate.length === 0) {
+        if (isTerminalFill) {
+          // A terminal order with genuinely no discoverable fills is an
+          // anomaly, not a normal "still filling" state — throw so the
+          // engine-level bounded retry (isTerminalStatus gate in
+          // onFillDetected's catch) or the startup catch-up path re-arms
+          // it, rather than silently committing nothing and losing the
+          // fill.
+          throw Object.assign(
+            new Error(`[${exchange}] No fills available to book for terminal buy order ${fillData.orderId} (status shows ${fillData.filledSize} filled) — refusing to commit a zero-value body`),
+            { incompleteFills: true }
+          );
+        }
+        logger.info(
+          `⏳ [${exchange}] No fills to aggregate yet for still-live buy ${fillData.orderId} (status shows ${fillData.filledSize} filled) — leaving retryable for the next poll/reconcile`,
+          { orderId: fillData.orderId, filledSize: fillData.filledSize }
+        );
+        return;
+      }
+
       // Buy-fill dedup across WS vs polling. Without it, a buy detected by both
       // the polling path (which starts the multi-hundred-ms handleOrderFill
       // chain, incl. a possible 2s retry) and a late WS FILLED event for the
@@ -3630,7 +3665,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // claim was already persisted by claimCapitalCredit, so a retry
           // never got back into the block to finish closing. Both of
           // those retry safely on their own — closedTrades.record dedupes
-          // by sellOrderId+qtySold, and resetCycle's state resets are
+          // by sellOrderId alone (see dedupKeyFor in closed-trades.js), and
+          // resetCycle's state resets are
           // already state-gated/idempotent (its one non-idempotent step,
           // fillLedger.startNewCycle(), landing twice on a genuine retry
           // only costs a spare cycle-number boundary — cosmetic, never a
@@ -3652,6 +3688,34 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
 
             logger.info(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+
+            // tp_filled + the optimizer recorders belong to the SAME
+            // claim-gated commit as cyclesCompleted++ / the capital credit
+            // (Claude delta review, round 6). They were previously below,
+            // ungated, alongside resetCycle()/closedTrades.record — so a
+            // retry after the claim already succeeded (capital credited,
+            // resetCycle awaiting a network cancel that then failed) would
+            // re-emit tp_filled and re-feed the optimizers on every retry,
+            // and once resetCycle() DID complete, avgCostBasis is reset to
+            // 0, so a subsequent retry's actualTpPct calc below would also
+            // be wrong. resetCycle()/closedTrades.record stay outside this
+            // gate (they retry idempotently on their own).
+            const actualTpPct = positionState.avgCostBasis > 0
+              ? ((summary2.avgPrice - positionState.avgCostBasis) / positionState.avgCostBasis) * 100
+              : 0;
+            tradeEvents.emitTradeEvent('tp_filled', exchange, `${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
+              assetAmount: summary2.totalSize,
+              price: summary2.avgPrice,
+              pnl,
+              holdbackAsset,
+              capitalGrowth: pnl,
+              newMaxUsdcDeployed: config.maxUsdcDeployed,
+            });
+            recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
+            recordCycleForSizeOptimizer({
+              stepsUsed: positionState.cycleBuys,
+              capitalDeployed: soldCostBasis,
+            }, config.maxUsdcDeployed);
           }
 
           // Link current-cycle buy fills to this sell order for buy→sell display linkage (skip body-owned)
@@ -3666,9 +3730,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
           // Preserve the legacy audit record before resetCycle clears its
           // cost basis. Safe to call every pass — record() dedupes by
-          // sellOrderId+qtySold, so a retry after the capital credit was
-          // already claimed still re-attempts this (and resetCycle below)
-          // without duplicating the audit entry.
+          // sellOrderId alone (dedupKeyFor in closed-trades.js), so a retry
+          // after the capital credit was already claimed still re-attempts
+          // this (and resetCycle below) without duplicating the audit
+          // entry.
           closedTrades.record({
             sellOrderId: fillData.orderId,
             ...sellTradeStamp(summary2),
@@ -3686,24 +3751,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             buyOrderIds: [...buyOrderIds],
             source: fillData.source || 'live',
           });
-
-          tradeEvents.emitTradeEvent('tp_filled', exchange, `${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
-            assetAmount: summary2.totalSize,
-            price: summary2.avgPrice,
-            pnl,
-            holdbackAsset,
-            capitalGrowth: pnl,
-            newMaxUsdcDeployed: config.maxUsdcDeployed,
-          });
-
-          const actualTpPct = positionState.avgCostBasis > 0
-            ? ((summary2.avgPrice - positionState.avgCostBasis) / positionState.avgCostBasis) * 100
-            : 0;
-          recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
-          recordCycleForSizeOptimizer({
-            stepsUsed: positionState.cycleBuys,
-            capitalDeployed: soldCostBasis,
-          }, config.maxUsdcDeployed);
 
           await resetCycle();
           saveLiveState();

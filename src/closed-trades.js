@@ -106,7 +106,9 @@ const createClosedTrades = (exchange, pair) => {
   };
 
   /**
-   * Record a closed trade. Deduplicates by sellOrderId + qtySold.
+   * Record a closed trade. Deduplicates on sellOrderId alone (falls back to
+   * sellOrderId:qtySold:timestamp only when sellOrderId is missing — see
+   * dedupKeyFor above).
    * @param {ClosedTrade} trade
    * @returns {boolean} Whether the trade was added (false if duplicate)
    */
@@ -128,8 +130,9 @@ const createClosedTrades = (exchange, pair) => {
   /**
    * Backfill closed-trades from fill ledger.
    *
-   * Idempotent: each generated entry is keyed by sellOrderId+qtySold and
-   * dedup'd via record(). Safe to call on every engine startup — it'll only
+   * Idempotent: each generated entry carries a sellOrderId and is dedup'd
+   * via record() (keyed on sellOrderId alone — see dedupKeyFor). Safe to
+   * call on every engine startup — it'll only
    * add missing entries, leaving live engine-recorded entries untouched.
    *
    * This was originally a one-time migration gated on `trades.length === 0`,

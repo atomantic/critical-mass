@@ -249,7 +249,7 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
     );
   });
 
-  it('does not credit the body for a gap fill whose ingest reports an already-seen duplicate (Claude convergence review, round 4)', async () => {
+  it('does not credit the body for a gap fill whose ingest reports an already-seen duplicate, and does not commit a zero-value body either (Claude convergence review, round 4; Claude delta review, round 6)', async () => {
     // Defensive coverage for handleOrderFillImpl's own bookkeeping: if
     // fillLedger.ingestFill reports the synthetic gap row as an
     // already-seen duplicate (result.fill === null — e.g. a race with
@@ -258,7 +258,13 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
     // nothing new actually entered the ledger this pass. An earlier round
     // of this fix fell back to the raw, never-ingested syntheticFill
     // object in that case, letting the body absorb size the ledger never
-    // recorded.
+    // recorded. A LATER round found that even after that fix, the resulting
+    // empty fillsToAggregate still fell through into committing a
+    // ZERO-value body (assetQty/costBasis 0, cycleBuys incremented,
+    // lastEntryPrice 0, buy_filled emitted) — this is a TERMINAL fill (no
+    // later poll will ever supersede it), so the fix now throws instead of
+    // committing nothing, giving the bounded engine-level retry a chance to
+    // recover it.
     const orderId = 'gap-dup-1';
     const adapter = {
       getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
@@ -267,6 +273,7 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
     const eng = makeEngine(adapter);
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [];
+    const cycleBuysBefore = pos.cycleBuys;
 
     const ledger = eng.getFillLedger();
     const originalIngestFill = ledger.ingestFill;
@@ -280,21 +287,57 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
     };
 
     try {
-      await eng._test.handleOrderFill({
-        orderId, side: 'buy', status: 'FILLED',
-        filledSize: 100, filledValue: 200000, averageFilledPrice: 2000, isPartialFill: false,
-      });
+      await assert.rejects(
+        eng._test.handleOrderFill({
+          orderId, side: 'buy', status: 'FILLED',
+          filledSize: 100, filledValue: 200000, averageFilledPrice: 2000, isPartialFill: false,
+        }),
+        /No fills available to book/,
+        'a terminal fill with nothing to book (duplicate gap ingest) must throw, not silently commit a zero-value body',
+      );
     } finally {
       ledger.ingestFill = originalIngestFill;
     }
 
     assert.ok(syntheticIngestAttempts >= 1, 'must have attempted to ingest the synthetic gap fill');
-    // A body may still be created from the empty aggregate (a separate,
-    // pre-existing quirk unrelated to this fix), but it must NOT be
-    // credited with the phantom 100 the ledger never actually recorded —
-    // that is what this fix guards against.
     const body = eng._getPositionState().celestialBodies.find(b => (b.sourceOrderIds || []).includes(orderId));
-    assert.equal(body?.assetQty || 0, 0, 'a gap fill whose ingest reports a duplicate must NOT credit assetQty the ledger never actually recorded');
+    assert.equal(body, undefined, 'must not create a body — zero-value or otherwise — when nothing was actually booked');
+    assert.equal(pos.cycleBuys, cycleBuysBefore, 'cycleBuys must not advance for a pass with nothing booked');
+  });
+
+  it('does not commit a zero-value body for a genuinely FIRST, still-live partial with no fills discoverable yet, and leaves the order retryable rather than throwing (Claude delta review, round 6)', async () => {
+    // A first-ever partial for an orderId with NO prior ledger rows, whose
+    // getOrderFills throws on both the initial attempt and
+    // handleOrderFillImpl's own 2s retry. Gap synthesis correctly does not
+    // apply (status is non-terminal — a later poll can still bring the
+    // real trade), so there is nothing at all to book this pass. Before
+    // this fix, fillsToAggregate fell through empty and still committed: a
+    // body with assetQty/costBasis 0, cycleBuys incremented,
+    // lastEntryPrice set to 0, and a buy_filled event emitted for a fill
+    // that never actually landed — and findMergeTarget was then free to
+    // cancel/re-place a REAL body's TP against that phantom's bogus 0
+    // price. Unlike the terminal case, this must NOT throw — the order
+    // stays tracked (keepEntryTracked, since isPartialFill is true) and is
+    // simply retried on the next poll/reconcile.
+    const orderId = 'first-partial-empty-1';
+    const adapter = {
+      getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
+      getOrderFills: async () => { throw new Error('trade scan unavailable'); },
+    };
+    const eng = makeEngine(adapter);
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [];
+    const cycleBuysBefore = pos.cycleBuys;
+
+    await eng._test.handleOrderFill({
+      orderId, side: 'buy', status: 'PARTIALLY_FILLED',
+      filledSize: 0.03, filledValue: 60, averageFilledPrice: 2000, isPartialFill: true,
+    });
+
+    const body = eng._getPositionState().celestialBodies.find(b => (b.sourceOrderIds || []).includes(orderId));
+    assert.equal(body, undefined, 'must not create a body — zero-value or otherwise — from an empty aggregate');
+    assert.equal(pos.cycleBuys, cycleBuysBefore, 'cycleBuys must not advance for a pass with nothing booked');
+    assert.equal(eng.getFillLedger().getFillsForOrder(orderId).length, 0, 'no fill row — real or synthetic — was recorded for this orderId');
   });
 });
 
