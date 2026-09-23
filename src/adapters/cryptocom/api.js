@@ -103,6 +103,20 @@ const createCryptocomAdapter = (keysPath = null) => {
   };
 
   /**
+   * Crypto.com's positive "this order does not exist" signal: HTTP 404, the
+   * 40401 NOT_FOUND / 316 NO_ORDER reject codes, or a not-found message.
+   * Anything else (auth, rate limit, transport) is an INCONCLUSIVE lookup and
+   * must NOT read as absent — that reading is what permits a double-place.
+   * @param {any} err
+   * @returns {boolean}
+   */
+  const isOrderNotFound = (err) =>
+    err?.status === 404
+    || Number(err?.code) === 40401
+    || Number(err?.code) === 316
+    || /order\s*not\s*found|no\s*order\s*found/i.test(err?.message ?? '');
+
+  /**
    * Make authenticated REST request to Crypto.com API
    * @param {string} method - API method (e.g., 'private/user-balance')
    * @param {Object} [params] - Request parameters
@@ -148,6 +162,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       cleanError.endpoint = method;
       cleanError.responseData = errData;
       cleanError.code = errData?.code;
+      cleanError.orderNotFound = isOrderNotFound(cleanError);
       throw cleanError;
     }
 
@@ -172,6 +187,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       cleanError.code = data.code;
       cleanError.responseData = data;
       cleanError.endpoint = method;
+      cleanError.orderNotFound = isOrderNotFound(cleanError);
       throw cleanError;
     }
 
@@ -577,20 +593,6 @@ const createCryptocomAdapter = (keysPath = null) => {
 
     return normalizeOrderDetail(order, clientOrderId);
   };
-
-  /**
-   * Crypto.com's positive "this order does not exist" signal: HTTP 404, the
-   * 40401 NOT_FOUND / 316 NO_ORDER reject codes, or a not-found message.
-   * Anything else (auth, rate limit, transport) is an INCONCLUSIVE lookup and
-   * must NOT read as absent — that reading is what permits a double-place.
-   * @param {any} err
-   * @returns {boolean}
-   */
-  const isOrderNotFound = (err) =>
-    err?.status === 404
-    || Number(err?.code) === 40401
-    || Number(err?.code) === 316
-    || /order\s*not\s*found|no\s*order\s*found/i.test(err?.message ?? '');
 
   /**
    * Unwrap the order payload, which the API nests under `order_info`.
