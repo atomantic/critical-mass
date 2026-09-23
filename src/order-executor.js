@@ -1061,22 +1061,48 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         // The exchange acknowledged the cancel ({success:true}), but every
         // adapter's cancelOrder response carries only that boolean — never a
         // filledSize — so an ack alone does not guarantee zero fill. A rung
-        // can still partially fill in the race window right before the
-        // cancel takes (the same race safeCancelOrder itself guards against
-        // by polling after an ack'd cancel). Check the terminal state before
-        // dropping tracking so a partial fill discovered here is booked via
-        // handleCancelledOrder/onFillDetected instead of silently lost
-        // (issue #674 Fix step 1).
+        // can still partially (or, rarely with eventual consistency, fully)
+        // fill in the race window right before the cancel takes (the same
+        // race safeCancelOrder itself guards against by polling after an
+        // ack'd cancel). Verify the terminal state before dropping tracking,
+        // mirroring the refused-cancel branch below exactly — including its
+        // isFilledStatus check first, and letting handleCancelledOrder's own
+        // partialFillTracker fallback apply when this getOrder response
+        // omits filledSize for a genuinely-partial cancel (issue #674 Fix
+        // step 1).
         const cancelledStatus = typeof adapter.getOrder === 'function'
           ? await adapter.getOrder(orderId).catch(() => null)
           : null;
-        if (cancelledStatus && cancelledStatus.filledSize > 0) {
-          await handleCancelledOrder(orderId, order, cancelledStatus, 'SAFE-mode cancel');
-        } else {
+
+        if (isFilledStatus(cancelledStatus)) {
+          logger.info(`📋 [${exchange}] Entry order ${orderId.slice(0, 8)} fully filled (discovered after a successful SAFE-mode cancel ack)`, {
+            orderId,
+            orderType: order.type,
+            status: cancelledStatus.status || 'FILLED',
+            reconciliationContext: 'SAFE-mode cancel',
+          });
+          const placedAt = order.placedAt;
           pendingOrders.delete(orderId);
           partialFillTracker.delete(orderId);
+          markSettled(orderId);
+          if (callbacks.onFillDetected) {
+            await callbacks.onFillDetected(orderId, { ...cancelledStatus, placedAt });
+          }
+          filled++;
+        } else if (cancelledStatus) {
+          // Cleanly cancelled (possibly with partial fills) — the shared
+          // handler routes any partial through onFillDetected before
+          // dropping tracking, falling back to partialFillTracker's
+          // high-water mark if this response omits filledSize.
+          await handleCancelledOrder(orderId, order, cancelledStatus, 'SAFE-mode cancel');
+          cancelled++;
+        } else {
+          // Could not verify (no getOrder on this adapter, or it failed) —
+          // trust the ack, same as every other "can't verify" fallback here.
+          pendingOrders.delete(orderId);
+          partialFillTracker.delete(orderId);
+          cancelled++;
         }
-        cancelled++;
         continue;
       }
 

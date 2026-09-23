@@ -431,6 +431,42 @@ describe('cancelAllEntries — refused-cancel fill handling (issue #209 A)', () 
     assert.equal(exec.getPendingCounts().entries, 0, 'order dropped from tracking after the fill was routed');
   });
 
+  it('falls back to the partialFillTracker high-water mark when a SUCCESSFUL cancel\'s getOrder response omits filledSize (issue #674 self-review finding)', async () => {
+    // Gemini can jump PARTIALLY_FILLED -> CANCELLED with the cancel-status
+    // response omitting the cumulative filledSize (documented elsewhere in
+    // this file for safeCancelOrder/handleCancelledOrder). The `!refused`
+    // branch must route through handleCancelledOrder itself (not gate on
+    // cancelledStatus.filledSize up front) so its existing partialFillTracker
+    // fallback still applies here too.
+    let phase = 'seed';
+    const adapter = {
+      cancelOrder: async () => ({ success: true }),
+      getOrder: async () => phase === 'seed'
+        ? { status: 'PARTIALLY_FILLED', filledSize: 0.006, completionPercentage: 60, side: 'BUY' }
+        : { status: 'CANCELLED', filledSize: 0, side: 'BUY' },
+    };
+    const captured = [];
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+    });
+
+    // Seed partialFillTracker via a partial-fill poll.
+    restoreEntry(exec, 'entry-tracker-fallback');
+    await exec.checkPendingOrderFills();
+    assert.equal(captured.length, 1, 'seed poll fires the partial-fill callback');
+
+    // Re-track the same order and cancel it successfully; the terminal
+    // getOrder response reports filledSize 0, but the tracker still has 0.006.
+    restoreEntry(exec, 'entry-tracker-fallback');
+    phase = 'verify';
+    const cancelled = await exec.cancelAllEntries();
+
+    assert.equal(cancelled, 1);
+    assert.equal(captured.length, 2, 'the tracked high-water mark is routed through onFillDetected on cancel');
+    assert.equal(captured[1].status.filledSize, 0.006, 'falls back to the tracked value, not the terminal response\'s 0');
+    assert.equal(captured[1].status.isPartialFill, true);
+  });
+
   it('handles a thrown cancel by checking the order rather than blindly deleting', async () => {
     // A rejected cancel promise where the order turns out to have filled must
     // still route the fill.
