@@ -616,17 +616,33 @@ const createCryptocomAdapter = (keysPath = null) => {
     const avgPrice = parseFloat(order.avg_price || order.filled_price || 0);
     const filledValue = parseFloat(order.cumulative_value || 0) || filledQuantity * avgPrice;
 
-    // Map status
+    // Map status.
+    //
+    // Every order that is off the book MUST normalize to a terminal status
+    // (mirrors the Gemini adapter's guard, issue #316): EXPIRED is a
+    // documented Crypto.com Exchange v1 order status, and letting it fall
+    // through to UNKNOWN means isTerminalStatus()/isCancelledStatus() never
+    // fire, cancelPartialFillOrder never confirms terminal, and
+    // NON_ADOPTABLE_STATUSES (order-manager.js) doesn't recognize it either,
+    // so an expired order gets adopted as if it were still live (issue #682).
     let status = 'UNKNOWN';
     const orderStatus = (order.status || '').toUpperCase();
     if (orderStatus === 'FILLED' || orderStatus === 'COMPLETED') {
       status = 'FILLED';
     } else if (orderStatus === 'CANCELED' || orderStatus === 'CANCELLED' || orderStatus === 'REJECTED') {
       status = 'CANCELLED';
+    } else if (orderStatus === 'EXPIRED') {
+      status = 'EXPIRED';
     } else if (orderStatus === 'ACTIVE' || orderStatus === 'NEW' || orderStatus === 'PENDING') {
       status = filledQuantity > 0 ? 'PARTIALLY_FILLED' : 'OPEN';
     } else if (orderStatus === 'PARTIALLY_FILLED') {
       status = 'PARTIALLY_FILLED';
+    } else if (orderStatus) {
+      // Genuinely unrecognised — leave UNKNOWN, but log once so a new
+      // exchange status doesn't silently orphan orders the way EXPIRED did.
+      logger.warn(`Crypto.com order status not recognized, reporting UNKNOWN: ${orderStatus}`, {
+        orderId: order.order_id || fallbackId,
+      });
     }
 
     return {
