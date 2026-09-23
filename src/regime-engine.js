@@ -6373,6 +6373,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     refreshRealizedFromCyclePairs();
     const { equity: currentEquity, capitalBase } = computeFundEquity(positionState, config, price);
+    if (!(currentEquity > 0)) {
+      return { success: false, message: `Fund equity is depleted ($${currentEquity.toFixed(2)}) — cannot re-base the drawdown peak` };
+    }
 
     riskManager.forceResume(currentEquity, capitalBase);
     persistDrawdownState();

@@ -168,6 +168,21 @@ const createRiskManager = (exchange, config, productId) => {
    * @returns {{drawdownPercent: number, isPaused: boolean, peakEquity: number, drawdownPausedAt: number|null}}
    */
   const updateDrawdown = (currentEquity, capitalBase) => {
+    // Depleted equity against a known positive peak is a 100% drawdown — it
+    // must pause, not fall through to the "nothing to track" skip below.
+    if (Number.isFinite(currentEquity) && currentEquity <= 0 && peakEquity !== null && peakEquity > 0) {
+      lastDrawdownPercent = 100;
+      maxDrawdownSeen = 100;
+      if (!isDrawdownPaused) {
+        isDrawdownPaused = true;
+        drawdownPausedAt = Date.now();
+        logger.warn(`⚠️ [${exchange}] Drawdown limit reached: fund equity depleted (${currentEquity.toFixed(2)}) from peak ${peakEquity.toFixed(2)}`, {
+          peakEquity, currentEquity, maxDrawdownPercent: config.maxDrawdownPercent,
+        });
+      }
+      return { drawdownPercent: 100, isPaused: true, peakEquity, drawdownPausedAt };
+    }
+
     // No meaningful equity (no price yet / unfunded fund) — nothing to track.
     if (!Number.isFinite(currentEquity) || currentEquity <= 0) {
       return {
@@ -483,8 +498,11 @@ const createRiskManager = (exchange, config, productId) => {
 /**
  * Principal component of drawdown equity, in quote currency.
  *
- * Explicit deposits win (config, then position state, then the legacy
- * originalCapital alias); otherwise the maxUsdcDeployed budget. This
+ * Explicit deposits win — the engine-tracked position-state deposit first
+ * (updateConfig keeps it current for direct depositedCapital edits AND for
+ * maxUsdcDeployed add/withdraw deltas, which never touch config.depositedCapital),
+ * then config, then the legacy originalCapital alias; otherwise the
+ * maxUsdcDeployed budget. This
  * deliberately does NOT use the APY calculator's auto-derived fallback
  * (maxUsdcDeployed − realizedPnL): that fallback moves with every realized
  * sell, which would cancel realized profit out of equity and make each TP
@@ -495,8 +513,8 @@ const createRiskManager = (exchange, config, productId) => {
  * @returns {number}
  */
 const resolveDrawdownCapitalBase = (position, config) => {
-  if (config?.depositedCapital > 0) return config.depositedCapital;
   if (position?.depositedCapital > 0) return position.depositedCapital;
+  if (config?.depositedCapital > 0) return config.depositedCapital;
   if (position?.originalCapital > 0) return position.originalCapital;
   return config?.maxUsdcDeployed > 0 ? config.maxUsdcDeployed : 0;
 };

@@ -367,7 +367,9 @@ describe('risk-manager fund equity (issue #693)', () => {
   });
 
   it('capital base prefers explicit deposits and falls back to the budget, never the realized-derived value', () => {
-    assert.equal(resolveDrawdownCapitalBase({ depositedCapital: 500 }, { depositedCapital: 800, maxUsdcDeployed: 1000 }), 800);
+    // engine-tracked deposit (kept current by updateConfig) beats the config value
+    assert.equal(resolveDrawdownCapitalBase({ depositedCapital: 500 }, { depositedCapital: 800, maxUsdcDeployed: 1000 }), 500);
+    assert.equal(resolveDrawdownCapitalBase({}, { depositedCapital: 800, maxUsdcDeployed: 1000 }), 800);
     assert.equal(resolveDrawdownCapitalBase({ depositedCapital: 500 }, { maxUsdcDeployed: 1000 }), 500);
     assert.equal(resolveDrawdownCapitalBase({ originalCapital: 400 }, { maxUsdcDeployed: 1000 }), 400);
     // realizedPnL must not leak into the base (APY auto-derive would give 900)
@@ -420,6 +422,15 @@ describe('risk-manager drawdown capital re-basing / persistence (issue #693)', (
     assert.equal(result.peakEquity, 1500);
     assert.equal(result.drawdownPercent, 10);
     assert.equal(result.isPaused, true);
+  });
+
+  it('depleted equity against a known peak pauses (100% drawdown) instead of being skipped', (t) => {
+    const riskManager = setup(t, { maxDrawdownPercent: 10 });
+    riskManager.updateDrawdown(1000, 1000);
+    const result = riskManager.updateDrawdown(-5, 1000);
+    assert.equal(result.isPaused, true);
+    assert.equal(result.drawdownPercent, 100);
+    assert.match(riskManager.canPlaceEntry(makePosition(), 0, 0).reason, /drawdown_paused/);
   });
 
   it('forceResume records the capital base so a deposit is not re-applied on the next tick', (t) => {
