@@ -33,9 +33,22 @@ const flushAsync = () => new Promise(resolve => setImmediate(resolve));
 const configUtils = require('../src/config-utils');
 const originalUpdateRegimeConfig = configUtils.updateRegimeConfig;
 const originalGetConfiguredFunds = configUtils.getConfiguredFunds;
+const originalGetFundConfig = configUtils.getFundConfig;
 configUtils.updateRegimeConfig = () => {};
 let STUBBED_FUNDS = [];
 configUtils.getConfiguredFunds = () => STUBBED_FUNDS;
+// recordCycleForSizeOptimizer resolves each candidate's EFFECTIVE traded
+// quote currency via getFundConfig(exchange, pair).productId (not the raw
+// pair string, to cover quote-currency overrides — see the source comment).
+// The real getFundConfig() would otherwise read production data/config.json
+// and resolve every unknown test pair to the same DEFAULTS.productId,
+// silently defeating every scenario below. regime-engine.js destructures
+// getFundConfig at require-time, so this stub function reference must stay
+// the SAME object forever — only the mutable PRODUCT_ID_OVERRIDES map it
+// reads may change between tests (reassigning configUtils.getFundConfig
+// itself later would not reach the already-captured destructured reference).
+let PRODUCT_ID_OVERRIDES = {};
+configUtils.getFundConfig = (_exchange, pair) => ({ productId: PRODUCT_ID_OVERRIDES[pair] || pair });
 
 const { createRegimeEngine } = require('../src/regime-engine');
 
@@ -49,6 +62,7 @@ after(() => {
   fs.rmSync(JUNK_DIR, { recursive: true, force: true });
   configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
   configUtils.getConfiguredFunds = originalGetConfiguredFunds;
+  configUtils.getFundConfig = originalGetFundConfig;
 });
 
 const makeAdapter = (over = {}) => ({
@@ -181,5 +195,36 @@ describe('issue #694 (codex P1) — recordCycleForSizeOptimizer skips the shared
 
     const { sizeOptimizer } = eng.getState();
     assert.equal(sizeOptimizer.lastKnownBalance, 4242.42, 'a sibling quoted in a different currency does not share this wallet');
+  });
+
+  it('a sibling whose IDENTITY pair differs in quote currency from its ACTUAL traded productId (override) still triggers the skip (codex review round 3)', async () => {
+    // A fund's configured identity `pair` and its live-traded `productId` can
+    // differ by quote currency (a documented, supported override — see
+    // productIdMatchesPair in config-utils.js): e.g. a fund registered under
+    // pair 'ETH-USD' can actually trade productId 'ETH-USDC'. Comparing raw
+    // pair strings alone would miss this fund sharing the USDC wallet.
+    PRODUCT_ID_OVERRIDES = { 'ETH-USD': 'ETH-USDC' };
+    try {
+      STUBBED_FUNDS = [
+        { exchange: 'coinbase', pair: TEST_PAIR },
+        { exchange: 'coinbase', pair: 'ETH-USD' }, // identity pair says USD, but trades USDC
+      ];
+      const orderId = 'fund-scoping-productid-override';
+      const eng = makeEngine();
+      setupLegacyTp(eng, orderId);
+      Object.assign(eng._getConfig(), { sizeAutoManaged: true });
+
+      await eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false });
+      await flushAsync();
+
+      const { sizeOptimizer } = eng.getState();
+      assert.equal(
+        sizeOptimizer.lastKnownBalance,
+        0,
+        'a sibling that ACTUALLY trades USDC (via productId override) must still be recognized as sharing the wallet'
+      );
+    } finally {
+      PRODUCT_ID_OVERRIDES = {};
+    }
   });
 });

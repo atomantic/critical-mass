@@ -16,7 +16,7 @@
 
 const { getAdapter } = require('./adapters');
 const { getUnaccountedFills } = require('./sync-fills');
-const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency, getConfiguredFunds } = require('./config-utils');
+const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency, getConfiguredFunds, getFundConfig } = require('./config-utils');
 const { createFillLedger } = require('./fill-ledger');
 const { createClosedTrades } = require('./closed-trades');
 const {
@@ -979,13 +979,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // A fund's configured identity `pair` and its actual traded `productId`
     // can differ by quote currency (a documented, supported override — see
     // productIdMatchesPair in config-utils.js), so comparing raw `f.pair`
-    // quote currencies can UNDER-count true sharing (codex review round 2):
-    // resolve each candidate's EFFECTIVE traded quote via its own regime
-    // config's productId, falling back to its pair when unset.
+    // quote currencies can UNDER-count true sharing (codex review round 2).
+    // Resolve each candidate's EFFECTIVE traded quote via getFundConfig()
+    // (NOT getRegimeConfig() — that returns only the nested `.regime`
+    // sub-object per resolveRegimeConfig; `productId` lives at the top level
+    // of the fund block, so getRegimeConfig().productId is always undefined
+    // and silently fell through to the pair every time — codex review round
+    // 3 caught this fix being a no-op). getFundConfig() merges DEFAULTS, so
+    // .productId is always a defined string; the `|| f.pair` stays as a
+    // defensive fallback only.
     const quoteCurrency = getQuoteCurrency(productId);
     const sharingQuote = getConfiguredFunds()
       .filter(f => f.exchange === exchange)
-      .filter(f => getQuoteCurrency(getRegimeConfig(f.exchange, f.pair)?.productId || f.pair) === quoteCurrency);
+      .filter(f => getQuoteCurrency(getFundConfig(f.exchange, f.pair)?.productId || f.pair) === quoteCurrency);
 
     // A failed/unavailable/ambiguous fetch (including an adapter with no
     // getAccountBalance at all — some test/legacy adapters) passes 0. When
@@ -4092,14 +4098,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             // crash during that fetch loses only this one best-effort
             // optimizer stats sample, never the P&L-critical state (codex
             // review round 2). recordCycleForSizeOptimizer never rejects (its
-            // own body is try/caught), so no unhandled-rejection risk.
+            // own body is try/caught), so no unhandled-rejection risk. Once
+            // it DOES resolve, re-save so the recorded sample/balance isn't
+            // left ONLY in memory until some unrelated future save happens to
+            // pick it up (codex review round 3) — cheap and idempotent, same
+            // as the periodic save timer already does.
             try {
               await resetCycle();
             } finally {
               recordCycleForSizeOptimizer({
                 stepsUsed: cycleBuysAtClose,
                 capitalDeployed: body.costBasis,
-              }).catch(() => {});
+              }).catch(() => {}).finally(() => {
+                saveLiveState();
+                fillLedger.persist();
+              });
             }
           }
         }
@@ -4351,12 +4364,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // a chance to delay them — a crash during that fetch loses only
           // this one best-effort optimizer stats sample, never the
           // P&L-critical state (codex review round 2). Never rejects (its
-          // own body is try/caught), so no unhandled-rejection risk.
+          // own body is try/caught), so no unhandled-rejection risk. Once it
+          // DOES resolve, re-save so the recorded sample/balance isn't left
+          // ONLY in memory until some unrelated future save picks it up
+          // (codex review round 3).
           try {
             await resetCycle();
           } finally {
             if (sizeOptimizerCycleData) {
-              recordCycleForSizeOptimizer(sizeOptimizerCycleData).catch(() => {});
+              recordCycleForSizeOptimizer(sizeOptimizerCycleData).catch(() => {}).finally(() => {
+                saveLiveState();
+                fillLedger.persist();
+              });
             }
           }
           saveLiveState();
@@ -6258,14 +6277,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // the optimizer's stats on retry (codex review round 1, P2).
           // Deliberately NOT awaited — see the live-mode call site's comment
           // on why (codex review round 2: don't delay saveDryRunState() below
-          // on the optimizer's balance-fetch).
+          // on the optimizer's balance-fetch). Once it DOES resolve, re-save
+          // so the recorded sample/balance isn't left only in memory until
+          // some unrelated future save picks it up (codex review round 3).
           try {
             await resetCycle();
           } finally {
             recordCycleForSizeOptimizer({
               stepsUsed: cycleBuysAtClose,
               capitalDeployed: body.costBasis,
-            }).catch(() => {});
+            }).catch(() => {}).finally(() => saveDryRunState());
           }
         }
       } else {
@@ -6297,14 +6318,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // stats on retry (codex review round 1, P2).
         // Deliberately NOT awaited — see the live-mode call site's comment
         // (codex review round 2: don't delay saveDryRunState() below on the
-        // optimizer's balance-fetch).
+        // optimizer's balance-fetch). Once it DOES resolve, re-save so the
+        // recorded sample/balance isn't left only in memory until some
+        // unrelated future save picks it up (codex review round 3).
         try {
           await resetCycle();
         } finally {
           recordCycleForSizeOptimizer({
             stepsUsed: cycleBuysAtClose,
             capitalDeployed: totalCostBasisAtClose,
-          }).catch(() => {});
+          }).catch(() => {}).finally(() => saveDryRunState());
         }
       }
 
