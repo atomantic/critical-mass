@@ -4121,9 +4121,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Update volatility metrics via REST API
-   */
-  /**
    * Seed the risk manager's drawdown tracker from the persisted snapshot once
    * per engine instance, so a restart keeps an active pause and the peak.
    */
@@ -4152,12 +4149,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     hydrateDrawdownState();
     const price = marketState.lastPrice;
     if (!(price > 0)) return null;
+    // A fill / merge / reset mid-flight can leave bodies and the ledger out of
+    // step (e.g. a TP's body already removed but its sell not yet paired),
+    // which would read as a transient equity drop. Skip this sample; the
+    // previous pause state stands until the next tick.
+    if (engineLocks.isMutatingPosition()) return null;
+    // realizedPnL / realizedAssetPnL are derived lazily from the ledger; refresh
+    // them so a just-filled TP's proceeds and holdback are in the equity.
+    refreshRealizedFromCyclePairs();
     const { equity, capitalBase } = computeFundEquity(positionState, config, price);
     const result = riskManager.updateDrawdown(equity, capitalBase);
     persistDrawdownState();
     return result;
   };
 
+  /**
+   * Update volatility metrics via REST API
+   */
   const updateMetrics = async () => {
     // Check health status (allows auto-recovery from SAFE mode). Pass the live
     // open-order count so a flat engine is exempt from the stale-orders check
@@ -6355,6 +6363,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       logger.info(`▶️ [${exchange}] Drawdown pause manually cleared (no mark price — peak unchanged)`);
       return { success: true, message: 'Resumed (no mark price — peak unchanged)' };
     }
+    refreshRealizedFromCyclePairs();
     const { equity: currentEquity } = computeFundEquity(positionState, config, price);
 
     riskManager.forceResume(currentEquity);

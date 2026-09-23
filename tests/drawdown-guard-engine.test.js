@@ -185,4 +185,22 @@ describe('drawdown guard wired into the engine (issue #693)', () => {
     assert.equal(risk.isDrawdownPaused, true);
     assert.equal(risk.peakEquity, 1000);
   });
+
+  it('skips the sample while a fill/merge is mutating the position (no transient false drawdown)', async () => {
+    const { eng } = makeEngine();
+    setPrice(eng, 100);
+    await eng._test.updateMetrics();
+    // Simulate a TP mid-flight: body gone, sell not yet paired in the ledger.
+    const pos = eng._getPositionState();
+    pos.celestialBodies = [];
+    pos.totalAsset = 0;
+    pos.totalCostBasis = 0;
+    eng._test.setFillInProgress(1);
+    try {
+      assert.equal(eng._test.refreshDrawdownGuard(), null);
+      assert.equal(eng.getState().risk.isDrawdownPaused, false);
+    } finally {
+      eng._test.setFillInProgress(0);
+    }
+  });
 });
