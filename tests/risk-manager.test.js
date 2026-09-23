@@ -422,6 +422,19 @@ describe('risk-manager drawdown capital re-basing / persistence (issue #693)', (
     assert.equal(result.isPaused, true);
   });
 
+  it('forceResume records the capital base so a deposit is not re-applied on the next tick', (t) => {
+    const riskManager = setup(t, { maxDrawdownPercent: 10 });
+    riskManager.updateDrawdown(1000, 1000);
+    riskManager.updateDrawdown(850, 1000); // paused
+    // Operator deposits $500 and resumes before the next metrics tick.
+    riskManager.forceResume(1350, 1500);
+    const result = riskManager.updateDrawdown(1350, 1500);
+    assert.equal(result.peakEquity, 1350);
+    assert.equal(result.drawdownPercent, 0);
+    assert.equal(result.isPaused, false);
+    assert.equal(riskManager.getState().currentDrawdownPercent, 0);
+  });
+
   it('round-trips an active pause and the peak through getPersistedState / restoreState', (t) => {
     const a = setup(t, { maxDrawdownPercent: 10 });
     a.updateDrawdown(1000, 1000);

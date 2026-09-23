@@ -444,13 +444,17 @@ const createRiskManager = (exchange, config, productId) => {
   /**
    * Force resume from drawdown pause (manual override)
    * @param {number} [currentEquity] - Current fund equity (computeFundEquity unit) to set as the new peak (optional)
+   * @param {number} [capitalBase] - Capital base included in `currentEquity`; recorded so the next
+   *   updateDrawdown does not re-apply a capital change the new peak already contains
    */
-  const forceResume = (currentEquity) => {
+  const forceResume = (currentEquity, capitalBase) => {
     if (isDrawdownPaused) {
       isDrawdownPaused = false;
       drawdownPausedAt = null;
       if (Number.isFinite(currentEquity) && currentEquity > 0) {
         peakEquity = currentEquity; // Reset peak to current equity
+        lastDrawdownPercent = 0;
+        if (Number.isFinite(capitalBase)) lastCapitalBase = capitalBase;
       }
       logger.info(`▶️ [${exchange}] Manually resumed from drawdown pause, peak reset to ${(peakEquity ?? 0).toFixed(2)}`, {
         peakEquity, resumeType: 'manual',

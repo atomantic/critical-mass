@@ -6364,9 +6364,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: true, message: 'Resumed (no mark price — peak unchanged)' };
     }
     refreshRealizedFromCyclePairs();
-    const { equity: currentEquity } = computeFundEquity(positionState, config, price);
+    const { equity: currentEquity, capitalBase } = computeFundEquity(positionState, config, price);
 
-    riskManager.forceResume(currentEquity);
+    riskManager.forceResume(currentEquity, capitalBase);
     persistDrawdownState();
     logger.info(`▶️ [${exchange}] Drawdown pause manually cleared, peak reset to $${currentEquity.toFixed(2)}`);
 
