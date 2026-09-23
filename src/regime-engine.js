@@ -6640,7 +6640,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         logger.info(`📊 [${exchange}] Building ladder: ${ladderCalculator.getSummary(ladder)}`);
 
         // Place ladder orders
+        const generationAtPlace = cycleResetGeneration;
         const result = await orderExecutor.placeLadderOrders(ladder.levels);
+        if (await abandonLadderPlacedAcrossReset(generationAtPlace, 'Ladder placement')) return;
 
         // Update position state
         positionState.ladderActive = true;
@@ -8824,6 +8826,28 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * A ladder placement normally owns the ladder lock start to finish, so no
+   * cycle reset can run under it. The one exception is a reset whose bounded
+   * wait timed out and proceeded anyway (#766): it swept only the rungs placed
+   * so far, and marking the rest active would leave a ladder resting into
+   * the new cycle that nothing sweeps. Detect that and cancel it.
+   * @param {number} generationAtStart - cycleResetGeneration when placement began
+   * @param {string} label - log label
+   * @returns {Promise<boolean>} true when the placed ladder was abandoned
+   */
+  const abandonLadderPlacedAcrossReset = async (generationAtStart, label) => {
+    if (cycleResetGeneration === generationAtStart) return false;
+    logger.warn(`⚠️ [${exchange}] ${label}: a cycle reset ran while the ladder was being placed (its ladder-lock wait timed out) — cancelling the ladder just placed`);
+    await orderExecutor.cancelAllLadderOrders();
+    positionState.ladderActive = false;
+    positionState.ladderPlacedAt = null;
+    positionState.ladderLowerBound = 0;
+    positionState.pendingLadderOrders = [];
+    saveLiveState();
+    return true;
+  };
+
+  /**
    * Cancel existing ladder orders and rebuild from scratch
    * Bypasses health/regime guards (user-initiated)
    *
@@ -8973,7 +8997,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     logger.info(`📊 [${exchange}] Rebuilding ladder: ${ladderCalculator.getSummary(ladder)}`);
 
     // Place ladder orders
+    const generationAtPlace = cycleResetGeneration;
     const result = await orderExecutor.placeLadderOrders(ladder.levels);
+    if (await abandonLadderPlacedAcrossReset(generationAtPlace, 'Ladder rebuild')) {
+      return { success: false, message: 'A cycle reset ran while the new ladder was being placed, so it was cancelled — rebuild again if appropriate.' };
+    }
 
     // Update position state
     positionState.ladderActive = true;
@@ -9285,6 +9313,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       refreshDrawdownGuard,
       getOrderExecutor: () => orderExecutor,
       resetCycle: () => resetCycle(),
+      // A reset that timed out on the ladder lock and proceeded unserialised.
+      resetCycleUnserialised: () => resetCycleLocked(null),
       checkAllCaps: () => riskManager.checkAllCaps(positionState),
     },
   };

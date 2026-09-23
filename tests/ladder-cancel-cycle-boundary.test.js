@@ -1030,6 +1030,40 @@ describe('ladder sweeps serialise on the ladder lock (#766)', () => {
     assert.equal(pos.ladderActive, true);
   });
 
+  it('a rebuild whose placement a timed-out reset ran alongside cancels the ladder it placed', async () => {
+    let eng;
+    const calls = { cancel: 0 };
+    eng = makeEngine({
+      adapter: { getAccountBalance: async () => ({ available: '1000' }) },
+      executor: {
+        cancelAllLadderOrders: async () => {
+          calls.cancel++;
+          return { cancelled: 0, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [] };
+        },
+        placeLadderOrders: async (levels) => {
+          // The reset gave up waiting on the ladder lock and ran mid-placement.
+          await eng._test.resetCycleUnserialised();
+          return { orders: levels.map((l, i) => ({ orderId: `late-rung-${i}`, ...l })), failedCount: 0 };
+        },
+      },
+    });
+    const config = eng._getConfig();
+    config.entryMode = 'ladder';
+    config.maxUsdcDeployed = 1000;
+    config.baseSizeUsdc = 10;
+    const m = eng._getMarketState();
+    m.lastPrice = 50000;
+    eng.getFillLedger().startNewCycle();
+    const pos = eng._getPositionState();
+
+    const result = await eng.rebuildLadder();
+    assert.equal(result.success, false);
+    assert.match(result.message, /cycle reset ran while the new ladder was being placed/);
+    assert.equal(calls.cancel, 1, 'the late ladder was swept');
+    assert.equal(pos.ladderActive, false);
+    assert.deepEqual(pos.pendingLadderOrders, []);
+  });
+
   it('a rebuild requested mid-reset runs after the reset instead of refusing or interleaving', async () => {
     const sweep = deferred();
     const { eng, calls } = setupSerialEngine({ holdCancel: [sweep] });
