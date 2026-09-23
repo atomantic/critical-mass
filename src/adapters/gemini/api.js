@@ -755,26 +755,30 @@ const createGeminiAdapter = (keysPath = null) => {
    * Fix (mirrors the Crypto.com approach): look up the order to learn its
    * symbol and creation time, then walk /v1/mytrades forward from that time
    * with pagination so fills are found regardless of product or trade volume.
+   *
+   * A failed order-status lookup, or a matched-fill total short of the
+   * order's own `executed_amount`, throws `{ incompleteFills: true }` instead
+   * of returning a partial set with no error (issue #679) — callers already
+   * treat a throw here as retryable (see `ingestNewFillsForOrder`).
    * @param {string} orderId - Order ID
    * @returns {Promise<OrderFill[]>} List of fills
    */
   adapter.getOrderFills = async (orderId) => {
     // Step 1: locate the order so the trade scan uses the right symbol and
-    // is bounded to the order's actual lifetime.
-    let symbol = null;
-    let sinceMs = Date.now() - 60 * 60 * 1000; // fallback: last hour, all symbols
+    // is bounded to the order's actual lifetime, and so completeness can be
+    // verified against Gemini's own executed_amount. A lookup failure means
+    // we can do neither — rethrow instead of degrading to a fixed 1h/
+    // all-symbol scan that would silently under-report a fully-filled sell.
+    let order;
     try {
-      const order = await makeRestRequest('/v1/order/status', { order_id: orderId });
-      if (order?.symbol) symbol = order.symbol.toLowerCase();
-      const createdMs = Number(order?.timestampms || (order?.timestamp ? Number(order.timestamp) * 1000 : 0));
-      if (createdMs > 0) sinceMs = createdMs - 60000; // 60s pad for clock skew
+      order = await makeRestRequest('/v1/order/status', { order_id: orderId });
     } catch (err) {
-      logger.warn(`⚠️ [gemini] getOrderFills: order-status lookup failed for ${orderId}: ${err.message} — scanning last hour across all symbols`, {
-        orderId,
-        fallbackWindowMs: 60 * 60 * 1000,
-        error: err.message,
-      });
+      throw new Error(`[gemini] getOrderFills: order-status lookup failed for ${orderId}: ${err.message}`);
     }
+    const symbol = order?.symbol ? order.symbol.toLowerCase() : null;
+    const createdMs = Number(order?.timestampms || (order?.timestamp ? Number(order.timestamp) * 1000 : 0));
+    const sinceMs = createdMs > 0 ? createdMs - 60000 : Date.now() - 60 * 60 * 1000; // 60s pad, or last hour/all symbols when order carries no timestamp
+    const executedAmount = parseFloat(order?.executed_amount || 0);
 
     // Step 2: paginate trades since order creation and filter by order
     const trades = await fetchTradesSince(symbol, sinceMs);
@@ -802,6 +806,18 @@ const createGeminiAdapter = (keysPath = null) => {
           liquidityIndicator: trade.is_maker ? 'MAKER' : 'TAKER',
         };
       });
+
+    // Step 3: verify the matched fills actually account for everything the
+    // exchange says executed — a short sum here is the "partial fill" case
+    // worth guarding against (distinct from designed holdback, which is
+    // computed downstream from the fills this function returns).
+    const totalMatched = fills.reduce((sum, fill) => sum + Number(fill.size || 0), 0);
+    if (totalMatched < executedAmount - 1e-9) {
+      throw Object.assign(
+        new Error(`[gemini] getOrderFills: fills incomplete for ${orderId}: ${totalMatched} of ${executedAmount}`),
+        { incompleteFills: true }
+      );
+    }
 
     return fills;
   };
