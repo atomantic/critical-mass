@@ -515,9 +515,10 @@ const updateAfterConsolidation = (state, consolidatedOrders, newOrderId, newSell
  * @param {BotState} state - Current state (mutated in place)
  * @param {{oldOrderId: string, newOrderId: string}[]} [restoredOrders] - Re-placed sells
  * @param {string[]} [failedRestoreOrderIds] - Cancelled sells that could not be re-placed
+ * @param {string} [reason] - Operator-facing `sellFailedReason` for each failed-restore order. Defaults to the "could not be re-placed" wording; callers pass a distinct reason when no restore was ever attempted (#676 review follow-up — e.g. the consolidated outcome was unknown and restoring was deliberately skipped because that order may already be live)
  * @returns {BotState} Updated state
  */
-const applyConsolidationRecovery = (state, restoredOrders = [], failedRestoreOrderIds = []) => {
+const applyConsolidationRecovery = (state, restoredOrders = [], failedRestoreOrderIds = [], reason = 'consolidation place failed and sell could not be re-placed') => {
   const now = new Date().toISOString();
 
   for (const { oldOrderId, newOrderId } of restoredOrders) {
@@ -533,7 +534,7 @@ const applyConsolidationRecovery = (state, restoredOrders = [], failedRestoreOrd
     const order = state.orders.find(o => o.orderId === oldOrderId);
     if (order) {
       order.status = 'sell_failed';
-      order.sellFailedReason = 'consolidation place failed and sell could not be re-placed';
+      order.sellFailedReason = reason;
       order.sellFailedAt = now;
       // No resting sell remains for this order, so drop its exposure from the
       // pending-sell aggregates (Math.max guards against float drift).

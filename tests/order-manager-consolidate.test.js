@@ -1,8 +1,13 @@
 // @ts-check
-const { describe, it } = require('node:test');
+const { describe, it, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const { consolidatePendingOrders } = require('../src/order-manager');
+const migration = require('../src/migration');
+const stateTracker = require('../src/state-tracker');
 
 const baseConfig = () => ({ productId: 'BTC-USD' });
 
@@ -331,25 +336,345 @@ describe('consolidatePendingOrders — ordered public contracts', () => {
       cancelledOrderIds: ['a', 'b', 'c'], skippedOrderIds: [], filledDuringCancelOrderIds: ['gap'],
       restoredOrders: [{ oldOrderId: 'a', newOrderId: 'restored-a' }, { oldOrderId: 'c', newOrderId: 'restored-c' }],
       failedRestoreOrderIds: ['b'],
+      unresolvedRestoreOrderIds: [],
     });
     script.assertComplete();
   });
 
-  for (const phase of ['cancel', 're-fetch', 'restore']) {
+  for (const phase of ['cancel', 're-fetch']) {
     it(`propagates the original ${phase} exception and stops exchange calls`, async () => {
       const error = new Error(`${phase} unavailable`);
       const steps = [getStep('a'), getStep('b'), getStep('c'), cancelStep('a'), getStep('a')];
       if (phase === 'cancel') steps.push({ call: ['cancelOrder', 'b'], error });
       if (phase === 're-fetch') steps.push(cancelStep('b'), { call: ['getOrder', 'b'], error });
-      if (phase === 'restore') steps.push(
-        cancelStep('b'), getStep('b'), cancelStep('c'), getStep('c'),
-        placeStep(4, 200, { success: false, errorMessage: 'rejected' }),
-        placeStep(1, 100, { success: true, orderId: 'restored-a' }),
-        { call: ['placeLimitSell', 'BTC-USD', 2, 250], error },
-      );
       const script = scriptedAdapter(steps);
       await assert.rejects(consolidatePendingOrders(baseConfig(), [order('a', 1, 100), order('b', 2, 250), order('c', 1, 200)], script.adapter), thrown => thrown === error);
       script.assertComplete();
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// #676 — a throw from the consolidated placement or a per-order restore must
+// not escape consolidatePendingOrders uncaught: the confirmed-cancelled
+// originals are already gone by this point, so an uncaught throw here used to
+// skip the recovery path (executeConsolidation never got a result to run
+// applyConsolidationRecovery/saveState against) and leave those orders
+// tracked as 'pending' forever while potentially naked on the exchange.
+// ---------------------------------------------------------------------------
+describe('consolidatePendingOrders — placement-throw recovery (issue #676)', () => {
+  it('a definitive (non-ambiguous) restore-placement throw does not abort the remaining restores', async () => {
+    const restoreError = new Error('restore unavailable');
+    const orders = [order('a', 1, 100), order('b', 2, 250), order('c', 1, 200)];
+    const steps = [
+      getStep('a'), getStep('b'), getStep('c'),
+      cancelStep('a'), getStep('a'), cancelStep('b'), getStep('b'), cancelStep('c'), getStep('c'),
+      placeStep(4, 200, { success: false, errorMessage: 'rejected' }),
+      placeStep(1, 100, { success: true, orderId: 'restored-a' }),
+      { call: ['placeLimitSell', 'BTC-USD', 2, 250], error: restoreError },
+      placeStep(1, 200, { success: true, orderId: 'restored-c' }),
+    ];
+    const script = scriptedAdapter(steps);
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, script.adapter);
+
+    assert.deepEqual(result, {
+      success: false,
+      error: 'Failed to place consolidated order: rejected',
+      cancelledOrderIds: ['a', 'b', 'c'],
+      skippedOrderIds: [],
+      filledDuringCancelOrderIds: [],
+      restoredOrders: [
+        { oldOrderId: 'a', newOrderId: 'restored-a' },
+        { oldOrderId: 'c', newOrderId: 'restored-c' },
+      ],
+      failedRestoreOrderIds: ['b'],
+      unresolvedRestoreOrderIds: [],
+    });
+    script.assertComplete();
+  });
+
+  it('(a) reconciles an ambiguous consolidated-placement outcome by adopting the live order — no restore', async () => {
+    const orders = [order('a', 1, 100), order('b', 2, 250)];
+    let placeCalls = 0;
+    let lookupCalls = 0;
+    const adapter = {
+      getOrder: async () => ({ completionPercentage: 0 }),
+      cancelOrder: async () => ({ success: true }),
+      placeLimitSell: async () => {
+        placeCalls += 1;
+        throw Object.assign(new Error('unknown order outcome'), {
+          status: 'unknown',
+          unknownOutcome: true,
+          clientOrderId: 'coid-consolidate-1',
+        });
+      },
+      findOrderByClientOrderId: async (clientOrderId) => {
+        lookupCalls += 1;
+        assert.equal(clientOrderId, 'coid-consolidate-1');
+        return { orderId: 'live-consolidated-1', status: 'OPEN' };
+      },
+    };
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter);
+
+    assert.equal(placeCalls, 1, 'must NOT re-place a possibly-executed order');
+    assert.equal(lookupCalls, 1, 'reconciled exactly once by client_order_id');
+    assert.equal(result.success, true);
+    assert.equal(result.newOrderId, 'live-consolidated-1', 'adopted the reconciled exchange order id');
+    assert.equal(result.restoredOrders, undefined, 'no restore attempted on a reconciled success');
+  });
+
+  it('(b) a definitive (non-ambiguous) consolidated-placement throw resolves with restore results and does not reject', async () => {
+    const orders = [order('a', 1, 100), order('b', 2, 250)];
+    const httpError = Object.assign(new Error('503 Service Unavailable'), { status: 503 });
+    const restorePlaces = [];
+    const adapter = {
+      getOrder: async () => ({ completionPercentage: 0 }),
+      cancelOrder: async () => ({ success: true }),
+      placeLimitSell: async (productId, qty, price) => {
+        if (qty > 2.5) throw httpError; // the consolidated place (3.0)
+        restorePlaces.push({ qty, price });
+        return { success: true, orderId: `restored-${qty}` };
+      },
+    };
+
+    // A rejection here would fail the test on its own (this `it` callback is
+    // awaited by the runner) — the explicit assertions below are the real check.
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter);
+
+    assert.equal(result.success, false);
+    assert.match(result.error, /503 Service Unavailable/);
+    assert.deepEqual(result.cancelledOrderIds, ['a', 'b']);
+    assert.deepEqual(result.restoredOrders, [
+      { oldOrderId: 'a', newOrderId: 'restored-1' },
+      { oldOrderId: 'b', newOrderId: 'restored-2' },
+    ]);
+    assert.deepEqual(result.failedRestoreOrderIds, []);
+    assert.deepEqual(result.unresolvedRestoreOrderIds, []);
+  });
+
+  it('does NOT restore the originals when the consolidated outcome is unknown and unresolvable (may already be live)', async () => {
+    const orders = [order('a', 1, 100), order('b', 2, 250)];
+    let restoreAttempts = 0;
+    const adapter = {
+      getOrder: async () => ({ completionPercentage: 0 }),
+      cancelOrder: async () => ({ success: true }),
+      placeLimitSell: async (productId, qty) => {
+        if (qty === 3) {
+          throw Object.assign(new Error('unknown order outcome'), {
+            status: 'unknown',
+            unknownOutcome: true,
+            clientOrderId: undefined, // no id to reconcile by — genuinely unresolvable
+          });
+        }
+        restoreAttempts += 1;
+        return { success: true, orderId: 'should-not-be-called' };
+      },
+    };
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter);
+
+    assert.equal(result.success, false);
+    assert.equal(result.pending, true);
+    assert.equal(restoreAttempts, 0, 'must not re-place over a possibly-live consolidated order');
+    assert.deepEqual(result.cancelledOrderIds, ['a', 'b']);
+    assert.deepEqual(result.restoredOrders, []);
+    // Unresolved, NOT a definitive failure — no restore was ever attempted
+    // because the consolidated order itself might already be live (#676 review
+    // round 2: this must be reported distinctly from failedRestoreOrderIds so
+    // an operator is never misled into manually re-placing over a live order).
+    assert.deepEqual(result.failedRestoreOrderIds, []);
+    assert.deepEqual(result.unresolvedRestoreOrderIds, ['a', 'b']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #676 review follow-up — a fund that already has an unresolved placement
+// intent (from an earlier ambiguous DCA buy, Fibonacci sell, etc.) must refuse
+// consolidation BEFORE cancelling anything. Checking the guard only inside the
+// consolidated placeWithUnknownReconcile call (i.e. after
+// cancelOrdersForConsolidation already ran) cancels every healthy sell first,
+// then refuses the consolidated placement for a reason that has nothing to do
+// with those sells, and recovery wrongly marks them sell_failed/naked.
+// ---------------------------------------------------------------------------
+describe('consolidatePendingOrders — refuses to cancel while a placement intent is already blocking (issue #676 follow-up)', () => {
+  const EXCHANGE = 'coinbase';
+  const PAIR = 'BTC-USD';
+  let tmpRoot;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'consolidate-blocking-intent-'));
+    mock.method(migration, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
+  });
+
+  afterEach(() => {
+    mock.restoreAll();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('refuses without cancelling any order when the fund already has a blocking intent', async () => {
+    const recorded = stateTracker.recordPlacementIntent({
+      exchange: EXCHANGE, pair: PAIR, action: 'dca_buy', side: 'buy', price: 100, size: 0.5, sizeUsdc: 50,
+    });
+    // A freshly recorded intent is only "dispatching" and owned by THIS process,
+    // which is deliberately non-blocking (a placement this same process has in
+    // flight right now) — mark it unresolved to model the real blocking case: an
+    // earlier ambiguous placement no one has reconciled yet.
+    const blocking = stateTracker.markPlacementIntentUnresolved(EXCHANGE, PAIR, recorded.id, { reason: 'ambiguous outcome' });
+
+    const orders = [order('a', 0.1, 2400), order('b', 0.2, 2500)];
+    let cancelCalls = 0;
+    let placeCalls = 0;
+    const adapter = {
+      // The up-front partial-fill check (read-only) is harmless and still runs —
+      // the guard must be checked before any MUTATING call (cancel/place).
+      getOrder: async () => ({ completionPercentage: 0 }),
+      cancelOrder: async () => { cancelCalls += 1; return { success: true }; },
+      placeLimitSell: async () => { placeCalls += 1; return { success: true, orderId: 'should-not-place' }; },
+    };
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter, { exchange: EXCHANGE, pair: PAIR });
+
+    assert.equal(cancelCalls, 0, 'must not cancel any resting sell while a blocking intent exists');
+    assert.equal(placeCalls, 0, 'must not place anything while a blocking intent exists');
+    assert.equal(result.success, false);
+    assert.equal(result.pending, true);
+    assert.match(result.error, new RegExp(blocking.id));
+    assert.equal(result.cancelledOrderIds, undefined, 'nothing was cancelled');
+  });
+
+  it('proceeds normally once no blocking intent exists (no scope regression)', async () => {
+    const orders = [order('a', 0.1, 2400), order('b', 0.2, 2500)];
+    const adapter = {
+      getOrder: async () => ({ completionPercentage: 0 }),
+      cancelOrder: async () => ({ success: true }),
+      placeLimitSell: async () => ({ success: true, orderId: 'consolidated-1' }),
+    };
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter, { exchange: EXCHANGE, pair: PAIR });
+
+    assert.equal(result.success, true);
+    assert.equal(result.newOrderId, 'consolidated-1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #676 review round 2 — a per-order restore with an ambiguous, unreconcilable
+// outcome must be reported as UNRESOLVED, not lumped into failedRestoreOrderIds
+// as though it were a definitive rejection. Once that happens, the fund's
+// durable placement intent also blocks every later restore attempt in the SAME
+// batch, and those must land as unresolved too (never reaching the exchange),
+// not as false "restore rejected" failures.
+// ---------------------------------------------------------------------------
+describe('restoreCancelledSellOrders — distinguishes unresolved restores from definitive failures (issue #676 follow-up)', () => {
+  const EXCHANGE = 'coinbase';
+  const PAIR = 'BTC-USD';
+  let tmpRoot;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'consolidate-unresolved-restore-'));
+    mock.method(migration, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
+  });
+
+  afterEach(() => {
+    mock.restoreAll();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('routes an unreconcilable restore, and every later restore it blocks, into unresolvedRestoreOrderIds', async () => {
+    const orders = [order('a', 0.1, 2400), order('b', 0.2, 2500), order('c', 0.3, 2600)];
+    let placeCalls = 0;
+    const adapter = {
+      getOrder: async () => ({ completionPercentage: 0 }),
+      cancelOrder: async () => ({ success: true }),
+      placeLimitSell: async (productId, qty) => {
+        placeCalls += 1;
+        // The consolidated place (0.6) is rejected outright — a definitive
+        // failure, triggering the restore loop below.
+        if (qty > 0.5) return { success: false, errorMessage: 'rejected' };
+        // Restore 'a' (0.1) succeeds.
+        if (Math.abs(qty - 0.1) < 1e-9) return { success: true, orderId: 'restored-a' };
+        // Restore 'b' (0.2) is ambiguous and unreconcilable (no client_order_id).
+        if (Math.abs(qty - 0.2) < 1e-9) {
+          throw Object.assign(new Error('unknown order outcome'), {
+            status: 'unknown', unknownOutcome: true, clientOrderId: undefined,
+          });
+        }
+        // Restore 'c' (0.3) should never actually reach the exchange — the
+        // fund's placement intent (recorded by 'b's unresolved attempt) must
+        // refuse it before dispatch.
+        return { success: true, orderId: 'should-not-be-called' };
+      },
+    };
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter, { exchange: EXCHANGE, pair: PAIR });
+
+    assert.equal(result.success, false);
+    assert.deepEqual(result.restoredOrders, [{ oldOrderId: 'a', newOrderId: 'restored-a' }]);
+    assert.deepEqual(result.failedRestoreOrderIds, [], 'neither b nor c is a DEFINITIVE failure');
+    assert.deepEqual(result.unresolvedRestoreOrderIds, ['b', 'c']);
+    // 3 placeLimitSell calls total: the consolidated place, restore-a, and
+    // restore-b's ambiguous attempt — restore-c must never dispatch.
+    assert.equal(placeCalls, 3, 'restore-c must be refused before reaching the exchange');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #676 review round 3 — a blocking intent that appears mid-flight (recorded by
+// ANOTHER process between round-1's up-front check and this call's own
+// consolidated placeWithUnknownReconcile dispatch) means the consolidated
+// order was refused BEFORE ever reaching the exchange (placeWithUnknownReconcile
+// sets blockedByIntentId, never __unknownError) — nothing is live from this
+// attempt, unlike a genuinely ambiguous post-dispatch outcome. That case must
+// still attempt to restore the originals (safe — nothing was submitted),
+// rather than being treated identically to "may already be live, don't touch
+// it". A pre-dispatch block also blocks the restore attempts themselves via
+// the same guard, so they correctly land as unresolved (not falsely "failed"
+// or falsely "restored") rather than reaching the exchange at all.
+// ---------------------------------------------------------------------------
+describe('consolidatePendingOrders — a pre-dispatch block (mid-flight, from elsewhere) is not treated as "may be live" (issue #676 follow-up)', () => {
+  const EXCHANGE = 'coinbase';
+  const PAIR = 'BTC-USD';
+  let tmpRoot;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'consolidate-mid-flight-block-'));
+    mock.method(migration, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
+  });
+
+  afterEach(() => {
+    mock.restoreAll();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('attempts to restore (rather than skipping restore outright) when refused pre-dispatch, and never dispatches anything to the exchange', async () => {
+    const orders = [order('a', 0.1, 2400), order('b', 0.2, 2500)];
+    let placeCalls = 0;
+    const adapter = {
+      getOrder: async () => ({ completionPercentage: 0 }),
+      // Simulate ANOTHER process recording a blocking intent on this exact
+      // fund the moment cancellation starts — after round-1's own up-front
+      // check already passed clean.
+      cancelOrder: async (orderId) => {
+        if (orderId === 'a') {
+          const recorded = stateTracker.recordPlacementIntent({
+            exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy', price: 100, size: 0.5, sizeUsdc: 50,
+          });
+          stateTracker.markPlacementIntentUnresolved(EXCHANGE, PAIR, recorded.id, { reason: 'mid-flight race' });
+        }
+        return { success: true };
+      },
+      placeLimitSell: async () => { placeCalls += 1; return { success: true, orderId: 'should-never-dispatch' }; },
+    };
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter, { exchange: EXCHANGE, pair: PAIR });
+
+    assert.equal(placeCalls, 0, 'neither the consolidated placement nor any restore may reach the exchange while blocked');
+    assert.equal(result.success, false);
+    assert.equal(result.pending, undefined, 'falls through to the ordinary failure/restore path, not the "may be live" early return');
+    assert.deepEqual(result.restoredOrders, []);
+    assert.deepEqual(result.failedRestoreOrderIds, [], 'a pre-dispatch block on the restore itself is unresolved, not a definitive failure');
+    assert.deepEqual(result.unresolvedRestoreOrderIds, ['a', 'b']);
+  });
 });
