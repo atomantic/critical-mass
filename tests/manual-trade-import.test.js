@@ -721,6 +721,48 @@ describe('Manual Trade Import', () => {
       assert.equal(fillLedger.getFillsForOrder('buy-1')[0].bodyId, second.trade.bodyId);
     });
 
+    // Issue #691 review follow-up (codex, round 3): a body that fully closes
+    // (its TP completely fills) is spliced out of positionState.celestialBodies,
+    // so injectBody's in-memory duplicate check can't see it on a later retry.
+    // The fill ledger still can: placeBodyTp stamps `sellOrderId` onto a
+    // body's buy fills the moment its TP is PLACED (crash-resilient linkage,
+    // CLAUDE.md), before the sell ever fills, and that stamp survives the
+    // body's later removal. A retry must consult it and refuse to create a
+    // second body — otherwise it would fabricate a live position (and place
+    // a real second TP sell) for an asset that was already sold.
+    it('refuses to create a second body once the buy fills are already linked to a sell in the ledger', async () => {
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      let calls = 0;
+      const importer = createImporter({
+        adapter,
+        injectBody: async () => {
+          calls++;
+          // Mimic placeBodyTp's real side effect: stamp sellOrderId onto the
+          // buy fills at TP PLACEMENT time, then fail before returning —
+          // the crash-resilient ledger linkage survives the failure even
+          // though the trade store update never runs.
+          fillLedger.annotateFillsByOrderId('buy-1', { sellOrderId: 'tp-order-1' });
+          fillLedger.persist();
+          throw new Error('saveLiveState failed (simulated)');
+        },
+      });
+
+      await assert.rejects(importer.importBuy({ buyOrderId: 'buy-1', createBody: true }));
+      assert.equal(calls, 1);
+
+      // Simulates the window in which that TP goes on to fully fill and its
+      // body is removed from the engine's live position before the operator
+      // retries — exactly what makes the in-memory duplicate check blind.
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.alreadyImported, true);
+      assert.equal(calls, 1, 'injectBody must never be called again once the buy is already linked to a sell');
+      assert.equal(store.getAll().length, 1);
+      assert.equal(store.getAll()[0].bodyId, null, 'no new body may be linked to this buy');
+      assert.notEqual(store.getAll()[0].status, STATUS.TP_PENDING);
+    });
+
     it('requires a buyOrderId', async () => {
       const result = await createImporter({ adapter: createFakeAdapter() }).importBuy({});
       assert.deepEqual(result, { success: false, error: 'buyOrderId is required' });

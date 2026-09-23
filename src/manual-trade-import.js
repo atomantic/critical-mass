@@ -325,6 +325,29 @@ const createManualTradeImporter = ({
       return ok({ trade: store.getById(trade.id), alreadyImported: true });
     }
 
+    // Durable close-check (issue #691, codex review): the in-memory duplicate
+    // check inside injectBody (regime-engine.js) only sees bodies still in
+    // positionState.celestialBodies — a body that fully closed (its TP
+    // completely filled) is spliced out of that array, so it becomes
+    // invisible to that check. The fill ledger doesn't lose the link: the
+    // moment a body's TP is PLACED, placeBodyTp stamps `sellOrderId` onto
+    // every one of that body's buy fills for crash-resilient linkage
+    // (CLAUDE.md) — before the sell ever fills, and it survives the body's
+    // later removal. So if this buyOrderId's fills already carry a
+    // sellOrderId (a TP was placed for them, resting or already filled), a
+    // retry must never create a second body for the same buy: creating one
+    // would either double-sell the same underlying asset (TP still resting)
+    // or fabricate a position for asset that's already gone (TP filled and
+    // the body closed).
+    const alreadyLinkedSell = fillLedger.getFillsForOrder(buyOrderId).find((r) => r.sellOrderId)?.sellOrderId;
+    if (alreadyLinkedSell) {
+      log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} is already linked to sell ${alreadyLinkedSell} — refusing to create another body`, {
+        buyOrderId,
+        sellOrderId: alreadyLinkedSell,
+      });
+      return ok({ trade: store.getById(trade.id), alreadyImported: true });
+    }
+
     if (!createBody) return ok({ trade: store.getById(trade.id) });
 
     const totalFees = buyFills.reduce((sum, f) => sum + (f.commission || f.totalCommission || 0), 0);
