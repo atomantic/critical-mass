@@ -3470,6 +3470,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // buy would sit in a cycle whose sell never consumed it (#711).
         const liveCycleId = fillLedger.getCurrentCycleId();
         if (ingestCycleId && liveCycleId && liveCycleId !== ingestCycleId) {
+          // An advancing partial of an already-owned order skipped the
+          // increment above (counted in the closed cycle); if the new cycle
+          // has no row of it yet, this move makes it one of that cycle's buy
+          // orders, so count it there too or the ledger and counter disagree.
+          const liveHadOrder = fillLedger.getCurrentCycleFills()
+            .some(f => f.side === 'buy' && f.orderId === fillData.orderId);
           let moved = 0;
           for (const f of fillsToAggregate) {
             if (f.side === 'buy' && f.cycleId === ingestCycleId && f.tradeId) {
@@ -3477,6 +3483,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               moved++;
             }
           }
+          if (moved > 0 && orderAlreadyOwned && !liveHadOrder) positionState.cycleBuys += 1;
           if (moved > 0) {
             logger.info(`🔀 [${exchange}] Cycle turned over while buy ${fillData.orderId} was booking — moved ${moved} fill(s) ${ingestCycleId} → ${liveCycleId}`, {
               orderId: fillData.orderId, fromCycleId: ingestCycleId, toCycleId: liveCycleId, moved,
@@ -7878,21 +7885,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // A rung can partially fill in the race window before the cancel above
     // took, and that fill is now booked into a body synchronously as part of
     // cancelAllLadderOrders (issue #674) — re-derive the budget from the
-    // CURRENT allocation before sizing the new ladder, so a fill discovered
-    // mid-cancel isn't missing from the math and the new ladder can't push
-    // deployed capital past maxUsdcDeployed. A rung that filled completely is
-    // reserved here until polling books it into a body — unless polling
-    // already booked ALL of it while the sweep ran, in which case the body's
-    // costBasis counts it and adding it again would undersize the ladder.
-    // Body ownership alone is not enough: a rung booked earlier as a partial
-    // already has a body, while the remainder this cost covers is unbooked.
-    const fullyBooked = (u) => isBuyAlreadyCommitted(positionState.celestialBodies, u.orderId)
-      && fillLedger.getRecordedSizeForOrder(u.orderId) >= (Number(u.filledSize) || 0) - 1e-9;
-    const unbookedSpend = unbookedFills
-      .filter(u => !fullyBooked(u))
-      .reduce((sum, u) => sum + (Number(u.cost) || 0), 0);
-    const postCancelAllocated = getAllocatedCapital() + unbookedSpend;
-    // The cash clamp must not size rungs against quote those fills spent
+    // CURRENT state before sizing the new ladder, so a fill discovered
+    // mid-cancel isn't missing from the math.
+    //
+    // Cash: the clamp must not size rungs against quote those fills spent
     // (issue #711). Where filling happened, re-read the balance: on exchanges
     // that hold quote for resting orders the fill was paid from the hold, so
     // the pre-cancel snapshot already excludes it and subtracting again would
@@ -7908,6 +7904,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         ? Math.min(availableQuote, parseFloat(freshBalance.available) || 0)
         : Math.max(0, availableQuote - cancelTimeSpend);
     }
+    // Deployed cap: derived after that await, so a fill committed during it
+    // is counted and the new ladder can't push deployed capital past
+    // maxUsdcDeployed. A rung that filled completely is reserved until polling
+    // books it into a body — unless polling already booked ALL of it while
+    // the sweep ran, in which case the body's costBasis counts it and adding
+    // it again would undersize the ladder. Body ownership alone is not
+    // enough: a rung booked earlier as a partial already has a body, while
+    // the remainder this cost covers is unbooked.
+    const fullyBooked = (u) => isBuyAlreadyCommitted(positionState.celestialBodies, u.orderId)
+      && fillLedger.getRecordedSizeForOrder(u.orderId) >= (Number(u.filledSize) || 0) - 1e-9;
+    const unbookedSpend = unbookedFills
+      .filter(u => !fullyBooked(u))
+      .reduce((sum, u) => sum + (Number(u.cost) || 0), 0);
+    const postCancelAllocated = getAllocatedCapital() + unbookedSpend;
     remainingBudget = Math.min(config.maxUsdcDeployed - postCancelAllocated, postCancelQuote);
     if (remainingBudget < (config.baseSizeUsdc || 50)) {
       return { success: false, message: `Budget dropped below min order size after a fill landed during ladder cancel ($${remainingBudget.toFixed(2)} left — $${(config.maxUsdcDeployed - postCancelAllocated).toFixed(2)} under the deployed cap, $${postCancelQuote.toFixed(2)} ${quoteCurrency} available). The old ladder was cancelled but not rebuilt — call rebuildLadder again if appropriate.` };

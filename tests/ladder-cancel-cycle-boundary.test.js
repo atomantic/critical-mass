@@ -275,6 +275,43 @@ describe('buy commit after a mid-pass cycle turnover (#711, concurrent framing)'
     assert.equal(ledger.getCurrentCycleAllBuysCount(), 1);
   });
 
+  it('counts an already-owned order\'s advancing partial in the new cycle it moves into', async () => {
+    // buy-e's first tranche already has a body (counted in the old cycle).
+    // Its next tranche is mid-pass when an operator reset turns the cycle
+    // over; the moved rows make buy-e one of the NEW cycle's buy orders.
+    const eng = makeEngine({
+      fillsByOrder: { 'buy-e': [rawFill('buy', 'buy-e', 't-buy-e-2', 0.002, 45000)] },
+    });
+    const ledger = eng.getFillLedger();
+    const oldCycle = ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-e', 't-buy-e-1', 0.002, 45000));
+    const pos = eng._getPositionState();
+    pos.celestialBodies = [makeBody('body-eeeeeeee', 'buy-e', 0.002, 45000, 'tp-e')];
+    pos.cycleBuys = 1;
+
+    // Operator reset (bodies preserved, no ladder → runs synchronously) lands
+    // between this pass's ingest and its commit.
+    let reset = false;
+    const realAggregate = ledger.aggregateFills;
+    ledger.aggregateFills = (rows) => {
+      if (!reset) { reset = true; eng._test.resetCycle(); }
+      return realAggregate(rows);
+    };
+    try {
+      await eng._test.handleOrderFill({ orderId: 'buy-e', side: 'buy', status: 'OPEN', filledSize: 0.004, averageFilledPrice: 45000, isPartialFill: true });
+    } finally {
+      ledger.aggregateFills = realAggregate;
+    }
+
+    assert.ok(reset, 'the cycle turned over mid-pass');
+    const newCycle = ledger.getCurrentCycleId();
+    assert.notEqual(newCycle, oldCycle);
+    assert.equal(ledger.getFillsForOrder('buy-e').find(f => f.tradeId === 't-buy-e-2').cycleId, newCycle);
+    assert.equal(ledger.getFillsForOrder('buy-e').find(f => f.tradeId === 't-buy-e-1').cycleId, oldCycle);
+    assert.equal(ledger.getCurrentCycleAllBuysCount(), 1);
+    assert.equal(pos.cycleBuys, 1, 'the live counter matches the ledger for the new cycle');
+  });
+
   it('leaves rows alone when the cycle did not turn over', async () => {
     const eng = makeEngine({
       fillsByOrder: { 'buy-d': [rawFill('buy', 'buy-d', 't-buy-d', 0.003, 45000)] },
@@ -418,6 +455,47 @@ describe('rebuildLadder — budget after a fill during the cancel (#711)', () =>
     const total = placedTotal(placed);
     assert.ok(total > 0);
     assert.ok(total <= 600 + 1e-6, `$200 booked + $200 still unbooked must both be reserved, got $${total.toFixed(2)}`);
+  });
+
+  it('counts a fill committed while the post-cancel balance re-read was in flight', async () => {
+    let eng;
+    let call = 0;
+    const placed = [];
+    eng = makeEngine({
+      adapter: {
+        getAccountBalance: async () => {
+          if (++call === 2) {
+            // A concurrent buy commits a $300 body during the re-read.
+            eng._getPositionState().celestialBodies = [makeBody('body-cccccccc', 'buy-x', 0.006, 50000, 'tp-x')];
+          }
+          return { available: '100000' };
+        },
+      },
+      executor: {
+        cancelAllLadderOrders: async () => ({ cancelled: 1, remainingTracked: 0, partialFills: 1, partialFillOrderIds: ['rung-z'], partialFillsCost: 50, unbookedFills: [] }),
+        placeLadderOrders: async (levels) => {
+          placed.push(...levels);
+          return { orders: levels.map((l, i) => ({ orderId: `new-rung-${i}`, ...l })), failedCount: 0 };
+        },
+      },
+    });
+    const config = eng._getConfig();
+    config.entryMode = 'ladder';
+    config.maxUsdcDeployed = 1000;
+    config.baseSizeUsdc = 10;
+    const m = eng._getMarketState();
+    m.lastPrice = 50000;
+    m.bid = 49999.99;
+    m.ask = 50000.01;
+    eng.getFillLedger().startNewCycle();
+    eng._getPositionState().ladderActive = true;
+
+    const res = await eng.rebuildLadder();
+
+    assert.equal(res.success, true, res.message);
+    assert.equal(call, 2);
+    const total = placedTotal(placed);
+    assert.ok(total > 0 && total <= 700 + 1e-6, `the $300 committed during the await must count, got $${total.toFixed(2)}`);
   });
 
   it('does not count a completely-filled rung twice once polling booked it during the sweep', async () => {
