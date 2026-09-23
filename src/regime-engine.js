@@ -6381,9 +6381,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.avgCostBasis = 0;
     }
 
-    // Persist the boundary in regime-state.json with the other operator-owned
-    // position state. The fill ledger remains the fallback for legacy state
-    // files that predate this marker.
     // Buys that landed during the sweep — ingested under the closing cycle
     // (ingestFill stamps the cycle live at ingest time) but not in the
     // pre-sweep snapshot. Sells stay put: a sell landing in that window closes
@@ -6392,6 +6389,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       ? fillLedger.getCurrentCycleFills().filter(f => f.side === 'buy' && !preSweepTradeIds.has(f.tradeId))
       : [];
 
+    // Persist the boundary in regime-state.json with the other operator-owned
+    // position state. The fill ledger remains the fallback for legacy state
+    // files that predate this marker.
     positionState.activeCycleId = fillLedger.startNewCycle();
     // Persist WHEN the cycle began too: it is the boundary recalculateCycles
     // uses to fold null-cycle fills the engine missed during downtime into
