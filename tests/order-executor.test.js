@@ -1022,6 +1022,25 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
     exec.clearTimers();
   });
 
+  it('never costs the new tranche below the rung\'s limit price when the earlier one filled cheaper (issue #711)', async () => {
+    // Earlier 0.004 filled at 50000 ($200); the remaining 0.002 at the 51000
+    // limit ($102). Size-prorating the cumulative $302 would say $100.67.
+    const adapter = {
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => ({ status: 'PARTIALLY_FILLED', filledSize: 0.004, filledValue: 200, averageFilledPrice: 50000, totalFees: 0, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', { onFillDetected: async () => {} });
+    restoreLadder(exec, 'ladder-cheap-first'); // limit 51000
+    await exec.checkPendingOrderFills();
+    adapter.getOrder = async () => ({ status: 'FILLED', filledSize: 0.006, filledValue: 302, averageFilledPrice: 50333.33, totalFees: 0, side: 'BUY' });
+
+    const result = await exec.cancelAllLadderOrders();
+
+    assert.equal(result.unbookedFills.length, 1);
+    assert.ok(Math.abs(result.unbookedFills[0].cost - 102) < 1e-9, `bounded by 0.002 @ the 51000 limit, got ${result.unbookedFills[0].cost}`);
+    exec.clearTimers();
+  });
+
   it('drops tracking BEFORE awaiting a slow fill callback, not after (issue #674 codex review finding)', async () => {
     // handleCancelledOrder is now awaitable so cancelAllLadderOrders can wait
     // for the fill to fully book, but that must not delay when the order
