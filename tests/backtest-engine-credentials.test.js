@@ -10,38 +10,62 @@
  * Coinbase adapter (`getAdapter('coinbase').loadCredentials()`), the single
  * source of truth for this credential everywhere else in the app.
  *
- * No test here writes any file — the worktree has no root `keys.json` and
- * none is created, so the "not configured" test exercises the real adapter
- * against its default (absent) path.
+ * Isolation (claude review finding on a follow-up commit): both the adapter
+ * and `backtest-engine.js` resolve the SAME default path — `<repo
+ * root>/data/coinbase-keys.json` — when no explicit `keysPath` is supplied,
+ * and neither exposes a way to inject one for this call. An earlier version
+ * of this test called that default path unmocked, relying on it happening to
+ * be absent in this worktree; on a machine where this live-trading app has
+ * real Coinbase keys configured (the normal deployment state — see this
+ * repo's CLAUDE.md), that would have read real credentials into process
+ * memory. Every test below instead intercepts `fs.existsSync`/`readFileSync`
+ * scoped EXACTLY to that one resolved path — real content is never read
+ * (existence is forced false, or fed fake content), regardless of what
+ * actually exists on the machine running the suite. Every other path passes
+ * straight through to the real fs so the rest of the test run is unaffected.
  */
-const { describe, it } = require('node:test');
+const fs = require('fs');
+const path = require('path');
+const { describe, it, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 
 const backtestEngine = require('../src/backtest-engine');
-const { getAdapter } = require('../src/adapters');
+
+// Matches both src/adapters/coinbase/api.js's `resolvedKeysPath` default
+// (path.join(__dirname, '..', '..', '..', 'data', 'coinbase-keys.json') from
+// src/adapters/coinbase/) and this file's own path.join to the same target.
+const DEFAULT_KEYS_PATH = path.join(__dirname, '..', 'data', 'coinbase-keys.json');
+
+const realExistsSync = fs.existsSync;
+const realReadFileSync = fs.readFileSync;
 
 describe('backtest-engine loadCredentials (issue #688)', () => {
-  it('delegates to the same Coinbase adapter instance getAdapter(\'coinbase\') returns, not an independent root keys.json read', () => {
-    // Both throw the adapter's own "not configured" error (proving the same
-    // code path), and neither is the MODULE_NOT_FOUND a hardcoded
-    // require('../keys.json') would throw once migration.js renames the
-    // legacy root file away.
-    let fromAdapter;
-    let fromBacktestEngine;
-    try { getAdapter('coinbase').loadCredentials(); } catch (err) { fromAdapter = err.message; }
-    try { backtestEngine.loadCredentials(); } catch (err) { fromBacktestEngine = err.message; }
+  afterEach(() => {
+    mock.restoreAll();
+  });
 
-    assert.ok(fromAdapter, 'expected getAdapter(\'coinbase\').loadCredentials() to throw in this worktree (no keys configured)');
-    assert.equal(fromBacktestEngine, fromAdapter, 'backtest-engine must surface the identical adapter error, proving it delegates rather than reading its own file');
+  it('delegates to the Coinbase adapter\'s resolvedKeysPath, not an independent root keys.json read', () => {
+    const fakeKeys = JSON.stringify({ name: 'fake-key-name', privateKey: 'fake-private-key-not-real-and-long-enough-to-pass-validation' });
+    mock.method(fs, 'existsSync', (p, ...rest) => (p === DEFAULT_KEYS_PATH ? true : realExistsSync(p, ...rest)));
+    mock.method(fs, 'readFileSync', (p, ...rest) => (p === DEFAULT_KEYS_PATH ? fakeKeys : realReadFileSync(p, ...rest)));
+
+    const creds = backtestEngine.loadCredentials();
+
+    // This is exactly what the adapter's own loadCredentials() would return
+    // for this file content — proving delegation, not a coincidence, since
+    // the OLD hardcoded `require('../keys.json')` path (a different file,
+    // never faked here) would have thrown MODULE_NOT_FOUND instead.
+    assert.deepEqual(creds, {
+      apiKey: 'fake-key-name',
+      apiSecret: 'fake-private-key-not-real-and-long-enough-to-pass-validation',
+    });
   });
 
   it('surfaces the adapter\'s "not configured" error instead of a MODULE_NOT_FOUND require crash', () => {
-    // No mock installed: exercises the REAL Coinbase adapter, whose default
-    // keys path (data/coinbase-keys.json) does not exist in this worktree.
-    // Before the fix, this call went through `require('../keys.json')`
-    // instead — throwing Cannot find module '../keys.json' rather than a
-    // handled "not configured" error, on any install where the migration
-    // had renamed the legacy root file away.
+    // Force the default path absent regardless of the machine's real state
+    // — the assertion must never depend on, or read, real on-disk content.
+    mock.method(fs, 'existsSync', (p, ...rest) => (p === DEFAULT_KEYS_PATH ? false : realExistsSync(p, ...rest)));
+
     assert.throws(
       () => backtestEngine.loadCredentials(),
       /API keys not configured/,
