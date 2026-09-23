@@ -5269,6 +5269,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       tpMinPercent: config.tpMinPercent,
       tpMaxPercent: config.tpMaxPercent,
       holdbackRatio: config.holdbackRatio,
+      // Same fee the engine actually budgets when sizing/gating a TP (placeBodyTp's
+      // feeFloorPct) — exposed so the dashboard's Open Orders "est." columns never
+      // hard-code a fee guess of their own. See issue #698.
+      feeRatePerSide: config.feeRate || 0.001,
       entryMode: config.entryMode || 'reactive',
       ladderAutoSwitch: config.ladderAutoSwitch || false,
       ladderMaxAthDropPct: config.ladderMaxAthDropPct || 80,
