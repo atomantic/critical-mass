@@ -216,6 +216,16 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
     assert.equal(sell.fee, 0.02);
     assert.ok(Math.abs(sell.bodyPnl - 1.98) < 1e-9, 'value and fees reach the booked sale');
 
+    // Issue #617: the body is still LIVE (liveTarget survives with 0.006 held) —
+    // the unsold remainder must NOT also be booked as zero-cost reserves, or
+    // realizedAssetPnL double-counts it (once as reserves, once still inside the
+    // live body's assetQty, and again when the body's replacement TP later fills).
+    assert.equal(sell.bodyHoldbackAsset, 0, 'no reserves booked — the remainder stays in the live body, not as holdback');
+    assert.equal(sell.partialFill, true, 'annotated as a partial fill, same as the normal body-TP partial path');
+    const cs = eng._getPositionState().celestialState;
+    assert.equal(cs.bodiesCompleted, 0, 'the body is still open — this sell did not complete a cycle');
+    assert.equal(eng._getPositionState().realizedAssetPnL, 0, 'realizedAssetPnL must not count the still-held remainder as reserves');
+
     const newBody = bodies.find(b => b.id !== 'target');
     assert.ok(
       (newBody.sourceOrderIds || []).includes('buy-new') || (newBody.buyOrders || []).some(o => o.orderId === 'buy-new'),

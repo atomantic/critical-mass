@@ -828,6 +828,19 @@ describe('#368 _mergeBodyImpl — execution-bearing cancellation during roll-up'
     assert.ok(sell, 'the executed tranche was booked to the fill ledger');
     assert.equal(sell.size, 0.004);
     assert.equal(sell.fee, 0.02);
+
+    // Issue #617: the source body is still LIVE (liveSource survives with 0.006
+    // held) — the unsold remainder must NOT also be booked as zero-cost reserves,
+    // or realizedAssetPnL double-counts it (once as reserves, once still inside
+    // the live body's assetQty, and again when the body's replacement TP fills).
+    assert.equal(sell.bodyHoldbackAsset, 0, 'no reserves booked — the remainder stays in the live source body');
+    assert.equal(sell.partialFill, true, 'annotated as a partial fill, same as the normal body-TP partial path');
+    assert.equal(eng._getPositionState().celestialState.bodiesCompleted, 0, 'the source body is still open — this sell did not complete a cycle');
+    // getDerivedRealizedPnL sums bodyHoldbackAsset across every sell in this
+    // (shared, cross-test) ledger, so a bare positionState check would be
+    // coupled to other its' fixtures. The bodyHoldbackAsset===0 row check
+    // above is the definitive per-sell assertion for this fix; this fill's
+    // own contribution to realizedAssetPnL is exactly that value: 0.
   });
 
   it('restores the source TP and books the sold tranche when the TARGET TP fires during cancel', async () => {
@@ -904,6 +917,14 @@ describe('#368 _mergeBodyImpl — execution-bearing cancellation during roll-up'
     const sell = ledger.find(fill => fill.orderId === 'tp-tgt2');
     assert.ok(sell, 'the executed target tranche was booked to the fill ledger');
     assert.equal(sell.size, 0.006);
+
+    // Issue #617: the target body is still LIVE (liveTarget survives with 0.014
+    // held) — same zero-cost-reserves guard as the source-race case above.
+    assert.equal(sell.bodyHoldbackAsset, 0, 'no reserves booked — the remainder stays in the live target body');
+    assert.equal(sell.partialFill, true, 'annotated as a partial fill, same as the normal body-TP partial path');
+    assert.equal(eng._getPositionState().celestialState.bodiesCompleted, 0, 'the target body is still open — this sell did not complete a cycle');
+    // See the source-race test above for why realizedAssetPnL itself isn't
+    // asserted directly against 0 here (shared cross-test ledger).
   });
 
   it('fully consuming the source body during cancel leaves it deducted to zero with no TP re-armed', async () => {
@@ -953,5 +974,10 @@ describe('#368 _mergeBodyImpl — execution-bearing cancellation during roll-up'
     assert.ok(Math.abs(liveSource.assetQty) < 1e-9, 'source body fully deducted to zero');
     assert.equal(liveSource.tpOrderId, null, 'no TP is re-armed on a zero-qty body');
     assert.equal(placeCalls, 0, 'placeBodyTpOrder is never called for a fully-consumed body');
+
+    // Issue #617: the body OBJECT is still present in celestialBodies (just at
+    // zero qty) — per the fix, "no live body remains" means the object is gone,
+    // not merely empty, so this must not be counted as a completed body either.
+    assert.equal(eng._getPositionState().celestialState.bodiesCompleted, 0, 'the lingering zero-qty body object is not counted as completed');
   });
 });

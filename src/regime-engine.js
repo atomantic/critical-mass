@@ -3011,14 +3011,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const pnl = proceeds - proratedCostBasis;
         const holdbackAsset = roundAsset(mergeSnapshot.assetQty - summary.totalSize);
 
-        const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
-        cs.bodiesCompleted += 1;
-        positionState.celestialState = cs;
-
-        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
-
-        orderExecutor.removeBodyTracking(fillData.orderId);
-
         // Deduct the sold tranche from the LIVE merged body (issue #201). If a buy
         // folded onto this body in the Race-3 window (between the partial-fill
         // pre-check and the TP cancel), the merged body still contains the qty/cost
@@ -3026,9 +3018,43 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // the account no longer holds and the sold tranche's cost is double-counted
         // (once here via bodyPnl, once retained in the merged body's costBasis).
         const liveMerged = (positionState.celestialBodies || []).find(b => b.id === mergeSnapshot.id);
+        // The body is still live whenever `liveMerged` is found — this sell only
+        // closed a fraction of it, not the whole cycle. Treat it exactly like the
+        // normal-path PARTIAL branch (:3145-3168) rather than a completed body:
+        // zero-cost holdback annotation (the unsold remainder stays in the live
+        // body, not as reserves), no bodiesCompleted increment, and
+        // consumedCostFraction tracking so heldOpenBuyCostBasis doesn't double-count
+        // the still-held remainder (issue #617).
+        const liveOwnsRemainder = !!liveMerged;
+
+        const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
+        if (!liveOwnsRemainder) cs.bodiesCompleted += 1;
+        positionState.celestialState = cs;
+
+        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
+
+        orderExecutor.removeBodyTracking(fillData.orderId);
+
         if (liveMerged) {
           liveMerged.assetQty = roundAsset(Math.max(0, liveMerged.assetQty - summary.totalSize));
           liveMerged.costBasis = roundUSDC(Math.max(0, liveMerged.costBasis - proratedCostBasis));
+
+          // Track the cumulative fraction of the body's ORIGINAL cost basis
+          // already realized via partial sells (mirrors the normal partial-fill
+          // path at :3159-3168). Without this, heldOpenBuyCostBasis counts the
+          // full buy cost as still-open while the sold tranche's prorated cost
+          // is simultaneously realized via bodyPnl above — double-counting it.
+          const prevConsumed = liveMerged.consumedCostFraction || 0;
+          liveMerged.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - soldRatio);
+          for (const srcId of new Set([
+            ...(liveMerged.sourceOrderIds || []),
+            ...((liveMerged.buyOrders || []).map(b => b.orderId)),
+          ])) {
+            if (srcId && srcId !== 'core-migration') {
+              fillLedger.annotateFillsByOrderId(srcId, { consumedCostFraction: liveMerged.consumedCostFraction });
+            }
+          }
+
           // The resting TP was sized for the pre-deduction (oversized) qty — cancel
           // and clear it so a correctly-sized TP is re-placed for the remaining body.
           if (liveMerged.tpOrderId) {
@@ -3079,20 +3105,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           bodyTier: mergeSnapshot.tier,
           bodyCostBasis: mergeSnapshot.costBasis,
           bodyAvgPrice: mergeSnapshot.avgPrice,
-          bodyBtcQty: mergeSnapshot.assetQty,
-          bodyHoldbackAsset: holdbackAsset,
+          bodyBtcQty: liveOwnsRemainder ? summary.totalSize : mergeSnapshot.assetQty,
+          bodyHoldbackAsset: liveOwnsRemainder ? 0 : holdbackAsset,
           bodyPnl: pnl,
           mergeSnapshot: true,
+          ...(liveOwnsRemainder && { partialFill: true }),
         });
 
         tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)} [merge-snapshot]`, {
           assetAmount: summary.totalSize,
           price: summary.avgPrice,
           pnl,
-          holdbackAsset,
+          holdbackAsset: liveOwnsRemainder ? 0 : holdbackAsset,
           bodyId: mergeSnapshot.id,
           bodyTier: mergeSnapshot.tier,
           mergeSnapshot: true,
+          ...(liveOwnsRemainder && { isPartialFill: true, remainingAsset: liveMerged.assetQty }),
         });
 
         saveLiveState();
