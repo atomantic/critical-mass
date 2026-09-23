@@ -607,6 +607,58 @@ describe('Manual Trade Import', () => {
       assert.equal(store.getAll().length, 1);
     });
 
+    // Issue #691 review follow-up: the top-of-function retry guard (trade.bodyId
+    // / STATUS.TP_PENDING) only fires once a PRIOR call reached store.markTpPlaced.
+    // If an earlier call's injectBody actually pushed the real body and placed its
+    // TP, but the call then rejected before markTpPlaced ran (e.g. saveLiveState()
+    // throwing), the trade store never learns about that body — so a retry falls
+    // through the guard, creates a second phantom body, and calls injectBody again.
+    // regime-engine's own injectBody refuses that as a duplicate of the real body;
+    // importBuy must honor the refusal and re-link the trade/ledger to the real
+    // body, never to the phantom it just (correctly) failed to inject.
+    it('re-links the trade to the existing body when injectBody refuses a retried duplicate', async () => {
+      const engineBodies = [];
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      const importer = createImporter({
+        adapter,
+        injectBody: async (body) => {
+          const duplicate = engineBodies.find((b) => b.sourceOrderIds[0] === body.sourceOrderIds[0]);
+          if (duplicate) {
+            return { success: false, error: 'duplicate body', bodyId: duplicate.id, tpPlaced: true };
+          }
+          // Real regime-engine behavior: push + place TP happen BEFORE the
+          // final saveLiveState() call, so a throw there still leaves the
+          // body live in the engine.
+          engineBodies.push(body);
+          throw new Error('saveLiveState failed (simulated)');
+        },
+      });
+
+      await assert.rejects(
+        importer.importBuy({ buyOrderId: 'buy-1', createBody: true }),
+        /saveLiveState failed/,
+      );
+      assert.equal(engineBodies.length, 1, 'the real body was pushed into the engine despite the later throw');
+      const realBodyId = engineBodies[0].id;
+
+      const beforeRetry = store.getAll();
+      assert.equal(beforeRetry.length, 1);
+      assert.equal(beforeRetry[0].bodyId, null, 'the trade store never learned about the real body');
+
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.alreadyImported, true);
+      assert.equal(engineBodies.length, 1, 'no second body was ever pushed into the engine');
+      assert.equal(second.trade.bodyId, realBodyId, 'the trade must link to the real, live body — not the refused phantom');
+
+      const rows = fillLedger.getFillsForOrder('buy-1');
+      assert.ok(rows.length > 0);
+      for (const row of rows) {
+        assert.equal(row.bodyId, realBodyId, 'fill-ledger rows must point at the real body, not the phantom');
+      }
+    });
+
     it('persists exactly one body to regime-state.json across a retried import (createBody:true, engine not running)', async () => {
       const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
       const importer = createImporter({ adapter, injectBody: null });

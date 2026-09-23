@@ -339,6 +339,27 @@ const createManualTradeImporter = ({
 
     if (injectBody) {
       const injectResult = await injectBody(body);
+      // injectBody's own defense-in-depth (regime-engine.js) refuses a body
+      // whose sourceOrderIds[0]/id already exists among the live bodies. That
+      // is exactly the retry race this guard targets: an earlier call's
+      // injectBody succeeded (pushed the real body, placed its TP) but this
+      // trade never reached markTpPlaced below (e.g. a subsequent throw from
+      // saveLiveState()), so the top-of-function guard didn't fire and we
+      // just tried to inject a second, phantom body for the same fill. Never
+      // point the trade/ledger at that phantom (it was refused — it does not
+      // exist in the engine and will never get a TP) — re-point them at the
+      // real body the engine already holds instead.
+      if (injectResult && injectResult.success === false && injectResult.bodyId) {
+        fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: injectResult.bodyId, isBodyOwned: true, isSatellite: true });
+        fillLedger.persist();
+        store.markTpPlaced(trade.id, injectResult.bodyId);
+        log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} injectBody refused a duplicate — re-linked to existing body ${injectResult.bodyId} instead of phantom ${body.id}`, {
+          bodyId: injectResult.bodyId,
+          phantomBodyId: body.id,
+          buyOrderId,
+        });
+        return ok({ trade: store.getById(trade.id), alreadyImported: true });
+      }
       log.info(`ℹ️ 📦 [${exchange}] Manual buy import: injected body ${body.id} into running engine (TP placed: ${injectResult?.tpPlaced})`, {
         bodyId: body.id,
         buyOrderId,
