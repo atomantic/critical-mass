@@ -765,21 +765,31 @@ describe('engine-side maintenance window', () => {
 });
 
 describe('engine IPC server enforces the maintenance window', () => {
+  const net = require('net');
   const { createIPCServer } = require('../src/ipc/ipc-server');
   const { createIPCClient } = require('../src/ipc/ipc-client');
   const engineMaintenance = require('../src/engine-maintenance');
-  const PORT = 45_529;
 
   after(() => engineMaintenance.setEngineMaintenance({ active: false }));
 
   it('answers reads and refuses mutations while the gateway holds the window', async () => {
-    const server = createIPCServer(PORT, 'test-engine');
+    // Ask the OS for a free ephemeral port instead of a fixed literal — a
+    // hardcoded port collides with a sibling `npm test` run (e.g. concurrent
+    // /do:next worktrees, or two terminals), causing EADDRINUSE and hanging
+    // this test indefinitely (#738). Matches the reserve-then-release
+    // convention already used in tests/engine-trade-event-bridge.test.js.
+    const reservation = net.createServer();
+    await new Promise((resolve) => reservation.listen(0, '127.0.0.1', resolve));
+    const port = reservation.address().port;
+    await new Promise((resolve) => reservation.close(resolve));
+
+    const server = createIPCServer(port, 'test-engine');
     server.start();
     let started = 0;
     server.onRequest('regime:start', async () => { started++; return { success: true }; });
     server.onRequest('regime:status', async () => ({ success: true, status: 'ok' }));
 
-    const client = createIPCClient(`ws://127.0.0.1:${PORT}`, 'test');
+    const client = createIPCClient(`ws://127.0.0.1:${port}`, 'test');
     client.connect();
     for (let i = 0; i < 100 && !client.isConnected(); i++) await new Promise(r => setTimeout(r, 10));
     assert.ok(client.isConnected(), 'IPC client connected');
