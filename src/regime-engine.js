@@ -5037,6 +5037,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             ? ((summary.avgPrice - body.avgPrice) / body.avgPrice) * 100
             : 0;
           recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
+          // Durable "this close still owes a cycle reset" marker: once the sell
+          // is annotated, a retry of this fill (after resetCycle throws) takes
+          // the already-processed branch below, which finishes the reset from
+          // it instead of skipping it.
+          positionState.pendingCycleResetFor = fillData.orderId;
           saveLiveState();
           fillLedger.persist();
           // Capture before resetCycle() zeroes cycleBuys, and run the
@@ -5070,6 +5075,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // as the periodic save timer already does.
           try {
             await resetCycle();
+            positionState.pendingCycleResetFor = null;
           } finally {
             recordCycleForSizeOptimizer({
               stepsUsed: cycleBuysAtClose,
@@ -5093,6 +5099,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const existingFills = fillLedger.getFillsForOrder(fillData.orderId);
         const alreadyProcessedAsBody = existingFills.some(f => f.isBodyOwned || f.isSatellite);
         if (alreadyProcessedAsBody) {
+          // A retry of a body TP close whose cycle reset failed after the sell
+          // was booked (#766): finish the reset the first pass owed.
+          if (positionState.pendingCycleResetFor === fillData.orderId
+            && (positionState.celestialBodies || []).length === 0) {
+            logger.warn(`🔁 [${exchange}] Sell ${fillData.orderId.slice(0,8)} already booked — completing its pending cycle reset`);
+            await resetCycle();
+            positionState.pendingCycleResetFor = null;
+            saveLiveState();
+            fillLedger.persist();
+            return;
+          }
           logger.info(`⏭️ [${exchange}] Sell ${fillData.orderId.slice(0,8)} already processed as body TP, skipping`);
           return;
         }
@@ -7235,10 +7252,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // (#674), and a concurrent WS/poll fill can land in the same window. The
     // closing TP never consumed such a buy, so it opens the NEW cycle (#711).
     // A reset that queued for the ladder lock uses its pre-queue snapshot
-    // instead (#766), unless another reset turned the cycle over meanwhile.
+    // instead (#766).
     const closingCycleId = fillLedger.getCurrentCycleId();
+    // A reset that queued behind another sweep is stale if a reset ahead of
+    // it in the queue already closed the cycle it was asked to close (two TP
+    // closes during one rebuild). Running it anyway would close the NEW cycle
+    // under a body still open in it, splitting that body's buy from its sell.
+    if (queuedFrom && queuedFrom.cycleId !== closingCycleId) {
+      logger.info(`🔄 [${exchange}] Queued cycle reset skipped — ${queuedFrom.cycleId ?? 'the initial cycle'} was already closed while it waited (now ${closingCycleId})`);
+      return;
+    }
     const closingCycleFills = () => cycleFillsFor(closingCycleId);
-    let preSweepTradeIds = queuedFrom && queuedFrom.cycleId === closingCycleId ? queuedFrom.tradeIds : null;
+    let preSweepTradeIds = queuedFrom ? queuedFrom.tradeIds : null;
 
     // Cancel remaining ladder orders - check both positionState and executor tracking
     const executorLadderOrders = orderExecutor.getPendingLadderOrders ? orderExecutor.getPendingLadderOrders() : [];
