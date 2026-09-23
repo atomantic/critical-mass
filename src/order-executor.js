@@ -1507,11 +1507,19 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * same `handleCancelledOrder` path the other cancel call sites use, which
    * books the fill via `onFillDetected` before dropping tracking. Ladder
    * entries are always buy-side.
-   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number}>} Cancel results
+   *
+   * `partialFillOrderIds` / `partialFillsCost` report what those mid-cancel
+   * bookings bought (issue #711): the quote spent (filledValue + fees, the
+   * same cost the body's costBasis carries) lets rebuildLadder keep its
+   * exchange-balance clamp honest without re-fetching, and the order IDs let
+   * callers reason about which buys landed inside their own sweep.
+   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number, partialFillOrderIds: string[], partialFillsCost: number}>} Cancel results
    */
   const cancelAllLadderOrders = async () => {
     let cancelled = 0;
     let partialFills = 0;
+    const partialFillOrderIds = [];
+    let partialFillsCost = 0;
 
     const ladderOrders = Array.from(pendingOrders.entries())
       .filter(([, order]) => order.type === 'ladder_entry');
@@ -1542,6 +1550,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             totalFees: result.totalFees || 0,
           }, 'Ladder cancel');
           partialFills++;
+          partialFillOrderIds.push(orderId);
+          partialFillsCost += (Number(result.filledValue) || 0) + (Number(result.totalFees) || 0);
         } else {
           pendingOrders.delete(orderId);
           partialFillTracker.delete(orderId);
@@ -1561,7 +1571,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const remainingTracked = Array.from(pendingOrders.values())
       .filter(o => o.type === 'ladder_entry').length;
 
-    return { cancelled, remainingTracked, partialFills };
+    return { cancelled, remainingTracked, partialFills, partialFillOrderIds, partialFillsCost };
   };
 
   /**

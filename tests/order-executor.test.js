@@ -917,6 +917,8 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
 
     assert.equal(result.cancelled, 1, 'a genuine cancel still counts as cancelled');
     assert.equal(result.partialFills, 1, 'the partial fill is reported back to the caller');
+    assert.deepEqual(result.partialFillOrderIds, ['ladder-partial'], 'which rung filled mid-cancel (issue #711)');
+    assert.ok(Math.abs(result.partialFillsCost - 204.01) < 1e-9, 'quote spent = filledValue + fees, for rebuildLadder\'s balance clamp (issue #711)');
     assert.equal(result.remainingTracked, 0);
     assert.equal(captured.length, 1, 'partial fill routed through onFillDetected before dropping tracking');
     assert.equal(captured[0].orderId, 'ladder-partial');
@@ -941,6 +943,8 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
 
     assert.equal(result.cancelled, 1);
     assert.equal(result.partialFills, 0);
+    assert.deepEqual(result.partialFillOrderIds, []);
+    assert.equal(result.partialFillsCost, 0);
     assert.equal(captured.length, 0);
   });
 
