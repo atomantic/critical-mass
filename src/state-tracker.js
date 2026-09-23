@@ -753,6 +753,9 @@ const createInitialRegimePositionState = () => ({
   // Durable operator-selected cycle boundary. Null preserves the fill-ledger
   // heuristic for state files written before cycle resets became persistent.
   activeCycleId: null,
+  // When that cycle began (ms). Bounds which null-cycle fills recalculateCycles
+  // may fold into it (#705); null = unknown (falls back to its earliest fill).
+  activeCycleStartedAt: null,
   lastEntryPrice: 0,
   lastEntryTime: 0,
   anchorPrice: 0,
