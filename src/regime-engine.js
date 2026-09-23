@@ -3663,10 +3663,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
         // A closed snapshot with no fold-in drains the live body to zero: drop
         // it like the normal full-fill path does rather than leave an empty
-        // body that never re-arms (issue #718). No cycle reset here — every
-        // caller of this branch is mid buy-merge or roll-up and still owns the
-        // position. A TP whose cancel was not confirmed keeps the body so
-        // reconciliation can still find that order.
+        // body that never re-arms (issue #718). No cycle reset here: a body
+        // drains to zero only when its TP executed during a merge cancel, and
+        // that caller is either a buy-merge about to create the buy's own body
+        // or a roll-up whose other body remains. A TP whose cancel was not
+        // confirmed keeps the body so reconciliation can still find that order.
         if (liveMerged && snapshotClosed && !(liveMerged.assetQty > 0) && !liveMerged.tpOrderId) {
           // In place: the buy-merge caller still holds this array.
           const drainedIdx = positionState.celestialBodies.indexOf(liveMerged);
