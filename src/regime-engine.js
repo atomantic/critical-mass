@@ -975,31 +975,51 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // that shared total — over-committing capital across sibling funds
     // (codex review, issue #694). Skip the fetch in that case, the same way
     // checkPositionCoverage skips its check, rather than act on unsound data.
+    //
+    // A fund's configured identity `pair` and its actual traded `productId`
+    // can differ by quote currency (a documented, supported override — see
+    // productIdMatchesPair in config-utils.js), so comparing raw `f.pair`
+    // quote currencies can UNDER-count true sharing (codex review round 2):
+    // resolve each candidate's EFFECTIVE traded quote via its own regime
+    // config's productId, falling back to its pair when unset.
     const quoteCurrency = getQuoteCurrency(productId);
     const sharingQuote = getConfiguredFunds()
-      .filter(f => f.exchange === exchange && getQuoteCurrency(f.pair) === quoteCurrency);
+      .filter(f => f.exchange === exchange)
+      .filter(f => getQuoteCurrency(getRegimeConfig(f.exchange, f.pair)?.productId || f.pair) === quoteCurrency);
 
     // A failed/unavailable/ambiguous fetch (including an adapter with no
-    // getAccountBalance at all — some test/legacy adapters) passes 0, which
-    // sizeOptimizer.recordCycle() already treats as "no fresh reading" — it
-    // leaves lastKnownBalance (and therefore any deferred evaluation) on the
-    // last verified balance instead of evaluating against 0 or the stale cap.
-    const quoteBalance = (sharingQuote.length <= 1 && typeof adapter.getAccountBalance === 'function')
+    // getAccountBalance at all — some test/legacy adapters) passes 0. When
+    // the fetch was skipped for sharing ambiguity specifically, ALSO force
+    // sizeOptimizer's cached lastKnownBalance back to unset — a fund that
+    // used to be the sole holder of this quote currency (balance previously
+    // recorded) but now shares it with a newly-added sibling must not keep
+    // evaluating against that now-unscoped stale value forever (codex review
+    // round 2). A plain fetch failure/missing method is NOT forced this way
+    // — sizeOptimizer.recordCycle() already treats availableBalance<=0 there
+    // as "no fresh reading" and correctly keeps the last verified balance,
+    // since a transient failure is expected to recover on its own.
+    const balanceAmbiguous = sharingQuote.length > 1;
+    const quoteBalance = (!balanceAmbiguous && typeof adapter.getAccountBalance === 'function')
       ? await adapter.getAccountBalance(quoteCurrency).catch(() => null)
       : null;
     const availableBalance = quoteBalance ? (parseFloat(quoteBalance.available) || 0) : 0;
 
     // This now runs AFTER resetCycle() at every call site (issue #694 review
-    // round 2), so an uncaught throw here (sizeOptimizer.recordCycle()'s own
-    // bookkeeping, or handleSizeAdjustment()'s updateRegimeConfig disk write)
-    // would abort handleOrderFillImpl after resetCycle()'s exchange-side
-    // effects and fillLedger.startNewCycle() cycle-boundary flip already
-    // committed, but before the caller's saveLiveState()/fillLedger.persist()
-    // run — leaving persisted state briefly stale relative to what already
-    // happened. The size adjustment is a best-effort optimizer side-effect,
-    // not part of the cycle-close itself, so a failure here is logged and
-    // swallowed rather than allowed to threaten the caller's own saves.
+    // round 1/2) — every caller awaits resetCycle() but then invokes this
+    // function WITHOUT awaiting it (fire-and-forget, .catch()'d at the call
+    // site) so its own network round-trip (adapter.getAccountBalance, up to
+    // a 30s exchange timeout) never delays the caller's own
+    // saveLiveState()/fillLedger.persist()/saveDryRunState() from durably
+    // persisting the already-completed cycle close (codex review round 2). A
+    // crash during this call loses only this one best-effort optimizer stats
+    // sample, never P&L-critical state. Any throw here (sizeOptimizer.
+    // recordCycle()'s own bookkeeping, or handleSizeAdjustment()'s
+    // updateRegimeConfig disk write) is therefore also caught and swallowed
+    // internally, so it can never become an unhandled rejection.
     try {
+      if (balanceAmbiguous) {
+        sizeOptimizer.invalidateBalance();
+      }
       const adjustment = sizeOptimizer.recordCycle({
         stepsUsed: cycleData.stepsUsed || 0,
         capitalDeployed: cycleData.capitalDeployed || 0,
@@ -4065,13 +4085,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             // `finally` means a resetCycle() failure (which retries on its
             // own via the outer dedup-clear/retry path) can never permanently
             // drop this cycle from the optimizer's stats (codex review round 1).
+            // Deliberately NOT awaited: the caller's own saveLiveState()/
+            // fillLedger.persist() (below) durably persist this already-
+            // completed sell/cycle-close before the optimizer's balance-fetch
+            // (up to a 30s exchange timeout) gets a chance to delay them — a
+            // crash during that fetch loses only this one best-effort
+            // optimizer stats sample, never the P&L-critical state (codex
+            // review round 2). recordCycleForSizeOptimizer never rejects (its
+            // own body is try/caught), so no unhandled-rejection risk.
             try {
               await resetCycle();
             } finally {
-              await recordCycleForSizeOptimizer({
+              recordCycleForSizeOptimizer({
                 stepsUsed: cycleBuysAtClose,
                 capitalDeployed: body.costBasis,
-              });
+              }).catch(() => {});
             }
           }
         }
@@ -4317,11 +4345,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // (codex review round 1, P2). Recording it here regardless of
           // resetCycle()'s outcome closes that gap; the underlying figures
           // were already fixed, committed facts before resetCycle() ran.
+          // Deliberately NOT awaited: saveLiveState()/fillLedger.persist()
+          // below durably persist this already-completed cycle close before
+          // the optimizer's balance-fetch (up to a 30s exchange timeout) gets
+          // a chance to delay them — a crash during that fetch loses only
+          // this one best-effort optimizer stats sample, never the
+          // P&L-critical state (codex review round 2). Never rejects (its
+          // own body is try/caught), so no unhandled-rejection risk.
           try {
             await resetCycle();
           } finally {
             if (sizeOptimizerCycleData) {
-              await recordCycleForSizeOptimizer(sizeOptimizerCycleData);
+              recordCycleForSizeOptimizer(sizeOptimizerCycleData).catch(() => {});
             }
           }
           saveLiveState();
@@ -6221,13 +6256,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // try/finally: see the live-mode call site's comment — a
           // resetCycle() failure must not permanently drop this cycle from
           // the optimizer's stats on retry (codex review round 1, P2).
+          // Deliberately NOT awaited — see the live-mode call site's comment
+          // on why (codex review round 2: don't delay saveDryRunState() below
+          // on the optimizer's balance-fetch).
           try {
             await resetCycle();
           } finally {
-            await recordCycleForSizeOptimizer({
+            recordCycleForSizeOptimizer({
               stepsUsed: cycleBuysAtClose,
               capitalDeployed: body.costBasis,
-            });
+            }).catch(() => {});
           }
         }
       } else {
@@ -6257,13 +6295,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // try/finally: see the live-mode call site's comment — a resetCycle()
         // failure must not permanently drop this cycle from the optimizer's
         // stats on retry (codex review round 1, P2).
+        // Deliberately NOT awaited — see the live-mode call site's comment
+        // (codex review round 2: don't delay saveDryRunState() below on the
+        // optimizer's balance-fetch).
         try {
           await resetCycle();
         } finally {
-          await recordCycleForSizeOptimizer({
+          recordCycleForSizeOptimizer({
             stepsUsed: cycleBuysAtClose,
             capitalDeployed: totalCostBasisAtClose,
-          });
+          }).catch(() => {});
         }
       }
 

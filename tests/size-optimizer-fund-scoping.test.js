@@ -17,6 +17,12 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+// recordCycleForSizeOptimizer() is invoked fire-and-forget (not awaited) by
+// its callers as of issue #694 review round 2, so its own async work can
+// still be pending when handleOrderFill()'s own promise resolves. Flush past
+// it before asserting on sizeOptimizer state.
+const flushAsync = () => new Promise(resolve => setImmediate(resolve));
+
 // The size optimizer persists per-pair into the SHARED data/config.json;
 // neutralize the write before regime-engine is required (it destructures
 // updateRegimeConfig at load time), mirroring the other engine-level suites.
@@ -114,6 +120,7 @@ describe('issue #694 (codex P1) — recordCycleForSizeOptimizer skips the shared
     Object.assign(eng._getConfig(), { sizeAutoManaged: true });
 
     await eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false });
+    await flushAsync();
 
     const { sizeOptimizer } = eng.getState();
     assert.equal(sizeOptimizer.lastKnownBalance, 4242.42, 'the only fund sharing this quote currency may use the real adapter balance');
@@ -130,6 +137,7 @@ describe('issue #694 (codex P1) — recordCycleForSizeOptimizer skips the shared
     Object.assign(eng._getConfig(), { sizeAutoManaged: true });
 
     await eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false });
+    await flushAsync();
 
     const { sizeOptimizer } = eng.getState();
     assert.equal(sizeOptimizer.totalCycleCount, 1, 'the cycle is still recorded for stats even when the balance is skipped');
@@ -152,6 +160,7 @@ describe('issue #694 (codex P1) — recordCycleForSizeOptimizer skips the shared
     Object.assign(eng._getConfig(), { sizeAutoManaged: true });
 
     await eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false });
+    await flushAsync();
 
     const { sizeOptimizer } = eng.getState();
     assert.equal(sizeOptimizer.lastKnownBalance, 4242.42, 'a sibling on a different exchange does not share this wallet');
@@ -168,6 +177,7 @@ describe('issue #694 (codex P1) — recordCycleForSizeOptimizer skips the shared
     Object.assign(eng._getConfig(), { sizeAutoManaged: true });
 
     await eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false });
+    await flushAsync();
 
     const { sizeOptimizer } = eng.getState();
     assert.equal(sizeOptimizer.lastKnownBalance, 4242.42, 'a sibling quoted in a different currency does not share this wallet');

@@ -21,6 +21,15 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+// recordCycleForSizeOptimizer() is invoked fire-and-forget (not awaited) by
+// its callers as of issue #694 review round 2, so its own async work
+// (adapter.getAccountBalance() etc.) can still be pending when
+// handleOrderFill()'s own promise resolves. Flush past it before asserting
+// on sizeOptimizer state — waits for at least one macrotask turn, by which
+// point every already-scheduled microtask (including this detached chain,
+// whose mocked adapter calls resolve near-instantly) has settled.
+const flushAsync = () => new Promise(resolve => setImmediate(resolve));
+
 // The size optimizer persists per-pair into the SHARED data/config.json;
 // neutralize the write before regime-engine is required (it destructures
 // updateRegimeConfig at load time), mirroring the other engine-level suites.
@@ -120,6 +129,7 @@ describe('issue #694 — recordCycleForSizeOptimizer feeds the real adapter bala
     assert.notEqual(configMaxUsdcDeployed, MOCK_BALANCE, 'test setup must keep the cap and the mocked balance distinct');
 
     await eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false });
+    await flushAsync();
 
     const { sizeOptimizer } = eng.getState();
     assert.equal(sizeOptimizer.totalCycleCount, 1, 'the cycle completion reached the size optimizer');
@@ -149,6 +159,7 @@ describe('issue #694 — recordCycleForSizeOptimizer feeds the real adapter bala
     const configMaxUsdcDeployed = eng._getConfig().maxUsdcDeployed;
 
     await eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false });
+    await flushAsync();
 
     const { sizeOptimizer } = eng.getState();
     assert.equal(sizeOptimizer.totalCycleCount, 1, 'the cycle is still recorded for stats even without a fresh balance');
@@ -184,6 +195,7 @@ describe('issue #694 — recordCycleForSizeOptimizer feeds the real adapter bala
       eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false }),
       'a missing getAccountBalance method must not throw out of fill handling'
     );
+    await flushAsync();
 
     const { sizeOptimizer } = eng.getState();
     assert.equal(sizeOptimizer.totalCycleCount, 1, 'the cycle is still recorded for stats even with no balance method');
@@ -219,6 +231,7 @@ describe('issue #694 — recordCycleForSizeOptimizer feeds the real adapter bala
       /exchange unavailable/,
       'resetCycle()\'s failure must still propagate so the outer wrapper retries the fill'
     );
+    await flushAsync();
 
     const { sizeOptimizer } = eng.getState();
     assert.equal(sizeOptimizer.totalCycleCount, 1, 'the cycle must still reach the optimizer even though resetCycle() itself failed');
