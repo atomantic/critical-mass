@@ -98,18 +98,28 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
     }
   }
 
-  if (!(status?.config?.entryMode === 'ladder' && status?.isRunning)) return null
+  // Only the TOGGLE BUTTON is gated by entryMode/isRunning — matching the
+  // pre-extraction behavior, where the settings/preview panel rendered
+  // independently of that condition (`{showLadderPanel && ladderEdits && (...)}`
+  // had no entryMode/isRunning check of its own). Gating the whole component
+  // behind that condition would hide an already-open panel the instant
+  // isRunning/entryMode flips via a status update, without the operator ever
+  // clicking "Close" — and since returning null doesn't reset local state,
+  // the panel would silently reappear with stale preview data later.
+  const showToggle = status?.config?.entryMode === 'ladder' && status?.isRunning
 
   return (
     <>
-      <button
-        onClick={handleToggle}
-        className="px-2 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-colors"
-      >
-        {showLadderPanel ? 'Close' : 'Rebuild Ladder'}
-      </button>
+      {showToggle && (
+        <button
+          onClick={handleToggle}
+          className="px-2 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-colors"
+        >
+          {showLadderPanel ? 'Close' : 'Rebuild Ladder'}
+        </button>
+      )}
       {showLadderPanel && ladderEdits && (
-        <div className="w-full mb-4 p-3 bg-indigo-900/20 border border-indigo-700/50 rounded-lg space-y-3">
+        <div className="mb-4 p-3 bg-indigo-900/20 border border-indigo-700/50 rounded-lg space-y-3">
           <div className="text-xs font-medium text-indigo-300">Ladder Settings</div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div>

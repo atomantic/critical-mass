@@ -57,7 +57,11 @@ function createDashboard({ apy: apyOverrides = {} } = {}) {
   function getInstance(type) {
     let inst = componentInstances.get(type)
     if (!inst) {
-      inst = { states: [], stateIndex: 0, idIndex: 0, effects: [], mounted: false }
+      // `name` qualifies the useId mock below so two different component
+      // TYPES (e.g. CapitalAdjust and LadderPanel) never both mint "form-0"
+      // — real DOM ids need to stay unique across component instances, not
+      // just within one.
+      inst = { name: type.name || 'component', states: [], stateIndex: 0, idIndex: 0, effects: [], mounted: false }
       componentInstances.set(type, inst)
     }
     return inst
@@ -104,7 +108,7 @@ function createDashboard({ apy: apyOverrides = {} } = {}) {
     useMemo: fn => fn(),
     useCallback: fn => fn,
     useRef: initial => ({ current: initial }),
-    useId: () => `form-${currentInstance.idIndex++}`,
+    useId: () => `form-${currentInstance.name}-${currentInstance.idIndex++}`,
     lazy: () => () => null,
   }
   const fetch = async (url, options = {}) => {

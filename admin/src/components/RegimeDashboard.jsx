@@ -1996,17 +1996,8 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
           <div className="bg-gray-800 rounded-lg p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-medium text-gray-400">Open Orders</h3>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2">
                 {isDryRun && <span className="text-xs text-purple-400">(Simulated)</span>}
-                <LadderPanel
-                  config={config}
-                  status={status}
-                  exchange={exchange}
-                  pairQuery={pairQuery}
-                  addToast={addToast}
-                  fetchConfig={fetchConfig}
-                  setSocketStatus={setSocketStatus}
-                />
                 {status?.position?.ladderActive && status?.isRunning && (
                   <button
                     onClick={handleCancelLadder}
@@ -2038,6 +2029,18 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 )}
               </div>
             </div>
+            {/* Rebuild Ladder toggle + settings/preview panel — kept out of the
+                buttons row above so opening it never shifts Cancel Ladder /
+                Collapse All / the order filter input. */}
+            <LadderPanel
+              config={config}
+              status={status}
+              exchange={exchange}
+              pairQuery={pairQuery}
+              addToast={addToast}
+              fetchConfig={fetchConfig}
+              setSocketStatus={setSocketStatus}
+            />
             <OpenOrdersTable
               pendingOrdersList={pendingOrdersList}
               liveFills={liveFills}
