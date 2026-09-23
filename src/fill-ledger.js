@@ -1649,13 +1649,33 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     let linkedCount = 0;
     const completedCycleIds = new Set(cycleDetails.map(d => d.cycleId));
     const cycleSellIds = new Map(); // cycleId -> first LEGACY (non-body/satellite) sell orderId
+    // A sell recalc attributed into a cycle (#705) is a re-imported row. It
+    // may serve as the cycle's legacy close only when core buys — and no
+    // body/satellite buy — link to it: then it is provably the core TP. A
+    // sell nothing links to, or one linked from body buys it could not
+    // inherit a single owner from, would stamp unrelated core buys with
+    // another order's sell (#752).
+    const sellLinkOwnership = new Map(); // sell orderId -> { core, owned }
+    for (const fill of fills.values()) {
+      if (fill.side !== 'buy') continue;
+      const linkedSellIds = new Set();
+      if (fill.sellOrderId) linkedSellIds.add(fill.sellOrderId);
+      if (fill.consumedBy && typeof fill.consumedBy === 'object') {
+        for (const id of Object.keys(fill.consumedBy)) linkedSellIds.add(id);
+      }
+      const owned = Boolean(fill.isBodyOwned || fill.isSatellite || fill.bodyId);
+      for (const id of linkedSellIds) {
+        const entry = sellLinkOwnership.get(id) || { core: false, owned: false };
+        if (owned) entry.owned = true; else entry.core = true;
+        sellLinkOwnership.set(id, entry);
+      }
+    }
     for (const fill of fills.values()) {
       if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
-      // A sell recalc attributed into this cycle (#705) is a re-imported row,
-      // not the cycle's own recorded close: pre-#705 it sat in a sell-only
-      // recovered cycle and never linked anything. Using it here could stamp
-      // unrelated core buys with another order's sell (#752).
-      if (fill.side === 'sell' && fill.cycleAttribution) continue;
+      if (fill.side === 'sell' && fill.cycleAttribution) {
+        const links = sellLinkOwnership.get(fill.orderId);
+        if (!links || !links.core || links.owned) continue;
+      }
       if (fill.side === 'sell' && fill.cycleId && completedCycleIds.has(fill.cycleId) && !cycleSellIds.has(fill.cycleId)) {
         cycleSellIds.set(fill.cycleId, fill.orderId);
       }

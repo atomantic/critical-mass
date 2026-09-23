@@ -2217,7 +2217,7 @@ describe('Fill Ledger', () => {
       assert.deepStrictEqual(preview.cycleDetails, result.cycleDetails);
     });
 
-    it('a link-attributed sell linked from a core buy stays unowned, and auto-link never uses it (#752)', () => {
+    it('a link-attributed sell linked only from core buys stays unowned and closes the cycle\'s other core buys (#752)', () => {
       const ledger = createTestLedger('attr-sell-core');
       ledger.ingestFill(buy('x-b', 'x-buy', 10), null, { cycleId: 'cycle-1' });
       ledger.annotateFillsByOrderId('x-buy', { sellOrderId: 'x-tp' });
@@ -2232,8 +2232,8 @@ describe('Fill Ledger', () => {
       assert.equal(row.isBodyOwned, undefined);
       assert.equal(row.bodyId, undefined);
       assert.ok(result.cycleDetails.some(d => d.cycleId === 'cycle-1'));
-      assert.equal(rowOf(ledger, 'y-b').sellOrderId, undefined,
-        'a re-imported sell is not the cycle\'s recorded close — pre-#705 it never linked anything');
+      assert.equal(rowOf(ledger, 'y-b').sellOrderId, 'x-tp',
+        'a core-linked recovered sell is provably the core TP, so legacy auto-link still applies');
     });
 
     it('heals a sell row an earlier (#705) recalc already attributed without its annotations (#752)', () => {
@@ -2264,15 +2264,18 @@ describe('Fill Ledger', () => {
       ledger.annotateFillsByOrderId('m1-buy', { isBodyOwned: true, bodyId: 'body-1', sellOrderId: 'm-tp' });
       ledger.ingestFill(buy('m2', 'm2-buy', 10.5), null, { cycleId: 'cycle-1' });
       ledger.annotateFillsByOrderId('m2-buy', { isBodyOwned: true, bodyId: 'body-2', sellOrderId: 'm-tp' });
+      ledger.ingestFill(buy('mc', 'mc-buy', 10.8), null, { cycleId: 'cycle-1' });
       ledger.ingestFill(sell('ms', 'm-tp', 11, '0.0019'), null, { cycleId: null });
       ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
 
-      ledger.recalculateCycles();
+      const result = ledger.recalculateCycles();
 
       const row = rowOf(ledger, 'ms');
       assert.equal(row.cycleAttribution, 'link');
       assert.equal(row.isBodyOwned, undefined);
       assert.equal(row.bodyId, undefined);
+      assert.ok(result.cycleDetails.some(d => d.cycleId === 'cycle-1'));
+      assert.equal(rowOf(ledger, 'mc').sellOrderId, undefined, 'a body-linked sell is never the core buy\'s close');
     });
   });
 
