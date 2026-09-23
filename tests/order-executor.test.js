@@ -917,6 +917,8 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
 
     assert.equal(result.cancelled, 1, 'a genuine cancel still counts as cancelled');
     assert.equal(result.partialFills, 1, 'the partial fill is reported back to the caller');
+    assert.deepEqual(result.partialFillOrderIds, ['ladder-partial'], 'which rung filled mid-cancel (issue #711)');
+    assert.ok(Math.abs(result.partialFillsCost - 204.01) < 1e-9, 'quote spent = filledValue + fees, for rebuildLadder\'s balance clamp (issue #711)');
     assert.equal(result.remainingTracked, 0);
     assert.equal(captured.length, 1, 'partial fill routed through onFillDetected before dropping tracking');
     assert.equal(captured[0].orderId, 'ladder-partial');
@@ -941,6 +943,9 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
 
     assert.equal(result.cancelled, 1);
     assert.equal(result.partialFills, 0);
+    assert.deepEqual(result.partialFillOrderIds, []);
+    assert.equal(result.partialFillsCost, 0);
+    assert.deepEqual(result.unbookedFills, []);
     assert.equal(captured.length, 0);
   });
 
@@ -969,6 +974,74 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
 
     assert.equal(onFillDetectedResolved, true, 'cancelAllLadderOrders must not resolve before the async fill callback completes');
     assert.equal(result.partialFills, 1);
+  });
+
+  it('reports the unbooked spend of a rung that filled completely during the cancel (issue #711)', async () => {
+    // A FILLED rung is left tracked for polling to book, so no body carries
+    // its cost yet — rebuildLadder has to reserve it from the return value.
+    const captured = [];
+    const adapter = {
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => ({ status: 'FILLED', filledSize: 0.01, filledValue: 510, averageFilledPrice: 51000, totalFees: 0.5, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+    });
+    restoreLadder(exec, 'ladder-full');
+
+    const result = await exec.cancelAllLadderOrders();
+
+    assert.equal(result.cancelled, 0);
+    assert.equal(result.partialFills, 0);
+    assert.equal(result.partialFillsCost, 0, 'nothing was booked during the sweep');
+    assert.equal(result.unbookedFills.length, 1);
+    assert.equal(result.unbookedFills[0].orderId, 'ladder-full');
+    assert.ok(Math.abs(result.unbookedFills[0].cost - 510.5) < 1e-9, `unbooked spend = filledValue + fees, got ${result.unbookedFills[0].cost}`);
+    assert.equal(result.unbookedFills[0].filledSize, 0.01);
+    assert.ok(Math.abs(result.unbookedFills[0].unitCost - 51050) < 1e-6, `per-unit bound = max(avg, limit) + fee/unit, got ${result.unbookedFills[0].unitCost}`);
+    assert.equal(result.remainingTracked, 1, 'left tracked for polling to book');
+    assert.equal(captured.length, 0);
+    exec.clearTimers();
+  });
+
+  it('costs only the part of a cancel-time fill not already booked as a polled partial (issue #711)', async () => {
+    // Polling already saw (and booked) 0.004 of this rung; the cancel reports
+    // the cumulative 0.006. Only the new 0.002 tranche is spend the caller's
+    // balance/allocation snapshots have not seen.
+    const adapter = {
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => ({ status: 'PARTIALLY_FILLED', filledSize: 0.004, filledValue: 204, averageFilledPrice: 51000, totalFees: 0, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', { onFillDetected: async () => {} });
+    restoreLadder(exec, 'ladder-prorate');
+    await exec.checkPendingOrderFills();
+    adapter.getOrder = async () => ({ status: 'CANCELLED', filledSize: 0.006, filledValue: 306, averageFilledPrice: 51000, totalFees: 0.6, side: 'BUY' });
+
+    const result = await exec.cancelAllLadderOrders();
+
+    assert.equal(result.partialFills, 1);
+    assert.ok(Math.abs(result.partialFillsCost - 306.6 / 3) < 1e-9, `only the unbooked third, got ${result.partialFillsCost}`);
+    exec.clearTimers();
+  });
+
+  it('never costs the new tranche below the rung\'s limit price when the earlier one filled cheaper (issue #711)', async () => {
+    // Earlier 0.004 filled at 50000 ($200); the remaining 0.002 at the 51000
+    // limit ($102). Size-prorating the cumulative $302 would say $100.67.
+    const adapter = {
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => ({ status: 'PARTIALLY_FILLED', filledSize: 0.004, filledValue: 200, averageFilledPrice: 50000, totalFees: 0, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', { onFillDetected: async () => {} });
+    restoreLadder(exec, 'ladder-cheap-first'); // limit 51000
+    await exec.checkPendingOrderFills();
+    adapter.getOrder = async () => ({ status: 'FILLED', filledSize: 0.006, filledValue: 302, averageFilledPrice: 50333.33, totalFees: 0, side: 'BUY' });
+
+    const result = await exec.cancelAllLadderOrders();
+
+    assert.equal(result.unbookedFills.length, 1);
+    assert.ok(Math.abs(result.unbookedFills[0].cost - 102) < 1e-9, `bounded by 0.002 @ the 51000 limit, got ${result.unbookedFills[0].cost}`);
+    assert.equal(result.unbookedFills[0].unitCost, 51000, 'the limit price bounds the per-unit cost too');
+    exec.clearTimers();
   });
 
   it('drops tracking BEFORE awaiting a slow fill callback, not after (issue #674 codex review finding)', async () => {

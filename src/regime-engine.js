@@ -3345,6 +3345,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       ? (fillData.placedAt || orderExecutor.getOrderPlacedAt(fillData.orderId))
       : null;
 
+    // The live cycle these rows are stamped with — the buy branch compares it
+    // at commit time to detect a cycle turnover mid-pass (issue #711).
+    const ingestCycleId = fillLedger.getCurrentCycleId();
+
     // Ingest each fill and collect the normalized fills
     const ingestedFills = [];
     for (const fill of rawFills) {
@@ -3606,6 +3610,34 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (!orderAlreadyOwned) positionState.cycleBuys += 1;
         positionState.lastEntryPrice = summary.avgPrice;
         positionState.lastEntryTime = Date.now();
+        // A resetCycle can start a new cycle while this pass awaits between
+        // ingest and commit (a TP close racing a ladder-cancel booking, or any
+        // concurrent fill). The body — and the step counted above — land in
+        // the NEW cycle, so the rows it books must too; left under the closed
+        // cycle, a restart's ledger auto-correct would undo the step and the
+        // buy would sit in a cycle whose sell never consumed it (#711).
+        const liveCycleId = fillLedger.getCurrentCycleId();
+        if (ingestCycleId && liveCycleId && liveCycleId !== ingestCycleId) {
+          // An advancing partial of an already-owned order skipped the
+          // increment above (counted in the closed cycle); if the new cycle
+          // has no row of it yet, this move makes it one of that cycle's buy
+          // orders, so count it there too or the ledger and counter disagree.
+          const liveHadOrder = fillLedger.getCurrentCycleFills()
+            .some(f => f.side === 'buy' && f.orderId === fillData.orderId);
+          let moved = 0;
+          for (const f of fillsToAggregate) {
+            if (f.side === 'buy' && f.cycleId === ingestCycleId && f.tradeId) {
+              fillLedger.updateFillCycleId(f.tradeId, liveCycleId);
+              moved++;
+            }
+          }
+          if (moved > 0 && orderAlreadyOwned && !liveHadOrder) positionState.cycleBuys += 1;
+          if (moved > 0) {
+            logger.info(`🔀 [${exchange}] Cycle turned over while buy ${fillData.orderId} was booking — moved ${moved} fill(s) ${ingestCycleId} → ${liveCycleId}`, {
+              orderId: fillData.orderId, fromCycleId: ingestCycleId, toCycleId: liveCycleId, moved,
+            });
+          }
+        }
       };
 
       // Celestial hierarchy: create new buy descriptor
@@ -6510,12 +6542,27 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Reset for new cycle
    */
   const resetCycle = async () => {
+    // The closing cycle's rows as they stand BEFORE the ladder sweep below —
+    // the only await in this function. A buy row that shows up in the closing
+    // cycle after the sweep landed while it ran: a rung that partially filled
+    // before its cancel took is booked synchronously by cancelAllLadderOrders
+    // (#674), and a concurrent WS/poll fill can land in the same window. The
+    // closing TP never consumed such a buy, so it opens the NEW cycle (#711).
+    const closingCycleId = fillLedger.getCurrentCycleId();
+    // A fresh ledger has no live cycle until its first reset: its fills are
+    // stamped null, so the closing "cycle" is the null-cycle rows.
+    const closingCycleFills = () => (closingCycleId
+      ? fillLedger.getCurrentCycleFills()
+      : fillLedger.getAllFills().filter(f => f.cycleId == null));
+    let preSweepTradeIds = null;
+
     // Cancel remaining ladder orders - check both positionState and executor tracking
     const executorLadderOrders = orderExecutor.getPendingLadderOrders ? orderExecutor.getPendingLadderOrders() : [];
     const hasTrackedLadder = (positionState.pendingLadderOrders && positionState.pendingLadderOrders.length > 0) || executorLadderOrders.length > 0;
     if (positionState.ladderActive || hasTrackedLadder) {
-      const { cancelled } = orderExecutor.cancelAllLadderOrders ? await orderExecutor.cancelAllLadderOrders() : { cancelled: 0 };
-      if (cancelled > 0) logger.info(`🧹 [${exchange}] Cancelled ${cancelled} unfilled ladder orders`);
+      preSweepTradeIds = new Set(closingCycleFills().map(f => f.tradeId));
+      const { cancelled, partialFills = 0 } = orderExecutor.cancelAllLadderOrders ? await orderExecutor.cancelAllLadderOrders() : { cancelled: 0 };
+      if (cancelled > 0) logger.info(`🧹 [${exchange}] Cancelled ${cancelled} unfilled ladder orders${partialFills > 0 ? ` (${partialFills} partially filled during the cancel and were booked)` : ''}`);
     }
 
     // Reset ladder state
@@ -6551,6 +6598,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.avgCostBasis = 0;
     }
 
+    // Buys that landed during the sweep — ingested under the closing cycle
+    // (ingestFill stamps the cycle live at ingest time) but not in the
+    // pre-sweep snapshot. Sells stay put: a sell landing in that window closes
+    // buys of the cycle it was ingested under.
+    const sweepBuys = preSweepTradeIds
+      ? closingCycleFills().filter(f => f.side === 'buy' && !preSweepTradeIds.has(f.tradeId))
+      : [];
+
     // Persist the boundary in regime-state.json with the other operator-owned
     // position state. The fill ledger remains the fallback for legacy state
     // files that predate this marker.
@@ -6559,6 +6614,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // uses to fold null-cycle fills the engine missed during downtime into
     // this cycle, and an empty post-reset cycle has no fill to infer it from (#705).
     positionState.activeCycleStartedAt = fillLedger.getCurrentCycleStartedAt();
+
+    // Those sweep buys belong to the cycle just started: re-tag them, and
+    // count the orders a surviving body already owns toward the new cycle's
+    // buy steps — cycleBuys was zeroed above, and without this a mid-cancel
+    // body contributes nothing to the maxCycleBuys cap until a restart's
+    // ledger auto-correct (#711). A carried row no body owns yet (booking
+    // still in flight, or deferred to a retry) is counted by its own commit,
+    // which now lands in the new cycle.
+    if (sweepBuys.length > 0) {
+      for (const fill of sweepBuys) fillLedger.updateFillCycleId(fill.tradeId, positionState.activeCycleId);
+      const carriedOrderIds = [...new Set(sweepBuys.map(f => f.orderId))];
+      positionState.cycleBuys = carriedOrderIds.filter(id => isBuyAlreadyCommitted(bodies, id)).length;
+      fillLedger.persist();
+      logger.info(`🔀 [${exchange}] Carried ${sweepBuys.length} buy fill(s) (${carriedOrderIds.length} order(s)) that landed during the ladder cancel into ${positionState.activeCycleId}; cycleBuys=${positionState.cycleBuys}`, {
+        closingCycleId,
+        newCycleId: positionState.activeCycleId,
+        orderIds: carriedOrderIds,
+        cycleBuys: positionState.cycleBuys,
+      });
+    }
     riskManager.resetCycleTracking();
 
     const bodyCount = bodies.length;
@@ -8000,6 +8075,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (riskManager.getState().isDrawdownPaused) {
       return { success: false, message: 'Drawdown pause active — resume from the drawdown pause before rebuilding the ladder' };
     }
+    // Don't start a ladder sweep mid-fill/merge/reconcile (same gate as
+    // resetCycleBuys): a TP close's resetCycle runs inside a fill and sweeps
+    // the ladder itself, and a sweep started underneath it can book a
+    // mid-cancel rung while the cycle turns over (issue #711).
+    if (engineLocks.isMutatingPosition()) {
+      return { success: false, message: engineLocks.describeBusy('position') };
+    }
 
     const allocatedCapital = getAllocatedCapital();
     let remainingBudget = config.maxUsdcDeployed - allocatedCapital;
@@ -8019,10 +8101,27 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     logger.info(`🔄 [${exchange}] Manual ladder rebuild requested, budget=$${remainingBudget.toFixed(2)} (allocated=$${allocatedCapital.toFixed(2)})`);
 
+    // Re-check after the balance await above: a fill that started meanwhile
+    // (e.g. a TP close, whose resetCycle sweeps the ladder itself) must not
+    // have this rebuild sweep underneath it (issue #711).
+    if (engineLocks.isMutatingPosition()) {
+      return { success: false, message: engineLocks.describeBusy('position') };
+    }
+
     // Cancel existing ladder orders
+    let midCancelSpend = 0;
+    let unbookedFills = [];
     if (positionState.ladderActive) {
       const cancelResult = await orderExecutor.cancelAllLadderOrders();
-      logger.info(`🧹 [${exchange}] Cancelled ${cancelResult.cancelled} existing ladder orders`);
+      // Booked mid-cancel partials already sit in a body's costBasis
+      // (getAllocatedCapital below) but not in the pre-cancel balance; rungs
+      // that filled completely are left for polling to book, so neither term
+      // sees them yet.
+      midCancelSpend = Number(cancelResult.partialFillsCost) || 0;
+      unbookedFills = Array.isArray(cancelResult.unbookedFills) ? cancelResult.unbookedFills : [];
+      const filledDuringCancel = midCancelSpend + unbookedFills.reduce((sum, u) => sum + (Number(u.cost) || 0), 0);
+      const spendNote = filledDuringCancel > 0 ? ` ($${filledDuringCancel.toFixed(2)} filled during the cancel)` : '';
+      logger.info(`🧹 [${exchange}] Cancelled ${cancelResult.cancelled} existing ladder orders${spendNote}`);
     }
 
     // Reset ladder state
@@ -8034,17 +8133,44 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // A rung can partially fill in the race window before the cancel above
     // took, and that fill is now booked into a body synchronously as part of
     // cancelAllLadderOrders (issue #674) — re-derive the budget from the
-    // CURRENT allocation before sizing the new ladder, so a fill discovered
-    // mid-cancel isn't missing from the math and the new ladder can't push
-    // deployed capital past maxUsdcDeployed. Clamp against the same exchange
-    // balance already fetched above (unaffected by an in-fund reallocation).
-    const postCancelAllocated = getAllocatedCapital();
-    remainingBudget = Math.min(config.maxUsdcDeployed - postCancelAllocated, availableQuote);
-    if (remainingBudget < (config.baseSizeUsdc || 50)) {
-      return { success: false, message: `Budget dropped below min order size after a fill landed during ladder cancel ($${remainingBudget.toFixed(2)} of $${config.maxUsdcDeployed.toFixed(2)} deployed budget remaining). The old ladder was cancelled but not rebuilt — call rebuildLadder again if appropriate.` };
+    // CURRENT state before sizing the new ladder, so a fill discovered
+    // mid-cancel isn't missing from the math.
+    //
+    // Cash: the clamp must not size rungs against quote those fills spent
+    // (issue #711). Where filling happened, re-read the balance: on exchanges
+    // that hold quote for resting orders the fill was paid from the hold, so
+    // the pre-cancel snapshot already excludes it and subtracting again would
+    // wrongly starve the rebuild; elsewhere the fresh read reflects the spend.
+    // Capped at the pre-cancel snapshot so a rebuild with a fill sizes the
+    // same as one without (released holds are not newly counted). If the
+    // re-read fails, fall back to subtracting the spend (conservative).
+    const cancelTimeSpend = midCancelSpend + unbookedFills.reduce((sum, u) => sum + (Number(u.cost) || 0), 0);
+    let postCancelQuote = availableQuote;
+    if (cancelTimeSpend > 0) {
+      const freshBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
+      postCancelQuote = freshBalance
+        ? Math.min(availableQuote, parseFloat(freshBalance.available) || 0)
+        : Math.max(0, availableQuote - cancelTimeSpend);
     }
-    if (postCancelAllocated !== allocatedCapital) {
-      logger.info(`🔄 [${exchange}] Re-derived ladder budget after a cancel-time fill: $${remainingBudget.toFixed(2)} (allocated=$${postCancelAllocated.toFixed(2)}, was $${allocatedCapital.toFixed(2)})`);
+    // Deployed cap: derived after that await, so a fill committed during it
+    // is counted and the new ladder can't push deployed capital past
+    // maxUsdcDeployed. A rung that filled completely is reserved until polling
+    // books it into a body — only the part the persisted fill ledger does not
+    // hold yet: a tranche booked earlier (as a partial, before a restart, or
+    // by polling while the sweep ran) is already in a body's costBasis or was
+    // sold and its capital returned, so reserving it again would undersize
+    // the ladder.
+    const unbookedSpend = unbookedFills.reduce((sum, u) => {
+      const unbookedSize = Math.max(0, (Number(u.filledSize) || 0) - fillLedger.getRecordedSizeForOrder(u.orderId));
+      return sum + unbookedSize * (Number(u.unitCost) || 0);
+    }, 0);
+    const postCancelAllocated = getAllocatedCapital() + unbookedSpend;
+    remainingBudget = Math.min(config.maxUsdcDeployed - postCancelAllocated, postCancelQuote);
+    if (remainingBudget < (config.baseSizeUsdc || 50)) {
+      return { success: false, message: `Budget dropped below min order size after a fill landed during ladder cancel ($${remainingBudget.toFixed(2)} left — $${(config.maxUsdcDeployed - postCancelAllocated).toFixed(2)} under the deployed cap, $${postCancelQuote.toFixed(2)} ${quoteCurrency} available). The old ladder was cancelled but not rebuilt — call rebuildLadder again if appropriate.` };
+    }
+    if (postCancelAllocated !== allocatedCapital || postCancelQuote !== availableQuote) {
+      logger.info(`🔄 [${exchange}] Re-derived ladder budget after a cancel-time fill: $${remainingBudget.toFixed(2)} (allocated=$${postCancelAllocated.toFixed(2)}, was $${allocatedCapital.toFixed(2)}; available ${quoteCurrency}=$${postCancelQuote.toFixed(2)}, was $${availableQuote.toFixed(2)})`);
     }
 
     // Build new ladder
@@ -8097,6 +8223,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   const cancelLadder = async () => {
     if (!isRunning) return { success: false, message: 'Engine not running' };
+    // Same gate as rebuildLadder (issue #711): don't sweep the ladder
+    // underneath an in-flight fill/merge/reconcile.
+    if (engineLocks.isMutatingPosition()) {
+      return { success: false, message: engineLocks.describeBusy('position') };
+    }
 
     const hadLadder = positionState.ladderActive;
     let cancelled = 0;
@@ -8360,6 +8491,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       ensureTakeProfitPlaced,
       refreshDrawdownGuard,
       getOrderExecutor: () => orderExecutor,
+      resetCycle: () => resetCycle(),
       checkAllCaps: () => riskManager.checkAllCaps(positionState),
     },
   };
