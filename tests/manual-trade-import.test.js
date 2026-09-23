@@ -721,27 +721,31 @@ describe('Manual Trade Import', () => {
       assert.equal(fillLedger.getFillsForOrder('buy-1')[0].bodyId, second.trade.bodyId);
     });
 
-    // Issue #691 review follow-up (codex, round 3): a body that fully closes
-    // (its TP completely fills) is spliced out of positionState.celestialBodies,
-    // so injectBody's in-memory duplicate check can't see it on a later retry.
-    // The fill ledger still can: placeBodyTp stamps `sellOrderId` onto a
-    // body's buy fills the moment its TP is PLACED (crash-resilient linkage,
-    // CLAUDE.md), before the sell ever fills, and that stamp survives the
-    // body's later removal. A retry must consult it and refuse to create a
-    // second body — otherwise it would fabricate a live position (and place
-    // a real second TP sell) for an asset that was already sold.
-    it('refuses to create a second body once the buy fills are already linked to a sell in the ledger', async () => {
+    // Issue #691 review follow-up (codex, rounds 3-4): a body that fully
+    // closes (its TP completely fills) is spliced out of
+    // positionState.celestialBodies, so injectBody's in-memory duplicate
+    // check can't see it on a later retry. The fill ledger still can:
+    // placeBodyTp stamps BOTH `bodyId` and `sellOrderId` onto a body's buy
+    // fills the moment its TP is PLACED (crash-resilient linkage, CLAUDE.md),
+    // before the sell ever fills, and that stamp survives the body's later
+    // removal. A retry must consult `bodyId` specifically (round 4: a bare
+    // `sellOrderId` alone is NOT safe — recalculateCycles' generic
+    // cycle-completion auto-link stamps that onto every buy in a >=50%-sold
+    // cycle for display, without a bodyId) and refuse to create a second
+    // body — otherwise it would fabricate a live position (and place a real
+    // second TP sell) for an asset that was already sold.
+    it('refuses to create a second body once the buy fills are already linked to a body in the ledger', async () => {
       const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
       let calls = 0;
       const importer = createImporter({
         adapter,
         injectBody: async () => {
           calls++;
-          // Mimic placeBodyTp's real side effect: stamp sellOrderId onto the
-          // buy fills at TP PLACEMENT time, then fail before returning —
-          // the crash-resilient ledger linkage survives the failure even
-          // though the trade store update never runs.
-          fillLedger.annotateFillsByOrderId('buy-1', { sellOrderId: 'tp-order-1' });
+          // Mimic placeBodyTp's real side effect: stamp bodyId + sellOrderId
+          // onto the buy fills at TP PLACEMENT time, then fail before
+          // returning — the crash-resilient ledger linkage survives the
+          // failure even though the trade store update never runs.
+          fillLedger.annotateFillsByOrderId('buy-1', { bodyId: 'body-live-1', sellOrderId: 'tp-order-1' });
           fillLedger.persist();
           throw new Error('saveLiveState failed (simulated)');
         },
@@ -757,10 +761,77 @@ describe('Manual Trade Import', () => {
 
       assert.equal(second.success, true);
       assert.equal(second.alreadyImported, true);
-      assert.equal(calls, 1, 'injectBody must never be called again once the buy is already linked to a sell');
+      assert.equal(calls, 1, 'injectBody must never be called again once the buy is already linked to a body');
       assert.equal(store.getAll().length, 1);
-      assert.equal(store.getAll()[0].bodyId, null, 'no new body may be linked to this buy');
-      assert.notEqual(store.getAll()[0].status, STATUS.TP_PENDING);
+      // The trade record must be linked to the REAL body the ledger already
+      // knows about — not left orphaned, and never a fresh id of its own.
+      assert.equal(store.getAll()[0].bodyId, 'body-live-1');
+      assert.equal(store.getAll()[0].status, STATUS.TP_PENDING);
+    });
+
+    it('does not skip body creation merely because a cycle-completion sellOrderId is present without a bodyId', async () => {
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      const importer = createImporter({ adapter, injectBody: null });
+
+      // Ledger-only import first (createBody:false) — the fills exist in the
+      // ledger but no body/TP has ever been created for them.
+      await importer.importBuy({ buyOrderId: 'buy-1', createBody: false });
+
+      // Simulate recalculateCycles' "auto-link buys to sells within
+      // completed cycles" step (fill-ledger.js) blanket-stamping sellOrderId
+      // onto this buy purely because its cycle crossed the 50%-sold
+      // heuristic — NOT proof this specific buy's own quantity was sold, and
+      // critically WITHOUT a bodyId (that field is only ever set by an
+      // actual body-creation flow).
+      fillLedger.annotateFillsByOrderId('buy-1', { sellOrderId: 'unrelated-cycle-sell' });
+      fillLedger.persist();
+
+      const result = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(result.success, true);
+      assert.notEqual(result.alreadyImported, true, 'a bare cycle-linkage sellOrderId must not be treated as already-imported');
+      assert.ok(result.trade.bodyId, 'a body must still be created for this genuinely-unmanaged buy');
+      const saved = readRegimeStateFile();
+      assert.equal(saved.position.celestialBodies.length, 1);
+    });
+
+    it('detects an engine-stopped body already persisted to disk even if markTpPlaced never completes (crash window)', async () => {
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      const importer = createImporter({ adapter, injectBody: null });
+
+      // Simulate a process crash between persistBodyToDisk succeeding and
+      // store.markTpPlaced ever completing — the fill-ledger bodyId
+      // annotation (stamped and persisted BEFORE persistBodyToDisk even
+      // runs) must survive this window even though the trade store's
+      // bodyId/status update does not.
+      const realMarkTpPlaced = store.markTpPlaced;
+      let markCalls = 0;
+      store.markTpPlaced = (...args) => {
+        markCalls++;
+        if (markCalls === 1) throw new Error('process crashed (simulated)');
+        return realMarkTpPlaced.apply(store, args);
+      };
+      try {
+        await assert.rejects(importer.importBuy({ buyOrderId: 'buy-1', createBody: true }));
+      } finally {
+        store.markTpPlaced = realMarkTpPlaced;
+      }
+
+      const beforeRetry = store.getAll();
+      assert.equal(beforeRetry.length, 1);
+      assert.equal(beforeRetry[0].bodyId, null, 'the trade store never learned about the persisted body');
+      const savedBefore = readRegimeStateFile();
+      assert.ok(savedBefore, 'the body was persisted to regime-state.json despite the later crash');
+      assert.equal(savedBefore.position.celestialBodies.length, 1);
+
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.alreadyImported, true);
+      const savedAfter = readRegimeStateFile();
+      assert.equal(savedAfter.position.celestialBodies.length, 1, 'no second body may be persisted');
+      assert.equal(second.trade.bodyId, savedBefore.position.celestialBodies[0].id, 'the retry must link the trade record to the already-persisted body');
+      assert.equal(second.trade.status, STATUS.TP_PENDING);
     });
 
     it('requires a buyOrderId', async () => {

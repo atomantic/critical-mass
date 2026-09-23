@@ -325,25 +325,44 @@ const createManualTradeImporter = ({
       return ok({ trade: store.getById(trade.id), alreadyImported: true });
     }
 
-    // Durable close-check (issue #691, codex review): the in-memory duplicate
-    // check inside injectBody (regime-engine.js) only sees bodies still in
+    // Durable close-check (issue #691, codex review, refined across two
+    // rounds). The in-memory duplicate check inside injectBody
+    // (regime-engine.js) only sees bodies still in
     // positionState.celestialBodies — a body that fully closed (its TP
     // completely filled) is spliced out of that array, so it becomes
-    // invisible to that check. The fill ledger doesn't lose the link: the
-    // moment a body's TP is PLACED, placeBodyTp stamps `sellOrderId` onto
-    // every one of that body's buy fills for crash-resilient linkage
-    // (CLAUDE.md) — before the sell ever fills, and it survives the body's
-    // later removal. So if this buyOrderId's fills already carry a
-    // sellOrderId (a TP was placed for them, resting or already filled), a
-    // retry must never create a second body for the same buy: creating one
-    // would either double-sell the same underlying asset (TP still resting)
-    // or fabricate a position for asset that's already gone (TP filled and
-    // the body closed).
-    const alreadyLinkedSell = fillLedger.getFillsForOrder(buyOrderId).find((r) => r.sellOrderId)?.sellOrderId;
-    if (alreadyLinkedSell) {
-      log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} is already linked to sell ${alreadyLinkedSell} — refusing to create another body`, {
+    // invisible to that check. The fill ledger doesn't lose the link, but it
+    // must be read carefully:
+    //   - `bodyId` is the precise signal. It is stamped ONLY by an actual
+    //     body-creation flow — this function's own pre-injection annotation a
+    //     few lines below, and placeBodyTp's TP-placement annotation — and,
+    //     once set, is never cleared except by this function's own
+    //     clearBodyAnnotation() rollback below on a confirmed non-duplicate
+    //     failure. It survives the body's later removal from
+    //     celestialBodies, and (for the engine-stopped path) it is persisted
+    //     to the ledger BEFORE persistBodyToDisk ever runs, so it also
+    //     catches a crash between persistBodyToDisk succeeding and
+    //     store.markTpPlaced below ever running.
+    //   - `sellOrderId` alone is NOT safe to key on: recalculateCycles'
+    //     "auto-link buys to sells" step (fill-ledger.js) blanket-stamps
+    //     sellOrderId onto EVERY buy in a cycle once that cycle crosses the
+    //     50% sold heuristic (isCompletedCycle) — a display convenience for
+    //     the aggregate cycle view, not proof this SPECIFIC buy's quantity
+    //     was sold. Keying on it would false-positive and leave a genuinely
+    //     unsold, unmanaged buy silently skipped.
+    const alreadyOwningBodyId = fillLedger.getFillsForOrder(buyOrderId).find((r) => r.bodyId)?.bodyId;
+    if (alreadyOwningBodyId) {
+      // The ledger already knows about a body for this buy, but the trade
+      // record might not (this is exactly the window this check exists to
+      // cover — e.g. the first attempt's injectBody THREW rather than
+      // returning normally, which skips markTpPlaced entirely without ever
+      // reaching the confirmed-duplicate re-link above). Link the trade
+      // record now so it doesn't sit at BUY_RECORDED/bodyId=null forever —
+      // every future retry would otherwise keep re-detecting this same
+      // ledger state without ever fixing it.
+      store.markTpPlaced(trade.id, alreadyOwningBodyId);
+      log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} is already linked to body ${alreadyOwningBodyId} — refusing to create another body`, {
         buyOrderId,
-        sellOrderId: alreadyLinkedSell,
+        bodyId: alreadyOwningBodyId,
       });
       return ok({ trade: store.getById(trade.id), alreadyImported: true });
     }
