@@ -1058,8 +1058,24 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       const refused = result.status === 'rejected' || !result.value?.success;
 
       if (!refused) {
-        pendingOrders.delete(orderId);
-        partialFillTracker.delete(orderId);
+        // The exchange acknowledged the cancel ({success:true}), but every
+        // adapter's cancelOrder response carries only that boolean — never a
+        // filledSize — so an ack alone does not guarantee zero fill. A rung
+        // can still partially fill in the race window right before the
+        // cancel takes (the same race safeCancelOrder itself guards against
+        // by polling after an ack'd cancel). Check the terminal state before
+        // dropping tracking so a partial fill discovered here is booked via
+        // handleCancelledOrder/onFillDetected instead of silently lost
+        // (issue #674 Fix step 1).
+        const cancelledStatus = typeof adapter.getOrder === 'function'
+          ? await adapter.getOrder(orderId).catch(() => null)
+          : null;
+        if (cancelledStatus && cancelledStatus.filledSize > 0) {
+          await handleCancelledOrder(orderId, order, cancelledStatus, 'SAFE-mode cancel');
+        } else {
+          pendingOrders.delete(orderId);
+          partialFillTracker.delete(orderId);
+        }
         cancelled++;
         continue;
       }

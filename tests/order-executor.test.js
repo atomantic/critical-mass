@@ -382,9 +382,15 @@ describe('cancelAllEntries — refused-cancel fill handling (issue #209 A)', () 
   });
 
   it('counts a genuinely-successful cancel and drops tracking', async () => {
+    // A successful cancel ack ({success:true}) is now verified with a
+    // getOrder check (issue #674 Fix step 1 — no adapter's cancelOrder
+    // response carries filledSize, so the ack alone can't rule out a partial
+    // fill). A getOrder failure here must not block the clean-cancel path —
+    // fall back to trusting the ack, matching every other cancel path's
+    // "can't verify, don't block on it" fallback.
     const adapter = {
       cancelOrder: async () => ({ success: true }),
-      getOrder: async () => { throw new Error('getOrder should not be needed on a clean cancel'); },
+      getOrder: async () => { throw new Error('network blip on the post-cancel check'); },
     };
     const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {});
     restoreEntry(exec, 'entry-clean-1');
@@ -394,6 +400,35 @@ describe('cancelAllEntries — refused-cancel fill handling (issue #209 A)', () 
 
     assert.equal(cancelled, 2);
     assert.equal(exec.getPendingCounts().entries, 0);
+  });
+
+  it('routes a partial fill through onFillDetected when a SUCCESSFUL cancel carries a fill (issue #674 Fix step 1 / PR #712 follow-up)', async () => {
+    // The exchange acknowledges the cancel ({success:true}) — the `!refused`
+    // path — but a rung partially filled in the race window right before the
+    // cancel took. No adapter's cancelOrder response carries filledSize, so
+    // this can only be discovered via a follow-up getOrder call; the old code
+    // never made one and just deleted the order, silently losing the fill.
+    const captured = [];
+    const entryCancelled = [];
+    const adapter = {
+      cancelOrder: async () => ({ success: true }),
+      getOrder: async () => ({ status: 'CANCELLED', filledSize: 0.004, filledValue: 9.2, averageFilledPrice: 2300, totalFees: 0.01, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+      onEntryCancelled: (orderId) => entryCancelled.push(orderId),
+    });
+    restoreEntry(exec, 'entry-success-partial');
+
+    const cancelled = await exec.cancelAllEntries();
+
+    assert.equal(cancelled, 1, 'a successful cancel with a partial fill still counts as cancelled');
+    assert.equal(captured.length, 1, 'the fill is routed through onFillDetected exactly once');
+    assert.equal(captured[0].orderId, 'entry-success-partial');
+    assert.equal(captured[0].status.isPartialFill, true);
+    assert.equal(captured[0].status.filledSize, 0.004);
+    assert.deepEqual(entryCancelled, ['entry-success-partial'], 'entry-cancel callback fires via the shared handler');
+    assert.equal(exec.getPendingCounts().entries, 0, 'order dropped from tracking after the fill was routed');
   });
 
   it('handles a thrown cancel by checking the order rather than blindly deleting', async () => {
