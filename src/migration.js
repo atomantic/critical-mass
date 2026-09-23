@@ -15,7 +15,7 @@
  *   data/coinbase/transactions.tsv
  *   data/coinbase/btc-price-cache-*.json
  *   data/*.backup (originals)
- *   keys/coinbase.json
+ *   data/coinbase-keys.json (root keys.json renamed to keys.json.migrated)
  */
 
 const fs = require('fs');

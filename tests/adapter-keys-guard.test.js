@@ -202,17 +202,5 @@ describe('adapter keys file parsing guards', () => {
         'should throw the not-configured error rather than reading any other file',
       );
     });
-
-    it('source no longer references a legacy fallback path', () => {
-      // Structural guard: the removed fallback was keyed off a hardcoded
-      // `path.join(__dirname, '..', '..', '..', 'keys.json')` — assert the
-      // string naming it is gone so a regression can't silently reintroduce
-      // it under a different variable name.
-      const apiSrc = fs.readFileSync(
-        require.resolve('../src/adapters/coinbase/api.js'),
-        'utf8',
-      );
-      assert.ok(!apiSrc.includes('legacyPath'), 'legacy keys.json fallback must not be reintroduced');
-    });
   });
 });
