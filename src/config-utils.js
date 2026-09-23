@@ -6,9 +6,7 @@
  * Supports backward compatibility with single-exchange config format.
  */
 
-const { DEFAULT_AGGRESSIVENESS_PRESETS, MERGE_PROXIMITY_BOUNDS, PRESET_FIELD_RULES } = require('./regime-preset-contract');
-const { validateConfigUpdate } = require('./config-validation');
-const { isDeepStrictEqual } = require('util');
+const { DEFAULT_AGGRESSIVENESS_PRESETS, MERGE_PROXIMITY_BOUNDS } = require('./regime-preset-contract');
 const fs = require('fs');
 const path = require('path');
 const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils');
