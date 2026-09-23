@@ -3,8 +3,10 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 
+// The Open Orders table (and its TP-edit / roll-up actions) was extracted out of
+// RegimeDashboard.jsx into regime/OpenOrdersTable.jsx (#700).
 const dashboardSource = fs.readFileSync(
-  path.join(__dirname, '..', 'admin', 'src', 'components', 'RegimeDashboard.jsx'),
+  path.join(__dirname, '..', 'admin', 'src', 'components', 'regime', 'OpenOrdersTable.jsx'),
   'utf8',
 )
 
@@ -16,7 +18,7 @@ const stylesSource = fs.readFileSync(
 test('regime order actions share a touch target without changing their handlers', () => {
   assert.match(
     dashboardSource,
-    /const REGIME_ORDER_TOUCH_TARGET = 'min-h-11 min-w-11 inline-flex items-center justify-center regime-order-touch-target'/,
+    /export const REGIME_ORDER_TOUCH_TARGET = 'min-h-11 min-w-11 inline-flex items-center justify-center regime-order-touch-target'/,
   )
   assert.equal((dashboardSource.match(/\$\{REGIME_ORDER_TOUCH_TARGET\}/g) || []).length, 2)
   assert.equal((dashboardSource.match(/renderTpEditBtn\(order, '(pct|price)'\)/g) || []).length, 2)
