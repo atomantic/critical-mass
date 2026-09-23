@@ -1894,7 +1894,9 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    *                            cost × (size − Σ consumedBy) / size — the
    *                            unsold remainder of a partly-sold order stays held
    *                          - otherwise (legacy): full cost × (1 − consumedCostFraction)
-   *                            when sellOrderId is absent or has no sell fills yet
+   *                            when sellOrderId is absent or has no sell fills yet,
+   *                            unless the pairing redirected it onto an unannotated
+   *                            sell (its cost is then already in realizedPnL)
    *   heldOpenAssetQty     = the same, in base quantity
    *   ledgerNetAsset       = Σ buy size − Σ sell size over the whole ledger
    *
@@ -1958,7 +1960,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // as closed the moment its TP rests, zeroing heldOpenBuyCostBasis.
     let heldOpenBuyCostBasis = 0;
     let heldOpenAssetQty = 0;
-    for (const buy of buyAggByOrderId.values()) {
+    for (const [aggKey, buy] of buyAggByOrderId) {
       if (buy.consumedBy && Object.keys(buy.consumedBy).length > 0) {
         // Quantity-aware closure (issue #607). Sells record what they consumed
         // from each buy order, so a buy order can be PARTLY closed: its unsold
@@ -1974,6 +1976,14 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       }
       const hasSellFills = !!buy.sellOrderId && pairing.sells.has(buy.sellOrderId);
       if (hasSellFills) continue;
+      // A buy whose stamped TP id never filled but that the pairing redirected
+      // (via bodyId) to an UNANNOTATED sell had its cost charged to that sell's
+      // realized pnl — sold share as cost, the rest booked as holdback. Holding
+      // it open too would count its cost twice. Redirects onto annotated sells
+      // never priced this buy (e.g. a partial TP whose buys were re-linked to a
+      // still-resting TP), so those keep the legacy rule below.
+      const pairedSellOrderId = pairing.buys.get(aggKey)?.pairedSellOrderId;
+      if (pairedSellOrderId && !pairing.sells.get(pairedSellOrderId)?.hasPnlAnnotation) continue;
       // Legacy boolean closure for buy orders no sell has recorded
       // consumption against (pre-#607 history, or a body whose tranches
       // could not account for its quantity): open until the linked sell

@@ -176,8 +176,11 @@ test('#697 B: buys stamped with a re-placed TP id pair with the real sell throug
   ingest(ledger, 'sell', 's-new', 110, 0.9);
   ledger.annotateFillsByOrderId('s-new', { bodyId: 'body1' });
   // 99 − 100 × 0.9 = 9; holdback 0.1
-  const { client } = await assertParity(ledger, { realizedPnL: 9, realizedAssetPnL: 0.1 });
+  const { server, client } = await assertParity(ledger, { realizedPnL: 9, realizedAssetPnL: 0.1 });
   assert.deepEqual(client.sellGroups[0].buys.map(b => b.orderId), ['b1']);
+  // Its cost is now in realized, so it must not also be held open.
+  assert.equal(server.heldOpenBuyCostBasis, 0);
+  assert.equal(server.heldOpenAssetQty, 0);
 });
 
 test('#697 C: a body-owned sell with only a holdback annotation uses it and prorates cost', async () => {
