@@ -3,11 +3,26 @@
  * Base adapter interface definition
  * All exchange adapters must implement these methods
  */
+const { AsyncLocalStorage } = require('async_hooks');
 
 /**
  * @typedef {import('../types').FillSummary} FillSummary
  * @typedef {import('../types').OrderFill} OrderFill
  */
+
+/**
+ * Carries per-call REST throttle/backoff wait time (ms) from an adapter's
+ * request layer (e.g. Gemini's `makeRestRequest`) out to the health-monitor
+ * instrumentation wrapper, so the wrapper can subtract time spent waiting in
+ * a client-side rate-limit queue from the latency it attributes to the
+ * exchange (issue #680). `instrumentAdapterForHealth` runs each call inside
+ * `restQueueTiming.run({ queuedMs: 0 }, ...)`; the request layer adds to
+ * `restQueueTiming.getStore()?.queuedMs` when a store is present (it is a
+ * no-op — and therefore harmless — for adapters/call paths that never run
+ * inside that store, e.g. outside instrumentation or during tests).
+ * @type {import('async_hooks').AsyncLocalStorage<{queuedMs: number}>}
+ */
+const restQueueTiming = new AsyncLocalStorage();
 
 /**
  * Required adapter methods that each exchange must implement:
@@ -172,4 +187,5 @@ module.exports = {
   validateAdapter,
   createBaseAdapter,
   createAmbiguousPlacementError,
+  restQueueTiming,
 };

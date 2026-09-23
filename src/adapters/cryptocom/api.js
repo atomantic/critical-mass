@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { createAuthenticatedRequest } = require('./auth');
 const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
-const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
+const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
 /**
@@ -103,6 +103,20 @@ const createCryptocomAdapter = (keysPath = null) => {
   };
 
   /**
+   * Crypto.com's positive "this order does not exist" signal: HTTP 404, the
+   * 40401 NOT_FOUND / 316 NO_ORDER reject codes, or a not-found message.
+   * Anything else (auth, rate limit, transport) is an INCONCLUSIVE lookup and
+   * must NOT read as absent — that reading is what permits a double-place.
+   * @param {any} err
+   * @returns {boolean}
+   */
+  const isOrderNotFound = (err) =>
+    err?.status === 404
+    || Number(err?.code) === 40401
+    || Number(err?.code) === 316
+    || /order\s*not\s*found|no\s*order\s*found/i.test(err?.message ?? '');
+
+  /**
    * Make authenticated REST request to Crypto.com API
    * @param {string} method - API method (e.g., 'private/user-balance')
    * @param {Object} [params] - Request parameters
@@ -148,6 +162,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       cleanError.endpoint = method;
       cleanError.responseData = errData;
       cleanError.code = errData?.code;
+      cleanError.orderNotFound = isOrderNotFound(cleanError);
       throw cleanError;
     }
 
@@ -172,6 +187,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       cleanError.code = data.code;
       cleanError.responseData = data;
       cleanError.endpoint = method;
+      cleanError.orderNotFound = isOrderNotFound(cleanError);
       throw cleanError;
     }
 
@@ -579,20 +595,6 @@ const createCryptocomAdapter = (keysPath = null) => {
   };
 
   /**
-   * Crypto.com's positive "this order does not exist" signal: HTTP 404, the
-   * 40401 NOT_FOUND / 316 NO_ORDER reject codes, or a not-found message.
-   * Anything else (auth, rate limit, transport) is an INCONCLUSIVE lookup and
-   * must NOT read as absent — that reading is what permits a double-place.
-   * @param {any} err
-   * @returns {boolean}
-   */
-  const isOrderNotFound = (err) =>
-    err?.status === 404
-    || Number(err?.code) === 40401
-    || Number(err?.code) === 316
-    || /order\s*not\s*found|no\s*order\s*found/i.test(err?.message ?? '');
-
-  /**
    * Unwrap the order payload, which the API nests under `order_info`.
    * @param {any} result
    * @returns {any|null}
@@ -676,17 +678,20 @@ const createCryptocomAdapter = (keysPath = null) => {
     const orders = result.data || [];
 
     return orders.map(order => {
-      const quantity = parseFloat(order.quantity || order.order_value || 0);
-      const filledQty = parseFloat(order.cumulative_quantity || order.filled_quantity || 0);
+      // finiteFloat (not a bare `parseFloat(x || 0)`) guards a TRUTHY but
+      // non-numeric field too — e.g. quantity: "N/A" — which would otherwise
+      // parse to NaN and poison the size subtraction below (issue #684).
+      const quantity = finiteFloat(order.quantity || order.order_value);
+      const filledQty = finiteFloat(order.cumulative_quantity || order.filled_quantity);
       return {
         orderId: order.order_id?.toString(),
         productId: order.instrument_name,
         side: (order.side || '').toUpperCase(),
         status: filledQty > 0 ? 'PARTIALLY_FILLED' : 'OPEN',
-        size: quantity - filledQty, // Remaining unfilled size
+        size: Math.max(0, quantity - filledQty), // Remaining unfilled size, clamped at 0 (issue #684 follow-up)
         originalSize: quantity,
         filledSize: filledQty,
-        price: parseFloat(order.price || order.limit_price || 0),
+        price: finiteFloat(order.price || order.limit_price),
         createdTime: order.create_time
           ? new Date(order.create_time).toISOString()
           : new Date().toISOString(),

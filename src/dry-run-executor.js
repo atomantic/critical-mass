@@ -999,50 +999,21 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   };
 
   /**
-   * Check invariants
-   * @returns {{valid: boolean, reason?: string}}
-   */
-  const checkInvariants = () => {
-    const openCount = Array.from(pendingOrders.values()).filter(o => o.status === 'open').length;
-    if (openCount > config.maxOpenOrders) {
-      return {
-        valid: false,
-        reason: `too_many_orders:${openCount}>${config.maxOpenOrders}`,
-      };
-    }
-    return { valid: true };
-  };
-
-  /**
    * Get active TP order ID
    * @returns {string|null}
    */
   const getActiveTpOrderId = () => activeTpOrderId;
 
   /**
-   * Get status summary for logging
-   * @returns {string}
+   * Whether `orderId` is the legacy core take-profit this executor placed
+   * (interface parity with the live executor — issue #672).
+   * @param {string} orderId
+   * @returns {boolean}
    */
-  const getSummary = () => {
-    const counts = getPendingCounts();
-    let summary = `[DRY-RUN] pending=${counts.total}(entries=${counts.entries},tp=${counts.takeProfits},bodies=${counts.bodies})`;
-
-    if (activeTpOrderId) {
-      summary += ` active_tp=${activeTpOrderId.substring(0, 12)}@$${lastTpPrice}`;
-    }
-
-    return summary;
-  };
-
-  /**
-   * Clear all pending orders
-   */
-  const clearPendingOrders = () => {
-    pendingOrders.clear();
-    bodyTpOrders.clear();
-    activeTpOrderId = null;
-    lastTpPrice = 0;
-    lastTpSize = 0;
+  const isTrackedTpOrder = (orderId) => {
+    if (!orderId) return false;
+    if (orderId === activeTpOrderId) return true;
+    return pendingOrders.get(orderId)?.type === 'take_profit';
   };
 
   /**
@@ -1345,10 +1316,8 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     getOrderPlacedAt,
     getPendingCounts,
     getPendingEntries,
-    checkInvariants,
     getActiveTpOrderId,
-    getSummary,
-    clearPendingOrders,
+    isTrackedTpOrder,
     clearTimers,
     restorePendingOrder,
 

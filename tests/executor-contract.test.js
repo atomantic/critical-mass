@@ -13,7 +13,7 @@ const originalUpdateRegimeConfig = configUtils.updateRegimeConfig;
 configUtils.updateRegimeConfig = () => {};
 
 const logger = require('../src/logger');
-const { REQUIRED_EXECUTOR_METHODS, validateExecutor } = require('../src/executor-contract');
+const { REQUIRED_EXECUTOR_METHODS, TEST_ONLY_EXECUTOR_METHODS, validateExecutor } = require('../src/executor-contract');
 const { createOrderExecutor } = require('../src/order-executor');
 const { createDryRunExecutor } = require('../src/dry-run-executor');
 const { createRegimeEngine } = require('../src/regime-engine');
@@ -74,7 +74,7 @@ const makeMockAdapter = (overrides = {}) => ({
 describe('Order Executor Contract - Interface Parity', () => {
   it('declares all required methods in REQUIRED_EXECUTOR_METHODS', () => {
     assert.ok(Array.isArray(REQUIRED_EXECUTOR_METHODS));
-    assert.ok(REQUIRED_EXECUTOR_METHODS.length >= 27);
+    assert.ok(REQUIRED_EXECUTOR_METHODS.length >= 21);
 
     const expectedMethods = [
       'placeEntryBid',
@@ -85,17 +85,11 @@ describe('Order Executor Contract - Interface Parity', () => {
       'handleOrderCancel',
       'getPendingCounts',
       'getPendingEntries',
-      'checkInvariants',
-      'getActiveTpOrderId',
-      'getSummary',
-      'clearPendingOrders',
       'restorePendingOrder',
       'markSettled',
       'getOrderPlacedAt',
       'placeBodyTpOrder',
       'cancelBodyTpOrder',
-      'isBodyTpOrder',
-      'getBodyByTpOrderId',
       'restoreBodyTpOrder',
       'removeBodyTracking',
       'placeLadderOrders',
@@ -111,6 +105,33 @@ describe('Order Executor Contract - Interface Parity', () => {
         REQUIRED_EXECUTOR_METHODS.includes(method),
         `REQUIRED_EXECUTOR_METHODS should include ${method}`
       );
+    }
+  });
+
+  it('TEST_ONLY_EXECUTOR_METHODS are implemented by both executors but not contract-required (issue #725)', () => {
+    // checkInvariants, getSummary (executor's own) and clearPendingOrders had
+    // zero production callers AND zero method-specific test coverage — #678's
+    // pattern applied cleanly, so they were deleted outright (see git history
+    // for issue #725). getActiveTpOrderId/isBodyTpOrder/getBodyByTpOrderId
+    // also have zero production callers, but unlike those three they carry
+    // real, still-valuable test coverage (TP-placement concurrency safety;
+    // the #133/#213E dry-run cost-basis regression suite) with no clean
+    // production-path substitute, so they stay implemented and exported —
+    // just no longer part of the required contract. This guards both
+    // directions: silently deleting one of them breaks this test, and
+    // silently re-adding one to REQUIRED_EXECUTOR_METHODS without wiring it
+    // into regime-engine.js (or allowlisting it) fails the next test below.
+    assert.ok(Array.isArray(TEST_ONLY_EXECUTOR_METHODS));
+    assert.deepEqual([...TEST_ONLY_EXECUTOR_METHODS].sort(), ['getActiveTpOrderId', 'getBodyByTpOrderId', 'isBodyTpOrder']);
+
+    const adapter = makeMockAdapter();
+    const liveExec = createOrderExecutor('coinbase', baseConfig(), adapter, TEST_PAIR, {}, TEST_PAIR);
+    const dryRunExec = createDryRunExecutor('coinbase', baseConfig(), { lastPrice: 50000, regime: 'NEUTRAL' }, {}, TEST_PAIR);
+
+    for (const method of TEST_ONLY_EXECUTOR_METHODS) {
+      assert.ok(!REQUIRED_EXECUTOR_METHODS.includes(method), `${method} should not be contract-required`);
+      assert.equal(typeof liveExec[method], 'function', `Live executor missing test-only method: ${method}`);
+      assert.equal(typeof dryRunExec[method], 'function', `Dry-run executor missing test-only method: ${method}`);
     }
   });
 
@@ -207,22 +228,22 @@ describe('Required methods stay live-called (issue #678)', () => {
     [...regimeEngineSource.matchAll(/orderExecutor\.([a-zA-Z]+)/g)].map(m => m[1])
   );
 
-  // Methods required by the contract but not directly invoked by name in
-  // regime-engine.js today. Each is exercised by a dedicated test suite
-  // (order-executor.test.js / dry-run-executor.test.js / placement-intents /
-  // race-conditions / regime-placement-adoption) rather than by the engine,
-  // so they are not dead in the same sense #678's three deletions were —
-  // this allowlist exists so a FUTURE required-but-truly-unused method fails
-  // this test loudly instead of silently drifting the way the three did.
-  // Pin the exact set; growing it silently defeats the guard.
-  const ALLOWED_UNCALLED_BY_ENGINE = new Set([
-    'checkInvariants',
-    'getActiveTpOrderId',
-    'getSummary',
-    'clearPendingOrders',
-    'isBodyTpOrder',
-    'getBodyByTpOrderId',
-  ]);
+  // Issue #725 resolved every entry this allowlist used to carry:
+  // checkInvariants/getSummary/clearPendingOrders had zero production callers
+  // AND zero method-specific test coverage, so they were deleted outright
+  // (#678's pattern applied cleanly). getActiveTpOrderId/isBodyTpOrder/
+  // getBodyByTpOrderId also had zero production callers, but carried real
+  // test coverage with no clean production-path substitute (TP-placement
+  // concurrency safety; the #133/#213E dry-run cost-basis regression suite),
+  // so instead of deleting them they were dropped from
+  // REQUIRED_EXECUTOR_METHODS entirely and moved to TEST_ONLY_EXECUTOR_METHODS
+  // (see the test above) — they stay implemented and test-only, but are no
+  // longer part of this contract, so there is nothing left to allowlist here.
+  // This allowlist exists so a FUTURE required-but-truly-unused method fails
+  // this test loudly instead of silently drifting. Pin the exact (now empty)
+  // set; growing it silently defeats the guard — a new entry should first be
+  // wired into regime-engine.js, or handled the way #725 handled these six.
+  const ALLOWED_UNCALLED_BY_ENGINE = new Set([]);
 
   it('every REQUIRED_EXECUTOR_METHODS entry is called by regime-engine.js or explicitly allowlisted', () => {
     const unexplained = REQUIRED_EXECUTOR_METHODS.filter(
