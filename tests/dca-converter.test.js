@@ -440,5 +440,46 @@ describe('dca-converter fund routing (issue #414)', () => {
       assert.ok(mergedBuy, 'the pending buy must be ingested');
       assert.equal(mergedBuy.cycleId, 'cycle-1', 'a still-active (partially-sold) cycle must be reused, not abandoned for a new one');
     });
+
+    // Second codex review finding on the fix above: a persisted live-cycle
+    // boundary (positionState.activeCycleId, #675) can name a cycle with NO
+    // fills on disk yet -- e.g. immediately after an operator cycle reset,
+    // which reserves the cycle NUMBER without writing any fill. A fresh
+    // fillLedger instance built only from on-disk fills can't see that
+    // reservation, so its own monotonic cycle counter could coincidentally
+    // reassign that exact (empty, reserved) cycle ID to an unrelated
+    // completed DCA pair being imported -- corrupting the persisted
+    // boundary the next engine restart restores.
+    it('reserves the persisted active-cycle boundary before importing, so a completed DCA pair cannot collide with it', () => {
+      seedFund(DEFAULT_PAIR, { orders: [] });
+
+      const regimeStatePath = path.join(fundDir(DEFAULT_PAIR), 'regime-state.json');
+      const regimeState = JSON.parse(fs.readFileSync(regimeStatePath, 'utf8'));
+      regimeState.position.activeCycleId = 'cycle-5';
+      fs.writeFileSync(regimeStatePath, JSON.stringify(regimeState));
+
+      reseedOrders(DEFAULT_PAIR, mergeOrders()); // one filled + one pending
+
+      const result = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(result.success, true);
+
+      const ledger = JSON.parse(fs.readFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), 'utf8'));
+      const doneBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-done');
+      const doneSell = ledger.find(f => f.tradeId === 'dca-convert-sell-sell-done');
+      const openBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-open');
+      assert.ok(doneBuy && doneSell && openBuy, 'all three synthetic fills must be ingested');
+
+      // The completed pair must NOT be assigned the reserved persisted cycle.
+      assert.notEqual(doneBuy.cycleId, 'cycle-5', "a completed DCA pair must not collide with the reserved persisted cycle's ID");
+      // The still-open pending buy IS the fund's actual live position, and
+      // belongs in the reserved boundary.
+      assert.equal(openBuy.cycleId, 'cycle-5');
+
+      // The persisted boundary must still correctly name the cycle that now
+      // holds the fund's open position, for the next engine restart's
+      // restorePersistedCycleId to restore the right cycle.
+      const mergedRegimeState = JSON.parse(fs.readFileSync(regimeStatePath, 'utf8'));
+      assert.equal(mergedRegimeState.position.activeCycleId, 'cycle-5');
+    });
   });
 });
