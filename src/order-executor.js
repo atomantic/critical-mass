@@ -663,6 +663,17 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       reconciliationContext: context,
       filledSize,
     });
+    // Drop tracking BEFORE awaiting the fill callback below — not after. A
+    // concurrent sweep (another checkPendingOrderFills/refreshStaleOrders
+    // pass, or a second stale timer) reads `pendingOrders` synchronously; if
+    // this order were still in it while we `await` a slow fill/TP-placement
+    // callback, that concurrent pass could re-discover the same "cancelled"
+    // order and re-run this same booking a second time. Clearing state here
+    // matches this function's original (pre-#674) synchronous timing, which
+    // never awaited the callback and so always cleared immediately.
+    pendingOrders.delete(orderId);
+    partialFillTracker.delete(orderId);
+    if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId);
     if (filledSize > 0 && callbacks.onFillDetected) {
       markSettled(orderId);
       // Await the fill callback (async in live mode) before returning. Most
@@ -677,9 +688,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       // fire-and-forget caller keeps working unchanged, closes that race.
       await callbacks.onFillDetected(orderId, { ...status, filledSize, placedAt: order.placedAt, isPartialFill: true });
     }
-    pendingOrders.delete(orderId);
-    partialFillTracker.delete(orderId);
-    if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId);
   };
 
   /**
@@ -748,6 +756,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
                 });
                 const placedAt = order.placedAt;
                 pendingOrders.delete(orderId);
+                partialFillTracker.delete(orderId);
                 markSettled(orderId);
                 if (callbacks.onFillDetected) {
                   callbacks.onFillDetected(orderId, { status: 'FILLED', side: 'buy', ...details, placedAt });
@@ -833,6 +842,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           if (cancelResult.filled) {
             const placedAt = order.placedAt;
             pendingOrders.delete(orderId);
+            partialFillTracker.delete(orderId);
             markSettled(orderId);
             if (callbacks.onFillDetected) {
               callbacks.onFillDetected(orderId, { status: 'FILLED', side: 'buy', ...details, placedAt });
@@ -1681,6 +1691,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           // ingestion (which stamps the CURRENT cycleId), silently
           // attributing this buy to the new cycle instead of the one it
           // actually belongs to (issue #674 review finding).
+          // NOTE: this serializes fill-booking (which can place a TP order,
+          // with retries) behind each partially-filled rung, one at a time —
+          // correctness over speed is the right tradeoff here (a lost fill is
+          // much worse than a slower cancel sweep), but multiple partial
+          // fills in one sweep will extend however long the caller's own
+          // critical section (e.g. resetCycle's fill-gate) stays held.
           await handleCancelledOrder(orderId, order, {
             status: 'CANCELLED',
             side: 'buy',
