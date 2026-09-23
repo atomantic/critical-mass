@@ -28,6 +28,8 @@ const {
   getNotificationConfig,
   getAggressivenessPresets,
   getBackupConfig,
+  getSentinelConfig,
+  SENTINEL_DEFAULTS,
   updateExchangeConfig,
   addFund,
   updateGlobalConfig,
@@ -1434,6 +1436,65 @@ describe('updateBackupConfig', () => {
     updateBackupConfig({ maxBackups: 30, includePriceCache: true });
     const written = mocks.written();
     assert.ok(written !== null);
+  });
+});
+
+// Issue #687: PUT /api/sentinel/config never value-checked pollIntervalMs
+// or maxAlerts, so a hand-edited or pre-fix on-disk value could turn the
+// poll timer into a ~1ms loop (same defect getBackupConfig already guards
+// against for the backup timers) or hand `alerts.slice(-maxAlerts)` a value
+// that keeps the wrong tail.
+describe('getSentinelConfig', () => {
+  afterEach(() => mock.restoreAll());
+
+  for (const unsafe of [0, -1, 59999, 86400001, null, '300000']) {
+    it(`uses the safe default for a hand-edited pollIntervalMs: ${JSON.stringify(unsafe)}`, () => {
+      setupFsMocks({
+        base: { exchanges: {}, global: { sentinel: { pollIntervalMs: unsafe } } },
+        user: null,
+      });
+      const result = getSentinelConfig();
+      assert.equal(result.pollIntervalMs, SENTINEL_DEFAULTS.pollIntervalMs);
+    });
+  }
+
+  for (const unsafe of [0, -5, 5001, 12.5, null, '200']) {
+    it(`uses the safe default for a hand-edited maxAlerts: ${JSON.stringify(unsafe)}`, () => {
+      setupFsMocks({
+        base: { exchanges: {}, global: { sentinel: { maxAlerts: unsafe } } },
+        user: null,
+      });
+      const result = getSentinelConfig();
+      assert.equal(result.maxAlerts, SENTINEL_DEFAULTS.maxAlerts);
+    });
+  }
+
+  it('preserves both supported bounds from stored config', () => {
+    setupFsMocks({
+      base: { exchanges: {}, global: { sentinel: { pollIntervalMs: 60000, maxAlerts: 5000 } } },
+      user: null,
+    });
+    const result = getSentinelConfig();
+    assert.equal(result.pollIntervalMs, 60000);
+    assert.equal(result.maxAlerts, 5000);
+  });
+
+  it('preserves the other bound too', () => {
+    setupFsMocks({
+      base: { exchanges: {}, global: { sentinel: { pollIntervalMs: 86400000, maxAlerts: 1 } } },
+      user: null,
+    });
+    const result = getSentinelConfig();
+    assert.equal(result.pollIntervalMs, 86400000);
+    assert.equal(result.maxAlerts, 1);
+  });
+
+  it('returns SENTINEL_DEFAULTS when none stored', () => {
+    setupFsMocks({ base: { exchanges: {}, global: {} }, user: null });
+    const result = getSentinelConfig();
+    assert.equal(result.enabled, SENTINEL_DEFAULTS.enabled);
+    assert.equal(result.pollIntervalMs, SENTINEL_DEFAULTS.pollIntervalMs);
+    assert.equal(result.maxAlerts, SENTINEL_DEFAULTS.maxAlerts);
   });
 });
 
