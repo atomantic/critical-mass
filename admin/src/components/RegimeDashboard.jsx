@@ -695,6 +695,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const [ladderNumberDraft, setLadderNumberDraft] = useState({})
   const [placingLadder, setPlacingLadder] = useState(false)
   const [cancellingLadder, setCancellingLadder] = useState(false)
+  const [cancelLadderConfirm, setCancelLadderConfirm] = useState(false)
   const [capitalAdjustMode, setCapitalAdjustMode] = useState(false)
   const [capitalAdjustValue, setCapitalAdjustValue] = useState('')
   const [capitalAdjusting, setCapitalAdjusting] = useState(false)
@@ -1208,7 +1209,11 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     }
   }
 
-  const handleCancelLadder = async () => {
+  const handleCancelLadder = () => {
+    setCancelLadderConfirm(true)
+  }
+
+  const handleExecuteCancelLadder = async () => {
     setCancellingLadder(true)
     try {
       const res = await fetch(`/api/${exchange}/regime/cancel-ladder${pairQuery}`, {
@@ -1227,6 +1232,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
       addToast({ type: 'error', title: 'Cancel Failed', message: err.message })
     } finally {
       setCancellingLadder(false)
+      setCancelLadderConfirm(false)
     }
   }
 
@@ -3471,6 +3477,10 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
       {/* Operational confirmation modals */}
       <RegimeActionModals
+        cancelLadderConfirm={cancelLadderConfirm}
+        cancellingLadder={cancellingLadder}
+        onDismissCancelLadder={() => setCancelLadderConfirm(false)}
+        onExecuteCancelLadder={handleExecuteCancelLadder}
         collapseAllConfirm={collapseAllConfirm}
         collapsingAll={collapsingAll}
         onDismissCollapseAll={() => setCollapseAllConfirm(false)}

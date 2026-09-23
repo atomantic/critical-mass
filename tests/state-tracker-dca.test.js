@@ -157,6 +157,22 @@ describe('applyConsolidationRecovery (issue #149)', () => {
     applyConsolidationRecovery(state);
     assert.equal(getPendingOrders(state).length, 2);
   });
+
+  // #676 review follow-up: a `pending` consolidation result never attempted a
+  // restore at all (the consolidated order might already be live), so the
+  // default "could not be re-placed" reason would misrepresent what happened —
+  // an operator reading it could conclude it's safe to manually re-place these
+  // sells, risking the exact double-sell the pending branch exists to avoid.
+  it('accepts a distinct reason for sells that were never attempted, not just failed, to restore', () => {
+    const state = stateWithPendingSells();
+    applyConsolidationRecovery(state, [], ['old-a', 'old-b'], 'consolidated placement outcome unknown — awaiting operator reconciliation');
+
+    for (const id of ['old-a', 'old-b']) {
+      const naked = state.orders.find(o => o.orderId === id);
+      assert.equal(naked.status, 'sell_failed');
+      assert.equal(naked.sellFailedReason, 'consolidated placement outcome unknown — awaiting operator reconciliation');
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

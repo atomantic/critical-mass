@@ -132,7 +132,7 @@ const executeConsolidation = async (exchange = 'coinbase', pair, orderIds = null
 
   cycleLogger.info(`ℹ️ [${exchange}] Starting consolidation of ${pendingOrders.length} orders`);
 
-  const result = await consolidatePendingOrders(config, pendingOrders, adapter);
+  const result = await consolidatePendingOrders(config, pendingOrders, adapter, { exchange, pair });
 
   if (result.success && result.newOrderId == null) {
     // Every eligible order filled during its cancel window (issue #150): no
@@ -192,13 +192,33 @@ const executeConsolidation = async (exchange = 'coinbase', pair, orderIds = null
     // recovery path re-placed them under new exchange IDs (issue #149). Re-point
     // tracked state at the new IDs and flag any sell that couldn't be re-placed,
     // then persist so the engine doesn't keep tracking the cancelled orders.
-    if (result.restoredOrders?.length || result.failedRestoreOrderIds?.length) {
+    if (result.restoredOrders?.length || result.failedRestoreOrderIds?.length || result.unresolvedRestoreOrderIds?.length) {
+      // Two distinct "not resting" outcomes, reported with different reasons so
+      // an operator never mistakes one for the other: a DEFINITIVE failure (the
+      // restore was attempted and rejected — safe to manually re-place) versus
+      // an UNRESOLVED outcome (never restored, or the restore's own outcome was
+      // ambiguous — the order may already be resting live, so a manual
+      // re-placement risks a double-sell; #676 review rounds 1 and 2). Applied
+      // as two calls so each set gets its own reason.
       stateTracker.applyConsolidationRecovery(state, result.restoredOrders, result.failedRestoreOrderIds);
+      if (result.unresolvedRestoreOrderIds?.length) {
+        stateTracker.applyConsolidationRecovery(
+          state, [], result.unresolvedRestoreOrderIds,
+          'restore outcome unknown — this order may already be resting live on the exchange; do NOT manually re-place until an operator reconciles the fund\'s placement intent',
+        );
+      }
       stateTracker.saveState(state, exchange, pair);
       if (result.failedRestoreOrderIds?.length) {
         cycleLogger.error(`❌ [${exchange}] ${result.failedRestoreOrderIds.length} sell(s) left naked after failed consolidation — operator action needed: ${result.failedRestoreOrderIds.join(', ')}`, {
           failedRestoreOrderIds: result.failedRestoreOrderIds,
           nakedOrderCount: result.failedRestoreOrderIds.length,
+          operatorActionRequired: true,
+        });
+      }
+      if (result.unresolvedRestoreOrderIds?.length) {
+        cycleLogger.error(`❌ [${exchange}] ${result.unresolvedRestoreOrderIds.length} sell(s) left in an UNKNOWN state after consolidation — may already be resting live; operator must reconcile before any manual re-placement: ${result.unresolvedRestoreOrderIds.join(', ')}`, {
+          unresolvedRestoreOrderIds: result.unresolvedRestoreOrderIds,
+          unresolvedOrderCount: result.unresolvedRestoreOrderIds.length,
           operatorActionRequired: true,
         });
       }

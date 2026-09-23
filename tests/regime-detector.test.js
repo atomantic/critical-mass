@@ -670,3 +670,27 @@ describe('onTransition callback', () => {
     assert.equal(callCount, 0);
   });
 });
+
+// ============================================================================
+// Regression: momentum thresholds must be scale-invariant across asset
+// prices (issue #683 - thresholds were fixed USD amounts, so a BTC-sized
+// $100-$250 threshold was unreachable for lower-priced assets like ETH/CRO).
+// ============================================================================
+describe('Regression - momentum threshold is basis-points, not fixed USD (#683)', () => {
+  it('trips CAUTION on the same relative VWAP divergence at BTC, ETH, and CRO price scales', () => {
+    const config = createTestConfig();
+
+    for (const price of [100000, 3000, 0.1]) {
+      const det = createRegimeDetector('test', config);
+      const vwap = price / 1.003;
+      const mode = det.classify(createMarketState({
+        realizedVol: 0.5,
+        volBaseline: 0.5,
+        lastPrice: price,
+        vwap,
+        atr1m: price * 0.0005,
+      }));
+      assert.equal(mode, 'CAUTION', `expected CAUTION at price=${price}, got ${mode}`);
+    }
+  });
+});

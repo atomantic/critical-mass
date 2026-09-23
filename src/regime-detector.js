@@ -96,13 +96,13 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
    */
   const classifyFromHarvest = (volExpansion, momentum, vwapDistance) => {
     // Check for sudden spike (HARVEST -> TREND directly)
-    if (volExpansion > 2.0 && momentum.magnitude > 2 * config.momentumMult * 100) {
+    if (volExpansion > 2.0 && momentum.magnitude > 2 * config.momentumMult * 10) {
       return 'TREND';
     }
 
     // Check for elevated conditions (HARVEST -> CAUTION)
     if (volExpansion > config.volExpansionMult ||
-        momentum.magnitude > config.momentumMult * 100) {
+        momentum.magnitude > config.momentumMult * 10) {
       return 'CAUTION';
     }
 
@@ -119,7 +119,7 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
   const classifyFromCaution = (volExpansion, momentum, vwapDistance) => {
     // Check for return to calm (CAUTION -> HARVEST)
     if (volExpansion < config.volContractionMult &&
-        momentum.magnitude < config.momentumMult * 50 &&
+        momentum.magnitude < config.momentumMult * 5 &&
         Math.abs(vwapDistance) < 1.0) {
       state.trendConfirmationCount = 0;
       return 'HARVEST';
@@ -153,14 +153,16 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
   /**
    * Calculate momentum signal from market state
    * @param {MarketState} marketState - Market state
-   * @returns {{magnitude: number, direction: string}}
+   * @returns {{magnitude: number, direction: string}} magnitude is in basis points of lastPrice
    */
   const calculateMomentumSignal = (marketState) => {
     const { lastPrice, vwap, tradeImbalance } = marketState;
 
-    // Use VWAP divergence as momentum proxy
+    // Use VWAP divergence as momentum proxy, expressed in basis points of
+    // lastPrice so the signal is comparable across assets at very different
+    // price scales (BTC ~$100k vs. CRO ~$0.10) instead of a fixed dollar amount.
     const vwapDelta = lastPrice - vwap;
-    const magnitude = Math.abs(vwapDelta);
+    const magnitude = lastPrice > 0 ? Math.abs(vwapDelta) / lastPrice * 10000 : 0;
     const direction = vwapDelta > 0 ? 'up' : vwapDelta < 0 ? 'down' : 'neutral';
 
     // Factor in trade imbalance if available
@@ -225,7 +227,7 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
    * @returns {string}
    */
   const buildTransitionReason = (volExpansion, momentum, vwapDistance) => {
-    return `vol_exp=${volExpansion.toFixed(2)}, momentum=${momentum.direction}:${momentum.magnitude.toFixed(0)}, vwap_dist=${vwapDistance.toFixed(2)}`;
+    return `vol_exp=${volExpansion.toFixed(2)}, momentum=${momentum.direction}:${momentum.magnitude.toFixed(1)}bps, vwap_dist=${vwapDistance.toFixed(2)}`;
   };
 
   /**
@@ -280,7 +282,7 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
     const duration = Math.round((Date.now() - state.since) / 1000);
 
     let summary = `mode=${mode} duration=${duration}s transitions=${transitionCount}`;
-    summary += ` vol_exp=${lastVolExpansion.toFixed(2)} momentum=${lastMomentumMag.toFixed(0)}`;
+    summary += ` vol_exp=${lastVolExpansion.toFixed(2)} momentum=${lastMomentumMag.toFixed(1)}bps`;
 
     if (mode === 'TREND' && trendDirection) {
       summary += ` direction=${trendDirection}`;

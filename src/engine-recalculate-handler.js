@@ -34,6 +34,25 @@
  * @property {(exchange: string, pair: string) => Object} getStandaloneLedger - Loads (or returns the cached) standalone fill ledger for a fund; throws on cold-start ledger corruption
  */
 
+/** Same shape restorePersistedCycleId (regime-engine.js) accepts. */
+const isPersistedCycleId = (cycleId) => typeof cycleId === 'string' && /^cycle-\d+$/.test(cycleId);
+
+/**
+ * Carry a persisted activeCycleId through a recalc's renumbering (#675):
+ * an existing marker is only translated via `idMap`; legacy state without
+ * one adopts the recalc's active cycle only when cycles were renamed.
+ * @param {unknown} persistedCycleId
+ * @param {{idMap?: Object<string, string>, activeCycleId?: string|null}} recalc
+ * @returns {string|null} The new marker, or null to leave it unchanged
+ */
+const translateActiveCycleId = (persistedCycleId, recalc) => {
+  const idMap = recalc?.idMap || {};
+  if (typeof persistedCycleId === 'string') {
+    return Object.prototype.hasOwnProperty.call(idMap, persistedCycleId) ? idMap[persistedCycleId] : null;
+  }
+  return Object.keys(idMap).length > 0 && recalc.activeCycleId ? recalc.activeCycleId : null;
+};
+
 /**
  * Register the `regime:recalculate` IPC request handler on a registry (the
  * engine's IPC server, or any object exposing the same
@@ -113,7 +132,18 @@ const registerEngineRecalculateHandler = (registry, deps) => {
       } catch (err) {
         return { success: false, error: err.message };
       }
-      const recalc = fillLedger.recalculateCycles();
+      // Anchor on the operator's durable cycle boundary before recovery, as a
+      // live engine does at boot — otherwise orphan renumbering keeps load()'s
+      // guessed cycle last and the persisted marker ends up naming a different
+      // (possibly completed) cycle on the next start (#675).
+      const persistedCycleId = currentState.position?.activeCycleId;
+      if (isPersistedCycleId(persistedCycleId) && typeof fillLedger.setCurrentCycleId === 'function') {
+        fillLedger.setCurrentCycleId(persistedCycleId);
+      }
+      // A preview must not mutate/persist the ledger (recalculateCycles
+      // persists orphan placement and renumbering) — same rule as the
+      // running-engine preview above (#132).
+      const recalc = apply ? fillLedger.recalculateCycles() : fillLedger.previewRecalculateCycles();
       const derived = fillLedger.getDerivedRealizedPnL();
       const cycleFills = fillLedger.getCurrentCycleFills();
       result = {
@@ -126,6 +156,10 @@ const registerEngineRecalculateHandler = (registry, deps) => {
         currentCycleFills: cycleFills.length,
       };
 
+      // The boundary anchor above moved the cached ledger's current cycle;
+      // drop the cache so a preview leaves no trace for later readers.
+      if (!apply) invalidateStandaloneLedger(exchange, resolvedPair);
+
       if (apply) {
         // Persist ONLY the cycle-derived P&L fields onto the existing
         // position — do not rebuild/overwrite order tracking, lifecycle,
@@ -137,6 +171,8 @@ const registerEngineRecalculateHandler = (registry, deps) => {
           realizedAssetPnL: derived.realizedAssetPnL,
           heldAssetCostBasis: derived.heldOpenBuyCostBasis,
         };
+        const nextCycleId = translateActiveCycleId(persistedCycleId, recalc);
+        if (nextCycleId) position.activeCycleId = nextCycleId;
         if (position.celestialState) {
           position.celestialState = {
             ...position.celestialState,
@@ -165,4 +201,4 @@ const registerEngineRecalculateHandler = (registry, deps) => {
   });
 };
 
-module.exports = { registerEngineRecalculateHandler };
+module.exports = { registerEngineRecalculateHandler, translateActiveCycleId };

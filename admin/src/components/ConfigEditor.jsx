@@ -886,7 +886,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             {/* Regime Detection */}
             <SectionCard title="Regime Detection">
               <div className="grid grid-cols-2 gap-3">
-                <FormInput label="Momentum Mult" hint="VWAP divergence threshold for momentum detection" value={regimeConfig.momentumMult || 1.5} onChange={(v) => handleRegimeChange('momentumMult', v)} type="number" />
+                <FormInput label="Momentum Mult" hint="VWAP divergence threshold (×10 bps)" value={regimeConfig.momentumMult || 1.5} onChange={(v) => handleRegimeChange('momentumMult', v)} type="number" />
                 <FormInput label="Vol Expansion" hint="realizedVol/baseline ratio to enter CAUTION" value={regimeConfig.volExpansionMult || 1.5} onChange={(v) => handleRegimeChange('volExpansionMult', v)} type="number" />
                 <FormInput label="Vol Contraction" hint="realizedVol/baseline ratio to return to HARVEST" value={regimeConfig.volContractionMult || 1.2} onChange={(v) => handleRegimeChange('volContractionMult', v)} type="number" />
                 <FormInput label="VWAP Hours" hint="Rolling window for VWAP calculation" value={regimeConfig.vwapPeriodHours || 4} onChange={(v) => handleRegimeChange('vwapPeriodHours', v)} type="number" />
