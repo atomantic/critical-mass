@@ -4050,9 +4050,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // of the already-deducted body double-counts the sale whenever the
           // two deliveries' dedup keys differ (a terminal event keys on the
           // bare orderId, this booking on orderId:size).
+          // "Booked" means the handler got as far as its per-order bodyPnl
+          // annotation (written to every row of the order at the end of a
+          // successful booking) — not merely that the snapshot left the map:
+          // a handler that threw after consuming it booked nothing.
           const snapshotConsumed = !!soldTp && !pendingMergeTpOrders.has(soldTp);
-          const alreadyBookedSize = snapshotConsumed
-            ? fillLedger.getFillsForOrder(soldTp).reduce((sum, f) => sum + Number(f.size || 0), 0)
+          const soldTpRows = snapshotConsumed ? fillLedger.getFillsForOrder(soldTp) : [];
+          const alreadyBookedSize = soldTpRows.length > 0 && soldTpRows.every(f => f.bodyPnl != null)
+            ? soldTpRows.reduce((sum, f) => sum + Number(f.size || 0), 0)
             : 0;
           const skipImmediateBooking = snapshotConsumed
             && !((cancelResult.filledSize || 0) > alreadyBookedSize + 1e-9);
@@ -4318,9 +4323,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // whether the fill was actually partial, so it is not a usable signal
         // here (unlike the normal path's other callers).
         const onOrder = mergeSnapshot.assetOnOrder || 0;
-        const isPartialSnapshotFill = onOrder > 0
-          ? summary.totalSize < onOrder * 0.99
-          : soldRatio < 0.95;
+        // Same whole-inventory rule as the normal path (issue #770).
+        const isPartialSnapshotFill = !(mergeSnapshot.assetQty > 0 && summary.totalSize >= mergeSnapshot.assetQty)
+          && (onOrder > 0
+            ? summary.totalSize < onOrder * 0.99
+            : soldRatio < 0.95);
 
         // Deduct the sold tranche from the LIVE merged body (issue #201). If a buy
         // folded onto this body in the Race-3 window (between the partial-fill
@@ -4612,10 +4619,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Fall back to the soldRatio heuristic only when assetOnOrder is
         // missing (legacy bodies / migration) so behavior degrades safely.
         const onOrder = body.assetOnOrder || 0;
-        const isPartial = fillData.isPartialFill ||
+        // A sale that took the body's whole inventory is never a partial, even
+        // when a stale TP's assetOnOrder (sized for a larger, pre-deduction
+        // body) says it filled less than planned: nothing is left to re-list,
+        // and the partial path would drive assetQty negative. Designed
+        // holdback keeps a healthy fill strictly below assetQty (issue #770).
+        const soldWholeBody = body.assetQty > 0 && summary.totalSize >= body.assetQty;
+        const isPartial = !soldWholeBody && (fillData.isPartialFill ||
           (onOrder > 0
             ? summary.totalSize < onOrder * 0.99 // 1% tolerance for rounding/fees
-            : soldRatio < 0.95);
+            : soldRatio < 0.95));
 
         // Update celestial state
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
