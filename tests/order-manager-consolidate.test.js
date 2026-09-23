@@ -619,3 +619,62 @@ describe('restoreCancelledSellOrders — distinguishes unresolved restores from 
     assert.equal(placeCalls, 3, 'restore-c must be refused before reaching the exchange');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #676 review round 3 — a blocking intent that appears mid-flight (recorded by
+// ANOTHER process between round-1's up-front check and this call's own
+// consolidated placeWithUnknownReconcile dispatch) means the consolidated
+// order was refused BEFORE ever reaching the exchange (placeWithUnknownReconcile
+// sets blockedByIntentId, never __unknownError) — nothing is live from this
+// attempt, unlike a genuinely ambiguous post-dispatch outcome. That case must
+// still attempt to restore the originals (safe — nothing was submitted),
+// rather than being treated identically to "may already be live, don't touch
+// it". A pre-dispatch block also blocks the restore attempts themselves via
+// the same guard, so they correctly land as unresolved (not falsely "failed"
+// or falsely "restored") rather than reaching the exchange at all.
+// ---------------------------------------------------------------------------
+describe('consolidatePendingOrders — a pre-dispatch block (mid-flight, from elsewhere) is not treated as "may be live" (issue #676 follow-up)', () => {
+  const EXCHANGE = 'coinbase';
+  const PAIR = 'BTC-USD';
+  let tmpRoot;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'consolidate-mid-flight-block-'));
+    mock.method(migration, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
+  });
+
+  afterEach(() => {
+    mock.restoreAll();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('attempts to restore (rather than skipping restore outright) when refused pre-dispatch, and never dispatches anything to the exchange', async () => {
+    const orders = [order('a', 0.1, 2400), order('b', 0.2, 2500)];
+    let placeCalls = 0;
+    const adapter = {
+      getOrder: async () => ({ completionPercentage: 0 }),
+      // Simulate ANOTHER process recording a blocking intent on this exact
+      // fund the moment cancellation starts — after round-1's own up-front
+      // check already passed clean.
+      cancelOrder: async (orderId) => {
+        if (orderId === 'a') {
+          const recorded = stateTracker.recordPlacementIntent({
+            exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy', price: 100, size: 0.5, sizeUsdc: 50,
+          });
+          stateTracker.markPlacementIntentUnresolved(EXCHANGE, PAIR, recorded.id, { reason: 'mid-flight race' });
+        }
+        return { success: true };
+      },
+      placeLimitSell: async () => { placeCalls += 1; return { success: true, orderId: 'should-never-dispatch' }; },
+    };
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter, { exchange: EXCHANGE, pair: PAIR });
+
+    assert.equal(placeCalls, 0, 'neither the consolidated placement nor any restore may reach the exchange while blocked');
+    assert.equal(result.success, false);
+    assert.equal(result.pending, undefined, 'falls through to the ordinary failure/restore path, not the "may be live" early return');
+    assert.deepEqual(result.restoredOrders, []);
+    assert.deepEqual(result.failedRestoreOrderIds, [], 'a pre-dispatch block on the restore itself is unresolved, not a definitive failure');
+    assert.deepEqual(result.unresolvedRestoreOrderIds, ['a', 'b']);
+  });
+});

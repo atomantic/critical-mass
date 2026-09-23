@@ -870,7 +870,7 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter, scope = 
     sellResult = { success: false, errorMessage: err.message };
   }
 
-  if (sellResult.pending) {
+  if (sellResult.pending && !sellResult.blockedByIntentId) {
     // Outcome is genuinely unknown and could not be reconciled (no
     // client_order_id, or the reconcile lookup itself failed). The
     // consolidated order MAY be live on the exchange — restoring the

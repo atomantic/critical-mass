@@ -870,7 +870,9 @@
  * @property {string[]} [cancelledOrderIds] - Order IDs confirmed cancelled (0% filled) and folded into the consolidated order
  * @property {string[]} [filledDuringCancelOrderIds] - Order IDs that filled in the gap between the eligibility check and the cancel; excluded from the consolidated total to avoid a double-sell (issue #150)
  * @property {{oldOrderId: string, newOrderId: string}[]} [restoredOrders] - Sells re-placed after a consolidated-place failure (naked-position recovery), mapping cancelled ID to new ID
- * @property {string[]} [failedRestoreOrderIds] - Cancelled order IDs that could NOT be re-placed during recovery
+ * @property {string[]} [failedRestoreOrderIds] - Cancelled order IDs that were DEFINITIVELY rejected during recovery — safe to manually re-place
+ * @property {string[]} [unresolvedRestoreOrderIds] - Cancelled order IDs whose restore (or the consolidated placement itself) had an ambiguous, unreconcilable outcome — may already be resting live; do NOT manually re-place until an operator reconciles the fund's placement intent (issue #676)
+ * @property {boolean} [pending] - True when the consolidated placement's own outcome is unknown and unresolved (operator reconciliation required); distinct from a definitive `success:false` failure
  * @property {string} [error] - Error message if consolidation failed
  */
 
