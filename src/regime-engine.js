@@ -768,7 +768,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // handleOrderFillImpl's own terminal-entry filter, and a failure
           // leaves it for reconcileTick's orphan sweep to catch up. Only a
           // genuinely empty cancel (nothing to book) is safe to purge here.
-          if ((info?.filledSize || 0) > 0) return;
+          const filledSize = info?.filledSize || 0;
+          if (filledSize > 0) {
+            // Stamp the resolved high-water mark onto the saved row itself
+            // (issue #673 codex round 3): handleCancelledOrder resolved this
+            // value via order-executor's own partialFillTracker fallback,
+            // which it then deletes. A LATER independent re-poll of this
+            // same (already-cancelled) order — this sweep, or startImpl's
+            // offline catch-up — can get a status whose filledSize reads
+            // back as 0/missing (the same adapter quirk
+            // handleCancelledOrder's fallback exists for), and would
+            // otherwise misread a real partial as an empty cancel and purge
+            // it with nothing booked. Persisting it here survives a restart
+            // too, since positionState is saved to disk.
+            const entry = positionState.pendingEntryOrders?.find(e => e.orderId === orderId);
+            if (entry) entry.knownFilledSize = Math.max(entry.knownFilledSize || 0, filledSize);
+            return;
+          }
           if (positionState.pendingEntryOrders?.length > 0) {
             positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(e => e.orderId !== orderId);
           }
@@ -4646,6 +4662,27 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Build the payload orderExecutor.restorePendingOrder expects from a saved
+   * pendingEntryOrders/pendingLadderOrders row, shared by catchUpTerminalEntry's
+   * failure path and reconcileTick's still-resting orphan re-arm.
+   * @param {{price?: number, assetQty?: number, sizeUsdc?: number, placedAt?: number, ladderIndex?: number}} savedEntry
+   * @param {'entry'|'ladder_entry'} entryType
+   */
+  const buildRestoreSpec = (savedEntry, entryType) => {
+    const restoreSpec = {
+      type: entryType,
+      price: savedEntry.price,
+      size: savedEntry.assetQty,
+      sizeUsdc: savedEntry.sizeUsdc,
+      placedAt: savedEntry.placedAt || Date.now(),
+    };
+    if (entryType === 'ladder_entry' && savedEntry.ladderIndex !== undefined) {
+      restoreSpec.ladderIndex = savedEntry.ladderIndex;
+    }
+    return restoreSpec;
+  };
+
+  /**
    * Route a single already-terminal (FILLED, or CANCELLED/EXPIRED with a
    * partial) saved entry/ladder order through the canonical fill pipeline —
    * or report it safe to retire when it's a genuinely empty cancel.
@@ -4658,14 +4695,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * being edited elsewhere (issue #671), so it isn't switched over to this
    * helper in this change.
    *
-   * @param {{orderId: string, price?: number, assetQty?: number, sizeUsdc?: number, placedAt?: number, ladderIndex?: number}} savedEntry
+   * @param {{orderId: string, price?: number, assetQty?: number, sizeUsdc?: number, placedAt?: number, ladderIndex?: number, knownFilledSize?: number}} savedEntry
    * @param {{status?: string, filledSize?: number}} orderStatus - already known to be terminal (FILLED/CANCELLED/EXPIRED/FAILED)
    * @param {'entry'|'ladder_entry'} [entryType]
    * @returns {Promise<{outcome: 'filled'|'empty'|'failed', error?: Error}>}
    */
   const catchUpTerminalEntry = async (savedEntry, orderStatus, entryType = 'entry') => {
     const isFullFilled = isFilledStatus(orderStatus);
-    const partialSize = parseFloat(orderStatus.filledSize || 0);
+    // A later independent poll of an already-cancelled order can under-report
+    // filledSize versus what was already resolved (via order-executor's own
+    // partialFillTracker high-water mark) at the moment it was first detected
+    // cancelled — the same adapter quirk handleCancelledOrder's own fallback
+    // exists for. onEntryCancelled stamps that resolved value onto the saved
+    // row as knownFilledSize before this function ever sees it; never trust a
+    // fresh read that's SMALLER than what's already confirmed known (codex
+    // review, issue #673 round 3).
+    const partialSize = Math.max(parseFloat(orderStatus.filledSize || 0), savedEntry.knownFilledSize || 0);
     if (!isFullFilled && partialSize <= 0) {
       return { outcome: 'empty' }; // truly empty cancel — safe for the caller to purge, no fill to record
     }
@@ -4679,6 +4724,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         status: isFullFilled ? 'FILLED' : orderStatus.status,
         isPartialFill: !isFullFilled,
         placedAt: savedEntry.placedAt,
+        // Override with the max-of-known size computed above — orderStatus's
+        // own (possibly stale) filledSize must not silently win over a
+        // confirmed higher known value.
+        filledSize: partialSize,
       }));
       return { outcome: 'filled' };
     } catch (err) {
@@ -4692,17 +4741,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         `⚠️ [${exchange}] Failed to catch up terminal ${entryType} ${savedEntry.orderId.slice(0, 8)}: ${err.message} — re-arming tracking for retry instead of dropping it`,
         { orderId: savedEntry.orderId, entryType, error: err.message, incompleteFills: err.incompleteFills === true }
       );
-      const restoreSpec = {
-        type: entryType,
-        price: savedEntry.price,
-        size: savedEntry.assetQty,
-        sizeUsdc: savedEntry.sizeUsdc,
-        placedAt: savedEntry.placedAt || Date.now(),
-      };
-      if (entryType === 'ladder_entry' && savedEntry.ladderIndex !== undefined) {
-        restoreSpec.ladderIndex = savedEntry.ladderIndex;
-      }
-      orderExecutor.restorePendingOrder(savedEntry.orderId, restoreSpec);
+      orderExecutor.restorePendingOrder(savedEntry.orderId, buildRestoreSpec(savedEntry, entryType));
       return { outcome: 'failed', error: err };
     }
   };
@@ -4811,7 +4850,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               );
               continue;
             }
-            if (!isTerminalStatus(orderStatus)) continue; // still resting — leave it for the ordinary path
+            if (!isTerminalStatus(orderStatus)) {
+              // Still live on the exchange (OPEN/PARTIALLY_FILLED) — re-arm
+              // executor tracking instead of merely skipping it, so the
+              // ordinary checkPendingOrderFills polling path (with its own
+              // advancing-partial routing via partialFillTracker) picks it
+              // back up on the next tick. Without this, an order that fell
+              // out of tracking while still resting would only ever be
+              // re-checked by THIS sweep's own terminal-only gate, silently
+              // missing any intermediate partial fill until it eventually
+              // reaches a terminal state (codex review, issue #673 round 2).
+              orderExecutor.restorePendingOrder(savedEntry.orderId, buildRestoreSpec(savedEntry, entryType));
+              continue;
+            }
 
             logger.warn(
               `⚠️ [${exchange}] Reconcile: orphaned ${entryType} ${savedEntry.orderId.slice(0, 8)} is ${orderStatus.status} but missing from executor tracking — catching up`,

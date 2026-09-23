@@ -69,12 +69,12 @@ const makeExecutor = (over = {}) => ({
   ...over,
 });
 
-const makeEngine = (adapter) => {
+const makeEngine = (adapter, executorOverrides = {}) => {
   const eng = createRegimeEngine('coinbase', TEST_PAIR, { dryRun: false, productId: TEST_PAIR }, {});
   eng._test.setRunning(true);
   eng._test.setProductDetails(PRODUCT_DETAILS);
   eng._test.setAdapter(adapter);
-  eng._test.setOrderExecutor(makeExecutor());
+  eng._test.setOrderExecutor(makeExecutor(executorOverrides));
   eng._test.setRecoveryModule({ reconcile: async () => ({ updated: false }) });
   // Zero retries: the very first callback failure gives up immediately,
   // exercising the "engine-level retry exhausted" state the sweep targets,
@@ -162,14 +162,56 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
       getOrderFills: async () => [],
       getOrder: async () => ({ orderId, side: 'BUY', status: 'OPEN', filledSize: 0 }),
     };
-    const eng = makeEngine(adapter);
+    const restoreCalls = [];
+    const eng = makeEngine(adapter, { restorePendingOrder: (id, spec) => restoreCalls.push({ id, spec }) });
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [{ orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() }];
 
     await eng._test.reconcileTick();
 
-    assert.equal(pos.pendingEntryOrders.length, 1, 'a still-open order must not be touched by the sweep');
+    assert.equal(pos.pendingEntryOrders.length, 1, 'a still-open order stays in positionState untouched');
     assert.equal(pos.celestialBodies.length, 0, 'nothing should be booked for a still-resting order');
+    // codex review round 2: a still-live orphan must be re-armed into
+    // executor tracking, not just left alone — otherwise the ordinary
+    // checkPendingOrderFills polling path (with its own advancing-partial
+    // routing) never picks it back up, and only this sweep's terminal-only
+    // gate would ever re-check it.
+    assert.deepEqual(restoreCalls.map(c => c.id), [orderId], 'a still-open orphan must be re-armed into executor tracking so normal polling resumes');
+    assert.equal(restoreCalls[0].spec.type, 'entry');
+  });
+
+  it('books a known partial instead of purging it, when a later re-poll under-reports filledSize (codex review round 3)', async () => {
+    // handleCancelledOrder resolves a partial via order-executor's own
+    // partialFillTracker high-water mark when the cancel-status response
+    // omits filledSize, then deletes that tracker. onEntryCancelled stamps
+    // the resolved value onto the saved row as knownFilledSize BEFORE that
+    // happens (see regime-engine.js's onEntryCancelled handler). A LATER
+    // independent re-poll of the same already-cancelled order — exactly
+    // what this sweep does — can hit the identical adapter quirk and read
+    // filledSize back as 0/missing. Without consulting knownFilledSize, the
+    // sweep would misclassify a real 0.4 partial as an empty cancel and
+    // purge it with nothing booked.
+    const orderId = 'e6';
+    const adapter = {
+      getOrderFills: async () => { throw new Error('trade scan unavailable'); },
+      // The exchange forgot filledSize on this later lookup — the exact
+      // quirk handleCancelledOrder's own partialFillTracker fallback exists
+      // for — but still reports a valid averageFilledPrice, letting the
+      // gap-synthesis fallback book the KNOWN size once the sweep supplies it.
+      getOrder: async () => ({ orderId, side: 'BUY', status: 'CANCELLED', filledSize: 0, averageFilledPrice: 2000 }),
+    };
+    const eng = makeEngine(adapter);
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [{
+      orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now(), knownFilledSize: 0.4,
+    }];
+
+    await eng._test.reconcileTick();
+
+    assert.equal(pos.pendingEntryOrders.length, 0, 'the row must be cleared once the known partial is caught up');
+    const bodies = pos.celestialBodies.filter(b => (b.sourceOrderIds || []).includes(orderId));
+    assert.equal(bodies.length, 1, 'the known partial must be booked into a body, not silently dropped');
+    assert.ok(Math.abs(bodies[0].assetQty - 0.4) < 1e-8, `the body must reflect the known 0.4 partial — got ${bodies[0].assetQty}`);
   });
 
   it('purges a saved entry that turns out to be an empty (unfilled) cancel, with nothing to book', async () => {
