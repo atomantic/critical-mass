@@ -2033,6 +2033,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         terminalSavedEntries.map(e => adapter.getOrder(e.orderId).catch(err => ({ __err: err })))
       );
       let caughtUpEntries = 0;
+      // Orders whose catch-up handleOrderFill threw (issue #679's stricter
+      // getOrderFills contract) — must NOT be purged below with no ledger
+      // record. Re-armed via restorePendingOrder in the catch block so the
+      // next reconcile's checkPendingOrderFills polls this (already-terminal
+      // on the exchange) order again and routes it through the
+      // retry-hardened live polling fill path.
+      const failedCatchUpIds = new Set();
       for (let i = 0; i < terminalSavedEntries.length; i++) {
         const savedEntry = terminalSavedEntries[i];
         const orderStatus = entryStatuses[i];
@@ -2058,20 +2065,43 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           }));
           caughtUpEntries++;
         } catch (err) {
+          // The status lookup above already proved this order has a real
+          // fill (isFullFilled or partialSize > 0) — losing THIS catch-up
+          // attempt (now far more likely: getOrderFills rejects on a failed
+          // lookup or an incompleteFills mismatch instead of silently
+          // returning a partial set) must not silently drop that buy.
+          // markSettled above already ran; re-arm executor tracking for the
+          // SAME orderId so it isn't an orphan, and keep it in
+          // pendingEntryOrders (below) instead of purging it.
           logger.warn(
-            `⚠️ [${exchange}] Failed to catch up offline entry ${savedEntry.orderId.slice(0, 8)}: ${err.message}`,
-            { orderId: savedEntry.orderId, error: err.message }
+            `⚠️ [${exchange}] Failed to catch up offline entry ${savedEntry.orderId.slice(0, 8)}: ${err.message} — re-arming tracking for retry instead of dropping it`,
+            { orderId: savedEntry.orderId, error: err.message, incompleteFills: err.incompleteFills === true }
           );
+          orderExecutor.restorePendingOrder(savedEntry.orderId, {
+            type: 'entry',
+            price: savedEntry.price,
+            size: savedEntry.assetQty,
+            sizeUsdc: savedEntry.sizeUsdc,
+            placedAt: savedEntry.placedAt || Date.now(),
+          });
+          failedCatchUpIds.add(savedEntry.orderId);
         }
       }
       if (caughtUpEntries > 0) {
         logger.info(`📥 [${exchange}] Caught up ${caughtUpEntries} offline-terminal entries before purge`);
       }
+      if (failedCatchUpIds.size > 0) {
+        logger.info(`🔁 [${exchange}] Re-armed ${failedCatchUpIds.size} offline-terminal entries whose fill catch-up failed, for retry`);
+      }
 
       // Remove saved pending entries that are no longer open on the exchange
-      // (filled or cancelled while engine was offline — fills already ingested above)
+      // (filled or cancelled while engine was offline — fills already ingested above).
+      // A failed catch-up (failedCatchUpIds) is retained even though it is
+      // also not open on the exchange — it needs a retry, not a purge.
       if (savedPendingEntries.length > 0) {
-        positionState.pendingEntryOrders = savedPendingEntries.filter(e => allOpenIds.has(e.orderId));
+        positionState.pendingEntryOrders = savedPendingEntries.filter(
+          e => allOpenIds.has(e.orderId) || failedCatchUpIds.has(e.orderId)
+        );
         const purged = savedPendingEntries.length - positionState.pendingEntryOrders.length;
         if (purged > 0) {
           logger.info(`🧹 [${exchange}] Purged ${purged} stale pending entry orders (filled/cancelled while offline)`);
@@ -2603,17 +2633,52 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       fillData.confirmedFills = finalFills;
     }
 
-    let rawFills = fillData.confirmedFills || await adapter.getOrderFills(fillData.orderId);
+    // getOrderFills now rejects (issue #679) instead of silently returning a
+    // partial/empty set when the order-detail/status lookup fails or the
+    // matched fills fall short of the exchange's own filled quantity. A
+    // throw and an empty array both mean "we could not confirm the real
+    // trade-level fills," so treat them the same: fall through to the
+    // existing empty-rawFills retry, and ultimately the order-status
+    // synthetic-fill fallback below (originally built for Coinbase's
+    // empty-array eventual-consistency case) — that fallback is the
+    // pre-existing safety net for exactly this situation, sourced from
+    // fillData (order status, from a SEPARATE already-succeeded
+    // adapter.getOrder call), never from the failed getOrderFills call.
+    let rawFills;
+    if (fillData.confirmedFills) {
+      rawFills = fillData.confirmedFills;
+    } else {
+      try {
+        rawFills = await adapter.getOrderFills(fillData.orderId);
+      } catch (err) {
+        logger.warn(
+          `⚠️ [${exchange}] getOrderFills failed for ${fillData.orderId}: ${err.message} — will retry once, then fall back to order-status data if it still fails`,
+          { orderId: fillData.orderId, side: fillData.side, error: err.message, incompleteFills: err.incompleteFills === true }
+        );
+        rawFills = [];
+      }
+    }
 
-    // If getOrderFills returns empty but we have fill data from order status (polling detection),
-    // retry once after a short delay - Coinbase has eventual consistency
+    // If getOrderFills returned empty (either because it legitimately found no
+    // fills yet, or because it just threw above), but we have fill data from
+    // order status (polling detection), retry once after a short delay -
+    // Coinbase has eventual consistency, and Crypto.com/Gemini's own scan may
+    // need a moment longer than getOrderFills' internal retry budget.
     if (rawFills.length === 0 && fillData.filledSize > 0) {
       logger.info(
         `⏳ [${exchange}] No fills yet for ${fillData.orderId}, retrying in 2s (status shows ${fillData.filledSize} filled)`,
         { orderId: fillData.orderId, side: fillData.side, filledSize: fillData.filledSize, retryDelayMs: 2000 }
       );
       await new Promise(r => setTimeout(r, 2000));
-      rawFills = await adapter.getOrderFills(fillData.orderId);
+      try {
+        rawFills = await adapter.getOrderFills(fillData.orderId);
+      } catch (err) {
+        logger.warn(
+          `⚠️ [${exchange}] getOrderFills still failing for ${fillData.orderId} after the retry: ${err.message} — falling back to order-status data`,
+          { orderId: fillData.orderId, side: fillData.side, error: err.message, incompleteFills: err.incompleteFills === true }
+        );
+        rawFills = [];
+      }
     }
 
     // Get order placement time for fill time tracking (entry orders only)
@@ -2637,15 +2702,39 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       ? ingestedFills
       : fillLedger.getFillsForOrder(fillData.orderId);
 
-    // Last resort: if still no fills but order status has data, create synthetic fill
-    // This handles Coinbase eventual consistency where fills API lags behind order status
-    if (fillsToAggregate.length === 0 && fillData.filledSize > 0 && fillData.averageFilledPrice > 0) {
+    // Last resort: if the order's CUMULATIVE ledger total for this orderId
+    // (everything ever ingested for it, including whatever the loop above
+    // just added) still falls short of what order status says filled,
+    // synthesize a fill for the GAP rather than the whole size. Deliberately
+    // compares against the cumulative LEDGER total, not fillsToAggregate —
+    // fillsToAggregate is this PASS's delta only (by design: an advancing
+    // partial's ingestedFills naturally excludes already-ingested rows via
+    // ingestFill's tradeId dedup), so comparing filledSize (a cumulative
+    // order-status figure) against it would misfire on every ordinary
+    // advancing partial, treating its by-design-partial "delta" as a false
+    // shortfall. This covers two cases the same way: no prior fills at all
+    // (ledgerTotal=0, gap=the full filledSize — the original Coinbase
+    // eventual-consistency case this fallback was built for) AND an order a
+    // body already partially owns from an earlier partial fill, whose
+    // TERMINAL rescan then failed (ledgerTotal=the earlier partial only,
+    // gap=the newly-filled remainder) — issue #679 follow-up, codex
+    // convergence review: previously a failed terminal rescan fell back to
+    // the stale ledger-only total, and shouldSkipBuyRecommit (below) then
+    // retired the order as "already owned, nothing new" without ever
+    // booking the remainder — the exchange's larger filledSize never
+    // reached the position model.
+    const ledgerTotalForOrder = fillLedger.getFillsForOrder(fillData.orderId)
+      .reduce((sum, f) => sum + Number(f.size || 0), 0);
+    const fillGap = fillData.filledSize > 0 ? fillData.filledSize - ledgerTotalForOrder : 0;
+    if (fillGap > 1e-9 && fillData.averageFilledPrice > 0) {
       logger.warn(
-        `⚠️ [${exchange}] Using order status data as fallback for ${fillData.orderId}: ${fillData.filledSize} @ ${fmtPrice(fillData.averageFilledPrice)}`,
+        `⚠️ [${exchange}] Using order status data as fallback for ${fillData.orderId}: gap ${fillGap} of ${fillData.filledSize} @ ${fmtPrice(fillData.averageFilledPrice)}`,
         {
           orderId: fillData.orderId,
           side: fillData.side,
           filledSize: fillData.filledSize,
+          ledgerTotalForOrder,
+          fillGap,
           averageFilledPrice: fillData.averageFilledPrice,
         }
       );
@@ -2654,17 +2743,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         orderId: fillData.orderId,
         side: fillData.side.toLowerCase(),
         price: fillData.averageFilledPrice,
-        size: fillData.filledSize,
-        quoteAmount: fillData.filledSize * fillData.averageFilledPrice,
+        size: fillGap,
+        quoteAmount: fillGap * fillData.averageFilledPrice,
         // Carry the known fee in BOTH fee and netFee so ingestFill persists it
-        // instead of defaulting to 0 (issue #210-C).
-        totalFees: fillData.totalFees || 0,
-        netFee: fillData.totalFees || 0,
+        // instead of defaulting to 0 (issue #210-C). Only attributed once —
+        // an already-recorded prior partial already carries its own fee.
+        totalFees: ledgerTotalForOrder <= 1e-9 ? (fillData.totalFees || 0) : 0,
+        netFee: ledgerTotalForOrder <= 1e-9 ? (fillData.totalFees || 0) : 0,
         timestamp: Date.now(),
       };
-      // Ingest synthetic fill into ledger so it's not lost
+      // Ingest synthetic fill into ledger so it's not lost. fillsToAggregate
+      // becomes JUST this gap fill (never old-rows-plus-gap): downstream
+      // "advancing partial" handling ADDS summary.totalSize onto the
+      // EXISTING body's assetQty, mirroring the success path where
+      // ingestedFills already contains only the NEW delta — aggregating
+      // the stale rows too would double-count what they already
+      // contributed when first ingested. Also count it in ingestedFills —
+      // gates shouldSkipBuyRecommit below, so an order a body already owns
+      // is not treated as "nothing new" when this gap fill is exactly the
+      // new thing.
       const result = fillLedger.ingestFill(syntheticFill, orderPlacedAt);
-      fillsToAggregate = result.fill ? [result.fill] : [syntheticFill];
+      const ingestedSynthetic = result.fill || syntheticFill;
+      fillsToAggregate = [ingestedSynthetic];
+      ingestedFills.push(ingestedSynthetic);
     }
 
     // Determine if buy or sell
@@ -3359,6 +3460,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           fillLedger.annotateFillsByOrderId(fillData.orderId, { untrackedSell: true });
           saveLiveState();
           fillLedger.persist();
+        } else if (!fillLedger.claimCapitalCredit(fillData.orderId)) {
+          // Idempotency guard (issue #679 follow-up, codex convergence
+          // review): handleOrderFill's wrapper clears the sell dedup key
+          // above on ANY throw so a retry (this engine's own bounded
+          // incompleteFills retry, or a genuine reconcile re-poll once the
+          // key is gone) can re-process the fill — but cyclesCompleted++ and
+          // resetCycle() below are NOT idempotent the way ingestFill/capital
+          // credit are. A throw AFTER this point on a prior attempt (e.g.
+          // during resetCycle/persist) would otherwise let a retry double-
+          // bump cyclesCompleted and start a second new ledger cycle,
+          // breaking the atomic-cycle invariant. Gate the WHOLE block —
+          // not just the capital application creditCapitalGrowth used to
+          // gate alone — on the ledger's own one-shot per-sellOrderId claim.
+          logger.info(
+            `ℹ️ [${exchange}] Untracked sell ${fillData.orderId.slice(0, 8)} cycle-close already applied — skipping re-apply (retry after a prior attempt got this far)`,
+            { orderId: fillData.orderId }
+          );
         } else {
           const proceeds = summary2.totalValue - summary2.totalFees;
           const soldCostBasis = summary2.totalSize * positionState.avgCostBasis;
@@ -3368,7 +3486,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           positionState.assetOnOrder = 0;
           positionState.cyclesCompleted += 1;
 
-          const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
+          // Capital was already claimed (fillLedger.claimCapitalCredit)
+          // above as the idempotency gate for this whole block — apply it
+          // directly rather than calling creditCapitalGrowth, which would
+          // re-claim and (seeing it already claimed) skip applying pnl.
+          const prevMaxUsdc = config.maxUsdcDeployed;
+          config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
+          updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
 
           logger.info(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
@@ -5113,7 +5237,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // callbacks keep orderId-only dedup since filledSize is final.
       // A terminal buy (including CANCELLED with an already-booked partial)
       // still needs retirement even when its cumulative fill size is unchanged.
-      const terminalBuy = status.side?.toLowerCase() === 'buy' && isTerminalStatus(status);
+      const isTerminal = isTerminalStatus(status);
+      const terminalBuy = status.side?.toLowerCase() === 'buy' && isTerminal;
       const dedupKey = makeFillDedupKey(orderId, status.isPartialFill && !terminalBuy, status.filledSize);
       if (recentlyProcessedFills.has(dedupKey)) {
         logger.warn(`⚠️ [${exchange}] Duplicate fill callback for ${dedupKey}, skipping`);
@@ -5151,27 +5276,33 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // double-count those in-memory — tracked for an ingest-guarded refactor
       // (issue #131).
       //
-      // A TERMINAL fill is different: checkPendingOrderFills already deleted
-      // this order from pendingOrders before invoking this callback (issue
-      // #679 follow-up, codex review), so "next reconcile" can no longer
-      // rediscover it — a rejection here would otherwise strand it forever on
-      // an exchange with no order-event WS (Gemini/Crypto.com). getOrderFills
-      // already retries its own trade-history scan briefly (see the adapters);
-      // an incompleteFills rejection this far out means that budget was
-      // exhausted, so schedule a bounded, longer-interval engine-level retry
-      // of this SAME callback instead of only logging.
+      // A TERMINAL fill (FILLED, or CANCELLED-with-a-booked-partial) is
+      // different: checkPendingOrderFills / handleCancelledOrder already
+      // deleted this order from pendingOrders before invoking this callback,
+      // so "next reconcile" below can no longer rediscover it — a rejection
+      // here would otherwise strand it forever on an exchange with no
+      // order-event WS (Gemini/Crypto.com). This is true regardless of the
+      // specific error: handleOrderFillImpl's own getOrderFills-failure
+      // fallback (order-status synthetic booking) already absorbs the common
+      // incompleteFills/lookup-failure case, but ANY other throw for a
+      // terminal fill has the identical "will never be revisited" problem
+      // (a rethrown lookup failure carries no incompleteFills flag, for
+      // instance — issue #679 follow-up, codex + coordinator review). A
+      // still-PARTIALLY_FILLED order legitimately stays tracked and IS
+      // re-detected by the next reconcile poll, so it keeps the original
+      // "log and wait" behavior below.
       try {
         await handleOrderFill(fillData);
         incompleteFillRetries.delete(dedupKey);
       } catch (err) {
         recentlyProcessedFills.delete(dedupKey);
-        if (err.incompleteFills === true) {
+        if (isTerminal) {
           const attempt = (incompleteFillRetries.get(dedupKey) || 0) + 1;
           if (attempt <= incompleteFillMaxRetries) {
             incompleteFillRetries.set(dedupKey, attempt);
             logger.warn(
-              `⚠️ [${exchange}] Fill scan for ${orderId} still incomplete (${err.message}) — scheduling engine-level retry ${attempt}/${incompleteFillMaxRetries} in ${incompleteFillRetryDelayMs}ms`,
-              { orderId, side: status.side, error: err.message, attempt }
+              `⚠️ [${exchange}] Terminal fill processing for ${orderId} failed (${err.message}) — scheduling engine-level retry ${attempt}/${incompleteFillMaxRetries} in ${incompleteFillRetryDelayMs}ms`,
+              { orderId, side: status.side, error: err.message, attempt, incompleteFills: err.incompleteFills === true }
             );
             const retryTimer = setTimeout(() => {
               ttlTimers.delete(retryTimer);
@@ -5183,7 +5314,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           }
           incompleteFillRetries.delete(dedupKey);
           logger.error(
-            `❌ [${exchange}] Fill scan for ${orderId} still incomplete after ${attempt - 1} engine-level retries — giving up automatically; operator must reconcile (scripts/backfill-missing-fills.js, and the periodic ledger-drift sweep will also surface this)`,
+            `❌ [${exchange}] Terminal fill processing for ${orderId} still failing after ${attempt - 1} engine-level retries — giving up automatically; operator must reconcile (scripts/backfill-missing-fills.js, and the periodic ledger-drift sweep will also surface this)`,
             { orderId, side: status.side, error: err.message }
           );
           return;
