@@ -776,4 +776,52 @@ describe('instrumentAdapterForHealth + Gemini REST throttle (issue #680)', () =>
     );
     assert.equal(monitor.checkHealth().mode, 'ACTIVE');
   });
+
+  it('excludes the 429 rate-limit backoff wait from recorded latency', async () => {
+    const monitor = createHealthMonitor('gemini-test', createTestConfig({ maxLatencyMs: 5000 }));
+    monitor.recordWsStatus(true);
+
+    // First attempt is rate-limited (429); makeRestRequest's retry sleeps
+    // RATE_LIMIT_BACKOFF_MS * 1 = 500ms (src/adapters/gemini/api.js) before
+    // the second, successful attempt. That real 500ms sleep is exactly the
+    // "backoff" half of issue #680's "Queue/backoff wait time is now tracked
+    // separately and excluded" fix — the throttle-slot-wait test above only
+    // covers the other half.
+    let calls = 0;
+    global.fetch = async (url) => {
+      const endpoint = new URL(url).pathname;
+      if (endpoint !== '/v1/order/status') throw new Error(`unexpected endpoint in test stub: ${endpoint}`);
+      calls += 1;
+      if (calls === 1) {
+        return { ok: false, status: 429, statusText: 'Too Many Requests', text: async () => JSON.stringify({ reason: 'RateLimited' }) };
+      }
+      const body = JSON.stringify({
+        order_id: 555,
+        symbol: 'ETHUSD',
+        side: 'buy',
+        is_live: true,
+        executed_amount: '0',
+        original_amount: '1',
+        avg_execution_price: '0',
+        timestampms: Date.now(),
+      });
+      return { ok: true, status: 200, statusText: 'OK', text: async () => body };
+    };
+
+    const adapter = createGeminiAdapter(keysPath);
+    const wrapped = instrumentAdapterForHealth(adapter, monitor);
+
+    await wrapped.getOrder('555');
+    assert.equal(calls, 2, 'expected one 429 then one successful retry');
+
+    const state = monitor.getState();
+    // The real backoff sleep is ~500ms; if it were still counted as latency
+    // this would sit near/above that. Well under it proves the backoff wait
+    // was subtracted, not just that the call happened to be fast.
+    assert.ok(
+      state.healthChecks.avgLatencyMs < 250,
+      `expected avgLatencyMs < 250 (429 backoff wait excluded), got ${state.healthChecks.avgLatencyMs}`
+    );
+    assert.equal(monitor.checkHealth().mode, 'ACTIVE');
+  });
 });
