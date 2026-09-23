@@ -322,6 +322,47 @@ describe('engine-recalculate-handler', () => {
     });
   });
 
+  describe('stopped fund — persisted activeCycleId (issue #675)', () => {
+    it('anchors the ledger on the persisted boundary and re-points it through idMap on apply', async () => {
+      const h = createHarness();
+      h.regimeStateByFund.set(fundKey(EXCHANGE, PAIR_A), { position: makeStaleFixture({ activeCycleId: 'cycle-2' }), regime: {} });
+      const ledger = createFakeLedger(h.calls, PAIR_A, {
+        recalc: { cyclesCompleted: 2, cycleDetails: [], orphansFixed: 2, activeCycleId: 'cycle-3', idMap: { 'cycle-2': 'cycle-3', 'cycle-1': 'cycle-2' } },
+      });
+      ledger.setCurrentCycleId = (id) => h.calls.push({ op: 'setCurrentCycleId', pair: PAIR_A, id });
+      h.standaloneLedgersByFund.set(fundKey(EXCHANGE, PAIR_A), ledger);
+
+      await h.recalculate({ apply: true }, EXCHANGE, PAIR_A);
+
+      const mine = callsFor(h.calls, PAIR_A);
+      const anchor = firstIndex(mine, 'setCurrentCycleId');
+      assert.ok(anchor >= 0 && anchor < firstIndex(mine, 'recalculateCycles'), 'boundary restored before recalc');
+      assert.equal(mine[anchor].id, 'cycle-2');
+      const saved = h.calls.find((c) => c.op === 'saveRegimeState').position;
+      assert.equal(saved.activeCycleId, 'cycle-3', 'marker follows the rename');
+    });
+
+    it('uses the read-only preview accessor on a stopped preview', async () => {
+      const h = createHarness();
+      h.regimeStateByFund.set(fundKey(EXCHANGE, PAIR_A), { position: makeStaleFixture({ activeCycleId: 'cycle-2' }), regime: {} });
+
+      const result = await h.recalculate({ apply: false }, EXCHANGE, PAIR_A);
+
+      const mine = callsFor(h.calls, PAIR_A);
+      assert.equal(firstIndex(mine, 'recalculateCycles'), -1, 'stopped preview must not run the mutating recalc');
+      assert.ok(firstIndex(mine, 'previewRecalculateCycles') >= 0);
+      assert.deepEqual(result.cycleDetails, [{ id: 'preview-cycle-5' }]);
+    });
+
+    it('translateActiveCycleId keeps an unrenamed marker and upgrades legacy state only on rename', () => {
+      const { translateActiveCycleId } = require('../src/engine-recalculate-handler');
+      assert.equal(translateActiveCycleId('cycle-4', { idMap: {} , activeCycleId: 'cycle-2' }), null);
+      assert.equal(translateActiveCycleId('cycle-4', { idMap: { 'cycle-4': 'cycle-5' } }), 'cycle-5');
+      assert.equal(translateActiveCycleId(undefined, { idMap: {}, activeCycleId: 'cycle-2' }), null);
+      assert.equal(translateActiveCycleId(undefined, { idMap: { 'cycle-1': 'cycle-2' }, activeCycleId: 'cycle-3' }), 'cycle-3');
+    });
+  });
+
   describe('validation and cold-start failures', () => {
     it('rejects a non-boolean apply before any state or ledger access', async () => {
       const h = createHarness();
