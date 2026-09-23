@@ -1,7 +1,7 @@
 // @ts-check
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { createEngineLocks, FILL_WAIT_MS, FILL_POLL_MS } = require('../src/engine-locks');
+const { createEngineLocks, FILL_WAIT_MS, FILL_POLL_MS, LADDER_WAIT_MS, LADDER_POLL_MS, BUSY_LADDER } = require('../src/engine-locks');
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
@@ -214,5 +214,260 @@ describe('createEngineLocks — constants', () => {
   it('pins the production 15s fill-wait bound and 25ms poll', () => {
     assert.equal(FILL_WAIT_MS, 15000);
     assert.equal(FILL_POLL_MS, 25);
+  });
+
+  it('pins the production 3-minute ladder-wait bound and 25ms poll (#766)', () => {
+    assert.equal(LADDER_WAIT_MS, 180000);
+    assert.equal(LADDER_POLL_MS, 25);
+  });
+});
+
+/** A promise plus its resolver, for holding a lock open deterministically. */
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  return { promise, resolve };
+};
+
+describe('createEngineLocks — ladder lock (#766)', () => {
+  it('queues a second sweep behind the first instead of refusing it', async () => {
+    const locks = createEngineLocks({ ladderPollMs: 1 });
+    const order = [];
+    const gate = deferred();
+    const first = locks.withLadderLock(async () => {
+      order.push('first:start');
+      await gate.promise;
+      order.push('first:end');
+      return 'first';
+    });
+    assert.equal(locks.isLadderBusy(), true);
+    const second = locks.withLadderLock(async () => {
+      order.push('second');
+      return 'second';
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(order, ['first:start'], 'the second sweep waits while the first holds');
+    assert.equal(locks.getFlags().ladderPending, 2);
+    assert.equal(locks.getFlags().ladderHolders, 1);
+    gate.resolve();
+    assert.equal(await first, 'first');
+    assert.equal(await second, 'second');
+    assert.deepEqual(order, ['first:start', 'first:end', 'second']);
+    assert.equal(locks.isLadderBusy(), false);
+    assert.equal(locks.getFlags().ladderHolders, 0);
+  });
+
+  it('serves waiters in FIFO order', async () => {
+    const locks = createEngineLocks({ ladderPollMs: 1 });
+    const order = [];
+    const gate = deferred();
+    const holder = locks.withLadderLock(() => gate.promise);
+    const waiters = ['a', 'b', 'c'].map((n) => locks.withLadderLock(async () => {
+      order.push(`${n}:start`);
+      await tick();
+      order.push(`${n}:end`);
+    }));
+    gate.resolve();
+    await holder;
+    await Promise.all(waiters);
+    assert.deepEqual(order, ['a:start', 'a:end', 'b:start', 'b:end', 'c:start', 'c:end'], 'no two waiters overlap');
+  });
+
+  it('is reentrant for the holder\'s own async context (a mid-cancel booking that resets the cycle)', async () => {
+    const locks = createEngineLocks();
+    const order = [];
+    const result = await locks.withLadderLock(async () => {
+      order.push('sweep');
+      await tick();
+      // e.g. cancelAllLadderOrders → booking → last body closes → resetCycle
+      const inner = await locks.withLadderLock(async () => {
+        order.push('nested-reset');
+        return 'inner';
+      });
+      order.push(inner);
+      return 'outer';
+    });
+    assert.equal(result, 'outer');
+    assert.deepEqual(order, ['sweep', 'nested-reset', 'inner']);
+    assert.equal(locks.isLadderBusy(), false);
+  });
+
+  it('does not let work the holder left running reenter after it released', async () => {
+    const locks = createEngineLocks({ ladderPollMs: 1 });
+    const order = [];
+    const leak = deferred();
+    let leaked;
+    await locks.withLadderLock(async () => {
+      // Fire-and-forget work spawned inside the holder inherits its context.
+      leaked = (async () => {
+        await leak.promise;
+        return locks.withLadderLock(async () => { order.push('leaked'); });
+      })();
+    });
+    const gate = deferred();
+    const second = locks.withLadderLock(async () => {
+      order.push('second:start');
+      await gate.promise;
+      order.push('second:end');
+    });
+    leak.resolve();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(order, ['second:start'], 'the stale context queues like any other caller');
+    gate.resolve();
+    await second;
+    await leaked;
+    assert.deepEqual(order, ['second:start', 'second:end', 'leaked']);
+  });
+
+  it('releases the lock when the holder throws', async () => {
+    const locks = createEngineLocks({ ladderPollMs: 1 });
+    await assert.rejects(locks.withLadderLock(async () => { throw new Error('cancel failed'); }), /cancel failed/);
+    assert.equal(locks.isLadderBusy(), false);
+    assert.equal(await locks.withLadderLock(async () => 'next'), 'next');
+  });
+
+  it('wait:false refuses while busy and takes the lock when free', async () => {
+    const locks = createEngineLocks();
+    const gate = deferred();
+    const holder = locks.withLadderLock(() => gate.promise);
+    let ran = false;
+    const refused = await locks.withLadderLock(async () => { ran = true; }, { wait: false });
+    assert.equal(ran, false);
+    assert.deepEqual(refused, { success: false, message: BUSY_LADDER });
+    gate.resolve();
+    await holder;
+    assert.equal(await locks.withLadderLock(async () => 'placed', { wait: false }), 'placed');
+  });
+
+  it('a caller inside a merge never waits on a held ladder lock', async () => {
+    let slept = 0;
+    const warnings = [];
+    const locks = createEngineLocks({
+      sleep: async (ms) => { slept += ms; await tick(); },
+      logWarn: (msg) => warnings.push(msg),
+    });
+    const gate = deferred();
+    const holder = locks.withLadderLock(() => gate.promise);
+    let ran = false;
+    await locks.withMergeLock(async () => {
+      await locks.withLadderLock(async () => { ran = true; }, { label: 'Cycle reset', exchange: 'coinbase' });
+    });
+    assert.equal(ran, true);
+    assert.equal(slept, 0, 'a merge must not poll the ladder lock');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /\[coinbase\] Cycle reset running inside a merge/);
+    gate.resolve();
+    await holder;
+  });
+
+  it('a caller inside a merge takes a free ladder lock (so later sweeps queue behind it)', async () => {
+    const locks = createEngineLocks({ ladderPollMs: 1 });
+    const order = [];
+    const gate = deferred();
+    const merge = locks.withMergeLock(() => locks.withLadderLock(async () => {
+      order.push('merge-reset:start');
+      await gate.promise;
+      order.push('merge-reset:end');
+    }));
+    assert.equal(locks.getFlags().ladderHolders, 1, 'the merge holds the free ladder lock');
+    // Outside the merge's context: a rebuild queues behind it as usual.
+    const rebuild = locks.withLadderLock(async () => { order.push('rebuild'); });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(order, ['merge-reset:start']);
+    gate.resolve();
+    await merge;
+    await rebuild;
+    assert.deepEqual(order, ['merge-reset:start', 'merge-reset:end', 'rebuild']);
+  });
+
+  it('onTimeout proceed: runs after the bound with a warning (a TP close is never dropped)', async () => {
+    let nowMs = 1_000_000;
+    const warnings = [];
+    const locks = createEngineLocks({
+      now: () => nowMs,
+      sleep: async (ms) => { nowMs += ms; },
+      logWarn: (msg) => warnings.push(msg),
+    });
+    const stuck = deferred();
+    const holder = locks.withLadderLock(() => stuck.promise);
+    let ran = false;
+    await locks.withLadderLock(async () => { ran = true; }, { onTimeout: 'proceed', label: 'Cycle reset', exchange: 'gemini' });
+    assert.equal(ran, true);
+    assert.ok(nowMs >= 1_000_000 + LADDER_WAIT_MS);
+    assert.deepEqual(warnings, ['⚠️ [gemini] Cycle reset proceeding after 180s wait — ladder lock still held (possible stuck ladder sweep)']);
+    stuck.resolve();
+    await holder;
+    assert.equal(locks.isLadderBusy(), false);
+  });
+
+  it('onTimeout refuse: gives up with the busy result, and later waiters stay queued behind the stuck holder', async () => {
+    let nowMs = 1_000_000;
+    let clockRuns = true;
+    const locks = createEngineLocks({
+      now: () => nowMs,
+      sleep: async (ms) => { if (clockRuns) nowMs += ms; else await tick(); },
+    });
+    const stuck = deferred();
+    const holder = locks.withLadderLock(() => stuck.promise);
+    let ran = false;
+    const refused = await locks.withLadderLock(async () => { ran = true; }, { onTimeout: 'refuse' });
+    assert.equal(ran, false);
+    assert.deepEqual(refused, { success: false, message: BUSY_LADDER });
+    assert.equal(locks.isLadderBusy(), true, 'the stuck holder still holds');
+    assert.equal(locks.getFlags().ladderPending, 1, 'the refused caller left the queue');
+
+    // A later caller (clock frozen, so no timeout pressure) must still wait
+    // for the stuck holder — the refusal did not hand the lock over.
+    clockRuns = false;
+    const order = [];
+    const later = locks.withLadderLock(async () => { order.push('later'); });
+    for (let i = 0; i < 5; i++) await tick();
+    assert.deepEqual(order, [], 'queued behind the stuck holder, not the refused caller');
+    stuck.resolve();
+    await holder;
+    await later;
+    assert.deepEqual(order, ['later']);
+  });
+});
+
+describe('createEngineLocks — ladder lock deadlock-freedom (#766)', () => {
+  it('a TP fill waiting on the ladder lock does not block the holder\'s own mid-cancel fill booking', async () => {
+    const locks = createEngineLocks({ ladderPollMs: 1, fillPollMs: 1 });
+    const order = [];
+    const placement = deferred();
+    const rebuild = locks.withLadderLock(async () => {
+      order.push('rebuild:cancel');
+      // The sweep books a rung that filled mid-cancel through the fill gate.
+      await locks.withFillGate(async () => { order.push('rebuild:mid-cancel-booking'); });
+      await placement.promise;
+      order.push('rebuild:placed');
+    });
+    // A TP fill closes the last body and resets the cycle.
+    const tpFill = locks.withFillGate(async () => {
+      order.push('tp:booked');
+      await locks.withLadderLock(async () => { order.push('tp:reset-sweep'); });
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(order, ['rebuild:cancel', 'rebuild:mid-cancel-booking', 'tp:booked'],
+      'the holder\'s booking passed the fill gate while the TP fill waits on the ladder lock');
+    placement.resolve();
+    await Promise.all([rebuild, tpFill]);
+    assert.deepEqual(order, ['rebuild:cancel', 'rebuild:mid-cancel-booking', 'tp:booked', 'rebuild:placed', 'tp:reset-sweep']);
+    assert.equal(locks.getFlags().fillInProgress, 0);
+    assert.equal(locks.isLadderBusy(), false);
+  });
+
+  it('a merge started while a TP fill waits on the ladder lock is not blocked by either', async () => {
+    const locks = createEngineLocks({ ladderPollMs: 1, fillPollMs: 1 });
+    const placement = deferred();
+    const rebuild = locks.withLadderLock(() => placement.promise);
+    const tpFill = locks.withFillGate(() => locks.withLadderLock(async () => 'reset'));
+    await tick();
+    let merged = false;
+    await locks.withMergeLock(async () => { merged = true; });
+    assert.equal(merged, true, 'merge ran while the ladder lock was held and a fill was queued on it');
+    placement.resolve();
+    await rebuild;
+    assert.equal(await tpFill, 'reset');
   });
 });
