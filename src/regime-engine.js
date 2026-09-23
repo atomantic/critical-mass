@@ -587,6 +587,9 @@ const repairHistoricalFillAnnotations = ({
   }
 };
 
+/** Ledger rows the engine synthesized in place of real exchange fills. */
+const PSEUDO_FILL_TRADE_ID = /^(synthetic-|consolidated-sell-)/;
+
 /**
  * Plan how live bodies must grow to cover recovered partial rows of their own
  * buy orders (issue #752). recalculateCycles places a null-cycle buy row
@@ -599,6 +602,7 @@ const repairHistoricalFillAnnotations = ({
  * (R2 in docs/pnl-architecture.md):
  *   - only orders with at least one `'order'`-attributed buy row are
  *     considered ('link' / 'timeframe' rows never grow a body);
+ *   - the order has no synthetic gap row (which recovered rows may duplicate);
  *   - every owned row of the order names ONE bodyId, and exactly one live
  *     body — that one — records the order in its `buyOrders`;
  *   - growth is the exact shortfall of the order's full ledger totals over
@@ -624,6 +628,16 @@ const planBodyGrowthFromRecoveredBuyRows = ({ fillLedger, celestialBodies }) => 
   }
   for (const buyOrderId of candidateOrderIds) {
     const rows = fillLedger.getFillsForOrder(buyOrderId).filter(r => r.side === 'buy');
+    // A pseudo row (`synthetic-<orderId>-<size>`, handleOrderFill's gap fill
+    // when the exchange returned no fills) stands in for real executions that
+    // sync-fills may since have re-imported under their real tradeIds — the
+    // very rows attributed here. Summing both would grow the body by asset it
+    // never bought, so leave such an order for manual review
+    // (scripts/backfill-missing-fills.js replaces pseudo rows).
+    if (rows.some(r => PSEUDO_FILL_TRADE_ID.test(String(r.tradeId)))) {
+      skipped.push({ buyOrderId, reason: 'order has a synthetic gap row that recovered rows may duplicate' });
+      continue;
+    }
     const bodyIds = new Set(rows.map(r => r.bodyId).filter(Boolean));
     if (bodyIds.size !== 1) {
       skipped.push({ buyOrderId, reason: `rows name ${bodyIds.size} bodies` });

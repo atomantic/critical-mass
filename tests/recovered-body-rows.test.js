@@ -112,6 +112,24 @@ describe('planBodyGrowthFromRecoveredBuyRows (#752)', () => {
     assert.equal(skipped.length, 1);
   });
 
+  it('skips an order whose body took a synthetic gap row the recovered rows may duplicate', () => {
+    const ledger = makeLedger('synthetic');
+    const body = seed(ledger);
+    // handleOrderFill booked 0.005 as a synthetic gap row when the exchange
+    // returned no fills; sync-fills later re-imported the real execution (a-2).
+    ledger.ingestFill({ tradeId: 'synthetic-a-buy-0.015', orderId: 'a-buy', side: 'buy', price: '50000', size: '0.005', tradeTime: at(1.05) },
+      null, { cycleId: 'cycle-1', skipPersist: true });
+    ledger.annotateFillsByOrderId('a-buy', { isBodyOwned: true, bodyId: 'body-A' });
+    body.buyOrders.push({ orderId: 'a-buy', price: 50000, assetQty: 0.005, sizeUsdc: 250 });
+    ledger.recalculateCycles();
+    assert.equal(ledger.getAllFills().find(f => f.tradeId === 'a-2').cycleAttribution, 'order');
+
+    const { plans, skipped } = planBodyGrowthFromRecoveredBuyRows({ fillLedger: ledger, celestialBodies: [body] });
+
+    assert.deepStrictEqual(plans, [], 'never grow a body by a duplicate of what it already holds');
+    assert.equal(skipped.length, 1);
+  });
+
   it('never considers a timestamp-folded buy (no linkage to an engine order — R2)', () => {
     const ledger = makeLedger('timeframe');
     const body = seed(ledger);
