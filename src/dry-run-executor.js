@@ -730,23 +730,6 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   };
 
   /**
-   * Cancel all body TP orders (simulated)
-   * @returns {Promise<number>} Number cancelled
-   */
-  const cancelAllBodyTpOrders = async () => {
-    let cancelled = 0;
-    const entries = Array.from(bodyTpOrders.entries());
-
-    for (const [bodyId, body] of entries) {
-      pendingOrders.delete(body.tpOrderId);
-      bodyTpOrders.delete(bodyId);
-      cancelled++;
-    }
-
-    return cancelled;
-  };
-
-  /**
    * Check if an order ID is a body TP order
    * @param {string} orderId - Order ID to check
    * @returns {boolean}
@@ -1079,68 +1062,6 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   };
 
   /**
-   * Refresh stale orders (simulated)
-   * @returns {Promise<number>}
-   */
-  const refreshStaleOrders = async () => {
-    const now = Date.now();
-    let refreshed = 0;
-
-    for (const [orderId, order] of pendingOrders) {
-      if (order.type === 'entry' && order.status === 'open') {
-        if (now - order.placedAt > (order.staleMs ?? config.orderStaleMs)) {
-          order.status = 'cancelled';
-          pendingOrders.delete(orderId);
-          refreshed++;
-        }
-      }
-    }
-
-    return refreshed;
-  };
-
-  /**
-   * Atomic order replacement (simulated)
-   * @param {string} oldOrderId - Order to cancel
-   * @param {Object} newOrderParams - New order parameters
-   * @returns {Promise<{success: boolean, newOrderId?: string, reason?: string}>}
-   */
-  const atomicReplace = async (oldOrderId, newOrderParams) => {
-    // Cancel old order
-    const oldOrder = pendingOrders.get(oldOrderId);
-    if (oldOrder) {
-      oldOrder.status = 'cancelled';
-      pendingOrders.delete(oldOrderId);
-    }
-
-    const { assetQty, price, type } = newOrderParams;
-    const newOrderId = generateOrderId();
-
-    const newOrder = {
-      orderId: newOrderId,
-      type,
-      side: type === 'entry' ? 'buy' : 'sell',
-      price,
-      size: assetQty,
-      sizeUsdc: assetQty * price,
-      placedAt: Date.now(),
-      status: 'open',
-      filledAt: null,
-      fillPrice: null,
-    };
-
-    pendingOrders.set(newOrderId, newOrder);
-
-    if (type === 'take_profit') {
-      activeTpOrderId = newOrderId;
-      lastTpPrice = price;
-      lastTpSize = assetQty;
-    }
-
-    return { success: true, newOrderId };
-  };
-
-  /**
    * Log that an entry was blocked
    * @param {string} reason - Block reason
    * @param {string} regime - Current regime
@@ -1417,8 +1338,6 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     placeEntryBid,
     placeTakeProfitOrder,
     cancelTpOrder,
-    refreshStaleOrders,
-    atomicReplace,
     cancelAllEntries,
     handleOrderFill,
     handleOrderCancel,
@@ -1442,7 +1361,6 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     // Body TP functions
     placeBodyTpOrder,
     cancelBodyTpOrder,
-    cancelAllBodyTpOrders,
     isBodyTpOrder,
     getBodyByTpOrderId,
     restoreBodyTpOrder,
@@ -1450,7 +1368,6 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     // Legacy aliases for backward compatibility
     placeSatelliteTpOrder: placeBodyTpOrder,
     cancelSatelliteTpOrder: cancelBodyTpOrder,
-    cancelAllSatelliteTpOrders: cancelAllBodyTpOrders,
     isSatelliteTpOrder: isBodyTpOrder,
     getSatelliteByTpOrderId: getBodyByTpOrderId,
     restoreSatelliteTpOrder: restoreBodyTpOrder,

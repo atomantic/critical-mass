@@ -755,53 +755,92 @@ const createGeminiAdapter = (keysPath = null) => {
    * Fix (mirrors the Crypto.com approach): look up the order to learn its
    * symbol and creation time, then walk /v1/mytrades forward from that time
    * with pagination so fills are found regardless of product or trade volume.
+   *
+   * A failed order-status lookup, or a matched-fill total short of the
+   * order's own `executed_amount`, throws `{ incompleteFills: true }` instead
+   * of returning a partial set with no error (issue #679) — callers already
+   * treat a throw here as retryable (see `ingestNewFillsForOrder`).
    * @param {string} orderId - Order ID
    * @returns {Promise<OrderFill[]>} List of fills
    */
   adapter.getOrderFills = async (orderId) => {
     // Step 1: locate the order so the trade scan uses the right symbol and
-    // is bounded to the order's actual lifetime.
-    let symbol = null;
-    let sinceMs = Date.now() - 60 * 60 * 1000; // fallback: last hour, all symbols
+    // is bounded to the order's actual lifetime, and so completeness can be
+    // verified against Gemini's own executed_amount. A lookup failure means
+    // we can do neither — rethrow instead of degrading to a fixed 1h/
+    // all-symbol scan that would silently under-report a fully-filled sell.
+    let order;
     try {
-      const order = await makeRestRequest('/v1/order/status', { order_id: orderId });
-      if (order?.symbol) symbol = order.symbol.toLowerCase();
-      const createdMs = Number(order?.timestampms || (order?.timestamp ? Number(order.timestamp) * 1000 : 0));
-      if (createdMs > 0) sinceMs = createdMs - 60000; // 60s pad for clock skew
+      order = await makeRestRequest('/v1/order/status', { order_id: orderId });
     } catch (err) {
-      logger.warn(`⚠️ [gemini] getOrderFills: order-status lookup failed for ${orderId}: ${err.message} — scanning last hour across all symbols`, {
-        orderId,
-        fallbackWindowMs: 60 * 60 * 1000,
-        error: err.message,
-      });
+      // Prefix the message on the SAME error object rather than throwing a
+      // fresh plain Error — makeRestRequest attaches `status`/`responseData`
+      // that health-monitor's isAuthDeniedError relies on to route an auth
+      // rejection into non-self-healing AUTH_DENIED instead of treating it
+      // as a retryable REST error; a new Error() would silently discard
+      // that metadata.
+      err.message = `[gemini] getOrderFills: order-status lookup failed for ${orderId}: ${err.message}`;
+      throw err;
+    }
+    const symbol = order?.symbol ? order.symbol.toLowerCase() : null;
+    const createdMs = Number(order?.timestampms || (order?.timestamp ? Number(order.timestamp) * 1000 : 0));
+    const sinceMs = createdMs > 0 ? createdMs - 60000 : Date.now() - 60 * 60 * 1000; // 60s pad, or last hour/all symbols when order carries no timestamp
+    const executedAmount = parseFloat(order?.executed_amount || 0);
+
+    // Step 2: paginate trades since order creation and filter by order.
+    // Step 3: verify the matched fills actually account for everything the
+    // exchange says executed — a short sum is the "partial fill" case worth
+    // guarding against (distinct from designed holdback, which is computed
+    // downstream from the fills this function returns). The most common
+    // cause of a short match right after a fill is Gemini's own
+    // trade-history eventual consistency (the fill just landed and
+    // /v1/mytrades hasn't caught up yet), which normally clears within a
+    // couple of seconds — retry briefly before rejecting. This matters
+    // beyond this call alone: order-executor's polling-based fill detection
+    // (checkPendingOrderFills) removes a terminal order from tracking
+    // BEFORE invoking its fill callback, and Gemini has no order-event
+    // WebSocket to rediscover it afterward, so a reject here on a merely
+    // transient gap can strand that fill with no automatic retry path.
+    const FILL_SCAN_RETRIES = 2;
+    const FILL_SCAN_RETRY_DELAY_MS = 750;
+    let fills;
+    let totalMatched;
+    for (let attempt = 0; ; attempt++) {
+      const trades = await fetchTradesSince(symbol, sinceMs);
+      fills = trades
+        .filter(trade => trade.order_id?.toString() === orderId.toString())
+        .map(trade => {
+          const price = parseFloat(trade.price || 0);
+          const size = parseFloat(trade.amount || 0);
+          const feeAmount = parseFloat(trade.fee_amount || 0);
+
+          return {
+            tradeId: trade.tid?.toString(),
+            orderId: trade.order_id?.toString(),
+            productId: trade.symbol,
+            side: trade.type?.toUpperCase(),
+            price,
+            size,
+            sizeInQuote: price * size,
+            commission: feeAmount,
+            totalCommission: feeAmount,
+            rebate: 0, // Gemini doesn't have maker rebates in the same way
+            netFee: feeAmount,
+            tradeTime: new Date(trade.timestampms).toISOString(),
+            liquidityIndicator: trade.is_maker ? 'MAKER' : 'TAKER',
+          };
+        });
+      totalMatched = fills.reduce((sum, fill) => sum + Number(fill.size || 0), 0);
+      if (totalMatched >= executedAmount - 1e-9 || attempt >= FILL_SCAN_RETRIES) break;
+      await new Promise(resolve => setTimeout(resolve, FILL_SCAN_RETRY_DELAY_MS));
     }
 
-    // Step 2: paginate trades since order creation and filter by order
-    const trades = await fetchTradesSince(symbol, sinceMs);
-
-    const fills = trades
-      .filter(trade => trade.order_id?.toString() === orderId.toString())
-      .map(trade => {
-        const price = parseFloat(trade.price || 0);
-        const size = parseFloat(trade.amount || 0);
-        const feeAmount = parseFloat(trade.fee_amount || 0);
-
-        return {
-          tradeId: trade.tid?.toString(),
-          orderId: trade.order_id?.toString(),
-          productId: trade.symbol,
-          side: trade.type?.toUpperCase(),
-          price,
-          size,
-          sizeInQuote: price * size,
-          commission: feeAmount,
-          totalCommission: feeAmount,
-          rebate: 0, // Gemini doesn't have maker rebates in the same way
-          netFee: feeAmount,
-          tradeTime: new Date(trade.timestampms).toISOString(),
-          liquidityIndicator: trade.is_maker ? 'MAKER' : 'TAKER',
-        };
-      });
+    if (totalMatched < executedAmount - 1e-9) {
+      throw Object.assign(
+        new Error(`[gemini] getOrderFills: fills incomplete for ${orderId}: ${totalMatched} of ${executedAmount}`),
+        { incompleteFills: true }
+      );
+    }
 
     return fills;
   };

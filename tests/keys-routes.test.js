@@ -638,6 +638,61 @@ describe('API key routes', () => {
 
       assert.equal(statusRes.body.configured, false);
     });
+
+    it('reports configured: true when a stale credential source still leaves the adapter usable (issue #688)', async () => {
+      // Regression: the DELETE handler used to hardcode `configured: false`
+      // after unlinking the keys file, even when another credential source
+      // (e.g. the legacy root keys.json, prior to its removal from the
+      // adapter) kept the exchange usable. The response must reflect the
+      // adapter's real post-delete state, not assume deletion always empties it.
+      const app = createFakeApp();
+      const writeJSON = (filePath, data) => fs.writeFileSync(filePath, JSON.stringify(data));
+      registerKeysRoutes(app, { writeJSON });
+
+      const adapters = require('../src/adapters');
+      mock.method(adapters, 'getAdapter', () => ({
+        hasValidKeys: () => true,
+      }));
+
+      const res = await invoke(app, 'DELETE /api/:exchange/keys', {
+        params: { exchange: 'coinbase' },
+      });
+
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.body.success, true);
+      assert.equal(res.body.configured, true, 'must reflect the adapter, not hardcode false');
+    });
+
+    it('reports configured: false when the adapter confirms no valid keys remain (issue #688)', async () => {
+      const app = createFakeApp();
+      registerKeysRoutes(app, { writeJSON: () => {} });
+
+      const adapters = require('../src/adapters');
+      mock.method(adapters, 'getAdapter', () => ({
+        hasValidKeys: () => false,
+      }));
+
+      const res = await invoke(app, 'DELETE /api/:exchange/keys', {
+        params: { exchange: 'coinbase' },
+      });
+
+      assert.equal(res.body.configured, false);
+    });
+
+    it('falls back to configured: false without throwing when the exchange has no registered adapter', async () => {
+      const app = createFakeApp();
+      registerKeysRoutes(app, { writeJSON: () => {} });
+
+      // No mock installed — 'not-a-real-exchange' hits the real getAdapter,
+      // which throws "Unknown exchange". The handler must not propagate that.
+      const res = await invoke(app, 'DELETE /api/:exchange/keys', {
+        params: { exchange: 'not-a-real-exchange' },
+      });
+
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.body.success, true);
+      assert.equal(res.body.configured, false);
+    });
   });
 
   describe('integration: credential safety', () => {

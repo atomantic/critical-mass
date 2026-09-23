@@ -135,6 +135,7 @@ describe('dca-converter fund routing (issue #414)', () => {
       getFundConfig: configUtils.getFundConfig,
       getRegimeConfig: configUtils.getRegimeConfig,
       setExchangeEnabled: configUtils.setExchangeEnabled,
+      setFundEnabled: configUtils.setFundEnabled,
       loadRawConfig: configUtils.loadRawConfig,
     };
 
@@ -146,11 +147,16 @@ describe('dca-converter fund routing (issue #414)', () => {
     configUtils.getDefaultPair = () => DEFAULT_PAIR;
     configUtils.getFundConfig = (_exchange, pair) => ({ productId: pair || DEFAULT_PAIR });
     configUtils.getRegimeConfig = () => ({ maxUsdcDeployed: 500 });
-    // Never touch the real config.json from a test.
-    configUtils.setExchangeEnabled = (exchange, enabledOrPair, maybeEnabled) => {
-      enabledCalls.push(typeof enabledOrPair === 'string'
-        ? { exchange, pair: enabledOrPair, enabled: maybeEnabled }
-        : { exchange, pair: undefined, enabled: enabledOrPair });
+    // Never touch the real config.json from a test. dca-converter's local
+    // setFundEnabled (issue #689) forwards to configUtils.setFundEnabled when
+    // it has a pair, and to the 2-arg configUtils.setExchangeEnabled alias
+    // (default fund) when it doesn't — stub both to keep tracking calls.
+    configUtils.setExchangeEnabled = (exchange, enabled) => {
+      enabledCalls.push({ exchange, pair: undefined, enabled });
+      return {};
+    };
+    configUtils.setFundEnabled = (exchange, pair, enabled) => {
+      enabledCalls.push({ exchange, pair, enabled });
       return {};
     };
     configUtils.loadRawConfig = () => ({ totalAllocation: 0 });
@@ -167,6 +173,7 @@ describe('dca-converter fund routing (issue #414)', () => {
     configUtils.getFundConfig = originals.getFundConfig;
     configUtils.getRegimeConfig = originals.getRegimeConfig;
     configUtils.setExchangeEnabled = originals.setExchangeEnabled;
+    configUtils.setFundEnabled = originals.setFundEnabled;
     configUtils.loadRawConfig = originals.loadRawConfig;
     for (const mod of [STATE_TRACKER, FILL_LEDGER, DCA_CONVERTER]) delete require.cache[mod];
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -301,5 +308,328 @@ describe('dca-converter fund routing (issue #414)', () => {
     assert.equal(preview.pending, 0);
     assert.equal(preview.filled, 0);
     assert.deepEqual(converter.previewConversion(EXCHANGE, DEFAULT_PAIR).sellOrderIds, ['sell-open-btc']);
+  });
+
+  // issue #692 — mergeToRegime's ingestion loop had drifted from
+  // executeConversion's: it never called startNewCycle() before the pending
+  // buys and never stamped sellOrderId on a filled order's buy fill. Per
+  // CLAUDE.md, cycles are atomic buy(n)->sell(1); mixing a completed pair
+  // into the same cycle as still-open pending buys left the completed
+  // trade's sell unpaired (realizedPnL zeroed) and made the low sell-ratio
+  // cycle look "active" to recalculateCycles(). Both loops now share
+  // ingestDcaOrdersIntoLedger.
+  describe('mergeToRegime keeps cycles atomic and pairs P&L correctly (issue #692)', () => {
+    const mergeOrders = () => ([
+      {
+        status: 'filled',
+        orderId: 'sell-done',
+        buyOrderId: 'buy-done',
+        buyQuantity: 0.01,
+        buyPrice: 50100,
+        buyUSDC: 501,
+        buyFees: 0,
+        buyCostBasis: 501,
+        sellQuantity: 0.01,
+        sellPrice: 51380,
+        sellFees: 0,
+        createdAt: '2025-01-01T00:00:00.000Z',
+        filledAt: '2025-01-02T00:00:00.000Z',
+      },
+      {
+        status: 'pending',
+        orderId: 'sell-open',
+        buyOrderId: 'buy-open',
+        buyQuantity: 0.02,
+        buyPrice: 48100,
+        buyUSDC: 962,
+        buyFees: 0,
+        buyCostBasis: 962,
+        sellPrice: 51000,
+        createdAt: '2025-02-01T00:00:00.000Z',
+      },
+    ]);
+
+    /** Rewrite ONLY state.json's orders — unlike seedFund(), this leaves the
+     * fill ledger and regime state from a prior merge call untouched, so a
+     * second mergeToRegime call can be checked for idempotent re-ingestion. */
+    const reseedOrders = (pair, orders) => {
+      fs.writeFileSync(path.join(fundDir(pair), 'state.json'), JSON.stringify({
+        orders,
+        totalAllocated: 1000,
+        initialAllocation: 0,
+        usdcFundSize: 0,
+        assetReserves: 0,
+      }));
+    };
+
+    it("does not mix a completed DCA trade into the pending buys' cycle, pairs its realized P&L, and is idempotent on re-run", () => {
+      seedFund(DEFAULT_PAIR, { orders: mergeOrders() });
+
+      const result = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(result.success, true);
+      assert.equal(result.summary.filledOrders, 1);
+      assert.equal(result.summary.pendingOrders, 1);
+
+      const ledger = JSON.parse(fs.readFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), 'utf8'));
+      const doneBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-done');
+      const doneSell = ledger.find(f => f.tradeId === 'dca-convert-sell-sell-done');
+      const openBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-open');
+      assert.ok(doneBuy && doneSell && openBuy, 'all three synthetic fills must be ingested');
+
+      // Cycles are atomic buy(n)->sell(1) (CLAUDE.md) — the pending buy's
+      // cycle must differ from the completed pair's cycle.
+      assert.equal(doneBuy.cycleId, doneSell.cycleId, 'the completed buy and its sell share one cycle');
+      assert.notEqual(openBuy.cycleId, doneBuy.cycleId, "the pending buy must not land in the completed trade's cycle");
+      assert.equal(doneBuy.sellOrderId, 'sell-done', 'the filled buy must be linked to its own sell for cycle-pair accounting');
+
+      // computeRealizedFromCyclePairs (the P&L source of truth) must pair the
+      // completed trade instead of leaving its sell unpaired.
+      delete require.cache[FILL_LEDGER];
+      const { createFillLedger } = require('../src/fill-ledger');
+      const freshLedger = createFillLedger(EXCHANGE, DEFAULT_PAIR, DEFAULT_PAIR, { quiet: true });
+      const pairs = freshLedger.computeRealizedFromCyclePairs();
+      assert.equal(pairs.realizedPnL, 12.8);
+      assert.equal(pairs.heldOpenBuyCostBasis, 962);
+      assert.equal(pairs.unpairedSellQty, 0);
+
+      // Re-run the merge over the SAME still-'filled'/'pending' DCA orders
+      // (as if triggered again before/without the DCA-state cleanup step).
+      // Every synthetic fill's tradeId already exists in the ledger, so
+      // ingestFill reports ingested:false for all of them — filledIngested
+      // must reflect that, not double-count the duplicate ingest attempt.
+      reseedOrders(DEFAULT_PAIR, mergeOrders());
+      const second = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(second.summary.filledOrders, 0, 'a duplicate merge must not recount already-ingested filled orders');
+    });
+
+    // Codex review finding on the first version of this fix: the merge-mode
+    // cycle-reuse check must test whether the ledger's active cycle is
+    // actually COMPLETE (isCompletedCycle's sell-ratio threshold), not
+    // merely whether it has any sell fill at all. A live engine's active
+    // cycle with a partial TP fill (sell ratio well under the completion
+    // threshold) is still the cycle #675's positionState.activeCycleId
+    // names — starting a fresh cycle for merged-in pending buys would
+    // orphan that persisted boundary from the very position it's meant to
+    // track.
+    it('reuses the active cycle for merged pending buys when it only has a partial (incomplete) sell, not only when it has zero sells', () => {
+      seedFund(DEFAULT_PAIR, { orders: [] });
+
+      // A live regime cycle already in progress: one buy fully deployed,
+      // then a PARTIAL TP sell (10% of size) — well below isCompletedCycle's
+      // 0.5 sell-ratio threshold, so this cycle is still active/incomplete,
+      // exactly like a live engine's in-progress cycle with a partially
+      // filled resting TP.
+      const liveFills = [
+        {
+          tradeId: 'live-buy-1', orderId: 'live-buy-order-1', side: 'buy',
+          price: 50000, size: 1.0, quoteAmount: 50000, netFee: 0,
+          timestamp: Date.parse('2025-03-01T00:00:00.000Z'), cycleId: 'cycle-1',
+        },
+        {
+          tradeId: 'live-sell-1', orderId: 'live-sell-order-1', side: 'sell',
+          price: 51000, size: 0.1, quoteAmount: 5100, netFee: 0,
+          timestamp: Date.parse('2025-03-02T00:00:00.000Z'), cycleId: 'cycle-1',
+        },
+      ];
+      fs.writeFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), JSON.stringify(liveFills));
+
+      // One still-pending DCA order to merge in — no filled orders, so the
+      // cycle-boundary decision under test isn't entangled with the
+      // filled-loop's own startNewCycle() calls.
+      reseedOrders(DEFAULT_PAIR, [mergeOrders()[1]]);
+
+      const result = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(result.success, true);
+      assert.equal(result.summary.pendingOrders, 1);
+
+      const ledger = JSON.parse(fs.readFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), 'utf8'));
+      const mergedBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-open');
+      assert.ok(mergedBuy, 'the pending buy must be ingested');
+      assert.equal(mergedBuy.cycleId, 'cycle-1', 'a still-active (partially-sold) cycle must be reused, not abandoned for a new one');
+    });
+
+    // Second codex review finding on the fix above: a persisted live-cycle
+    // boundary (positionState.activeCycleId, #675) can name a cycle with NO
+    // fills on disk yet -- e.g. immediately after an operator cycle reset,
+    // which reserves the cycle NUMBER without writing any fill. A fresh
+    // fillLedger instance built only from on-disk fills can't see that
+    // reservation, so its own monotonic cycle counter could coincidentally
+    // reassign that exact (empty, reserved) cycle ID to an unrelated
+    // completed DCA pair being imported -- corrupting the persisted
+    // boundary the next engine restart restores.
+    it('reserves the persisted active-cycle boundary before importing, so a completed DCA pair cannot collide with it', () => {
+      seedFund(DEFAULT_PAIR, { orders: [] });
+
+      const regimeStatePath = path.join(fundDir(DEFAULT_PAIR), 'regime-state.json');
+      const regimeState = JSON.parse(fs.readFileSync(regimeStatePath, 'utf8'));
+      regimeState.position.activeCycleId = 'cycle-5';
+      fs.writeFileSync(regimeStatePath, JSON.stringify(regimeState));
+
+      reseedOrders(DEFAULT_PAIR, mergeOrders()); // one filled + one pending
+
+      const result = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(result.success, true);
+
+      const ledger = JSON.parse(fs.readFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), 'utf8'));
+      const doneBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-done');
+      const doneSell = ledger.find(f => f.tradeId === 'dca-convert-sell-sell-done');
+      const openBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-open');
+      assert.ok(doneBuy && doneSell && openBuy, 'all three synthetic fills must be ingested');
+
+      // The completed pair must NOT be assigned the reserved persisted cycle.
+      assert.notEqual(doneBuy.cycleId, 'cycle-5', "a completed DCA pair must not collide with the reserved persisted cycle's ID");
+      // The still-open pending buy IS the fund's actual live position, and
+      // belongs in the reserved boundary.
+      assert.equal(openBuy.cycleId, 'cycle-5');
+
+      // The persisted boundary must still correctly name the cycle that now
+      // holds the fund's open position, for the next engine restart's
+      // restorePersistedCycleId to restore the right cycle.
+      const mergedRegimeState = JSON.parse(fs.readFileSync(regimeStatePath, 'utf8'));
+      assert.equal(mergedRegimeState.position.activeCycleId, 'cycle-5');
+    });
+
+    // Third codex review finding: a completed DCA order can legitimately
+    // hold back more than half its bought asset (config.holdbackPercent >
+    // 50, mirrored here by a sellQuantity well under half the buyQuantity).
+    // With no persisted position.activeCycleId and no pre-existing ledger
+    // activity, the cycle the filled loop just created for that trade must
+    // never be mistaken for a genuine pre-existing "live" cycle merely
+    // because its sell ratio reads as "incomplete" under the 0.5 threshold
+    // -- that would mix the pending buys into an already-closed trade's
+    // cycle, reintroducing this issue's original bug.
+    it('never reuses a just-completed high-holdback DCA trade as the "live" cycle for pending buys', () => {
+      seedFund(DEFAULT_PAIR, { orders: [] }); // no persisted activeCycleId, empty ledger
+
+      const highHoldbackOrders = [
+        {
+          status: 'filled',
+          orderId: 'sell-holdback',
+          buyOrderId: 'buy-holdback',
+          buyQuantity: 1.0,
+          buyPrice: 50000,
+          buyUSDC: 50000,
+          buyFees: 0,
+          buyCostBasis: 50000,
+          // 70% holdback: sold well under half of what was bought, so
+          // isCompletedCycle's 0.5 sell-ratio threshold alone would read
+          // this closed trade's own cycle as "incomplete".
+          sellQuantity: 0.3,
+          sellPrice: 51000,
+          sellFees: 0,
+          createdAt: '2025-01-01T00:00:00.000Z',
+          filledAt: '2025-01-02T00:00:00.000Z',
+        },
+        mergeOrders()[1], // the one pending order
+      ];
+      reseedOrders(DEFAULT_PAIR, highHoldbackOrders);
+
+      const result = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(result.success, true);
+      assert.equal(result.summary.filledOrders, 1);
+      assert.equal(result.summary.pendingOrders, 1);
+
+      const ledger = JSON.parse(fs.readFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), 'utf8'));
+      const holdbackBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-holdback');
+      const openBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-open');
+      assert.ok(holdbackBuy && openBuy);
+      assert.notEqual(
+        openBuy.cycleId,
+        holdbackBuy.cycleId,
+        'the pending buy must land in a fresh cycle, not the just-closed high-holdback trade\'s cycle',
+      );
+    });
+
+    // Fourth codex review finding: the same high-holdback misjudgment can
+    // happen with a cycle left on disk by an EARLIER merge/execute run, not
+    // just one created by the current call — load()'s own heuristic (no
+    // persisted activeCycleId to trust outright) can restore straight to
+    // that old closed trade's cycle, and a ratio-only check would still
+    // misjudge it as open.
+    it('never reuses an already-closed high-holdback cycle left on disk by an earlier run', () => {
+      seedFund(DEFAULT_PAIR, { orders: [] });
+
+      // Pre-existing ledger, as if an earlier merge already imported one
+      // high-holdback completed trade into cycle-1 (70% held back, buy
+      // sellOrderId already linked to its sell — genuinely closed).
+      const priorFills = [
+        {
+          tradeId: 'dca-convert-buy-buy-old', orderId: 'buy-old', side: 'buy',
+          price: 50000, size: 1.0, quoteAmount: 50000, netFee: 0,
+          timestamp: Date.parse('2025-01-01T00:00:00.000Z'), cycleId: 'cycle-1',
+          sellOrderId: 'sell-old',
+        },
+        {
+          tradeId: 'dca-convert-sell-sell-old', orderId: 'sell-old', side: 'sell',
+          price: 51000, size: 0.3, quoteAmount: 15300, netFee: 0,
+          timestamp: Date.parse('2025-01-02T00:00:00.000Z'), cycleId: 'cycle-1',
+        },
+      ];
+      fs.writeFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), JSON.stringify(priorFills));
+
+      // No persisted activeCycleId this run either — only a new pending
+      // order to merge in.
+      reseedOrders(DEFAULT_PAIR, [mergeOrders()[1]]);
+
+      const result = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(result.success, true);
+      assert.equal(result.summary.pendingOrders, 1);
+
+      const ledger = JSON.parse(fs.readFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), 'utf8'));
+      const openBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-open');
+      assert.ok(openBuy);
+      assert.notEqual(
+        openBuy.cycleId,
+        'cycle-1',
+        'the pending buy must not land in a prior run\'s already-closed high-holdback cycle',
+      );
+    });
+
+    // Fifth codex review finding: if the process crashes between the
+    // fill-ledger writes above and the comprehensive saveRegimeState() call
+    // near the end of mergeToRegime, regime-state.json must not be left
+    // naming the OLD cycle boundary while the ledger already reflects the
+    // new one -- restorePersistedCycleId would trust the stale marker on
+    // the next engine start. Verify the corrected boundary is persisted
+    // immediately (a distinct, early saveRegimeState call), not only as
+    // part of the final save.
+    it('persists a corrected active-cycle boundary immediately, not only at the end of the merge', () => {
+      seedFund(DEFAULT_PAIR, { orders: [] });
+      reseedOrders(DEFAULT_PAIR, mergeOrders()); // one filled + one pending, no persisted boundary yet
+
+      // Stub state-tracker's saveRegimeState to record every call's
+      // activeCycleId, then force dca-converter to be re-required so its
+      // own destructured reference binds to the stub (mirrors this file's
+      // own "destructured at require time" re-require pattern above).
+      delete require.cache[STATE_TRACKER];
+      const stateTracker = require('../src/state-tracker');
+      const originalSaveRegimeState = stateTracker.saveRegimeState;
+      const calls = [];
+      stateTracker.saveRegimeState = (position, ...rest) => {
+        calls.push(position.activeCycleId);
+        return originalSaveRegimeState(position, ...rest);
+      };
+
+      let freshConverter;
+      try {
+        delete require.cache[FILL_LEDGER];
+        delete require.cache[DCA_CONVERTER];
+        freshConverter = require('../src/dca-converter');
+
+        const result = freshConverter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+        assert.equal(result.success, true);
+      } finally {
+        stateTracker.saveRegimeState = originalSaveRegimeState;
+      }
+
+      // At least two saves: the immediate boundary-correction save, and the
+      // final comprehensive save with the merged celestial bodies appended.
+      assert.ok(calls.length >= 2, `expected an early boundary-correction save plus the final save, got ${calls.length}`);
+      // The FIRST save must already carry the corrected boundary ('cycle-2'
+      // — the new cycle the pending buy landed in, since the filled order's
+      // own cycle-1 closed it) -- not only the last one -- so a crash right
+      // after it still leaves regime-state.json consistent with the ledger.
+      assert.equal(calls[0], 'cycle-2', 'the first saveRegimeState call must already carry the corrected boundary');
+    });
   });
 });

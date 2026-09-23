@@ -18,8 +18,8 @@ const {
   getRegimeConfig,
   updateExchangeConfig,
   updateFundConfig,
-  setExchangeEnabled,
-  setExchangeDryRun,
+  setFundEnabled,
+  setFundDryRun,
   addFund,
   removeFund,
   getBaseCurrency,
@@ -394,7 +394,7 @@ module.exports = (app, deps) => {
     let applied = false;
 
     if (typeof enabled === 'boolean') {
-      setExchangeEnabled(exchange, pair, enabled);
+      setFundEnabled(exchange, pair, enabled);
       applied = true;
       logger.info(`ℹ️ [${exchange}/${pair}] Trading automation ${enabled ? 'ENABLED' : 'DISABLED'}`, {
         action: 'toggle-enabled',
@@ -403,7 +403,7 @@ module.exports = (app, deps) => {
     }
 
     if (typeof dryRun === 'boolean') {
-      setExchangeDryRun(exchange, pair, dryRun);
+      setFundDryRun(exchange, pair, dryRun);
       applied = true;
       logger.info(`ℹ️ [${exchange}/${pair}] Dry-run mode ${dryRun ? 'ENABLED' : 'DISABLED'}`, {
         action: 'toggle-dry-run',
@@ -607,7 +607,20 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
+
+    if (!getGlobalConfig().simpleDcaEnabled) {
+      return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
+    }
+
     const { orderIds } = req.body || {};
+    if (orderIds !== undefined) {
+      const isValidOrderIdList = Array.isArray(orderIds)
+        && orderIds.length <= 200
+        && orderIds.every(id => typeof id === 'string' && id.length > 0);
+      if (!isValidOrderIdList) {
+        return res.status(400).json({ success: false, error: 'orderIds must be an array of order id strings' });
+      }
+    }
 
     exchangeLogger(exchange, pair, '/api/:exchange/consolidate').info(`ℹ️ [${exchange}/${pair}] Consolidation triggered via API`, {
       action: 'consolidate',

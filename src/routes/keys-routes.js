@@ -123,6 +123,19 @@ module.exports = (app, deps) => {
       keysLogger(exchange, '/api/:exchange/keys').info(`ℹ️ [${exchange}] API keys deleted`, { action: 'delete-keys' });
     }
 
-    res.json({ success: true, exchange, configured: false });
+    // Report the REAL post-delete state rather than hardcoding false (issue #688):
+    // a stale/legacy credential source could still leave the adapter usable even
+    // after this file is gone, and the UI should reflect that instead of hiding it.
+    // Any exchange without a registered adapter (unknown/unsupported) falls back
+    // to false, matching the pre-existing behavior for that case.
+    let configured = false;
+    try {
+      const { getAdapter } = require('../adapters');
+      configured = getAdapter(exchange).hasValidKeys();
+    } catch (err) {
+      keysLogger(exchange, '/api/:exchange/keys').warn(`⚠️ [${exchange}] Could not resolve adapter to verify post-delete state`, { error: err.message });
+    }
+
+    res.json({ success: true, exchange, configured });
   });
 };

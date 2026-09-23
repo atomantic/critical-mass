@@ -8,6 +8,7 @@
 const { createContextLogger } = require('../logger');
 const { validateEndpointUrl } = require('../url-validator');
 const { asyncRoute } = require('./route-utils');
+const { validateConfigUpdate, SENTINEL_CONFIG_SCHEMA, validateSentinelConfigUpdate } = require('../config-validator');
 
 /**
  * Context logger for the Sentinel routes. Sentinel watches news feeds rather
@@ -52,7 +53,7 @@ module.exports = (app, deps) => {
 
   // Allowlist of top-level keys accepted by updateSentinelConfig.
   // Sub-objects (aiClassification, keywords, feeds) are whitelisted as a unit
-  // and their internal structure is validated by updateSentinelConfig itself.
+  // and value-checked below by validateSentinelConfigUpdate (issue #687).
   const SENTINEL_CONFIG_ALLOWED_KEYS = new Set([
     'enabled',
     'pollIntervalMs',
@@ -78,6 +79,19 @@ module.exports = (app, deps) => {
 
     if (Object.keys(sanitized).length === 0) {
       return res.status(400).json({ success: false, error: `No recognised config keys. Allowed: ${[...SENTINEL_CONFIG_ALLOWED_KEYS].join(', ')}` });
+    }
+
+    // Value-validate every key before anything is persisted or looked up
+    // (issue #687): flat fields (enabled/pollIntervalMs/maxAlerts) via the
+    // shared schema, nested/array fields (aiClassification/feeds/keywords)
+    // via the dedicated sub-validator. This runs before the SSRF loop below
+    // so a non-array `feeds` is rejected outright instead of silently
+    // skipping that check.
+    const { errors: flatErrors } = validateConfigUpdate(SENTINEL_CONFIG_SCHEMA, sanitized);
+    const { errors: nestedErrors } = validateSentinelConfigUpdate(sanitized);
+    const validationErrors = [...flatErrors, ...nestedErrors];
+    if (validationErrors.length > 0) {
+      return res.status(400).json({ success: false, errors: validationErrors });
     }
 
     // SSRF guard (issue #215-A): validate every feed URL at config-write time,
