@@ -1117,9 +1117,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let wsFeed = null;
   let metricsInterval = null;
   let reconcileInterval = null;
-  // Merge / reconcile / fill / entry mutual exclusion lives in engine-locks.js
-  // (#580). Fills wait (bounded) for an in-flight merge; a merge never waits on
-  // fills. Manual operator merges are not gated on in-flight fills (deliberate).
+  // Merge / reconcile / fill / entry / ladder-sweep mutual exclusion lives in
+  // engine-locks.js (#580, #766). Fills wait (bounded) for an in-flight merge
+  // or ladder sweep; a merge never waits on fills or on the ladder lock.
+  // Manual operator merges are not gated on in-flight fills (deliberate).
   const engineLocks = createEngineLocks({
     logWarn: (msg) => logger.warn(msg),
   });
@@ -4892,6 +4893,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           bodyId: body.id,
         });
 
+        let closesCycle = false;
         if (isPartial) {
           // PARTIAL FILL: reduce body size, keep body active, re-place TP for remaining
           const remainingAsset = roundAsset(body.assetQty - summary.totalSize);
@@ -4966,51 +4968,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             newMaxUsdcDeployed: config.maxUsdcDeployed,
           });
 
-          // If no bodies remain, do a full cycle reset
-          if (positionState.celestialBodies.length === 0) {
-            positionState.cyclesCompleted += 1;
-
-            const actualTpPct = body.avgPrice > 0
-              ? ((summary.avgPrice - body.avgPrice) / body.avgPrice) * 100
-              : 0;
-            recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
-            // Capture before resetCycle() zeroes cycleBuys, and run the
-            // optimizer's real-balance fetch (issue #694) AFTER resetCycle()
-            // flips the fill-ledger's cycle boundary (fillLedger.startNewCycle())
-            // — not before it — so the network round-trip never widens the
-            // window where a concurrent entry evaluation (gated only by
-            // isEntryInProgress(), not isMutatingPosition()) could land a buy
-            // fill still attributed to the closing cycle (Claude review).
-            const cycleBuysAtClose = positionState.cycleBuys;
-            // try/finally: resetCycle()'s only network call (ladder cancel)
-            // runs before any state mutation, so a throw there means nothing
-            // else in resetCycle() ran either — but capitalDeployed/stepsUsed
-            // above are already committed facts about this fill, independent
-            // of whether the ladder cleanup succeeds. Recording them in
-            // `finally` means a resetCycle() failure (which retries on its
-            // own via the outer dedup-clear/retry path) can never permanently
-            // drop this cycle from the optimizer's stats (codex review round 1).
-            // Deliberately NOT awaited: the caller's own saveLiveState()/
-            // fillLedger.persist() (below) durably persist this already-
-            // completed sell/cycle-close before the optimizer's balance-fetch
-            // (up to a 30s exchange timeout) gets a chance to delay them — a
-            // crash during that fetch loses only this one best-effort
-            // optimizer stats sample, never the P&L-critical state (codex
-            // review round 2). recordCycleForSizeOptimizer never rejects (its
-            // own body is try/caught), so no unhandled-rejection risk. Once
-            // it DOES resolve, re-save so the recorded sample/balance isn't
-            // left ONLY in memory until some unrelated future save happens to
-            // pick it up (codex review round 3) — cheap and idempotent, same
-            // as the periodic save timer already does.
-            try {
-              await resetCycle();
-            } finally {
-              recordCycleForSizeOptimizer({
-                stepsUsed: cycleBuysAtClose,
-                capitalDeployed: body.costBasis,
-              }).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
-            }
-          }
+          // No bodies left: the cycle closes. The reset runs below, after this
+          // sell's P&L annotation and closed-trade record are committed (#766).
+          closesCycle = positionState.celestialBodies.length === 0;
         }
 
         // Annotate fills with body metadata
@@ -5065,6 +5025,65 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           source: 'live',
         });
 
+        // If no bodies remain, do a full cycle reset — AFTER the bookkeeping
+        // above, persisted first: resetCycle can wait on the ladder lock behind
+        // an in-flight rebuild (#766), and a crash during that wait must not
+        // lose this sell's bodyPnl/holdback annotation (the realized-P&L source
+        // of truth) with the body it came from already gone.
+        if (closesCycle) {
+          positionState.cyclesCompleted += 1;
+
+          const actualTpPct = body.avgPrice > 0
+            ? ((summary.avgPrice - body.avgPrice) / body.avgPrice) * 100
+            : 0;
+          recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
+          // Durable "this close still owes a cycle reset" marker: once the sell
+          // is annotated, a retry of this fill (after resetCycle throws) takes
+          // the already-processed branch below, which finishes the reset from
+          // it instead of skipping it.
+          positionState.pendingCycleResetFor = fillData.orderId;
+          saveLiveState();
+          fillLedger.persist();
+          // Capture before resetCycle() zeroes cycleBuys, and run the
+          // optimizer's real-balance fetch (issue #694) AFTER resetCycle()
+          // flips the fill-ledger's cycle boundary (fillLedger.startNewCycle())
+          // — not before it — so the network round-trip never widens the
+          // window where a concurrent entry evaluation (gated only by
+          // isEntryInProgress(), not isMutatingPosition()) could land a buy
+          // fill still attributed to the closing cycle (Claude review).
+          const cycleBuysAtClose = positionState.cycleBuys;
+          // try/finally: resetCycle()'s only network call (ladder cancel)
+          // runs before any state mutation, so a throw there means nothing
+          // else in resetCycle() ran either — but capitalDeployed/stepsUsed
+          // above are already committed facts about this fill, independent
+          // of whether the ladder cleanup succeeds. Recording them in
+          // `finally` means a resetCycle() failure (the sell itself is
+          // already booked and persisted above, so it is never re-booked)
+          // can never permanently drop this cycle from the optimizer's stats
+          // (codex review round 1).
+          // Deliberately NOT awaited: the caller's own saveLiveState()/
+          // fillLedger.persist() (below) durably persist this already-
+          // completed sell/cycle-close before the optimizer's balance-fetch
+          // (up to a 30s exchange timeout) gets a chance to delay them — a
+          // crash during that fetch loses only this one best-effort
+          // optimizer stats sample, never the P&L-critical state (codex
+          // review round 2). recordCycleForSizeOptimizer never rejects (its
+          // own body is try/caught), so no unhandled-rejection risk. Once
+          // it DOES resolve, re-save so the recorded sample/balance isn't
+          // left ONLY in memory until some unrelated future save happens to
+          // pick it up (codex review round 3) — cheap and idempotent, same
+          // as the periodic save timer already does.
+          try {
+            await resetCycle();
+            positionState.pendingCycleResetFor = null;
+          } finally {
+            recordCycleForSizeOptimizer({
+              stepsUsed: cycleBuysAtClose,
+              capitalDeployed: body.costBasis,
+            }).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
+          }
+        }
+
         saveLiveState();
         fillLedger.persist();
         if (callbacks.onStatusUpdate) callbacks.onStatusUpdate(getState());
@@ -5080,6 +5099,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const existingFills = fillLedger.getFillsForOrder(fillData.orderId);
         const alreadyProcessedAsBody = existingFills.some(f => f.isBodyOwned || f.isSatellite);
         if (alreadyProcessedAsBody) {
+          // A retry of a body TP close whose cycle reset failed after the sell
+          // was booked (#766): finish the reset the first pass owed.
+          if (positionState.pendingCycleResetFor === fillData.orderId
+            && (positionState.celestialBodies || []).length === 0) {
+            logger.warn(`🔁 [${exchange}] Sell ${fillData.orderId.slice(0,8)} already booked — completing its pending cycle reset`);
+            await resetCycle();
+            positionState.pendingCycleResetFor = null;
+            saveLiveState();
+            fillLedger.persist();
+            return;
+          }
           logger.info(`⏭️ [${exchange}] Sell ${fillData.orderId.slice(0,8)} already processed as body TP, skipping`);
           return;
         }
@@ -6039,6 +6069,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // would let a merge (or the next reconcile tick) race an in-flight TP
       // re-placement (#189 review).
       await reconcilePendingPlacements();
+      await completeOwedCycleReset().catch((err) => {
+        logger.error(`❌ [${exchange}] Owed cycle reset failed (will retry next reconcile): ${err.message}`, { error: err.message });
+      });
       const pending = [];
 
       // Check for entry fills that WebSocket might have missed
@@ -6544,7 +6577,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // only the last ladder's orders tracked (issue #98). All early-returns from
     // here must clear it, so the rest of the function runs under withEntryLock.
     if (engineLocks.isEntryInProgress()) return;
-    await engineLocks.withEntryLock(async () => {
+    // A rebuild/cancel/cycle-reset sweep in flight owns the ladder (#766): it
+    // may have cleared ladderActive mid-sweep, and placing here would stack a
+    // second ladder on the one it is about to place. Skip — the next tick
+    // re-evaluates — rather than queue: taken without waiting, so held for the
+    // whole placement and a sweep requested meanwhile runs after it.
+    await engineLocks.withEntryLock(() => engineLocks.withLadderLock(async () => {
       // Calculate remaining budget, capped at actual available balance
       let remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
       const quoteCurrency = getQuoteCurrency(productId);
@@ -6602,7 +6640,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         logger.info(`📊 [${exchange}] Building ladder: ${ladderCalculator.getSummary(ladder)}`);
 
         // Place ladder orders
+        const generationAtPlace = cycleResetGeneration;
         const result = await orderExecutor.placeLadderOrders(ladder.levels);
+        if (await abandonLadderPlacedAcrossReset(generationAtPlace, 'Ladder placement')) return;
 
         // Update position state
         positionState.ladderActive = true;
@@ -6626,7 +6666,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       };
 
       await placeLadder();
-    });
+    }, { wait: false }));
   };
 
   /**
@@ -7169,30 +7209,117 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Reset for new cycle
+   * Finish a cycle reset a body TP close still owes (#766) — its fill booked
+   * the sell, then resetCycle threw, and the fill may never be re-delivered
+   * (the WS path does not retry; polling retries are bounded and lost on
+   * restart). Run from the reconcile tick, so it also covers a restart.
+   * Skipped while a sweep or fill is in flight (either may be finishing it).
+   */
+  const completeOwedCycleReset = async () => {
+    const owedFor = positionState.pendingCycleResetFor;
+    if (!owedFor) return;
+    if ((positionState.celestialBodies || []).length > 0) {
+      // A new body opened before the reset ran; closing the cycle now would
+      // cut it off from its own sell. Drop the debt and leave a trace.
+      logger.warn(`⚠️ [${exchange}] Owed cycle reset for ${String(owedFor).slice(0, 8)} abandoned — a body opened before it could run`);
+      positionState.pendingCycleResetFor = null;
+      saveLiveState();
+      return;
+    }
+    if (engineLocks.isLadderBusy() || engineLocks.getFlags().fillInProgress > 0) return;
+    logger.warn(`🔁 [${exchange}] Completing the cycle reset owed by ${String(owedFor).slice(0, 8)}`);
+    await resetCycle();
+    saveLiveState();
+    fillLedger.persist();
+  };
+
+  /**
+   * Reset for new cycle.
+   *
+   * Serialised with every other ladder sweep (rebuildLadder, cancelLadder,
+   * ladder placement) on the engine's ladder lock (#766): a TP close that
+   * lands mid-rebuild waits for the rebuild to finish, then cancels the
+   * ladder it just placed — rather than sweeping underneath it and leaving
+   * the rebuild to mark a cancelled ladder active. Reentrant, so a reset
+   * reached from inside a sweep's own mid-cancel booking runs through.
    */
   const resetCycle = async () => {
+    // Buys that land while this reset waits its turn postdate the close just
+    // like the sweep's own (#711 — see resetCycleLocked), e.g. a rung of the
+    // ladder the in-flight rebuild just placed. Snapshot the closing cycle
+    // before queueing so they are carried too. Uncontended, the lock is taken
+    // synchronously and no snapshot is needed.
+    let queuedFrom = null;
+    if (engineLocks.isLadderBusy()) {
+      const cycleId = fillLedger.getCurrentCycleId();
+      queuedFrom = {
+        generation: cycleResetGeneration,
+        tradeIds: new Set(cycleFillsFor(cycleId).map(f => f.tradeId)),
+      };
+    }
+    return engineLocks.withLadderLock(() => resetCycleLocked(queuedFrom), {
+      onTimeout: 'proceed',
+      label: 'Cycle reset',
+      exchange,
+    });
+  };
+
+  /**
+   * Number of cycle turnovers resetCycleLocked has performed. A queued reset
+   * compares it (not the cycle id, which an operator recalculation can
+   * rename) to tell whether a reset ahead of it already closed its cycle.
+   */
+  let cycleResetGeneration = 0;
+
+  /**
+   * A fresh ledger has no live cycle until its first reset: its fills are
+   * stamped null, so the closing "cycle" is the null-cycle rows.
+   * @param {string|null} cycleId - fillLedger.getCurrentCycleId() at call time
+   */
+  const cycleFillsFor = (cycleId) => (cycleId
+    ? fillLedger.getCurrentCycleFills()
+    : fillLedger.getAllFills().filter(f => f.cycleId == null));
+
+  /**
+   * @param {{generation: number, tradeIds: Set<string>}|null} queuedFrom -
+   *   the closing cycle's rows when this reset queued behind another sweep
+   */
+  const resetCycleLocked = async (queuedFrom) => {
     // The closing cycle's rows as they stand BEFORE the ladder sweep below —
     // the only await in this function. A buy row that shows up in the closing
     // cycle after the sweep landed while it ran: a rung that partially filled
     // before its cancel took is booked synchronously by cancelAllLadderOrders
     // (#674), and a concurrent WS/poll fill can land in the same window. The
     // closing TP never consumed such a buy, so it opens the NEW cycle (#711).
+    // A reset that queued for the ladder lock uses its pre-queue snapshot
+    // instead (#766).
     const closingCycleId = fillLedger.getCurrentCycleId();
-    // A fresh ledger has no live cycle until its first reset: its fills are
-    // stamped null, so the closing "cycle" is the null-cycle rows.
-    const closingCycleFills = () => (closingCycleId
-      ? fillLedger.getCurrentCycleFills()
-      : fillLedger.getAllFills().filter(f => f.cycleId == null));
-    let preSweepTradeIds = null;
+    // A reset that queued behind another sweep is stale if a reset ahead of
+    // it in the queue already closed the cycle it was asked to close (two TP
+    // closes during one rebuild). Running it anyway would close the NEW cycle
+    // under a body still open in it, splitting that body's buy from its sell.
+    if (queuedFrom && queuedFrom.generation !== cycleResetGeneration) {
+      logger.info(`🔄 [${exchange}] Queued cycle reset skipped — the cycle it was asked to close was already closed while it waited (now ${closingCycleId})`);
+      positionState.pendingCycleResetFor = null;
+      return;
+    }
+    const closingCycleFills = () => cycleFillsFor(closingCycleId);
+    let preSweepTradeIds = queuedFrom ? queuedFrom.tradeIds : null;
+    const generationAtEntry = cycleResetGeneration;
 
     // Cancel remaining ladder orders - check both positionState and executor tracking
     const executorLadderOrders = orderExecutor.getPendingLadderOrders ? orderExecutor.getPendingLadderOrders() : [];
     const hasTrackedLadder = (positionState.pendingLadderOrders && positionState.pendingLadderOrders.length > 0) || executorLadderOrders.length > 0;
     if (positionState.ladderActive || hasTrackedLadder) {
-      preSweepTradeIds = new Set(closingCycleFills().map(f => f.tradeId));
+      preSweepTradeIds = preSweepTradeIds || new Set(closingCycleFills().map(f => f.tradeId));
       const { cancelled, partialFills = 0 } = orderExecutor.cancelAllLadderOrders ? await orderExecutor.cancelAllLadderOrders() : { cancelled: 0 };
       if (cancelled > 0) logger.info(`🧹 [${exchange}] Cancelled ${cancelled} unfilled ladder orders${partialFills > 0 ? ` (${partialFills} partially filled during the cancel and were booked)` : ''}`);
+      // Two resets that both timed out on the ladder lock can overlap here;
+      // only the first to finish its sweep turns the cycle over (#766).
+      if (cycleResetGeneration !== generationAtEntry) {
+        logger.info(`🔄 [${exchange}] Cycle reset skipped after its sweep — a concurrent reset already turned the cycle over`);
+        return;
+      }
     }
 
     // Reset ladder state
@@ -7231,15 +7358,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Buys that landed during the sweep — ingested under the closing cycle
     // (ingestFill stamps the cycle live at ingest time) but not in the
     // pre-sweep snapshot. Sells stay put: a sell landing in that window closes
-    // buys of the cycle it was ingested under.
+    // buys of the cycle it was ingested under — so a window buy whose body a
+    // TP already closed (possible across a queued reset's wait, #766) stays
+    // with that sell in the closing cycle rather than splitting the pair. A
+    // TP only placed (sellOrderId is stamped at placement) does not count, and
+    // neither does a partial sale: a body that still owns the buy is open.
+    const closedBySale = (f) => f.sellOrderId
+      && fillLedger.getRecordedSizeForOrder(f.sellOrderId) > 0
+      && !isBuyAlreadyCommitted(bodies, f.orderId);
     const sweepBuys = preSweepTradeIds
-      ? closingCycleFills().filter(f => f.side === 'buy' && !preSweepTradeIds.has(f.tradeId))
+      ? closingCycleFills().filter(f => f.side === 'buy' && !preSweepTradeIds.has(f.tradeId) && !closedBySale(f))
       : [];
 
     // Persist the boundary in regime-state.json with the other operator-owned
     // position state. The fill ledger remains the fallback for legacy state
     // files that predate this marker.
     positionState.activeCycleId = fillLedger.startNewCycle();
+    cycleResetGeneration++;
+    // Any completed turnover pays off a body TP close's owed reset (#766).
+    positionState.pendingCycleResetFor = null;
     // Persist WHEN the cycle began too: it is the boundary recalculateCycles
     // uses to fold null-cycle fills the engine missed during downtime into
     // this cycle, and an empty post-reset cycle has no fill to infer it from (#705).
@@ -8500,6 +8637,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (engineLocks.isMutatingPosition()) {
       return { success: false, message: engineLocks.describeBusy('position') };
     }
+    // An operator reset must not queue behind (or, after the wait bound, run
+    // alongside) a ladder rebuild/cancel/reset in flight (#766) — refuse like
+    // rebuildLadder/cancelLadder. Uncontended, resetCycle below takes the
+    // ladder lock synchronously, so nothing can slip in between.
+    if (engineLocks.isLadderBusy()) {
+      return { success: false, message: engineLocks.describeBusy('ladder') };
+    }
     // resetCycle() treats a DRAINING lifecycle as "this cycle boundary is the
     // close trigger" and transitions straight to CLOSED (stopping the engine
     // via onLifecycleClosed) — an operator clicking "resume buying" while the
@@ -8689,11 +8833,45 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * A ladder placement normally owns the ladder lock start to finish, so no
+   * cycle reset can run under it. The one exception is a reset whose bounded
+   * wait timed out and proceeded anyway (#766): it swept only the rungs placed
+   * so far, and marking the rest active would leave a ladder resting into
+   * the new cycle that nothing sweeps. Detect that and cancel it.
+   * @param {number} generationAtStart - cycleResetGeneration when placement began
+   * @param {string} label - log label
+   * @returns {Promise<boolean>} true when the placed ladder was abandoned
+   */
+  const abandonLadderPlacedAcrossReset = async (generationAtStart, label) => {
+    if (cycleResetGeneration === generationAtStart) return false;
+    logger.warn(`⚠️ [${exchange}] ${label}: a cycle reset ran while the ladder was being placed (its ladder-lock wait timed out) — cancelling the ladder just placed`);
+    await orderExecutor.cancelAllLadderOrders();
+    positionState.ladderActive = false;
+    positionState.ladderPlacedAt = null;
+    positionState.ladderLowerBound = 0;
+    positionState.pendingLadderOrders = [];
+    saveLiveState();
+    return true;
+  };
+
+  /**
    * Cancel existing ladder orders and rebuild from scratch
    * Bypasses health/regime guards (user-initiated)
+   *
+   * Holds the ladder lock from the first check to the last placement (#766),
+   * so a TP close's resetCycle that lands mid-rebuild queues behind it and
+   * then sweeps the fresh ladder, and a rebuild requested mid-reset runs
+   * after the reset. Gives up with a busy message if another sweep is stuck.
    * @returns {Promise<{success: boolean, message: string}>}
    */
-  const rebuildLadder = async () => {
+  const rebuildLadder = () => engineLocks.withLadderLock(rebuildLadderLocked, {
+    onTimeout: 'refuse',
+    label: 'Ladder rebuild',
+    exchange,
+  });
+
+  /** @returns {Promise<{success: boolean, message: string}>} */
+  const rebuildLadderLocked = async () => {
     if (!isRunning) {
       return { success: false, message: 'Engine not running' };
     }
@@ -8731,9 +8909,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     logger.info(`🔄 [${exchange}] Manual ladder rebuild requested, budget=$${remainingBudget.toFixed(2)} (allocated=$${allocatedCapital.toFixed(2)})`);
 
-    // Re-check after the balance await above: a fill that started meanwhile
-    // (e.g. a TP close, whose resetCycle sweeps the ladder itself) must not
-    // have this rebuild sweep underneath it (issue #711).
+    // Re-check after the balance await above: don't size a ladder against a
+    // position a fill that started meanwhile is still mutating (issue #711).
+    // A fill that starts AFTER this point and closes the cycle no longer
+    // races the sweep: its resetCycle queues on the ladder lock this rebuild
+    // holds, then cancels the ladder placed below (#766).
     if (engineLocks.isMutatingPosition()) {
       return { success: false, message: engineLocks.describeBusy('position') };
     }
@@ -8824,7 +9004,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     logger.info(`📊 [${exchange}] Rebuilding ladder: ${ladderCalculator.getSummary(ladder)}`);
 
     // Place ladder orders
+    const generationAtPlace = cycleResetGeneration;
     const result = await orderExecutor.placeLadderOrders(ladder.levels);
+    if (await abandonLadderPlacedAcrossReset(generationAtPlace, 'Ladder rebuild')) {
+      return { success: false, message: 'A cycle reset ran while the new ladder was being placed, so it was cancelled — rebuild again if appropriate.' };
+    }
 
     // Update position state
     positionState.ladderActive = true;
@@ -8851,7 +9035,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     return { success: true, message: msg };
   };
 
-  const cancelLadder = async () => {
+  /**
+   * Cancel the ladder and switch to reactive entries. Serialised with the
+   * other ladder sweeps on the ladder lock (#766) — see rebuildLadder.
+   * @returns {Promise<{success: boolean, message: string}>}
+   */
+  const cancelLadder = () => engineLocks.withLadderLock(cancelLadderLocked, {
+    onTimeout: 'refuse',
+    label: 'Ladder cancel',
+    exchange,
+  });
+
+  /** @returns {Promise<{success: boolean, message: string}>} */
+  const cancelLadderLocked = async () => {
     if (!isRunning) return { success: false, message: 'Engine not running' };
     // Same gate as rebuildLadder (issue #711): don't sweep the ladder
     // underneath an in-flight fill/merge/reconcile.
@@ -9085,6 +9281,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       setOrderExecutor: (v) => { orderExecutor = v; },
       handleTicker: (data) => handleTicker(data),
       evaluateEntryTrigger: () => evaluateEntryTrigger(),
+      evaluateLadderEntry: () => evaluateLadderEntry(),
       setRecoveryModule: (v) => { recoveryModule = v; },
       setMergeInProgress: engineLocks._test.setMergeInProgress,
       setReconcileInProgress: engineLocks._test.setReconcileInProgress,
@@ -9123,6 +9320,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       refreshDrawdownGuard,
       getOrderExecutor: () => orderExecutor,
       resetCycle: () => resetCycle(),
+      // A reset that timed out on the ladder lock and proceeded unserialised.
+      resetCycleUnserialised: () => resetCycleLocked(null),
       checkAllCaps: () => riskManager.checkAllCaps(positionState),
     },
   };

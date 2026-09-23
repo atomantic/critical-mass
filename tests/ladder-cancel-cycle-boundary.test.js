@@ -667,3 +667,496 @@ describe('rebuildLadder / cancelLadder refuse to sweep mid-mutation (#711)', () 
     assert.equal(eng._getPositionState().ladderActive, true);
   });
 });
+
+describe('ladder sweeps serialise on the ladder lock (#766)', () => {
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((r) => { resolve = r; });
+    return { promise, resolve };
+  };
+  const until = async (cond, what) => {
+    for (let i = 0; i < 200; i++) {
+      if (cond()) return;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    assert.fail(`timed out waiting for ${what}`);
+  };
+
+  /**
+   * Ladder-mode engine whose placeLadderOrders and cancelAllLadderOrders can
+   * be held open. `holdPlace` / `holdCancel` are consumed once each, in call order.
+   */
+  const setupSerialEngine = ({ fillsByOrder = {}, holdPlace = [], holdCancel = [] } = {}) => {
+    const calls = { cancel: 0, place: 0 };
+    const eng = makeEngine({
+      fillsByOrder,
+      adapter: { getAccountBalance: async () => ({ available: '1000' }) },
+      executor: {
+        cancelAllLadderOrders: async () => {
+          calls.cancel++;
+          const hold = holdCancel.shift();
+          if (hold) await hold.promise;
+          return { cancelled: 1, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [] };
+        },
+        placeLadderOrders: async (levels) => {
+          calls.place++;
+          const hold = holdPlace.shift();
+          if (hold) await hold.promise;
+          return { orders: levels.map((l, i) => ({ orderId: `new-rung-${calls.place}-${i}`, ...l })), failedCount: 0 };
+        },
+      },
+    });
+    const config = eng._getConfig();
+    config.entryMode = 'ladder';
+    config.maxUsdcDeployed = 1000;
+    config.baseSizeUsdc = 10;
+    const m = eng._getMarketState();
+    m.lastPrice = 50000;
+    m.bid = 49999.99;
+    m.ask = 50000.01;
+    return { eng, calls };
+  };
+
+  it('a TP close that lands mid-rebuild waits for it, then sweeps the ladder it placed', async () => {
+    const placement = deferred();
+    const { eng, calls } = setupSerialEngine({
+      fillsByOrder: {
+        'tp-a': [rawFill('sell', 'tp-a', 't-sell-a', 0.0099, 52000)],
+        'new-rung-1-0': [rawFill('buy', 'new-rung-1-0', 't-new-rung', 0.002, 49000)],
+      },
+      holdPlace: [placement],
+    });
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-a', 't-buy-a', 0.01, 50000));
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.celestialBodies = [makeBody('body-aaaaaaaa', 'buy-a', 0.01, 50000, 'tp-a')];
+    pos.cycleBuys = 1;
+    pos.ladderActive = true;
+    pos.pendingLadderOrders = [{ orderId: 'old-rung', price: 49000 }];
+
+    const rebuild = eng.rebuildLadder();
+    await until(() => calls.place === 1, 'the rebuild to start placing');
+    assert.equal(calls.cancel, 1, 'the rebuild swept the old ladder');
+
+    // The body's TP sells while the new rungs are still being placed.
+    const tp = eng._test.handleOrderFill({ orderId: 'tp-a', side: 'sell', status: 'FILLED', filledSize: 0.0099, averageFilledPrice: 52000 });
+    await until(() => pos.celestialBodies.length === 0, 'the TP to close the last body');
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 1));
+    assert.equal(calls.cancel, 1, 'the reset did not sweep underneath the in-flight rebuild');
+    assert.equal(ledger.getCurrentCycleId(), closingCycle, 'the reset is queued, not run');
+    assert.equal(ledger.getFillsForOrder('tp-a')[0].bodyPnl != null, true,
+      'the sell\'s P&L annotation is committed before the reset waits on the ladder lock');
+
+    // A rung the rebuild already got onto the book fills while the reset waits.
+    await eng._test.handleOrderFill({ orderId: 'new-rung-1-0', side: 'buy', status: 'FILLED', filledSize: 0.002, averageFilledPrice: 49000, filledValue: 98 });
+
+    placement.resolve();
+    const rebuilt = await rebuild;
+    assert.equal(rebuilt.success, true, rebuilt.message);
+    await tp;
+
+    assert.equal(calls.cancel, 2, 'the reset swept the freshly placed ladder after the rebuild finished');
+    assert.equal(pos.ladderActive, false, 'no stale "active" ladder pointing at cancelled rungs');
+    assert.deepEqual(pos.pendingLadderOrders, []);
+    const newCycle = ledger.getCurrentCycleId();
+    assert.notEqual(newCycle, closingCycle);
+    assert.equal(ledger.getFillsForOrder('new-rung-1-0')[0].cycleId, newCycle,
+      'a buy that landed while the reset queued opens the new cycle, like a sweep buy (#711)');
+    assert.equal(ledger.getFillsForOrder('tp-a')[0].cycleId, closingCycle);
+    assert.equal(pos.cycleBuys, 1, 'the surviving rung body counts toward the new cycle');
+    assert.equal(ledger.getCurrentCycleAllBuysCount(), pos.cycleBuys);
+    assert.equal(eng._test.getFlags().ladderPending, 0);
+  });
+
+  it('a window buy whose own TP sold while the reset queued stays with that sell in the closing cycle', async () => {
+    const placement = deferred();
+    const fillsByOrder = {
+      'tp-a': [rawFill('sell', 'tp-a', 't-sell-a', 0.0099, 52000)],
+      'new-rung-1-0': [rawFill('buy', 'new-rung-1-0', 't-new-rung', 0.002, 49000)],
+    };
+    const { eng, calls } = setupSerialEngine({ fillsByOrder, holdPlace: [placement] });
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-a', 't-buy-a', 0.01, 50000));
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.celestialBodies = [makeBody('body-aaaaaaaa', 'buy-a', 0.01, 50000, 'tp-a')];
+    pos.cycleBuys = 1;
+    pos.ladderActive = true;
+
+    const rebuild = eng.rebuildLadder();
+    await until(() => calls.place === 1, 'the rebuild to start placing');
+    const tp = eng._test.handleOrderFill({ orderId: 'tp-a', side: 'sell', status: 'FILLED', filledSize: 0.0099, averageFilledPrice: 52000 });
+    await until(() => pos.celestialBodies.length === 0, 'the TP to close the last body');
+
+    // While the reset waits: a new rung fills, and its own TP sells in full.
+    await eng._test.handleOrderFill({ orderId: 'new-rung-1-0', side: 'buy', status: 'FILLED', filledSize: 0.002, averageFilledPrice: 49000, filledValue: 98 });
+    const rungBody = pos.celestialBodies[0];
+    const rungTp = rungBody.tpOrderId;
+    const rungTpSize = rungBody.assetOnOrder;
+    assert.ok(rungTp && rungTpSize > 0, 'the rung body got a TP');
+    fillsByOrder[rungTp] = [rawFill('sell', rungTp, 't-sell-rung', rungTpSize, 51000)];
+    const rungClose = eng._test.handleOrderFill({ orderId: rungTp, side: 'sell', status: 'FILLED', filledSize: rungTpSize, averageFilledPrice: 51000 });
+    await until(() => pos.celestialBodies.length === 0, 'the rung TP to close its body');
+
+    placement.resolve();
+    assert.equal((await rebuild).success, true);
+    await tp;
+    await rungClose;
+
+    const rungBuyCycle = ledger.getFillsForOrder('new-rung-1-0')[0].cycleId;
+    assert.equal(rungBuyCycle, ledger.getFillsForOrder(rungTp)[0].cycleId, 'buy and the sell that closed it share a cycle');
+    assert.equal(rungBuyCycle, closingCycle);
+    assert.notEqual(ledger.getCurrentCycleId(), closingCycle);
+    assert.equal(pos.cycleBuys, 0, 'nothing open carried into the new cycle');
+    assert.equal(ledger.getCurrentCycleAllBuysCount(), 0);
+  });
+
+  it('a window buy whose TP only partly sold (body still open) is carried into the new cycle', async () => {
+    const placement = deferred();
+    const fillsByOrder = {
+      'tp-a': [rawFill('sell', 'tp-a', 't-sell-a', 0.0099, 52000)],
+      'new-rung-1-0': [rawFill('buy', 'new-rung-1-0', 't-w', 0.002, 49000)],
+    };
+    let failTpPlacement = false;
+    let tpSeq = 0;
+    const { eng, calls } = setupSerialEngine({ fillsByOrder, holdPlace: [placement] });
+    const executor = eng._test.getOrderExecutor();
+    executor.placeBodyTpOrder = async () => (failTpPlacement
+      ? { success: false, errorMessage: 'rejected' }
+      : { success: true, orderId: `tp-w-${++tpSeq}` });
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-a', 't-buy-a', 0.01, 50000));
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.celestialBodies = [makeBody('body-aaaaaaaa', 'buy-a', 0.01, 50000, 'tp-a')];
+    pos.cycleBuys = 1;
+    pos.ladderActive = true;
+
+    const rebuild = eng.rebuildLadder();
+    await until(() => calls.place === 1, 'the rebuild to start placing');
+    const tp = eng._test.handleOrderFill({ orderId: 'tp-a', side: 'sell', status: 'FILLED', filledSize: 0.0099, averageFilledPrice: 52000 });
+    await until(() => pos.celestialBodies.length === 0, 'the TP to close the last body');
+
+    await eng._test.handleOrderFill({ orderId: 'new-rung-1-0', side: 'buy', status: 'FILLED', filledSize: 0.002, averageFilledPrice: 49000, filledValue: 98 });
+    const w = pos.celestialBodies[0];
+    const wTp = w.tpOrderId;
+    assert.ok(wTp);
+    // Half of W's TP sells; re-placing the remainder's TP fails, so the buy
+    // still points at the partly filled order.
+    const half = Math.round((w.assetOnOrder / 2) * 1e8) / 1e8;
+    fillsByOrder[wTp] = [rawFill('sell', wTp, 't-sell-w-part', half, 51000)];
+    eng._test.setAdapter({
+      cancelOrder: async () => ({ success: true }),
+      getOpenOrders: async () => [],
+      getAccountBalance: async () => ({ available: '1000' }),
+      getOrder: async (id) => (id === wTp
+        ? { orderId: id, side: 'sell', status: 'CANCELLED', filledSize: half, filledValue: half * 51000, averageFilledPrice: 51000 }
+        : { filledSize: 0, status: 'OPEN' }),
+      getOrderFills: async (orderId) => fillsByOrder[orderId] || [],
+      getPositions: async () => [],
+    });
+    failTpPlacement = true;
+    await eng._test.handleOrderFill({ orderId: wTp, side: 'sell', status: 'CANCELLED', filledSize: half, averageFilledPrice: 51000, isPartialFill: true }).catch(() => {});
+    assert.equal(pos.celestialBodies.length, 1, 'W is still open');
+
+    placement.resolve();
+    assert.equal((await rebuild).success, true);
+    await tp;
+
+    const newCycle = ledger.getCurrentCycleId();
+    assert.notEqual(newCycle, closingCycle);
+    assert.equal(ledger.getFillsForOrder('new-rung-1-0')[0].cycleId, newCycle, 'the open body\'s buy opens the new cycle');
+    assert.equal(pos.cycleBuys, 1, 'and counts as its buy step');
+  });
+
+  it('a second TP close queued behind the same rebuild does not close the cycle the first reset opened', async () => {
+    const placement = deferred();
+    const fillsByOrder = {
+      'tp-a': [rawFill('sell', 'tp-a', 't-sell-a', 0.0099, 52000)],
+      'new-rung-1-0': [rawFill('buy', 'new-rung-1-0', 't-w1', 0.002, 49000)],
+      'new-rung-1-1': [rawFill('buy', 'new-rung-1-1', 't-w2', 0.002, 48000)],
+    };
+    const { eng, calls } = setupSerialEngine({ fillsByOrder, holdPlace: [placement] });
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-a', 't-buy-a', 0.01, 50000));
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.celestialBodies = [makeBody('body-aaaaaaaa', 'buy-a', 0.01, 50000, 'tp-a')];
+    pos.cycleBuys = 1;
+    pos.ladderActive = true;
+    const cyclesStarted = [];
+    const origStart = ledger.startNewCycle;
+    ledger.startNewCycle = (...args) => { const id = origStart(...args); cyclesStarted.push(id); return id; };
+
+    const rebuild = eng.rebuildLadder();
+    await until(() => calls.place === 1, 'the rebuild to start placing');
+    const resetA = eng._test.handleOrderFill({ orderId: 'tp-a', side: 'sell', status: 'FILLED', filledSize: 0.0099, averageFilledPrice: 52000 });
+    await until(() => pos.celestialBodies.length === 0, 'the TP to close the last body');
+
+    // W1 fills and its TP sells (a second close → reset B queues), then W2 fills and stays open.
+    await eng._test.handleOrderFill({ orderId: 'new-rung-1-0', side: 'buy', status: 'FILLED', filledSize: 0.002, averageFilledPrice: 49000, filledValue: 98 });
+    const w1 = pos.celestialBodies[0];
+    fillsByOrder[w1.tpOrderId] = [rawFill('sell', w1.tpOrderId, 't-sell-w1', w1.assetOnOrder, 51000)];
+    const resetB = eng._test.handleOrderFill({ orderId: w1.tpOrderId, side: 'sell', status: 'FILLED', filledSize: w1.assetOnOrder, averageFilledPrice: 51000 });
+    await until(() => pos.celestialBodies.length === 0, 'W1\'s TP to close its body');
+    await eng._test.handleOrderFill({ orderId: 'new-rung-1-1', side: 'buy', status: 'FILLED', filledSize: 0.002, averageFilledPrice: 48000, filledValue: 96 });
+    assert.equal(pos.celestialBodies.length, 1, 'W2 is an open body');
+
+    placement.resolve();
+    assert.equal((await rebuild).success, true);
+    await resetA;
+    await resetB;
+
+    assert.equal(cyclesStarted.length, 1, 'exactly one cycle turnover for the one closed cycle');
+    const newCycle = cyclesStarted[0];
+    assert.equal(ledger.getCurrentCycleId(), newCycle);
+    assert.equal(ledger.getFillsForOrder('new-rung-1-1')[0].cycleId, newCycle, 'the open W2 buy opens the new cycle');
+    assert.equal(ledger.getFillsForOrder('new-rung-1-0')[0].cycleId, closingCycle, 'W1 stays with its sell');
+    assert.equal(pos.cycleBuys, 1, 'W2 is the new cycle\'s one buy step — not zeroed by a stale reset');
+    assert.equal(pos.celestialBodies.length, 1);
+    assert.equal(pos.pendingCycleResetFor, null);
+  });
+
+  it('a TP close whose cycle reset throws is completed by the fill\'s retry, not skipped as already processed', async () => {
+    let failSweep = true;
+    let sweeps = 0;
+    const eng = makeEngine({
+      fillsByOrder: { 'tp-a': [rawFill('sell', 'tp-a', 't-sell-a', 0.0099, 52000)] },
+      executor: {
+        cancelAllLadderOrders: async () => {
+          sweeps++;
+          if (failSweep) { failSweep = false; throw new Error('exchange down'); }
+          return { cancelled: 1, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [] };
+        },
+      },
+    });
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-a', 't-buy-a', 0.01, 50000));
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.celestialBodies = [makeBody('body-aaaaaaaa', 'buy-a', 0.01, 50000, 'tp-a')];
+    pos.cycleBuys = 3;
+    pos.ladderActive = true;
+    const tpFill = { orderId: 'tp-a', side: 'sell', status: 'FILLED', filledSize: 0.0099, averageFilledPrice: 52000 };
+
+    await assert.rejects(eng._test.handleOrderFill(tpFill), /exchange down/);
+    assert.equal(ledger.getCurrentCycleId(), closingCycle, 'the failed reset changed nothing');
+    assert.equal(ledger.getFillsForOrder('tp-a')[0].bodyPnl != null, true, 'the sell itself is booked');
+    assert.equal(pos.pendingCycleResetFor, 'tp-a', 'the owed reset is recorded');
+    const pnlAfterFirst = ledger.getFillsForOrder('tp-a')[0].bodyPnl;
+
+    await eng._test.handleOrderFill(tpFill);
+    assert.equal(sweeps, 2);
+    assert.notEqual(ledger.getCurrentCycleId(), closingCycle, 'the retry turned the cycle over');
+    assert.equal(pos.cycleBuys, 0);
+    assert.equal(pos.ladderActive, false);
+    assert.equal(pos.pendingCycleResetFor, null);
+    assert.equal(ledger.getFillsForOrder('tp-a')[0].bodyPnl, pnlAfterFirst, 'the sell was not re-booked');
+    assert.equal(pos.cyclesCompleted, 1, 'the close is counted once');
+  });
+
+  it('an owed reset whose fill is never re-delivered is completed by the next reconcile tick', async () => {
+    let failSweep = true;
+    const eng = makeEngine({
+      fillsByOrder: { 'tp-a': [rawFill('sell', 'tp-a', 't-sell-a', 0.0099, 52000)] },
+      executor: {
+        cancelAllLadderOrders: async () => {
+          if (failSweep) { failSweep = false; throw new Error('exchange down'); }
+          return { cancelled: 1, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [] };
+        },
+      },
+    });
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-a', 't-buy-a', 0.01, 50000));
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.celestialBodies = [makeBody('body-aaaaaaaa', 'buy-a', 0.01, 50000, 'tp-a')];
+    pos.cycleBuys = 3;
+    pos.ladderActive = true;
+
+    // WS delivery: one attempt, no retry.
+    await assert.rejects(eng._test.handleOrderFill({ orderId: 'tp-a', side: 'sell', status: 'FILLED', filledSize: 0.0099, averageFilledPrice: 52000 }), /exchange down/);
+    assert.equal(pos.pendingCycleResetFor, 'tp-a');
+
+    await eng._test.reconcileTick();
+    assert.notEqual(ledger.getCurrentCycleId(), closingCycle, 'the reconcile tick paid the owed reset');
+    assert.equal(pos.cycleBuys, 0);
+    assert.equal(pos.ladderActive, false);
+    assert.equal(pos.pendingCycleResetFor, null);
+    assert.equal(pos.cyclesCompleted, 1);
+
+    // Nothing owed any more: the next tick does not turn the cycle over again.
+    const cycleAfter = ledger.getCurrentCycleId();
+    await eng._test.reconcileTick();
+    assert.equal(ledger.getCurrentCycleId(), cycleAfter);
+  });
+
+  it('any completed cycle turnover pays off an owed reset', async () => {
+    const eng = makeEngine();
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    const pos = eng._getPositionState();
+    pos.pendingCycleResetFor = 'tp-z';
+    const result = await eng.resetCycleBuys();
+    assert.equal(result.success, true, result.message);
+    assert.equal(pos.pendingCycleResetFor, null, 'a later retry of tp-z will not reset again');
+  });
+
+  it('an operator cycle reset refuses while a ladder sweep is in flight', async () => {
+    const placement = deferred();
+    const { eng, calls } = setupSerialEngine({ holdPlace: [placement] });
+    const ledger = eng.getFillLedger();
+    const cycle = ledger.startNewCycle();
+    const pos = eng._getPositionState();
+    pos.activeCycleId = cycle;
+    pos.ladderActive = true;
+
+    const rebuild = eng.rebuildLadder();
+    await until(() => calls.place === 1, 'the rebuild to start placing');
+    const reset = await eng.resetCycleBuys();
+    assert.equal(reset.success, false);
+    assert.match(reset.message, /ladder rebuild, cancel, or cycle reset is in progress/);
+    assert.equal(ledger.getCurrentCycleId(), cycle, 'no cycle turnover');
+
+    placement.resolve();
+    assert.equal((await rebuild).success, true);
+    assert.equal(pos.ladderActive, true);
+  });
+
+  it('a rebuild whose placement a timed-out reset ran alongside cancels the ladder it placed', async () => {
+    let eng;
+    const calls = { cancel: 0 };
+    eng = makeEngine({
+      adapter: { getAccountBalance: async () => ({ available: '1000' }) },
+      executor: {
+        cancelAllLadderOrders: async () => {
+          calls.cancel++;
+          return { cancelled: 0, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [] };
+        },
+        placeLadderOrders: async (levels) => {
+          // The reset gave up waiting on the ladder lock and ran mid-placement.
+          await eng._test.resetCycleUnserialised();
+          return { orders: levels.map((l, i) => ({ orderId: `late-rung-${i}`, ...l })), failedCount: 0 };
+        },
+      },
+    });
+    const config = eng._getConfig();
+    config.entryMode = 'ladder';
+    config.maxUsdcDeployed = 1000;
+    config.baseSizeUsdc = 10;
+    const m = eng._getMarketState();
+    m.lastPrice = 50000;
+    eng.getFillLedger().startNewCycle();
+    const pos = eng._getPositionState();
+
+    const result = await eng.rebuildLadder();
+    assert.equal(result.success, false);
+    assert.match(result.message, /cycle reset ran while the new ladder was being placed/);
+    assert.equal(calls.cancel, 1, 'the late ladder was swept');
+    assert.equal(pos.ladderActive, false);
+    assert.deepEqual(pos.pendingLadderOrders, []);
+  });
+
+  it('two resets that both timed out on the ladder lock turn the cycle over once', async () => {
+    const sweeps = [deferred(), deferred()];
+    let n = 0;
+    const eng = makeEngine({
+      executor: {
+        cancelAllLadderOrders: async () => {
+          await sweeps[n++].promise;
+          return { cancelled: 0, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [] };
+        },
+      },
+    });
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.ladderActive = true;
+    const started = [];
+    const origStart = ledger.startNewCycle;
+    ledger.startNewCycle = (...args) => { const id = origStart(...args); started.push(id); return id; };
+
+    const a = eng._test.resetCycleUnserialised();
+    const b = eng._test.resetCycleUnserialised();
+    sweeps[0].resolve();
+    await a;
+    sweeps[1].resolve();
+    await b;
+    assert.equal(started.length, 1, 'one turnover for one closing cycle');
+    assert.equal(ledger.getCurrentCycleId(), started[0]);
+  });
+
+  it('a rebuild requested mid-reset runs after the reset instead of refusing or interleaving', async () => {
+    const sweep = deferred();
+    const { eng, calls } = setupSerialEngine({ holdCancel: [sweep] });
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.ladderActive = true;
+
+    const reset = eng._test.resetCycle();
+    await until(() => calls.cancel === 1, 'the reset to start sweeping');
+    const rebuild = eng.rebuildLadder();
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 1));
+    assert.equal(calls.place, 0, 'the rebuild waits for the reset\'s sweep');
+
+    sweep.resolve();
+    await reset;
+    const rebuilt = await rebuild;
+    assert.equal(rebuilt.success, true, rebuilt.message);
+    assert.equal(calls.cancel, 1, 'nothing left to sweep after the reset');
+    assert.equal(calls.place, 1);
+    assert.equal(pos.ladderActive, true, 'the rebuild\'s ladder is the live one');
+    assert.equal(pos.pendingLadderOrders.length > 0, true);
+    assert.notEqual(ledger.getCurrentCycleId(), closingCycle);
+  });
+
+  it('cancelLadder waits for an in-flight rebuild, then cancels the ladder it placed', async () => {
+    const placement = deferred();
+    const { eng, calls } = setupSerialEngine({ holdPlace: [placement] });
+    const pos = eng._getPositionState();
+    pos.ladderActive = true;
+
+    const rebuild = eng.rebuildLadder();
+    await until(() => calls.place === 1, 'the rebuild to start placing');
+    const cancel = eng.cancelLadder();
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 1));
+    assert.equal(calls.cancel, 1, 'only the rebuild\'s own sweep so far');
+
+    placement.resolve();
+    assert.equal((await rebuild).success, true);
+    const cancelled = await cancel;
+    assert.equal(cancelled.success, true, cancelled.message);
+    assert.equal(calls.cancel, 2);
+    assert.equal(pos.ladderActive, false);
+    assert.deepEqual(pos.pendingLadderOrders, []);
+    assert.equal(eng._getConfig().entryMode, 'reactive');
+  });
+
+  it('tick-driven ladder placement skips while a rebuild owns the ladder', async () => {
+    const placement = deferred();
+    const { eng, calls } = setupSerialEngine({ holdPlace: [placement] });
+    const pos = eng._getPositionState();
+    pos.ladderActive = true;
+
+    const rebuild = eng.rebuildLadder();
+    await until(() => calls.place === 1, 'the rebuild to start placing');
+    assert.equal(pos.ladderActive, false, 'mid-rebuild the ladder reads as inactive');
+    await eng._test.evaluateLadderEntry();
+    assert.equal(calls.place, 1, 'no second ladder stacked on the one being placed');
+    assert.equal(eng._test.getFlags().entryInProgress, false, 'the skip released the entry gate');
+
+    placement.resolve();
+    assert.equal((await rebuild).success, true);
+    assert.equal(pos.ladderActive, true);
+  });
+});

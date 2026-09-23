@@ -13,6 +13,19 @@
  * holder (collapse-all → per-body merge) runs through, while a concurrent
  * second holder is refused. A depth counter would treat overlapping awaits
  * as the same holder.
+ *
+ * Ladder sweeps (#766) — rebuildLadder, cancelLadder, resetCycle's ladder
+ * cancel, and the tick-driven ladder placement — serialise on a QUEUED,
+ * reentrant ladder lock (withLadderLock): a second sweep waits for the first
+ * to finish instead of cancelling its half-placed rungs underneath it. The
+ * wait-for graph stays acyclic:
+ *   - fill → merge (withFillGate, bounded) and fill → ladder (a TP close's
+ *     resetCycle, bounded);
+ *   - ladder holder → merge only (its own mid-cancel bookings pass the fill
+ *     gate); a ladder holder never waits on fills — its nested calls, in its
+ *     own async context, run through the ladder lock reentrantly;
+ *   - merge → nothing: a caller inside a merge never waits on the ladder
+ *     lock (it takes it only when free, otherwise runs unserialised).
  */
 const { AsyncLocalStorage } = require('node:async_hooks');
 
@@ -20,9 +33,19 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 const FILL_WAIT_MS = 15000;
 /** Poll interval while a fill waits for mergeInProgress to clear. */
 const FILL_POLL_MS = 25;
+/**
+ * How long a caller waits for an in-flight ladder sweep before its timeout
+ * policy applies. A full 30-rung rebuild (a bounded safeCancelOrder per rung —
+ * ≤3 cancel acks or 6 status polls — then one placement per rung) finishes
+ * well inside this; the bound only catches a hung exchange call.
+ */
+const LADDER_WAIT_MS = 180000;
+/** Poll interval while a caller waits for the ladder lock. */
+const LADDER_POLL_MS = 25;
 
 const BUSY_STRUCTURE = 'A merge or reconcile is already in progress';
 const BUSY_POSITION = 'A merge, reconcile, or fill is in progress — try again';
+const BUSY_LADDER = 'A ladder rebuild, cancel, or cycle reset is in progress — try again';
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -33,6 +56,8 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * @param {(ms: number) => Promise<void>} [opts.sleep]
  * @param {number} [opts.fillWaitMs]
  * @param {number} [opts.fillPollMs]
+ * @param {number} [opts.ladderWaitMs]
+ * @param {number} [opts.ladderPollMs]
  */
 const createEngineLocks = (opts = {}) => {
   const logWarn = opts.logWarn || (() => {});
@@ -40,12 +65,23 @@ const createEngineLocks = (opts = {}) => {
   const sleep = opts.sleep || defaultSleep;
   const fillWaitMs = opts.fillWaitMs ?? FILL_WAIT_MS;
   const fillPollMs = opts.fillPollMs ?? FILL_POLL_MS;
+  const ladderWaitMs = opts.ladderWaitMs ?? LADDER_WAIT_MS;
+  const ladderPollMs = opts.ladderPollMs ?? LADDER_POLL_MS;
 
   let mergeInProgress = false;
   const mergeOwner = new AsyncLocalStorage();
   let reconcileInProgress = false;
   let fillInProgress = 0;
   let entryInProgress = false;
+  // Ladder lock: `ladderTail` settles when the last queued holder releases;
+  // `ladderPending` counts holders + waiters (0 ⇔ free). The ALS store is a
+  // per-acquisition token, deactivated on release, so async work the holder
+  // spawned and left running (a timer, a fire-and-forget booking) cannot
+  // reenter a lock it no longer holds.
+  let ladderTail = Promise.resolve();
+  let ladderPending = 0;
+  let ladderHolders = 0;
+  const ladderOwner = new AsyncLocalStorage();
 
   /**
    * True while a merge or reconcile is rewriting celestialBodies / TP orders.
@@ -66,11 +102,15 @@ const createEngineLocks = (opts = {}) => {
 
   /**
    * Operator-facing busy reason. `structure` matches merge/rollup refusals;
-   * `position` matches cycle-reset refusals (includes in-flight fills).
-   * @param {'structure' | 'position'} [scope='structure']
+   * `position` matches cycle-reset refusals (includes in-flight fills);
+   * `ladder` matches refusals while a ladder sweep holds the ladder lock.
+   * @param {'structure' | 'position' | 'ladder'} [scope='structure']
    */
-  const describeBusy = (scope = 'structure') =>
-    scope === 'position' ? BUSY_POSITION : BUSY_STRUCTURE;
+  const describeBusy = (scope = 'structure') => {
+    if (scope === 'position') return BUSY_POSITION;
+    if (scope === 'ladder') return BUSY_LADDER;
+    return BUSY_STRUCTURE;
+  };
 
   /**
    * Acquire the merge lock for `fn`. Reentrant: a nested call from the same
@@ -165,11 +205,92 @@ const createEngineLocks = (opts = {}) => {
     }
   };
 
+  /** True while a ladder sweep holds the ladder lock or one is queued. */
+  const isLadderBusy = () => ladderPending > 0;
+
+  /**
+   * Serialise a ladder sweep (#766). Queued, not refusing: a caller waits
+   * (FIFO) for the in-flight holder, then runs `fn` holding the lock.
+   * Reentrant: a call from inside the holder's own async context — e.g. a
+   * rung that fills during the holder's cancel sweep, whose booking closes
+   * the last body and runs resetCycle — runs `fn` directly, since waiting
+   * would deadlock on itself.
+   *
+   * - `wait: false` — tick-driven callers: refuse instead of queueing.
+   * - `onTimeout` — after ladderWaitMs: 'proceed' runs `fn` unserialised with
+   *   a warning (a TP close must not be dropped); 'refuse' gives up with the
+   *   busy result (an operator action can be retried).
+   * - A caller inside a merge never waits (a merge must never wait on a
+   *   holder whose own fills can wait on that merge): it takes the lock if
+   *   free, otherwise runs `fn` unserialised with a warning.
+   * @template T
+   * @param {() => (T | Promise<T>)} fn
+   * @param {{wait?: boolean, onTimeout?: 'proceed' | 'refuse', label?: string, exchange?: string}} [opts]
+   * @returns {Promise<T | {success: false, message: string}>}
+   */
+  const withLadderLock = async (fn, opts = {}) => {
+    const held = ladderOwner.getStore();
+    if (held && held.active) {
+      return fn();
+    }
+    const { wait = true, onTimeout = 'proceed', label = 'ladder sweep', exchange = '?' } = opts;
+    const busy = ladderPending > 0;
+    if (busy && !wait) {
+      return { success: false, message: BUSY_LADDER };
+    }
+    if (busy && mergeInProgress && mergeOwner.getStore()) {
+      logWarn(`⚠️ [${exchange}] ${label} running inside a merge while a ladder sweep is in flight — not waiting (a merge never waits on the ladder lock)`);
+      return fn();
+    }
+
+    const prev = ladderTail;
+    /** @type {() => void} */
+    let release = () => {};
+    ladderTail = new Promise((resolve) => { release = resolve; });
+    ladderPending++;
+
+    let proceededPastHolder = false;
+    if (busy) {
+      let prevDone = false;
+      prev.then(() => { prevDone = true; });
+      const waitDeadline = now() + ladderWaitMs;
+      while (!prevDone && now() < waitDeadline) {
+        await sleep(ladderPollMs);
+      }
+      if (!prevDone) {
+        if (onTimeout === 'refuse') {
+          ladderPending--;
+          // Keep later waiters queued behind the stuck holder, not behind us.
+          prev.then(release);
+          return { success: false, message: BUSY_LADDER };
+        }
+        logWarn(`⚠️ [${exchange}] ${label} proceeding after ${ladderWaitMs / 1000}s wait — ladder lock still held (possible stuck ladder sweep)`);
+        proceededPastHolder = true;
+      }
+    }
+
+    const token = { active: true };
+    ladderHolders++;
+    try {
+      return await ladderOwner.run(token, fn);
+    } finally {
+      token.active = false;
+      ladderHolders--;
+      ladderPending--;
+      // Having run alongside a stuck holder, hand the lock on only once that
+      // holder is done too — later waiters must not skip past it silently.
+      if (proceededPastHolder) prev.then(release);
+      else release();
+    }
+  };
+
   const getFlags = () => ({
     mergeInProgress,
     reconcileInProgress,
     fillInProgress,
     entryInProgress,
+    ladderPending,
+    ladderHolders,
   });
 
   return {
@@ -177,9 +298,11 @@ const createEngineLocks = (opts = {}) => {
     withFillGate,
     withReconcileLock,
     withEntryLock,
+    withLadderLock,
     isMutatingStructure,
     isMutatingPosition,
     isEntryInProgress,
+    isLadderBusy,
     describeBusy,
     getFlags,
     _test: {
@@ -196,4 +319,7 @@ module.exports = {
   createEngineLocks,
   FILL_WAIT_MS,
   FILL_POLL_MS,
+  LADDER_WAIT_MS,
+  LADDER_POLL_MS,
+  BUSY_LADDER,
 };

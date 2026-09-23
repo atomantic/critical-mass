@@ -430,6 +430,7 @@
  * @property {number} cycleBuys - Number of buy orders filled in current cycle
  * @property {string|null} [activeCycleId] - Durable operator-selected cycle boundary
  * @property {number|null} [activeCycleStartedAt] - When activeCycleId began (ms); live-cycle fill-attribution boundary (#705)
+ * @property {string|null} [pendingCycleResetFor] - Body TP sell whose cycle-closing reset has not completed yet (#766)
  * @property {number} lastEntryPrice - Price of last entry
  * @property {number} lastEntryTime - Timestamp of last entry
  * @property {number} anchorPrice - Price anchor for volatility clock

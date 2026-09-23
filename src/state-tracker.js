@@ -756,6 +756,9 @@ const createInitialRegimePositionState = () => ({
   // When that cycle began (ms). Bounds which null-cycle fills recalculateCycles
   // may fold into it (#705); null = unknown (falls back to its earliest fill).
   activeCycleStartedAt: null,
+  // Sell order id of a body TP that closed the last body and still owes its
+  // cycle reset (#766); a retry of that fill completes the reset from it.
+  pendingCycleResetFor: null,
   lastEntryPrice: 0,
   lastEntryTime: 0,
   anchorPrice: 0,
