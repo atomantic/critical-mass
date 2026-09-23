@@ -966,19 +966,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * under-reporting re-poll as a plain entry.
    * @param {string} orderId
    * @param {number} filledSize
-   * @returns {boolean} whether any saved row was stamped
    */
   const stampKnownFilledSize = (orderId, filledSize) => {
-    if (!(filledSize > 0)) return false;
-    let stamped = false;
+    if (!(filledSize > 0)) return;
     for (const list of ['pendingEntryOrders', 'pendingLadderOrders']) {
       const row = positionState[list]?.find(e => e.orderId === orderId);
-      if (row) {
-        row.knownFilledSize = Math.max(row.knownFilledSize || 0, filledSize);
-        stamped = true;
-      }
+      if (row) row.knownFilledSize = Math.max(row.knownFilledSize || 0, filledSize);
     }
-    return stamped;
   };
 
   /**
