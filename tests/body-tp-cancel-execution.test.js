@@ -51,12 +51,12 @@ const PRODUCT_DETAILS = { baseMinSize: '0.0001', baseIncrement: '0.00000001' };
 
 const EXECUTION = { cancelled: true, filled: false, filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 };
 
-const sellFill = (orderId) => [{
+const sellFill = (orderId, size = '0.004') => [{
   tradeId: `${orderId}-t1`,
   orderId,
   side: 'sell',
   price: '50500',
-  size: '0.004',
+  size,
   totalCommission: '0.02',
   rebate: '0',
   liquidityIndicator: 'MAKER',
@@ -317,5 +317,28 @@ describe('#670 TP cancel-for-replace books executions during cancel', () => {
     assert.deepEqual(cancels, ['tp-old'], 'reprice cancelled through the executor');
     assertBookedAndResized(eng, placed, 'tp-old', pair);
     assert.equal(placed.length, 1, 'the reprice did not also re-place a full-size TP');
+  });
+  it('books a TP that executed its full planned size during the cancel as a completed cycle, not a partial', async () => {
+    // Cancel-after-full-fill: the whole assetOnOrder (0.005) sold; the other
+    // 0.005 of the body is designed holdback and must become reserves, not a
+    // re-listed "remainder".
+    const { eng, placed } = makeEngine({
+      cancelResult: { cancelled: true, filled: false, filledSize: 0.005, filledValue: 252.5, averageFilledPrice: 50500, totalFees: 0.025 },
+      adapter: {
+        getOrder: async () => ({ status: 'CANCELLED', filledSize: 0.005, filledValue: 252.5, averageFilledPrice: 50500 }),
+        getOrderFills: async (orderId) => sellFill(orderId, '0.005'),
+      },
+      pair: '__test670full__',
+    });
+
+    const result = await eng.setBodyTpPercent('b1', 2);
+
+    assert.equal(result.success, false);
+    const pos = eng._getPositionState();
+    assert.equal(pos.celestialBodies.length, 0, 'the completed TP closed its body');
+    assert.equal(placed.length, 0, 'the designed holdback is not re-listed');
+    const sell = readSellRow('tp-old', '__test670full__');
+    assert.ok(Math.abs(sell.bodyHoldbackAsset - 0.005) < 1e-9, `holdback booked as reserves, got ${sell.bodyHoldbackAsset}`);
+    assert.equal(sell.partialFill, undefined, 'not annotated as a partial fill');
   });
 });

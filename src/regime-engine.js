@@ -4045,13 +4045,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       `⚠️ [${exchange}] ${context}: body ${body.id.slice(-8)} TP ${oldTp.slice(0, 8)} sold ${cancelResult.filledSize} ${baseCurrency} during cancel — booking before re-place (#670)`,
       { bodyId: body.id, orderId: oldTp, filledSize: cancelResult.filledSize, context }
     );
+    // A TP that executed its whole planned size before the cancel landed
+    // (the cancel-after-full-fill race) is a completed TP, not a partial:
+    // route it as terminal so the sell handler closes the body and books its
+    // designed holdback as reserves instead of re-listing that holdback. The
+    // partial-fill flag would otherwise force the partial branch whenever the
+    // exchange's status carries no completionPercentage.
+    const onOrder = body.assetOnOrder || 0;
+    const executedFullTp = onOrder > 0 && cancelResult.filledSize >= onOrder * 0.99;
     try {
       await handleOrderFill(buildPartialFillData(oldTp, 'sell', {
-        status: 'CANCELLED',
+        status: executedFullTp ? 'FILLED' : 'CANCELLED',
         filledSize: cancelResult.filledSize,
         filledValue: cancelResult.filledValue,
         averageFilledPrice: cancelResult.averageFilledPrice,
-      }, { totalFees: cancelResult.totalFees || 0 }));
+      }, { totalFees: cancelResult.totalFees || 0, ...(executedFullTp && { isPartialFill: false }) }));
     } catch (err) {
       logger.warn(
         `⚠️ [${exchange}] ${context}: failed to book body ${body.id.slice(-8)} TP ${oldTp.slice(0, 8)} execution during cancel: ${err.message} — keeping TP identity for reconciliation`,
