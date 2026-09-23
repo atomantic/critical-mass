@@ -413,7 +413,7 @@
  * @property {number} transitionCount - Number of regime transitions
  * @property {'up' | 'down' | null} trendDirection - Trend direction if in TREND mode
  * @property {number} lastVolExpansion - Last computed volatility expansion ratio
- * @property {number} lastMomentumMag - Last computed momentum magnitude
+ * @property {number} lastMomentumMag - Last computed momentum magnitude, in basis points of lastPrice
  * @property {number} trendConfirmationCount - Consecutive trend confirmations
  */
 
