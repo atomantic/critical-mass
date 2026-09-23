@@ -4636,6 +4636,68 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Route a single already-terminal (FILLED, or CANCELLED/EXPIRED with a
+   * partial) saved entry/ladder order through the canonical fill pipeline —
+   * or report it safe to retire when it's a genuinely empty cancel.
+   *
+   * Mirrors the shape of startImpl's own offline entry catch-up (issue #679's
+   * stricter getOrderFills contract applies identically here: a throw from
+   * handleOrderFill must not silently drop a real fill). Factored out as its
+   * own function so reconcileTick's orphan sweep (issue #673) gets the same
+   * retry-safe handling without duplicating it; startImpl is concurrently
+   * being edited elsewhere (issue #671), so it isn't switched over to this
+   * helper in this change.
+   *
+   * @param {{orderId: string, price?: number, assetQty?: number, sizeUsdc?: number, placedAt?: number, ladderIndex?: number}} savedEntry
+   * @param {{status?: string, filledSize?: number}} orderStatus - already known to be terminal (FILLED/CANCELLED/EXPIRED/FAILED)
+   * @param {'entry'|'ladder_entry'} [entryType]
+   * @returns {Promise<{outcome: 'filled'|'empty'|'failed', error?: Error}>}
+   */
+  const catchUpTerminalEntry = async (savedEntry, orderStatus, entryType = 'entry') => {
+    const isFullFilled = isFilledStatus(orderStatus);
+    const partialSize = parseFloat(orderStatus.filledSize || 0);
+    if (!isFullFilled && partialSize <= 0) {
+      return { outcome: 'empty' }; // truly empty cancel — safe for the caller to purge, no fill to record
+    }
+    logger.info(
+      `📥 [${exchange}] Catching up terminal ${entryType} ${savedEntry.orderId.slice(0, 8)}: status=${orderStatus.status}, filled=${partialSize}`,
+      { orderId: savedEntry.orderId, entryType, status: orderStatus.status, filledSize: partialSize }
+    );
+    orderExecutor.markSettled(savedEntry.orderId);
+    try {
+      await handleOrderFill(buildPartialFillData(savedEntry.orderId, 'buy', orderStatus, {
+        status: isFullFilled ? 'FILLED' : orderStatus.status,
+        isPartialFill: !isFullFilled,
+        placedAt: savedEntry.placedAt,
+      }));
+      return { outcome: 'filled' };
+    } catch (err) {
+      // The status lookup above already proved this order has a real fill —
+      // losing this catch-up attempt must not silently drop it. Re-arm
+      // executor tracking for the SAME orderId so the ordinary live polling
+      // path (checkPendingOrderFills → onFillDetected, with its own #679
+      // bounded engine-level retry) rediscovers and re-processes it on the
+      // next tick, instead of leaving it an orphan indefinitely.
+      logger.warn(
+        `⚠️ [${exchange}] Failed to catch up terminal ${entryType} ${savedEntry.orderId.slice(0, 8)}: ${err.message} — re-arming tracking for retry instead of dropping it`,
+        { orderId: savedEntry.orderId, entryType, error: err.message, incompleteFills: err.incompleteFills === true }
+      );
+      const restoreSpec = {
+        type: entryType,
+        price: savedEntry.price,
+        size: savedEntry.assetQty,
+        sizeUsdc: savedEntry.sizeUsdc,
+        placedAt: savedEntry.placedAt || Date.now(),
+      };
+      if (entryType === 'ladder_entry' && savedEntry.ladderIndex !== undefined) {
+        restoreSpec.ladderIndex = savedEntry.ladderIndex;
+      }
+      orderExecutor.restorePendingOrder(savedEntry.orderId, restoreSpec);
+      return { outcome: 'failed', error: err };
+    }
+  };
+
+  /**
    * One reconciliation pass. Extracted from the setInterval callback so the
    * #196 lock-release integration test can drive a single tick directly (via the
    * _test hooks) without a lingering interval. Behaviour is identical to the
@@ -4675,6 +4737,78 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           .catch(err => {
             logger.error(`❌ [${exchange}] Fill check failed: ${err.message}`, { error: err.message });
           }));
+      }
+
+      // Sweep for saved entry/ladder orders that have fallen out of the
+      // executor's own tracking without ever reaching a terminal outcome in
+      // positionState (issue #673). checkPendingOrderFills (above) and
+      // handleCancelledOrder both delete a terminal order from
+      // orderExecutor's pendingOrders BEFORE invoking onFillDetected, and
+      // onFillDetected's engine-level retry (issue #679) is bounded — once it
+      // exhausts its retries it gives up, but only a SUCCESSFUL
+      // handleOrderFill removes the row from positionState.pendingEntryOrders
+      // / pendingLadderOrders. Nothing else re-polled those lists at
+      // runtime — only the startup catch-up did — so a transient error after
+      // a buy fill could leave it invisible to both the executor and the
+      // fill pipeline until the process restarted. This sweep re-detects the
+      // gap every reconcile tick instead.
+      if (orderExecutor.capabilities?.liveReconciliation) {
+        pending.push((async () => {
+          const trackedIds = new Set(
+            orderExecutor.getPendingOrdersList()
+              .filter(o => o.type === 'entry' || o.type === 'ladder_entry')
+              .map(o => o.orderId)
+          );
+          const orphans = [
+            ...(positionState.pendingEntryOrders || []).map(savedEntry => ({ savedEntry, entryType: 'entry' })),
+            ...(positionState.pendingLadderOrders || []).map(savedEntry => ({ savedEntry, entryType: 'ladder_entry' })),
+          ].filter(({ savedEntry }) => !trackedIds.has(savedEntry.orderId));
+
+          for (const { savedEntry, entryType } of orphans) {
+            let orderStatus;
+            try {
+              orderStatus = await adapter.getOrder(savedEntry.orderId);
+            } catch (err) {
+              logger.warn(
+                `⚠️ [${exchange}] Reconcile: could not check orphaned ${entryType} ${savedEntry.orderId.slice(0, 8)} (untracked by executor): ${err.message} — will retry next tick`,
+                { orderId: savedEntry.orderId, entryType, error: err.message }
+              );
+              continue;
+            }
+            if (!isTerminalStatus(orderStatus)) continue; // still resting — leave it for the ordinary path
+            // The dedup key for any terminal buy collapses to the bare
+            // orderId (makeFillDedupKey), regardless of isPartialFill/size.
+            // If the polling callback path is already mid-flight or
+            // engine-level-retrying (issue #679) this exact order, let it
+            // finish instead of racing a second handleOrderFill call for the
+            // same orderId — shouldSkipBuyRecommit dedups any true overlap,
+            // but avoiding it is cheaper than relying on that alone. If it
+            // eventually exhausts its retries, both maps clear the key and
+            // this sweep catches it up on a later tick.
+            if (recentlyProcessedFills.has(savedEntry.orderId) || incompleteFillRetries.has(savedEntry.orderId)) {
+              continue;
+            }
+
+            logger.warn(
+              `⚠️ [${exchange}] Reconcile: orphaned ${entryType} ${savedEntry.orderId.slice(0, 8)} is ${orderStatus.status} but missing from executor tracking — catching up`,
+              { orderId: savedEntry.orderId, entryType, status: orderStatus.status }
+            );
+            const result = await catchUpTerminalEntry(savedEntry, orderStatus, entryType);
+            if (result.outcome === 'empty') {
+              // Truly empty cancel — safe to purge, nothing to record.
+              if (entryType === 'ladder_entry') {
+                positionState.pendingLadderOrders = (positionState.pendingLadderOrders || [])
+                  .filter(o => o.orderId !== savedEntry.orderId);
+              } else {
+                positionState.pendingEntryOrders = (positionState.pendingEntryOrders || [])
+                  .filter(e => e.orderId !== savedEntry.orderId);
+              }
+              saveLiveState();
+            }
+          }
+        })().catch(err => {
+          logger.error(`❌ [${exchange}] Orphaned entry/ladder sweep failed: ${err.message}`, { error: err.message });
+        }));
       }
 
       // Check for TP order fill that WebSocket might have missed
