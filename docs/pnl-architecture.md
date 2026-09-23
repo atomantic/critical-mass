@@ -52,8 +52,11 @@ and reserves must shrink by the same quantity or the asset is counted twice.
 The engine records this as `bodyHoldbackAsset: 0` plus a separate,
 non-negative `bodyReservesSoldAsset` (and `reservesSoldAsset` on the
 closed-trade record), never as a negative holdback: the pairing clamps
-negative holdback annotations to 0 (legacy corrupt rows), and the startup
-annotation repair re-pairs any sell carrying one. The position-coverage
+negative holdback annotations to 0 (legacy corrupt rows), and
+`fill-ledger.js`'s `load()` rewrites any sell still carrying one — negative
+`bodyHoldbackAsset`/`satelliteHoldbackAsset` rows written between #769 and
+#770 (neither ever released) into holdback 0 + `bodyReservesSoldAsset`,
+once, the moment the ledger is loaded (issue #779). The position-coverage
 identity `ledgerNetAsset == heldOpenAssetQty + realizedAssetPnL` holds only
 with the drawdown subtracted.
 
