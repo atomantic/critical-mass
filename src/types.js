@@ -206,6 +206,11 @@
  * @property {string} productId - Product ID
  * @property {string} side - Order side
  * @property {string} status - Order status
+ * @property {number} size - Remaining unfilled base quantity (exchange-reported when
+ *   available, otherwise originalSize - filledSize). NOT the size the order was
+ *   originally placed for — see originalSize.
+ * @property {number} originalSize - Base quantity the order was originally placed for
+ * @property {number} price - Limit price the order was placed at
  * @property {number} filledSize - Amount filled
  * @property {string} createdTime - ISO timestamp
  */

@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { createAuthenticatedRequest } = require('./auth');
 const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
-const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
+const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
 /**
@@ -678,17 +678,20 @@ const createCryptocomAdapter = (keysPath = null) => {
     const orders = result.data || [];
 
     return orders.map(order => {
-      const quantity = parseFloat(order.quantity || order.order_value || 0);
-      const filledQty = parseFloat(order.cumulative_quantity || order.filled_quantity || 0);
+      // finiteFloat (not a bare `parseFloat(x || 0)`) guards a TRUTHY but
+      // non-numeric field too — e.g. quantity: "N/A" — which would otherwise
+      // parse to NaN and poison the size subtraction below (issue #684).
+      const quantity = finiteFloat(order.quantity || order.order_value);
+      const filledQty = finiteFloat(order.cumulative_quantity || order.filled_quantity);
       return {
         orderId: order.order_id?.toString(),
         productId: order.instrument_name,
         side: (order.side || '').toUpperCase(),
         status: filledQty > 0 ? 'PARTIALLY_FILLED' : 'OPEN',
-        size: quantity - filledQty, // Remaining unfilled size
+        size: Math.max(0, quantity - filledQty), // Remaining unfilled size, clamped at 0 (issue #684 follow-up)
         originalSize: quantity,
         filledSize: filledQty,
-        price: parseFloat(order.price || order.limit_price || 0),
+        price: finiteFloat(order.price || order.limit_price),
         createdTime: order.create_time
           ? new Date(order.create_time).toISOString()
           : new Date().toISOString(),

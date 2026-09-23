@@ -508,6 +508,24 @@ const readBooleanFlag = (body, field, defaultValue) => {
   return { value };
 };
 
+/**
+ * Parse a value to a float, falling back when the result isn't finite.
+ * `parseFloat(x || 0)` alone only guards a falsy input (missing/empty/0) —
+ * a TRUTHY but non-numeric value (an exchange API returning "N/A", "", or
+ * any other unparseable string) still produces NaN, which then poisons any
+ * arithmetic built on it (issue #684 — a getOpenOrders() `size` computed as
+ * `originalSize - filledSize` silently becomes NaN, and NaN fails every
+ * `> 0` gate the same way `undefined` does, defeating downstream safety
+ * checks like the orphan-sell-order detector).
+ * @param {*} value
+ * @param {number} [fallback]
+ * @returns {number}
+ */
+const finiteFloat = (value, fallback = 0) => {
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? n : fallback;
+};
+
 module.exports = {
   BASIS_POINTS_DIVISOR,
   isFilledStatus,
@@ -530,4 +548,5 @@ module.exports = {
   fmtPrice,
   fmtCurrency,
   readBooleanFlag,
+  finiteFloat,
 };
