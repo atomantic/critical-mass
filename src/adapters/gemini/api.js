@@ -641,23 +641,32 @@ const createGeminiAdapter = (keysPath = null) => {
 
     return orders
       .filter(order => toGeminiSymbol(productId) === order.symbol.toLowerCase())
-      .map(order => ({
-        orderId: order.order_id?.toString(),
-        productId: order.symbol,
-        side: order.side?.toUpperCase(),
-        status: order.is_live ? 'OPEN' : 'CLOSED',
+      .map(order => {
+        const originalSize = parseFloat(order.original_amount || 0);
+        const filledSize = parseFloat(order.executed_amount || 0);
         // Gemini's /v1/orders response carries remaining_amount directly when
-        // present; fall back to originalAmount - executedAmount so a payload
-        // that omits it (or an older API shape) still yields the remaining
-        // unfilled quantity rather than undefined (issue #684 — an undefined
-        // size makes the orphan-sell detector's `o.size > 0` check silently
-        // false, so Gemini's untracked-sell warning never fires).
-        size: parseFloat(order.remaining_amount ?? (order.original_amount - order.executed_amount)),
-        originalSize: parseFloat(order.original_amount || 0),
-        price: parseFloat(order.price || 0),
-        filledSize: parseFloat(order.executed_amount || 0),
-        createdTime: new Date(order.timestampms).toISOString(),
-      }));
+        // present; fall back to originalSize - filledSize (both already
+        // NaN-guarded via `|| 0` above) so a payload that omits it — or an
+        // older API shape — still yields a real number rather than NaN.
+        // NaN would defeat this exact fix: the orphan-sell detector's
+        // `o.size > 0` check treats `NaN > 0` as false, same as `undefined >
+        // 0`, so Gemini's untracked-sell warning would silently never fire
+        // (issue #684).
+        const size = order.remaining_amount != null
+          ? parseFloat(order.remaining_amount)
+          : originalSize - filledSize;
+        return {
+          orderId: order.order_id?.toString(),
+          productId: order.symbol,
+          side: order.side?.toUpperCase(),
+          status: order.is_live ? 'OPEN' : 'CLOSED',
+          size,
+          originalSize,
+          price: parseFloat(order.price || 0),
+          filledSize,
+          createdTime: new Date(order.timestampms).toISOString(),
+        };
+      });
   };
 
   /**

@@ -138,6 +138,33 @@ describe('adapter getOpenOrders() shape parity (issue #684)', () => {
     }
   });
 
+  it('Gemini never yields NaN for size when remaining/original/executed amounts are all absent (would silently defeat the orphan-sell `o.size > 0` gate exactly like the original undefined bug)', async () => {
+    const keysPath = path.join(os.tmpdir(), `gemini-open-orders-shape-nan-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(keysPath, JSON.stringify({ apiKey: 'test-api-key-123', apiSecret: 'test-api-secret-456' }));
+    try {
+      const adapter = createGeminiAdapter(keysPath);
+      global.fetch = async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => JSON.stringify([{
+          order_id: 557,
+          symbol: 'btcusd',
+          side: 'sell',
+          is_live: true,
+          timestampms: 1750000000000,
+        }]),
+      });
+
+      const orders = await adapter.getOpenOrders('BTC-USD');
+      assert.equal(orders.length, 1);
+      assert.ok(Number.isFinite(orders[0].size), `size must be a finite number, got ${orders[0].size}`);
+      assert.equal(orders[0].size, 0);
+    } finally {
+      fs.rmSync(keysPath, { force: true });
+    }
+  });
+
   it('Crypto.com reports the remaining unfilled size, plus originalSize and price', async () => {
     const keysPath = path.join(os.tmpdir(), `cryptocom-open-orders-shape-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
     fs.writeFileSync(keysPath, JSON.stringify({ apiKey: 'test-api-key-123', apiSecret: 'test-api-secret-456' }));
