@@ -145,6 +145,24 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
   };
 
   /**
+   * Invalidate the cached balance reading (issue #694 review round 2).
+   *
+   * A caller can lose the ability to attribute the shared exchange wallet to
+   * this fund alone (e.g. a sibling fund on the same exchange/quote currency
+   * gets added after this fund already had a verified balance) — at that
+   * point the previously-recorded `lastKnownBalance` is no longer sound to
+   * evaluate against, even though it's still a positive number. Without an
+   * explicit reset, `evaluate()`'s `lastKnownBalance <= 0` guard would never
+   * catch this: it only guards "never observed a balance," not "observed one
+   * that's since become unsound." Reset it back to the same unset state a
+   * fresh optimizer starts in, so evaluate() skips until a fresh, unambiguous
+   * balance is observed again.
+   */
+  const invalidateBalance = () => {
+    lastKnownBalance = 0;
+  };
+
+  /**
    * Update statistics from recent cycles
    */
   const updateStatistics = () => {
@@ -188,6 +206,18 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
     // Minimum sample size
     const minSampleSize = config.sizeMinSampleSize || 5;
     if (totalCycleCount < minSampleSize) {
+      return null;
+    }
+
+    // No real balance has ever been observed yet (every recordCycle() call so
+    // far arrived with availableBalance <= 0 — e.g. a failed/unavailable
+    // exchange balance fetch — so lastKnownBalance is still its 0 initial
+    // value, never a verified reading). Evaluating against 0 here would floor
+    // baseSizeUsdc to sizeAbsoluteMinBase and (unlike the deliberate,
+    // explicit balance=0 case covered by calculateAdjustment's own tests)
+    // slash maxUsdcDeployed to 0 with no real signal behind it. Skip this
+    // evaluation and wait for a verified balance instead (issue #694 item 2).
+    if (lastKnownBalance <= 0) {
       return null;
     }
 
@@ -475,6 +505,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
   return {
     recordCycle,
     updateBalance,
+    invalidateBalance,
     evaluate,
     previewSizing,
     getStatus,
