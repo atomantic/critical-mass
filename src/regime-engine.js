@@ -4935,6 +4935,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           additive: booking.additive,
         });
 
+        // Annotate the sell with its body booking, committed synchronously
+        // with the credit and consumption above — before any await below, so
+        // a concurrent booking of the same order cannot interleave between
+        // the plan and the commit, and a later throw cannot leave a mutated
+        // body without its commit marker. Adds to a booking this order
+        // already committed when this pass booked new execution (issue #777).
+        // body.assetQty/avgPrice are still the pre-sale values here.
+        fillLedger.commitSellBooking(fillData.orderId, {
+          isBodyOwned: true,
+          bodyId: body.id,
+          bodyTier: body.tier,
+          bodyCostBasis: proratedCostBasis,
+          bodyAvgPrice: body.avgPrice,
+          bodyBtcQty: isPartial ? summary.totalSize : body.assetQty,
+          bodyHoldbackAsset: isPartial ? 0 : holdbackAsset,
+          ...(!isPartial && reservesSoldAsset > 0 && { bodyReservesSoldAsset: reservesSoldAsset }),
+          bodyPnl: pnl,
+          ...(isPartial && { partialFill: true }),
+        }, { additive: booking.additive, soldSize: summary.totalSize });
+
         if (isPartial) {
           // PARTIAL FILL: reduce body size, keep body active, re-place TP for remaining
           const remainingAsset = roundAsset(body.assetQty - summary.totalSize);
@@ -5055,21 +5075,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             }
           }
         }
-
-        // Annotate fills with body metadata — adding to a booking this order
-        // already committed when this pass booked new execution (issue #777)
-        fillLedger.commitSellBooking(fillData.orderId, {
-          isBodyOwned: true,
-          bodyId: body.id,
-          bodyTier: body.tier,
-          bodyCostBasis: proratedCostBasis,
-          bodyAvgPrice: body.avgPrice,
-          bodyBtcQty: isPartial ? summary.totalSize : body.assetQty,
-          bodyHoldbackAsset: isPartial ? 0 : holdbackAsset,
-          ...(!isPartial && reservesSoldAsset > 0 && { bodyReservesSoldAsset: reservesSoldAsset }),
-          bodyPnl: pnl,
-          ...(isPartial && { partialFill: true }),
-        }, { additive: booking.additive, soldSize: summary.totalSize });
 
         // Link source buy fills to this sell order for buy→sell display linkage.
         // Skip on partial fills: placeBodyTp above already re-linked the buys to
