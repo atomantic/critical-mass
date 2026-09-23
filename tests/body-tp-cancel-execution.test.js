@@ -577,6 +577,49 @@ describe('#744 merge-snapshot stale-TP cancel books an execution during the canc
     assert.equal(staleSell.partialFill, undefined, 'booked as the body-closing sale, not a partial');
   });
 
+  it('does not book the snapshot TP twice when its fill lands during the merge cancel of that same order', async () => {
+    // The buy-merge snapshots tp-old and cancels it; before that cancel
+    // returns, tp-old's own 0.002 fill is delivered. The body still points at
+    // tp-old, so the merge-snapshot branch sees it as the live "stale" TP and
+    // its cancel reports the same 0.002 execution.
+    const pair = '__test744snapself__';
+    let cancelCalls = 0;
+    let eng;
+    ({ eng } = makeEngine({
+      pair,
+      cancelResult: null,
+      adapter: {
+        getOrder: async (orderId) => (orderId === 'tp-old' && cancelCalls === 0
+          ? { status: 'OPEN', filledSize: 0 }
+          : { status: 'CANCELLED', filledSize: 0.002, filledValue: 101, averageFilledPrice: 50500 }),
+        getOrderFills: async (orderId) => (orderId === 'buy-new' ? buyFill(orderId) : sellFill(orderId, '0.002')),
+      },
+      executor: {
+        cancelBodyTpOrder: async (bodyId, orderId) => {
+          cancelCalls += 1;
+          if (cancelCalls === 1) {
+            await eng._test.handleOrderFill({ orderId: 'tp-old', side: 'sell', status: 'CANCELLED', filledSize: 0.002, filledValue: 101, averageFilledPrice: 50500 });
+            return { cancelled: true, filled: false, filledSize: 0 };
+          }
+          return { cancelled: true, filled: false, filledSize: 0.002, filledValue: 101, averageFilledPrice: 50500, totalFees: 0.01 };
+        },
+        getPendingCounts: () => ({ total: 1_000_000 }),
+      },
+    }));
+    seedBuy(eng);
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+
+    const ledger = JSON.parse(fs.readFileSync(path.join(isolatedData.fundDir('coinbase', pair), 'fill-ledger.json'), 'utf8'));
+    assert.equal(ledger.filter(f => f.orderId === 'tp-old').length, 1, 'one sell row for tp-old');
+    for (const b of eng._getPositionState().celestialBodies) {
+      assert.ok(b.assetQty > 0, `no body drained by a double deduction, got ${b.assetQty}`);
+    }
+    const total = eng._getPositionState().celestialBodies.reduce((sum, b) => sum + b.assetQty, 0);
+    // 0.01 seed − 0.002 sold once + 0.01 new buy.
+    assert.ok(Math.abs(total - 0.018) < 1e-9, `the 0.002 sale is deducted exactly once, got ${total}`);
+  });
+
   it('keeps the stale TP identity and a retry marker when booking the execution fails', async () => {
     const pair = '__test744snapfail__';
     const staleCancel = { cancelled: true, filled: false, filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 };
