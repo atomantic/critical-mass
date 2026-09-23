@@ -28,6 +28,8 @@ const {
   getNotificationConfig,
   getAggressivenessPresets,
   getBackupConfig,
+  getSentinelConfig,
+  SENTINEL_DEFAULTS,
   updateExchangeConfig,
   addFund,
   updateGlobalConfig,
@@ -1437,6 +1439,65 @@ describe('updateBackupConfig', () => {
   });
 });
 
+// Issue #687: PUT /api/sentinel/config never value-checked pollIntervalMs
+// or maxAlerts, so a hand-edited or pre-fix on-disk value could turn the
+// poll timer into a ~1ms loop (same defect getBackupConfig already guards
+// against for the backup timers) or hand `alerts.slice(-maxAlerts)` a value
+// that keeps the wrong tail.
+describe('getSentinelConfig', () => {
+  afterEach(() => mock.restoreAll());
+
+  for (const unsafe of [0, -1, 59999, 86400001, null, '300000']) {
+    it(`uses the safe default for a hand-edited pollIntervalMs: ${JSON.stringify(unsafe)}`, () => {
+      setupFsMocks({
+        base: { exchanges: {}, global: { sentinel: { pollIntervalMs: unsafe } } },
+        user: null,
+      });
+      const result = getSentinelConfig();
+      assert.equal(result.pollIntervalMs, SENTINEL_DEFAULTS.pollIntervalMs);
+    });
+  }
+
+  for (const unsafe of [0, -5, 5001, 12.5, null, '200']) {
+    it(`uses the safe default for a hand-edited maxAlerts: ${JSON.stringify(unsafe)}`, () => {
+      setupFsMocks({
+        base: { exchanges: {}, global: { sentinel: { maxAlerts: unsafe } } },
+        user: null,
+      });
+      const result = getSentinelConfig();
+      assert.equal(result.maxAlerts, SENTINEL_DEFAULTS.maxAlerts);
+    });
+  }
+
+  it('preserves both supported bounds from stored config', () => {
+    setupFsMocks({
+      base: { exchanges: {}, global: { sentinel: { pollIntervalMs: 60000, maxAlerts: 5000 } } },
+      user: null,
+    });
+    const result = getSentinelConfig();
+    assert.equal(result.pollIntervalMs, 60000);
+    assert.equal(result.maxAlerts, 5000);
+  });
+
+  it('preserves the other bound too', () => {
+    setupFsMocks({
+      base: { exchanges: {}, global: { sentinel: { pollIntervalMs: 86400000, maxAlerts: 1 } } },
+      user: null,
+    });
+    const result = getSentinelConfig();
+    assert.equal(result.pollIntervalMs, 86400000);
+    assert.equal(result.maxAlerts, 1);
+  });
+
+  it('returns SENTINEL_DEFAULTS when none stored', () => {
+    setupFsMocks({ base: { exchanges: {}, global: {} }, user: null });
+    const result = getSentinelConfig();
+    assert.equal(result.enabled, SENTINEL_DEFAULTS.enabled);
+    assert.equal(result.pollIntervalMs, SENTINEL_DEFAULTS.pollIntervalMs);
+    assert.equal(result.maxAlerts, SENTINEL_DEFAULTS.maxAlerts);
+  });
+});
+
 // ============================================================================
 // Deep Merge (tested indirectly through loadRawConfig)
 // ============================================================================
@@ -1611,6 +1672,18 @@ describe('fund deletion tombstones', () => {
     configUtils.updateFundConfig('coinbase', 'BTC-USDC', { dryRun: true });
     assert.ok(!JSON.stringify(mocks.user()).includes('deletedPairs'),
       'ordinary saves must not introduce a tombstone key');
+  });
+
+  it('refuses to change an existing fund\'s traded asset (#685 defence in depth)', () => {
+    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+    const before = JSON.stringify(mocks.user());
+    assert.throws(
+      () => configUtils.updateFundConfig('coinbase', 'BTC-USDC', { productId: 'ETH-USDC' }),
+      /cannot change a fund's traded asset/,
+    );
+    assert.equal(JSON.stringify(mocks.user()), before, 'a refused save must not write');
+    // A quote-only change on the same asset is still allowed.
+    configUtils.updateFundConfig('coinbase', 'BTC-USDC', { productId: 'BTC-USD' });
   });
 
   it('suppresses a tombstoned pair in a legacy flat exchange block', () => {

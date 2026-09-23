@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import ModalDialog from './ModalDialog'
 
 const INTERVAL_OPTIONS = [
   { label: '6 hours', value: 6 * 60 * 60 * 1000 },
@@ -49,7 +50,15 @@ function BackupRestore() {
   // the configuration by this restore (issue #533).
   const [fundRemovalAcknowledged, setFundRemovalAcknowledged] = useState(false)
   const [deleting, setDeleting] = useState(null)
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
   const [refreshError, setRefreshError] = useState(null)
+  const [fundStateRestoreConfirm, setFundStateRestoreConfirm] = useState(null)
+  const [fundStateRestoring, setFundStateRestoring] = useState(false)
+  // Same writer-quiescence gate as the full restore (HTTP 409
+  // `writers-not-quiesced`), scoped to the fund-state restore dialog so the two
+  // flows don't share state.
+  const [fundStateBlockedBy, setFundStateBlockedBy] = useState(null)
+  const [fundStateForceAcknowledged, setFundStateForceAcknowledged] = useState(false)
 
   // `silent` refreshes run after a completed action: they must never swap the page
   // for the loading/error gate, or the action's own result message is erased.
@@ -149,31 +158,51 @@ function BackupRestore() {
     }
   }
 
-  const handleRestoreFundState = async (snapshotId, exchange, pair) => {
-    if (!window.confirm(`Restore ${exchange}/${pair} from ${snapshotId}? Running engines will be stopped and its state files replaced.`)) return
-    setRestoring(true)
+  const handleRestoreFundState = (snapshotId, exchange, pair) => {
+    setFundStateRestoreConfirm({ snapshotId, exchange, pair })
+  }
+
+  const handleExecuteFundStateRestore = async ({ force = false } = {}) => {
+    if (!fundStateRestoreConfirm) return
+    const { snapshotId, exchange, pair } = fundStateRestoreConfirm
+    setFundStateRestoring(true)
     setMessage(null)
+    let blocked = null
     try {
       const res = await fetch(`/api/backups/fund-state/${encodeURIComponent(snapshotId)}/${encodeURIComponent(exchange)}/${encodeURIComponent(pair)}/restore`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ force }),
       })
       const data = await res.json().catch(() => ({}))
       if (res.ok && data.success) {
         setMessage({ type: 'success', text: data.message || `Restored ${data.filesRestored} files for ${exchange}/${pair}` })
+        fetchData({ silent: true })
+      } else if (res.status === 409 && data.code === 'writers-not-quiesced') {
+        // Nothing was written. Keep the dialog open and offer the override.
+        blocked = data.unconfirmed || []
+        setMessage({ type: 'error', text: data.error || 'Restore blocked: writers did not confirm shutdown' })
       } else {
         setMessage({ type: 'error', text: data.error || 'Fund-state restore failed' })
       }
     } catch (err) {
       setMessage({ type: 'error', text: err.message || 'Fund-state restore failed' })
     } finally {
-      setRestoring(false)
+      setFundStateRestoring(false)
+      setFundStateBlockedBy(blocked)
+      setFundStateForceAcknowledged(false)
+      if (!blocked) setFundStateRestoreConfirm(null)
     }
-    fetchData({ silent: true })
   }
 
-  const handleDelete = async (filename) => {
+  const handleDelete = (filename) => {
+    const backup = backups.find(b => b.filename === filename)
+    setDeleteConfirm({ filename, sizeBytes: backup?.sizeBytes })
+  }
+
+  const handleExecuteDelete = async () => {
+    if (!deleteConfirm) return
+    const { filename } = deleteConfirm
     setDeleting(filename)
     try {
       const res = await fetch(`/api/backups/${filename}`, { method: 'DELETE' })
@@ -187,6 +216,7 @@ function BackupRestore() {
       setMessage({ type: 'error', text: err.message || 'Failed to delete backup' })
     } finally {
       setDeleting(null)
+      setDeleteConfirm(null)
     }
   }
 
@@ -244,6 +274,12 @@ function BackupRestore() {
     fetchData({ silent: true })
   }
 
+  const cancelFundStateRestore = () => {
+    setFundStateRestoreConfirm(null)
+    setFundStateBlockedBy(null)
+    setFundStateForceAcknowledged(false)
+  }
+
   const cancelRestore = () => {
     setRestoreTarget(null)
     setBlockedBy(null)
@@ -293,6 +329,114 @@ function BackupRestore() {
 
   return (
     <div className="max-w-2xl space-y-6">
+      {/* Delete backup confirmation dialog */}
+      {deleteConfirm && (
+        <ModalDialog
+          onClose={() => setDeleteConfirm(null)}
+          dismissible={!deleting}
+          labelledBy="delete-backup-title"
+          describedBy="delete-backup-description"
+        >
+          <h3 id="delete-backup-title" className="text-white text-lg font-medium mb-3">Delete Backup</h3>
+          <p id="delete-backup-description" className="text-gray-300 text-sm mb-4">
+            Permanently delete backup <span className="font-mono text-yellow-400">{deleteConfirm.filename}</span>?
+          </p>
+          <p className="text-gray-400 text-xs mb-4">
+            Size: <span className="font-mono">{formatBytes(deleteConfirm.sizeBytes || 0)}</span>. This action cannot be undone.
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+              onClick={() => setDeleteConfirm(null)}
+              disabled={deleting}
+              autoFocus
+            >
+              Cancel
+            </button>
+            <button
+              className="px-4 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded transition-colors disabled:opacity-50"
+              onClick={handleExecuteDelete}
+              disabled={deleting}
+            >
+              {deleting ? 'Deleting…' : 'Delete Backup'}
+            </button>
+          </div>
+        </ModalDialog>
+      )}
+
+      {/* Fund-state restore confirmation dialog */}
+      {fundStateRestoreConfirm && (
+        <ModalDialog
+          onClose={cancelFundStateRestore}
+          dismissible={!fundStateRestoring}
+          labelledBy="fund-state-restore-title"
+          describedBy="fund-state-restore-description"
+        >
+          <h3 id="fund-state-restore-title" className="text-white text-lg font-medium mb-3">Restore Fund State</h3>
+          <p id="fund-state-restore-description" className="text-gray-300 text-sm mb-4">
+            Restore <span className="font-mono text-yellow-400">{fundStateRestoreConfirm.exchange}/{fundStateRestoreConfirm.pair}</span> from snapshot <span className="font-mono">{fundStateRestoreConfirm.snapshotId}</span>?
+          </p>
+          <p className="text-gray-400 text-xs mb-4">
+            Running engines will be stopped and state files replaced. This action cannot be undone.
+          </p>
+          {fundStateBlockedBy && (
+            <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 mb-4">
+              <p className="text-sm font-semibold text-red-200 mb-2">
+                Blocked: {fundStateBlockedBy.length} writer(s) did not confirm shutdown. No files were changed.
+              </p>
+              <ul className="text-xs text-red-200/90 font-mono space-y-1 mb-3">
+                {fundStateBlockedBy.map(w => (
+                  <li key={`${w.exchange}:${w.reason}`}>
+                    {w.exchange} &middot; {w.reason}{w.error ? ` — ${w.error}` : ''}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs text-red-200/80 mb-3">
+                Forcing the restore applies the snapshot anyway. If one of these writers is
+                still alive it will overwrite the recovered files with its own pre-restore
+                snapshot. Only force when you know the process is dead (e.g. a crashed
+                engine that cannot be reached over IPC).
+              </p>
+              <label className="flex items-center gap-2 text-xs text-red-200">
+                <input
+                  type="checkbox"
+                  checked={fundStateForceAcknowledged}
+                  onChange={e => setFundStateForceAcknowledged(e.target.checked)}
+                  className="accent-red-500"
+                />
+                I have verified the listed writers are not running
+              </label>
+            </div>
+          )}
+          <div className="flex justify-end gap-3">
+            <button
+              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+              onClick={cancelFundStateRestore}
+              disabled={fundStateRestoring}
+              autoFocus
+            >
+              Cancel
+            </button>
+            <button
+              className="px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded transition-colors disabled:opacity-50"
+              onClick={() => handleExecuteFundStateRestore()}
+              disabled={fundStateRestoring}
+            >
+              {fundStateRestoring ? 'Restoring…' : fundStateBlockedBy ? 'Retry Restore' : 'Restore Fund State'}
+            </button>
+            {fundStateBlockedBy && (
+              <button
+                className="px-4 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded transition-colors disabled:opacity-50"
+                onClick={() => handleExecuteFundStateRestore({ force: true })}
+                disabled={fundStateRestoring || !fundStateForceAcknowledged}
+              >
+                Force Restore Anyway
+              </button>
+            )}
+          </div>
+        </ModalDialog>
+      )}
+
       {/* Config Panel */}
       <div className="bg-gray-800 rounded-lg p-6">
         <h2 className="text-xl font-semibold mb-4">Backup Settings</h2>
@@ -455,7 +599,7 @@ function BackupRestore() {
                       <span className="font-mono text-gray-300">{fund.exchange} &middot; {fund.pair} &middot; {fund.files.length} file(s)</span>
                       <button
                         onClick={() => handleRestoreFundState(snapshot.snapshotId, fund.exchange, fund.pair)}
-                        disabled={restoring}
+                        disabled={restoring || fundStateRestoring}
                         className="px-3 py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded font-medium transition-colors"
                       >
                         Restore Fund State
@@ -680,7 +824,7 @@ function BackupRestore() {
                   </button>
                   <button
                     onClick={() => handleDelete(backup.filename)}
-                    disabled={deleting === backup.filename}
+                    disabled={deleting === backup.filename || (deleteConfirm && deleteConfirm.filename === backup.filename)}
                     className="px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:bg-red-900 disabled:cursor-not-allowed rounded text-xs font-medium transition-colors"
                   >
                     {deleting === backup.filename ? '...' : 'Delete'}

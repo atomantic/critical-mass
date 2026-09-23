@@ -177,24 +177,31 @@ const splitOrphansIntoCycles = (orphanFills) => {
 /**
  * Build mapping from old cycle IDs to sequential cycle-1, cycle-2... IDs.
  * Completed cycles are ordered first by timestamp, followed by active cycles.
+ * The live cycle (`currentId`) is always numbered LAST, even when it has no
+ * fills yet (a fresh post-reset cycle), so renumbering can never hand its ID
+ * to a historical cycle or leave it colliding with a renumbered one (#675).
  * @param {Map<string, number>} cycleTimestamps - Map of cycleId -> earliest fill timestamp
  * @param {Set<string>} completedIds - Set of completed cycleIds
+ * @param {string|null} [currentId=null] - The engine's live cycle ID
  * @returns {{ idMap: Map<string, string>, nextCycleNumber: number, renumbered: number }}
  */
-const buildCycleRenumberingMap = (cycleTimestamps, completedIds) => {
+const buildCycleRenumberingMap = (cycleTimestamps, completedIds, currentId = null) => {
   const completedEntries = [];
   const activeEntries = [];
   for (const [id, ts] of cycleTimestamps) {
+    if (currentId && id === currentId) continue;
     if (completedIds.has(id)) completedEntries.push([id, ts]);
     else activeEntries.push([id, ts]);
   }
   completedEntries.sort((a, b) => a[1] - b[1]);
   activeEntries.sort((a, b) => a[1] - b[1]);
+  const ordered = [...completedEntries, ...activeEntries];
+  if (currentId) ordered.push([currentId]);
 
   let cycleNum = 1;
   let renumbered = 0;
   const idMap = new Map();
-  for (const [oldId] of [...completedEntries, ...activeEntries]) {
+  for (const [oldId] of ordered) {
     const newId = `cycle-${cycleNum}`;
     idMap.set(oldId, newId);
     if (oldId !== newId) renumbered++;
@@ -1055,7 +1062,10 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * - Identifies completed cycles (cycles with sells)
    * - Assigns orphan fills (cycleId: null) to cycles based on timestamp
    * - Calculates BTC holdback per cycle and total reserves
-   * @returns {{cyclesCompleted: number, realizedPnL: number, realizedAssetPnL: number, cycleDetails: Array, orphansFixed: number}}
+   * - Never moves the live cycle: incomplete orphan groups stay in their own
+   *   recovered cycles, and currentCycleId is only adopted from them when it
+   *   was null. Renumbering keeps the live cycle last (#675).
+   * @returns {{cyclesCompleted: number, realizedPnL: number, realizedAssetPnL: number, cycleDetails: Array, orphansFixed: number, activeCycleId: string|null, idMap: Object<string, string>}}
    */
   const recalculateCycles = () => {
     const allFills = Array.from(fills.values()).sort((a, b) => a.timestamp - b.timestamp);
@@ -1120,6 +1130,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // Assign orphan fills to cycles based on buy-sell pattern
     // A sell ends a cycle, the next buy starts a new cycle
     let orphansFixed = 0;
+    const hadCurrentCycle = Boolean(currentCycleId);
     const orphanCycles = splitOrphansIntoCycles(orphanFills);
     if (orphanCycles.length > 0) {
       logger.info(`🔧 [${exchange}] Split ${orphanFills.length} orphan fills into ${orphanCycles.length} cycles`, {
@@ -1140,15 +1151,18 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
           bumpLedgerVersion();
         }
 
-        // Check if this is a completed cycle
+        // Check if this is a completed cycle. An incomplete orphan group stays
+        // in its own recovered cycle — sync-fills / manual-trade-import
+        // null-stamp historical fills on purpose (#108) — and must NEVER
+        // displace the engine's live cycle (#675).
         if (isCompletedCycle(cycleFills, cycleCompletionRatio)) {
           const { cycleDetail, pnl, holdbackAsset } = computeCycleStats(cycleId, cycleFills);
           cycleDetails.push(cycleDetail);
           totalRealizedPnL += pnl;
           totalRealizedAssetPnL += holdbackAsset;
           completedCycles.push({ cycleId, fills: cycleFills });
-        } else {
-          // This is the current active cycle
+        } else if (!hadCurrentCycle) {
+          // No live cycle to preserve — adopt the latest incomplete orphan group.
           currentCycleId = cycleId;
         }
       }
@@ -1164,10 +1178,14 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
     // Renumber cycles only when orphan fills created new cycle IDs that need
     // sequential numbering. Skip renumbering otherwise to preserve stable IDs.
+    const cycleIdMap = {};
     if (orphansFixed > 0) {
       const cycleTimestamps = collectCycleTimestamps(cycleMap, orphanCycles);
       const completedIds = new Set(cycleDetails.map(d => d.cycleId));
-      const { idMap, nextCycleNumber: cycleNum, renumbered } = buildCycleRenumberingMap(cycleTimestamps, completedIds);
+      const { idMap, nextCycleNumber: cycleNum, renumbered } = buildCycleRenumberingMap(cycleTimestamps, completedIds, currentCycleId);
+      for (const [oldId, newId] of idMap) {
+        if (oldId !== newId) cycleIdMap[oldId] = newId;
+      }
 
       if (renumbered > 0) {
         cycleIndex.clear();
@@ -1238,6 +1256,10 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       cycleDetails,
       orphansFixed,
       activeCycleId: currentCycleId,
+      // old → new cycle ID for every cycle the renumbering renamed. Callers
+      // holding a durable cycle ID (positionState.activeCycleId) must re-point
+      // it through this map, or the next restart restores a stale name (#675).
+      idMap: cycleIdMap,
     };
   };
 
@@ -1255,7 +1277,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * avgCost-prorated totals are diagnostic. Here we surface cycleDetails and
    * the orphan-fix count so the UI can render them.
    *
-   * @returns {{cyclesCompleted: number, cycleDetails: Array, orphansFixed: number, activeCycleId: string|null}}
+   * @returns {{cyclesCompleted: number, cycleDetails: Array, orphansFixed: number, activeCycleId: string|null, idMap: Object<string, string>}}
    */
   const previewRecalculateCycles = () => {
     const allFills = Array.from(fills.values()).sort((a, b) => a.timestamp - b.timestamp);
@@ -1274,13 +1296,16 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // assigned and which would-be cycles complete vs become the active cycle.
     let orphansFixed = 0;
     let previewActiveCycleId = currentCycleId;
+    const hadCurrentCycle = Boolean(currentCycleId);
     const orphanCycles = splitOrphansIntoCycles(orphanFills);
     if (orphanCycles.length > 0) {
       for (const { cycleId, fills: cycleFills } of orphanCycles) {
         orphansFixed += cycleFills.length;
         if (isCompletedCycle(cycleFills, cycleCompletionRatio)) {
           cycleDetails.push(computeCycleStats(cycleId, cycleFills).cycleDetail);
-        } else {
+        } else if (!hadCurrentCycle) {
+          // Same rule as recalculateCycles: an orphan group only becomes the
+          // active cycle when there is no live cycle to preserve (#675).
           previewActiveCycleId = cycleId;
         }
       }
@@ -1288,10 +1313,14 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
     // Renumber preview cycle IDs if orphan fills created new cycle IDs,
     // mirroring the renumbering in recalculateCycles without mutating fills.
+    const cycleIdMap = {};
     if (orphansFixed > 0) {
       const cycleTimestamps = collectCycleTimestamps(cycleMap, orphanCycles);
       const completedIds = new Set(cycleDetails.map(d => d.cycleId));
-      const { idMap } = buildCycleRenumberingMap(cycleTimestamps, completedIds);
+      const { idMap } = buildCycleRenumberingMap(cycleTimestamps, completedIds, previewActiveCycleId);
+      for (const [oldId, newId] of idMap) {
+        if (oldId !== newId) cycleIdMap[oldId] = newId;
+      }
 
       for (const detail of cycleDetails) {
         if (idMap.has(detail.cycleId)) detail.cycleId = idMap.get(detail.cycleId);
@@ -1306,6 +1335,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       cycleDetails,
       orphansFixed,
       activeCycleId: previewActiveCycleId,
+      idMap: cycleIdMap,
     };
   };
 

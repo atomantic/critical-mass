@@ -2,6 +2,12 @@ import React from 'react'
 import ModalDialog from '../ModalDialog'
 
 const RegimeActionModals = ({
+  // Cancel Ladder state & handlers
+  cancelLadderConfirm,
+  cancellingLadder,
+  onDismissCancelLadder,
+  onExecuteCancelLadder,
+
   // Collapse All state & handlers
   collapseAllConfirm,
   collapsingAll,
@@ -56,6 +62,41 @@ const RegimeActionModals = ({
 }) => {
   return (
     <>
+      {/* Cancel-ladder confirmation dialog */}
+      {cancelLadderConfirm && (
+        <ModalDialog
+          onClose={() => onDismissCancelLadder()}
+          dismissible={!cancellingLadder}
+          labelledBy="cancel-ladder-title"
+          describedBy="cancel-ladder-description"
+        >
+          <h3 id="cancel-ladder-title" className="text-white text-lg font-medium mb-3">Cancel Ladder</h3>
+          <p id="cancel-ladder-description" className="text-gray-300 text-sm mb-4">
+            Cancels <span className="text-amber-300 font-medium">{status?.position?.pendingLadderOrders?.length || 0}</span> resting ladder buy order{(status?.position?.pendingLadderOrders?.length || 0) !== 1 ? 's' : ''} and switches <span className="font-mono">entryMode</span> to <span className="font-mono">reactive</span>.
+          </p>
+          <p className="text-gray-400 text-xs mb-4">
+            The fund will no longer place new ladder orders and will only enter positions through reactive buys (market, fill-or-kill).
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+              onClick={() => onDismissCancelLadder()}
+              disabled={cancellingLadder}
+              autoFocus
+            >
+              Cancel
+            </button>
+            <button
+              className="px-4 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded transition-colors disabled:opacity-50"
+              onClick={onExecuteCancelLadder}
+              disabled={cancellingLadder}
+            >
+              {cancellingLadder ? 'Cancelling…' : 'Cancel Ladder'}
+            </button>
+          </div>
+        </ModalDialog>
+      )}
+
       {/* Collapse-all confirmation dialog */}
       {collapseAllConfirm && (
         <ModalDialog
