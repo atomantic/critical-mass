@@ -673,43 +673,6 @@ const planBodyGrowthFromRecoveredBuyRows = ({ fillLedger, celestialBodies }) => 
   return { plans, skipped };
 };
 
-/**
- * Boot-time application of planBodyGrowthFromRecoveredBuyRows (issue #752).
- * Runs before the engine is live, so — like repairHistoricalFillAnnotations
- * step 0 — it only grows the body; the reconcile loop's stale-size check then
- * sees assetOnOrder no longer matching the grown assetQty's planned TP size
- * and cancels/re-places the TP. (A running engine uses extendBody instead,
- * which cancels the TP before growing.)
- * @param {Object} deps
- * @param {Object} deps.fillLedger
- * @param {Object} deps.positionState
- * @param {Object} deps.config
- * @param {Object} deps.logger
- * @param {string} deps.baseCurrency
- * @param {string} deps.exchange
- * @param {Object} deps.celestialHierarchy
- * @returns {number} Bodies grown (caller persists when > 0)
- */
-const growBodiesFromRecoveredBuyRows = ({
-  fillLedger, positionState, config, logger, baseCurrency, exchange, celestialHierarchy: hierarchy,
-}) => {
-  const { plans, skipped } = planBodyGrowthFromRecoveredBuyRows({ fillLedger, celestialBodies: positionState.celestialBodies });
-  for (const { buyOrderId, reason } of skipped) {
-    logger.warn(`⚠️ [${exchange}] Recovered buy rows of ${String(buyOrderId).slice(0, 8)} not merged into a body (${reason}) — manual review`, { buyOrderId, reason });
-  }
-  for (const { body, buyOrderId, shortfall } of plans) {
-    hierarchy.mergeIntoBody(body, shortfall, config.maxUsdcDeployed, buyOrderId, logger);
-    logger.info(`🔧 [${exchange}] Grew body ${body.id.slice(-8)} by ${shortfall.assetQty} ${baseCurrency} from recovered rows of buy ${String(buyOrderId).slice(0, 8)} (now ${body.assetQty} ${baseCurrency}); reconcile loop will re-place its TP`, {
-      bodyId: body.id, buyOrderId, assetQty: shortfall.assetQty, costBasis: shortfall.costBasis,
-    });
-  }
-  if (plans.length > 0) {
-    hierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
-    hierarchy.syncPositionState(positionState, positionState.celestialBodies);
-  }
-  return plans.length;
-};
-
 /** Floor for `fillDriftSweepMs` — one full-history exchange fetch per minute. */
 const MIN_FILL_DRIFT_SWEEP_MS = 60_000;
 
@@ -2231,12 +2194,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Folding null-cycle fills into the live cycle (#705) changes its
       // membership, so the counters restored above must be re-derived too.
       const cycleIdChanged = syncActiveCycleIdAfterRecalc(recalcResult);
-      // Recovered partial rows of a body's own buy order (#752) grow that
-      // body; the reconcile loop re-places its now under-sized TP.
-      const bodiesGrown = growBodiesFromRecoveredBuyRows({
-        fillLedger, positionState, config, logger, baseCurrency, exchange, celestialHierarchy,
-      });
-      if (resyncLiveCycleCountersAfterRecalc(recalcResult) || cycleIdChanged || bodiesGrown > 0) saveLiveState();
+      if (resyncLiveCycleCountersAfterRecalc(recalcResult) || cycleIdChanged) saveLiveState();
       if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0 || sealedLegacy > 0) {
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         refreshRealizedFromCyclePairs();
@@ -2730,6 +2688,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     isRunning = true;
+
+    // Recovered partial rows of a body's own buy order (#752) grow that body
+    // through extendBody now that the engine is live: it cancels the body's TP
+    // BEFORE growing it, so a stale TP that fills first can never book the
+    // recovered quantity as zero-cost holdback.
+    extendBodiesFromRecoveredBuyRows();
 
     // Start Gemini heartbeat to prevent order auto-cancellation.
     // Owner key: the adapter is a per-exchange singleton shared across funds,
@@ -7338,13 +7302,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let recoveredGrowthChain = Promise.resolve();
 
   /**
-   * Running-engine counterpart of growBodiesFromRecoveredBuyRows (#752):
-   * grow each body that owns recovered partial rows of its own buy order via
-   * extendBody, which cancels the body's TP BEFORE growing it and re-places
-   * it at the new size. Fire-and-forget (the recalc result doesn't wait on
-   * exchange round trips) but serialized, and idempotent — extendBody merges
-   * only the order's remaining shortfall, so a failed or repeated attempt is
-   * simply retried by the next recalc or boot.
+   * Grow each body that owns recovered partial rows of its own buy order
+   * (planBodyGrowthFromRecoveredBuyRows, #752) via extendBody, which cancels
+   * the body's TP BEFORE growing it and re-places it at the new size. Runs at
+   * start (once live) and after an operator recalc. Fire-and-forget (callers
+   * don't wait on exchange round trips) but serialized, and idempotent —
+   * extendBody merges only the order's remaining shortfall, so a failed or
+   * repeated attempt is simply retried by the next recalc or start.
    * @returns {Promise<void>}
    */
   const extendBodiesFromRecoveredBuyRows = () => {
@@ -8295,7 +8259,6 @@ module.exports = {
   restorePersistedCycleId,
   repairHistoricalFillAnnotations,
   planBodyGrowthFromRecoveredBuyRows,
-  growBodiesFromRecoveredBuyRows,
   cancelPartialFillOrder,
   buildPartialFillData,
   makeFillDedupKey,

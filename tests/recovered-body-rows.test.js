@@ -14,10 +14,8 @@ const path = require('path');
 const {
   createRegimeEngine,
   planBodyGrowthFromRecoveredBuyRows,
-  growBodiesFromRecoveredBuyRows,
 } = require('../src/regime-engine');
 const { createFillLedger } = require('../src/fill-ledger');
-const celestialHierarchy = require('../src/celestial-hierarchy');
 
 const PAIRS = [];
 const engines = [];
@@ -29,7 +27,6 @@ after(() => {
 const T0 = Date.parse('2026-01-01T00:00:00.000Z');
 const at = (h) => new Date(T0 + h * 3600_000).toISOString();
 const noop = () => {};
-const quietLogger = { info: noop, warn: noop, error: noop };
 
 /**
  * Body `body-A` bought order `a-buy` for 0.01 @ 50000 (row a-1). A second
@@ -139,28 +136,6 @@ describe('planBodyGrowthFromRecoveredBuyRows (#752)', () => {
     assert.equal(ledger.getAllFills().find(f => f.tradeId === 'm-1').cycleAttribution, 'timeframe');
     const { plans } = planBodyGrowthFromRecoveredBuyRows({ fillLedger: ledger, celestialBodies: [body] });
     assert.deepStrictEqual(plans.map(p => p.buyOrderId), ['a-buy']);
-  });
-});
-
-describe('growBodiesFromRecoveredBuyRows — boot path (#752)', () => {
-  it('grows the body once (idempotent) and leaves the TP for the reconcile loop to re-size', () => {
-    const ledger = makeLedger('boot');
-    const body = seed(ledger);
-    ledger.recalculateCycles();
-    const positionState = { celestialBodies: [body] };
-    const deps = {
-      fillLedger: ledger, positionState, config: { maxUsdcDeployed: 10000 }, logger: quietLogger,
-      baseCurrency: 'BTC', exchange: 'coinbase', celestialHierarchy,
-    };
-
-    assert.equal(growBodiesFromRecoveredBuyRows(deps), 1);
-    assert.equal(body.assetQty, 0.015);
-    assert.equal(body.costBasis, 750);
-    assert.equal(body.tpOrderId, 'a-tp', 'boot never touches the exchange; reconcile sees the stale size');
-    assert.equal(positionState.totalAsset, 0.015, 'position totals re-synced from bodies');
-
-    assert.equal(growBodiesFromRecoveredBuyRows(deps), 0, 'a second boot converges — no double growth');
-    assert.equal(body.assetQty, 0.015);
   });
 });
 

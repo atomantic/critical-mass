@@ -416,7 +416,7 @@ const deriveAttributedAnnotations = (attributed, cycleMap) => {
     const fields = ORDER_LEVEL_FIELDS[fill.side];
     if (!fields || !fill.orderId) continue;
     const sibling = (cycleMap.get(cycleId) || []).find(f =>
-      !attributedFills.has(f) && f.orderId === fill.orderId && f.side === fill.side);
+      f !== fill && !attributedFills.has(f) && f.orderId === fill.orderId && f.side === fill.side);
     if (!sibling) continue;
     const patch = {};
     for (const field of fields) {
