@@ -356,4 +356,47 @@ describe('#670 TP cancel-for-replace books executions during cancel', () => {
     assert.match(result.message, /sold during cancel — sale booked/);
     assertBookedAndResized(eng, placed, 'tp-old', '__test670nosize__');
   });
+  it('reconcile retries a failed booking with the known execution even when the status omits filledSize', async () => {
+    let openOrders = [{ orderId: 'tp-old' }];
+    const { eng, placed } = makeEngine({
+      cancelResult: EXECUTION,
+      adapter: {
+        // The first booking cannot confirm the order terminal; afterwards the
+        // exchange reports CANCELLED with no cumulative size at all.
+        getOpenOrders: async () => openOrders,
+        getOrder: async () => ({ status: 'CANCELLED' }),
+      },
+      pair: '__test670retry__',
+    });
+    seedBuy(eng);
+
+    const first = await eng.setBodyTpPercent('b1', 2);
+    assert.match(first.message, /deferred to reconciliation/);
+    const body = eng._getPositionState().celestialBodies[0];
+    assert.equal(body.tpOrderId, 'tp-old');
+    assert.equal(body.pendingTpCancelExecution.filledSize, 0.004, 'the known execution is kept for the retry');
+
+    openOrders = [];
+    await eng._test.reconcileTick();
+
+    assertBookedAndResized(eng, placed, 'tp-old', '__test670retry__');
+    assert.equal(body.pendingTpCancelExecution, undefined, 'marker cleared once booked');
+  });
+
+  it('classifies a full execution on a legacy body with no assetOnOrder as a completed TP', async () => {
+    const { eng, placed } = makeEngine({
+      cancelResult: { cancelled: true, filled: false, filledSize: 0.0099, filledValue: 499.95, averageFilledPrice: 50500, totalFees: 0.05 },
+      adapter: {
+        getOrder: async () => ({ status: 'CANCELLED', filledSize: 0.0099 }),
+        getOrderFills: async (orderId) => sellFill(orderId, '0.0099'),
+      },
+      pair: '__test670legacy__',
+    });
+    eng._getPositionState().celestialBodies[0].assetOnOrder = 0;
+
+    await eng.setBodyTpPercent('b1', 2);
+
+    assert.equal(eng._getPositionState().celestialBodies.length, 0, 'the completed TP closed its body');
+    assert.equal(placed.length, 0);
+  });
 });

@@ -4051,28 +4051,61 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       `⚠️ [${exchange}] ${context}: body ${body.id.slice(-8)} TP ${oldTp.slice(0, 8)} sold ${cancelResult.filledSize} ${baseCurrency} during cancel — booking before re-place (#670)`,
       { bodyId: body.id, orderId: oldTp, filledSize: cancelResult.filledSize, context }
     );
+    return bookTpCancelExecution(body, oldTp, cancelResult, context);
+  };
+
+  /**
+   * Book a body TP's execution that was reported by a cancel (see
+   * cancelBodyTpForReplace) through the normal body-TP sell path. The body
+   * must still carry `tpOrderId = orderId`.
+   *
+   * On failure the known execution is kept on the body as
+   * `pendingTpCancelExecution` (persisted with it), so the reconcile loop can
+   * retry the booking even when the exchange's CANCELLED status omits the
+   * filled size — otherwise it would read "cancelled, nothing filled", clear
+   * the TP and re-place against the unreduced body, losing the sale.
+   * @param {Object} body
+   * @param {string} orderId - The cancelled TP
+   * @param {{filledSize: number, filledValue?: number, averageFilledPrice?: number, totalFees?: number}} execution
+   * @param {string} context - Log label
+   * @returns {Promise<'booked'|'booking_failed'>}
+   */
+  const bookTpCancelExecution = async (body, orderId, execution, context) => {
     // A TP that executed its whole planned size before the cancel landed
     // (the cancel-after-full-fill race) is a completed TP, not a partial:
     // route it as terminal so the sell handler closes the body and books its
     // designed holdback as reserves instead of re-listing that holdback. The
     // partial-fill flag would otherwise force the partial branch whenever the
-    // exchange's status carries no completionPercentage.
+    // exchange's status carries no completionPercentage. Mirrors the sell
+    // handler's classification, including its legacy fallback for bodies
+    // with no recorded assetOnOrder.
     const onOrder = body.assetOnOrder || 0;
-    const executedFullTp = onOrder > 0 && cancelResult.filledSize >= onOrder * 0.99;
+    const executedFullTp = onOrder > 0
+      ? execution.filledSize >= onOrder * 0.99
+      : body.assetQty > 0 && execution.filledSize / body.assetQty >= 0.95;
     try {
-      await handleOrderFill(buildPartialFillData(oldTp, 'sell', {
+      await handleOrderFill(buildPartialFillData(orderId, 'sell', {
         status: executedFullTp ? 'FILLED' : 'CANCELLED',
-        filledSize: cancelResult.filledSize,
-        filledValue: cancelResult.filledValue,
-        averageFilledPrice: cancelResult.averageFilledPrice,
-      }, { totalFees: cancelResult.totalFees || 0, ...(executedFullTp && { isPartialFill: false }) }));
+        filledSize: execution.filledSize,
+        filledValue: execution.filledValue,
+        averageFilledPrice: execution.averageFilledPrice,
+      }, { totalFees: execution.totalFees || 0, ...(executedFullTp && { isPartialFill: false }) }));
     } catch (err) {
+      body.pendingTpCancelExecution = {
+        orderId,
+        filledSize: execution.filledSize,
+        filledValue: execution.filledValue || 0,
+        averageFilledPrice: execution.averageFilledPrice || 0,
+        totalFees: execution.totalFees || 0,
+      };
+      saveLiveState();
       logger.warn(
-        `⚠️ [${exchange}] ${context}: failed to book body ${body.id.slice(-8)} TP ${oldTp.slice(0, 8)} execution during cancel: ${err.message} — keeping TP identity for reconciliation`,
-        { bodyId: body.id, orderId: oldTp, error: err.message, context }
+        `⚠️ [${exchange}] ${context}: failed to book body ${body.id.slice(-8)} TP ${orderId.slice(0, 8)} execution during cancel: ${err.message} — keeping TP identity for reconciliation`,
+        { bodyId: body.id, orderId, error: err.message, context }
       );
       return 'booking_failed';
     }
+    delete body.pendingTpCancelExecution;
     return 'booked';
   };
 
@@ -4669,7 +4702,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 await handleOrderFill(fillData);
               } else if (isCancelledStatus(bodyStatus)) {
                 const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-                if (bodyStatus.filledSize > 0) {
+                // A cancel-for-replace whose booking failed (#670) left the
+                // execution it knew about on the body; retry with it rather
+                // than trusting a status that may omit the filled size.
+                const knownExecution = body.pendingTpCancelExecution?.orderId === body.tpOrderId
+                  ? body.pendingTpCancelExecution
+                  : null;
+                if (knownExecution && !((parseFloat(bodyStatus.filledSize) || 0) > knownExecution.filledSize)) {
+                  orderExecutor.markSettled(body.tpOrderId);
+                  await bookTpCancelExecution(body, body.tpOrderId, knownExecution, 'Reconcile retry');
+                } else if (bodyStatus.filledSize > 0) {
                   // Route partials through handleOrderFill before re-placing — otherwise
                   // they're lost (Gemini has no order-events WS, and polling drops the
                   // order from pendingOrders once it sees CANCELLED).
