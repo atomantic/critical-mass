@@ -237,6 +237,63 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
     );
   });
 
+  it('books reserves and completes the cycle (does NOT treat as partial) when the target TP fills its FULL planned size during the cancel race (codex review finding on #669)', async () => {
+    // Same shape as the #227-follow-up test above, except the cancel-race fill
+    // is for the TP's ENTIRE planned assetOnOrder (0.009 of the 0.01 body —
+    // the other 0.001 is the body's DESIGNED holdback, per makeBody's
+    // assetOnOrder: qty*0.9), not a true partial. A healthy 100%-of-assetOnOrder
+    // fill must be booked as a completed cycle — full reserves, bodiesCompleted
+    // incremented — exactly like the normal body-TP path, NOT as a partial fill
+    // just because the live body still holds its designed holdback afterward
+    // (summary.totalSize === body.assetQty is never true on a healthy fill;
+    // checking "does liveMerged still hold qty" would misclassify this).
+    const target = makeBody('target', 50000, 0.01, 'tp-target-full'); // assetOnOrder = 0.009
+    let getOrderCalls = 0;
+    const eng = makeEngine({
+      bodies: [target],
+      adapter: {
+        // Pre-check (1st call) is clean; the terminal-confirm call (2nd,
+        // inside cancelPartialFillOrder) reports the healthy full execution —
+        // same two-call shape the #227-follow-up test above uses.
+        getOrder: async () => {
+          getOrderCalls++;
+          return getOrderCalls === 1
+            ? { filledSize: 0, status: 'OPEN' }
+            : { filledSize: 0.009, status: 'CANCELLED', averageFilledPrice: 50500 };
+        },
+        getOpenOrders: async () => [],
+        getOrderFills: async (orderId) => {
+          if (orderId === 'tp-target-full') {
+            return [{
+              tradeId: 'tp-target-full-t1', orderId: 'tp-target-full', side: 'sell', price: '50500', size: '0.009',
+              totalCommission: '0.045', rebate: '0', liquidityIndicator: 'MAKER', tradeTime: new Date().toISOString(),
+            }];
+          }
+          return buyFills('buy-new', 0.01, 50000);
+        },
+      },
+      executor: {
+        placeBodyTpOrder: async () => ({ success: true, orderId: `tp-new-${Math.random()}` }),
+        // Fills the FULL planned assetOnOrder (0.009), not less — a healthy
+        // complete execution that merely raced the cancel, not a true partial.
+        cancelBodyTpOrder: async () => ({ cancelled: true, filled: false, filledSize: 0.009, filledValue: 454.5, averageFilledPrice: 50500, totalFees: 0.045 }),
+      },
+    });
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+
+    const ledger = JSON.parse(fs.readFileSync(path.join(JUNK_DIR, 'fill-ledger.json'), 'utf8'));
+    const sell = ledger.find(fill => fill.orderId === 'tp-target-full');
+    assert.ok(sell, 'the executed tranche was booked to the fill ledger');
+    assert.equal(sell.partialFill, undefined, 'a healthy full-of-assetOnOrder fill is NOT annotated as a partial fill');
+    // holdback = 0.01 - 0.009 = 0.001, booked as reserves (not withheld to 0).
+    assert.ok(Math.abs(sell.bodyHoldbackAsset - 0.001) < 1e-9, `full holdback is booked as reserves, got ${sell.bodyHoldbackAsset}`);
+    // soldRatio = 0.009/0.01 = 0.9 — bodyCostBasis is the prorated SOLD cost
+    // (450), not the full $500 snapshot cost.
+    assert.ok(Math.abs(sell.bodyCostBasis - 450) < 1e-6, `bodyCostBasis is the prorated sold cost, got ${sell.bodyCostBasis}`);
+    assert.equal(eng._getPositionState().celestialState.bodiesCompleted, 1, 'a healthy complete-of-assetOnOrder fill completes the cycle');
+  });
+
   it('prices consumedCostFraction off the DOLLAR cost actually removed, not a quantity ratio, when a fold-in buy prices differently than the body (issue #669 review finding)', async () => {
     // Same #227-follow-up shape as above, except a SECOND buy successfully
     // folds onto the SAME live target body (via the ordinary merge path,

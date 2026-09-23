@@ -3011,6 +3011,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const pnl = proceeds - proratedCostBasis;
         const holdbackAsset = roundAsset(mergeSnapshot.assetQty - summary.totalSize);
 
+        // Detect a TRUE partial fill of the snapshot's own TP — NOT "does the
+        // live body still hold asset" (a healthy 100%-of-assetOnOrder fill
+        // ALWAYS leaves designed holdback behind, per the holdback-vs-partial
+        // distinction this codebase treats as load-bearing: summary.totalSize
+        // === body.assetQty is never true on a healthy fill). Mirrors the
+        // normal partial-fill path's isPartial check (:~3210) using
+        // mergeSnapshot.assetOnOrder — the frozen size the cancelled/fired TP
+        // was actually placed for (snapshotted before assetOnOrder is cleared
+        // to 0 on cancel, both in the buy-merge race above and in
+        // bookExecutionDuringCancel's roll-up snapshots). Deliberately does
+        // NOT OR in `fillData.isPartialFill`: every caller that reaches this
+        // branch via buildPartialFillData (the #227/#368 immediate
+        // self-booking paths) hardcodes that flag to `true` regardless of
+        // whether the fill was actually partial, so it is not a usable signal
+        // here (unlike the normal path's other callers).
+        const onOrder = mergeSnapshot.assetOnOrder || 0;
+        const isPartialSnapshotFill = onOrder > 0
+          ? summary.totalSize < onOrder * 0.99
+          : soldRatio < 0.95;
+
         // Deduct the sold tranche from the LIVE merged body (issue #201). If a buy
         // folded onto this body in the Race-3 window (between the partial-fill
         // pre-check and the TP cancel), the merged body still contains the qty/cost
@@ -3018,19 +3038,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // the account no longer holds and the sold tranche's cost is double-counted
         // (once here via bodyPnl, once retained in the merged body's costBasis).
         const liveMerged = (positionState.celestialBodies || []).find(b => b.id === mergeSnapshot.id);
-        // The body is still live whenever `liveMerged` is found — this sell only
-        // closed a fraction of it, not the whole cycle. Treat it exactly like the
-        // normal-path PARTIAL branch (:3145-3168) rather than a completed body:
-        // zero-cost holdback annotation (the unsold remainder stays in the live
-        // body, not as reserves), no bodiesCompleted increment, and
-        // consumedCostFraction tracking so heldOpenBuyCostBasis doesn't double-count
-        // the still-held remainder (issue #617). This branch never splices a body
-        // out of celestialBodies (unlike the normal-path FULL FILL branch), so
-        // `liveMerged` can still be found at exactly zero qty/cost after a sell
-        // that fully drains it — that IS a completed cycle, so the "still open"
-        // decision below is made AFTER the deduction, on the resulting qty, not
-        // on object presence alone.
+        // The body is still OPEN only when `liveMerged` exists AND this was a
+        // true partial fill of its TP — a healthy complete-of-assetOnOrder
+        // fill closes the cycle (reserves booked, bodiesCompleted counted)
+        // exactly like the normal path, even though this branch never splices
+        // the now-empty-of-obligation body out of celestialBodies (issue
+        // #617/#669).
+        const liveOwnsRemainder = !!liveMerged && isPartialSnapshotFill;
+
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
+        if (!liveOwnsRemainder) cs.bodiesCompleted += 1;
         positionState.celestialState = cs;
 
         const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
@@ -3110,13 +3127,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           }
         }
 
-        // Decide AFTER the deduction above: the live body object can still be
-        // found at exactly zero qty (this branch never splices it out of
-        // celestialBodies), which is a completed cycle, not an open one —
-        // object presence alone (`!!liveMerged`) is not sufficient.
-        const liveOwnsRemainder = !!liveMerged && liveMerged.assetQty > 0;
-        if (!liveOwnsRemainder) cs.bodiesCompleted += 1;
-
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
         // Re-place a correctly-sized TP on the deducted body (issue #201).
@@ -3130,7 +3140,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           isBodyOwned: true,
           bodyId: mergeSnapshot.id,
           bodyTier: mergeSnapshot.tier,
-          bodyCostBasis: mergeSnapshot.costBasis,
+          // The prorated cost of the SOLD tranche, not the full snapshot cost —
+          // matches the normal partial-fill path (:~3318), which always records
+          // proratedCostBasis regardless of partial/complete (proratedCostBasis
+          // already equals the full cost when soldRatio is 1).
+          bodyCostBasis: proratedCostBasis,
           bodyAvgPrice: mergeSnapshot.avgPrice,
           bodyBtcQty: liveOwnsRemainder ? summary.totalSize : mergeSnapshot.assetQty,
           bodyHoldbackAsset: liveOwnsRemainder ? 0 : holdbackAsset,
