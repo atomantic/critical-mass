@@ -758,7 +758,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }, productId)
     : createOrderExecutor(exchange, config, adapter, productId, {
         onFillDetected: (orderId, status) => liveCallbacks.onFillDetected && liveCallbacks.onFillDetected(orderId, status),
-        onEntryCancelled: (orderId) => {
+        onEntryCancelled: (orderId, info) => {
+          // A cancel that also carries a fill (info.filledSize > 0) is about
+          // to be routed through onFillDetected right after this fires —
+          // purging the saved row here, before that fill's outcome is known,
+          // would orphan a real buy with nothing left to rediscover it if
+          // processing fails and the #679 engine-level retry exhausts (issue
+          // #673). Leave it: a successful fill removes it via
+          // handleOrderFillImpl's own terminal-entry filter, and a failure
+          // leaves it for reconcileTick's orphan sweep to catch up. Only a
+          // genuinely empty cancel (nothing to book) is safe to purge here.
+          if ((info?.filledSize || 0) > 0) return;
           if (positionState.pendingEntryOrders?.length > 0) {
             positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(e => e.orderId !== orderId);
           }

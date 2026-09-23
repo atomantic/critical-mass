@@ -189,6 +189,62 @@ describe('checkPendingOrderFills — CANCELLED with partial fills', () => {
     assert.equal(result.cancelled, 1);
     assert.equal(captured.length, 0);
   });
+
+  it('treats EXPIRED the same as CANCELLED (issue #673 follow-up, codex review)', async () => {
+    // checkPendingOrderFills used to match only the literal 'CANCELLED'
+    // string, not shared-utils' full CANCELLED/CANCELED/EXPIRED/FAILED set
+    // (isCancelledStatus) that the rest of the codebase already treats as
+    // terminal-off-book. Gemini normalizes any off-book, not-explicitly-
+    // cancelled order to EXPIRED — an order restored into tracking via
+    // restorePendingOrder() (e.g. regime-engine.js's reconcile orphan sweep
+    // re-arming a failed catch-up) would come back EXPIRED and never be
+    // revisited by this loop, since none of the three branches matched.
+    const captured = [];
+    const adapter = makeAdapter({ status: 'EXPIRED', filledSize: 0.02, completionPercentage: 20, side: 'BUY' });
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+    });
+    exec.restorePendingOrder('order-expired', {
+      type: 'entry',
+      price: 2300,
+      size: 0.1,
+      sizeUsdc: 230,
+      placedAt: Date.now(),
+    });
+
+    const result = await exec.checkPendingOrderFills();
+
+    assert.equal(result.cancelled, 1, 'EXPIRED must count as a cancel, same as CANCELLED');
+    assert.equal(captured.length, 1, 'the partial fill on an EXPIRED order must still be routed through onFillDetected');
+    assert.equal(captured[0].status.filledSize, 0.02);
+    assert.equal(exec.getPendingCounts().entries, 0, 'the order must be dropped from tracking, not left polled forever');
+  });
+
+  it('passes filledSize to onEntryCancelled so a consumer can defer purging a fill-bearing cancel (issue #673 follow-up, codex review)', async () => {
+    // regime-engine.js's onEntryCancelled handler must be able to tell a
+    // genuinely empty cancel (safe to purge its saved bookkeeping
+    // immediately) apart from one that is about to be routed through
+    // onFillDetected (whose outcome — success or an exhausted #679 retry —
+    // isn't known yet). Purging eagerly for the latter would orphan a real
+    // fill with nothing left to rediscover it.
+    const entryCancelledCalls = [];
+    const adapter = makeAdapter({ status: 'CANCELLED', filledSize: 0.03, completionPercentage: 30, side: 'BUY' });
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      onFillDetected: () => {},
+      onEntryCancelled: (orderId, info) => entryCancelledCalls.push({ orderId, filledSize: info?.filledSize }),
+    });
+    exec.restorePendingOrder('order-cancel-partial', {
+      type: 'entry',
+      price: 2300,
+      size: 0.1,
+      sizeUsdc: 230,
+      placedAt: Date.now(),
+    });
+
+    await exec.checkPendingOrderFills();
+
+    assert.deepEqual(entryCancelledCalls, [{ orderId: 'order-cancel-partial', filledSize: 0.03 }]);
+  });
 });
 
 describe('cancelAllEntries — refused-cancel fill handling (issue #209 A)', () => {
