@@ -157,7 +157,13 @@ const createSentinelService = (io, deps) => {
       for (const item of items) {
         if (!isCurrent()) return;
         const guid = item.guid;
-        if (seenGuids.has(guid)) continue;
+        if (seenGuids.has(guid)) {
+          // Refresh timestamp so items still in feed don't expire after MAX_SEEN_AGE_MS.
+          // Without this, items that remain in the feed for >7 days get pruned and re-alerted
+          // on the next poll (issue #695).
+          seenGuids.set(guid, Date.now());
+          continue;
+        }
 
         const alert = await processItem(item, config);
         if (!isCurrent()) return;
