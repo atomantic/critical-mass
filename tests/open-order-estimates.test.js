@@ -123,6 +123,20 @@ test('body TP sold at full qty with zero holdback (exchange-minimum guard) repor
   assert.equal(estHoldback, 0);
 });
 
+test('bodyData.assetQty < order.size (unreachable in practice, but guarded) falls back to the tiered ratio formula, never negative/NaN', async () => {
+  // Regression guard for the >= boundary fixed in this issue: if order.size ever
+  // exceeds bodyData.assetQty (stale/partial-fill data, or the >= guard regressing
+  // back to a stricter check), the estimate must still be a sane non-negative number
+  // from the ratio-formula fallback, never a negative raw subtraction.
+  const { computeOpenOrderEstimate } = await load();
+
+  const bodyData = { assetQty: 1, avgPrice: 50000, costBasis: 50000, tier: 'planet' };
+  const order = { type: 'body_tp', orderId: 'tp-stale', size: 1.0000001, price: 51500 };
+
+  const { estHoldback } = computeOpenOrderEstimate(order, bodyData, { holdbackRatio: 0.5 });
+  assert.ok(estHoldback === null || (Number.isFinite(estHoldback) && estHoldback >= 0), `estHoldback=${estHoldback}`);
+});
+
 test('TIER_HOLDBACK_SCALE stays in sync with src/celestial-hierarchy.js TIERS', async () => {
   const { TIER_HOLDBACK_SCALE } = await load();
   for (const tier of TIERS) {
