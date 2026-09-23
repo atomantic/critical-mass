@@ -33,22 +33,40 @@ const flushAsync = () => new Promise(resolve => setImmediate(resolve));
 const configUtils = require('../src/config-utils');
 const originalUpdateRegimeConfig = configUtils.updateRegimeConfig;
 const originalGetConfiguredFunds = configUtils.getConfiguredFunds;
-const originalGetFundConfig = configUtils.getFundConfig;
+const originalLoadConfig = configUtils.loadConfig;
 configUtils.updateRegimeConfig = () => {};
 let STUBBED_FUNDS = [];
 configUtils.getConfiguredFunds = () => STUBBED_FUNDS;
 // recordCycleForSizeOptimizer resolves each candidate's EFFECTIVE traded
-// quote currency via getFundConfig(exchange, pair).productId (not the raw
-// pair string, to cover quote-currency overrides — see the source comment).
-// The real getFundConfig() would otherwise read production data/config.json
-// and resolve every unknown test pair to the same DEFAULTS.productId,
+// quote currency from its RAW per-pair config block (loadConfig() +
+// normalizeExchangeBlock(), NOT getFundConfig()/getRegimeConfig() — both
+// DEFAULTS/regime-merged results whose .productId is never falsy, which
+// would silently defeat the `?? pair` fallback for a fund with no explicit
+// override — see the source comment). The real loadConfig() would otherwise
+// read production data/config.json and find none of these test pairs,
 // silently defeating every scenario below. regime-engine.js destructures
-// getFundConfig at require-time, so this stub function reference must stay
-// the SAME object forever — only the mutable PRODUCT_ID_OVERRIDES map it
-// reads may change between tests (reassigning configUtils.getFundConfig
-// itself later would not reach the already-captured destructured reference).
+// loadConfig/normalizeExchangeBlock at require-time, so this stub function
+// reference must stay the SAME object forever — only the mutable
+// PRODUCT_ID_OVERRIDES map it reads may change between tests (reassigning
+// configUtils.loadConfig itself later would not reach the already-captured
+// destructured reference).
 let PRODUCT_ID_OVERRIDES = {};
-configUtils.getFundConfig = (_exchange, pair) => ({ productId: PRODUCT_ID_OVERRIDES[pair] || pair });
+// A sentinel (rather than just omitting a key from PRODUCT_ID_OVERRIDES)
+// distinguishes "no override — use `pair` as the synthesized productId" from
+// "the raw block has NO productId field at all" (a fund never explicitly
+// configured with one — legacy/hand-edited config), the exact case claude
+// review round 3 found silently mis-resolving to DEFAULTS.productId via the
+// DEFAULTS-merged getFundConfig()/getRegimeConfig() accessors.
+const NO_PRODUCT_ID = Symbol('no productId field on the raw block');
+configUtils.loadConfig = () => {
+  const exchanges = {};
+  for (const { exchange: fundExchange, pair } of STUBBED_FUNDS) {
+    exchanges[fundExchange] = exchanges[fundExchange] || { pairs: {} };
+    const override = PRODUCT_ID_OVERRIDES[pair];
+    exchanges[fundExchange].pairs[pair] = override === NO_PRODUCT_ID ? {} : { productId: override || pair };
+  }
+  return { exchanges, global: {} };
+};
 
 const { createRegimeEngine } = require('../src/regime-engine');
 
@@ -62,7 +80,7 @@ after(() => {
   fs.rmSync(JUNK_DIR, { recursive: true, force: true });
   configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
   configUtils.getConfiguredFunds = originalGetConfiguredFunds;
-  configUtils.getFundConfig = originalGetFundConfig;
+  configUtils.loadConfig = originalLoadConfig;
 });
 
 const makeAdapter = (over = {}) => ({
@@ -222,6 +240,40 @@ describe('issue #694 (codex P1) — recordCycleForSizeOptimizer skips the shared
         sizeOptimizer.lastKnownBalance,
         0,
         'a sibling that ACTUALLY trades USDC (via productId override) must still be recognized as sharing the wallet'
+      );
+    } finally {
+      PRODUCT_ID_OVERRIDES = {};
+    }
+  });
+
+  it('a sibling fund with NO explicit productId at all in its raw config block still resolves correctly (claude review round 3)', async () => {
+    // Reading .productId off a DEFAULTS-merged accessor (getFundConfig() or
+    // getRegimeConfig()) is never falsy — it silently reads back
+    // DEFAULTS.productId ('BTC-USDC') for a fund whose raw block never set
+    // an explicit productId at all (legacy/hand-edited config, or anything
+    // not created through the addFund API path), which would misclassify
+    // this fund as quoting USDC regardless of its real pair. The fix reads
+    // the RAW block and falls back to the pair itself (`?? pair`), not a
+    // DEFAULTS-merged result.
+    PRODUCT_ID_OVERRIDES = { 'ETH-USD': NO_PRODUCT_ID };
+    try {
+      STUBBED_FUNDS = [
+        { exchange: 'coinbase', pair: TEST_PAIR },
+        { exchange: 'coinbase', pair: 'ETH-USD' }, // no productId field at all on its raw block
+      ];
+      const orderId = 'fund-scoping-no-productid-field';
+      const eng = makeEngine();
+      setupLegacyTp(eng, orderId);
+      Object.assign(eng._getConfig(), { sizeAutoManaged: true });
+
+      await eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false });
+      await flushAsync();
+
+      const { sizeOptimizer } = eng.getState();
+      assert.equal(
+        sizeOptimizer.lastKnownBalance,
+        4242.42,
+        'a sibling with no productId at all resolves to its own pair (ETH-USD, quote USD) — NOT DEFAULTS.productId (BTC-USDC, quote USDC) — so it must NOT be treated as sharing this fund\'s USDC wallet'
       );
     } finally {
       PRODUCT_ID_OVERRIDES = {};

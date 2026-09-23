@@ -16,7 +16,7 @@
 
 const { getAdapter } = require('./adapters');
 const { getUnaccountedFills } = require('./sync-fills');
-const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency, getConfiguredFunds, getFundConfig } = require('./config-utils');
+const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency, getConfiguredFunds, loadConfig, normalizeExchangeBlock } = require('./config-utils');
 const { createFillLedger } = require('./fill-ledger');
 const { createClosedTrades } = require('./closed-trades');
 const {
@@ -980,18 +980,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // can differ by quote currency (a documented, supported override — see
     // productIdMatchesPair in config-utils.js), so comparing raw `f.pair`
     // quote currencies can UNDER-count true sharing (codex review round 2).
-    // Resolve each candidate's EFFECTIVE traded quote via getFundConfig()
-    // (NOT getRegimeConfig() — that returns only the nested `.regime`
-    // sub-object per resolveRegimeConfig; `productId` lives at the top level
-    // of the fund block, so getRegimeConfig().productId is always undefined
-    // and silently fell through to the pair every time — codex review round
-    // 3 caught this fix being a no-op). getFundConfig() merges DEFAULTS, so
-    // .productId is always a defined string; the `|| f.pair` stays as a
-    // defensive fallback only.
+    // Resolve each candidate's EFFECTIVE traded quote from its RAW per-pair
+    // config block, not getFundConfig()/getRegimeConfig() (both DEFAULTS/
+    // regime-merged results, so `.productId` is NEVER falsy there — it
+    // silently reads back DEFAULTS.productId = 'BTC-USDC' for any fund with
+    // no explicit override, making `|| f.pair` dead code and misclassifying
+    // every such fund as quoting USDC; claude review round 3 caught this
+    // exact trap, already worked around the same way in
+    // config-snapshot.js:117 — `fundBlock?.productId ?? pair`, read from the
+    // raw block).
     const quoteCurrency = getQuoteCurrency(productId);
     const sharingQuote = getConfiguredFunds()
       .filter(f => f.exchange === exchange)
-      .filter(f => getQuoteCurrency(getFundConfig(f.exchange, f.pair)?.productId || f.pair) === quoteCurrency);
+      .filter(f => {
+        const rawBlock = normalizeExchangeBlock(loadConfig().exchanges?.[f.exchange] || {}).pairs?.[f.pair];
+        return getQuoteCurrency(rawBlock?.productId ?? f.pair) === quoteCurrency;
+      });
 
     // A failed/unavailable/ambiguous fetch (including an adapter with no
     // getAccountBalance at all — some test/legacy adapters) passes 0. When
@@ -1038,6 +1042,33 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
     } catch (err) {
       logger.warn(`⚠️ [${exchange}] Size optimizer recording failed (non-fatal): ${err.message}`, { error: err.message });
+    }
+  };
+
+  /**
+   * Re-save after recordCycleForSizeOptimizer's detached (fire-and-forget)
+   * call resolves, so its result isn't left only in memory (issue #694
+   * review round 3). Guarded: this runs inside a `.finally()` on a promise
+   * chain nobody awaits, so an unguarded throw (e.g. a disk fault —
+   * ENOSPC/EACCES/EROFS — surfacing from saveLiveState()/fillLedger.persist())
+   * would be a genuinely unhandled promise rejection, which can crash a live
+   * trading process with resting orders on the exchange — precisely the
+   * hazard saveLiveStateGuarded exists to prevent for every other background
+   * caller in this file (claude review round 3).
+   */
+  const resaveAfterSizeOptimizerLive = () => {
+    try {
+      saveLiveStateGuarded('size-optimizer-record');
+      fillLedger.persist();
+    } catch (err) {
+      logger.warn(`⚠️ [${exchange}] Post-size-optimizer state save failed (non-fatal): ${err.message}`, { error: err.message });
+    }
+  };
+  const resaveAfterSizeOptimizerDryRun = () => {
+    try {
+      saveDryRunState();
+    } catch (err) {
+      logger.warn(`⚠️ [${exchange}] Post-size-optimizer dry-run state save failed (non-fatal): ${err.message}`, { error: err.message });
     }
   };
 
@@ -4109,10 +4140,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               recordCycleForSizeOptimizer({
                 stepsUsed: cycleBuysAtClose,
                 capitalDeployed: body.costBasis,
-              }).catch(() => {}).finally(() => {
-                saveLiveState();
-                fillLedger.persist();
-              });
+              }).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
             }
           }
         }
@@ -4372,10 +4400,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             await resetCycle();
           } finally {
             if (sizeOptimizerCycleData) {
-              recordCycleForSizeOptimizer(sizeOptimizerCycleData).catch(() => {}).finally(() => {
-                saveLiveState();
-                fillLedger.persist();
-              });
+              recordCycleForSizeOptimizer(sizeOptimizerCycleData).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
             }
           }
           saveLiveState();
@@ -6286,7 +6311,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             recordCycleForSizeOptimizer({
               stepsUsed: cycleBuysAtClose,
               capitalDeployed: body.costBasis,
-            }).catch(() => {}).finally(() => saveDryRunState());
+            }).catch(() => {}).finally(resaveAfterSizeOptimizerDryRun);
           }
         }
       } else {
@@ -6327,7 +6352,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           recordCycleForSizeOptimizer({
             stepsUsed: cycleBuysAtClose,
             capitalDeployed: totalCostBasisAtClose,
-          }).catch(() => {}).finally(() => saveDryRunState());
+          }).catch(() => {}).finally(resaveAfterSizeOptimizerDryRun);
         }
       }
 
