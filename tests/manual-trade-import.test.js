@@ -698,6 +698,70 @@ describe('Manual Trade Import', () => {
       }
     });
 
+    // Issue #726 follow-up (self-review): a Collapse-All merge re-stamps a
+    // buy order's ledger rows onto the SURVIVOR body's id
+    // (regime-engine.js's mergeBodies path) without ever updating this trade
+    // record's bodyId — so trade.bodyId can be stale relative to the
+    // ledger's own bodyId after a merge. The extend logic must treat the
+    // ledger's own bodyId as authoritative, never re-stamp already-linked
+    // rows back onto the stale pre-merge id, and extend the CURRENT
+    // (merged) body instead of a defunct one.
+    it('uses the ledger\'s current bodyId, not the trade record\'s stale one, after a Collapse-All merge', async () => {
+      const bodies = [{ id: 'body-merged', assetQty: 0.05, costBasis: 4500 }];
+      const extendCalls = [];
+      const fillsByOrder = { 'buy-1': [buyFills[0]] };
+      const adapter = createFakeAdapter({ fillsByOrder });
+      const importer = createImporter({
+        adapter,
+        injectBody: async (body) => {
+          bodies.push(body);
+          return { tpPlaced: true };
+        },
+        extendBody: (bodyId, extra) => {
+          extendCalls.push({ bodyId, extra });
+          const body = bodies.find((b) => b.id === bodyId);
+          if (!body) return { success: false, error: 'Body not found' };
+          body.assetQty += extra.assetQty;
+          body.costBasis += extra.costBasis;
+          return { success: true, bodyId };
+        },
+      });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, true);
+      const originalBodyId = first.trade.bodyId;
+      assert.notEqual(originalBodyId, 'body-merged');
+
+      // Simulate an operator Collapse-All merge absorbing the manually
+      // imported body into 'body-merged' — this is exactly what
+      // regime-engine's mergeBodies path does to the ledger, independent of
+      // the manual-trades store record.
+      fillLedger.annotateFillsByOrderId('buy-1', { bodyId: 'body-merged', bodyTier: 'planet' });
+      fillLedger.persist();
+
+      // More of the order filled since, and the trade record still points
+      // at the pre-merge (now-defunct) body id.
+      fillsByOrder['buy-1'] = buyFills;
+
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.extended, true);
+      assert.equal(extendCalls.length, 1);
+      assert.equal(extendCalls[0].bodyId, 'body-merged', 'must extend the CURRENT (merged) body, not the stale pre-merge id');
+
+      // The pre-existing, already-linked fill row must still read
+      // 'body-merged' — never reverted to the stale trade.bodyId.
+      const rows = fillLedger.getFillsForOrder('buy-1');
+      assert.equal(rows.length, 2);
+      for (const row of rows) {
+        assert.equal(row.bodyId, 'body-merged', 'no row may be re-stamped onto the defunct pre-merge body id');
+      }
+
+      // The trade record itself is kept in sync with the merge too.
+      assert.equal(second.trade.bodyId, 'body-merged');
+    });
+
     it('extends the persisted body on regime-state.json with fills that arrived since it was created (engine not running)', async () => {
       const fillsByOrder = { 'buy-1': [buyFills[0]] };
       const adapter = createFakeAdapter({ fillsByOrder });

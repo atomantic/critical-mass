@@ -361,12 +361,25 @@ const createManualTradeImporter = ({
       // is real and owned; leaving it unlinked makes it invisible to the
       // position model and to every future retry, which would keep
       // re-detecting the identical gap forever.
+      //
+      // "Unlinked" means no bodyId at all — NOT "bodyId !== trade.bodyId".
+      // An operator-triggered Collapse-All merge re-stamps every constituent
+      // buy order's ledger rows onto the SURVIVOR body's id (regime-engine.js
+      // mergeBodies path) without ever updating this trade record's bodyId,
+      // so trade.bodyId can be stale relative to the ledger's own bodyId
+      // after a merge. Comparing against it directly would treat every
+      // already-accounted-for row as "new" and stamp them back onto the
+      // stale, now-defunct body id, corrupting otherwise-correct linkage.
+      // The ledger's own bodyId (when any row already carries one) is the
+      // authoritative "current" body — fall back to trade.bodyId only when
+      // the ledger has no signal yet.
       const orderRows = trade.bodyId ? fillLedger.getFillsForOrder(buyOrderId) : [];
-      const unlinkedRows = orderRows.filter((r) => r.bodyId !== trade.bodyId);
+      const unlinkedRows = orderRows.filter((r) => !r.bodyId);
+      const currentBodyId = orderRows.find((r) => r.bodyId)?.bodyId || trade.bodyId;
 
       if (unlinkedRows.length === 0) {
-        log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} already has body ${trade.bodyId} — skipping duplicate body creation`, {
-          bodyId: trade.bodyId,
+        log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} already has body ${currentBodyId} — skipping duplicate body creation`, {
+          bodyId: currentBodyId,
           buyOrderId,
         });
         return ok({ trade: store.getById(trade.id), alreadyImported: true });
@@ -377,20 +390,23 @@ const createManualTradeImporter = ({
       const extraFees = unlinkedRows.reduce((sum, r) => sum + (r.totalCommission || r.commission || 0), 0);
       const extra = { assetQty: extraSize, costBasis: extraQuote + extraFees, avgPrice: averagePrice(extraQuote, extraSize) };
 
-      // Link the new rows to the existing body regardless of how the extend
-      // below resolves — they DO belong to this buy/body pairing, and
-      // leaving them unlinked would make every future retry re-detect this
-      // exact same gap without ever fixing it.
-      fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: trade.bodyId, isBodyOwned: true, isSatellite: true });
+      // Link the new rows to the body's current (post-merge-aware) id
+      // regardless of how the extend below resolves — they DO belong to this
+      // buy/body pairing, and leaving them unlinked would make every future
+      // retry re-detect this exact same gap without ever fixing it.
+      fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: currentBodyId, isBodyOwned: true, isSatellite: true });
       fillLedger.persist();
+      // Keep the trade record's own bodyId pointer in sync too, mirroring
+      // the durable close-check re-link a few lines below.
+      if (currentBodyId !== trade.bodyId) store.markTpPlaced(trade.id, currentBodyId);
 
       const extended = extendBody
-        ? extendBody(trade.bodyId, extra, buyOrderId)
-        : { success: extendPersistedBody(trade.bodyId, extra, buyOrderId), bodyId: trade.bodyId };
+        ? extendBody(currentBodyId, extra, buyOrderId)
+        : { success: extendPersistedBody(currentBodyId, extra, buyOrderId), bodyId: currentBodyId };
 
       if (extended.success) {
-        log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} extended body ${trade.bodyId} with ${extraSize} additional fill(s) instead of creating a duplicate`, {
-          bodyId: trade.bodyId,
+        log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} extended body ${currentBodyId} with ${extraSize} additional fill(s) instead of creating a duplicate`, {
+          bodyId: currentBodyId,
           buyOrderId,
           extraSize,
         });
@@ -401,8 +417,8 @@ const createManualTradeImporter = ({
         // linked/recorded above; the extra asset just isn't reflected in any
         // live-manageable body. Surface this loudly rather than pretending
         // the extension succeeded.
-        log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} has ${extraSize} new fill(s) beyond body ${trade.bodyId}, but that body could not be extended (${extended.error || 'not found'}) — fills are linked in the ledger but not reflected in any live body`, {
-          bodyId: trade.bodyId,
+        log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} has ${extraSize} new fill(s) beyond body ${currentBodyId}, but that body could not be extended (${extended.error || 'not found'}) — fills are linked in the ledger but not reflected in any live body`, {
+          bodyId: currentBodyId,
           buyOrderId,
           extraSize,
           error: extended.error,
