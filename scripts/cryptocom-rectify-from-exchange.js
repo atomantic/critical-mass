@@ -143,6 +143,7 @@ for (const t of exchange) {
     if (prior.bodyAvgPrice != null) fill.bodyAvgPrice = prior.bodyAvgPrice;
     if (prior.bodyBtcQty != null) fill.bodyBtcQty = prior.bodyBtcQty;
     if (prior.bodyHoldbackAsset != null) fill.bodyHoldbackAsset = prior.bodyHoldbackAsset;
+    if (prior.bodyReservesSoldAsset != null) fill.bodyReservesSoldAsset = prior.bodyReservesSoldAsset;
     if (prior.bodyPnl != null) fill.bodyPnl = prior.bodyPnl;
   }
 
