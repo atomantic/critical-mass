@@ -646,6 +646,15 @@ const createGeminiAdapter = (keysPath = null) => {
         productId: order.symbol,
         side: order.side?.toUpperCase(),
         status: order.is_live ? 'OPEN' : 'CLOSED',
+        // Gemini's /v1/orders response carries remaining_amount directly when
+        // present; fall back to originalAmount - executedAmount so a payload
+        // that omits it (or an older API shape) still yields the remaining
+        // unfilled quantity rather than undefined (issue #684 — an undefined
+        // size makes the orphan-sell detector's `o.size > 0` check silently
+        // false, so Gemini's untracked-sell warning never fires).
+        size: parseFloat(order.remaining_amount ?? (order.original_amount - order.executed_amount)),
+        originalSize: parseFloat(order.original_amount || 0),
+        price: parseFloat(order.price || 0),
         filledSize: parseFloat(order.executed_amount || 0),
         createdTime: new Date(order.timestampms).toISOString(),
       }));

@@ -543,8 +543,14 @@ const createCoinbaseAdapter = (keysPath = null) => {
       const cfg = order.order_configuration || {};
       const limitCfg = cfg.limit_limit_gtc || cfg.limit_limit_gtd || cfg.limit_limit_fok || {};
       const stopCfg = cfg.stop_limit_stop_limit_gtc || cfg.stop_limit_stop_limit_gtd || {};
-      const size = parseFloat(limitCfg.base_size || stopCfg.base_size || 0);
+      const originalSize = parseFloat(limitCfg.base_size || stopCfg.base_size || 0);
       const price = parseFloat(limitCfg.limit_price || stopCfg.limit_price || 0);
+      const filledSize = parseFloat(order.filled_size || 0);
+      // size is the REMAINING unfilled quantity, not the size the order was
+      // originally placed for (issue #684 — a caller like the orphan-sell
+      // detector wants "how much is still on the book," and reporting the
+      // original size on a partial fill misrepresents it).
+      const size = originalSize - filledSize;
 
       return {
         orderId: order.order_id,
@@ -552,8 +558,9 @@ const createCoinbaseAdapter = (keysPath = null) => {
         side: order.side,
         status: order.status,
         size,
+        originalSize,
         price,
-        filledSize: parseFloat(order.filled_size || 0),
+        filledSize,
         createdTime: order.created_time,
       };
     });
