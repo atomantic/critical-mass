@@ -6,7 +6,7 @@
  * process via IPC WebSocket. Config reads/writes stay local (file-based).
  */
 
-const { getRegimeConfig, updateRegimeConfig, updateFundConfig, getFundConfig } = require('../config-utils');
+const { getRegimeConfig, updateRegimeConfig, updateFundConfig, getFundConfig, productIdMatchesPair } = require('../config-utils');
 const { resolvePlacementIntent } = require('../state-tracker');
 const { buildStoppedRegimeStatus } = require('../regime-status');
 const { createContextLogger } = require('../logger');
@@ -149,6 +149,21 @@ module.exports = (app, deps) => {
     }
     if ('productId' in fundUpdates && (typeof fundUpdates.productId !== 'string' || !fundUpdates.productId.trim())) {
       return res.status(400).json({ success: false, errors: ['productId must be a non-empty string'] });
+    }
+
+    // Guard against cross-market contamination — ensure productId's base asset
+    // matches the fund's pair. Same check as exchange-routes.js (issue #453).
+    if ('productId' in fundUpdates) {
+      const { ok, pairBase, incomingBase } = productIdMatchesPair(pair, fundUpdates.productId);
+      if (!ok) {
+        logger.warn(`⚠️ 🛑 [${exchange}/${pair}] Rejected config save: productId "${fundUpdates.productId}" trades ${incomingBase}, not ${pairBase}`, {
+          action: 'update-config',
+          productId: fundUpdates.productId,
+          incomingBase,
+          pairBase,
+        });
+        return res.status(400).json({ success: false, errors: [`productId "${fundUpdates.productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}); a config save cannot change a fund's traded asset`] });
+      }
     }
 
     if (Object.keys(fundUpdates).length > 0) {
