@@ -975,6 +975,30 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
     assert.equal(result.partialFills, 1);
   });
 
+  it('reports the unbooked spend of a rung that filled completely during the cancel (issue #711)', async () => {
+    // A FILLED rung is left tracked for polling to book, so no body carries
+    // its cost yet — rebuildLadder has to reserve it from the return value.
+    const captured = [];
+    const adapter = {
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => ({ status: 'FILLED', filledSize: 0.01, filledValue: 510, averageFilledPrice: 51000, totalFees: 0.5, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+    });
+    restoreLadder(exec, 'ladder-full');
+
+    const result = await exec.cancelAllLadderOrders();
+
+    assert.equal(result.cancelled, 0);
+    assert.equal(result.partialFills, 0);
+    assert.equal(result.partialFillsCost, 0, 'nothing was booked during the sweep');
+    assert.ok(Math.abs(result.unbookedFillsCost - 510.5) < 1e-9, `unbooked spend = filledValue + fees, got ${result.unbookedFillsCost}`);
+    assert.equal(result.remainingTracked, 1, 'left tracked for polling to book');
+    assert.equal(captured.length, 0);
+    exec.clearTimers();
+  });
+
   it('drops tracking BEFORE awaiting a slow fill callback, not after (issue #674 codex review finding)', async () => {
     // handleCancelledOrder is now awaitable so cancelAllLadderOrders can wait
     // for the fill to fully book, but that must not delay when the order

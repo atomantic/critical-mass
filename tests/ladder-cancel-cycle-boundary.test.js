@@ -345,6 +345,40 @@ describe('rebuildLadder — budget after a mid-cancel fill (#711)', () => {
   });
 });
 
+describe('rebuildLadder — a rung that filled completely during the cancel (#711 review)', () => {
+  it('reserves its unbooked spend in both the deployed-cap and the cash terms', async () => {
+    const placed = [];
+    const eng = makeEngine({
+      adapter: { getAccountBalance: async () => ({ available: '100000' }) },
+      executor: {
+        // Left for polling: no body yet, so getAllocatedCapital() can't see it.
+        cancelAllLadderOrders: async () => ({ cancelled: 2, remainingTracked: 1, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFillsCost: 400 }),
+        placeLadderOrders: async (levels) => {
+          placed.push(...levels);
+          return { orders: levels.map((l, i) => ({ orderId: `new-rung-${i}`, ...l })), failedCount: 0 };
+        },
+      },
+    });
+    const config = eng._getConfig();
+    config.entryMode = 'ladder';
+    config.maxUsdcDeployed = 1000; // the deployed cap binds, not cash
+    config.baseSizeUsdc = 10;
+    const m = eng._getMarketState();
+    m.lastPrice = 50000;
+    m.bid = 49999.99;
+    m.ask = 50000.01;
+    eng.getFillLedger().startNewCycle();
+    eng._getPositionState().ladderActive = true;
+
+    const res = await eng.rebuildLadder();
+
+    assert.equal(res.success, true, res.message);
+    const total = placed.reduce((sum, l) => sum + l.sizeUsdc, 0);
+    assert.ok(total > 0);
+    assert.ok(total <= 600 + 1e-6, `new ladder must leave room for the $400 fill polling has yet to book, got $${total.toFixed(2)}`);
+  });
+});
+
 describe('rebuildLadder / cancelLadder refuse to sweep mid-mutation (#711)', () => {
   for (const [label, setFlag] of [
     ['an in-flight fill', (eng, v) => eng._test.setFillInProgress(v ? 1 : 0)],
@@ -378,4 +412,33 @@ describe('rebuildLadder / cancelLadder refuse to sweep mid-mutation (#711)', () 
       assert.equal(config.entryMode, 'ladder', 'cancelLadder did not switch modes');
     });
   }
+
+  it('rebuildLadder re-checks after the balance fetch, before sweeping', async () => {
+    let sweeps = 0;
+    let eng;
+    eng = makeEngine({
+      adapter: {
+        getAccountBalance: async () => {
+          // A fill (e.g. a TP close) starts while the balance is in flight.
+          eng._test.setFillInProgress(1);
+          return { available: '1000' };
+        },
+      },
+      executor: { cancelAllLadderOrders: async () => { sweeps++; return { cancelled: 0, remainingTracked: 0 }; } },
+    });
+    const config = eng._getConfig();
+    config.entryMode = 'ladder';
+    config.maxUsdcDeployed = 1000;
+    config.baseSizeUsdc = 10;
+    eng._getPositionState().ladderActive = true;
+    try {
+      const rebuild = await eng.rebuildLadder();
+      assert.equal(rebuild.success, false);
+      assert.match(rebuild.message, /in progress/);
+    } finally {
+      eng._test.setFillInProgress(0);
+    }
+    assert.equal(sweeps, 0, 'no sweep started underneath the fill');
+    assert.equal(eng._getPositionState().ladderActive, true);
+  });
 });

@@ -7846,12 +7846,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     logger.info(`🔄 [${exchange}] Manual ladder rebuild requested, budget=$${remainingBudget.toFixed(2)} (allocated=$${allocatedCapital.toFixed(2)})`);
 
+    // Re-check after the balance await above: a fill that started meanwhile
+    // (e.g. a TP close, whose resetCycle sweeps the ladder itself) must not
+    // have this rebuild sweep underneath it (issue #711).
+    if (engineLocks.isMutatingPosition()) {
+      return { success: false, message: engineLocks.describeBusy('position') };
+    }
+
     // Cancel existing ladder orders
     let midCancelSpend = 0;
+    let unbookedSpend = 0;
     if (positionState.ladderActive) {
       const cancelResult = await orderExecutor.cancelAllLadderOrders();
+      // Booked mid-cancel partials already sit in a body's costBasis
+      // (getAllocatedCapital below) but not in the pre-cancel balance; rungs
+      // that filled completely are left for polling to book, so neither term
+      // sees them yet.
       midCancelSpend = Number(cancelResult.partialFillsCost) || 0;
-      logger.info(`🧹 [${exchange}] Cancelled ${cancelResult.cancelled} existing ladder orders${cancelResult.partialFills > 0 ? ` (${cancelResult.partialFills} partially filled during the cancel, $${midCancelSpend.toFixed(2)} spent)` : ''}`);
+      unbookedSpend = Number(cancelResult.unbookedFillsCost) || 0;
+      const spendNote = midCancelSpend + unbookedSpend > 0 ? ` ($${(midCancelSpend + unbookedSpend).toFixed(2)} filled during the cancel)` : '';
+      logger.info(`🧹 [${exchange}] Cancelled ${cancelResult.cancelled} existing ladder orders${spendNote}`);
     }
 
     // Reset ladder state
@@ -7872,13 +7886,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // quote for resting orders the fill came out of that hold, so this errs
     // conservative (a smaller ladder), never toward an insufficient-funds
     // rejection.
-    const postCancelAllocated = getAllocatedCapital();
-    const postCancelQuote = Math.max(0, availableQuote - midCancelSpend);
+    const postCancelAllocated = getAllocatedCapital() + unbookedSpend;
+    const postCancelQuote = Math.max(0, availableQuote - midCancelSpend - unbookedSpend);
     remainingBudget = Math.min(config.maxUsdcDeployed - postCancelAllocated, postCancelQuote);
     if (remainingBudget < (config.baseSizeUsdc || 50)) {
       return { success: false, message: `Budget dropped below min order size after a fill landed during ladder cancel ($${remainingBudget.toFixed(2)} left — $${(config.maxUsdcDeployed - postCancelAllocated).toFixed(2)} under the deployed cap, $${postCancelQuote.toFixed(2)} ${quoteCurrency} available). The old ladder was cancelled but not rebuilt — call rebuildLadder again if appropriate.` };
     }
-    if (postCancelAllocated !== allocatedCapital || midCancelSpend > 0) {
+    if (postCancelAllocated !== allocatedCapital || midCancelSpend > 0 || unbookedSpend > 0) {
       logger.info(`🔄 [${exchange}] Re-derived ladder budget after a cancel-time fill: $${remainingBudget.toFixed(2)} (allocated=$${postCancelAllocated.toFixed(2)}, was $${allocatedCapital.toFixed(2)}; available ${quoteCurrency}=$${postCancelQuote.toFixed(2)}, was $${availableQuote.toFixed(2)})`);
     }
 

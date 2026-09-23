@@ -829,7 +829,7 @@
  * @property {(bodyId: string, tpOrderId: string, assetQty: number, tpPrice: number, placedAt?: number) => void} restoreBodyTpOrder
  * @property {(tpOrderId: string) => void} removeBodyTracking
  * @property {(levels: Array<{index: number, price: number, assetQty: number, sizeUsdc: number}>) => Promise<{orders: Array<any>, failedCount: number}>} placeLadderOrders
- * @property {() => Promise<{cancelled: number, remainingTracked: number, partialFills?: number, partialFillOrderIds?: string[], partialFillsCost?: number}>} cancelAllLadderOrders
+ * @property {() => Promise<{cancelled: number, remainingTracked: number, partialFills?: number, partialFillOrderIds?: string[], partialFillsCost?: number, unbookedFillsCost?: number}>} cancelAllLadderOrders
  * @property {() => Array<{orderId: string, price: number, size: number, sizeUsdc: number, ladderIndex: number, placedAt: number}>} getPendingLadderOrders
  * @property {(orderId: string) => boolean} isLadderOrder
  * @property {(increment: number) => void} setPriceIncrement

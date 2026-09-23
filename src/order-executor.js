@@ -1513,13 +1513,18 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * same cost the body's costBasis carries) lets rebuildLadder keep its
    * exchange-balance clamp honest without re-fetching, and the order IDs let
    * callers reason about which buys landed inside their own sweep.
-   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number, partialFillOrderIds: string[], partialFillsCost: number}>} Cancel results
+   * `unbookedFillsCost` is the spend of rungs that filled COMPLETELY before
+   * their cancel took: those stay tracked for polling to book later, so no
+   * body carries their cost yet — the caller must reserve it itself. Tranches
+   * already booked as partials (the tracker's high-water mark) are excluded.
+   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number, partialFillOrderIds: string[], partialFillsCost: number, unbookedFillsCost: number}>} Cancel results
    */
   const cancelAllLadderOrders = async () => {
     let cancelled = 0;
     let partialFills = 0;
     const partialFillOrderIds = [];
     let partialFillsCost = 0;
+    let unbookedFillsCost = 0;
 
     const ladderOrders = Array.from(pendingOrders.entries())
       .filter(([, order]) => order.type === 'ladder_entry');
@@ -1558,6 +1563,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         }
         cancelled++;
       } else if (result.filled) {
+        const filledSize = Number(result.filledSize) || 0;
+        const alreadyBooked = Math.min(partialFillTracker.get(orderId) || 0, filledSize);
+        const unbookedShare = filledSize > 0 ? (filledSize - alreadyBooked) / filledSize : 1;
+        unbookedFillsCost += ((Number(result.filledValue) || 0) + (Number(result.totalFees) || 0)) * unbookedShare;
         logger.info(`📋 [${exchange}] Ladder order ${orderId.slice(0, 8)} filled during cancel — polling will process`, {
           orderId,
           orderType: 'ladder_entry',
@@ -1571,7 +1580,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const remainingTracked = Array.from(pendingOrders.values())
       .filter(o => o.type === 'ladder_entry').length;
 
-    return { cancelled, remainingTracked, partialFills, partialFillOrderIds, partialFillsCost };
+    return { cancelled, remainingTracked, partialFills, partialFillOrderIds, partialFillsCost, unbookedFillsCost };
   };
 
   /**
