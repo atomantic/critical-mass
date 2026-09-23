@@ -431,6 +431,30 @@ describe('cancelAllEntries — refused-cancel fill handling (issue #209 A)', () 
     assert.equal(exec.getPendingCounts().entries, 0, 'order dropped from tracking after the fill was routed');
   });
 
+  it('routes a fill through onFillDetected when a SUCCESSFUL cancel is followed by a FILLED getOrder (rare eventual-consistency full fill)', async () => {
+    // The exchange acks the cancel as successful, but a subsequent getOrder
+    // check reports the order fully FILLED (eventual-consistency race). This
+    // must be counted as a fill, not mislabeled "cancelled with a partial".
+    const captured = [];
+    const entryCancelled = [];
+    const adapter = {
+      cancelOrder: async () => ({ success: true }),
+      getOrder: async () => ({ status: 'FILLED', completionPercentage: 100, filledSize: 0.1, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+      onEntryCancelled: (orderId) => entryCancelled.push(orderId),
+    });
+    restoreEntry(exec, 'entry-success-full');
+
+    const cancelled = await exec.cancelAllEntries();
+
+    assert.equal(cancelled, 0, 'a full fill discovered after a successful cancel ack is not a cancel');
+    assert.equal(captured.length, 1, 'the fill is routed through onFillDetected');
+    assert.deepEqual(entryCancelled, [], 'onEntryCancelled must NOT fire for a genuine fill');
+    assert.equal(exec.getPendingCounts().entries, 0);
+  });
+
   it('falls back to the partialFillTracker high-water mark when a SUCCESSFUL cancel\'s getOrder response omits filledSize (issue #674 self-review finding)', async () => {
     // Gemini can jump PARTIALLY_FILLED -> CANCELLED with the cancel-status
     // response omitting the cumulative filledSize (documented elsewhere in
