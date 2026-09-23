@@ -13,7 +13,7 @@ Critical-mass runs as 5 PM2 processes: a thin API gateway and 3 isolated engine 
          │         │
 ┌────────┴──┐  ┌───┴────────────┐
 │ cm-coinbase│  │ cm-gemini      │
-│ IPC :5570  │  │ IPC :5571      │
+│ IPC :5572  │  │ IPC :5573      │
 │            │  │                │
 │ Regime eng │  │ Thin wrapper   │
 │ Market data│  │ around coinbase│
@@ -40,8 +40,8 @@ Critical-mass runs as 5 PM2 processes: a thin API gateway and 3 isolated engine 
 
 | Engine | File | Env | IPC Port | Notes |
 |---|---|---|---|---|
-| Coinbase | `coinbase-engine.js` | `EXCHANGE_NAME=coinbase` | 5570 | Regime engine, market data, chart buffer |
-| Gemini | `gemini-engine.js` | `EXCHANGE_NAME=gemini` | 5571 | Thin wrapper around coinbase-engine |
+| Coinbase | `coinbase-engine.js` | `EXCHANGE_NAME=coinbase` | 5572 | Regime engine, market data, chart buffer |
+| Gemini | `gemini-engine.js` | `EXCHANGE_NAME=gemini` | 5573 | Thin wrapper around coinbase-engine |
 | Crypto.com | `cryptocom-engine.js` | `EXCHANGE_NAME=cryptocom` | 5574 | Thin wrapper around coinbase-engine |
 
 ## Gateway Routing

@@ -50,6 +50,8 @@ const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils'
 const { createOperatorAuth } = require('./src/operator-auth');
 const { resolveListenHosts, isGatewayOrigin } = require('./src/gateway-listen');
 const { registerProcessGuards } = require('./src/process-guard');
+const { resolveIpcPort } = require('./src/ipc-port-defaults');
+const { PORTS } = require('./ecosystem.config.cjs');
 
 // A backup restore that a crash interrupted leaves data/ as a mix of
 // archive-era and current-era files. Finish its rollback BEFORE anything reads
@@ -65,7 +67,7 @@ runMigrationIfNeeded();
 
 const app = express();
 const server = http.createServer(app);
-const PORT = process.env.PORT || 5570;
+const PORT = process.env.PORT || PORTS.API;
 const operatorAuth = createOperatorAuth({
   authFile: path.join(DATA_DIR, 'operator-auth.json'),
   readJSON,
@@ -195,9 +197,9 @@ const rescheduleBackupTimer = () => {
 
 // ============ Crypto Exchange Engine IPC ============
 
-const COINBASE_IPC_PORT = parseInt(process.env.COINBASE_IPC_PORT) || 5570;
-const GEMINI_IPC_PORT = parseInt(process.env.GEMINI_IPC_PORT) || 5571;
-const CRYPTOCOM_IPC_PORT = parseInt(process.env.CRYPTOCOM_IPC_PORT) || 5574;
+const COINBASE_IPC_PORT = resolveIpcPort('coinbase');
+const GEMINI_IPC_PORT = resolveIpcPort('gemini');
+const CRYPTOCOM_IPC_PORT = resolveIpcPort('cryptocom');
 
 /** @type {Array<(name: string, msg: Object) => void>} */
 const ipcEventListeners = [];
