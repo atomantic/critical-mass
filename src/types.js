@@ -424,6 +424,7 @@
  * @property {number} avgCostBasis - Average cost per BTC
  * @property {number} cycleBuys - Number of buy orders filled in current cycle
  * @property {string|null} [activeCycleId] - Durable operator-selected cycle boundary
+ * @property {number|null} [activeCycleStartedAt] - When activeCycleId began (ms); live-cycle fill-attribution boundary (#705)
  * @property {number} lastEntryPrice - Price of last entry
  * @property {number} lastEntryTime - Timestamp of last entry
  * @property {number} anchorPrice - Price anchor for volatility clock
@@ -488,6 +489,7 @@
  * @property {number} timestamp - Exchange timestamp
  * @property {number} ingestedAt - When fill was ingested
  * @property {string|null} cycleId - Trading cycle ID
+ * @property {'order'|'link'|'timeframe'} [cycleAttribution] - How recalculateCycles placed a null-cycle fill into an existing cycle (#705)
  */
 
 /**

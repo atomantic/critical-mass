@@ -138,7 +138,9 @@ const registerEngineRecalculateHandler = (registry, deps) => {
       // (possibly completed) cycle on the next start (#675).
       const persistedCycleId = currentState.position?.activeCycleId;
       if (isPersistedCycleId(persistedCycleId) && typeof fillLedger.setCurrentCycleId === 'function') {
-        fillLedger.setCurrentCycleId(persistedCycleId);
+        // …with its persisted start time, the live-cycle boundary that
+        // null-cycle fill attribution folds against (#705).
+        fillLedger.setCurrentCycleId(persistedCycleId, currentState.position?.activeCycleStartedAt ?? null);
       }
       // A preview must not mutate/persist the ledger (recalculateCycles
       // persists orphan placement and renumbering) — same rule as the

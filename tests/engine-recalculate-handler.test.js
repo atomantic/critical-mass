@@ -325,11 +325,11 @@ describe('engine-recalculate-handler', () => {
   describe('stopped fund — persisted activeCycleId (issue #675)', () => {
     it('anchors the ledger on the persisted boundary and re-points it through idMap on apply', async () => {
       const h = createHarness();
-      h.regimeStateByFund.set(fundKey(EXCHANGE, PAIR_A), { position: makeStaleFixture({ activeCycleId: 'cycle-2' }), regime: {} });
+      h.regimeStateByFund.set(fundKey(EXCHANGE, PAIR_A), { position: makeStaleFixture({ activeCycleId: 'cycle-2', activeCycleStartedAt: 1234 }), regime: {} });
       const ledger = createFakeLedger(h.calls, PAIR_A, {
         recalc: { cyclesCompleted: 2, cycleDetails: [], orphansFixed: 2, activeCycleId: 'cycle-3', idMap: { 'cycle-2': 'cycle-3', 'cycle-1': 'cycle-2' } },
       });
-      ledger.setCurrentCycleId = (id) => h.calls.push({ op: 'setCurrentCycleId', pair: PAIR_A, id });
+      ledger.setCurrentCycleId = (id, startedAt) => h.calls.push({ op: 'setCurrentCycleId', pair: PAIR_A, id, startedAt });
       h.standaloneLedgersByFund.set(fundKey(EXCHANGE, PAIR_A), ledger);
 
       await h.recalculate({ apply: true }, EXCHANGE, PAIR_A);
@@ -338,6 +338,7 @@ describe('engine-recalculate-handler', () => {
       const anchor = firstIndex(mine, 'setCurrentCycleId');
       assert.ok(anchor >= 0 && anchor < firstIndex(mine, 'recalculateCycles'), 'boundary restored before recalc');
       assert.equal(mine[anchor].id, 'cycle-2');
+      assert.equal(mine[anchor].startedAt, 1234, 'the persisted start time bounds live-cycle attribution (#705)');
       const saved = h.calls.find((c) => c.op === 'saveRegimeState').position;
       assert.equal(saved.activeCycleId, 'cycle-3', 'marker follows the rename');
     });

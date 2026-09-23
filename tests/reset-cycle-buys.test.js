@@ -335,3 +335,111 @@ describe('#675 recalculateAndRefresh re-points the persisted activeCycleId', () 
     assert.equal(eng._getPositionState().activeCycleId, 'cycle-99', 'operator boundary preserved');
   });
 });
+
+describe('#705 live-cycle start boundary and counter resync', () => {
+  const PAIR_705 = '__test705__';
+  after(() => fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', PAIR_705), { recursive: true, force: true }));
+
+  it('resetCycleBuys persists the new cycle\'s start time and a restart restores it', async () => {
+    const PAIR = '__test705r__';
+    after(() => fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', PAIR), { recursive: true, force: true }));
+    const eng = createRegimeEngine('coinbase', PAIR, { dryRun: false, productId: PAIR, maxCycleBuys: 3 }, {});
+    engines.push(eng);
+    eng._test.setRunning(true);
+    eng._test.setProductDetails(PRODUCT_DETAILS);
+    eng._test.setAdapter(makeAdapter());
+    eng._test.setOrderExecutor(makeExecutor());
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill({ tradeId: 'r705-b', orderId: 'r705-buy', side: 'buy', price: '50000', size: '0.01' });
+    eng._getPositionState().cycleBuys = 3;
+
+    const before = Date.now();
+    const result = await eng.resetCycleBuys();
+    assert.equal(result.success, true);
+
+    const startedAt = eng._getPositionState().activeCycleStartedAt;
+    assert.ok(Number.isFinite(startedAt) && startedAt >= before, 'reset records when the new cycle began');
+    assert.equal(startedAt, ledger.getCurrentCycleStartedAt());
+    const saved = loadRegimeState('coinbase', PAIR).position;
+    assert.equal(saved.activeCycleStartedAt, startedAt, 'and persists it next to activeCycleId');
+
+    const restarted = createRegimeEngine('coinbase', PAIR, { dryRun: false, productId: PAIR, maxCycleBuys: 3 }, {});
+    engines.push(restarted);
+    restorePersistedCycleId(restarted.getFillLedger(), saved, { info: () => {} }, 'coinbase');
+    assert.equal(restarted.getFillLedger().getCurrentCycleId(), saved.activeCycleId);
+    assert.equal(restarted.getFillLedger().getCurrentCycleStartedAt(), startedAt,
+      'the empty post-reset cycle keeps its boundary across a restart');
+  });
+
+  it('recalculateAndRefresh folds a missed in-timeframe fill into the live cycle and resyncs cycleBuys', () => {
+    const eng = createRegimeEngine('coinbase', PAIR_705, { dryRun: false, productId: PAIR_705, maxCycleBuys: 3 }, {});
+    engines.push(eng);
+    const ledger = eng.getFillLedger();
+    const T0 = Date.parse('2026-01-01T00:00:00.000Z');
+    const at = (h) => new Date(T0 + h * 3600_000).toISOString();
+    const fill = (tradeId, orderId, side, h, cycleId) => ledger.ingestFill(
+      { tradeId, orderId, side, price: '50000', size: '0.01', tradeTime: at(h) }, null, { cycleId, skipPersist: true });
+    fill('f705-c1b', 'f705-c1-buy', 'buy', 10, 'cycle-1');
+    fill('f705-c1s', 'f705-c1-sell', 'sell', 11, 'cycle-1');
+    fill('f705-c2b', 'f705-c2-buy', 'buy', 21, 'cycle-2');
+    // Engine was down at t=22h when this buy filled; sync-fills re-imported it null.
+    fill('f705-miss', 'f705-missed-buy', 'buy', 22, null);
+    // …and an older historical orphan that predates the reset at t=20h.
+    fill('f705-old', 'f705-old-buy', 'buy', 5, null);
+    const pos = eng._getPositionState();
+    pos.activeCycleId = 'cycle-2';
+    pos.activeCycleStartedAt = T0 + 20 * 3600_000;
+    pos.cycleBuys = 1;
+
+    eng.recalculateAndRefresh();
+
+    assert.equal(ledger.getCurrentCycleAllBuysCount(), 2, 'the missed buy now counts toward the live cycle');
+    assert.equal(pos.cycleBuys, 2, 'cycleBuys is resynced so the per-cycle entry limit sees it');
+    assert.ok(ledger.getCurrentCycleFills().some(f => f.tradeId === 'f705-miss'));
+    assert.ok(!ledger.getCurrentCycleFills().some(f => f.tradeId === 'f705-old'), 'pre-reset orphan stays out');
+    assert.equal(pos.activeCycleId, ledger.getCurrentCycleId());
+    assert.equal(pos.activeCycleStartedAt, T0 + 20 * 3600_000, 'start time survives the renumbering');
+    assert.equal(loadRegimeState('coinbase', PAIR_705).position.cycleBuys, 2, 'and is persisted');
+  });
+});
+
+describe('#705 boot orphan-buy recovery skips timestamp-folded fills', () => {
+  const { repairHistoricalFillAnnotations } = require('../src/regime-engine');
+  const { createFillLedger } = require('../src/fill-ledger');
+  const PAIR = '__test705s__';
+  after(() => fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', PAIR), { recursive: true, force: true }));
+
+  it('never offers a timeframe-attributed buy to a body merge (no automatic TP for unlinked imports)', () => {
+    const ledger = createFillLedger('coinbase', PAIR, PAIR);
+    const T0 = Date.parse('2026-01-01T00:00:00.000Z');
+    const at = (h) => new Date(T0 + h * 3600_000).toISOString();
+    ledger.setCurrentCycleId('cycle-1', T0);
+    // Interrupted handleOrderFill: stamped into the live cycle, no body yet.
+    ledger.ingestFill({ tradeId: 's705-live', orderId: 's705-live-buy', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    // sync-fills import folded in by timestamp only.
+    ledger.ingestFill({ tradeId: 's705-sync', orderId: 's705-sync-buy', side: 'buy', price: '50000', size: '0.01', tradeTime: at(2) }, null, { cycleId: null, skipPersist: true });
+    const recalc = ledger.recalculateCycles();
+    assert.equal(recalc.liveCycleOrphansAttributed, 1);
+    assert.equal(ledger.getAllFills().find(f => f.tradeId === 's705-sync').cycleAttribution, 'timeframe');
+
+    const offered = [];
+    const noop = () => {};
+    repairHistoricalFillAnnotations({
+      fillLedger: ledger,
+      positionState: { celestialBodies: [], activeTpOrderId: null },
+      config: {},
+      logger: { info: noop, warn: noop },
+      baseCurrency: 'BTC',
+      priceIncrement: 0.01,
+      exchange: 'coinbase',
+      celestialHierarchy: { findMergeTarget: (_bodies, newBuy) => { offered.push(newBuy.buyOrderId); return null; } },
+      calculateDynamicTpPercent: () => 1,
+      roundPrice: (p) => p,
+      roundAsset: (q) => q,
+      fmtPrice: String,
+    });
+
+    assert.deepStrictEqual(offered, ['s705-live-buy'], 'only the engine-stamped orphan is offered for adoption');
+  });
+});
