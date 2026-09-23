@@ -1725,13 +1725,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * is a non-idempotent config.json write; claiming the credit in the fill
    * ledger (persisted before this write) makes a crash-replay of the same
    * sellOrderId a no-op instead of a double-apply that inflates the budget cap.
+   * The claim is keyed per booked amount (issue #777): a second booking of
+   * the same sell order for execution the first never covered is credited
+   * too, while a replay of an already-credited booking is not.
    * @param {string} sellOrderId
    * @param {number} pnl
+   * @param {{bookedSize: number, replay: boolean}} [booking] - From
+   *   planSellBooking: the order's cumulative booked size once this booking
+   *   commits, and whether the pass re-aggregates the whole order (a replay
+   *   refuses on any prior credit)
    * @returns {number} maxUsdcDeployed BEFORE this credit (unchanged when already credited)
    */
-  const creditCapitalGrowth = (sellOrderId, pnl) => {
+  const creditCapitalGrowth = (sellOrderId, pnl, booking) => {
     const prevMaxUsdc = config.maxUsdcDeployed;
-    if (!fillLedger.claimCapitalCredit(sellOrderId)) {
+    if (!fillLedger.claimCapitalCredit(sellOrderId, booking?.bookedSize, { replay: !!booking?.replay })) {
       logger.info(
         `ℹ️ [${exchange}] Capital growth for ${sellOrderId?.slice(0, 8)} already credited — skipping re-apply (crash-replay idempotency #210-B)`,
         { orderId: sellOrderId }
@@ -1741,6 +1748,32 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
     updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
     return prevMaxUsdc;
+  };
+
+  /**
+   * How a body-TP sell booking lands on the fill ledger (issue #777). The
+   * per-order annotations (bodyPnl, holdback, reserves sold, consumedBy, the
+   * capital credit) are read once per orderId, so a SECOND booking of an
+   * order that already committed one — a partial then its remainder, or a
+   * cancel-race execution beyond what an in-flight fill booked (#227/#770) —
+   * must add to it. It does only when this pass aggregated rows it just
+   * ingested: those rows cannot be part of the committed booking. A pass that
+   * ingested nothing re-aggregates every row of the order (a crash replay),
+   * so it replaces, exactly as before.
+   * @param {string} orderId - Sell order id
+   * @param {number} soldSize - Base quantity this booking sold
+   * @param {boolean} rowsAreNew - The booking aggregates only newly ingested rows
+   * @returns {{additive: boolean, replay: boolean, bookedSize: number}}
+   *   bookedSize is the order's cumulative booked size once this booking
+   *   commits; `replay` marks a pass that re-aggregated the whole order
+   */
+  const planSellBooking = (orderId, soldSize, rowsAreNew) => {
+    const prior = rowsAreNew ? fillLedger.getSellBooking(orderId) : null;
+    return {
+      additive: !!prior,
+      replay: !rowsAreNew,
+      bookedSize: roundAsset((prior ? prior.bookedSize : 0) + (Number(soldSize) || 0)),
+    };
   };
 
   /**
@@ -3723,10 +3756,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    *   tranche it covered is consumed in full
    * @param {string} args.sellOrderId
    * @param {string} args.bodyId - For logging
+   * @param {boolean} [args.additive] - A second booking of the same sell
+   *   order (issue #777): add to its consumption instead of replacing it
    * @returns {void} Buys with no open tranche stay on legacy sellOrderId /
    *   consumedCostFraction closure.
    */
-  const recordBodyConsumption = ({ entries, bodyQty, qty, closesBody, sellOrderId, bodyId }) => {
+  const recordBodyConsumption = ({ entries, bodyQty, qty, closesBody, sellOrderId, bodyId, additive = false }) => {
     // getBuyOrderConsumption scans the whole ledger; a collapsed body can hold
     // hundreds of tranches, so look each order up once per sale.
     const consumptionCache = new Map();
@@ -3741,7 +3776,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const legacySeeds = legacyConsumptionSeeds(plan, consumptionOf, legacyFraction);
       for (const { entry, next } of plan.entries) entry.consumedQty = roundAsset(next);
       for (const [orderId, { delta, prior }] of plan.orders) {
-        if (delta > 0) fillLedger.recordBuyConsumption(orderId, sellOrderId, delta, legacySeeds.get(orderId) ?? prior);
+        if (delta > 0) fillLedger.recordBuyConsumption(orderId, sellOrderId, delta, legacySeeds.get(orderId) ?? prior, { additive });
       }
     }
     const coverage = plan ? plan.coverage : 0;
@@ -4286,15 +4321,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // of the already-deducted body double-counts the sale whenever the
           // two deliveries' dedup keys differ (a terminal event keys on the
           // bare orderId, this booking on orderId:size).
-          // "Booked" means the handler got as far as its per-order bodyPnl
-          // annotation (written to every row of the order at the end of a
-          // successful booking) — not merely that the snapshot left the map:
-          // a handler that threw after consuming it booked nothing.
+          // "Booked" means the handler committed its booking: the per-order
+          // bodyBookedSize marker (issue #777), written synchronously with
+          // the body mutation — not merely that the snapshot left the map (a
+          // handler that threw after consuming it booked nothing) nor that
+          // the order carries a bodyPnl from some other booking. Execution
+          // beyond the marker is booked below, and adds to it.
           const snapshotConsumed = !!soldTp && !pendingMergeTpOrders.has(soldTp);
-          const soldTpRows = snapshotConsumed ? fillLedger.getFillsForOrder(soldTp) : [];
-          const alreadyBookedSize = soldTpRows.length > 0 && soldTpRows.every(f => f.bodyPnl != null)
-            ? soldTpRows.reduce((sum, f) => sum + Number(f.size || 0), 0)
-            : 0;
+          const committedBooking = snapshotConsumed ? fillLedger.getSellBooking(soldTp) : null;
+          const alreadyBookedSize = committedBooking && committedBooking.hasMarker ? committedBooking.bookedSize : 0;
           const skipImmediateBooking = snapshotConsumed
             && !((cancelResult.filledSize || 0) > alreadyBookedSize + 1e-9);
           if (skipImmediateBooking) {
@@ -4524,8 +4559,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const t1 = setTimeout(() => { recentlyProcessedSellFills.delete(dedupKey); ttlTimers.delete(t1); }, 5 * 60 * 1000);
       ttlTimers.add(t1);
 
+      // An order that already committed a booking books only the rows no
+      // booking covered yet (issue #777): whatever this pass ingested, plus
+      // any row that reached the ledger another way (startup recovery, a
+      // dedup-skipped delivery) — so that execution is booked, and added to
+      // the committed booking, instead of re-booking every row of the order
+      // as a replay. With nothing unbooked this IS a replay: all rows, as before.
+      let sellRowsAreNew = ingestedFills.length > 0;
+      const unbookedSellFills = fillLedger.getUnbookedSellFills(fillData.orderId);
+      if (unbookedSellFills && unbookedSellFills.length > 0) {
+        fillsToAggregate = unbookedSellFills;
+        sellRowsAreNew = true;
+      }
+      const bookedTradeIds = fillsToAggregate.map(f => f.tradeId);
+
       // UNIFIED BODY TP FILL — find matching celestial body by TP order ID
       const summary = fillLedger.aggregateFills(fillsToAggregate);
+      const booking = planSellBooking(fillData.orderId, summary.totalSize, sellRowsAreNew);
 
       // Race 3: check merge-snapshot maps first (fill arrived for body removed during merge)
       const mergeSnapshot = pendingMergeTpOrders.get(fillData.orderId)
@@ -4584,7 +4634,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (!liveOwnsRemainder) cs.bodiesCompleted += 1;
         positionState.celestialState = cs;
 
-        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
+        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl, booking);
 
         orderExecutor.removeBodyTracking(fillData.orderId);
 
@@ -4620,6 +4670,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           closesBody: snapshotClosed,
           sellOrderId: fillData.orderId,
           bodyId: mergeSnapshot.id,
+          additive: booking.additive,
         });
 
         if (liveMerged) {
@@ -4693,7 +4744,34 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             // snapshot's TP never covered must not be charged it at all.
             stampConsumedCostFraction(liveMerged, liveConsumedRatio);
           }
+        }
 
+        // Commit the booking the moment the body mutation above is done —
+        // synchronously with it, before any await below (issue #777). The
+        // per-order bodyBookedSize this writes is the booking-commit marker
+        // the buy-merge #227 continuation reads to decide what an in-flight
+        // fill already booked: written any later, a throw in the stale-TP
+        // cancel / re-place below would leave a deducted body with no marker,
+        // and the continuation would book the same sale on top of it.
+        fillLedger.commitSellBooking(fillData.orderId, {
+          isBodyOwned: true,
+          bodyId: mergeSnapshot.id,
+          bodyTier: mergeSnapshot.tier,
+          // The prorated cost of the SOLD tranche, not the full snapshot cost —
+          // matches the normal partial-fill path (:~3318), which always records
+          // proratedCostBasis regardless of partial/complete (proratedCostBasis
+          // already equals the full cost when soldRatio is 1).
+          bodyCostBasis: proratedCostBasis,
+          bodyAvgPrice: mergeSnapshot.avgPrice,
+          bodyBtcQty: liveOwnsRemainder ? summary.totalSize : mergeSnapshot.assetQty,
+          bodyHoldbackAsset: liveOwnsRemainder ? 0 : holdbackAsset,
+          ...(!liveOwnsRemainder && reservesSoldAsset > 0 && { bodyReservesSoldAsset: reservesSoldAsset }),
+          bodyPnl: pnl,
+          mergeSnapshot: true,
+          ...(liveOwnsRemainder && { partialFill: true }),
+        }, { additive: booking.additive, soldSize: summary.totalSize, bookedTradeIds });
+
+        if (liveMerged) {
           if (liveMerged.tpOrderId && liveMerged.tpOrderId === fillData.orderId) {
             // The body still points at the snapshotted order itself: this
             // fill landed while a buy-merge / roll-up cancel of that same
@@ -4795,24 +4873,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
         logger.info(`${tierCfg.emoji} [${exchange}] Merge-snapshot TP filled (${mergeSnapshot.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
-        fillLedger.annotateFillsByOrderId(fillData.orderId, {
-          isBodyOwned: true,
-          bodyId: mergeSnapshot.id,
-          bodyTier: mergeSnapshot.tier,
-          // The prorated cost of the SOLD tranche, not the full snapshot cost —
-          // matches the normal partial-fill path (:~3318), which always records
-          // proratedCostBasis regardless of partial/complete (proratedCostBasis
-          // already equals the full cost when soldRatio is 1).
-          bodyCostBasis: proratedCostBasis,
-          bodyAvgPrice: mergeSnapshot.avgPrice,
-          bodyBtcQty: liveOwnsRemainder ? summary.totalSize : mergeSnapshot.assetQty,
-          bodyHoldbackAsset: liveOwnsRemainder ? 0 : holdbackAsset,
-          ...(!liveOwnsRemainder && reservesSoldAsset > 0 && { bodyReservesSoldAsset: reservesSoldAsset }),
-          bodyPnl: pnl,
-          mergeSnapshot: true,
-          ...(liveOwnsRemainder && { partialFill: true }),
-        });
-
         tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)} [merge-snapshot]`, {
           assetAmount: summary.totalSize,
           price: summary.avgPrice,
@@ -4875,8 +4935,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         positionState.celestialState = cs;
         // Partial fills are handled naturally — FIFO sees only the actual sold qty.
 
-        // Grow capital (idempotent per sellOrderId — issue #210-B)
-        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
+        // Grow capital (idempotent per booked amount — issues #210-B, #777)
+        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl, booking);
 
         // Record per buy order what this sale consumed (issue #607), before
         // the body is reduced. A partial consumes only what sold (no reserve
@@ -4891,7 +4951,28 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           closesBody: !isPartial,
           sellOrderId: fillData.orderId,
           bodyId: body.id,
+          additive: booking.additive,
         });
+
+        // Annotate the sell with its body booking, committed synchronously
+        // with the credit and consumption above — before any await below, so
+        // a concurrent booking of the same order cannot interleave between
+        // the plan and the commit, and a later throw cannot leave a mutated
+        // body without its commit marker. Adds to a booking this order
+        // already committed when this pass booked new execution (issue #777).
+        // body.assetQty/avgPrice are still the pre-sale values here.
+        fillLedger.commitSellBooking(fillData.orderId, {
+          isBodyOwned: true,
+          bodyId: body.id,
+          bodyTier: body.tier,
+          bodyCostBasis: proratedCostBasis,
+          bodyAvgPrice: body.avgPrice,
+          bodyBtcQty: isPartial ? summary.totalSize : body.assetQty,
+          bodyHoldbackAsset: isPartial ? 0 : holdbackAsset,
+          ...(!isPartial && reservesSoldAsset > 0 && { bodyReservesSoldAsset: reservesSoldAsset }),
+          bodyPnl: pnl,
+          ...(isPartial && { partialFill: true }),
+        }, { additive: booking.additive, soldSize: summary.totalSize, bookedTradeIds });
 
         let closesCycle = false;
         if (isPartial) {
@@ -4972,20 +5053,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // sell's P&L annotation and closed-trade record are committed (#766).
           closesCycle = positionState.celestialBodies.length === 0;
         }
-
-        // Annotate fills with body metadata
-        fillLedger.annotateFillsByOrderId(fillData.orderId, {
-          isBodyOwned: true,
-          bodyId: body.id,
-          bodyTier: body.tier,
-          bodyCostBasis: proratedCostBasis,
-          bodyAvgPrice: body.avgPrice,
-          bodyBtcQty: isPartial ? summary.totalSize : body.assetQty,
-          bodyHoldbackAsset: isPartial ? 0 : holdbackAsset,
-          ...(!isPartial && reservesSoldAsset > 0 && { bodyReservesSoldAsset: reservesSoldAsset }),
-          bodyPnl: pnl,
-          ...(isPartial && { partialFill: true }),
-        });
 
         // Link source buy fills to this sell order for buy→sell display linkage.
         // Skip on partial fills: placeBodyTp above already re-linked the buys to

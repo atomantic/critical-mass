@@ -1789,6 +1789,10 @@ describe('Fill Ledger', () => {
       assert.ok(Math.abs(consumption.size - 0.003) < 1e-12);
       assert.equal(ledger.getDerivedRealizedPnL().heldOpenAssetQty, 0.002);
 
+      // A second booking of the SAME sell (issue #777) adds to its entry.
+      ledger.recordBuyConsumption('buy-c', 'tp-c', 0.0005, 0, { additive: true });
+      assert.deepEqual(ledger.getBuyOrderConsumption('buy-c').consumedBy, { 'tp-c': 0.0015 });
+      ledger.recordBuyConsumption('buy-c', 'tp-c', 0.001); // back to the single booking
       // A second sale adds its own entry; the late row picks the map up too.
       ledger.recordBuyConsumption('buy-c', 'tp-c2', 0.002);
       assert.equal(ledger.getDerivedRealizedPnL().heldOpenAssetQty, 0);
@@ -2800,6 +2804,132 @@ describe('Fill Ledger', () => {
       assert.equal(ledger.claimCapitalCredit('sell-A'), true);
       assert.equal(ledger.claimCapitalCredit('sell-B'), true, 'a different sell is credited independently');
       assert.equal(ledger.claimCapitalCredit('sell-A'), false);
+    });
+
+    it('credits a second booking of the same sell for a larger booked size, never a replay (issue #777)', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A', size: '0.002' }));
+      assert.equal(ledger.claimCapitalCredit('sell-A', 0.002), true, 'first tranche credited');
+      assert.equal(ledger.claimCapitalCredit('sell-A', 0.002), false, 'a replay of the same booking is refused');
+      ledger.ingestFill(makeSellFill({ tradeId: 's2', orderId: 'sell-A', size: '0.001' }));
+      assert.equal(ledger.claimCapitalCredit('sell-A', 0.003), true, 'execution beyond the first booking is credited');
+      assert.equal(ledger.claimCapitalCredit('sell-A', 0.003), false);
+      assert.equal(ledger.claimCapitalCredit('sell-A'), false, 'an unsized claim refuses any prior credit');
+      assert.ok(ledger.getFillsForOrder('sell-A').every(r => r.capitalCreditedSize === 0.003));
+      assert.equal(createTestLedger().claimCapitalCredit('sell-A', 0.003), false, 'the sized marker survives a reload');
+    });
+
+    it('refuses a replay re-aggregating more rows than an earlier credit covered', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A', size: '0.002' }));
+      assert.equal(ledger.claimCapitalCredit('sell-A', 0.002), true);
+      ledger.ingestFill(makeSellFill({ tradeId: 's2', orderId: 'sell-A', size: '0.001' }));
+      assert.equal(ledger.claimCapitalCredit('sell-A', 0.003, { replay: true }), false, 'the first tranche is never credited twice');
+      const fresh = createTestLedger();
+      fresh.ingestFill(makeSellFill({ tradeId: 't1', orderId: 'sell-B', size: '0.002' }));
+      assert.equal(fresh.claimCapitalCredit('sell-B', 0.002, { replay: true }), true, 'a first booking through a replay pass is credited');
+      fresh.ingestFill(makeSellFill({ tradeId: 't2', orderId: 'sell-B', size: '0.001' }));
+      assert.equal(fresh.claimCapitalCredit('sell-B', 0.003), true, 'and records its size, so later execution is still credited');
+    });
+
+    it('treats a credit recorded before sizes existed as covering the whole order', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A', size: '0.002' }));
+      assert.equal(ledger.claimCapitalCredit('sell-A'), true);
+      ledger.ingestFill(makeSellFill({ tradeId: 's2', orderId: 'sell-A', size: '0.001' }));
+      assert.equal(ledger.claimCapitalCredit('sell-A', 0.003), false, 'conservative: never a double credit');
+    });
+  });
+
+  // =======================================================================
+  // commitSellBooking — a second booking of one sell order adds up (#777)
+  // =======================================================================
+  describe('commitSellBooking (issue #777)', () => {
+    const tranche1 = {
+      isBodyOwned: true, bodyId: 'b1', bodyTier: 'ASTEROID', bodyCostBasis: 100, bodyAvgPrice: 50000,
+      bodyBtcQty: 0.002, bodyHoldbackAsset: 0, bodyPnl: 0.98, partialFill: true,
+    };
+
+    it('a first booking replaces and records the commit marker once per order', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A', size: '0.001' }));
+      ledger.ingestFill(makeSellFill({ tradeId: 's2', orderId: 'sell-A', size: '0.001' }));
+      assert.equal(ledger.getSellBooking('sell-A'), null, 'nothing committed yet');
+      assert.equal(ledger.commitSellBooking('sell-A', tranche1, { soldSize: 0.002 }), 0.002);
+      const booking = ledger.getSellBooking('sell-A');
+      assert.equal(booking.bodyPnl, 0.98, 'read once per order, never summed across rows');
+      assert.equal(booking.bookedSize, 0.002);
+      assert.equal(booking.hasMarker, true);
+    });
+
+    it('a second booking adds P&L, cost, quantity, holdback and reserves sold, and clears partialFill on close', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A', size: '0.002' }));
+      ledger.commitSellBooking('sell-A', tranche1, { soldSize: 0.002 });
+      ledger.ingestFill(makeSellFill({ tradeId: 's2', orderId: 'sell-A', size: '0.009' }));
+      const total = ledger.commitSellBooking('sell-A', {
+        isBodyOwned: true, bodyId: 'b1', bodyTier: 'ASTEROID', bodyCostBasis: 400, bodyAvgPrice: 50000,
+        bodyBtcQty: 0.008, bodyHoldbackAsset: 0.0001, bodyReservesSoldAsset: 0.0011, bodyPnl: 3.5,
+      }, { additive: true, soldSize: 0.009 });
+      assert.equal(total, 0.011);
+      const rows = ledger.getFillsForOrder('sell-A');
+      assert.equal(rows.length, 2);
+      for (const row of rows) {
+        assert.ok(Math.abs(row.bodyPnl - 4.48) < 1e-9);
+        assert.equal(row.bodyCostBasis, 500);
+        assert.equal(row.bodyBtcQty, 0.01);
+        assert.equal(row.bodyHoldbackAsset, 0.0001);
+        assert.equal(row.bodyReservesSoldAsset, 0.0011);
+        assert.equal(row.bodyBookedSize, 0.011);
+        assert.equal(row.partialFill, undefined, 'the closing booking clears the partial flag');
+      }
+      assert.ok(Math.abs(ledger.getDerivedRealizedPnL().realizedPnL - 4.48) < 1e-9, 'realizedPnL counts both tranches once');
+    });
+
+    it('stamps the rows a booking covered, so a row that arrived another way reads as unbooked', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A', size: '0.002' }));
+      assert.equal(ledger.getUnbookedSellFills('sell-A'), null, 'no committed booking: caller keeps its own selection');
+      ledger.ingestFill(makeSellFill({ tradeId: 's2', orderId: 'sell-A', size: '0.001' }));
+      ledger.commitSellBooking('sell-A', tranche1, { soldSize: 0.002, bookedTradeIds: ['s1'] });
+      const unbooked = ledger.getUnbookedSellFills('sell-A');
+      assert.deepEqual(unbooked.map(f => f.tradeId), ['s2'], 's2 got the order-level annotation but no booking covered it');
+      ledger.commitSellBooking('sell-A', { ...tranche1, bodyPnl: 0.48 }, { additive: true, soldSize: 0.001, bookedTradeIds: ['s2'] });
+      assert.deepEqual(ledger.getUnbookedSellFills('sell-A'), []);
+      assert.equal(ledger.getSellBooking('sell-A').bookedSize, 0.003);
+    });
+
+    it('without additive (a replay re-aggregating every row) it replaces', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A', size: '0.002' }));
+      ledger.commitSellBooking('sell-A', tranche1, { soldSize: 0.002 });
+      ledger.commitSellBooking('sell-A', tranche1, { soldSize: 0.002 });
+      const booking = ledger.getSellBooking('sell-A');
+      assert.equal(booking.bodyPnl, 0.98);
+      assert.equal(booking.bookedSize, 0.002);
+    });
+
+    it('adds onto a booking committed before the marker existed, sized by its annotated rows', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A', size: '0.002' }));
+      ledger.annotateFillsByOrderId('sell-A', tranche1);
+      const legacy = ledger.getSellBooking('sell-A');
+      assert.equal(legacy.hasMarker, false);
+      assert.equal(legacy.bookedSize, 0.002);
+      ledger.ingestFill(makeSellFill({ tradeId: 's2', orderId: 'sell-A', size: '0.001' }));
+      ledger.commitSellBooking('sell-A', { ...tranche1, bodyPnl: 0.48, bodyCostBasis: 50, bodyBtcQty: 0.001 }, { additive: true, soldSize: 0.001, bookedTradeIds: ['s2'] });
+      const booking = ledger.getSellBooking('sell-A');
+      assert.ok(Math.abs(booking.bodyPnl - 1.46) < 1e-9);
+      assert.equal(booking.bookedSize, 0.003);
+      assert.deepEqual(ledger.getUnbookedSellFills('sell-A'), [], 'the legacy tranche stays booked, never re-booked');
     });
   });
 
