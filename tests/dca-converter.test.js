@@ -302,4 +302,97 @@ describe('dca-converter fund routing (issue #414)', () => {
     assert.equal(preview.filled, 0);
     assert.deepEqual(converter.previewConversion(EXCHANGE, DEFAULT_PAIR).sellOrderIds, ['sell-open-btc']);
   });
+
+  // issue #692 — mergeToRegime's ingestion loop had drifted from
+  // executeConversion's: it never called startNewCycle() before the pending
+  // buys and never stamped sellOrderId on a filled order's buy fill. Per
+  // CLAUDE.md, cycles are atomic buy(n)->sell(1); mixing a completed pair
+  // into the same cycle as still-open pending buys left the completed
+  // trade's sell unpaired (realizedPnL zeroed) and made the low sell-ratio
+  // cycle look "active" to recalculateCycles(). Both loops now share
+  // ingestDcaOrdersIntoLedger.
+  describe('mergeToRegime keeps cycles atomic and pairs P&L correctly (issue #692)', () => {
+    const mergeOrders = () => ([
+      {
+        status: 'filled',
+        orderId: 'sell-done',
+        buyOrderId: 'buy-done',
+        buyQuantity: 0.01,
+        buyPrice: 50100,
+        buyUSDC: 501,
+        buyFees: 0,
+        buyCostBasis: 501,
+        sellQuantity: 0.01,
+        sellPrice: 51380,
+        sellFees: 0,
+        createdAt: '2025-01-01T00:00:00.000Z',
+        filledAt: '2025-01-02T00:00:00.000Z',
+      },
+      {
+        status: 'pending',
+        orderId: 'sell-open',
+        buyOrderId: 'buy-open',
+        buyQuantity: 0.02,
+        buyPrice: 48100,
+        buyUSDC: 962,
+        buyFees: 0,
+        buyCostBasis: 962,
+        sellPrice: 51000,
+        createdAt: '2025-02-01T00:00:00.000Z',
+      },
+    ]);
+
+    /** Rewrite ONLY state.json's orders — unlike seedFund(), this leaves the
+     * fill ledger and regime state from a prior merge call untouched, so a
+     * second mergeToRegime call can be checked for idempotent re-ingestion. */
+    const reseedOrders = (pair, orders) => {
+      fs.writeFileSync(path.join(fundDir(pair), 'state.json'), JSON.stringify({
+        orders,
+        totalAllocated: 1000,
+        initialAllocation: 0,
+        usdcFundSize: 0,
+        assetReserves: 0,
+      }));
+    };
+
+    it("does not mix a completed DCA trade into the pending buys' cycle, pairs its realized P&L, and is idempotent on re-run", () => {
+      seedFund(DEFAULT_PAIR, { orders: mergeOrders() });
+
+      const result = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(result.success, true);
+      assert.equal(result.summary.filledOrders, 1);
+      assert.equal(result.summary.pendingOrders, 1);
+
+      const ledger = JSON.parse(fs.readFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), 'utf8'));
+      const doneBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-done');
+      const doneSell = ledger.find(f => f.tradeId === 'dca-convert-sell-sell-done');
+      const openBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-open');
+      assert.ok(doneBuy && doneSell && openBuy, 'all three synthetic fills must be ingested');
+
+      // Cycles are atomic buy(n)->sell(1) (CLAUDE.md) — the pending buy's
+      // cycle must differ from the completed pair's cycle.
+      assert.equal(doneBuy.cycleId, doneSell.cycleId, 'the completed buy and its sell share one cycle');
+      assert.notEqual(openBuy.cycleId, doneBuy.cycleId, "the pending buy must not land in the completed trade's cycle");
+      assert.equal(doneBuy.sellOrderId, 'sell-done', 'the filled buy must be linked to its own sell for cycle-pair accounting');
+
+      // computeRealizedFromCyclePairs (the P&L source of truth) must pair the
+      // completed trade instead of leaving its sell unpaired.
+      delete require.cache[FILL_LEDGER];
+      const { createFillLedger } = require('../src/fill-ledger');
+      const freshLedger = createFillLedger(EXCHANGE, DEFAULT_PAIR, DEFAULT_PAIR, { quiet: true });
+      const pairs = freshLedger.computeRealizedFromCyclePairs();
+      assert.equal(pairs.realizedPnL, 12.8);
+      assert.equal(pairs.heldOpenBuyCostBasis, 962);
+      assert.equal(pairs.unpairedSellQty, 0);
+
+      // Re-run the merge over the SAME still-'filled'/'pending' DCA orders
+      // (as if triggered again before/without the DCA-state cleanup step).
+      // Every synthetic fill's tradeId already exists in the ledger, so
+      // ingestFill reports ingested:false for all of them — filledIngested
+      // must reflect that, not double-count the duplicate ingest attempt.
+      reseedOrders(DEFAULT_PAIR, mergeOrders());
+      const second = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(second.summary.filledOrders, 0, 'a duplicate merge must not recount already-ingested filled orders');
+    });
+  });
 });

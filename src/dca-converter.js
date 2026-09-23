@@ -157,6 +157,125 @@ const previewConversion = (exchange, pair) => {
 };
 
 /**
+ * Ingest DCA "filled" and "pending" orders into a fill ledger as synthetic
+ * fills. Shared by executeConversion and mergeToRegime so the two loops
+ * cannot drift apart again (issue #692) — before this helper existed,
+ * mergeToRegime never stamped sellOrderId on a filled order's buy fill and
+ * never opened a fresh cycle for the pending block, so a completed DCA
+ * trade's buy and sell landed in the SAME cycle as the still-open pending
+ * buys. Per CLAUDE.md's P&L model, cycles are atomic buy(n)->sell(1): mixing
+ * a closed pair into the live cycle left the sell unpaired (realized P&L
+ * zeroed) and the cycle's low sell ratio meant recalculateCycles() restored
+ * it as the active cycle on the next engine start.
+ *
+ * @param {ReturnType<typeof createFillLedger>} fillLedger
+ * @param {Array<Object>} filled - completed DCA buy+sell order pairs
+ * @param {Array<Object>} pending - still-open DCA buys
+ * @param {{ linkPendingSells: boolean }} options - `true` (executeConversion,
+ *   always a fresh ledger): stamp each pending buy's sellOrderId with its
+ *   still-open exchange sell order, and always start a brand-new cycle for
+ *   the pending block. `false` (mergeToRegime, an existing regime run):
+ *   leave sellOrderId unset — the caller annotates isBodyOwned/bodyId once
+ *   celestial bodies exist — and reuse the ledger's current active cycle for
+ *   the pending block when it has no sells yet, so open positions merged in
+ *   land in the engine's real in-progress cycle instead of a new one.
+ * @returns {{ filledIngested: number, pendingIngested: number }}
+ */
+const ingestDcaOrdersIntoLedger = (fillLedger, filled, pending, { linkPendingSells }) => {
+  let filledIngested = 0;
+  for (const order of filled) {
+    fillLedger.startNewCycle();
+
+    // Synthetic buy fill
+    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
+    const buyResult = fillLedger.ingestFill({
+      tradeId: buyTradeId,
+      orderId: order.buyOrderId,
+      side: 'buy',
+      price: order.buyPrice,
+      size: order.buyQuantity,
+      totalCommission: order.buyFees || 0,
+      rebate: order.buyRebates || 0,
+      liquidityIndicator: 'TAKER',
+      tradeTime: order.createdAt,
+    });
+
+    // Synthetic sell fill
+    const sellTradeId = `dca-convert-sell-${order.orderId}`;
+    fillLedger.ingestFill({
+      tradeId: sellTradeId,
+      orderId: order.orderId,
+      side: 'sell',
+      price: order.sellPrice,
+      size: order.sellQuantity,
+      totalCommission: order.sellFees || 0,
+      rebate: order.sellRebates || 0,
+      liquidityIndicator: 'MAKER',
+      tradeTime: order.filledAt || order.createdAt,
+    });
+
+    // Link the buy to its sell so computeRealizedFromCyclePairs pairs them
+    // directly instead of relying on a later recalculateCycles() auto-link
+    // pass (which only links buys within cycles it judges "completed" —
+    // never guaranteed to run, e.g. mergeToRegime doesn't call it at all).
+    // A no-op if the buy trade wasn't actually appended (duplicate re-run).
+    fillLedger.annotateFillsByOrderId(order.buyOrderId, { sellOrderId: order.orderId });
+
+    if (buyResult.ingested) filledIngested++;
+  }
+
+  // Open (or reuse) the cycle that will hold the still-open pending buys.
+  if (linkPendingSells) {
+    // executeConversion always starts from a clean cycle boundary — it just
+    // (re)built the ledger, so there is no pre-existing active cycle worth
+    // preserving.
+    fillLedger.startNewCycle();
+  } else {
+    // mergeToRegime preserves an existing regime run. If the ledger's
+    // active cycle is still open (no sells recorded against it), the merged
+    // pending buys belong there — not in a brand-new cycle that would split
+    // an already-tracked open position away from its own cycle.
+    const activeCycleId = fillLedger.getCurrentCycleId();
+    const activeCycleHasSells = activeCycleId
+      ? fillLedger.getCurrentCycleFills().some((fill) => fill.side === 'sell')
+      : false;
+    if (!activeCycleId || activeCycleHasSells) {
+      fillLedger.startNewCycle();
+    }
+  }
+
+  let pendingIngested = 0;
+  for (const order of pending) {
+    // Synthetic buy fill for the open position
+    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
+    const buyResult = fillLedger.ingestFill({
+      tradeId: buyTradeId,
+      orderId: order.buyOrderId,
+      side: 'buy',
+      price: order.buyPrice,
+      size: order.buyQuantity,
+      totalCommission: order.buyFees || 0,
+      rebate: order.buyRebates || 0,
+      liquidityIndicator: 'TAKER',
+      tradeTime: order.createdAt,
+    });
+
+    if (linkPendingSells && buyResult.ingested && buyResult.fill) {
+      // Link the buy fill to its still-open sell order on the exchange.
+      // markDirty after direct field mutation: ingestFill auto-persisted
+      // and cleared the dirty flag, so a trailing persist() would
+      // otherwise no-op and lose this sellOrderId on restart.
+      buyResult.fill.sellOrderId = order.orderId;
+      fillLedger.markDirty();
+    }
+
+    if (buyResult.ingested) pendingIngested++;
+  }
+
+  return { filledIngested, pendingIngested };
+};
+
+/**
  * Execute DCA-to-Regime conversion
  * @param {string} exchange
  * @param {string} [pair] - Fund pair; defaults to the exchange's default pair
@@ -198,72 +317,13 @@ const executeConversion = (exchange, pair) => {
     throw new Error(`Fill ledger init failed for ${fundLabel(exchange, pair)} during DCA conversion — see engine logs for details`);
   }
 
-  // Ingest filled (completed) DCA orders as completed cycles
-  let filledIngested = 0;
-  for (const order of filled) {
-    fillLedger.startNewCycle();
-
-    // Synthetic buy fill
-    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
-    const buyResult = fillLedger.ingestFill({
-      tradeId: buyTradeId,
-      orderId: order.buyOrderId,
-      side: 'buy',
-      price: order.buyPrice,
-      size: order.buyQuantity,
-      totalCommission: order.buyFees || 0,
-      rebate: order.buyRebates || 0,
-      liquidityIndicator: 'TAKER',
-      tradeTime: order.createdAt,
-    });
-
-    // Synthetic sell fill
-    const sellTradeId = `dca-convert-sell-${order.orderId}`;
-    fillLedger.ingestFill({
-      tradeId: sellTradeId,
-      orderId: order.orderId,
-      side: 'sell',
-      price: order.sellPrice,
-      size: order.sellQuantity,
-      totalCommission: order.sellFees || 0,
-      rebate: order.sellRebates || 0,
-      liquidityIndicator: 'MAKER',
-      tradeTime: order.filledAt || order.createdAt,
-    });
-
-    if (buyResult.ingested) filledIngested++;
-  }
-
-  // Start active cycle for pending orders
-  fillLedger.startNewCycle();
-
-  let pendingIngested = 0;
-  for (const order of pending) {
-    // Synthetic buy fill for the open position
-    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
-    const buyResult = fillLedger.ingestFill({
-      tradeId: buyTradeId,
-      orderId: order.buyOrderId,
-      side: 'buy',
-      price: order.buyPrice,
-      size: order.buyQuantity,
-      totalCommission: order.buyFees || 0,
-      rebate: order.buyRebates || 0,
-      liquidityIndicator: 'TAKER',
-      tradeTime: order.createdAt,
-    });
-
-    // Link the buy fill to its existing sell order on exchange.
-    // markDirty after direct field mutation: ingestFill auto-persisted
-    // and cleared the dirty flag, so the trailing persist() below would
-    // otherwise no-op and lose this sellOrderId on restart.
-    if (buyResult.ingested && buyResult.fill) {
-      buyResult.fill.sellOrderId = order.orderId;
-      fillLedger.markDirty();
-    }
-
-    if (buyResult.ingested) pendingIngested++;
-  }
+  // Ingest filled (completed) DCA orders as completed cycles, then start a
+  // fresh cycle for the still-open pending orders and link each pending
+  // buy to its still-resting exchange sell order (shared with mergeToRegime
+  // via ingestDcaOrdersIntoLedger — see its docstring, issue #692).
+  const { filledIngested, pendingIngested } = ingestDcaOrdersIntoLedger(fillLedger, filled, pending, {
+    linkPendingSells: true,
+  });
 
   fillLedger.persist();
   log('INFO', `📝 [${fundLabel(exchange, pair)}] Fill ledger: ${filledIngested} filled + ${pendingIngested} pending orders ingested`);
@@ -412,67 +472,17 @@ const mergeToRegime = (exchange, pair) => {
     throw new Error(`Fill ledger init failed for ${fundLabel(exchange, pair)} during DCA merge — see engine logs for details`);
   }
 
-  // Ingest filled (completed) DCA orders as completed cycle fills
-  let filledIngested = 0;
-  for (const order of filled) {
-    fillLedger.startNewCycle();
-
-    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
-    fillLedger.ingestFill({
-      tradeId: buyTradeId,
-      orderId: order.buyOrderId,
-      side: 'buy',
-      price: order.buyPrice,
-      size: order.buyQuantity,
-      totalCommission: order.buyFees || 0,
-      rebate: order.buyRebates || 0,
-      liquidityIndicator: 'TAKER',
-      tradeTime: order.createdAt,
-    });
-
-    const sellTradeId = `dca-convert-sell-${order.orderId}`;
-    fillLedger.ingestFill({
-      tradeId: sellTradeId,
-      orderId: order.orderId,
-      side: 'sell',
-      price: order.sellPrice,
-      size: order.sellQuantity,
-      totalCommission: order.sellFees || 0,
-      rebate: order.sellRebates || 0,
-      liquidityIndicator: 'MAKER',
-      tradeTime: order.filledAt || order.createdAt,
-    });
-
-    filledIngested++;
-  }
-
-  // Ingest pending order buy fills into the current active cycle
-  let pendingIngested = 0;
-  for (const order of pending) {
-    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
-    const buyResult = fillLedger.ingestFill({
-      tradeId: buyTradeId,
-      orderId: order.buyOrderId,
-      side: 'buy',
-      price: order.buyPrice,
-      size: order.buyQuantity,
-      totalCommission: order.buyFees || 0,
-      rebate: order.buyRebates || 0,
-      liquidityIndicator: 'TAKER',
-      tradeTime: order.createdAt,
-    });
-
-    // Mark as body-owned so these fills don't conflict with core position tracking.
-    // markDirty: ingestFill auto-persisted and cleared the dirty flag,
-    // so the trailing persist() below would otherwise no-op and lose
-    // this isBodyOwned flag on restart.
-    if (buyResult.ingested && buyResult.fill) {
-      buyResult.fill.isBodyOwned = true;
-      fillLedger.markDirty();
-    }
-
-    if (buyResult.ingested) pendingIngested++;
-  }
+  // Ingest filled (completed) DCA orders as their own closed cycles, then
+  // ingest the still-open pending buys into the ledger's live active cycle
+  // (reused when open, per ingestDcaOrdersIntoLedger's merge-mode branch)
+  // instead of the filled orders' cycle — keeps cycles atomic (buy(n)->
+  // sell(1), per CLAUDE.md) so a completed DCA trade's realized P&L is
+  // never zeroed by an unrelated open position sharing its cycle (#692).
+  // isBodyOwned/bodyId for the pending buys is annotated below in step 4b,
+  // once their celestial bodies exist.
+  const { filledIngested, pendingIngested } = ingestDcaOrdersIntoLedger(fillLedger, filled, pending, {
+    linkPendingSells: false,
+  });
 
   fillLedger.persist();
   log('INFO', `📝 [${fundLabel(exchange, pair)}] Fill ledger merge: ${filledIngested} filled + ${pendingIngested} pending orders ingested`);
