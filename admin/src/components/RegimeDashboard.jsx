@@ -7,6 +7,7 @@ import { pairQuery as buildPairQuery } from '../utils/api'
 import { createRequestOwner } from '../utils/requestOwner.mjs'
 import { deriveRegimeFillGroups, searchRegimeFillGroups, visibleOrphanBuys } from '../utils/regimeFillGroups.mjs'
 import { resolveElapsedDisplay } from '../utils/liveTimerElapsed.mjs'
+import { computeOpenOrderEstimate, DEFAULT_FEE_RATE_PER_SIDE } from '../utils/openOrderEstimates.mjs'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
@@ -2630,6 +2631,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   const openOrders = pendingOrdersList.filter(o => o.status === 'open')
                   const avgCost = position.avgCostBasis || 0
                   const holdbackRatio = config?.holdbackRatio ?? 0.5
+                  const feeRatePerSide = config?.feeRatePerSide ?? config?.feeRate ?? DEFAULT_FEE_RATE_PER_SIDE
 
                   // Build body lookup from status.celestial.bodies for fallback
                   const celestialBodies = status?.celestial?.bodies || []
@@ -2721,27 +2723,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     const age = Date.now() - order.placedAt
                     const isTpOrder = order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp'
                     const bodyData = (order.type === 'body_tp' || order.type === 'satellite_tp' || order.type === 'take_profit') ? bodyLookup.get(order.orderId) : null
-                    const orderAvgCost = (order.bodyAvgCost ?? order.satelliteAvgCost) || bodyData?.avgPrice || (isTpOrder ? avgCost : 0)
-                    const sellValue = order.size * order.price
-                    const estSellFee = sellValue * 0.0006
-                    const satCostBasis = (order.bodyCostBasis ?? order.satelliteCostBasis) || bodyData?.costBasis
-                    const satBtcQty = (order.bodyBtcQty ?? order.satelliteBtcQty) || bodyData?.assetQty
-                    const proratedCost = satCostBasis && satBtcQty
-                      ? (satCostBasis / satBtcQty) * order.size
-                      : null
-                    const estPnl = isTpOrder && orderAvgCost > 0
-                      ? (sellValue - estSellFee) - (proratedCost || orderAvgCost * order.size)
-                      : null
-                    const profitPerAsset = order.price - orderAvgCost
-                    const denominator = order.price * (1 - holdbackRatio) + orderAvgCost * holdbackRatio
-                    const estHoldback = isTpOrder && profitPerAsset > 0 && denominator > 0
-                      ? order.size * profitPerAsset * holdbackRatio / denominator
-                      : null
-                    const estHoldbackValue = estHoldback ? estHoldback * order.price : null
-                    const tpPercent = order.tpPercent
-                      || (((order.type === 'satellite_tp' || order.type === 'body_tp' || (order.type === 'take_profit' && bodyData)) && orderAvgCost > 0)
-                        ? ((order.price - orderAvgCost) / orderAvgCost * 100).toFixed(2)
-                        : null)
+                    const { estSellFee, estPnl, estHoldback, estHoldbackValue, tpPercent } = computeOpenOrderEstimate(
+                      order, bodyData, { avgCost, holdbackRatio, feeRatePerSide }
+                    )
                     const relatedBuys = isTpOrder ? getRelatedBuys(order) : []
 
                     return { ...order, age, estPnl, estSellFee, estHoldback, estHoldbackValue, tpPercent, relatedBuys }

@@ -39,17 +39,19 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
   /**
    * Check if keys file exists and contains valid-looking credentials
+   *
+   * Only ever consults `resolvedKeysPath` (the migrated `data/coinbase-keys.json`
+   * location) — issue #688: a legacy root-`keys.json` fallback here meant
+   * deleting the configured key via the API left the engine signing requests
+   * with the old credential. `src/migration.js`'s one-time migration is now
+   * the only way a legacy `keys.json` is ever consumed.
    * @returns {boolean}
    */
   adapter.hasValidKeys = () => {
-    const legacyPath = path.join(__dirname, '..', '..', '..', 'keys.json');
-    const keysFile = fs.existsSync(resolvedKeysPath) ? resolvedKeysPath :
-                     fs.existsSync(legacyPath) ? legacyPath : null;
-
-    if (!keysFile) return false;
+    if (!fs.existsSync(resolvedKeysPath)) return false;
 
     try {
-      const keys = JSON.parse(fs.readFileSync(keysFile, 'utf8'));
+      const keys = JSON.parse(fs.readFileSync(resolvedKeysPath, 'utf8'));
       const apiKey = keys.name || keys.apiKey;
       const apiSecret = keys.privateKey || keys.apiSecret;
 
@@ -67,25 +69,20 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
   /**
    * Load API credentials from keys file
+   *
+   * Only ever reads `resolvedKeysPath` — no legacy root-`keys.json` fallback
+   * (issue #688; see `hasValidKeys` above for why).
    * @returns {ApiCredentials}
    * @throws {Error} If keys file is missing or invalid
    */
   adapter.loadCredentials = () => {
-    // Check for legacy keys.json first for backward compatibility
-    const legacyPath = path.join(__dirname, '..', '..', '..', 'keys.json');
-    let keysFile = resolvedKeysPath;
-
-    if (!fs.existsSync(resolvedKeysPath) && fs.existsSync(legacyPath)) {
-      keysFile = legacyPath;
-    }
-
-    if (!fs.existsSync(keysFile)) {
+    if (!fs.existsSync(resolvedKeysPath)) {
       throw new Error('API keys not configured. Please add your Coinbase API keys.');
     }
 
     let keys;
     try {
-      keys = JSON.parse(fs.readFileSync(keysFile, 'utf8'));
+      keys = JSON.parse(fs.readFileSync(resolvedKeysPath, 'utf8'));
     } catch (err) {
       throw new Error('Failed to parse API keys file: corrupted or invalid JSON');
     }

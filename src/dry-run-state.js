@@ -14,8 +14,9 @@
  * funds it owns, so no cross-process merge and no lock is needed.
  *
  * A legacy root file is imported lazily, per fund, on first read and is never
- * deleted — it stays as the operator's fallback, the same way `migrateKeys`
- * leaves `keys.json` in place.
+ * deleted — it stays as the operator's fallback (unlike `migrateKeys`, which
+ * renames its own legacy root file, `keys.json`, out of the way after a
+ * successful migration — see `src/migration.js`, issue #688).
  */
 
 const fs = require('fs');

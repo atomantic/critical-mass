@@ -173,4 +173,34 @@ describe('adapter keys file parsing guards', () => {
       assert.equal(adapter.hasValidKeys(), true, 'should return true for valid file');
     });
   });
+
+  describe('Coinbase adapter — no legacy keys.json fallback (issue #688)', () => {
+    // Deleting a key via DELETE /api/coinbase/keys only removes the file at
+    // `resolvedKeysPath`. Before this fix, hasValidKeys()/loadCredentials()
+    // would fall back to a root `keys.json` whenever the configured file was
+    // missing, so a deleted key silently kept being used. That fallback is
+    // now gone entirely — the adapter never resolves any path other than the
+    // one it was given.
+    //
+    // These tests never write a file at the hardcoded legacy location
+    // (`<app root>/keys.json`, which would be this worktree's real keys.json
+    // path) — they only assert against the explicit `keysPath` constructor
+    // argument, which is the only path the adapter consults post-fix.
+
+    it('hasValidKeys() is false when the configured keys file is absent, independent of any other file', () => {
+      // coinbaseKeysPath deliberately not written — simulates the state right
+      // after DELETE /api/coinbase/keys removed it.
+      const adapter = createCoinbaseAdapter(coinbaseKeysPath);
+      assert.equal(adapter.hasValidKeys(), false);
+    });
+
+    it('loadCredentials() throws "not configured" (not a legacy-path read) when the configured file is absent', () => {
+      const adapter = createCoinbaseAdapter(coinbaseKeysPath);
+      assert.throws(
+        () => adapter.loadCredentials(),
+        /API keys not configured/,
+        'should throw the not-configured error rather than reading any other file',
+      );
+    });
+  });
 });

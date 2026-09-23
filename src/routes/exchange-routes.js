@@ -18,8 +18,8 @@ const {
   getRegimeConfig,
   updateExchangeConfig,
   updateFundConfig,
-  setExchangeEnabled,
-  setExchangeDryRun,
+  setFundEnabled,
+  setFundDryRun,
   addFund,
   removeFund,
   getBaseCurrency,
@@ -394,7 +394,7 @@ module.exports = (app, deps) => {
     let applied = false;
 
     if (typeof enabled === 'boolean') {
-      setExchangeEnabled(exchange, pair, enabled);
+      setFundEnabled(exchange, pair, enabled);
       applied = true;
       logger.info(`ℹ️ [${exchange}/${pair}] Trading automation ${enabled ? 'ENABLED' : 'DISABLED'}`, {
         action: 'toggle-enabled',
@@ -403,7 +403,7 @@ module.exports = (app, deps) => {
     }
 
     if (typeof dryRun === 'boolean') {
-      setExchangeDryRun(exchange, pair, dryRun);
+      setFundDryRun(exchange, pair, dryRun);
       applied = true;
       logger.info(`ℹ️ [${exchange}/${pair}] Dry-run mode ${dryRun ? 'ENABLED' : 'DISABLED'}`, {
         action: 'toggle-dry-run',

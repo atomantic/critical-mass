@@ -12,7 +12,7 @@ const path = require('path');
 const { loadState, saveState, loadRegimeState, saveRegimeState } = require('./state-tracker');
 const { createFillLedger, isCompletedCycle } = require('./fill-ledger');
 const { createNewBody, classifyTier, syncPositionState } = require('./celestial-hierarchy');
-const { setExchangeEnabled, getRegimeConfig, getFundConfig } = require('./config-utils');
+const { setFundEnabled: setConfigFundEnabled, setExchangeEnabled, getRegimeConfig, getFundConfig } = require('./config-utils');
 const { resolveFundDataDir } = require('./migration');
 const { log } = require('./logger');
 
@@ -28,15 +28,16 @@ const CONVERSION_FILES = ['state.json', 'fill-ledger.json', 'regime-state.json']
 const fundLabel = (exchange, pair) => (pair ? `${exchange}/${pair}` : exchange);
 
 /**
- * Enable/disable the fund being converted. setExchangeEnabled's 2-arg form
+ * Enable/disable the fund being converted. `setExchangeEnabled`'s alias form
  * targets the exchange's DEFAULT fund, which is the wrong fund whenever a
- * non-default pair is being converted — so forward the pair when we have one.
+ * non-default pair is being converted — so forward the pair to
+ * `setFundEnabled` when we have one.
  * @param {string} exchange
  * @param {string|undefined} pair
  * @param {boolean} enabled
  */
 const setFundEnabled = (exchange, pair, enabled) => (
-  pair ? setExchangeEnabled(exchange, pair, enabled) : setExchangeEnabled(exchange, enabled)
+  pair ? setConfigFundEnabled(exchange, pair, enabled) : setExchangeEnabled(exchange, enabled)
 );
 
 /**
