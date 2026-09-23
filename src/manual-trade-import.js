@@ -23,10 +23,11 @@
  *     self-healing.
  */
 
-const { createNewBody, syncPositionState } = require('./celestial-hierarchy');
+const { createNewBody, syncPositionState, mergeIntoBody } = require('./celestial-hierarchy');
 const { loadRegimeState, saveRegimeState } = require('./state-tracker');
 const { STATUS } = require('./manual-trades');
 const { readBooleanFlag } = require('./shared-utils');
+const { getRegimeConfig } = require('./config-utils');
 
 /** Logger used when a caller supplies none (tests, CLI paths). */
 const NOOP_LOGGER = { info: () => {}, warn: () => {}, error: () => {} };
@@ -91,6 +92,11 @@ const legTimestamp = (fills) => new Date(fills[0].tradeTime).getTime();
  * @param {((body: Object) => Promise<Object>)|null} [deps.injectBody] - Injects a
  *   new celestial body into the running engine; null when no engine is up, in
  *   which case the body is persisted to regime-state.json instead.
+ * @param {((bodyId: string, extra: Object, buyOrderId: string) => Object)|null} [deps.extendBody] -
+ *   Grows an already-live body with fills that arrived after it was created
+ *   (issue #726 — a retried import of a still-filling buy order); null when
+ *   no engine is up, in which case the persisted body on regime-state.json is
+ *   extended directly instead.
  * @returns {Object} importSell / importBuy / importPair / checkPendingBuy
  */
 const createManualTradeImporter = ({
@@ -102,6 +108,7 @@ const createManualTradeImporter = ({
   fundConfig,
   logger,
   injectBody = null,
+  extendBody = null,
 }) => {
   const log = logger || NOOP_LOGGER;
   const ok = (extra) => ({ success: true, exchange, pair, ...extra });
@@ -266,6 +273,33 @@ const createManualTradeImporter = ({
   };
 
   /**
+   * Extend a body already persisted to regime-state.json (engine not
+   * running) with fills that arrived after it was first written (issue
+   * #726 — mirrors regime-engine's own extendBody for the running-engine
+   * case, but with no live TP to worry about since none was ever placed).
+   * @param {string} bodyId - Body to extend, as previously written by persistBodyToDisk
+   * @param {{assetQty:number, costBasis:number, avgPrice:number}} extra - New fill totals to merge in
+   * @param {string} buyOrderId - The buy order the extra fills belong to
+   * @returns {boolean} Whether a matching persisted body was found and extended
+   */
+  const extendPersistedBody = (bodyId, extra, buyOrderId) => {
+    const saved = loadRegimeState(exchange, pair);
+    if (!saved.position) return false;
+    const body = (saved.position.celestialBodies || []).find((b) => b.id === bodyId);
+    if (!body) return false;
+    // maxUsdcDeployed lives in the regime config (adjusted at cycle-completion
+    // time), not fundConfig — fetch it fresh rather than trusting a
+    // constructor-time snapshot, since the engine (persisting its own
+    // adjustments via updateRegimeConfig) is, by definition, not running on
+    // this path.
+    const { maxUsdcDeployed } = getRegimeConfig(exchange, pair);
+    mergeIntoBody(body, extra, maxUsdcDeployed, buyOrderId, log);
+    syncPositionState(saved.position, saved.position.celestialBodies);
+    saveRegimeState(saved.position, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, pair);
+    return true;
+  };
+
+  /**
    * Buy-first import: record a manual buy and, by default, turn it into a
    * celestial body so the engine places a take-profit against it.
    *
@@ -318,11 +352,64 @@ const createManualTradeImporter = ({
     // stamps it right after the first successful injectBody/persistBodyToDisk
     // below) or the status already advanced to TP_PENDING.
     if (trade.bodyId || trade.status === STATUS.TP_PENDING) {
-      log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} already has body ${trade.bodyId} — skipping duplicate body creation`, {
-        bodyId: trade.bodyId,
-        buyOrderId,
-      });
-      return ok({ trade: store.getById(trade.id), alreadyImported: true });
+      // The buy order may have still been FILLING when the body above was
+      // created — ingestAdapterFills already wrote any fills that arrived
+      // since into the ledger (it runs unconditionally, before this guard),
+      // but the PRIOR call's fillLedger.annotateFillsByOrderId only reached
+      // the rows that existed at that time. Detect and reconcile that gap
+      // instead of silently dropping it (issue #726) — the additional asset
+      // is real and owned; leaving it unlinked makes it invisible to the
+      // position model and to every future retry, which would keep
+      // re-detecting the identical gap forever.
+      const orderRows = trade.bodyId ? fillLedger.getFillsForOrder(buyOrderId) : [];
+      const unlinkedRows = orderRows.filter((r) => r.bodyId !== trade.bodyId);
+
+      if (unlinkedRows.length === 0) {
+        log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} already has body ${trade.bodyId} — skipping duplicate body creation`, {
+          bodyId: trade.bodyId,
+          buyOrderId,
+        });
+        return ok({ trade: store.getById(trade.id), alreadyImported: true });
+      }
+
+      const extraSize = unlinkedRows.reduce((sum, r) => sum + r.size, 0);
+      const extraQuote = unlinkedRows.reduce((sum, r) => sum + r.price * r.size, 0);
+      const extraFees = unlinkedRows.reduce((sum, r) => sum + (r.totalCommission || r.commission || 0), 0);
+      const extra = { assetQty: extraSize, costBasis: extraQuote + extraFees, avgPrice: averagePrice(extraQuote, extraSize) };
+
+      // Link the new rows to the existing body regardless of how the extend
+      // below resolves — they DO belong to this buy/body pairing, and
+      // leaving them unlinked would make every future retry re-detect this
+      // exact same gap without ever fixing it.
+      fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: trade.bodyId, isBodyOwned: true, isSatellite: true });
+      fillLedger.persist();
+
+      const extended = extendBody
+        ? extendBody(trade.bodyId, extra, buyOrderId)
+        : { success: extendPersistedBody(trade.bodyId, extra, buyOrderId), bodyId: trade.bodyId };
+
+      if (extended.success) {
+        log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} extended body ${trade.bodyId} with ${extraSize} additional fill(s) instead of creating a duplicate`, {
+          bodyId: trade.bodyId,
+          buyOrderId,
+          extraSize,
+        });
+      } else {
+        // The body no longer exists to extend — most likely its TP fully
+        // closed and it was spliced out of the live position between the
+        // first import and this retry. The new rows are still correctly
+        // linked/recorded above; the extra asset just isn't reflected in any
+        // live-manageable body. Surface this loudly rather than pretending
+        // the extension succeeded.
+        log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} has ${extraSize} new fill(s) beyond body ${trade.bodyId}, but that body could not be extended (${extended.error || 'not found'}) — fills are linked in the ledger but not reflected in any live body`, {
+          bodyId: trade.bodyId,
+          buyOrderId,
+          extraSize,
+          error: extended.error,
+        });
+      }
+
+      return ok({ trade: store.getById(trade.id), alreadyImported: true, extended: extended.success });
     }
 
     // Durable close-check (issue #691, codex review, refined across two

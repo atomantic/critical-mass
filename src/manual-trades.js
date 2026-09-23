@@ -218,6 +218,33 @@ const createManualTradeStore = (exchange, pair) => {
     // (issue #691; mirrors addManualBuy/addManualSell's per-order idempotency).
     for (const t of trades.values()) {
       if (t.buyOrderId === buyData.buyOrderId && t.sellOrderId === sellData.sellOrderId) {
+        if (t.status === STATUS.COMPLETED) {
+          // A genuine prior paired import of this exact pair — nothing to do.
+          return t;
+        }
+        // A non-completed record for this exact (buyOrderId, sellOrderId)
+        // already exists — most likely importSell's sell-first recovery flow
+        // created it (status BUY_PENDING) while waiting on the recovery buy
+        // to fill, and the operator has now imported the same pair directly
+        // via importPair, which already fetched and linked both legs' fills.
+        // Promote it in place instead of returning it unchanged (issue #726)
+        // — otherwise it stays stuck at its old status forever despite
+        // nothing being left to do.
+        t.sellPrice = sellData.sellPrice;
+        t.sellSize = sellData.sellSize;
+        t.sellQuoteAmount = sellData.sellQuoteAmount;
+        t.sellTimestamp = sellData.sellTimestamp;
+        t.sellFillTradeIds = sellData.sellFillTradeIds || [];
+        t.buyPrice = buyData.buyPrice;
+        t.buySize = buyData.buySize;
+        t.buyQuoteAmount = buyData.buyQuoteAmount;
+        t.buyFilledAt = buyData.buyTimestamp;
+        t.buyFillTradeIds = buyData.buyFillTradeIds || [];
+        t.status = STATUS.COMPLETED;
+        t.tradeType = 'paired';
+        if (note) t.note = note;
+        t.updatedAt = Date.now();
+        persist();
         return t;
       }
     }

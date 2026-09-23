@@ -7404,6 +7404,38 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     return { success: true, bodyId: body.id, tpPlaced: !!tpResult };
   };
 
+  /**
+   * Extend an already-live body with fills for its OWN buy order that
+   * arrived after the body was first created (issue #726): the buy order
+   * was still filling at first import, so the body — and its already-placed
+   * TP — were sized only to the fills seen at that time. A later retry with
+   * the fuller fill set must not silently drop the difference (the omission
+   * this function exists to close).
+   *
+   * Grows assetQty/costBasis/avgPrice via the same celestialHierarchy.
+   * mergeIntoBody a live DCA-buy-fill merge uses, but deliberately does NOT
+   * touch the body's existing TP order. Per CLAUDE.md, `assetQty -
+   * assetOnOrder` is the DESIGNED holdback (zero-cost-basis reserve), not a
+   * partial fill needing repair — so the extra asset simply becomes a
+   * larger holdback reserve. No live order is cancelled or resized, which
+   * means no new fill-during-cancel race is introduced by this path.
+   *
+   * @param {string} bodyId - Body to extend (must still be live in this engine)
+   * @param {{assetQty:number, costBasis:number, avgPrice:number}} extra - New fill totals to merge in
+   * @param {string} buyOrderId - The buy order the extra fills belong to
+   * @returns {{success: boolean, error?: string, bodyId?: string}}
+   */
+  const extendBody = (bodyId, extra, buyOrderId) => {
+    if (!isRunning) return { success: false, error: 'Engine not running' };
+    const body = (positionState.celestialBodies || []).find((b) => b.id === bodyId);
+    if (!body) return { success: false, error: 'Body not found' };
+    celestialHierarchy.mergeIntoBody(body, extra, config.maxUsdcDeployed, buyOrderId, logger);
+    celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+    saveLiveState();
+    logger.info(`📦 [${exchange}] Extended body ${body.id} (${body.tier}) with ${extra.assetQty} additional ${baseCurrency} from buy ${buyOrderId} (now ${body.assetQty} ${baseCurrency} total)`);
+    return { success: true, bodyId: body.id };
+  };
+
   return {
     start,
     stop,
@@ -7432,6 +7464,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     rebuildLadder,
     cancelLadder,
     injectBody,
+    extendBody,
     // Dry-run specific methods
     isDryRun,
     getDryRunLog,

@@ -484,3 +484,70 @@ describe('injectBody duplicate refusal (issue #691, codex review follow-up)', ()
     assert.equal(pos.celestialBodies.length, 1, 'the phantom body must never be pushed into the live position');
   });
 });
+
+describe('extendBody (issue #726)', () => {
+  // A retried manual-buy import can discover fills for a buy order that
+  // arrived AFTER the body it already owns was created (the order was still
+  // filling at first import). extendBody grows that body's
+  // assetQty/costBasis in place via the same mergeIntoBody a live DCA-buy
+  // merge uses, WITHOUT touching its resting TP — per CLAUDE.md, assetQty -
+  // assetOnOrder is the designed holdback, so the extra asset simply becomes
+  // a larger holdback reserve rather than requiring a live order cancel.
+  it('grows an existing live body and leaves its TP order untouched', () => {
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    engine._test.setRunning(true);
+
+    const pos = engine._getPositionState();
+    pos.celestialBodies = [
+      {
+        id: 'body-1',
+        tier: 'satellite',
+        assetQty: 0.005,
+        avgPrice: 90000,
+        costBasis: 450,
+        tpOrderId: 'tp-existing',
+        tpPrice: 95000,
+        assetOnOrder: 0.004,
+        sourceOrderIds: ['buy-1'],
+        buyOrders: [{ orderId: 'buy-1', price: 90000, assetQty: 0.005, sizeUsdc: 450 }],
+        mergeCount: 0,
+      },
+    ];
+
+    const result = engine.extendBody('body-1', { assetQty: 0.001, costBasis: 92, avgPrice: 92000 }, 'buy-1');
+
+    assert.equal(result.success, true);
+    assert.equal(result.bodyId, 'body-1');
+    const body = pos.celestialBodies[0];
+    assert.ok(Math.abs(body.assetQty - 0.006) < 1e-9);
+    assert.ok(Math.abs(body.costBasis - 542) < 1e-9);
+    // The resting TP is completely untouched — no cancel/replace happened.
+    assert.equal(body.tpOrderId, 'tp-existing');
+    assert.equal(body.tpPrice, 95000);
+    assert.equal(body.assetOnOrder, 0.004);
+    // mergeIntoBody bookkeeping still runs (sourceOrderIds/buyOrders/mergeCount).
+    assert.deepEqual(body.sourceOrderIds, ['buy-1', 'buy-1']);
+    assert.equal(body.buyOrders.length, 2);
+    assert.equal(body.mergeCount, 1);
+  });
+
+  it('returns success:false without mutating anything when the body is no longer live', () => {
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    engine._test.setRunning(true);
+    engine._getPositionState().celestialBodies = [];
+
+    const result = engine.extendBody('body-gone', { assetQty: 0.001, costBasis: 92, avgPrice: 92000 }, 'buy-1');
+
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'Body not found');
+  });
+
+  it('returns success:false when the engine is not running', () => {
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    // isRunning defaults to false — never set via _test.setRunning here.
+    const result = engine.extendBody('body-1', { assetQty: 0.001, costBasis: 92, avgPrice: 92000 }, 'buy-1');
+
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'Engine not running');
+  });
+});
