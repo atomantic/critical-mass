@@ -453,14 +453,21 @@ const isTerminalStatus = (order) => isFilledStatus(order) || isCancelledStatus(o
  * order and lets the engine place a duplicate (2026-07-11 cryptocom incident:
  * a flaky-network startup nulled 4 live body TPs and duplicated 2 of them).
  *
- * @param {Error & {response?: {status?: number, data?: {code?: number}}}} err
+ * Relies on `err.orderNotFound`, which the Gemini and Crypto.com adapters set
+ * from their own exchange-specific not-found signals (HTTP 404, a reject
+ * code, or a reason string) before throwing — see each adapter's private
+ * `isOrderNotFound`. Coinbase deliberately never sets this flag: its
+ * eventually-consistent history endpoint can briefly 404 on a live order, so
+ * treating any Coinbase 404 as definitive would orphan tracking on a false
+ * positive. The message fallback below is a narrow, adapter-agnostic
+ * backstop, not a return of the old axios-shaped `.response` checks (no
+ * adapter here uses axios or sets `.response`).
+ *
+ * @param {Error & {orderNotFound?: boolean}} err
  * @returns {boolean}
  */
 const isOrderNotFoundError = (err) =>
-  !!err &&
-  (err.message?.includes('not found') ||
-    err.response?.status === 404 ||
-    err.response?.data?.code === 40003);
+  !!err && (err.orderNotFound === true || /\border [\w-]+ not found\b/.test(err.message || ''));
 
 /**
  * True when `orderId` is present in an open-orders listing. Used to reject a

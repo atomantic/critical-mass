@@ -148,6 +148,15 @@ const createGeminiAdapter = (keysPath = null) => {
   };
 
   /**
+   * Gemini's "this order does not exist" signal: HTTP 404, or a reason code of
+   * OrderNotFound on any status. Anything else is an inconclusive lookup.
+   * @param {any} err
+   * @returns {boolean}
+   */
+  const isOrderNotFound = (err) =>
+    err?.status === 404 || /ordernotfound/i.test(err?.responseData?.reason ?? '');
+
+  /**
    * Make authenticated REST request to Gemini API
    * Preserves large order IDs (exceeding JavaScript's MAX_SAFE_INTEGER) as strings
    * @param {string} endpoint - API endpoint (e.g., '/v1/balances')
@@ -210,6 +219,7 @@ const createGeminiAdapter = (keysPath = null) => {
         cleanError.status = response.status;
         cleanError.endpoint = `POST ${endpoint}`;
         cleanError.responseData = errData;
+        cleanError.orderNotFound = isOrderNotFound(cleanError);
         throw cleanError;
       }
 
@@ -496,15 +506,6 @@ const createGeminiAdapter = (keysPath = null) => {
    */
   adapter.placeLimitBuy = (productId, baseAmount, price, options = {}) =>
     placeLimitOrder('buy', productId, baseAmount, price, options);
-
-  /**
-   * Gemini's "this order does not exist" signal: HTTP 404, or a reason code of
-   * OrderNotFound on any status. Anything else is an inconclusive lookup.
-   * @param {any} err
-   * @returns {boolean}
-   */
-  const isOrderNotFound = (err) =>
-    err?.status === 404 || /ordernotfound/i.test(err?.responseData?.reason ?? '');
 
   /**
    * Normalize a /v1/order/status response into the shared OrderDetails shape.
