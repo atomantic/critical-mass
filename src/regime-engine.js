@@ -186,6 +186,48 @@ const isBuyAlreadyCommitted = (bodies, orderId) =>
   );
 
 /**
+ * Pure predicate: did a body TP execute its whole PLANNED size? A TP is placed
+ * for `body.assetOnOrder` (body.assetQty minus the designed holdback), so a
+ * fill that covers ≥99% of it is a completed TP — its body closes and the
+ * holdback is booked as reserves — even when the order was later reported
+ * CANCELLED (the cancel-after-full-fill race). Mirrors the sell handler's own
+ * isPartial check, including its legacy fallback for bodies with no recorded
+ * assetOnOrder (issues #670, #744).
+ * @param {{assetOnOrder?: number, assetQty?: number}|null|undefined} body
+ * @param {number} filledSize - Cumulative size the TP executed
+ * @returns {boolean}
+ */
+const isFullTpExecution = (body, filledSize) => {
+  if (!body || !(filledSize > 0)) return false;
+  const onOrder = body.assetOnOrder || 0;
+  return onOrder > 0
+    ? filledSize >= onOrder * 0.99
+    : body.assetQty > 0 && filledSize / body.assetQty >= 0.95;
+};
+
+/**
+ * Drop a persisted `pendingTpCancelExecution` marker once the body's TP has
+ * moved off the order it was recorded for (issue #744). The marker is only
+ * ever honoured while `body.tpOrderId === marker.orderId` (see
+ * knownTpCancelExecution), and order ids are never reused, so after the TP
+ * moves (booked through a plain status branch, re-placed, cleared) it is dead
+ * state that would otherwise ride along in every save forever.
+ * @param {Array<Object>|null|undefined} bodies
+ * @returns {number} How many markers were dropped
+ */
+const pruneStaleTpCancelMarkers = (bodies) => {
+  let pruned = 0;
+  for (const body of bodies || []) {
+    const marker = body && body.pendingTpCancelExecution;
+    if (marker && marker.orderId !== body.tpOrderId) {
+      delete body.pendingTpCancelExecution;
+      pruned += 1;
+    }
+  }
+  return pruned;
+};
+
+/**
  * Pure predicate: is this body stranded sub-min "dust"? — it has a positive qty,
  * no resting TP order, AND its entire qty rounds below the exchange minimum order
  * size, so a TP can never be placed for it on its own. Such a body must be
@@ -1284,6 +1326,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Refresh realized P&L (USD + asset reserves) from cycle pairs before persisting
     refreshRealizedFromCyclePairs();
+
+    // A cancel-execution marker whose TP has since moved is dead state (#744).
+    pruneStaleTpCancelMarkers(positionState.celestialBodies);
 
     const regimeState = regimeDetector.getState();
     const tpOptimizerState = tpOptimizer.exportState();
@@ -3141,6 +3186,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         throw new Error(`Partial TP ${fillData.orderId} final fills incomplete; retry reconciliation`);
       }
       fillData.confirmedFills = finalFills;
+      // A body TP that executed its whole planned size is a completed TP,
+      // not a partial, even when the exchange reports it CANCELLED (or still
+      // OPEN with a sub-1% sliver, now frozen) and carries no
+      // completionPercentage for isFilledStatus to read. Without this, the
+      // reconcile / startup partial routes force the partial branch: the
+      // designed holdback stays an active body and is re-listed for sale
+      // (issue #744). Same classification as bookTpCancelExecution (#670).
+      if (fillData.isPartialFill) {
+        const tpBody = (positionState.celestialBodies || []).find(b => b.tpOrderId === fillData.orderId);
+        if (isFullTpExecution(tpBody, fillData.filledSize)) fillData.isPartialFill = false;
+      }
     }
 
     // getOrderFills now rejects (issue #679) instead of silently returning a
@@ -3906,9 +3962,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             stampConsumedCostFraction(liveMerged, liveConsumedRatio);
           }
 
-          // The resting TP was sized for the pre-deduction (oversized) qty — cancel
-          // and clear it so a correctly-sized TP is re-placed for the remaining body.
-          if (liveMerged.tpOrderId) {
+          if (liveMerged.tpOrderId && liveMerged.tpOrderId === fillData.orderId) {
+            // The body still points at the snapshotted order itself: this
+            // fill landed while a buy-merge / roll-up cancel of that same
+            // order is still in flight (issue #744). Its execution is the one
+            // THIS handler is booking, and the merge continuation owns the
+            // cancel and the re-place — cancelling, booking or re-placing here
+            // would double-book the sale or leave a second TP live next to
+            // the one the continuation places. Only a body this sale drained
+            // drops the identity (nothing left to re-arm), so it is removed
+            // below and reconcile can never re-book the order against it.
+            if (snapshotClosed && !(liveMerged.assetQty > 0)) {
+              liveMerged.tpOrderId = null;
+              liveMerged.tpPrice = 0;
+              liveMerged.assetOnOrder = 0;
+              if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(fillData.orderId);
+            }
+          } else if (liveMerged.tpOrderId) {
+            // The resting TP was sized for the pre-deduction (oversized) qty — cancel
+            // and clear it so a correctly-sized TP is re-placed for the remaining body.
             const staleTp = liveMerged.tpOrderId;
             let cancelResult;
             try {
@@ -3920,11 +3992,36 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               );
             }
 
-            if (cancelResult?.cancelled) {
+            const staleOutcome = cancelResult ? classifyBodyTpCancellation(cancelResult) : null;
+            if (staleOutcome === 'cancelled') {
               liveMerged.tpOrderId = null;
               liveMerged.tpPrice = 0;
               liveMerged.assetOnOrder = 0;
               if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(staleTp);
+            } else if (staleOutcome === 'cancelled_with_execution') {
+              // The stale TP sold a tranche while we cancelled it, and
+              // cancelBodyTpOrder has already dropped its executor tracking —
+              // no poll will ever find that sale (issue #744, the #670 class).
+              // Book it now through the normal body-TP sell path: liveMerged
+              // still carries tpOrderId = staleTp, so that path deducts the
+              // tranche from the (already snapshot-deducted) live body, records
+              // its consumption, and re-places a right-sized TP — or closes the
+              // body on a full-size fill. Nested: we are already inside a fill
+              // or a roll-up, so the fill gate must not be re-entered. On a
+              // booking failure the body keeps tpOrderId = staleTp plus the
+              // pendingTpCancelExecution marker, and reconcile retries it.
+              logger.warn(
+                `⚠️ [${exchange}] Merge-snapshot: body ${liveMerged.id.slice(-8)} TP ${staleTp.slice(0, 8)} sold ${cancelResult.filledSize} ${baseCurrency} during its stale-size cancel — booking before re-place (#744)`,
+                { bodyId: liveMerged.id, orderId: staleTp, filledSize: cancelResult.filledSize }
+              );
+              // The stale TP was sized for the PRE-deduction body, so its
+              // assetOnOrder can exceed what the live body still holds. Cap it
+              // at the body before booking: the sell handler classifies
+              // full-vs-partial against assetOnOrder, and a sale covering the
+              // whole remaining body must close it — as a partial it would
+              // drive assetQty negative.
+              if (liveMerged.assetOnOrder > liveMerged.assetQty) liveMerged.assetOnOrder = liveMerged.assetQty;
+              await bookTpCancelExecution(liveMerged, staleTp, cancelResult, 'Merge-snapshot stale-size', { nested: true });
             } else if (cancelResult) {
               logger.error(
                 `❌ [${exchange}] Merge-snapshot body TP cancellation was not confirmed for ${staleTp} — keeping the existing TP identity and skipping replacement`,
@@ -3956,8 +4053,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
-        // Re-place a correctly-sized TP on the deducted body (issue #201).
-        if (liveMerged && liveMerged.assetQty > 0 && !liveMerged.tpOrderId) {
+        // Re-place a correctly-sized TP on the deducted body (issue #201) —
+        // unless booking its stale TP's cancel-race execution just closed and
+        // removed it (issue #744): a detached body must not list a TP.
+        if (liveMerged && liveMerged.assetQty > 0 && !liveMerged.tpOrderId
+          && (positionState.celestialBodies || []).includes(liveMerged)) {
           await placeBodyTp(liveMerged);
         }
 
@@ -4514,22 +4614,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Book a body TP's execution that was reported by a cancel (see
-   * cancelBodyTpForReplace) through the normal body-TP sell path. The body
-   * must still carry `tpOrderId = orderId`.
-   *
-   * On failure the known execution is kept on the body as
-   * `pendingTpCancelExecution` (persisted with it), so the reconcile loop can
-   * retry the booking even when the exchange's CANCELLED status omits the
-   * filled size — otherwise it would read "cancelled, nothing filled", clear
-   * the TP and re-place against the unreduced body, losing the sale.
-   * @param {Object} body
-   * @param {string} orderId - The cancelled TP
-   * @param {{filledSize: number, filledValue?: number, averageFilledPrice?: number, totalFees?: number}} execution
-   * @param {string} context - Log label
-   * @returns {Promise<'booked'|'booking_failed'>}
-   */
-  /**
    * The execution a failed cancel-for-replace booking recorded for this
    * body's current TP (see bookTpCancelExecution), when the exchange's
    * CANCELLED status does not report MORE than it — a status that omits the
@@ -4544,26 +4628,55 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     return (parseFloat(status?.filledSize) || 0) > known.filledSize ? null : known;
   };
 
-  const bookTpCancelExecution = async (body, orderId, execution, context) => {
+  /**
+   * Book a body TP's execution that was reported by a cancel (see
+   * cancelBodyTpForReplace) through the normal body-TP sell path. The body
+   * must still carry `tpOrderId = orderId`.
+   *
+   * On failure the known execution is kept on the body as
+   * `pendingTpCancelExecution` (persisted with it), so the reconcile loop can
+   * retry the booking even when the exchange's CANCELLED status omits the
+   * filled size — otherwise it would read "cancelled, nothing filled", clear
+   * the TP and re-place against the unreduced body, losing the sale.
+   * @param {Object} body
+   * @param {string} orderId - The cancelled TP
+   * @param {{filledSize: number, filledValue?: number, averageFilledPrice?: number, totalFees?: number}} execution
+   * @param {string} context - Log label
+   * @param {{nested?: boolean}} [opts] - `nested: true` when the caller is
+   *   itself running inside handleOrderFillImpl or a roll-up merge
+   * @returns {Promise<'booked'|'booking_failed'>}
+   */
+  const bookTpCancelExecution = async (body, orderId, execution, context, { nested = false } = {}) => {
     // A TP that executed its whole planned size before the cancel landed
     // (the cancel-after-full-fill race) is a completed TP, not a partial:
     // route it as terminal so the sell handler closes the body and books its
     // designed holdback as reserves instead of re-listing that holdback. The
     // partial-fill flag would otherwise force the partial branch whenever the
-    // exchange's status carries no completionPercentage. Mirrors the sell
-    // handler's classification, including its legacy fallback for bodies
-    // with no recorded assetOnOrder.
-    const onOrder = body.assetOnOrder || 0;
-    const executedFullTp = onOrder > 0
-      ? execution.filledSize >= onOrder * 0.99
-      : body.assetQty > 0 && execution.filledSize / body.assetQty >= 0.95;
+    // exchange's status carries no completionPercentage.
+    const executedFullTp = isFullTpExecution(body, execution.filledSize);
+    const fillData = buildPartialFillData(orderId, 'sell', {
+      status: executedFullTp ? 'FILLED' : 'CANCELLED',
+      filledSize: execution.filledSize,
+      filledValue: execution.filledValue,
+      averageFilledPrice: execution.averageFilledPrice,
+    }, { totalFees: execution.totalFees || 0, ...(executedFullTp && { isPartialFill: false }) });
     try {
-      await handleOrderFill(buildPartialFillData(orderId, 'sell', {
-        status: executedFullTp ? 'FILLED' : 'CANCELLED',
-        filledSize: execution.filledSize,
-        filledValue: execution.filledValue,
-        averageFilledPrice: execution.averageFilledPrice,
-      }, { totalFees: execution.totalFees || 0, ...(executedFullTp && { isPartialFill: false }) }));
+      if (nested) {
+        // Already inside a fill (fill gate held) or a roll-up (merge lock
+        // held): the wrapper's fill gate would wait on that same merge hold
+        // for its full window (see bookExecutionDuringCancel), so run the
+        // handler directly and release its dedup key on failure ourselves,
+        // exactly as the wrapper would.
+        const dedupRef = { set: null, key: null };
+        try {
+          await handleOrderFillImpl(fillData, dedupRef);
+        } catch (err) {
+          if (dedupRef.set) dedupRef.set.delete(dedupRef.key);
+          throw err;
+        }
+      } else {
+        await handleOrderFill(fillData);
+      }
     } catch (err) {
       body.pendingTpCancelExecution = {
         orderId,
@@ -8117,4 +8230,6 @@ module.exports = {
   isBuyAlreadyCommitted,
   shouldSkipBuyRecommit,
   isStrandedDustBody,
+  isFullTpExecution,
+  pruneStaleTpCancelMarkers,
 };
