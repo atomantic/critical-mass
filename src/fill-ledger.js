@@ -362,6 +362,97 @@ const attributeOrphanFills = ({ cycleMap, orphanFills, liveCycleId, liveStartTs 
 };
 
 /**
+ * Order-level annotations: written per orderId (annotateFillsByOrderId), so
+ * every partial row of one order carries the same values. A recovered row of
+ * an annotated order inherits them from a sibling row (#705 buys, #752 sells).
+ * Taking a sell's P&L annotation once per orderId (shared/cycle-pairing.mjs)
+ * is what makes copying it onto another row of the same order safe.
+ */
+const ORDER_LEVEL_FIELDS = {
+  buy: ['isBodyOwned', 'bodyId', 'bodyTier', 'isSatellite', 'sellOrderId', 'consumedBy', 'consumedCostFraction'],
+  sell: [
+    'isBodyOwned', 'bodyId', 'bodyTier', 'isSatellite',
+    'bodyCostBasis', 'bodyAvgPrice', 'bodyBtcQty', 'bodyHoldbackAsset', 'bodyPnl',
+    'satellitePnl', 'satelliteHoldbackAsset', 'partialFill', 'mergeSnapshot', 'untrackedSell',
+  ],
+};
+
+/** @param {any} fill */
+const isOwnedFill = (fill) => Boolean(fill.isBodyOwned || fill.isSatellite || fill.bodyId);
+
+/**
+ * Annotation patches for fills attributeOrphanFills placed into existing
+ * cycles (issues #705, #752). Pure — returns patches, never mutates — so
+ * recalculateCycles (applies them) and previewRecalculateCycles (evaluates
+ * patched copies) agree.
+ *
+ *   1. A row whose order already has rows in the target cycle copies that
+ *      sibling's order-level fields it lacks (buy AND sell rows — a body TP
+ *      sell row that sync-fills re-imported keeps its bodyPnl /
+ *      bodyHoldbackAsset / ownership, instead of reading as a legacy sell).
+ *   2. A sell with no sibling row, placed by buy→sell linkage, inherits
+ *      OWNERSHIP only (isBodyOwned / bodyId / bodyTier / isSatellite) from the
+ *      buys that link to it, when every such buy is owned by the same body.
+ *      Its P&L is then priced by cycle pairing's linked-cost proration — the
+ *      same numbers the source of truth already derives for it. A sell linked
+ *      from any core buy (or from several bodies) is left alone.
+ *
+ * Without this an attributed body sell reads as a legacy core sell: it
+ * enters core position rebuilds and computeCycleStats, and auto-link can
+ * stamp unrelated core buys with it.
+ *
+ * @param {Array<{fill: Fill, cycleId: string}>} attributed
+ * @param {Map<string, Fill[]>} cycleMap - Already holds the attributed fills
+ * @returns {Map<Fill, Object>} fill → fields to assign
+ */
+const deriveAttributedAnnotations = (attributed, cycleMap) => {
+  /** @type {Map<Fill, Object>} */
+  const patches = new Map();
+  if (!attributed || attributed.length === 0) return patches;
+  const attributedFills = new Set(attributed.map(a => a.fill));
+
+  // 1. Sibling copy.
+  for (const { fill, cycleId } of attributed) {
+    const fields = ORDER_LEVEL_FIELDS[fill.side];
+    if (!fields || !fill.orderId) continue;
+    const sibling = (cycleMap.get(cycleId) || []).find(f =>
+      !attributedFills.has(f) && f.orderId === fill.orderId && f.side === fill.side);
+    if (!sibling) continue;
+    const patch = {};
+    for (const field of fields) {
+      if (sibling[field] !== undefined && fill[field] === undefined) {
+        patch[field] = field === 'consumedBy' ? { ...sibling[field] } : sibling[field];
+      }
+    }
+    if (Object.keys(patch).length > 0) patches.set(fill, patch);
+  }
+
+  // 2. Linked-buy ownership for sibling-less sells (sees step-1 patches).
+  const view = (f) => (patches.has(f) ? { ...f, ...patches.get(f) } : f);
+  for (const { fill, cycleId } of attributed) {
+    if (fill.side !== 'sell' || !fill.orderId || patches.has(fill) || isOwnedFill(fill)) continue;
+    const cycleFills = cycleMap.get(cycleId) || [];
+    if (cycleFills.some(f => !attributedFills.has(f) && f.orderId === fill.orderId && f.side === 'sell')) continue;
+    const linkedBuys = cycleFills.map(view).filter(f => f.side === 'buy' && (
+      f.sellOrderId === fill.orderId
+      || (f.consumedBy && typeof f.consumedBy === 'object'
+        && Object.prototype.hasOwnProperty.call(f.consumedBy, fill.orderId))
+    ));
+    if (linkedBuys.length === 0 || !linkedBuys.every(isOwnedFill)) continue;
+    const bodyIds = new Set(linkedBuys.map(f => f.bodyId || null));
+    if (bodyIds.size !== 1) continue;
+    const [bodyId] = bodyIds;
+    const tiers = new Set(linkedBuys.map(f => f.bodyTier).filter(Boolean));
+    const patch = { isBodyOwned: true };
+    if (bodyId) patch.bodyId = bodyId;
+    if (tiers.size === 1) patch.bodyTier = [...tiers][0];
+    if (linkedBuys.every(f => f.isSatellite)) patch.isSatellite = true;
+    patches.set(fill, patch);
+  }
+  return patches;
+};
+
+/**
  * Build mapping from old cycle IDs to sequential cycle-1, cycle-2... IDs.
  * Completed cycles are ordered first by timestamp, followed by active cycles.
  * The live cycle (`currentId`) is always numbered LAST, even when it has no
@@ -1307,7 +1398,9 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * previewRecalculateCycles so both evaluate cycle completion AFTER folding.
    * @param {Map<string, Fill[]>} cycleMap - Mutated: attributed fills appended
    * @param {Fill[]} orphanFills
-   * @returns {{ attributed: Array<{fill: Fill, cycleId: string, reason: 'order'|'link'|'timeframe'}>, remaining: Fill[], liveCount: number }}
+   * Also returns the annotation patches the attributed fills should inherit
+   * (deriveAttributedAnnotations, #752) — computed, never applied, here.
+   * @returns {{ attributed: Array<{fill: Fill, cycleId: string, reason: 'order'|'link'|'timeframe'}>, remaining: Fill[], liveCount: number, patches: Map<Fill, Object> }}
    */
   const attributeOrphansIntoCycleMap = (cycleMap, orphanFills) => {
     const result = attributeOrphanFills({
@@ -1320,7 +1413,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       if (!cycleMap.has(cycleId)) cycleMap.set(cycleId, []);
       cycleMap.get(cycleId).push(fill);
     }
-    return result;
+    return { ...result, patches: deriveAttributedAnnotations(result.attributed, cycleMap) };
   };
 
   /**
@@ -1350,24 +1443,17 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       attributed,
       remaining: orphanFills,
       liveCount: liveCycleOrphansAttributed,
+      patches: attributedPatches,
     } = attributeOrphansIntoCycleMap(cycleMap, allOrphanFills);
     // Order-level annotations live on EVERY row of an order (TP placement,
     // body annotation and #607 consumption all write per-orderId), so a
-    // recovered partial row of an already-annotated buy order inherits them —
-    // otherwise it reads as an unowned core buy (core totals, legacy TP
-    // linkage, boot orphan adoption) while its siblings belong to a body.
-    const ORDER_LEVEL_BUY_FIELDS = ['isBodyOwned', 'bodyId', 'bodyTier', 'isSatellite', 'sellOrderId', 'consumedBy', 'consumedCostFraction'];
+    // recovered partial row of an already-annotated order inherits them —
+    // otherwise a body buy row reads as an unowned core buy (core totals,
+    // legacy TP linkage, boot orphan adoption), and a body TP sell row as a
+    // legacy core sell (core stats, auto-link) (#705, #752).
     for (const { fill, cycleId, reason } of attributed) {
-      if (reason === 'order' && fill.side === 'buy') {
-        const sibling = (cycleMap.get(cycleId) || []).find(f => f !== fill && f.orderId === fill.orderId && f.side === 'buy' && f.cycleId === cycleId);
-        if (sibling) {
-          for (const field of ORDER_LEVEL_BUY_FIELDS) {
-            if (sibling[field] !== undefined && fill[field] === undefined) {
-              fill[field] = field === 'consumedBy' ? { ...sibling[field] } : sibling[field];
-            }
-          }
-        }
-      }
+      const patch = attributedPatches.get(fill);
+      if (patch) Object.assign(fill, patch);
       fill.cycleId = cycleId;
       // Record HOW the cycle was chosen. A 'timeframe' fold has no linkage to
       // any engine order — sync-fills imports every trade on the pair, manual
@@ -1548,6 +1634,11 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     const cycleSellIds = new Map(); // cycleId -> first LEGACY (non-body/satellite) sell orderId
     for (const fill of fills.values()) {
       if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+      // A sell recalc attributed into this cycle (#705) is a re-imported row,
+      // not the cycle's own recorded close: pre-#705 it sat in a sell-only
+      // recovered cycle and never linked anything. Using it here could stamp
+      // unrelated core buys with another order's sell (#752).
+      if (fill.side === 'sell' && fill.cycleAttribution) continue;
       if (fill.side === 'sell' && fill.cycleId && completedCycleIds.has(fill.cycleId) && !cycleSellIds.has(fill.cycleId)) {
         cycleSellIds.set(fill.cycleId, fill.orderId);
       }
@@ -1629,7 +1720,15 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       attributed,
       remaining: orphanFills,
       liveCount: liveCycleOrphansAttributed,
+      patches: attributedPatches,
     } = attributeOrphansIntoCycleMap(cycleMap, allOrphanFills);
+    // Evaluate the inherited annotations (#752) on copies, so preview's
+    // cycleDetails match what recalculateCycles computes after applying them.
+    if (attributedPatches.size > 0) {
+      for (const [id, cycleFills] of cycleMap) {
+        cycleMap.set(id, cycleFills.map(f => (attributedPatches.has(f) ? { ...f, ...attributedPatches.get(f) } : f)));
+      }
+    }
 
     const cycleDetails = [];
     for (const [cycleId, cycleFills] of cycleMap) {

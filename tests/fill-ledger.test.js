@@ -2144,6 +2144,114 @@ describe('Fill Ledger', () => {
       assert.deepStrictEqual(ids(preview), ids(result));
       assert.equal(preview.cyclesCompleted, result.cyclesCompleted);
     });
+
+    // --- #752: attributed SELL rows keep their body/satellite annotations ---
+    const rowOf = (ledger, tradeId) => ledger.getAllFills().find(f => f.tradeId === tradeId);
+    const cycleFillsOf = (ledger, cycleId) => ledger.getAllFills().filter(f => f.cycleId === cycleId);
+
+    it('an order-attributed body TP sell row inherits its sibling\'s per-sell annotations (#752)', () => {
+      const ledger = createTestLedger('attr-sell-order');
+      ledger.ingestFill(buy('ab-b', 'a-buy', 10, '0.002'), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('a-buy', { isBodyOwned: true, bodyId: 'body-A', bodyTier: 'moon', sellOrderId: 'a-tp' });
+      ledger.ingestFill(buy('core-b', 'core-buy', 10.5, '0.001'), null, { cycleId: 'cycle-1' });
+      ledger.ingestFill(sell('as-1', 'a-tp', 11, '0.0009'), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('a-tp', {
+        isBodyOwned: true, bodyId: 'body-A', bodyTier: 'moon',
+        bodyCostBasis: 180, bodyAvgPrice: 100000, bodyBtcQty: 0.002, bodyHoldbackAsset: 0.0002, bodyPnl: 7.5,
+      });
+      // The TP's second partial row, re-imported null by sync-fills.
+      ledger.ingestFill(sell('as-2', 'a-tp', 11.5, '0.0009'), null, { cycleId: null });
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+      const derivedBefore = ledger.getDerivedRealizedPnL();
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      const row = rowOf(ledger, 'as-2');
+      assert.equal(row.cycleId, 'cycle-1');
+      assert.equal(row.cycleAttribution, 'order');
+      assert.equal(row.isBodyOwned, true);
+      assert.equal(row.bodyId, 'body-A');
+      assert.equal(row.bodyPnl, 7.5);
+      assert.equal(row.bodyHoldbackAsset, 0.0002);
+      // bodyPnl is taken once per orderId, so the copy never double-counts.
+      const derived = ledger.getDerivedRealizedPnL();
+      assert.equal(derived.realizedPnL, derivedBefore.realizedPnL);
+      assert.equal(derived.realizedAssetPnL, derivedBefore.realizedAssetPnL);
+      // A body sell is not a legacy sell: cycle-1 completes, yet the core buy is
+      // not stamped with the body's TP, and core stats see no sell.
+      assert.ok(result.cycleDetails.some(d => d.cycleId === 'cycle-1'));
+      assert.equal(rowOf(ledger, 'core-b').sellOrderId, undefined);
+      const c1 = result.cycleDetails.find(d => d.cycleId === 'cycle-1');
+      assert.equal(c1.assetSold, 0);
+      assert.equal(ledger.rebuildPositionFromFills(cycleFillsOf(ledger, 'cycle-1')).totalAsset, 0.001, 'only the core buy');
+      assert.deepStrictEqual(preview.cycleDetails, result.cycleDetails, 'preview evaluates the same inherited annotations');
+    });
+
+    it('a link-attributed sibling-less sell inherits ownership from the body buys that link to it (#752)', () => {
+      const ledger = createTestLedger('attr-sell-link');
+      ledger.ingestFill(buy('lb-b', 'b-buy', 10, '0.002'), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('b-buy', { isBodyOwned: true, bodyId: 'body-B', bodyTier: 'moon', sellOrderId: 'b-tp' });
+      ledger.ingestFill(buy('core-b', 'core-buy', 10.5, '0.001'), null, { cycleId: 'cycle-1' });
+      // The body TP filled while the engine was down; sync-fills re-imported it null.
+      ledger.ingestFill(sell('bs-1', 'b-tp', 11, '0.0019'), null, { cycleId: null });
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+      const derivedBefore = ledger.getDerivedRealizedPnL();
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      const row = rowOf(ledger, 'bs-1');
+      assert.equal(row.cycleId, 'cycle-1');
+      assert.equal(row.cycleAttribution, 'link');
+      assert.equal(row.isBodyOwned, true);
+      assert.equal(row.bodyId, 'body-B');
+      assert.equal(row.bodyTier, 'moon');
+      assert.equal(row.isSatellite, undefined);
+      assert.equal(row.bodyPnl, undefined, 'P&L stays with cycle pairing\'s linked-cost proration');
+      assert.deepStrictEqual(ledger.getDerivedRealizedPnL(), derivedBefore);
+      assert.ok(result.cycleDetails.some(d => d.cycleId === 'cycle-1'), 'the sell completes cycle-1');
+      assert.equal(rowOf(ledger, 'core-b').sellOrderId, undefined, 'auto-link never books the core buy against a body TP');
+      assert.equal(ledger.rebuildPositionFromFills(cycleFillsOf(ledger, 'cycle-1')).totalAsset, 0.001,
+        'the body sell does not reduce the core position');
+      assert.deepStrictEqual(preview.cycleDetails, result.cycleDetails);
+    });
+
+    it('a link-attributed sell linked from a core buy stays unowned, and auto-link never uses it (#752)', () => {
+      const ledger = createTestLedger('attr-sell-core');
+      ledger.ingestFill(buy('x-b', 'x-buy', 10), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('x-buy', { sellOrderId: 'x-tp' });
+      ledger.ingestFill(buy('y-b', 'y-buy', 10.5), null, { cycleId: 'cycle-1' });
+      ledger.ingestFill(sell('xs', 'x-tp', 11, '0.0011'), null, { cycleId: null });
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+
+      const result = ledger.recalculateCycles();
+
+      const row = rowOf(ledger, 'xs');
+      assert.equal(row.cycleAttribution, 'link');
+      assert.equal(row.isBodyOwned, undefined);
+      assert.equal(row.bodyId, undefined);
+      assert.ok(result.cycleDetails.some(d => d.cycleId === 'cycle-1'));
+      assert.equal(rowOf(ledger, 'y-b').sellOrderId, undefined,
+        'a re-imported sell is not the cycle\'s recorded close — pre-#705 it never linked anything');
+    });
+
+    it('a link-attributed sell linked from buys of two different bodies stays unowned (#752)', () => {
+      const ledger = createTestLedger('attr-sell-mixed');
+      ledger.ingestFill(buy('m1', 'm1-buy', 10), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('m1-buy', { isBodyOwned: true, bodyId: 'body-1', sellOrderId: 'm-tp' });
+      ledger.ingestFill(buy('m2', 'm2-buy', 10.5), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('m2-buy', { isBodyOwned: true, bodyId: 'body-2', sellOrderId: 'm-tp' });
+      ledger.ingestFill(sell('ms', 'm-tp', 11, '0.0019'), null, { cycleId: null });
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+
+      ledger.recalculateCycles();
+
+      const row = rowOf(ledger, 'ms');
+      assert.equal(row.cycleAttribution, 'link');
+      assert.equal(row.isBodyOwned, undefined);
+      assert.equal(row.bodyId, undefined);
+    });
   });
 
   // =======================================================================

@@ -200,6 +200,33 @@ const findMergeTarget = (bodies, newBuy, maxUsdcDeployed, candidateTpPrice, maxB
 };
 
 /**
+ * How much of a buy order's FULL fill totals a body has not yet absorbed
+ * (issues #726, #752). Compares `totals` against what the body's own
+ * `buyOrders` bookkeeping records for `buyOrderId`, so repeated calls for the
+ * same order converge on exactly `totals` — never more — however many times a
+ * caller retries or more fills arrive in between. Pure.
+ * @param {CelestialBody} body
+ * @param {{assetQty: number, costBasis: number, avgPrice: number}} totals - The order's FULL current totals (not a delta)
+ * @param {string} buyOrderId
+ * @returns {{recordedQty: number, shortfall: {assetQty: number, costBasis: number, avgPrice: number}|null}} shortfall is null when already covered
+ */
+const computeBuyOrderShortfall = (body, totals, buyOrderId) => {
+  const recorded = (body.buyOrders || [])
+    .filter((bo) => bo.orderId === buyOrderId)
+    .reduce((acc, bo) => ({ qty: acc.qty + (bo.assetQty || 0), cost: acc.cost + (bo.sizeUsdc || 0) }), { qty: 0, cost: 0 });
+  const shortfallQty = roundAsset(totals.assetQty - recorded.qty);
+  if (shortfallQty <= 0.00000001) return { recordedQty: recorded.qty, shortfall: null };
+  return {
+    recordedQty: recorded.qty,
+    shortfall: {
+      assetQty: shortfallQty,
+      costBasis: roundUSDC(totals.costBasis - recorded.cost),
+      avgPrice: totals.avgPrice,
+    },
+  };
+};
+
+/**
  * Merge a new buy into an existing body, potentially promoting it
  * @param {CelestialBody} target - Body to merge into
  * @param {Object} newBuy - Buy fill summary
@@ -682,6 +709,7 @@ module.exports = {
   generateBodyId,
   createNewBody,
   findMergeTarget,
+  computeBuyOrderShortfall,
   mergeIntoBody,
   mergeBodies,
   planBodyConsumption,
