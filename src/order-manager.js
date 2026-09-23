@@ -40,6 +40,35 @@ const orderLogger = (adapter, productId) => createContextLogger({
 });
 
 /**
+ * Fetch fee/fill detail for an already-filled order, degrading to a $0-fee
+ * stub instead of losing the whole fill record when the underlying scan
+ * throws. `getOrderFills`/`getOrderFillSummary` now reject when the
+ * order-detail/status lookup fails or the matched fills fall short of the
+ * exchange's own filled quantity (issue #679), rather than silently
+ * returning a partial set. Every call site here already has the order's
+ * price/size/value from `adapter.getOrder` (unaffected by that change) —
+ * only fee/rebate detail and the raw fills list come from this call — so a
+ * failure here must not cost the caller a fill it already knows happened:
+ * funds moved, and losing the record risks a duplicate re-buy/re-sell and an
+ * untracked exchange position (the same "money moved, engine recorded
+ * nothing" leak issue #208A guards against elsewhere in this file).
+ * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @param {string} orderId - Order ID whose fee/fill detail to fetch
+ * @returns {Promise<{totalFees: number, totalRebates: number, netFees: number, fills: Array<Object>}>}
+ */
+const safeGetOrderFillSummary = async (adapter, orderId) => {
+  try {
+    return await adapter.getOrderFillSummary(orderId);
+  } catch (err) {
+    orderLogger(adapter).warn(
+      `⚠️ Could not fetch fee/fill detail for ${orderId}: ${err.message} — recording the fill with $0 fees; reconcile fees manually`,
+      { orderId, error: err.message, incompleteFills: err.incompleteFills === true }
+    );
+    return { totalFees: 0, totalRebates: 0, netFees: 0, fills: [] };
+  }
+};
+
+/**
  * Wait for a market buy order to fill and get fill details with fees
  * @param {string} orderId - Order ID to check
  * @param {ExchangeAdapter} adapter - Exchange adapter
@@ -53,7 +82,7 @@ const waitForBuyFill = async (orderId, adapter, maxAttempts = 10, delayMs = 1000
 
     if (isFilledStatus(order)) {
       // Get detailed fill info with fees/rebates
-      const fillSummary = await adapter.getOrderFillSummary(orderId);
+      const fillSummary = await safeGetOrderFillSummary(adapter, orderId);
 
       return {
         orderId,
@@ -78,7 +107,7 @@ const waitForBuyFill = async (orderId, adapter, maxAttempts = 10, delayMs = 1000
       // executed. Funds moved, so record the fill instead of throwing it away
       // as a "money moved, engine recorded nothing" leak (issue #208A follow-up).
       if (order.filledSize > 0) {
-        const fillSummary = await adapter.getOrderFillSummary(orderId);
+        const fillSummary = await safeGetOrderFillSummary(adapter, orderId);
         return {
           orderId,
           price: order.averageFilledPrice,
@@ -469,7 +498,7 @@ const checkFilledOrders = async (pendingOrders, adapter = null) => {
 
     if (orderStatus.status === 'FILLED') {
       // Get detailed fill info with fees/rebates
-      const fillSummary = await adapter.getOrderFillSummary(pendingOrder.orderId);
+      const fillSummary = await safeGetOrderFillSummary(adapter, pendingOrder.orderId);
 
       filledOrders.push({
         orderId: pendingOrder.orderId,
@@ -889,7 +918,7 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
       }
 
       // Gather the executed-portion details so the caller can book the proceeds.
-      const fillSummary = await adapter.getOrderFillSummary(prevOrderId);
+      const fillSummary = await safeGetOrderFillSummary(adapter, prevOrderId);
       prevFill = {
         orderId: prevOrderId,
         filledSize,
@@ -997,7 +1026,7 @@ const checkFibonacciSellFill = async (orderId, adapter) => {
     return null;
   }
 
-  const fillSummary = await adapter.getOrderFillSummary(orderId);
+  const fillSummary = await safeGetOrderFillSummary(adapter, orderId);
 
   return {
     orderId,
