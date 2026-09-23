@@ -73,6 +73,44 @@ describe('hourly fund-state snapshots', () => {
     assert.equal(fs.existsSync(path.join(fundDir, 'chart-data-buffer.json')), false);
   });
 
+  it('includes dry-run-state.json in snapshots (regression test for #702)', () => {
+    // Seed a fund with dry-run-state.json
+    const dryRunState = {
+      lastUpdated: '2026-09-22T12:00:00.000Z',
+      byExchange: {
+        coinbase: {
+          'BTC-USDC': {
+            executorState: {
+              pendingOrders: [{ id: 'order-1' }],
+              filledOrders: [],
+              activeTpOrderId: null,
+              simulatedRealizedPnL: 100.5,
+            },
+          },
+        },
+      },
+    };
+    writeJson(path.join(fundDir, 'dry-run-state.json'), dryRunState);
+
+    // Create snapshot
+    const backup = createFundStateBackup({ paths, now: new Date('2026-09-20T03:00:00.000Z') });
+    assert.equal(backup.success, true, JSON.stringify(backup));
+    assert.ok(backup.funds[0].files.includes('dry-run-state.json'), 'Snapshot should include dry-run-state.json');
+
+    // Delete fund directory
+    fs.rmSync(fundDir, { recursive: true, force: true });
+    assert.equal(fs.existsSync(fundDir), false);
+
+    // Restore snapshot
+    const restored = restoreFundStateBackup(backup.snapshotId, 'coinbase', 'BTC-USDC', { paths });
+    assert.equal(restored.success, true, JSON.stringify(restored));
+
+    // Verify dry-run-state.json was restored byte-identical
+    assert.equal(fs.existsSync(path.join(fundDir, 'dry-run-state.json')), true);
+    const restoredDryRunState = JSON.parse(fs.readFileSync(path.join(fundDir, 'dry-run-state.json'), 'utf8'));
+    assert.deepEqual(restoredDryRunState, dryRunState);
+  });
+
   it('rejects path traversal before touching the data directory', () => {
     const result = restoreFundStateBackup('../outside', 'coinbase', 'BTC-USDC', { paths });
     assert.equal(result.success, false);

@@ -44,7 +44,7 @@ const MANIFEST_VERSION = 1;
 const FUND_STATE_BACKUP_DIRNAME = 'fund-state';
 const FUND_STATE_MANIFEST_FILENAME = 'fund-state-manifest.json';
 const FUND_STATE_MANIFEST_VERSION = 1;
-const FUND_STATE_SNAPSHOT_FILENAMES = ['fill-ledger.json', 'regime-state.json', 'closed-trades.json', 'state.json'];
+const FUND_STATE_SNAPSHOT_FILENAMES = ['fill-ledger.json', 'regime-state.json', 'closed-trades.json', 'state.json', 'dry-run-state.json'];
 
 const SPAWN_TIMEOUT_MS = 60000;
 
