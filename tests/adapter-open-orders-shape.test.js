@@ -265,4 +265,36 @@ describe('adapter getOpenOrders() shape parity (issue #684)', () => {
       fs.rmSync(keysPath, { force: true });
     }
   });
+
+  it('Crypto.com clamps size at zero instead of going negative', async () => {
+    const keysPath = path.join(os.tmpdir(), `cryptocom-open-orders-shape-clamp-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(keysPath, JSON.stringify({ apiKey: 'test-api-key-123', apiSecret: 'test-api-secret-456' }));
+    try {
+      const adapter = createCryptocomAdapter(keysPath);
+      global.fetch = async () => ({
+        ok: true,
+        text: async () => JSON.stringify({
+          code: 0,
+          result: {
+            data: [{
+              order_id: 'CDC-2',
+              instrument_name: 'BTC_USD',
+              side: 'SELL',
+              quantity: '0', // quantity missing/zero, but cumulative_quantity nonzero
+              cumulative_quantity: String(FILLED),
+              price: String(PRICE),
+              create_time: 1750000000000,
+            }],
+          },
+        }),
+      });
+
+      const orders = await adapter.getOpenOrders('BTC-USD');
+      assert.equal(orders.length, 1);
+      assert.equal(orders[0].originalSize, 0);
+      assert.equal(orders[0].size, 0, 'size must clamp at 0, not go negative (0 - FILLED)');
+    } finally {
+      fs.rmSync(keysPath, { force: true });
+    }
+  });
 });

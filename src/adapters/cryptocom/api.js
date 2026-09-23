@@ -685,7 +685,7 @@ const createCryptocomAdapter = (keysPath = null) => {
         productId: order.instrument_name,
         side: (order.side || '').toUpperCase(),
         status: filledQty > 0 ? 'PARTIALLY_FILLED' : 'OPEN',
-        size: quantity - filledQty, // Remaining unfilled size
+        size: Math.max(0, quantity - filledQty), // Remaining unfilled size, clamped at 0 (issue #684 follow-up)
         originalSize: quantity,
         filledSize: filledQty,
         price: parseFloat(order.price || order.limit_price || 0),
