@@ -1079,54 +1079,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   /**
-   * Check invariants (max open orders)
-   * @returns {{valid: boolean, reason?: string}}
-   */
-  const checkInvariants = () => {
-    if (pendingOrders.size > config.maxOpenOrders) {
-      return {
-        valid: false,
-        reason: `too_many_orders:${pendingOrders.size}>${config.maxOpenOrders}`,
-      };
-    }
-    return { valid: true };
-  };
-
-  /**
    * Get active TP order ID
    * @returns {string|null}
    */
   const getActiveTpOrderId = () => activeTpOrderId;
-
-  /**
-   * Get status summary for logging
-   * @returns {string}
-   */
-  const getSummary = () => {
-    const counts = getPendingCounts();
-    let summary = `pending=${counts.total}(entries=${counts.entries},tp=${counts.takeProfits},body=${counts.bodies})`;
-
-    if (activeTpOrderId) {
-      summary += ` active_tp=${activeTpOrderId.substring(0, 8)}@$${lastTpPrice}`;
-    }
-
-    return summary;
-  };
-
-  /**
-   * Clear all pending orders (for recovery)
-   */
-  const clearPendingOrders = () => {
-    pendingOrders.clear();
-    partialFillTracker.clear();
-    activeTpOrderId = null;
-    lastTpPrice = 0;
-    lastTpSize = 0;
-    bodyTpOrders.clear();
-    tpOrderToKey.clear();
-    for (const t of staleTimers) clearTimeout(t);
-    staleTimers.clear();
-  };
 
   /**
    * Restore pending order (for recovery from exchange)
@@ -1612,10 +1568,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     getPendingCounts,
     getPendingEntries,
     getPendingOrdersList,
-    checkInvariants,
     getActiveTpOrderId,
-    getSummary,
-    clearPendingOrders,
     restorePendingOrder,
     checkPendingOrderFills,
     // Fill time tracking
