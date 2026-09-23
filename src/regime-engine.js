@@ -6069,6 +6069,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // would let a merge (or the next reconcile tick) race an in-flight TP
       // re-placement (#189 review).
       await reconcilePendingPlacements();
+      await completeOwedCycleReset().catch((err) => {
+        logger.error(`❌ [${exchange}] Owed cycle reset failed (will retry next reconcile): ${err.message}`, { error: err.message });
+      });
       const pending = [];
 
       // Check for entry fills that WebSocket might have missed
@@ -7204,6 +7207,31 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Finish a cycle reset a body TP close still owes (#766) — its fill booked
+   * the sell, then resetCycle threw, and the fill may never be re-delivered
+   * (the WS path does not retry; polling retries are bounded and lost on
+   * restart). Run from the reconcile tick, so it also covers a restart.
+   * Skipped while a sweep or fill is in flight (either may be finishing it).
+   */
+  const completeOwedCycleReset = async () => {
+    const owedFor = positionState.pendingCycleResetFor;
+    if (!owedFor) return;
+    if ((positionState.celestialBodies || []).length > 0) {
+      // A new body opened before the reset ran; closing the cycle now would
+      // cut it off from its own sell. Drop the debt and leave a trace.
+      logger.warn(`⚠️ [${exchange}] Owed cycle reset for ${String(owedFor).slice(0, 8)} abandoned — a body opened before it could run`);
+      positionState.pendingCycleResetFor = null;
+      saveLiveState();
+      return;
+    }
+    if (engineLocks.isLadderBusy() || engineLocks.getFlags().fillInProgress > 0) return;
+    logger.warn(`🔁 [${exchange}] Completing the cycle reset owed by ${String(owedFor).slice(0, 8)}`);
+    await resetCycle();
+    saveLiveState();
+    fillLedger.persist();
+  };
+
+  /**
    * Reset for new cycle.
    *
    * Serialised with every other ladder sweep (rebuildLadder, cancelLadder,
@@ -7222,7 +7250,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     let queuedFrom = null;
     if (engineLocks.isLadderBusy()) {
       const cycleId = fillLedger.getCurrentCycleId();
-      queuedFrom = { cycleId, tradeIds: new Set(cycleFillsFor(cycleId).map(f => f.tradeId)) };
+      queuedFrom = {
+        generation: cycleResetGeneration,
+        tradeIds: new Set(cycleFillsFor(cycleId).map(f => f.tradeId)),
+      };
     }
     return engineLocks.withLadderLock(() => resetCycleLocked(queuedFrom), {
       onTimeout: 'proceed',
@@ -7230,6 +7261,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       exchange,
     });
   };
+
+  /**
+   * Number of cycle turnovers resetCycleLocked has performed. A queued reset
+   * compares it (not the cycle id, which an operator recalculation can
+   * rename) to tell whether a reset ahead of it already closed its cycle.
+   */
+  let cycleResetGeneration = 0;
 
   /**
    * A fresh ledger has no live cycle until its first reset: its fills are
@@ -7241,7 +7279,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     : fillLedger.getAllFills().filter(f => f.cycleId == null));
 
   /**
-   * @param {{cycleId: string|null, tradeIds: Set<string>}|null} queuedFrom -
+   * @param {{generation: number, tradeIds: Set<string>}|null} queuedFrom -
    *   the closing cycle's rows when this reset queued behind another sweep
    */
   const resetCycleLocked = async (queuedFrom) => {
@@ -7258,8 +7296,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // it in the queue already closed the cycle it was asked to close (two TP
     // closes during one rebuild). Running it anyway would close the NEW cycle
     // under a body still open in it, splitting that body's buy from its sell.
-    if (queuedFrom && queuedFrom.cycleId !== closingCycleId) {
-      logger.info(`🔄 [${exchange}] Queued cycle reset skipped — ${queuedFrom.cycleId ?? 'the initial cycle'} was already closed while it waited (now ${closingCycleId})`);
+    if (queuedFrom && queuedFrom.generation !== cycleResetGeneration) {
+      logger.info(`🔄 [${exchange}] Queued cycle reset skipped — the cycle it was asked to close was already closed while it waited (now ${closingCycleId})`);
+      positionState.pendingCycleResetFor = null;
       return;
     }
     const closingCycleFills = () => cycleFillsFor(closingCycleId);
@@ -7323,6 +7362,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // position state. The fill ledger remains the fallback for legacy state
     // files that predate this marker.
     positionState.activeCycleId = fillLedger.startNewCycle();
+    cycleResetGeneration++;
+    // Any completed turnover pays off a body TP close's owed reset (#766).
+    positionState.pendingCycleResetFor = null;
     // Persist WHEN the cycle began too: it is the boundary recalculateCycles
     // uses to fold null-cycle fills the engine missed during downtime into
     // this cycle, and an empty post-reset cycle has no fill to infer it from (#705).

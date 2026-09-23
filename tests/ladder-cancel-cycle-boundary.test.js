@@ -902,6 +902,54 @@ describe('ladder sweeps serialise on the ladder lock (#766)', () => {
     assert.equal(pos.cyclesCompleted, 1, 'the close is counted once');
   });
 
+  it('an owed reset whose fill is never re-delivered is completed by the next reconcile tick', async () => {
+    let failSweep = true;
+    const eng = makeEngine({
+      fillsByOrder: { 'tp-a': [rawFill('sell', 'tp-a', 't-sell-a', 0.0099, 52000)] },
+      executor: {
+        cancelAllLadderOrders: async () => {
+          if (failSweep) { failSweep = false; throw new Error('exchange down'); }
+          return { cancelled: 1, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [] };
+        },
+      },
+    });
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-a', 't-buy-a', 0.01, 50000));
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.celestialBodies = [makeBody('body-aaaaaaaa', 'buy-a', 0.01, 50000, 'tp-a')];
+    pos.cycleBuys = 3;
+    pos.ladderActive = true;
+
+    // WS delivery: one attempt, no retry.
+    await assert.rejects(eng._test.handleOrderFill({ orderId: 'tp-a', side: 'sell', status: 'FILLED', filledSize: 0.0099, averageFilledPrice: 52000 }), /exchange down/);
+    assert.equal(pos.pendingCycleResetFor, 'tp-a');
+
+    await eng._test.reconcileTick();
+    assert.notEqual(ledger.getCurrentCycleId(), closingCycle, 'the reconcile tick paid the owed reset');
+    assert.equal(pos.cycleBuys, 0);
+    assert.equal(pos.ladderActive, false);
+    assert.equal(pos.pendingCycleResetFor, null);
+    assert.equal(pos.cyclesCompleted, 1);
+
+    // Nothing owed any more: the next tick does not turn the cycle over again.
+    const cycleAfter = ledger.getCurrentCycleId();
+    await eng._test.reconcileTick();
+    assert.equal(ledger.getCurrentCycleId(), cycleAfter);
+  });
+
+  it('any completed cycle turnover pays off an owed reset', async () => {
+    const eng = makeEngine();
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    const pos = eng._getPositionState();
+    pos.pendingCycleResetFor = 'tp-z';
+    const result = await eng.resetCycleBuys();
+    assert.equal(result.success, true, result.message);
+    assert.equal(pos.pendingCycleResetFor, null, 'a later retry of tp-z will not reset again');
+  });
+
   it('an operator cycle reset refuses while a ladder sweep is in flight', async () => {
     const placement = deferred();
     const { eng, calls } = setupSerialEngine({ holdPlace: [placement] });
