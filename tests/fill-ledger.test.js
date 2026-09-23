@@ -2925,10 +2925,11 @@ describe('Fill Ledger', () => {
       assert.equal(legacy.hasMarker, false);
       assert.equal(legacy.bookedSize, 0.002);
       ledger.ingestFill(makeSellFill({ tradeId: 's2', orderId: 'sell-A', size: '0.001' }));
-      ledger.commitSellBooking('sell-A', { ...tranche1, bodyPnl: 0.48, bodyCostBasis: 50, bodyBtcQty: 0.001 }, { additive: true, soldSize: 0.001 });
+      ledger.commitSellBooking('sell-A', { ...tranche1, bodyPnl: 0.48, bodyCostBasis: 50, bodyBtcQty: 0.001 }, { additive: true, soldSize: 0.001, bookedTradeIds: ['s2'] });
       const booking = ledger.getSellBooking('sell-A');
       assert.ok(Math.abs(booking.bodyPnl - 1.46) < 1e-9);
       assert.equal(booking.bookedSize, 0.003);
+      assert.deepEqual(ledger.getUnbookedSellFills('sell-A'), [], 'the legacy tranche stays booked, never re-booked');
     });
   });
 

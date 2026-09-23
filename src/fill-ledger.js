@@ -2005,9 +2005,13 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     let matched = false;
     for (const fill of fills.values()) {
       if (fill.orderId !== orderId) continue;
+      // A booking committed before the marker existed covered the rows that
+      // carry its annotation (issue #777): keep them booked, or a later
+      // pass would book them again as unbooked execution.
+      const legacyBooked = prior && !prior.hasMarker && fill.bodyPnl != null;
       Object.assign(fill, merged);
       if (!merged.partialFill) delete fill.partialFill;
-      if (!booked || booked.has(fill.tradeId)) fill.bodyBooked = true;
+      if (!booked || booked.has(fill.tradeId) || legacyBooked) fill.bodyBooked = true;
       matched = true;
     }
     if (matched) {
