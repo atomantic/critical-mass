@@ -1516,11 +1516,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * `unbookedFills` lists the rungs that filled COMPLETELY before their
    * cancel took, with their spend: those stay tracked for polling to book
    * later, so no body carries their cost yet — the caller must reserve it
-   * itself (per order, so it can skip one polling booked in the meantime).
+   * itself (per order, with the cumulative filled size, so it can skip one
+   * polling fully booked in the meantime).
    * Both costs cover only what was not already booked as an earlier partial
    * (the tracker's high-water mark): an earlier tranche is already in a
    * body's costBasis and in the caller's balance snapshot.
-   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number, partialFillOrderIds: string[], partialFillsCost: number, unbookedFills: Array<{orderId: string, cost: number}>}>} Cancel results
+   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number, partialFillOrderIds: string[], partialFillsCost: number, unbookedFills: Array<{orderId: string, filledSize: number, cost: number}>}>} Cancel results
    */
   const cancelAllLadderOrders = async () => {
     let cancelled = 0;
@@ -1576,7 +1577,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         }
         cancelled++;
       } else if (result.filled) {
-        unbookedFills.push({ orderId, cost: newFillCost(orderId, result) });
+        unbookedFills.push({ orderId, filledSize: Number(result.filledSize) || 0, cost: newFillCost(orderId, result) });
         logger.info(`📋 [${exchange}] Ladder order ${orderId.slice(0, 8)} filled during cancel — polling will process`, {
           orderId,
           orderType: 'ladder_entry',

@@ -860,7 +860,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    * Cancel all unfilled ladder orders
    * Simulated rungs never fill mid-cancel, so the partial-fill fields are
    * always empty — present for return-shape parity with the live executor.
-   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number, partialFillOrderIds: string[], partialFillsCost: number, unbookedFills: Array<{orderId: string, cost: number}>}>} Cancel results
+   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number, partialFillOrderIds: string[], partialFillsCost: number, unbookedFills: Array<{orderId: string, filledSize: number, cost: number}>}>} Cancel results
    */
   const cancelAllLadderOrders = async () => {
     let cancelled = 0;

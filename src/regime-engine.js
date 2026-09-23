@@ -7882,10 +7882,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // mid-cancel isn't missing from the math and the new ladder can't push
     // deployed capital past maxUsdcDeployed. A rung that filled completely is
     // reserved here until polling books it into a body — unless polling
-    // already did while the sweep ran, in which case the body's costBasis
-    // counts it and adding it again would undersize the ladder.
+    // already booked ALL of it while the sweep ran, in which case the body's
+    // costBasis counts it and adding it again would undersize the ladder.
+    // Body ownership alone is not enough: a rung booked earlier as a partial
+    // already has a body, while the remainder this cost covers is unbooked.
+    const fullyBooked = (u) => isBuyAlreadyCommitted(positionState.celestialBodies, u.orderId)
+      && fillLedger.getRecordedSizeForOrder(u.orderId) >= (Number(u.filledSize) || 0) - 1e-9;
     const unbookedSpend = unbookedFills
-      .filter(u => !isBuyAlreadyCommitted(positionState.celestialBodies, u.orderId))
+      .filter(u => !fullyBooked(u))
       .reduce((sum, u) => sum + (Number(u.cost) || 0), 0);
     const postCancelAllocated = getAllocatedCapital() + unbookedSpend;
     // The cash clamp must not size rungs against quote those fills spent
