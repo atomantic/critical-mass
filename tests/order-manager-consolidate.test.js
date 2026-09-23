@@ -335,21 +335,143 @@ describe('consolidatePendingOrders — ordered public contracts', () => {
     script.assertComplete();
   });
 
-  for (const phase of ['cancel', 're-fetch', 'restore']) {
+  for (const phase of ['cancel', 're-fetch']) {
     it(`propagates the original ${phase} exception and stops exchange calls`, async () => {
       const error = new Error(`${phase} unavailable`);
       const steps = [getStep('a'), getStep('b'), getStep('c'), cancelStep('a'), getStep('a')];
       if (phase === 'cancel') steps.push({ call: ['cancelOrder', 'b'], error });
       if (phase === 're-fetch') steps.push(cancelStep('b'), { call: ['getOrder', 'b'], error });
-      if (phase === 'restore') steps.push(
-        cancelStep('b'), getStep('b'), cancelStep('c'), getStep('c'),
-        placeStep(4, 200, { success: false, errorMessage: 'rejected' }),
-        placeStep(1, 100, { success: true, orderId: 'restored-a' }),
-        { call: ['placeLimitSell', 'BTC-USD', 2, 250], error },
-      );
       const script = scriptedAdapter(steps);
       await assert.rejects(consolidatePendingOrders(baseConfig(), [order('a', 1, 100), order('b', 2, 250), order('c', 1, 200)], script.adapter), thrown => thrown === error);
       script.assertComplete();
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// #676 — a throw from the consolidated placement or a per-order restore must
+// not escape consolidatePendingOrders uncaught: the confirmed-cancelled
+// originals are already gone by this point, so an uncaught throw here used to
+// skip the recovery path (executeConsolidation never got a result to run
+// applyConsolidationRecovery/saveState against) and leave those orders
+// tracked as 'pending' forever while potentially naked on the exchange.
+// ---------------------------------------------------------------------------
+describe('consolidatePendingOrders — placement-throw recovery (issue #676)', () => {
+  it('a definitive (non-ambiguous) restore-placement throw does not abort the remaining restores', async () => {
+    const restoreError = new Error('restore unavailable');
+    const orders = [order('a', 1, 100), order('b', 2, 250), order('c', 1, 200)];
+    const steps = [
+      getStep('a'), getStep('b'), getStep('c'),
+      cancelStep('a'), getStep('a'), cancelStep('b'), getStep('b'), cancelStep('c'), getStep('c'),
+      placeStep(4, 200, { success: false, errorMessage: 'rejected' }),
+      placeStep(1, 100, { success: true, orderId: 'restored-a' }),
+      { call: ['placeLimitSell', 'BTC-USD', 2, 250], error: restoreError },
+      placeStep(1, 200, { success: true, orderId: 'restored-c' }),
+    ];
+    const script = scriptedAdapter(steps);
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, script.adapter);
+
+    assert.deepEqual(result, {
+      success: false,
+      error: 'Failed to place consolidated order: rejected',
+      cancelledOrderIds: ['a', 'b', 'c'],
+      skippedOrderIds: [],
+      filledDuringCancelOrderIds: [],
+      restoredOrders: [
+        { oldOrderId: 'a', newOrderId: 'restored-a' },
+        { oldOrderId: 'c', newOrderId: 'restored-c' },
+      ],
+      failedRestoreOrderIds: ['b'],
+    });
+    script.assertComplete();
+  });
+
+  it('(a) reconciles an ambiguous consolidated-placement outcome by adopting the live order — no restore', async () => {
+    const orders = [order('a', 1, 100), order('b', 2, 250)];
+    let placeCalls = 0;
+    let lookupCalls = 0;
+    const adapter = {
+      getOrder: async () => ({ completionPercentage: 0 }),
+      cancelOrder: async () => ({ success: true }),
+      placeLimitSell: async () => {
+        placeCalls += 1;
+        throw Object.assign(new Error('unknown order outcome'), {
+          status: 'unknown',
+          unknownOutcome: true,
+          clientOrderId: 'coid-consolidate-1',
+        });
+      },
+      findOrderByClientOrderId: async (clientOrderId) => {
+        lookupCalls += 1;
+        assert.equal(clientOrderId, 'coid-consolidate-1');
+        return { orderId: 'live-consolidated-1', status: 'OPEN' };
+      },
+    };
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter);
+
+    assert.equal(placeCalls, 1, 'must NOT re-place a possibly-executed order');
+    assert.equal(lookupCalls, 1, 'reconciled exactly once by client_order_id');
+    assert.equal(result.success, true);
+    assert.equal(result.newOrderId, 'live-consolidated-1', 'adopted the reconciled exchange order id');
+    assert.equal(result.restoredOrders, undefined, 'no restore attempted on a reconciled success');
+  });
+
+  it('(b) a definitive (non-ambiguous) consolidated-placement throw resolves with restore results and does not reject', async () => {
+    const orders = [order('a', 1, 100), order('b', 2, 250)];
+    const httpError = Object.assign(new Error('503 Service Unavailable'), { status: 503 });
+    const restorePlaces = [];
+    const adapter = {
+      getOrder: async () => ({ completionPercentage: 0 }),
+      cancelOrder: async () => ({ success: true }),
+      placeLimitSell: async (productId, qty, price) => {
+        if (qty > 2.5) throw httpError; // the consolidated place (3.0)
+        restorePlaces.push({ qty, price });
+        return { success: true, orderId: `restored-${qty}` };
+      },
+    };
+
+    // A rejection here would fail the test on its own (this `it` callback is
+    // awaited by the runner) — the explicit assertions below are the real check.
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter);
+
+    assert.equal(result.success, false);
+    assert.match(result.error, /503 Service Unavailable/);
+    assert.deepEqual(result.cancelledOrderIds, ['a', 'b']);
+    assert.deepEqual(result.restoredOrders, [
+      { oldOrderId: 'a', newOrderId: 'restored-1' },
+      { oldOrderId: 'b', newOrderId: 'restored-2' },
+    ]);
+    assert.deepEqual(result.failedRestoreOrderIds, []);
+  });
+
+  it('does NOT restore the originals when the consolidated outcome is unknown and unresolvable (may already be live)', async () => {
+    const orders = [order('a', 1, 100), order('b', 2, 250)];
+    let restoreAttempts = 0;
+    const adapter = {
+      getOrder: async () => ({ completionPercentage: 0 }),
+      cancelOrder: async () => ({ success: true }),
+      placeLimitSell: async (productId, qty) => {
+        if (qty === 3) {
+          throw Object.assign(new Error('unknown order outcome'), {
+            status: 'unknown',
+            unknownOutcome: true,
+            clientOrderId: undefined, // no id to reconcile by — genuinely unresolvable
+          });
+        }
+        restoreAttempts += 1;
+        return { success: true, orderId: 'should-not-be-called' };
+      },
+    };
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter);
+
+    assert.equal(result.success, false);
+    assert.equal(result.pending, true);
+    assert.equal(restoreAttempts, 0, 'must not re-place over a possibly-live consolidated order');
+    assert.deepEqual(result.cancelledOrderIds, ['a', 'b']);
+    assert.deepEqual(result.restoredOrders, []);
+    assert.deepEqual(result.failedRestoreOrderIds, ['a', 'b']);
+  });
 });

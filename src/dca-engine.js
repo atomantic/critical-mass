@@ -132,7 +132,7 @@ const executeConsolidation = async (exchange = 'coinbase', pair, orderIds = null
 
   cycleLogger.info(`ℹ️ [${exchange}] Starting consolidation of ${pendingOrders.length} orders`);
 
-  const result = await consolidatePendingOrders(config, pendingOrders, adapter);
+  const result = await consolidatePendingOrders(config, pendingOrders, adapter, { exchange, pair });
 
   if (result.success && result.newOrderId == null) {
     // Every eligible order filled during its cancel window (issue #150): no
