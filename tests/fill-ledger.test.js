@@ -2236,6 +2236,28 @@ describe('Fill Ledger', () => {
         'a re-imported sell is not the cycle\'s recorded close — pre-#705 it never linked anything');
     });
 
+    it('heals a sell row an earlier (#705) recalc already attributed without its annotations (#752)', () => {
+      const ledger = createTestLedger('attr-sell-heal');
+      ledger.ingestFill(buy('hb', 'h-buy', 10, '0.002'), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('h-buy', { isBodyOwned: true, bodyId: 'body-H', sellOrderId: 'h-tp' });
+      ledger.ingestFill(sell('hs-1', 'h-tp', 11, '0.0009'), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('h-tp', { isBodyOwned: true, bodyId: 'body-H', bodyPnl: 4, bodyHoldbackAsset: 0.0002 });
+      // Stamped into cycle-1 by the pre-#752 recalc: cycleId + attribution, no annotations.
+      ledger.ingestFill(sell('hs-2', 'h-tp', 11.5, '0.0009'), null, { cycleId: 'cycle-1' });
+      const row = rowOf(ledger, 'hs-2');
+      row.cycleAttribution = 'order';
+      delete row.isBodyOwned; delete row.bodyId; delete row.bodyPnl; delete row.bodyHoldbackAsset;
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+
+      const preview = ledger.previewRecalculateCycles();
+      assert.equal(rowOf(ledger, 'hs-2').bodyId, undefined, 'preview never mutates');
+      const result = ledger.recalculateCycles();
+
+      assert.equal(rowOf(ledger, 'hs-2').bodyId, 'body-H');
+      assert.equal(rowOf(ledger, 'hs-2').bodyPnl, 4);
+      assert.deepStrictEqual(preview.cycleDetails, result.cycleDetails);
+    });
+
     it('a link-attributed sell linked from buys of two different bodies stays unowned (#752)', () => {
       const ledger = createTestLedger('attr-sell-mixed');
       ledger.ingestFill(buy('m1', 'm1-buy', 10), null, { cycleId: 'cycle-1' });

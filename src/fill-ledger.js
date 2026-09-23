@@ -1413,7 +1413,19 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       if (!cycleMap.has(cycleId)) cycleMap.set(cycleId, []);
       cycleMap.get(cycleId).push(fill);
     }
-    return { ...result, patches: deriveAttributedAnnotations(result.attributed, cycleMap) };
+    // Rows an earlier recalc already attributed (#705 shipped before #752)
+    // are re-derived too, so existing ledgers heal; patches only ever fill
+    // fields a row lacks, so re-deriving is idempotent. Timestamp folds have
+    // no order linkage to inherit from.
+    const earlier = [];
+    for (const [cycleId, cycleFills] of cycleMap) {
+      for (const fill of cycleFills) {
+        if (fill.cycleId === cycleId && fill.cycleAttribution && fill.cycleAttribution !== 'timeframe') {
+          earlier.push({ fill, cycleId });
+        }
+      }
+    }
+    return { ...result, patches: deriveAttributedAnnotations([...result.attributed, ...earlier], cycleMap) };
   };
 
   /**
@@ -1451,9 +1463,14 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // otherwise a body buy row reads as an unowned core buy (core totals,
     // legacy TP linkage, boot orphan adoption), and a body TP sell row as a
     // legacy core sell (core stats, auto-link) (#705, #752).
+    let annotationsInherited = 0;
+    for (const [fill, patch] of attributedPatches) {
+      Object.assign(fill, patch);
+      annotationsInherited++;
+      dirtySinceLastPersist = true;
+      bumpLedgerVersion();
+    }
     for (const { fill, cycleId, reason } of attributed) {
-      const patch = attributedPatches.get(fill);
-      if (patch) Object.assign(fill, patch);
       fill.cycleId = cycleId;
       // Record HOW the cycle was chosen. A 'timeframe' fold has no linkage to
       // any engine order — sync-fills imports every trade on the pair, manual
@@ -1666,7 +1683,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       });
     }
 
-    if (orphansFixed > 0 || linkedCount > 0) {
+    if (orphansFixed > 0 || linkedCount > 0 || annotationsInherited > 0) {
       persist();
     }
 
