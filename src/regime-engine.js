@@ -186,6 +186,48 @@ const isBuyAlreadyCommitted = (bodies, orderId) =>
   );
 
 /**
+ * Pure predicate: did a body TP execute its whole PLANNED size? A TP is placed
+ * for `body.assetOnOrder` (body.assetQty minus the designed holdback), so a
+ * fill that covers ≥99% of it is a completed TP — its body closes and the
+ * holdback is booked as reserves — even when the order was later reported
+ * CANCELLED (the cancel-after-full-fill race). Mirrors the sell handler's own
+ * isPartial check, including its legacy fallback for bodies with no recorded
+ * assetOnOrder (issues #670, #744).
+ * @param {{assetOnOrder?: number, assetQty?: number}|null|undefined} body
+ * @param {number} filledSize - Cumulative size the TP executed
+ * @returns {boolean}
+ */
+const isFullTpExecution = (body, filledSize) => {
+  if (!body || !(filledSize > 0)) return false;
+  const onOrder = body.assetOnOrder || 0;
+  return onOrder > 0
+    ? filledSize >= onOrder * 0.99
+    : body.assetQty > 0 && filledSize / body.assetQty >= 0.95;
+};
+
+/**
+ * Drop a persisted `pendingTpCancelExecution` marker once the body's TP has
+ * moved off the order it was recorded for (issue #744). The marker is only
+ * ever honoured while `body.tpOrderId === marker.orderId` (see
+ * knownTpCancelExecution), and order ids are never reused, so after the TP
+ * moves (booked through a plain status branch, re-placed, cleared) it is dead
+ * state that would otherwise ride along in every save forever.
+ * @param {Array<Object>|null|undefined} bodies
+ * @returns {number} How many markers were dropped
+ */
+const pruneStaleTpCancelMarkers = (bodies) => {
+  let pruned = 0;
+  for (const body of bodies || []) {
+    const marker = body && body.pendingTpCancelExecution;
+    if (marker && marker.orderId !== body.tpOrderId) {
+      delete body.pendingTpCancelExecution;
+      pruned += 1;
+    }
+  }
+  return pruned;
+};
+
+/**
  * Pure predicate: is this body stranded sub-min "dust"? — it has a positive qty,
  * no resting TP order, AND its entire qty rounds below the exchange minimum order
  * size, so a TP can never be placed for it on its own. Such a body must be
@@ -585,6 +627,92 @@ const repairHistoricalFillAnnotations = ({
       logger.info(`🔧 [${exchange}] Annotated ${annotatedCount} satellite fills for correct tracking`);
     }
   }
+};
+
+/** Ledger rows the engine synthesized in place of real exchange fills. */
+const PSEUDO_FILL_TRADE_ID = /^(synthetic-|consolidated-sell-)/;
+
+/**
+ * Plan how live bodies must grow to cover recovered partial rows of their own
+ * buy orders (issue #752). recalculateCycles places a null-cycle buy row
+ * that shares its orderId with a body-owned order into that order's cycle
+ * and copies its ownership (`cycleAttribution: 'order'`, #705) — but the
+ * body's assetQty/costBasis were sized from the rows known when the fill was
+ * handled, so its TP stays sized for less than the position actually held.
+ *
+ * Guards — this is the engine's OWN linked order, never an unlinked import
+ * (R2 in docs/pnl-architecture.md):
+ *   - only orders with at least one `'order'`-attributed buy row are
+ *     considered ('link' / 'timeframe' rows never grow a body);
+ *   - the order has no synthetic gap row (which recovered rows may duplicate);
+ *   - every owned row of the order names ONE bodyId, and exactly one live
+ *     body — that one — records the order in its `buyOrders`;
+ *   - growth is the exact shortfall of the order's full ledger totals over
+ *     the body's recorded share (computeBuyOrderShortfall), so repeated
+ *     calls converge, and it may not exceed the attributed rows' own size —
+ *     a larger gap is some other discrepancy and is left for manual review.
+ * Pure: never mutates the ledger or a body.
+ * @param {Object} params
+ * @param {Object} params.fillLedger - Fill ledger instance
+ * @param {Object[]} params.celestialBodies - Live bodies
+ * @returns {{ plans: Array<{body: Object, buyOrderId: string, totals: {assetQty: number, costBasis: number, avgPrice: number}, shortfall: {assetQty: number, costBasis: number, avgPrice: number}}>, skipped: Array<{buyOrderId: string, reason: string}> }}
+ */
+const planBodyGrowthFromRecoveredBuyRows = ({ fillLedger, celestialBodies }) => {
+  const plans = [];
+  const skipped = [];
+  const bodies = celestialBodies || [];
+  const candidateOrderIds = new Set();
+  for (const f of fillLedger.getAllFills()) {
+    if (f.side === 'buy' && f.cycleAttribution === 'order' && f.bodyId && f.orderId
+      && !String(f.tradeId).startsWith('dca-convert')) {
+      candidateOrderIds.add(f.orderId);
+    }
+  }
+  for (const buyOrderId of candidateOrderIds) {
+    const rows = fillLedger.getFillsForOrder(buyOrderId).filter(r => r.side === 'buy');
+    // A pseudo row (`synthetic-<orderId>-<size>`, handleOrderFill's gap fill
+    // when the exchange returned no fills) stands in for real executions that
+    // sync-fills may since have re-imported under their real tradeIds — the
+    // very rows attributed here. Summing both would grow the body by asset it
+    // never bought, so leave such an order for manual review
+    // (scripts/backfill-missing-fills.js replaces pseudo rows).
+    if (rows.some(r => PSEUDO_FILL_TRADE_ID.test(String(r.tradeId)))) {
+      skipped.push({ buyOrderId, reason: 'order has a synthetic gap row that recovered rows may duplicate' });
+      continue;
+    }
+    const bodyIds = new Set(rows.map(r => r.bodyId).filter(Boolean));
+    if (bodyIds.size !== 1) {
+      skipped.push({ buyOrderId, reason: `rows name ${bodyIds.size} bodies` });
+      continue;
+    }
+    const [bodyId] = bodyIds;
+    const owners = bodies.filter(b => (b.buyOrders || []).some(bo => bo.orderId === buyOrderId));
+    // No owner: the body already closed (its TP sold) — nothing live to grow.
+    if (owners.length === 0) continue;
+    if (owners.length !== 1 || owners[0].id !== bodyId) {
+      skipped.push({ buyOrderId, reason: `order recorded by ${owners.length} live bodies, not only ${bodyId}` });
+      continue;
+    }
+    const body = owners[0];
+    const qty = rows.reduce((sum, r) => sum + (r.size || 0), 0);
+    const quote = rows.reduce((sum, r) => sum + (r.quoteAmount || 0), 0);
+    const totals = {
+      assetQty: roundAsset(qty),
+      costBasis: roundUSDC(rows.reduce((sum, r) => sum + (r.quoteAmount || 0) + (r.netFee || 0), 0)),
+      avgPrice: qty > 0 ? quote / qty : 0,
+    };
+    const { shortfall } = celestialHierarchy.computeBuyOrderShortfall(body, totals, buyOrderId);
+    if (!shortfall) continue;
+    const attributedQty = rows
+      .filter(r => r.cycleAttribution === 'order')
+      .reduce((sum, r) => sum + (r.size || 0), 0);
+    if (shortfall.assetQty > attributedQty + 0.00000001) {
+      skipped.push({ buyOrderId, reason: `shortfall ${shortfall.assetQty} exceeds recovered rows ${roundAsset(attributedQty)}` });
+      continue;
+    }
+    plans.push({ body, buyOrderId, totals, shortfall });
+  }
+  return { plans, skipped };
 };
 
 /** Floor for `fillDriftSweepMs` — one full-history exchange fetch per minute. */
@@ -1284,6 +1412,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Refresh realized P&L (USD + asset reserves) from cycle pairs before persisting
     refreshRealizedFromCyclePairs();
+
+    // A cancel-execution marker whose TP has since moved is dead state (#744).
+    pruneStaleTpCancelMarkers(positionState.celestialBodies);
 
     const regimeState = regimeDetector.getState();
     const tpOptimizerState = tpOptimizer.exportState();
@@ -2603,6 +2734,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     isRunning = true;
 
+    // Recovered partial rows of a body's own buy order (#752) grow that body
+    // through extendBody now that the engine is live: it cancels the body's TP
+    // BEFORE growing it, so a stale TP that fills first can never book the
+    // recovered quantity as zero-cost holdback.
+    extendBodiesFromRecoveredBuyRows();
+
     // Start Gemini heartbeat to prevent order auto-cancellation.
     // Owner key: the adapter is a per-exchange singleton shared across funds,
     // and its heartbeat is refcounted per owner so stopping one fund cannot
@@ -3141,6 +3278,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         throw new Error(`Partial TP ${fillData.orderId} final fills incomplete; retry reconciliation`);
       }
       fillData.confirmedFills = finalFills;
+      // A body TP that executed its whole planned size is a completed TP,
+      // not a partial, even when the exchange reports it CANCELLED (or still
+      // OPEN with a sub-1% sliver, now frozen) and carries no
+      // completionPercentage for isFilledStatus to read. Without this, the
+      // reconcile / startup partial routes force the partial branch: the
+      // designed holdback stays an active body and is re-listed for sale
+      // (issue #744). Same classification as bookTpCancelExecution (#670).
+      if (fillData.isPartialFill) {
+        const tpBody = (positionState.celestialBodies || []).find(b => b.tpOrderId === fillData.orderId);
+        if (isFullTpExecution(tpBody, fillData.filledSize)) fillData.isPartialFill = false;
+      }
     }
 
     // getOrderFills now rejects (issue #679) instead of silently returning a
@@ -3938,9 +4086,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             stampConsumedCostFraction(liveMerged, liveConsumedRatio);
           }
 
-          // The resting TP was sized for the pre-deduction (oversized) qty — cancel
-          // and clear it so a correctly-sized TP is re-placed for the remaining body.
-          if (liveMerged.tpOrderId) {
+          if (liveMerged.tpOrderId && liveMerged.tpOrderId === fillData.orderId) {
+            // The body still points at the snapshotted order itself: this
+            // fill landed while a buy-merge / roll-up cancel of that same
+            // order is still in flight (issue #744). Its execution is the one
+            // THIS handler is booking, and the merge continuation owns the
+            // cancel and the re-place — cancelling, booking or re-placing here
+            // would double-book the sale or leave a second TP live next to
+            // the one the continuation places. Only a body this sale drained
+            // drops the identity (nothing left to re-arm), so it is removed
+            // below and reconcile can never re-book the order against it.
+            if (snapshotClosed && !(liveMerged.assetQty > 0)) {
+              liveMerged.tpOrderId = null;
+              liveMerged.tpPrice = 0;
+              liveMerged.assetOnOrder = 0;
+              if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(fillData.orderId);
+            }
+          } else if (liveMerged.tpOrderId) {
+            // The resting TP was sized for the pre-deduction (oversized) qty — cancel
+            // and clear it so a correctly-sized TP is re-placed for the remaining body.
             const staleTp = liveMerged.tpOrderId;
             let cancelResult;
             try {
@@ -3952,11 +4116,36 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               );
             }
 
-            if (cancelResult?.cancelled) {
+            const staleOutcome = cancelResult ? classifyBodyTpCancellation(cancelResult) : null;
+            if (staleOutcome === 'cancelled') {
               liveMerged.tpOrderId = null;
               liveMerged.tpPrice = 0;
               liveMerged.assetOnOrder = 0;
               if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(staleTp);
+            } else if (staleOutcome === 'cancelled_with_execution') {
+              // The stale TP sold a tranche while we cancelled it, and
+              // cancelBodyTpOrder has already dropped its executor tracking —
+              // no poll will ever find that sale (issue #744, the #670 class).
+              // Book it now through the normal body-TP sell path: liveMerged
+              // still carries tpOrderId = staleTp, so that path deducts the
+              // tranche from the (already snapshot-deducted) live body, records
+              // its consumption, and re-places a right-sized TP — or closes the
+              // body on a full-size fill. Nested: we are already inside a fill
+              // or a roll-up, so the fill gate must not be re-entered. On a
+              // booking failure the body keeps tpOrderId = staleTp plus the
+              // pendingTpCancelExecution marker, and reconcile retries it.
+              logger.warn(
+                `⚠️ [${exchange}] Merge-snapshot: body ${liveMerged.id.slice(-8)} TP ${staleTp.slice(0, 8)} sold ${cancelResult.filledSize} ${baseCurrency} during its stale-size cancel — booking before re-place (#744)`,
+                { bodyId: liveMerged.id, orderId: staleTp, filledSize: cancelResult.filledSize }
+              );
+              // The stale TP was sized for the PRE-deduction body, so its
+              // assetOnOrder can exceed what the live body still holds. Cap it
+              // at the body before booking: the sell handler classifies
+              // full-vs-partial against assetOnOrder, and a sale covering the
+              // whole remaining body must close it — as a partial it would
+              // drive assetQty negative.
+              if (liveMerged.assetOnOrder > liveMerged.assetQty) liveMerged.assetOnOrder = liveMerged.assetQty;
+              await bookTpCancelExecution(liveMerged, staleTp, cancelResult, 'Merge-snapshot stale-size', { nested: true });
             } else if (cancelResult) {
               logger.error(
                 `❌ [${exchange}] Merge-snapshot body TP cancellation was not confirmed for ${staleTp} — keeping the existing TP identity and skipping replacement`,
@@ -3988,8 +4177,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
-        // Re-place a correctly-sized TP on the deducted body (issue #201).
-        if (liveMerged && liveMerged.assetQty > 0 && !liveMerged.tpOrderId) {
+        // Re-place a correctly-sized TP on the deducted body (issue #201) —
+        // unless booking its stale TP's cancel-race execution just closed and
+        // removed it (issue #744): a detached body must not list a TP.
+        if (liveMerged && liveMerged.assetQty > 0 && !liveMerged.tpOrderId
+          && (positionState.celestialBodies || []).includes(liveMerged)) {
           await placeBodyTp(liveMerged);
         }
 
@@ -4546,22 +4738,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Book a body TP's execution that was reported by a cancel (see
-   * cancelBodyTpForReplace) through the normal body-TP sell path. The body
-   * must still carry `tpOrderId = orderId`.
-   *
-   * On failure the known execution is kept on the body as
-   * `pendingTpCancelExecution` (persisted with it), so the reconcile loop can
-   * retry the booking even when the exchange's CANCELLED status omits the
-   * filled size — otherwise it would read "cancelled, nothing filled", clear
-   * the TP and re-place against the unreduced body, losing the sale.
-   * @param {Object} body
-   * @param {string} orderId - The cancelled TP
-   * @param {{filledSize: number, filledValue?: number, averageFilledPrice?: number, totalFees?: number}} execution
-   * @param {string} context - Log label
-   * @returns {Promise<'booked'|'booking_failed'>}
-   */
-  /**
    * The execution a failed cancel-for-replace booking recorded for this
    * body's current TP (see bookTpCancelExecution), when the exchange's
    * CANCELLED status does not report MORE than it — a status that omits the
@@ -4576,26 +4752,55 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     return (parseFloat(status?.filledSize) || 0) > known.filledSize ? null : known;
   };
 
-  const bookTpCancelExecution = async (body, orderId, execution, context) => {
+  /**
+   * Book a body TP's execution that was reported by a cancel (see
+   * cancelBodyTpForReplace) through the normal body-TP sell path. The body
+   * must still carry `tpOrderId = orderId`.
+   *
+   * On failure the known execution is kept on the body as
+   * `pendingTpCancelExecution` (persisted with it), so the reconcile loop can
+   * retry the booking even when the exchange's CANCELLED status omits the
+   * filled size — otherwise it would read "cancelled, nothing filled", clear
+   * the TP and re-place against the unreduced body, losing the sale.
+   * @param {Object} body
+   * @param {string} orderId - The cancelled TP
+   * @param {{filledSize: number, filledValue?: number, averageFilledPrice?: number, totalFees?: number}} execution
+   * @param {string} context - Log label
+   * @param {{nested?: boolean}} [opts] - `nested: true` when the caller is
+   *   itself running inside handleOrderFillImpl or a roll-up merge
+   * @returns {Promise<'booked'|'booking_failed'>}
+   */
+  const bookTpCancelExecution = async (body, orderId, execution, context, { nested = false } = {}) => {
     // A TP that executed its whole planned size before the cancel landed
     // (the cancel-after-full-fill race) is a completed TP, not a partial:
     // route it as terminal so the sell handler closes the body and books its
     // designed holdback as reserves instead of re-listing that holdback. The
     // partial-fill flag would otherwise force the partial branch whenever the
-    // exchange's status carries no completionPercentage. Mirrors the sell
-    // handler's classification, including its legacy fallback for bodies
-    // with no recorded assetOnOrder.
-    const onOrder = body.assetOnOrder || 0;
-    const executedFullTp = onOrder > 0
-      ? execution.filledSize >= onOrder * 0.99
-      : body.assetQty > 0 && execution.filledSize / body.assetQty >= 0.95;
+    // exchange's status carries no completionPercentage.
+    const executedFullTp = isFullTpExecution(body, execution.filledSize);
+    const fillData = buildPartialFillData(orderId, 'sell', {
+      status: executedFullTp ? 'FILLED' : 'CANCELLED',
+      filledSize: execution.filledSize,
+      filledValue: execution.filledValue,
+      averageFilledPrice: execution.averageFilledPrice,
+    }, { totalFees: execution.totalFees || 0, ...(executedFullTp && { isPartialFill: false }) });
     try {
-      await handleOrderFill(buildPartialFillData(orderId, 'sell', {
-        status: executedFullTp ? 'FILLED' : 'CANCELLED',
-        filledSize: execution.filledSize,
-        filledValue: execution.filledValue,
-        averageFilledPrice: execution.averageFilledPrice,
-      }, { totalFees: execution.totalFees || 0, ...(executedFullTp && { isPartialFill: false }) }));
+      if (nested) {
+        // Already inside a fill (fill gate held) or a roll-up (merge lock
+        // held): the wrapper's fill gate would wait on that same merge hold
+        // for its full window (see bookExecutionDuringCancel), so run the
+        // handler directly and release its dedup key on failure ourselves,
+        // exactly as the wrapper would.
+        const dedupRef = { set: null, key: null };
+        try {
+          await handleOrderFillImpl(fillData, dedupRef);
+        } catch (err) {
+          if (dedupRef.set) dedupRef.set.delete(dedupRef.key);
+          throw err;
+        }
+      } else {
+        await handleOrderFill(fillData);
+      }
     } catch (err) {
       body.pendingTpCancelExecution = {
         orderId,
@@ -7281,6 +7486,41 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     logger.info(`🔄 [${exchange}] Position updated externally: buys=${positionState.cycleBuys}, cycles=${positionState.cyclesCompleted}, ${baseCurrency} reserves=${positionState.realizedAssetPnL}`);
   };
 
+  /** Tail of the serialized extendBodiesFromRecoveredBuyRows runs. */
+  let recoveredGrowthChain = Promise.resolve();
+
+  /**
+   * Grow each body that owns recovered partial rows of its own buy order
+   * (planBodyGrowthFromRecoveredBuyRows, #752) via extendBody, which cancels
+   * the body's TP BEFORE growing it and re-places it at the new size. Runs at
+   * start (once live) and after an operator recalc. Fire-and-forget (callers
+   * don't wait on exchange round trips) but serialized, and idempotent —
+   * extendBody merges only the order's remaining shortfall, so a failed or
+   * repeated attempt is simply retried by the next recalc or start.
+   * @returns {Promise<void>}
+   */
+  const extendBodiesFromRecoveredBuyRows = () => {
+    // Chain onto any earlier run so back-to-back recalcs never overlap; each
+    // run plans against the bodies as they are when it starts.
+    recoveredGrowthChain = recoveredGrowthChain.then(async () => {
+      const { plans, skipped } = planBodyGrowthFromRecoveredBuyRows({ fillLedger, celestialBodies: positionState.celestialBodies });
+      for (const { buyOrderId, reason } of skipped) {
+        logger.warn(`⚠️ [${exchange}] Recovered buy rows of ${String(buyOrderId).slice(0, 8)} not merged into a body (${reason}) — manual review`, { buyOrderId, reason });
+      }
+      for (const { body, buyOrderId, totals } of plans) {
+        try {
+          const res = await extendBody(body.id, totals, buyOrderId);
+          if (!res.success) logger.warn(`⚠️ [${exchange}] Could not grow body ${body.id.slice(-8)} from recovered rows of buy ${String(buyOrderId).slice(0, 8)}: ${res.error}`, { bodyId: body.id, buyOrderId, error: res.error });
+        } catch (err) {
+          logger.error(`❌ [${exchange}] Growing body ${body.id.slice(-8)} from recovered rows of buy ${String(buyOrderId).slice(0, 8)} failed: ${err.message}`, { bodyId: body.id, buyOrderId, error: err.message });
+        }
+      }
+    }).catch((err) => {
+      logger.error(`❌ [${exchange}] Recovered-row body growth failed: ${err.message}`, { error: err.message });
+    });
+    return recoveredGrowthChain;
+  };
+
   /**
    * Recompute cycle boundaries on the engine's OWN ledger and re-derive P&L
    * from the cycle-pair source of truth. Used by the regime:recalculate
@@ -7289,7 +7529,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * realizedPnL, or (c) blind-merge a rebuilt position into the live engine
    * (which would null activeTpOrderId and resurrect stale bodies). It mutates
    * only realizedPnL / realizedAssetPnL / heldAssetCostBasis / cyclesCompleted
-   * — never order tracking, lifecycle, or ladder state (issue #96).
+   * — never order tracking, lifecycle, or ladder state (issue #96) — except
+   * that a body owning recovered rows of its own buy order is then grown
+   * through extendBody, which re-places that body's TP (#752).
    * @returns {{cyclesCompleted:number, realizedPnL:number, realizedAssetPnL:number, cycleDetails:any[], orphansFixed:number, activeCycleId:string|null}}
    */
   const recalculateAndRefresh = () => {
@@ -7304,6 +7546,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // realizedAssetPnL and heldAssetCostBasis and persists.
     refreshRealizedFromCyclePairs();
     saveLiveState();
+    extendBodiesFromRecoveredBuyRows();
     return {
       cyclesCompleted: recalc.cyclesCompleted,
       realizedPnL: positionState.realizedPnL,
@@ -8054,6 +8297,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     return { success: true, bodyId: body.id, tpPlaced: !!tpResult };
   };
 
+  /** Body ids with an extendBody in progress. */
+  const extendInFlight = new Set();
+
   /**
    * Extend an already-live body with fills for its OWN buy order that
    * arrived after the body was first created (issue #726): the buy order
@@ -8103,19 +8349,34 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (!isRunning) return { success: false, error: 'Engine not running' };
     const body = (positionState.celestialBodies || []).find((b) => b.id === bodyId);
     if (!body) return { success: false, error: 'Body not found' };
-    const recorded = (body.buyOrders || [])
-      .filter((bo) => bo.orderId === buyOrderId)
-      .reduce((acc, bo) => ({ qty: acc.qty + (bo.assetQty || 0), cost: acc.cost + (bo.sizeUsdc || 0) }), { qty: 0, cost: 0 });
-    const shortfallQty = roundAsset(totals.assetQty - recorded.qty);
-    if (shortfallQty <= 0.00000001) {
-      logger.info(`📦 [${exchange}] Extend for body ${body.id} / buy ${buyOrderId} already applied (${recorded.qty} >= ${totals.assetQty}) — no-op retry`);
+    // One extend per body at a time (#752): a second caller (a recalc's
+    // recovered-row growth, a manual import) would compute the same shortfall
+    // before the first merged it, then merge it again after its own cancel —
+    // and its cancel could null a TP the first had just re-placed.
+    if (extendInFlight.has(body.id)) {
+      return { success: false, error: 'Extend already in progress for this body — retry once it settles' };
+    }
+    extendInFlight.add(body.id);
+    try {
+      return await extendBodyLocked(body, totals, buyOrderId);
+    } finally {
+      extendInFlight.delete(body.id);
+    }
+  };
+
+  /**
+   * extendBody's work, run while the body holds its extendInFlight slot.
+   * @param {Object} body
+   * @param {{assetQty:number, costBasis:number, avgPrice:number}} totals
+   * @param {string} buyOrderId
+   * @returns {Promise<{success: boolean, error?: string, bodyId?: string, tier?: string, alreadyApplied?: boolean, tpPlaced?: boolean}>}
+   */
+  const extendBodyLocked = async (body, totals, buyOrderId) => {
+    const { recordedQty, shortfall } = celestialHierarchy.computeBuyOrderShortfall(body, totals, buyOrderId);
+    if (!shortfall) {
+      logger.info(`📦 [${exchange}] Extend for body ${body.id} / buy ${buyOrderId} already applied (${recordedQty} >= ${totals.assetQty}) — no-op retry`);
       return { success: true, bodyId: body.id, tier: body.tier, alreadyApplied: true };
     }
-    const shortfall = {
-      assetQty: shortfallQty,
-      costBasis: roundUSDC(totals.costBasis - recorded.cost),
-      avgPrice: totals.avgPrice,
-    };
 
     // Cancel the existing TP BEFORE growing the body, so the re-place below
     // sizes against the grown assetQty, not the stale one.
@@ -8242,6 +8503,7 @@ module.exports = {
   createInitialPositionState,
   restorePersistedCycleId,
   repairHistoricalFillAnnotations,
+  planBodyGrowthFromRecoveredBuyRows,
   cancelPartialFillOrder,
   buildPartialFillData,
   makeFillDedupKey,
@@ -8249,4 +8511,6 @@ module.exports = {
   isBuyAlreadyCommitted,
   shouldSkipBuyRecommit,
   isStrandedDustBody,
+  isFullTpExecution,
+  pruneStaleTpCancelMarkers,
 };
