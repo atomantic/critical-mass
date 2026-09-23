@@ -3979,10 +3979,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             const staleOutcome = cancelResult ? classifyBodyTpCancellation(cancelResult) : null;
             // A fill for the snapshotted TP can land while a buy-merge's cancel
             // of that same order is still in flight — the body then still
-            // points at it. Its execution is the one THIS handler is booking,
-            // so it must not be booked a second time as a "stale" TP sale.
-            if (staleOutcome === 'cancelled'
-              || (staleOutcome === 'cancelled_with_execution' && staleTp === fillData.orderId)) {
+            // points at it. Its execution (partial or complete) is the one
+            // THIS handler is booking: never book it a second time as a
+            // "stale" TP sale, and never leave the body pointing at it, or
+            // reconcile re-books it once the dedup key expires.
+            const isOwnOrder = staleTp === fillData.orderId
+              && (staleOutcome === 'cancelled_with_execution' || staleOutcome === 'filled');
+            if (staleOutcome === 'cancelled' || isOwnOrder) {
               liveMerged.tpOrderId = null;
               liveMerged.tpPrice = 0;
               liveMerged.assetOnOrder = 0;
