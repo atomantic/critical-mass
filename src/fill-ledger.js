@@ -1899,6 +1899,12 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    *                            sell (its cost is then already in realizedPnL)
    *   heldOpenAssetQty     = the same, in base quantity
    *   ledgerNetAsset       = Σ buy size − Σ sell size over the whole ledger
+   *   untrackedSellQty     = Σ size of sell orders annotated `untrackedSell`
+   *                          (foreign sells — manual/tooling — that closed no
+   *                          cycle; issues #672/#750). Already inside
+   *                          ledgerNetAsset; broken out so position coverage
+   *                          can attribute the gap they open instead of the
+   *                          engine guessing which holding they drew down.
    *
    * Every body sale records sold + booked holdback as consumed, so wherever
    * sells were booked with `consumedBy` records,
@@ -1911,7 +1917,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * attributed to the paired sell's basis.
    *
    * Side-effect-free — safe to call on every status emit and state save.
-   * @returns {{realizedPnL: number, realizedAssetPnL: number, heldOpenBuyCostBasis: number, heldOpenAssetQty: number, ledgerNetAsset: number, unpairedSellQty: number}}
+   * @returns {{realizedPnL: number, realizedAssetPnL: number, heldOpenBuyCostBasis: number, heldOpenAssetQty: number, ledgerNetAsset: number, unpairedSellQty: number, untrackedSellQty: number}}
    */
   const computeRealizedFromCyclePairsUncached = () => {
     // Pairing and per-sell pnl/holdback come from the shared rule set the
@@ -1924,6 +1930,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // with their consumption records.
     const buyAggByOrderId = new Map();
     let ledgerNetAsset = 0;
+    const untrackedSellOrderIds = new Set();
     for (const f of fills.values()) {
       if (f.side === 'buy') {
         const aggKey = buyPairKey(f);
@@ -1949,6 +1956,9 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         }
         ledgerNetAsset += f.size || 0;
       } else if (f.side === 'sell') {
+        // Flag is per orderId: a row ingested after annotateFillsByOrderId ran
+        // carries none, yet belongs to the same foreign order.
+        if (f.untrackedSell && f.orderId) untrackedSellOrderIds.add(f.orderId);
         ledgerNetAsset -= f.size || 0;
       }
     }
@@ -2001,6 +2011,10 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       heldOpenAssetQty += buy.size * (1 - consumed);
     }
 
+    // Foreign sells (issues #672/#750): every row of a flagged order counts.
+    let untrackedSellQty = 0;
+    for (const orderId of untrackedSellOrderIds) untrackedSellQty += pairing.sells.get(orderId)?.size || 0;
+
     return {
       realizedPnL: roundUSDC(pairing.realizedPnL),
       realizedAssetPnL: roundAsset(pairing.realizedAssetPnL),
@@ -2008,6 +2022,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       heldOpenAssetQty: roundAsset(heldOpenAssetQty),
       ledgerNetAsset: roundAsset(ledgerNetAsset),
       unpairedSellQty: roundAsset(pairing.unpairedSellQty),
+      untrackedSellQty: roundAsset(untrackedSellQty),
     };
   };
 
@@ -2092,7 +2107,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
   /**
    * Source-of-truth derivation for position.realizedPnL and realizedAssetPnL.
-   * @returns {{realizedPnL: number, realizedAssetPnL: number, unpairedSellQty: number, heldOpenBuyCostBasis: number, heldOpenAssetQty: number, ledgerNetAsset: number}}
+   * @returns {{realizedPnL: number, realizedAssetPnL: number, unpairedSellQty: number, heldOpenBuyCostBasis: number, heldOpenAssetQty: number, ledgerNetAsset: number, untrackedSellQty: number}}
    */
   const getDerivedRealizedPnL = () => computeRealizedFromCyclePairs();
 

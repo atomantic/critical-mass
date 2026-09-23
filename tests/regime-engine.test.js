@@ -1,9 +1,11 @@
 // @ts-check
-const { describe, it } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
 
 const { createRegimeEngine, cancelPartialFillOrder, resolveEntryBudget, makeFillDedupKey, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody } = require('../src/regime-engine');
 const { instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/health-monitor');
+const { getRegimeStateFile } = require('../src/state-tracker');
 
 describe('makeFillDedupKey', () => {
   it('uses order ID alone for terminal fills', () => {
@@ -482,5 +484,243 @@ describe('injectBody duplicate refusal (issue #691, codex review follow-up)', ()
     assert.equal(result.error, 'duplicate body');
     assert.equal(result.bodyId, 'body-merged-survivor');
     assert.equal(pos.celestialBodies.length, 1, 'the phantom body must never be pushed into the live position');
+  });
+});
+
+describe('extendBody (issue #726)', () => {
+  // extendBody's success path calls saveLiveState(), which persists to the
+  // REAL (git-ignored, not the live trading fund's) data/gemini/BTC-USD/
+  // regime-state.json in this repo checkout — every other test in this
+  // file that reaches createRegimeEngine('gemini', 'BTC-USD', ...) never
+  // exercises a path that saves, so this is the first that needs isolation.
+  // saveRegimeState's optimistic version-locking merges PROTECTED_FIELDS
+  // (including celestialBodies) from whatever's already on disk whenever
+  // its version is ahead of this process's in-memory count — a leftover
+  // file from a prior test run would silently clobber the body state these
+  // tests just computed. Delete it before and after every test here so each
+  // one starts and ends from a clean slate.
+  const stateFile = getRegimeStateFile('gemini', 'BTC-USD');
+  beforeEach(() => { fs.rmSync(stateFile, { force: true }); });
+  afterEach(() => { fs.rmSync(stateFile, { force: true }); });
+
+  const PRODUCT_DETAILS = { baseMinSize: '0.0001', baseIncrement: '0.00000001' };
+  const makeBody = (tpOrderId) => ({
+    id: 'body-1',
+    tier: 'satellite',
+    assetQty: 0.005,
+    avgPrice: 90000,
+    costBasis: 450,
+    tpOrderId,
+    tpPrice: tpOrderId ? 95000 : 0,
+    assetOnOrder: tpOrderId ? 0.004 : 0,
+    sourceOrderIds: ['buy-1'],
+    buyOrders: [{ orderId: 'buy-1', price: 90000, assetQty: 0.005, sizeUsdc: 450 }],
+    mergeCount: 0,
+  });
+
+  /**
+   * A running engine with adapter/executor faked exactly like
+   * body-tp-cancel-execution.test.js's makeEngine (the proven fixture for
+   * cancelBodyTpForReplace / #670 flows) — extendBody now drives that same
+   * cancel-and-replace path (codex delta review, round 4).
+   */
+  const makeExtendEngine = ({
+    cancelResult = { cancelled: true, filled: false, filledSize: 0 },
+    placeResult = { success: true, orderId: 'tp-new-1' },
+  } = {}) => {
+    const cancels = [];
+    const placed = [];
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    engine._test.setRunning(true);
+    engine._test.setProductDetails(PRODUCT_DETAILS);
+    engine._test.setAdapter({
+      getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
+      getOpenOrders: async () => [],
+      cancelOrder: async () => ({ success: false }),
+      getOrderFills: async () => [],
+    });
+    engine._test.setOrderExecutor({
+      cancelBodyTpOrder: async (bodyId, orderId) => { cancels.push(orderId); return cancelResult; },
+      placeBodyTpOrder: async (size, price) => { placed.push([size, price]); return placeResult; },
+      checkPendingOrderFills: async () => ({ polled: 0, filled: 0, cancelled: 0 }),
+      markSettled: () => {},
+      removeBodyTracking: () => {},
+      handleOrderFill: () => {},
+      getPendingCounts: () => ({ total: 0 }),
+      getOrderPlacedAt: () => null,
+      isLadderOrder: () => false,
+    });
+    return { engine, cancels, placed };
+  };
+
+  // A retried manual-buy import can discover fills for a buy order that
+  // arrived AFTER the body it already owns was created (the order was still
+  // filling at first import). extendBody grows that body's
+  // assetQty/costBasis in place via the same mergeIntoBody a live DCA-buy
+  // merge uses, then cancels and re-places its TP so it covers the grown
+  // assetQty (codex delta review, round 4) — leaving a stale TP in place
+  // would silently balloon the effective holdback fraction past whatever
+  // calculateTakeProfitSize planned for it at TP-placement time, per
+  // CLAUDE.md, writing the new fill's real cost off as fake zero-cost profit.
+  it('grows an existing live body and re-places its TP sized to the grown assetQty', async () => {
+    const { engine, cancels, placed } = makeExtendEngine();
+    const pos = engine._getPositionState();
+    pos.celestialBodies = [makeBody('tp-existing')];
+
+    // extendBody takes the buy order's FULL current totals (0.005 already
+    // recorded + 0.001 new = 0.006), not a delta — it computes the exact
+    // shortfall (0.001) itself against what body-1's own buyOrders
+    // bookkeeping already shows for buy-1.
+    const result = await engine.extendBody('body-1', { assetQty: 0.006, costBasis: 542, avgPrice: 92000 }, 'buy-1');
+
+    assert.equal(result.success, true);
+    assert.equal(result.bodyId, 'body-1');
+    assert.equal(result.tpPlaced, true);
+    const body = pos.celestialBodies[0];
+    assert.ok(Math.abs(body.assetQty - 0.006) < 1e-9);
+    assert.ok(Math.abs(body.costBasis - 542) < 1e-9);
+    // The stale TP was cancelled and a new one placed against the GROWN body.
+    assert.deepEqual(cancels, ['tp-existing']);
+    assert.equal(placed.length, 1, 'a replacement TP must be placed');
+    assert.equal(body.tpOrderId, 'tp-new-1');
+    assert.notEqual(body.tpOrderId, 'tp-existing', 'the stale TP must not survive the extend');
+    // mergeIntoBody bookkeeping still runs (sourceOrderIds/buyOrders/mergeCount),
+    // fed only the 0.001/92 shortfall, not the full 0.006/542.
+    assert.deepEqual(body.sourceOrderIds, ['buy-1', 'buy-1']);
+    assert.equal(body.buyOrders.length, 2);
+    assert.ok(Math.abs(body.buyOrders[1].assetQty - 0.001) < 1e-9);
+    assert.ok(Math.abs(body.buyOrders[1].sizeUsdc - 92) < 1e-9);
+    assert.equal(body.mergeCount, 1);
+  });
+
+  it('grows a body with no existing TP without attempting any cancel', async () => {
+    const { engine, cancels, placed } = makeExtendEngine();
+    const pos = engine._getPositionState();
+    pos.celestialBodies = [makeBody(null)];
+
+    const result = await engine.extendBody('body-1', { assetQty: 0.006, costBasis: 542, avgPrice: 92000 }, 'buy-1');
+
+    assert.equal(result.success, true);
+    assert.equal(cancels.length, 0, 'nothing to cancel when the body has no resting TP yet');
+    assert.equal(placed.length, 1, 'a TP is placed fresh, already sized to the grown body');
+    assert.ok(Math.abs(pos.celestialBodies[0].assetQty - 0.006) < 1e-9);
+  });
+
+  for (const [name, cancelResult, message] of [
+    ['filled', { cancelled: false, filled: true, filledSize: 0.004 }, /filled/],
+    ['unresolved', { cancelled: false, filled: false, filledSize: 0 }, /unresolved/],
+  ]) {
+    it(`fails without growing the body when the existing TP's cancel is ${name}`, async () => {
+      const { engine, placed } = makeExtendEngine({ cancelResult });
+      const pos = engine._getPositionState();
+      pos.celestialBodies = [makeBody('tp-existing')];
+
+      const result = await engine.extendBody('body-1', { assetQty: 0.006, costBasis: 542, avgPrice: 92000 }, 'buy-1');
+
+      assert.equal(result.success, false);
+      assert.match(result.error, message);
+      assert.equal(placed.length, 0, 'no replacement TP over a body that was never grown');
+      const body = pos.celestialBodies[0];
+      assert.equal(body.assetQty, 0.005, 'the body must NOT grow when the TP cannot be safely repriced');
+      assert.equal(body.tpOrderId, 'tp-existing', 'the stale TP is left exactly as it was');
+    });
+  }
+
+  it('returns success:false without mutating anything when the body is no longer live', async () => {
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    engine._test.setRunning(true);
+    engine._getPositionState().celestialBodies = [];
+
+    const result = await engine.extendBody('body-gone', { assetQty: 0.001, costBasis: 92, avgPrice: 92000 }, 'buy-1');
+
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'Body not found');
+  });
+
+  it('returns success:false when the engine is not running', async () => {
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    // isRunning defaults to false — never set via _test.setRunning here.
+    const result = await engine.extendBody('body-1', { assetQty: 0.001, costBasis: 92, avgPrice: 92000 }, 'buy-1');
+
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'Engine not running');
+  });
+
+  // codex review (round 2): a crash between extendBody's own saveLiveState()
+  // and the caller's fill-ledger linkage write must not let a retry for the
+  // SAME buyOrderId re-apply the same growth and double-count it. Uses a
+  // body with NO existing TP so the identical-retry's no-op path (which
+  // returns before ever touching a TP) is exercised in isolation from the
+  // cancel/replace behavior covered above.
+  it('is idempotent across a retry for the same buyOrderId once the full totals are already covered', async () => {
+    const { engine, cancels, placed } = makeExtendEngine();
+    const pos = engine._getPositionState();
+    pos.celestialBodies = [makeBody(null)];
+
+    // buy-1's full current fill size across ALL its fills is 0.006 (0.005
+    // already recorded + 0.001 new).
+    const totals = { assetQty: 0.006, costBasis: 542, avgPrice: 92000 };
+    const first = await engine.extendBody('body-1', totals, 'buy-1');
+    assert.equal(first.success, true);
+    assert.notEqual(first.alreadyApplied, true);
+    assert.ok(Math.abs(pos.celestialBodies[0].assetQty - 0.006) < 1e-9);
+    assert.equal(placed.length, 1, 'the first (genuine) extend places a TP');
+
+    // Retry with the IDENTICAL totals — simulating a crash right after the
+    // first call's saveLiveState() but before the ledger was ever marked
+    // linked, so a real caller would retry here with the SAME totals (no
+    // new fills arrived in between).
+    const second = await engine.extendBody('body-1', totals, 'buy-1');
+    assert.equal(second.success, true);
+    assert.equal(second.alreadyApplied, true, 'a retry that is already covered must be a verified no-op');
+    assert.equal(cancels.length, 0, 'a no-op retry must never touch the TP it just placed');
+    assert.equal(placed.length, 1, 'no second TP placement on a no-op retry');
+    assert.ok(
+      Math.abs(pos.celestialBodies[0].assetQty - 0.006) < 1e-9,
+      'the delta must not be double-counted on an identical retry'
+    );
+    assert.ok(
+      Math.abs(pos.celestialBodies[0].costBasis - 542) < 1e-9,
+      'costBasis must not be double-counted on an identical retry either'
+    );
+  });
+
+  // codex review round 3 — the specific compounding bug a naive
+  // delta-plus-expectedTotalQty check still had: if the SAME crash window
+  // is hit, but MORE fills arrive before the retry (the normal case for a
+  // still-filling order, which is this whole feature's premise), a
+  // delta-based retry would re-include the already-applied portion. Since
+  // extendBody now takes FULL totals and computes the shortfall itself
+  // against buyOrders bookkeeping, a growing total across repeated calls
+  // must converge to exactly the latest total — never more.
+  it('does not double-count an already-applied portion when a later call arrives with a LARGER total (compounding retry)', async () => {
+    const { engine, placed } = makeExtendEngine();
+    const pos = engine._getPositionState();
+    pos.celestialBodies = [makeBody(null)];
+
+    // First extend applies d1 (0.001/$92) — simulates the call whose ledger
+    // link then crashed before persisting.
+    const first = await engine.extendBody('body-1', { assetQty: 0.006, costBasis: 542, avgPrice: 92000 }, 'buy-1');
+    assert.equal(first.success, true);
+    assert.ok(Math.abs(pos.celestialBodies[0].assetQty - 0.006) < 1e-9);
+
+    // Before the retry, MORE of the order fills (d2 = 0.002/$184) — the
+    // retry's caller (manual-trade-import.js) recomputes totals from EVERY
+    // currently-known ledger row, which now covers d1+d2. The naive fix
+    // would merge d1+d2 again; the correct fix merges only the shortfall (d2).
+    const second = await engine.extendBody('body-1', { assetQty: 0.008, costBasis: 726, avgPrice: 91000 }, 'buy-1');
+    assert.equal(second.success, true);
+    assert.notEqual(second.alreadyApplied, true, 'd2 is genuinely new and must actually be applied');
+    assert.ok(
+      Math.abs(pos.celestialBodies[0].assetQty - 0.008) < 1e-9,
+      'the body must converge to exactly the latest total (0.008), not overshoot from double-counting d1'
+    );
+    assert.ok(
+      Math.abs(pos.celestialBodies[0].costBasis - 726) < 1e-9,
+      'costBasis must converge to exactly the latest total (726), not overshoot from double-counting d1'
+    );
+    // Both the genuine d1 extend and the genuine d2 extend each place their
+    // own TP over the then-current body (no TP existed for either call).
+    assert.equal(placed.length, 2);
   });
 });
