@@ -343,6 +343,22 @@ describe('engine-recalculate-handler', () => {
       assert.equal(saved.activeCycleId, 'cycle-3', 'marker follows the rename');
     });
 
+    it('saves the live cycle\'s re-derived buy count when apply attributed fills into it (#705)', async () => {
+      const h = createHarness();
+      h.regimeStateByFund.set(fundKey(EXCHANGE, PAIR_A), { position: makeStaleFixture({ activeCycleId: 'cycle-2', cycleBuys: 1 }), regime: {} });
+      const ledger = createFakeLedger(h.calls, PAIR_A, {
+        recalc: { cyclesCompleted: 1, cycleDetails: [], orphansFixed: 1, liveCycleOrphansAttributed: 1, activeCycleId: 'cycle-2', idMap: {} },
+      });
+      ledger.getCurrentCycleAllBuysCount = () => 2;
+      h.standaloneLedgersByFund.set(fundKey(EXCHANGE, PAIR_A), ledger);
+
+      await h.recalculate({ apply: true }, EXCHANGE, PAIR_A);
+
+      const saved = h.calls.find((c) => c.op === 'saveRegimeState').position;
+      assert.equal(saved.cycleBuys, 2);
+      assert.equal(saved.activeCycleId, 'cycle-2');
+    });
+
     it('uses the read-only preview accessor on a stopped preview', async () => {
       const h = createHarness();
       h.regimeStateByFund.set(fundKey(EXCHANGE, PAIR_A), { position: makeStaleFixture({ activeCycleId: 'cycle-2' }), regime: {} });

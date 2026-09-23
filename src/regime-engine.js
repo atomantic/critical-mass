@@ -1118,6 +1118,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     for (const field of ['totalAsset', 'totalCostBasis', 'avgCostBasis', 'cycleBuys']) {
       if (rebuilt[field] !== undefined) positionState[field] = rebuilt[field];
     }
+    // A recovered core buy that is newer than the entry clock moves it, so the
+    // min-interval / volatility entry triggers don't fire again too soon or
+    // against a stale anchor. Only ever forward: body-owned buys are absent
+    // from the core rebuild, whose lastEntryTime would otherwise regress it.
+    if (rebuilt.lastEntryTime > (positionState.lastEntryTime || 0)) {
+      positionState.lastEntryTime = rebuilt.lastEntryTime;
+      positionState.lastEntryPrice = rebuilt.lastEntryPrice;
+      positionState.anchorPrice = rebuilt.anchorPrice;
+    }
     const bodies = positionState.celestialBodies || [];
     if (bodies.length > 0) {
       celestialHierarchy.syncPositionState(positionState, bodies);

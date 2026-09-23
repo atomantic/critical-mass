@@ -175,6 +175,14 @@ const registerEngineRecalculateHandler = (registry, deps) => {
         };
         const nextCycleId = translateActiveCycleId(persistedCycleId, recalc);
         if (nextCycleId) position.activeCycleId = nextCycleId;
+        // Fills attributed INTO the live cycle (#705) change its buy count;
+        // a stopped fund's status reads the saved counter, and a later recalc
+        // won't re-attribute them. Every buy is counted, as boot does in
+        // celestial mode (in legacy mode there are no body-owned buys, so the
+        // two counts agree). Boot re-derives position totals from the ledger.
+        if (recalc.liveCycleOrphansAttributed > 0 && typeof fillLedger.getCurrentCycleAllBuysCount === 'function') {
+          position.cycleBuys = fillLedger.getCurrentCycleAllBuysCount();
+        }
         if (position.celestialState) {
           position.celestialState = {
             ...position.celestialState,

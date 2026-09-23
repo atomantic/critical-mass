@@ -383,6 +383,9 @@ describe('#705 live-cycle start boundary and counter resync', () => {
     fill('f705-c1b', 'f705-c1-buy', 'buy', 10, 'cycle-1');
     fill('f705-c1s', 'f705-c1-sell', 'sell', 11, 'cycle-1');
     fill('f705-c2b', 'f705-c2-buy', 'buy', 21, 'cycle-2');
+    // A later partial row of the live buy order, missed while down: attributed
+    // by its order (not by time), so it moves the entry clock forward.
+    fill('f705-c2b-p2', 'f705-c2-buy', 'buy', 21.5, null);
     // Engine was down at t=22h when this buy filled; sync-fills re-imported it null.
     fill('f705-miss', 'f705-missed-buy', 'buy', 22, null);
     // …and an older historical orphan that predates the reset at t=20h.
@@ -391,15 +394,18 @@ describe('#705 live-cycle start boundary and counter resync', () => {
     pos.activeCycleId = 'cycle-2';
     pos.activeCycleStartedAt = T0 + 20 * 3600_000;
     pos.cycleBuys = 1;
+    pos.lastEntryTime = T0 + 21 * 3600_000;
 
     eng.recalculateAndRefresh();
+
+    assert.equal(pos.lastEntryTime, T0 + 21.5 * 3600_000, 'entry clock follows the recovered partial row');
 
     assert.equal(ledger.getCurrentCycleAllBuysCount(), 2, 'the missed buy now counts toward the live cycle');
     assert.equal(pos.cycleBuys, 2, 'cycleBuys is resynced so the per-cycle entry limit sees it');
     // …but with no bodies the core totals come from rebuildPositionFromFills,
     // and an unlinked timestamp-folded buy must not enter the position a core
     // TP would be sized from (no automatic sell for it — R2).
-    assert.equal(pos.totalAsset, 0.01, 'only the engine-stamped live buy is in the core position');
+    assert.equal(pos.totalAsset, 0.02, 'only the live buy order (both rows) is in the core position');
     assert.ok(ledger.getCurrentCycleFills().some(f => f.tradeId === 'f705-miss'));
     assert.ok(!ledger.getCurrentCycleFills().some(f => f.tradeId === 'f705-old'), 'pre-reset orphan stays out');
     assert.equal(pos.activeCycleId, ledger.getCurrentCycleId());
