@@ -463,3 +463,82 @@ describe('buy-merge cancellation outcomes — characterization (#331)', () => {
     });
   }
 });
+
+describe('untracked sell with no bodies — only the engine\'s own TP closes the cycle (issue #672)', () => {
+  const CLOSED_TRADES = path.join(JUNK_DIR, 'closed-trades.json');
+  const readClosed = () => (fs.existsSync(CLOSED_TRADES) ? JSON.parse(fs.readFileSync(CLOSED_TRADES, 'utf8')) : []);
+  const sellFills = (orderId, size, price) => [{
+    tradeId: `${orderId}-t1`,
+    orderId,
+    side: 'sell',
+    price: String(price),
+    size: String(size),
+    totalCommission: '0.5',
+    rebate: '0',
+    liquidityIndicator: 'MAKER',
+    tradeTime: new Date().toISOString(),
+  }];
+  const makeCoreEngine = ({ orderId, activeTpOrderId = null, executor } = {}) => {
+    const eng = makeEngine({
+      bodies: [],
+      adapter: { getOrderFills: async (id) => sellFills(id, 0.01, 50000) },
+      executor,
+    });
+    const pos = eng._getPositionState();
+    pos.totalAsset = 0.0105;
+    pos.avgCostBasis = 49000;
+    pos.totalCostBasis = 0.0105 * 49000;
+    pos.activeTpOrderId = activeTpOrderId;
+    eng._getConfig().maxUsdcDeployed = 10000;
+    return { eng, pos, fill: { orderId, side: 'sell', status: 'FILLED', filledSize: 0.01, averageFilledPrice: 50000 } };
+  };
+  const findTrade = (id) => readClosed().find(t => t.sellOrderId === id);
+
+  it('a foreign (manual) sell is annotated untrackedSell and never credits capital, bumps cycles, or records a trade', async () => {
+    const { eng, pos, fill } = makeCoreEngine({ orderId: 'manual-672' });
+    const closedBefore = readClosed().length;
+    await eng._test.handleOrderFill(fill);
+    assert.equal(eng._getConfig().maxUsdcDeployed, 10000, 'maxUsdcDeployed unchanged');
+    assert.equal(pos.cyclesCompleted || 0, 0, 'cyclesCompleted unchanged');
+    assert.equal(readClosed().length, closedBefore, 'no closed trade written');
+    assert.equal(findTrade('manual-672'), undefined);
+    const fills = eng.getFillLedger().getFillsForOrder('manual-672');
+    assert.ok(fills.length > 0 && fills.every(f => f.untrackedSell === true), 'fill carries untrackedSell');
+    assert.ok(fills.every(f => !f.capitalCredited), 'no capital claim stamped');
+    assert.equal(pos.avgCostBasis, 49000, 'cycle not reset');
+  });
+
+  it('the engine\'s own core TP (activeTpOrderId) still closes the cycle', async () => {
+    const { eng, pos, fill } = makeCoreEngine({ orderId: 'tp-core-672', activeTpOrderId: 'tp-core-672' });
+    await eng._test.handleOrderFill(fill);
+    assert.equal(pos.cyclesCompleted, 1);
+    assert.ok(eng._getConfig().maxUsdcDeployed > 10000, 'capital credited with the cycle profit');
+    assert.ok(findTrade('tp-core-672'), 'closed trade recorded');
+    assert.equal(pos.activeTpOrderId, null, 'cycle reset');
+  });
+
+  it('an executor-tracked take_profit closes the cycle even after activeTpOrderId was cleared', async () => {
+    const { eng, pos, fill } = makeCoreEngine({
+      orderId: 'tp-exec-672',
+      executor: { isTrackedTpOrder: (id) => id === 'tp-exec-672' },
+    });
+    await eng._test.handleOrderFill(fill);
+    assert.equal(pos.cyclesCompleted, 1);
+    assert.ok(findTrade('tp-exec-672'), 'closed trade recorded');
+  });
+
+  it('a retry of an already-claimed close finishes idempotently without re-crediting capital', async () => {
+    // First pass claimed the credit and resetCycle() nulled activeTpOrderId,
+    // then something after it threw — the retry must still be treated as the
+    // engine's own TP (not downgraded to untrackedSell) and must not re-credit.
+    const { eng, pos, fill } = makeCoreEngine({ orderId: 'tp-retry-672' });
+    const ledger = eng.getFillLedger();
+    for (const f of sellFills('tp-retry-672', 0.01, 50000)) ledger.ingestFill(f, null);
+    assert.equal(ledger.claimCapitalCredit('tp-retry-672'), true);
+    await eng._test.handleOrderFill(fill);
+    assert.equal(eng._getConfig().maxUsdcDeployed, 10000, 'capital not credited a second time');
+    assert.equal(pos.cyclesCompleted || 0, 0, 'cycle counter not bumped a second time');
+    assert.ok(findTrade('tp-retry-672'), 'closed trade recorded on the retry');
+    assert.ok(ledger.getFillsForOrder('tp-retry-672').every(f => !f.untrackedSell), 'not mislabelled untrackedSell');
+  });
+});

@@ -617,6 +617,10 @@ const mergeToRegime = (exchange, pair) => {
   const liveCycleId = fillLedger.getCurrentCycleId();
   if (liveCycleId && liveCycleId !== position.activeCycleId) {
     position.activeCycleId = liveCycleId;
+    // Keep the start time paired with the ID (#705): a freshly started cycle
+    // reports its creation time, a reused/inferred one reports null (unknown
+    // — recalculateCycles then bounds it by its own earliest fill).
+    position.activeCycleStartedAt = fillLedger.getCurrentCycleStartedAt();
     // Persist the corrected boundary NOW, before any further mutation.
     // ingestDcaOrdersIntoLedger already wrote the new cycle's fills to
     // fill-ledger.json (ingestFill/annotateFillsByOrderId auto-persist) —

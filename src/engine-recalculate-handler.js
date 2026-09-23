@@ -138,7 +138,9 @@ const registerEngineRecalculateHandler = (registry, deps) => {
       // (possibly completed) cycle on the next start (#675).
       const persistedCycleId = currentState.position?.activeCycleId;
       if (isPersistedCycleId(persistedCycleId) && typeof fillLedger.setCurrentCycleId === 'function') {
-        fillLedger.setCurrentCycleId(persistedCycleId);
+        // …with its persisted start time, the live-cycle boundary that
+        // null-cycle fill attribution folds against (#705).
+        fillLedger.setCurrentCycleId(persistedCycleId, currentState.position?.activeCycleStartedAt ?? null);
       }
       // A preview must not mutate/persist the ledger (recalculateCycles
       // persists orphan placement and renumbering) — same rule as the
@@ -173,6 +175,14 @@ const registerEngineRecalculateHandler = (registry, deps) => {
         };
         const nextCycleId = translateActiveCycleId(persistedCycleId, recalc);
         if (nextCycleId) position.activeCycleId = nextCycleId;
+        // Fills attributed INTO the live cycle (#705) change its buy count;
+        // a stopped fund's status reads the saved counter, and a later recalc
+        // won't re-attribute them. Every buy is counted, as boot does in
+        // celestial mode (in legacy mode there are no body-owned buys, so the
+        // two counts agree). Boot re-derives position totals from the ledger.
+        if (recalc.liveCycleOrphansAttributed > 0 && typeof fillLedger.getCurrentCycleAllBuysCount === 'function') {
+          position.cycleBuys = fillLedger.getCurrentCycleAllBuysCount();
+        }
         if (position.celestialState) {
           position.celestialState = {
             ...position.celestialState,

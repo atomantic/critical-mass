@@ -361,7 +361,9 @@ const restorePersistedCycleId = (fillLedger, positionState, logger, exchange) =>
       cycleId: persistedCycleId,
     });
   }
-  fillLedger.setCurrentCycleId(persistedCycleId);
+  // Carry the persisted start time (#705) so recalculateCycles has a live-
+  // cycle boundary even while the post-reset cycle holds no fills yet.
+  fillLedger.setCurrentCycleId(persistedCycleId, positionState.activeCycleStartedAt ?? null);
   return true;
 };
 
@@ -411,8 +413,13 @@ const repairHistoricalFillAnnotations = ({
       for (const oid of (body.sourceOrderIds || [])) knownBuyOrderIds.add(oid);
       for (const buy of (body.buyOrders || [])) if (buy.orderId) knownBuyOrderIds.add(buy.orderId);
     }
+    // Fills recalculateCycles folded into this cycle purely by timestamp
+    // (#705) are excluded: nothing links them to an engine order (sync-fills
+    // re-imports manual trades too), so adopting one into a body would place
+    // an automatic sell for it — manual review only (R2, pnl-architecture.md).
     const orphanBuyFills = cycleFills.filter(f =>
       f.side === 'buy' && !f.bodyId
+      && f.cycleAttribution !== 'timeframe'
       && !String(f.tradeId).startsWith('dca-convert')
       && !knownBuyOrderIds.has(f.orderId)
     );
@@ -1088,6 +1095,50 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       cycleId: next,
     });
     positionState.activeCycleId = next;
+    return true;
+  };
+
+  /**
+   * After a recalc that attributed null-cycle fills INTO the live cycle
+   * (#705), live-cycle membership changed, so the position counters derived
+   * from it at boot (cycleBuys, and the core totals) are stale — an
+   * under-counted cycleBuys would let the engine bypass its per-cycle entry
+   * limit. (Timestamp-folded buys raise cycleBuys only; rebuildPositionFromFills
+   * keeps them out of the core totals so no TP is auto-placed for them — R2.) Re-derive them from the ledger exactly as the reconcile path does:
+   * core totals from the current cycle's fills, body totals from bodies
+   * (authoritative in celestial mode), and cycleBuys from all current-cycle
+   * buy orders in celestial mode (issue #210-A).
+   * @param {{liveCycleOrphansAttributed?: number}} recalc
+   * @returns {boolean} Whether counters were resynced
+   */
+  const resyncLiveCycleCountersAfterRecalc = (recalc) => {
+    if (!(recalc?.liveCycleOrphansAttributed > 0)) return false;
+    const before = { cycleBuys: positionState.cycleBuys, totalAsset: positionState.totalAsset };
+    const rebuilt = fillLedger.rebuildPositionFromFills();
+    for (const field of ['totalAsset', 'totalCostBasis', 'avgCostBasis', 'cycleBuys']) {
+      if (rebuilt[field] !== undefined) positionState[field] = rebuilt[field];
+    }
+    // A recovered core buy that is newer than the entry clock moves it, so the
+    // min-interval / volatility entry triggers don't fire again too soon or
+    // against a stale anchor. Only ever forward: body-owned buys are absent
+    // from the core rebuild, whose lastEntryTime would otherwise regress it.
+    if (rebuilt.lastEntryTime > (positionState.lastEntryTime || 0)) {
+      positionState.lastEntryTime = rebuilt.lastEntryTime;
+      positionState.lastEntryPrice = rebuilt.lastEntryPrice;
+      positionState.anchorPrice = rebuilt.anchorPrice;
+    }
+    const bodies = positionState.celestialBodies || [];
+    if (bodies.length > 0) {
+      celestialHierarchy.syncPositionState(positionState, bodies);
+    }
+    if (config.celestialEnabled !== false) {
+      positionState.cycleBuys = fillLedger.getCurrentCycleAllBuysCount();
+    }
+    logger.info(`🔧 [${exchange}] Resynced live-cycle counters after attributing ${recalc.liveCycleOrphansAttributed} orphan fill(s): cycleBuys ${before.cycleBuys} → ${positionState.cycleBuys}, ${baseCurrency} ${before.totalAsset} → ${positionState.totalAsset}`, {
+      liveCycleOrphansAttributed: recalc.liveCycleOrphansAttributed,
+      cycleBuys: positionState.cycleBuys,
+      totalAsset: positionState.totalAsset,
+    });
     return true;
   };
 
@@ -1885,7 +1936,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Orphan recovery may renumber cycles. Re-point the durable boundary
       // (#606) at the ledger's live cycle and persist it now, or the next
       // restart restores a stale ID that names a different cycle (#675).
-      if (syncActiveCycleIdAfterRecalc(recalcResult)) saveLiveState();
+      // Folding null-cycle fills into the live cycle (#705) changes its
+      // membership, so the counters restored above must be re-derived too.
+      const cycleIdChanged = syncActiveCycleIdAfterRecalc(recalcResult);
+      if (resyncLiveCycleCountersAfterRecalc(recalcResult) || cycleIdChanged) saveLiveState();
       if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0 || sealedLegacy > 0) {
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         refreshRealizedFromCyclePairs();
@@ -2010,11 +2064,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // entry was shrunk) would leave the entry at its full notional
           // beside that body, overstating deployed capital. The main pass
           // books everything the exchange reported, so the exchange's own
-          // unfilled remainder is the exact figure to keep. (Not after a
-          // legacy-row failure: tranches the ledger lacks are still unbooked,
-          // and the later pass that books them shrinks the entry itself.)
+          // unfilled remainder (open-order `size`, issue #684) is the exact
+          // figure to keep. (Not after a legacy-row failure: tranches the
+          // ledger lacks are still unbooked, and the later pass that books
+          // them shrinks the entry itself.)
           if (mainPassStarted && isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)) {
-            const remaining = Math.max(0, Number(order.size || 0) - Number(order.filledSize || 0));
+            const remaining = Math.max(0, Number(order.size) || 0);
             positionState.pendingEntryOrders = (positionState.pendingEntryOrders || []).map(e => (
               e.orderId !== order.orderId ? e : { ...e, assetQty: remaining, sizeUsdc: remaining * Number(e.price || order.price || 0) }
             ));
@@ -2053,25 +2108,32 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // Check if this "orphan" has partial fills — if so, restore it instead of cancelling
           if (order.filledSize && order.filledSize > 0) {
             logger.info(`📦 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} has partial fills (${order.filledSize} ${baseCurrency}) — restoring instead of cancelling`);
+            // Every sibling restorePendingOrder({type: 'entry', ...}) call in
+            // this file sets `size` to the order's ORIGINAL placed quantity
+            // (e.g. savedEntry.assetQty above), not what's left unfilled —
+            // the dashboard reads it as the "of N" denominator alongside
+            // filledSize (RegimeDashboard.jsx: "X of Y filled"). order.size
+            // is now the REMAINING unfilled quantity (issue #684); use
+            // order.originalSize here to match the established convention.
             const orphanPlacedAt = order.createdTime ? new Date(order.createdTime).getTime() : Date.now();
             orderExecutor.restorePendingOrder(order.orderId, {
               type: 'entry',
               price: order.price,
-              size: order.size,
-              sizeUsdc: order.size * order.price,
+              size: order.originalSize,
+              sizeUsdc: order.originalSize * order.price,
               placedAt: orphanPlacedAt,
             });
             // Keep the adopted order in the persisted pending list so it
             // survives the next restart, then book its filled tranche through
             // the standard pipeline (issue #671) — which also shrinks this
-            // entry to its unfilled remainder.
+            // entry from its original quantity to its unfilled remainder.
             if (!positionState.pendingEntryOrders) positionState.pendingEntryOrders = [];
             if (!positionState.pendingEntryOrders.some(e => e.orderId === order.orderId)) {
               positionState.pendingEntryOrders.push({
                 orderId: order.orderId,
                 price: order.price,
-                assetQty: order.size,
-                sizeUsdc: order.size * order.price,
+                assetQty: order.originalSize,
+                sizeUsdc: order.originalSize * order.price,
                 placedAt: orphanPlacedAt,
               });
             }
@@ -2871,6 +2933,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // CANCELLED-with-execution is terminal even when isPartialFill is true.
     const keepEntryTracked = fillData.isPartialFill
       && fillData.side?.toLowerCase() === 'buy' && !isTerminalStatus(fillData);
+    // Snapshot the legacy core TP id BEFORE any await (issue #672): a
+    // concurrent fill's resetCycle() nulls positionState.activeTpOrderId, and
+    // the untracked-sell branch below must still recognise this order as the
+    // engine's own TP when deciding whether it may close the cycle.
+    const entryCoreTpOrderId = positionState.activeTpOrderId;
     // Freeze a partially-filled sell before resizing — see cancelPartialFillOrder.
     if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'sell') {
       const cancellation = await cancelPartialFillOrder({ adapter, exchange, pair: productId }, fillData.orderId);
@@ -3573,23 +3640,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // TP it was never part of. The tranche objects themselves are shared
         // with the live body, which is what advances its consumedQty.
         //
-        // Consume exactly what leaves a body: with the live body still present
-        // that is only the sold qty (the block below deducts nothing else), so
-        // held cost keeps matching the bodies. On a complete fill that body
-        // still holds the holdback it also books as reserves — a model double
-        // count tracked in issue #718, which the ledger coverage reading then
-        // shows instead of hiding. Only when no live body holds its tranches
-        // did the snapshot body close: sold + booked holdback, every tranche in
-        // full (issue #607).
-        // A roll-up moves the snapshot's tranche objects into the surviving
-        // target, so "the snapshot body's id is gone" does not mean its asset
-        // left the model: a late fill of the source's old TP (the
-        // completedMergeTpOrders window) must not close tranches a live body
-        // still carries.
+        // Consume exactly what leaves a body. A true partial with the live body
+        // still present consumes only the sold qty (the block below deducts
+        // nothing else), so held cost keeps matching the bodies. A complete
+        // fill closes the snapshot body even though its live object remains:
+        // sold + booked holdback, every tranche it covered in full — and the
+        // block below removes the same whole snapshot from the live body, so
+        // the holdback is not also left in it as inventory (issue #718).
+        // With no live body, the snapshot body closed only if no other body
+        // holds its tranches (issue #607): a roll-up moves the snapshot's
+        // tranche objects into the surviving target, so "the snapshot body's
+        // id is gone" does not mean its asset left the model — a late fill of
+        // the source's old TP (the completedMergeTpOrders window) must not
+        // close tranches a live body still carries.
         const snapshotTranches = new Set(mergeSnapshot.buyOrders || []);
         const heldElsewhere = (positionState.celestialBodies || [])
           .some(b => (b.buyOrders || []).some(e => snapshotTranches.has(e)));
-        const snapshotClosed = !liveMerged && !heldElsewhere;
+        const snapshotClosed = liveMerged ? !liveOwnsRemainder : !heldElsewhere;
         recordBodyConsumption({
           entries: mergeSnapshot.buyOrders,
           bodyQty: mergeSnapshot.assetQty,
@@ -3613,12 +3680,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // the dollar amount removed (proratedCostBasis / pre-deduction
           // liveMerged.costBasis) makes that reconciliation exact by
           // construction, regardless of the fold-in's price.
+          //
+          // What leaves the live pool depends on whether the snapshot body
+          // closed. A true partial removes only the sold tranche at its
+          // prorated cost. A complete fill removes the WHOLE snapshot — sold
+          // qty plus the designed holdback just booked as zero-cost reserves,
+          // at its full cost — exactly as the normal path splices a filled
+          // body out entirely. Deducting only the sold qty there left the
+          // holdback in the live body as well as in reserves, so it was
+          // counted twice and re-listed for sale (issue #718). Only a fold-in
+          // the snapshot's TP never covered stays behind.
+          const removedQty = snapshotClosed
+            ? Math.max(mergeSnapshot.assetQty, summary.totalSize)
+            : summary.totalSize;
+          const removedCost = snapshotClosed ? mergeSnapshot.costBasis : proratedCostBasis;
           const liveConsumedRatio = liveMerged.costBasis > 0
-            ? Math.min(proratedCostBasis / liveMerged.costBasis, 1)
+            ? Math.min(removedCost / liveMerged.costBasis, 1)
             : 1;
 
-          liveMerged.assetQty = roundAsset(Math.max(0, liveMerged.assetQty - summary.totalSize));
-          liveMerged.costBasis = roundUSDC(Math.max(0, liveMerged.costBasis - proratedCostBasis));
+          liveMerged.assetQty = roundAsset(Math.max(0, liveMerged.assetQty - removedQty));
+          liveMerged.costBasis = roundUSDC(Math.max(0, liveMerged.costBasis - removedCost));
 
           // Track the cumulative fraction of the body's ORIGINAL cost basis
           // already realized via partial sells (mirrors the normal partial-fill
@@ -3627,10 +3708,34 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // is simultaneously realized via bodyPnl above — double-counting it.
           const prevConsumed = liveMerged.consumedCostFraction || 0;
           liveMerged.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - liveConsumedRatio);
-          // Legacy fallback for buys the sale could not record per order. A
-          // tracked buy ignores this fraction — and a tracked fold-in the
-          // snapshot's TP never covered must not be charged it at all.
-          stampConsumedCostFraction(liveMerged, liveConsumedRatio);
+          if (snapshotClosed) {
+            // The closed snapshot's tranches (consumed in full above) leave
+            // the live body with its asset, so its next TP neither re-links
+            // them nor spreads a later sale over them. Link them to THIS sell
+            // like the normal full-fill path does: a TP re-placed on the live
+            // body after the snapshot re-stamped them with an order this
+            // branch cancels, which would leave an untracked buy held open
+            // with no body to re-link it. The untouched fold-in pool must not
+            // be charged this sale's cost fraction.
+            liveMerged.buyOrders = (liveMerged.buyOrders || []).filter(e => !snapshotTranches.has(e));
+            const keptIds = new Set(liveMerged.buyOrders.map(e => e && e.orderId));
+            const closedIds = new Set([
+              ...(mergeSnapshot.sourceOrderIds || []),
+              ...(mergeSnapshot.buyOrders || []).map(e => e && e.orderId),
+            ]);
+            liveMerged.sourceOrderIds = (liveMerged.sourceOrderIds || [])
+              .filter(id => keptIds.has(id) || !closedIds.has(id));
+            const closedOnlyIds = [...closedIds].filter(id => id && id !== 'core-migration' && !keptIds.has(id));
+            if (closedOnlyIds.length > 0) {
+              fillLedger.annotateFillsByOrderIds(closedOnlyIds, { sellOrderId: fillData.orderId });
+            }
+            liveMerged.avgPrice = liveMerged.assetQty > 0 ? liveMerged.costBasis / liveMerged.assetQty : 0;
+          } else {
+            // Legacy fallback for buys the sale could not record per order. A
+            // tracked buy ignores this fraction — and a tracked fold-in the
+            // snapshot's TP never covered must not be charged it at all.
+            stampConsumedCostFraction(liveMerged, liveConsumedRatio);
+          }
 
           // The resting TP was sized for the pre-deduction (oversized) qty — cancel
           // and clear it so a correctly-sized TP is re-placed for the remaining body.
@@ -3665,6 +3770,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               );
             }
           }
+        }
+
+        // A closed snapshot with no fold-in drains the live body to zero: drop
+        // it like the normal full-fill path does rather than leave an empty
+        // body that never re-arms (issue #718). No cycle reset here: a body
+        // drains to zero only when its TP executed during a merge cancel, and
+        // that caller is either a buy-merge about to create the buy's own body
+        // or a roll-up whose other body remains. A TP whose cancel was not
+        // confirmed keeps the body so reconciliation can still find that order.
+        if (liveMerged && snapshotClosed && !(liveMerged.assetQty > 0) && !liveMerged.tpOrderId) {
+          // In place: the buy-merge caller still holds this array.
+          const drainedIdx = positionState.celestialBodies.indexOf(liveMerged);
+          if (drainedIdx !== -1) positionState.celestialBodies.splice(drainedIdx, 1);
         }
 
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
@@ -3923,12 +4041,35 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           return;
         }
 
+        // Guard (issue #672): only the engine's OWN legacy core TP may close
+        // the cycle. The exchange user channel delivers every sell on the
+        // product — a manual sale of reserves, the DCA/manual-trades tooling,
+        // scripts — and between celestial cycles there are no bodies, so
+        // without this a foreign sell was booked as a cycle close crediting
+        // its full proceeds to maxUsdcDeployed. Ownership is proven by:
+        //  - the core TP id snapshotted before any await, or still current;
+        //  - the executor tracking it as `take_profit` (pending, active, or
+        //    recently settled — covers polling-backstop / cancel-race paths);
+        //  - a prior pass having already claimed its capital credit — a
+        //    retry of a close whose resetCycle() already nulled
+        //    activeTpOrderId must still finish closing idempotently.
+        const sellOrderId = fillData.orderId;
+        const isOwnCoreTp = !!sellOrderId && (
+          sellOrderId === entryCoreTpOrderId
+          || sellOrderId === positionState.activeTpOrderId
+          || (typeof orderExecutor.isTrackedTpOrder === 'function' && orderExecutor.isTrackedTpOrder(sellOrderId))
+          || existingFills.some(f => f.capitalCredited)
+        );
+
         // Guard: if celestial bodies still exist, this is NOT a legitimate cycle-closing TP.
         // It's likely a duplicate/untracked satellite sell. Log and annotate but don't complete the cycle.
         const remainingBodies = (positionState.celestialBodies || []).length;
-        if (remainingBodies > 0) {
-          logger.warn(`⚠️ [${exchange}] Untracked sell ${fillData.orderId.slice(0,8)} (${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}) — ${remainingBodies} celestial bodies still active, skipping cycle completion`);
-          fillLedger.annotateFillsByOrderId(fillData.orderId, { untrackedSell: true });
+        if (remainingBodies > 0 || !isOwnCoreTp) {
+          const reason = remainingBodies > 0
+            ? `${remainingBodies} celestial bodies still active`
+            : 'not the engine\'s take-profit order (manual/external sell?)';
+          logger.warn(`⚠️ [${exchange}] Untracked sell ${String(sellOrderId).slice(0,8)} (${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}) — ${reason}, skipping cycle completion`);
+          fillLedger.annotateFillsByOrderId(sellOrderId, { untrackedSell: true });
           saveLiveState();
           fillLedger.persist();
         } else {
@@ -4006,7 +4147,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const cycleFills = fillLedger.getCurrentCycleFills();
           const buyOrderIds = new Set();
           for (const fill of cycleFills) {
-            if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId) {
+            // Timestamp-folded buys (#705) are not in the core position this TP sold.
+            if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId && fill.cycleAttribution !== 'timeframe') {
               fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: fillData.orderId });
               buyOrderIds.add(fill.orderId);
             }
@@ -5697,7 +5839,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Link all current-cycle non-body buys to this sell order (skip body-owned buys)
       const cycleFills = fillLedger.getCurrentCycleFills();
       for (const fill of cycleFills) {
-        if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId) {
+        // Timestamp-folded buys (#705) are not in the core position this TP sells.
+        if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId && fill.cycleAttribution !== 'timeframe') {
           fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: result.orderId });
         }
       }
@@ -5767,6 +5910,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // position state. The fill ledger remains the fallback for legacy state
     // files that predate this marker.
     positionState.activeCycleId = fillLedger.startNewCycle();
+    // Persist WHEN the cycle began too: it is the boundary recalculateCycles
+    // uses to fold null-cycle fills the engine missed during downtime into
+    // this cycle, and an empty post-reset cycle has no fill to infer it from (#705).
+    positionState.activeCycleStartedAt = fillLedger.getCurrentCycleStartedAt();
     riskManager.resetCycleTracking();
 
     const bodyCount = bodies.length;
@@ -6387,7 +6534,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.lastTpPrice = intent.price ?? 0;
       positionState.assetOnOrder = intent.size ?? 0;
       const sourceIds = new Set(fillLedger.getCurrentCycleFills()
-        .filter(f => f.side === 'buy' && !f.isBodyOwned && !f.isSatellite && !f.bodyId)
+        .filter(f => f.side === 'buy' && !f.isBodyOwned && !f.isSatellite && !f.bodyId && f.cycleAttribution !== 'timeframe')
         .map(f => f.orderId));
       fillLedger.annotateFillsByOrderIds(sourceIds, { sellOrderId: found.orderId });
     }
@@ -6603,6 +6750,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     restorePersistedCycleId(fillLedger, positionState, logger, exchange);
     const recalc = fillLedger.recalculateCycles();
     syncActiveCycleIdAfterRecalc(recalc);
+    resyncLiveCycleCountersAfterRecalc(recalc);
     positionState.cyclesCompleted = recalc.cyclesCompleted;
     // Source of truth — cycle pairs, NOT FIFO/closed-trades. Also updates
     // realizedAssetPnL and heldAssetCostBasis and persists.
@@ -7397,6 +7545,7 @@ module.exports = {
   createInitialMarketState,
   createInitialPositionState,
   restorePersistedCycleId,
+  repairHistoricalFillAnnotations,
   cancelPartialFillOrder,
   buildPartialFillData,
   makeFillDedupKey,

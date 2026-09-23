@@ -1825,24 +1825,27 @@ describe('Fill Ledger', () => {
       assert.equal(ledger.getCurrentCycleAllBuysCount(), 0);
     });
 
-    it('keeps a newer incomplete orphan group in its own cycle without displacing the live one', () => {
+    it('folds a newer unlinked orphan buy into the live cycle without displacing it (#705)', () => {
       const ledger = createTestLedger('orphan-newer');
       seedLiveCycles(ledger);
       // A buy re-imported with cycleId null that postdates the live cycle's
-      // start. Attributing it is out of scope for recovery (it may be linked
-      // to fills on either side); what matters is that it never replaces
-      // the live cycle.
+      // start (no persisted start time here, so the boundary is the live
+      // cycle's earliest fill at t=20h): a fill the engine missed during
+      // downtime inside the live cycle. It joins the live cycle; the live
+      // cycle keeps its identity.
       ledger.ingestFill(makeBuyFill({ tradeId: 'late-b', orderId: 'late-buy', tradeTime: at(22 * HOUR) }), null, { cycleId: null });
 
       const preview = ledger.previewRecalculateCycles();
       const result = ledger.recalculateCycles();
 
       assert.equal(result.orphansFixed, 1);
-      assert.deepStrictEqual(currentTradeIds(ledger), ['c2-b1', 'c2-b2']);
-      assert.equal(ledger.getCurrentCycleAllBuysCount(), 2);
-      const late = ledger.getAllFills().find(f => f.tradeId === 'late-b');
-      assert.notEqual(late.cycleId, ledger.getCurrentCycleId());
+      assert.equal(result.liveCycleOrphansAttributed, 1);
+      assert.deepStrictEqual(currentTradeIds(ledger), ['c2-b1', 'c2-b2', 'late-b']);
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 3);
+      assert.equal(ledger.getCurrentCycleId(), 'cycle-2', 'no recovered cycle was created, so nothing is renumbered');
+      assert.deepStrictEqual(result.idMap, {});
       assert.equal(preview.activeCycleId, result.activeCycleId);
+      assert.equal(preview.liveCycleOrphansAttributed, result.liveCycleOrphansAttributed);
       assert.deepStrictEqual(preview.idMap, result.idMap);
     });
 
@@ -1857,6 +1860,289 @@ describe('Fill Ledger', () => {
       assert.equal(result.activeCycleId, 'cycle-1');
       assert.equal(ledger.getCurrentCycleId(), 'cycle-1');
       assert.equal(preview.activeCycleId, result.activeCycleId);
+    });
+  });
+
+  // =======================================================================
+  // Null-cycle fills inside the live cycle's timeframe (issue #705)
+  // =======================================================================
+  describe('recalculateCycles attributes null-cycle fills to the live cycle (issue #705)', () => {
+    const HOUR = 60 * 60 * 1000;
+    const T0 = Date.parse('2026-01-01T00:00:00.000Z');
+    const at = (h) => new Date(T0 + h * HOUR).toISOString();
+    const cycleOf = (ledger, tradeId) => ledger.getAllFills().find(f => f.tradeId === tradeId).cycleId;
+    const currentTradeIds = (ledger) => ledger.getCurrentCycleFills().map(f => f.tradeId).sort();
+    const buy = (tradeId, orderId, h, size = '0.001') => makeBuyFill({ tradeId, orderId, size, tradeTime: at(h) });
+    const sell = (tradeId, orderId, h, size = '0.001') => makeSellFill({ tradeId, orderId, size, tradeTime: at(h) });
+
+    // Completed cycle-1 (t=10-11h); cycle-2 is a fresh post-reset live cycle.
+    const seedCompletedCycle1 = (ledger) => {
+      ledger.ingestFill(buy('c1-b', 'c1-buy', 10), null, { cycleId: 'cycle-1' });
+      ledger.ingestFill(sell('c1-s', 'c1-sell', 11), null, { cycleId: 'cycle-1' });
+    };
+
+    it('startNewCycle records its start time; setCurrentCycleId only keeps a supplied one', () => {
+      const ledger = createTestLedger('started-at');
+      const before = Date.now();
+      ledger.startNewCycle();
+      assert.ok(ledger.getCurrentCycleStartedAt() >= before);
+      ledger.setCurrentCycleId('cycle-7', T0);
+      assert.equal(ledger.getCurrentCycleStartedAt(), T0);
+      ledger.setCurrentCycleId('cycle-7');
+      assert.equal(ledger.getCurrentCycleStartedAt(), null, 'an unknown start is null, never a stale one');
+      ledger.setCurrentCycleId('cycle-7', /** @type {any} */ ('garbage'));
+      assert.equal(ledger.getCurrentCycleStartedAt(), null);
+    });
+
+    it('folds orphans after a persisted reset boundary into the still-empty live cycle, leaves earlier ones', () => {
+      const ledger = createTestLedger('fold-empty-live');
+      seedCompletedCycle1(ledger);
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR); // reset at t=30h, no fills yet
+      ledger.ingestFill(buy('pre-b', 'pre-buy', 25), null, { cycleId: null });
+      ledger.ingestFill(buy('post-b', 'post-buy', 31), null, { cycleId: null });
+
+      const preview = ledger.previewRecalculateCycles();
+      assert.equal(cycleOf(ledger, 'post-b'), null, 'preview never stamps fills');
+      assert.equal(ledger.getAllFills().find(f => f.tradeId === 'post-b').cycleAttribution, undefined);
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.liveCycleOrphansAttributed, 1);
+      assert.equal(result.orphansFixed, 2);
+      assert.deepStrictEqual(currentTradeIds(ledger), ['post-b']);
+      assert.equal(ledger.getAllFills().find(f => f.tradeId === 'post-b').cycleAttribution, 'timeframe');
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 1);
+      assert.notEqual(cycleOf(ledger, 'pre-b'), ledger.getCurrentCycleId(), 'pre-reset fill stays out of the live cycle');
+      assert.equal(result.activeCycleId, ledger.getCurrentCycleId());
+      assert.equal(preview.activeCycleId, result.activeCycleId);
+      assert.deepStrictEqual(preview.idMap, result.idMap);
+      assert.equal(preview.liveCycleOrphansAttributed, result.liveCycleOrphansAttributed);
+      assert.equal(preview.orphansFixed, result.orphansFixed);
+      // The renamed live cycle keeps its start time.
+      assert.equal(ledger.getCurrentCycleStartedAt(), T0 + 30 * HOUR);
+    });
+
+    it('counts a timeframe-folded buy toward cycleBuys but keeps it out of the core position', () => {
+      const ledger = createTestLedger('fold-rebuild');
+      seedCompletedCycle1(ledger);
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+      ledger.ingestFill(buy('live-b', 'live-buy', 31), null, { cycleId: 'cycle-2' });
+      ledger.ingestFill(buy('late-b', 'late-buy', 32), null, { cycleId: null });
+
+      ledger.recalculateCycles();
+      const rebuilt = ledger.rebuildPositionFromFills();
+
+      assert.equal(rebuilt.cycleBuys, 2);
+      assert.equal(ledger.getCurrentCycleBuysCount(), 2);
+      assert.equal(rebuilt.totalAsset, 0.001, 'no core TP may be sized over an unlinked import');
+    });
+
+    it('a known start time is the boundary even when older fills were stamped into the live cycle', () => {
+      const ledger = createTestLedger('fold-known-start');
+      seedCompletedCycle1(ledger);
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+      // DCA-merge synthetic pending buy dated at order creation, before the reset.
+      ledger.ingestFill(buy('dca-b', 'dca-buy', 20), null, { cycleId: 'cycle-2' });
+      ledger.ingestFill(buy('manual-b', 'manual-buy', 25), null, { cycleId: null });
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.liveCycleOrphansAttributed, 0);
+      assert.equal(preview.liveCycleOrphansAttributed, 0);
+      assert.deepStrictEqual(currentTradeIds(ledger), ['dca-b'], 'the pre-reset manual buy stays out');
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 1);
+    });
+
+    it('auto-link never stamps a timeframe-folded buy once its cycle completes (legacy core)', () => {
+      const ledger = createTestLedger('fold-autolink');
+      ledger.setCurrentCycleId('cycle-1', T0 + 9 * HOUR);
+      ledger.ingestFill(buy('core-b', 'core-buy', 10), null, { cycleId: 'cycle-1' });
+      ledger.ingestFill(buy('manual-b', 'manual-buy', 11), null, { cycleId: null });
+      ledger.recalculateCycles();
+      assert.equal(ledger.getAllFills().find(f => f.tradeId === 'manual-b').cycleAttribution, 'timeframe');
+      // Core TP fills for the core position only (TP placement skips the
+      // timeframe buy), then the cycle resets.
+      ledger.annotateFillsByOrderId('core-buy', { sellOrderId: 'core-tp' });
+      ledger.ingestFill(sell('core-s', 'core-tp', 12), null, { cycleId: 'cycle-1' });
+      const before = ledger.getDerivedRealizedPnL();
+      ledger.startNewCycle();
+
+      const result = ledger.recalculateCycles();
+
+      assert.ok(result.cycleDetails.some(d => d.cycleId === 'cycle-1'), 'cycle-1 is completed and non-current');
+      assert.equal(ledger.getAllFills().find(f => f.tradeId === 'manual-b').sellOrderId, undefined,
+        'the manual buy is not booked against the core TP');
+      const after = ledger.getDerivedRealizedPnL();
+      assert.equal(after.realizedPnL, before.realizedPnL);
+      assert.equal(after.realizedAssetPnL, before.realizedAssetPnL);
+      assert.equal(after.heldOpenBuyCostBasis, before.heldOpenBuyCostBasis);
+    });
+
+    it('does not fold anything into an empty live cycle with no known start time', () => {
+      const ledger = createTestLedger('fold-no-boundary');
+      seedCompletedCycle1(ledger);
+      ledger.setCurrentCycleId('cycle-2'); // legacy state: no persisted start
+      ledger.ingestFill(buy('late-b', 'late-buy', 31), null, { cycleId: null });
+
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.liveCycleOrphansAttributed, 0);
+      assert.deepStrictEqual(currentTradeIds(ledger), []);
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 0);
+    });
+
+    it('attributes by order linkage before timestamp: a late partial row joins its own order\'s cycle', () => {
+      const ledger = createTestLedger('fold-linkage');
+      seedCompletedCycle1(ledger);
+      // cycle-1's sell order had a second partial row that sync-fills re-imported.
+      ledger.ingestFill(sell('c1-s2', 'c1-sell', 32), null, { cycleId: null });
+      // A buy linked (sellOrderId) to cycle-1's sell, re-imported null.
+      ledger.ingestFill(buy('c1-b2', 'c1-buy-2', 31), null, { cycleId: null });
+      ledger.annotateFillsByOrderId('c1-buy-2', { sellOrderId: 'c1-sell' });
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      assert.equal(cycleOf(ledger, 'c1-s2'), 'cycle-1');
+      assert.equal(cycleOf(ledger, 'c1-b2'), 'cycle-1');
+      const attributionOf = (id) => ledger.getAllFills().find(f => f.tradeId === id).cycleAttribution;
+      assert.equal(attributionOf('c1-s2'), 'order');
+      assert.equal(attributionOf('c1-b2'), 'order', 'linked to c1-s2, so it moves with that component');
+      assert.equal(result.orphansAttributed, 2);
+      assert.equal(result.liveCycleOrphansAttributed, 0);
+      assert.deepStrictEqual(currentTradeIds(ledger), [], 'linked fills never fold into the live cycle by time');
+      assert.deepStrictEqual(result.idMap, {}, 'no recovered cycle → no renumbering');
+      assert.equal(preview.orphansAttributed, result.orphansAttributed);
+    });
+
+    it('a recovered partial row of a body-owned buy order inherits the order\'s ownership annotations', () => {
+      const ledger = createTestLedger('fold-body-row');
+      seedCompletedCycle1(ledger);
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+      ledger.ingestFill(buy('bb-1', 'body-buy', 31), null, { cycleId: 'cycle-2' });
+      ledger.annotateFillsByOrderId('body-buy', { isBodyOwned: true, bodyId: 'body-A', bodyTier: 'moon', sellOrderId: 'body-tp' });
+      ledger.ingestFill(buy('bb-2', 'body-buy', 32), null, { cycleId: null });
+
+      ledger.recalculateCycles();
+
+      const row = ledger.getAllFills().find(f => f.tradeId === 'bb-2');
+      assert.equal(row.cycleId, 'cycle-2');
+      assert.equal(row.cycleAttribution, 'order');
+      assert.equal(row.bodyId, 'body-A');
+      assert.equal(row.isBodyOwned, true);
+      assert.equal(row.sellOrderId, 'body-tp');
+      assert.equal(ledger.rebuildPositionFromFills().totalAsset, 0, 'body-owned rows stay out of the core position');
+    });
+
+    it('attributes a buy linked only via sellOrderId to its sell\'s cycle', () => {
+      const ledger = createTestLedger('fold-link-only');
+      seedCompletedCycle1(ledger);
+      ledger.ingestFill(buy('l-b', 'l-buy', 31), null, { cycleId: null });
+      ledger.annotateFillsByOrderId('l-buy', { sellOrderId: 'c1-sell' });
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+
+      const result = ledger.recalculateCycles();
+
+      assert.equal(cycleOf(ledger, 'l-b'), 'cycle-1');
+      assert.equal(ledger.getAllFills().find(f => f.tradeId === 'l-b').cycleAttribution, 'link');
+      assert.equal(result.liveCycleOrphansAttributed, 0);
+    });
+
+    it('keeps a linked orphan buy/sell together when the pair straddles the live boundary', () => {
+      const ledger = createTestLedger('fold-straddle');
+      seedCompletedCycle1(ledger);
+      ledger.ingestFill(buy('s-b', 's-buy', 29), null, { cycleId: null });
+      ledger.annotateFillsByOrderId('s-buy', { sellOrderId: 's-sell' });
+      ledger.ingestFill(sell('s-s', 's-sell', 31), null, { cycleId: null });
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.liveCycleOrphansAttributed, 0);
+      assert.equal(cycleOf(ledger, 's-b'), cycleOf(ledger, 's-s'), 'the pair lands in one cycle (atomic)');
+      assert.notEqual(cycleOf(ledger, 's-s'), ledger.getCurrentCycleId());
+    });
+
+    it('never folds a component holding a sell by timestamp, even entirely inside the live timeframe', () => {
+      const ledger = createTestLedger('fold-pair');
+      seedCompletedCycle1(ledger);
+      // A manual-trade import pair (linked buy → sell) and a lone unlinked sell.
+      ledger.ingestFill(buy('p-b', 'p-buy', 31), null, { cycleId: null });
+      ledger.annotateFillsByOrderId('p-buy', { sellOrderId: 'p-sell' });
+      ledger.ingestFill(sell('p-s', 'p-sell', 32), null, { cycleId: null });
+      ledger.ingestFill(sell('lone-s', 'lone-sell', 33), null, { cycleId: null });
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.liveCycleOrphansAttributed, 0);
+      assert.deepStrictEqual(currentTradeIds(ledger), [], 'no foreign sell may join (or complete) the live cycle');
+      assert.equal(cycleOf(ledger, 'p-b'), cycleOf(ledger, 'p-s'), 'the pair stays together in a recovered cycle');
+      assert.notEqual(cycleOf(ledger, 'lone-s'), ledger.getCurrentCycleId());
+      assert.equal(preview.cyclesCompleted, result.cyclesCompleted);
+    });
+
+    it('keeps an unlinked buy with the unlinked sell after it instead of folding the buy alone', () => {
+      const ledger = createTestLedger('fold-roundtrip');
+      seedCompletedCycle1(ledger);
+      // A manual round trip sync-fills re-imported without links, then a
+      // genuinely missed engine buy after it.
+      ledger.ingestFill(buy('rt-b', 'rt-buy', 31), null, { cycleId: null });
+      ledger.ingestFill(sell('rt-s', 'rt-sell', 32), null, { cycleId: null });
+      ledger.ingestFill(buy('miss-b', 'miss-buy', 33), null, { cycleId: null });
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      assert.equal(cycleOf(ledger, 'rt-b'), cycleOf(ledger, 'rt-s'), 'the round trip is not split across cycles');
+      assert.notEqual(cycleOf(ledger, 'rt-s'), ledger.getCurrentCycleId());
+      assert.deepStrictEqual(currentTradeIds(ledger), ['miss-b'], 'a buy after the unplaced sell still folds');
+      assert.equal(result.liveCycleOrphansAttributed, 1);
+      assert.equal(preview.liveCycleOrphansAttributed, result.liveCycleOrphansAttributed);
+      assert.equal(preview.cyclesCompleted, result.cyclesCompleted);
+      assert.ok(result.cycleDetails.some(d => d.cycleId === cycleOf(ledger, 'rt-s')), 'the round trip is a completed cycle');
+    });
+
+    it('leaves an orphan whose order spans two cycles unattributed (ambiguous)', () => {
+      const ledger = createTestLedger('fold-ambiguous');
+      seedCompletedCycle1(ledger);
+      ledger.ingestFill(buy('c2-b', 'c2-buy', 20), null, { cycleId: 'cycle-2' });
+      ledger.ingestFill(sell('c2-s', 'shared-sell', 21), null, { cycleId: 'cycle-2' });
+      ledger.ingestFill(sell('c1-sx', 'shared-sell', 12), null, { cycleId: 'cycle-1' });
+      ledger.setCurrentCycleId('cycle-3', T0 + 30 * HOUR);
+      ledger.ingestFill(sell('amb-s', 'shared-sell', 31), null, { cycleId: null });
+
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.orphansAttributed, 0);
+      assert.equal(result.liveCycleOrphansAttributed, 0);
+      assert.ok(!['cycle-1', 'cycle-2', ledger.getCurrentCycleId()].includes(cycleOf(ledger, 'amb-s')));
+    });
+
+    it('re-evaluates live-cycle completion after folding, identically in preview and apply', () => {
+      const ledger = createTestLedger('fold-completes');
+      seedCompletedCycle1(ledger);
+      ledger.ingestFill(buy('c2-b1', 'c2-buy-1', 20), null, { cycleId: 'cycle-2' });
+      ledger.ingestFill(buy('c2-b2', 'c2-buy-2', 21), null, { cycleId: 'cycle-2' });
+      // TP placement stamped both buys with their sell; the TP filled while the
+      // engine was down and sync-fills re-imported it null.
+      ledger.annotateFillsByOrderId('c2-buy-1', { sellOrderId: 'c2-tp' });
+      ledger.annotateFillsByOrderId('c2-buy-2', { sellOrderId: 'c2-tp' });
+      ledger.setCurrentCycleId('cycle-2');
+      ledger.ingestFill(sell('late-s', 'c2-tp', 23, '0.002'), null, { cycleId: null });
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      assert.equal(cycleOf(ledger, 'late-s'), 'cycle-2');
+      const ids = (r) => r.cycleDetails.map(d => d.cycleId).sort();
+      assert.ok(ids(result).includes('cycle-2'), 'the folded sell completes the live cycle');
+      assert.equal(result.cyclesCompleted, 2);
+      assert.deepStrictEqual(ids(preview), ids(result));
+      assert.equal(preview.cyclesCompleted, result.cyclesCompleted);
     });
   });
 

@@ -14,6 +14,7 @@
  */
 
 const { createContextLogger } = require('./logger');
+const { restQueueTiming } = require('./adapters/base-adapter');
 
 /**
  * Consecutive failed state persists before the engine trips into SAFE mode
@@ -545,16 +546,23 @@ const instrumentAdapterForHealth = (adapter, healthMonitor) => {
     if (typeof fn !== 'function') continue;
     wrapped[name] = (...args) => {
       const startedAt = Date.now();
-      return Promise.resolve(fn.apply(adapter, args))
+      // Run inside a fresh queuedMs store (issue #680): a client-side
+      // throttle/backoff wait (e.g. Gemini's REST request spacing and 429
+      // backoff) is time the exchange never saw, so it must not count toward
+      // the latency SAFE-mode trigger. The request layer adds to
+      // `store.queuedMs` when it awaits such a wait; adapters that never
+      // touch the store leave it at 0, so this is a no-op for them.
+      const timing = { queuedMs: 0 };
+      return restQueueTiming.run(timing, () => Promise.resolve(fn.apply(adapter, args)))
         .then((result) => {
-          healthMonitor.recordRestLatency(Date.now() - startedAt);
+          healthMonitor.recordRestLatency(Math.max(0, Date.now() - startedAt - timing.queuedMs));
           // A successful authenticated call means access is back — auto-clear a
           // prior AUTH_DENIED (e.g. the IP was re-allowlisted). No-op otherwise.
           if (AUTHENTICATED_REST_METHODS.has(name)) healthMonitor.clearAuthDenied();
           return result;
         })
         .catch((err) => {
-          healthMonitor.recordRestLatency(Date.now() - startedAt);
+          healthMonitor.recordRestLatency(Math.max(0, Date.now() - startedAt - timing.queuedMs));
           // Auth/IP-allowlist denial is terminal until an operator fixes it —
           // route it to AUTH_DENIED (pause + notify) instead of the transient
           // SAFE-mode error counters, so it neither self-heals nor hammers the
