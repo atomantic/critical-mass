@@ -450,6 +450,56 @@ describe('merge-snapshot complete sale with the live body still present (issues 
   });
 });
 
+describe('late complete merge-snapshot fill after the live body was re-armed (issue #718)', () => {
+  it('links the closed snapshot\'s untracked buys to the sell that closed them', async () => {
+    // A buy merges onto the body cleanly (its TP cancel reports no execution),
+    // and the merged body gets a replacement TP, which re-stamps every source
+    // buy with that TP's orderId. The OLD TP's full fill then arrives late
+    // through the completed-snapshot window. Its source buy is legacy
+    // (sourceOrderIds only, no tranche), so only sellOrderId can close it.
+    const eng = makeEngine({
+      getOrderFills: async (orderId) => {
+        if (orderId === 'buy-new') return [rawFill('buy', 'buy-new', 'buy-new-t1', 0.01, 50000)];
+        if (orderId === 'tp-old') return [rawFill('sell', 'tp-old', 'tp-old-t1', 0.0099, 52000)];
+        return [];
+      },
+    }, {
+      getPendingCounts: () => ({ total: 1_000_000 }), // force the single body as merge target
+    });
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-l', 'buy-l-t1', 0.01, 50000));
+    ledger.annotateFillsByOrderId('buy-l', { sellOrderId: 'tp-old' });
+    const legacy = makeBody('body-llllllll', 'buy-l', 0.01, 50000, 'tp-old');
+    legacy.buyOrders = [];
+    legacy.sourceOrderIds = ['buy-l'];
+    legacy.assetOnOrder = 0.0099;
+    const pos = eng._getPositionState();
+    pos.celestialBodies = [legacy];
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+    const merged = pos.celestialBodies.find(b => b.id === 'body-llllllll');
+    assert.ok(merged && merged.tpOrderId && merged.tpOrderId !== 'tp-old', 'the merged body was re-armed');
+    assert.notEqual(ledger.getFillsForOrder('buy-l')[0].sellOrderId, 'tp-old', 'the replacement TP re-stamped the legacy buy');
+
+    await eng._test.handleOrderFill(sellFill('tp-old', 0.0099, 52000));
+
+    const live = pos.celestialBodies.find(b => b.id === 'body-llllllll');
+    assert.ok(live, 'the live body survives, holding only the fold-in');
+    assert.ok(Math.abs(live.assetQty - 0.01) < EPS, `fold-in qty only, got ${live.assetQty}`);
+    assert.ok(Math.abs(live.costBasis - 500) < 0.01, `fold-in cost only, got ${live.costBasis}`);
+    assert.ok(!live.sourceOrderIds.includes('buy-l'));
+    assert.equal(ledger.getFillsForOrder('buy-l')[0].sellOrderId, 'tp-old', 'the closed legacy buy is linked to the sell that closed it');
+
+    const derived = ledger.getDerivedRealizedPnL();
+    const inBodies = pos.celestialBodies.reduce((sum, b) => sum + b.assetQty, 0);
+    const bodyCost = pos.celestialBodies.reduce((sum, b) => sum + b.costBasis, 0);
+    assert.ok(Math.abs(derived.heldOpenBuyCostBasis - bodyCost) < 0.01, `held cost ${derived.heldOpenBuyCostBasis} vs bodies ${bodyCost}`);
+    assert.ok(Math.abs((inBodies + derived.realizedAssetPnL) - derived.ledgerNetAsset) < EPS,
+      `bodies ${inBodies} + reserves ${derived.realizedAssetPnL} vs ledger ${derived.ledgerNetAsset}`);
+  });
+});
+
 describe('legacy buy order split across bodies (issue #607)', () => {
   it('seeds the first record with what other bodies already sold under sellOrderId closure', async () => {
     // Pre-#607: order buy-s filled in two advancing partials that landed in two

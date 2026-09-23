@@ -3606,10 +3606,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           if (snapshotClosed) {
             // The closed snapshot's tranches (consumed in full above) leave
             // the live body with its asset, so its next TP neither re-links
-            // them nor spreads a later sale over them. Its untracked buys
-            // stay closed by the sellOrderId stamped when the filled TP was
-            // placed; the untouched fold-in pool must not be charged this
-            // sale's cost fraction.
+            // them nor spreads a later sale over them. Link them to THIS sell
+            // like the normal full-fill path does: a TP re-placed on the live
+            // body after the snapshot re-stamped them with an order this
+            // branch cancels, which would leave an untracked buy held open
+            // with no body to re-link it. The untouched fold-in pool must not
+            // be charged this sale's cost fraction.
             liveMerged.buyOrders = (liveMerged.buyOrders || []).filter(e => !snapshotTranches.has(e));
             const keptIds = new Set(liveMerged.buyOrders.map(e => e && e.orderId));
             const closedIds = new Set([
@@ -3618,6 +3620,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             ]);
             liveMerged.sourceOrderIds = (liveMerged.sourceOrderIds || [])
               .filter(id => keptIds.has(id) || !closedIds.has(id));
+            const closedOnlyIds = [...closedIds].filter(id => id && id !== 'core-migration' && !keptIds.has(id));
+            if (closedOnlyIds.length > 0) {
+              fillLedger.annotateFillsByOrderIds(closedOnlyIds, { sellOrderId: fillData.orderId });
+            }
             liveMerged.avgPrice = liveMerged.assetQty > 0 ? liveMerged.costBasis / liveMerged.assetQty : 0;
           } else {
             // Legacy fallback for buys the sale could not record per order. A
