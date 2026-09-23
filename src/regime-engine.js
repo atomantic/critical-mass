@@ -958,6 +958,83 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     onFillDetected: null,
   };
 
+  /**
+   * Raise a saved pending entry/ladder row's knownFilledSize high-water mark
+   * (issue #673 codex round 3, #764). Searches BOTH saved lists: the executor
+   * fires onEntryCancelled for 'entry' and 'ladder_entry' orders alike, and a
+   * ladder rung that loses its partial size is exposed to the same
+   * under-reporting re-poll as a plain entry.
+   * @param {string} orderId
+   * @param {number} filledSize
+   * @returns {boolean} whether any saved row was stamped
+   */
+  const stampKnownFilledSize = (orderId, filledSize) => {
+    if (!(filledSize > 0)) return false;
+    let stamped = false;
+    for (const list of ['pendingEntryOrders', 'pendingLadderOrders']) {
+      const row = positionState[list]?.find(e => e.orderId === orderId);
+      if (row) {
+        row.knownFilledSize = Math.max(row.knownFilledSize || 0, filledSize);
+        stamped = true;
+      }
+    }
+    return stamped;
+  };
+
+  /**
+   * order-executor's onEntryCancelled callback: fires from handleCancelledOrder
+   * for every cancelled 'entry' / 'ladder_entry' order, just before any fill it
+   * carries is routed through onFillDetected.
+   * @param {string} orderId
+   * @param {{filledSize?: number}} [info]
+   */
+  const handleEntryCancelled = (orderId, info) => {
+    // A cancel that also carries a fill (info.filledSize > 0) is about
+    // to be routed through onFillDetected right after this fires —
+    // purging the saved row here, before that fill's outcome is known,
+    // would orphan a real buy with nothing left to rediscover it if
+    // processing fails and the #679 engine-level retry exhausts (issue
+    // #673). Leave it: a successful fill removes it via
+    // handleOrderFillImpl's own terminal-entry filter, and a failure
+    // leaves it for reconcileTick's orphan sweep to catch up. Only a
+    // genuinely empty cancel (nothing to book) is safe to purge here.
+    const filledSize = info?.filledSize || 0;
+    if (filledSize > 0) {
+      // Stamp the resolved high-water mark onto the saved row itself
+      // (issue #673 codex round 3): handleCancelledOrder resolved this
+      // value via order-executor's own partialFillTracker fallback,
+      // which it then deletes. A LATER independent re-poll of this
+      // same (already-cancelled) order — the reconcile sweep, or startImpl's
+      // offline catch-up — can get a status whose filledSize reads
+      // back as 0/missing (the same adapter quirk
+      // handleCancelledOrder's fallback exists for), and would
+      // otherwise misread a real partial as an empty cancel and purge
+      // it with nothing booked. Persisting it here survives a restart
+      // too, since positionState is saved to disk. Ladder rungs get the
+      // same stamp (issue #764).
+      stampKnownFilledSize(orderId, filledSize);
+      return;
+    }
+    // "Empty" per THIS cancel read — but a row already carrying a
+    // knownFilledSize has a confirmed partial that was never booked (a
+    // successful booking removes the row). That happens when a failed
+    // catch-up re-armed executor tracking via restorePendingOrder, which
+    // does not repopulate partialFillTracker, so the re-cancel resolves
+    // filledSize from an under-reporting status alone (issue #764). Keep
+    // the row for reconcileTick's orphan sweep, which books knownFilledSize.
+    const savedEntry = positionState.pendingEntryOrders?.find(e => e.orderId === orderId);
+    if (savedEntry?.knownFilledSize > 0) {
+      logger.warn(
+        `⚠️ [${exchange}] Entry ${orderId.slice(0, 8)} re-cancelled with no reported fill, but a ${savedEntry.knownFilledSize} partial is already known — keeping it for the orphan sweep instead of purging`,
+        { orderId, knownFilledSize: savedEntry.knownFilledSize }
+      );
+      return;
+    }
+    if (positionState.pendingEntryOrders?.length > 0) {
+      positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(e => e.orderId !== orderId);
+    }
+  };
+
   // Create order executor - use dry-run executor when dryRun is enabled
   // Callbacks are set up later after internal functions are defined.
   // `let` so the #196 concurrency tests can inject a mock; no production
@@ -969,37 +1046,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }, productId)
     : createOrderExecutor(exchange, config, adapter, productId, {
         onFillDetected: (orderId, status) => liveCallbacks.onFillDetected && liveCallbacks.onFillDetected(orderId, status),
-        onEntryCancelled: (orderId, info) => {
-          // A cancel that also carries a fill (info.filledSize > 0) is about
-          // to be routed through onFillDetected right after this fires —
-          // purging the saved row here, before that fill's outcome is known,
-          // would orphan a real buy with nothing left to rediscover it if
-          // processing fails and the #679 engine-level retry exhausts (issue
-          // #673). Leave it: a successful fill removes it via
-          // handleOrderFillImpl's own terminal-entry filter, and a failure
-          // leaves it for reconcileTick's orphan sweep to catch up. Only a
-          // genuinely empty cancel (nothing to book) is safe to purge here.
-          const filledSize = info?.filledSize || 0;
-          if (filledSize > 0) {
-            // Stamp the resolved high-water mark onto the saved row itself
-            // (issue #673 codex round 3): handleCancelledOrder resolved this
-            // value via order-executor's own partialFillTracker fallback,
-            // which it then deletes. A LATER independent re-poll of this
-            // same (already-cancelled) order — this sweep, or startImpl's
-            // offline catch-up — can get a status whose filledSize reads
-            // back as 0/missing (the same adapter quirk
-            // handleCancelledOrder's fallback exists for), and would
-            // otherwise misread a real partial as an empty cancel and purge
-            // it with nothing booked. Persisting it here survives a restart
-            // too, since positionState is saved to disk.
-            const entry = positionState.pendingEntryOrders?.find(e => e.orderId === orderId);
-            if (entry) entry.knownFilledSize = Math.max(entry.knownFilledSize || 0, filledSize);
-            return;
-          }
-          if (positionState.pendingEntryOrders?.length > 0) {
-            positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(e => e.orderId !== orderId);
-          }
-        },
+        onEntryCancelled: (orderId, info) => handleEntryCancelled(orderId, info),
       }, pair);
 
   validateExecutor(orderExecutor, isDryRun ? 'dry-run' : 'live');
@@ -2586,7 +2633,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       let caughtUpEntries = 0;
       // Orders whose catch-up handleOrderFill threw (issue #679's stricter
       // getOrderFills contract) — must NOT be purged below with no ledger
-      // record. Re-armed via restorePendingOrder in the catch block so the
+      // record. Re-armed via restorePendingOrder (inside catchUpTerminalEntry) so the
       // next reconcile's checkPendingOrderFills polls this (already-terminal
       // on the exchange) order again and routes it through the
       // retry-hardened live polling fill path.
@@ -2603,40 +2650,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           }
           continue;
         }
-        try {
-          const isFullFilled = isFilledStatus(orderStatus);
-          const partialSize = parseFloat(orderStatus.filledSize || 0);
-          if (!isFullFilled && partialSize <= 0) continue; // truly empty cancel, ok to purge
-          logger.info(`📥 [${exchange}] Catching up offline entry ${savedEntry.orderId.slice(0, 8)}: status=${orderStatus.status}, filled=${partialSize}`);
-          orderExecutor.markSettled(savedEntry.orderId);
-          await handleOrderFill(buildPartialFillData(savedEntry.orderId, 'buy', orderStatus, {
-            status: isFullFilled ? 'FILLED' : orderStatus.status,
-            isPartialFill: !isFullFilled,
-            placedAt: savedEntry.placedAt,
-          }));
-          caughtUpEntries++;
-        } catch (err) {
-          // The status lookup above already proved this order has a real
-          // fill (isFullFilled or partialSize > 0) — losing THIS catch-up
-          // attempt (now far more likely: getOrderFills rejects on a failed
-          // lookup or an incompleteFills mismatch instead of silently
-          // returning a partial set) must not silently drop that buy.
-          // markSettled above already ran; re-arm executor tracking for the
-          // SAME orderId so it isn't an orphan, and keep it in
-          // pendingEntryOrders (below) instead of purging it.
-          logger.warn(
-            `⚠️ [${exchange}] Failed to catch up offline entry ${savedEntry.orderId.slice(0, 8)}: ${err.message} — re-arming tracking for retry instead of dropping it`,
-            { orderId: savedEntry.orderId, error: err.message, incompleteFills: err.incompleteFills === true }
-          );
-          orderExecutor.restorePendingOrder(savedEntry.orderId, {
-            type: 'entry',
-            price: savedEntry.price,
-            size: savedEntry.assetQty,
-            sizeUsdc: savedEntry.sizeUsdc,
-            placedAt: savedEntry.placedAt || Date.now(),
-          });
-          failedCatchUpIds.add(savedEntry.orderId);
-        }
+        // Shared with reconcileTick's orphan sweep (issue #764): honors the
+        // saved row's knownFilledSize high-water mark, so a restart during the
+        // exposure window can't misread a real partial as an empty cancel just
+        // because this fresh poll under-reports filledSize. On a throw (issue
+        // #679's stricter getOrderFills contract) it has already re-armed
+        // executor tracking for the SAME orderId and stamped the resolved size
+        // onto the row; keep it in pendingEntryOrders (below) instead of
+        // purging it.
+        const result = await catchUpTerminalEntry(savedEntry, orderStatus, 'entry');
+        if (result.outcome === 'filled') caughtUpEntries++;
+        else if (result.outcome === 'failed') failedCatchUpIds.add(savedEntry.orderId);
+        // 'empty': truly empty cancel, ok to purge below
       }
       if (caughtUpEntries > 0) {
         logger.info(`📥 [${exchange}] Caught up ${caughtUpEntries} offline-terminal entries before purge`);
@@ -5645,13 +5670,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * partial) saved entry/ladder order through the canonical fill pipeline —
    * or report it safe to retire when it's a genuinely empty cancel.
    *
-   * Mirrors the shape of startImpl's own offline entry catch-up (issue #679's
-   * stricter getOrderFills contract applies identically here: a throw from
-   * handleOrderFill must not silently drop a real fill). Factored out as its
-   * own function so reconcileTick's orphan sweep (issue #673) gets the same
-   * retry-safe handling without duplicating it; startImpl is concurrently
-   * being edited elsewhere (issue #671), so it isn't switched over to this
-   * helper in this change.
+   * Shared by startImpl's offline entry catch-up and reconcileTick's orphan
+   * sweep (issues #673, #764), so both honor a saved row's knownFilledSize
+   * and handle a failed handleOrderFill the same retry-safe way (issue #679's
+   * stricter getOrderFills contract: a throw must not silently drop a real
+   * fill).
    *
    * @param {{orderId: string, price?: number, assetQty?: number, sizeUsdc?: number, placedAt?: number, ladderIndex?: number, knownFilledSize?: number}} savedEntry
    * @param {{status?: string, filledSize?: number}} orderStatus - already known to be terminal (FILLED/CANCELLED/EXPIRED/FAILED)
@@ -5699,6 +5722,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         `⚠️ [${exchange}] Failed to catch up terminal ${entryType} ${savedEntry.orderId.slice(0, 8)}: ${err.message} — re-arming tracking for retry instead of dropping it`,
         { orderId: savedEntry.orderId, entryType, error: err.message, incompleteFills: err.incompleteFills === true }
       );
+      // Persist the size this attempt resolved onto the saved row (issue
+      // #764): restorePendingOrder does not repopulate the executor's
+      // partialFillTracker, so if the re-armed order is later re-detected
+      // cancelled through checkPendingOrderFills → handleCancelledOrder with
+      // an under-reporting status, knownFilledSize is the only record of the
+      // partial. Stamp the caller's row object too — startImpl re-adds its
+      // pre-catch-up snapshot row when handleOrderFill already dropped the
+      // live one before throwing.
+      if (partialSize > 0) {
+        savedEntry.knownFilledSize = Math.max(savedEntry.knownFilledSize || 0, partialSize);
+        stampKnownFilledSize(savedEntry.orderId, partialSize);
+      }
       orderExecutor.restorePendingOrder(savedEntry.orderId, buildRestoreSpec(savedEntry, entryType));
       return { outcome: 'failed', error: err };
     }
@@ -8782,6 +8817,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       mergeBody: _mergeBodyImpl,
       handleOrderFill,
       handlePolledFill: (orderId, status) => liveCallbacks.onFillDetected(orderId, status),
+      handleEntryCancelled,
       getMergeTpSnapshots: () => ({ pending: new Map(pendingMergeTpOrders), completed: new Map(completedMergeTpOrders) }),
       sweepLedgerDrift,
       getFillDrift: () => fillDrift,

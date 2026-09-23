@@ -162,6 +162,37 @@ describe('startup catch-up for saved entries that went terminal offline (issue #
     );
   });
 
+  it('books a saved knownFilledSize partial when the startup re-poll under-reports filledSize (issue #764)', async () => {
+    // onEntryCancelled stamped a resolved 0.4 partial onto the saved row
+    // before the restart; the fresh startup poll hits the adapter quirk that
+    // omits filledSize on a cancelled order. Trusting the fresh read alone
+    // would purge a real partial as an empty cancel with nothing booked.
+    const eng = makeEngine('__teststartupcatchup_c__', {
+      getOrder: async (orderId) => (orderId === RESTORED_ORDER_ID
+        ? { status: 'CANCELLED', filledSize: 0, averageFilledPrice: 2000 }
+        : { status: 'OPEN', filledSize: 0 }),
+      getOrderFills: async () => { throw new Error('trade scan unavailable'); },
+    });
+
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [{
+      orderId: RESTORED_ORDER_ID, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() - 60000, knownFilledSize: 0.4,
+    }];
+
+    const result = await eng.start();
+    assert.equal(result.success, true, `start() must still succeed: ${result.error}`);
+
+    const finalPos = eng._getPositionState();
+    assert.equal(
+      (finalPos.pendingEntryOrders || []).some(e => e.orderId === RESTORED_ORDER_ID),
+      false,
+      'the caught-up partial is purged from pending entries once booked',
+    );
+    const bodies = finalPos.celestialBodies.filter(b => (b.sourceOrderIds || []).includes(RESTORED_ORDER_ID));
+    assert.equal(bodies.length, 1, 'the known partial must be booked into a body, not purged as an empty cancel');
+    assert.ok(Math.abs(bodies[0].assetQty - 0.4) < 1e-8, `the body must reflect the known 0.4 partial — got ${bodies[0].assetQty}`);
+  });
+
   it('purges the entry as before when catch-up succeeds', async () => {
     const eng = makeEngine('__teststartupcatchup_b__', {
       getOrder: async (orderId) => (orderId === RESTORED_ORDER_ID

@@ -214,6 +214,84 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
     assert.ok(Math.abs(bodies[0].assetQty - 0.4) < 1e-8, `the body must reflect the known 0.4 partial — got ${bodies[0].assetQty}`);
   });
 
+  it('stamps knownFilledSize on a cancelled ladder rung too, so an under-reporting re-poll books it instead of purging (issue #764)', async () => {
+    // order-executor's handleCancelledOrder fires onEntryCancelled for
+    // 'ladder_entry' orders as well as 'entry' ones. The stamp used to search
+    // only pendingEntryOrders, so a rung whose resolved partial then failed to
+    // book had no high-water mark for this sweep to fall back on.
+    const orderId = 'l1';
+    const adapter = {
+      getOrderFills: async () => { throw new Error('trade scan unavailable'); },
+      getOrder: async () => ({ orderId, side: 'BUY', status: 'CANCELLED', filledSize: 0, averageFilledPrice: 2000 }),
+    };
+    const eng = makeEngine(adapter);
+    const pos = eng._getPositionState();
+    pos.pendingLadderOrders = [{ orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now(), ladderIndex: 0 }];
+
+    // The executor resolved a 0.4 partial (from its partialFillTracker) on cancel.
+    eng._test.handleEntryCancelled(orderId, { filledSize: 0.4 });
+    assert.equal(pos.pendingLadderOrders[0].knownFilledSize, 0.4, 'the ladder rung row must carry the resolved partial as knownFilledSize');
+
+    await eng._test.reconcileTick();
+
+    assert.equal(pos.pendingLadderOrders.length, 0, 'the rung must be cleared once its known partial is caught up');
+    const bodies = pos.celestialBodies.filter(b => (b.sourceOrderIds || []).includes(orderId));
+    assert.equal(bodies.length, 1, 'the known ladder partial must be booked into a body, not purged as empty');
+    assert.ok(Math.abs(bodies[0].assetQty - 0.4) < 1e-8, `the body must reflect the known 0.4 partial — got ${bodies[0].assetQty}`);
+  });
+
+  it('keeps a failed catch-up\'s observed partial through a later empty-looking re-cancel, and books it (issue #764)', async () => {
+    // 1st sweep: the status shows a real 0.4 partial, but it can't be booked
+    // (no usable price, trade scan down) — catchUpTerminalEntry re-arms the
+    // executor via restorePendingOrder, which does NOT repopulate the
+    // executor's partialFillTracker. When that re-armed order is re-detected
+    // cancelled with an under-reporting status, onEntryCancelled sees
+    // filledSize 0. Without a persisted knownFilledSize the row would be
+    // purged as an empty cancel, losing the real partial.
+    const orderId = 'e7';
+    let pollNo = 0;
+    const adapter = {
+      getOrderFills: async () => { throw new Error('trade scan unavailable'); },
+      getOrder: async () => (++pollNo === 1
+        ? { orderId, side: 'BUY', status: 'CANCELLED', filledSize: 0.4, filledValue: 0, averageFilledPrice: 0 }
+        : { orderId, side: 'BUY', status: 'CANCELLED', filledSize: 0, averageFilledPrice: 2000 }),
+    };
+    const restoreCalls = [];
+    const eng = makeEngine(adapter, { restorePendingOrder: (id, spec) => restoreCalls.push({ id, spec }) });
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [{ orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() }];
+
+    await eng._test.reconcileTick();
+
+    assert.deepEqual(restoreCalls.map(c => c.id), [orderId], 'the failed catch-up must re-arm executor tracking');
+    assert.equal(pos.celestialBodies.length, 0, 'nothing was bookable on the first attempt');
+    assert.equal(pos.pendingEntryOrders.length, 1, 'the row survives the failed catch-up');
+    assert.equal(pos.pendingEntryOrders[0].knownFilledSize, 0.4, 'the failed catch-up must persist the partial size it observed');
+
+    // The re-armed order is re-detected cancelled; the status omits filledSize
+    // and the executor's tracker is empty, so it reports an "empty" cancel.
+    eng._test.handleEntryCancelled(orderId, { filledSize: 0 });
+    assert.equal(pos.pendingEntryOrders.length, 1, 'a row with a known partial must not be purged by an empty-looking re-cancel');
+
+    await eng._test.reconcileTick();
+
+    assert.equal(pos.pendingEntryOrders.length, 0, 'the row must be cleared once the known partial is booked');
+    const bodies = pos.celestialBodies.filter(b => (b.sourceOrderIds || []).includes(orderId));
+    assert.equal(bodies.length, 1, 'the known partial must be booked into a body');
+    assert.ok(Math.abs(bodies[0].assetQty - 0.4) < 1e-8, `the body must reflect the known 0.4 partial — got ${bodies[0].assetQty}`);
+  });
+
+  it('still purges a genuinely empty cancel via onEntryCancelled when no partial is known', () => {
+    const orderId = 'e8';
+    const eng = makeEngine({ getOrderFills: async () => [], getOrder: async () => ({ status: 'CANCELLED', filledSize: 0 }) });
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [{ orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() }];
+
+    eng._test.handleEntryCancelled(orderId, { filledSize: 0 });
+
+    assert.equal(pos.pendingEntryOrders.length, 0, 'an empty cancel with no known partial is still purged immediately');
+  });
+
   it('purges a saved entry that turns out to be an empty (unfilled) cancel, with nothing to book', async () => {
     const orderId = 'e3';
     const adapter = {
