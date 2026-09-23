@@ -532,5 +532,97 @@ describe('dca-converter fund routing (issue #414)', () => {
         'the pending buy must land in a fresh cycle, not the just-closed high-holdback trade\'s cycle',
       );
     });
+
+    // Fourth codex review finding: the same high-holdback misjudgment can
+    // happen with a cycle left on disk by an EARLIER merge/execute run, not
+    // just one created by the current call — load()'s own heuristic (no
+    // persisted activeCycleId to trust outright) can restore straight to
+    // that old closed trade's cycle, and a ratio-only check would still
+    // misjudge it as open.
+    it('never reuses an already-closed high-holdback cycle left on disk by an earlier run', () => {
+      seedFund(DEFAULT_PAIR, { orders: [] });
+
+      // Pre-existing ledger, as if an earlier merge already imported one
+      // high-holdback completed trade into cycle-1 (70% held back, buy
+      // sellOrderId already linked to its sell — genuinely closed).
+      const priorFills = [
+        {
+          tradeId: 'dca-convert-buy-buy-old', orderId: 'buy-old', side: 'buy',
+          price: 50000, size: 1.0, quoteAmount: 50000, netFee: 0,
+          timestamp: Date.parse('2025-01-01T00:00:00.000Z'), cycleId: 'cycle-1',
+          sellOrderId: 'sell-old',
+        },
+        {
+          tradeId: 'dca-convert-sell-sell-old', orderId: 'sell-old', side: 'sell',
+          price: 51000, size: 0.3, quoteAmount: 15300, netFee: 0,
+          timestamp: Date.parse('2025-01-02T00:00:00.000Z'), cycleId: 'cycle-1',
+        },
+      ];
+      fs.writeFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), JSON.stringify(priorFills));
+
+      // No persisted activeCycleId this run either — only a new pending
+      // order to merge in.
+      reseedOrders(DEFAULT_PAIR, [mergeOrders()[1]]);
+
+      const result = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(result.success, true);
+      assert.equal(result.summary.pendingOrders, 1);
+
+      const ledger = JSON.parse(fs.readFileSync(path.join(fundDir(DEFAULT_PAIR), 'fill-ledger.json'), 'utf8'));
+      const openBuy = ledger.find(f => f.tradeId === 'dca-convert-buy-buy-open');
+      assert.ok(openBuy);
+      assert.notEqual(
+        openBuy.cycleId,
+        'cycle-1',
+        'the pending buy must not land in a prior run\'s already-closed high-holdback cycle',
+      );
+    });
+
+    // Fifth codex review finding: if the process crashes between the
+    // fill-ledger writes above and the comprehensive saveRegimeState() call
+    // near the end of mergeToRegime, regime-state.json must not be left
+    // naming the OLD cycle boundary while the ledger already reflects the
+    // new one -- restorePersistedCycleId would trust the stale marker on
+    // the next engine start. Verify the corrected boundary is persisted
+    // immediately (a distinct, early saveRegimeState call), not only as
+    // part of the final save.
+    it('persists a corrected active-cycle boundary immediately, not only at the end of the merge', () => {
+      seedFund(DEFAULT_PAIR, { orders: [] });
+      reseedOrders(DEFAULT_PAIR, mergeOrders()); // one filled + one pending, no persisted boundary yet
+
+      // Stub state-tracker's saveRegimeState to record every call's
+      // activeCycleId, then force dca-converter to be re-required so its
+      // own destructured reference binds to the stub (mirrors this file's
+      // own "destructured at require time" re-require pattern above).
+      delete require.cache[STATE_TRACKER];
+      const stateTracker = require('../src/state-tracker');
+      const originalSaveRegimeState = stateTracker.saveRegimeState;
+      const calls = [];
+      stateTracker.saveRegimeState = (position, ...rest) => {
+        calls.push(position.activeCycleId);
+        return originalSaveRegimeState(position, ...rest);
+      };
+
+      let freshConverter;
+      try {
+        delete require.cache[FILL_LEDGER];
+        delete require.cache[DCA_CONVERTER];
+        freshConverter = require('../src/dca-converter');
+
+        const result = freshConverter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+        assert.equal(result.success, true);
+      } finally {
+        stateTracker.saveRegimeState = originalSaveRegimeState;
+      }
+
+      // At least two saves: the immediate boundary-correction save, and the
+      // final comprehensive save with the merged celestial bodies appended.
+      assert.ok(calls.length >= 2, `expected an early boundary-correction save plus the final save, got ${calls.length}`);
+      // The FIRST save must already carry the corrected boundary ('cycle-2'
+      // — the new cycle the pending buy landed in, since the filled order's
+      // own cycle-1 closed it) -- not only the last one -- so a crash right
+      // after it still leaves regime-state.json consistent with the ledger.
+      assert.equal(calls[0], 'cycle-2', 'the first saveRegimeState call must already carry the corrected boundary');
+    });
   });
 });

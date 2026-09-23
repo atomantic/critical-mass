@@ -157,6 +157,28 @@ const previewConversion = (exchange, pair) => {
 };
 
 /**
+ * Ground-truth "is any buy in this cycle still genuinely open" check —
+ * the SAME buy→sell pairing computeRealizedFromCyclePairs uses (a buy is
+ * open when its sellOrderId is absent, or names a sell that isn't actually
+ * in the ledger), not a sell/buy SIZE ratio. isCompletedCycle's ratio
+ * heuristic misjudges a fully-closed but legitimately high-holdback trade
+ * (config.holdbackPercent > 50, so sold size < half bought size) as
+ * "incomplete" — which matters here because a merge candidate cycle
+ * inferred from load()'s own heuristic (no persisted position.activeCycleId
+ * to trust outright) could be exactly such an already-closed trade, from
+ * THIS import or an earlier one.
+ * @param {Array<Object>} cycleFills - fills already assigned to the candidate cycle
+ * @param {Array<Object>} allFills - every fill in the ledger (sellOrderId may point outside the cycle)
+ * @returns {boolean}
+ */
+const cycleHasOpenBuy = (cycleFills, allFills) => {
+  const sellOrderIdsPresent = new Set(
+    allFills.filter((f) => f.side === 'sell' && f.orderId).map((f) => f.orderId),
+  );
+  return cycleFills.some((f) => f.side === 'buy' && (!f.sellOrderId || !sellOrderIdsPresent.has(f.sellOrderId)));
+};
+
+/**
  * Ingest DCA "filled" and "pending" orders into a fill ledger as synthetic
  * fills. Shared by executeConversion and mergeToRegime so the two loops
  * cannot drift apart again (issue #692) — before this helper existed,
@@ -293,10 +315,25 @@ const ingestDcaOrdersIntoLedger = (fillLedger, filled, pending, { linkPendingSel
     // anyway would silently orphan that boundary from the buys just merged
     // in — a brand-new cycle is only warranted once the boundary has
     // actually closed, or there was no pre-existing boundary at all.
+    //
+    // Trust level differs by source: `mergeActiveCycleId` is an EXPLICIT
+    // boundary the engine itself persisted (including a freshly reserved,
+    // still-empty one right after an operator cycle reset) — reuse it via
+    // the same lenient ratio test the rest of the engine uses, unless its
+    // own fills already show it closed. `originalActiveCycleId` is only
+    // load()'s own INFERRED guess (no persisted marker to trust outright),
+    // which can land on an already-closed high-holdback trade the ratio
+    // test alone would misjudge as open (isCompletedCycle above, and see
+    // cycleHasOpenBuy's docstring) — require ground-truth buy/sell pairing
+    // for that guess instead of trusting the ratio.
     const candidateCycleId = mergeActiveCycleId || originalActiveCycleId;
     if (candidateCycleId) {
       fillLedger.setCurrentCycleId(candidateCycleId);
-      if (isCompletedCycle(fillLedger.getCurrentCycleFills())) {
+      const candidateFills = fillLedger.getCurrentCycleFills();
+      const candidateStillOpen = mergeActiveCycleId
+        ? !isCompletedCycle(candidateFills)
+        : cycleHasOpenBuy(candidateFills, fillLedger.getAllFills());
+      if (!candidateStillOpen) {
         fillLedger.startNewCycle();
       }
     } else {
@@ -566,6 +603,15 @@ const mergeToRegime = (exchange, pair) => {
   const liveCycleId = fillLedger.getCurrentCycleId();
   if (liveCycleId && liveCycleId !== position.activeCycleId) {
     position.activeCycleId = liveCycleId;
+    // Persist the corrected boundary NOW, before any further mutation.
+    // ingestDcaOrdersIntoLedger already wrote the new cycle's fills to
+    // fill-ledger.json (ingestFill/annotateFillsByOrderId auto-persist) —
+    // without an immediate save here, a crash between that write and the
+    // comprehensive saveRegimeState() call near the end of this function
+    // would leave regime-state.json still naming the OLD boundary, and the
+    // next engine start's restorePersistedCycleId would trust that stale
+    // marker over the ledger's own fills.
+    saveRegimeState(position, existingState.regime, exchange, existingState.tpOptimizer, existingState.sizeOptimizer, pair);
   }
 
   fillLedger.persist();
