@@ -6933,6 +6933,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (isDryRun) {
       orderExecutor.resetDryRunState();
       positionState = createInitialPositionState();
+      // Drop the in-memory risk manager's drawdown peak/pause too — otherwise
+      // it survives the positionState wipe and the next metrics tick writes
+      // the stale peak/pause right back into the fresh state (issue #742).
+      riskManager.resetDrawdown();
       // Clear saved state file
       dryRunState.clearState(exchange, pair);
       return true;
