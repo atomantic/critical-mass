@@ -451,8 +451,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   let currentCycleId = null;
   // When the live cycle began (ms), if known: set by startNewCycle() or
   // restored from the persisted positionState.activeCycleStartedAt. Null when
-  // the live cycle was inferred (load() heuristic, legacy state) — the fill
-  // attribution boundary then falls back to the cycle's own earliest fill,
+  // the live cycle was inferred (load() heuristic, legacy state) — only then
+  // does the fill attribution boundary fall back to the cycle's earliest fill,
   // and an empty cycle has no boundary at all (issue #705).
   let currentCycleStartedAt = null;
   let nextCycleNumber = 1;
@@ -1276,8 +1276,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
   /**
    * Earliest timestamp that belongs to the live cycle (issue #705): the
-   * persisted start time, pulled earlier by any fill already stamped into
-   * the live cycle (its timeframe provably reaches back to that fill). Null
+   * persisted start time when known; otherwise (legacy state / inferred
+   * cycle) the earliest fill already stamped into the live cycle. Null
    * when neither is known — an empty cycle restored without a start time has
    * no safe boundary, so nothing is folded into it by timestamp.
    * @param {Map<string, Fill[]>} cycleMap
@@ -1285,7 +1285,12 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    */
   const resolveLiveCycleStartTs = (cycleMap) => {
     if (!currentCycleId) return null;
-    let startTs = currentCycleStartedAt;
+    // A known start time is authoritative: fills stamped into the live cycle
+    // with older timestamps (e.g. DCA-merge synthetic pending buys dated at
+    // order creation) must not drag the fold boundary back over unrelated
+    // history.
+    if (currentCycleStartedAt !== null) return currentCycleStartedAt;
+    let startTs = null;
     for (const fill of cycleMap.get(currentCycleId) || []) {
       const ts = Number(fill.timestamp);
       if (Number.isFinite(ts) && (startTs === null || ts < startTs)) startTs = ts;
@@ -1548,6 +1553,10 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     for (const fill of fills.values()) {
       if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
       if (fill.cycleId && fill.cycleId === currentCycleId) continue;
+      // A buy folded in by timestamp alone (#705) was never part of the core
+      // position the cycle's TP sold — stamping it would book its cost as
+      // consumed by that sell (realized P&L / reserves / closed-trades).
+      if (fill.cycleAttribution === 'timeframe') continue;
       if (fill.side === 'buy' && fill.cycleId && !fill.sellOrderId && completedCycleIds.has(fill.cycleId)) {
         const sellId = cycleSellIds.get(fill.cycleId);
         if (sellId) {

@@ -1936,6 +1936,48 @@ describe('Fill Ledger', () => {
       assert.equal(rebuilt.totalAsset, 0.001, 'no core TP may be sized over an unlinked import');
     });
 
+    it('a known start time is the boundary even when older fills were stamped into the live cycle', () => {
+      const ledger = createTestLedger('fold-known-start');
+      seedCompletedCycle1(ledger);
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+      // DCA-merge synthetic pending buy dated at order creation, before the reset.
+      ledger.ingestFill(buy('dca-b', 'dca-buy', 20), null, { cycleId: 'cycle-2' });
+      ledger.ingestFill(buy('manual-b', 'manual-buy', 25), null, { cycleId: null });
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.liveCycleOrphansAttributed, 0);
+      assert.equal(preview.liveCycleOrphansAttributed, 0);
+      assert.deepStrictEqual(currentTradeIds(ledger), ['dca-b'], 'the pre-reset manual buy stays out');
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 1);
+    });
+
+    it('auto-link never stamps a timeframe-folded buy once its cycle completes (legacy core)', () => {
+      const ledger = createTestLedger('fold-autolink');
+      ledger.setCurrentCycleId('cycle-1', T0 + 9 * HOUR);
+      ledger.ingestFill(buy('core-b', 'core-buy', 10), null, { cycleId: 'cycle-1' });
+      ledger.ingestFill(buy('manual-b', 'manual-buy', 11), null, { cycleId: null });
+      ledger.recalculateCycles();
+      assert.equal(ledger.getAllFills().find(f => f.tradeId === 'manual-b').cycleAttribution, 'timeframe');
+      // Core TP fills for the core position only (TP placement skips the
+      // timeframe buy), then the cycle resets.
+      ledger.annotateFillsByOrderId('core-buy', { sellOrderId: 'core-tp' });
+      ledger.ingestFill(sell('core-s', 'core-tp', 12), null, { cycleId: 'cycle-1' });
+      const before = ledger.getDerivedRealizedPnL();
+      ledger.startNewCycle();
+
+      const result = ledger.recalculateCycles();
+
+      assert.ok(result.cycleDetails.some(d => d.cycleId === 'cycle-1'), 'cycle-1 is completed and non-current');
+      assert.equal(ledger.getAllFills().find(f => f.tradeId === 'manual-b').sellOrderId, undefined,
+        'the manual buy is not booked against the core TP');
+      const after = ledger.getDerivedRealizedPnL();
+      assert.equal(after.realizedPnL, before.realizedPnL);
+      assert.equal(after.realizedAssetPnL, before.realizedAssetPnL);
+      assert.equal(after.heldOpenBuyCostBasis, before.heldOpenBuyCostBasis);
+    });
+
     it('does not fold anything into an empty live cycle with no known start time', () => {
       const ledger = createTestLedger('fold-no-boundary');
       seedCompletedCycle1(ledger);
