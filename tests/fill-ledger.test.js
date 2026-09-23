@@ -1742,6 +1742,25 @@ describe('Fill Ledger', () => {
       assert.equal(ledger.getCurrentCycleAllBuysCount(), 0);
     });
 
+    it('folds an incomplete orphan group inside the live cycle timeframe into the live cycle', () => {
+      const ledger = createTestLedger('orphan-newer');
+      seedLiveCycles(ledger);
+      // A buy the engine missed during downtime, re-imported with cycleId null.
+      ledger.ingestFill(makeBuyFill({ tradeId: 'late-b', orderId: 'late-buy', tradeTime: at(22 * HOUR) }), null, { cycleId: null });
+      const liveBefore = ledger.getCurrentCycleId();
+
+      const preview = ledger.previewRecalculateCycles();
+      const result = ledger.recalculateCycles();
+
+      assert.equal(result.orphansFixed, 1);
+      assert.equal(ledger.getCurrentCycleId(), liveBefore, 'no renumbering: no standalone cycle was created');
+      assert.deepStrictEqual(result.idMap, {});
+      assert.deepStrictEqual(currentTradeIds(ledger), ['c2-b1', 'c2-b2', 'late-b']);
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 3, 'the missed buy counts toward the cycle-buy limit');
+      assert.equal(preview.activeCycleId, result.activeCycleId);
+      assert.deepStrictEqual(preview.idMap, result.idMap);
+    });
+
     it('still adopts an incomplete orphan group when there is no live cycle', () => {
       const ledger = createTestLedger('orphan-no-live');
       ledger.ingestFill(makeBuyFill({ tradeId: 'o1-b', orderId: 'o1-buy', tradeTime: at(0) }), null, { cycleId: null });

@@ -290,4 +290,20 @@ describe('#675 recalculateAndRefresh re-points the persisted activeCycleId', () 
     restorePersistedCycleId(ledger, loadRegimeState('coinbase', PAIR_675).position, { info: () => {} }, 'coinbase');
     assert.equal(ledger.getCurrentCycleAllBuysCount(), 2);
   });
+
+  it('never replaces an existing boundary with the ledger\'s guess when nothing was renamed', () => {
+    const eng = createRegimeEngine('coinbase', PAIR_675, { dryRun: false, productId: PAIR_675, maxCycleBuys: 3 }, {});
+    engines.push(eng);
+    const ledger = eng.getFillLedger();
+    // Simulate a SIGUSR1 reload: the ledger's current cycle fell back to its
+    // own heuristic while the persisted operator boundary names a newer one.
+    const guessed = ledger.getCurrentCycleId();
+    eng._getPositionState().activeCycleId = 'cycle-99';
+
+    const result = eng.recalculateAndRefresh();
+
+    assert.deepStrictEqual(result.orphansFixed, 0);
+    assert.notEqual(guessed, 'cycle-99');
+    assert.equal(eng._getPositionState().activeCycleId, 'cycle-99', 'operator boundary preserved');
+  });
 });

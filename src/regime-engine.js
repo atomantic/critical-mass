@@ -1038,22 +1038,32 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * can renumber every cycle (returned as `idMap`), and the persisted
    * boundary is otherwise only written by resetCycle — so without this the
    * next restart's restorePersistedCycleId would select whatever cycle now
-   * holds the old name, possibly a completed one (#675). Legacy state files
-   * without the marker are only upgraded when the recalc actually moved IDs.
-   * @param {{orphansFixed?: number, idMap?: Object<string, string>}} recalc
+   * holds the old name, possibly a completed one (#675).
+   *
+   * An existing marker is only translated through the rename map — never
+   * replaced by the ledger's own guess. After a SIGUSR1 reload the ledger's
+   * current cycle comes from load()'s "most recent unsold cycle" heuristic,
+   * and overwriting the operator's post-reset boundary with it would undo the
+   * #606 fix on the next restart. Legacy state files without the marker only
+   * gain one when the recalc actually renamed cycles.
+   * @param {{idMap?: Object<string, string>}} recalc
    * @returns {boolean} Whether activeCycleId changed (caller should persist)
    */
   const syncActiveCycleIdAfterRecalc = (recalc) => {
-    const hasMarker = typeof positionState.activeCycleId === 'string';
-    const renamed = Object.keys(recalc?.idMap || {}).length > 0;
-    if (!hasMarker && !renamed) return false;
-    const liveCycleId = fillLedger.getCurrentCycleId();
-    if (!liveCycleId || positionState.activeCycleId === liveCycleId) return false;
-    logger.info(`🔢 [${exchange}] Re-pointing persisted active cycle after recalc: ${positionState.activeCycleId ?? 'none'} → ${liveCycleId}`, {
-      previousCycleId: positionState.activeCycleId ?? null,
-      cycleId: liveCycleId,
+    const idMap = recalc?.idMap || {};
+    const previous = positionState.activeCycleId;
+    let next;
+    if (typeof previous === 'string') {
+      next = Object.prototype.hasOwnProperty.call(idMap, previous) ? idMap[previous] : previous;
+    } else if (Object.keys(idMap).length > 0) {
+      next = fillLedger.getCurrentCycleId();
+    }
+    if (!next || next === previous) return false;
+    logger.info(`🔢 [${exchange}] Re-pointing persisted active cycle after recalc: ${previous ?? 'none'} → ${next}`, {
+      previousCycleId: previous ?? null,
+      cycleId: next,
     });
-    positionState.activeCycleId = liveCycleId;
+    positionState.activeCycleId = next;
     return true;
   };
 
