@@ -337,10 +337,11 @@ const planBodyConsumption = (entries, bodyQty, qty, legacyConsumedFraction = () 
     if (!entry || !entry.orderId || entry.orderId === 'core-migration') continue;
     const size = Number(entry.assetQty) || 0;
     if (!(size > 0)) continue;
-    const legacyFraction = Math.min(Math.max(Number(legacyConsumedFraction(entry)) || 0, 0), 1);
+    // The legacy lookup is only consulted for untracked tranches — the engine
+    // backs it with a ledger scan.
     const prior = Number.isFinite(entry.consumedQty)
       ? Math.min(Math.max(entry.consumedQty, 0), size)
-      : size * legacyFraction;
+      : size * Math.min(Math.max(Number(legacyConsumedFraction(entry)) || 0, 0), 1);
     const rowOpen = Math.max(0, size - prior);
     rows.push({ entry, size, prior, open: rowOpen });
     open += rowOpen;

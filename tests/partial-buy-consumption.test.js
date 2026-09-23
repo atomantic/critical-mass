@@ -384,3 +384,86 @@ describe('merge-snapshot partial sale (issue #607)', () => {
     assert.ok(Math.abs(held - live.costBasis) < 0.01, `held ${held} vs body ${live.costBasis}`);
   });
 });
+
+describe('merge-snapshot complete sale with the live body still present (issue #607)', () => {
+  it('consumes only what left the body, so held cost keeps matching the bodies', async () => {
+    // The target TP fills its FULL planned size (0.0099 of a 0.01 body; 0.0001
+    // is designed holdback) during a buy-merge cancel, while a fold-in lands
+    // on the same live body. The live body is deducted only the sold 0.0099.
+    let target;
+    let getOrderCalls = 0;
+    const eng = makeEngine({
+      getOrder: async () => {
+        getOrderCalls++;
+        return getOrderCalls === 1
+          ? { filledSize: 0, status: 'OPEN' }
+          : { filledSize: 0.0099, status: 'CANCELLED', averageFilledPrice: 50500 };
+      },
+      getOpenOrders: async () => [],
+      getOrderFills: async (orderId) => {
+        if (orderId === 'tp-full') {
+          eng.getFillLedger().ingestFill(rawFill('buy', 'buy-f', 'buy-f-t1', 0.006, 55000));
+          celestialHierarchy.mergeIntoBody(target, { assetQty: 0.006, costBasis: 330, avgPrice: 55000 }, 100000, 'buy-f');
+          return [rawFill('sell', 'tp-full', 'tp-full-t1', 0.0099, 50500)];
+        }
+        return orderId === 'buy-new' ? [rawFill('buy', 'buy-new', 'buy-new-t1', 0.01, 50000)] : [];
+      },
+    }, {
+      getPendingCounts: () => ({ total: 1_000_000 }),
+      cancelBodyTpOrder: async () => ({ cancelled: true, filled: false, filledSize: 0.0099, filledValue: 499.95, averageFilledPrice: 50500, totalFees: 0 }),
+    });
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-o', 'buy-o-t1', 0.01, 50000));
+    ledger.annotateFillsByOrderId('buy-o', { sellOrderId: 'tp-full' });
+    target = makeBody('body-ffffffff', 'buy-o', 0.01, 50000, 'tp-full');
+    target.assetOnOrder = 0.0099;
+    const pos = eng._getPositionState();
+    pos.celestialBodies = [target];
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+
+    assert.deepEqual(ledger.getBuyOrderConsumption('buy-o').consumedBy, { 'tp-full': 0.0099 });
+    const derived = ledger.getDerivedRealizedPnL();
+    const inBodies = pos.celestialBodies.reduce((sum, b) => sum + b.assetQty, 0);
+    const bodyCost = pos.celestialBodies.reduce((sum, b) => sum + b.costBasis, 0);
+    assert.ok(Math.abs(derived.heldOpenAssetQty - inBodies) < EPS, `held ${derived.heldOpenAssetQty} vs bodies ${inBodies}`);
+    assert.ok(Math.abs(derived.heldOpenBuyCostBasis - bodyCost) < 0.01, `held cost ${derived.heldOpenBuyCostBasis} vs bodies ${bodyCost}`);
+    // Issue #718: the holdback is both booked as reserves and still in the
+    // live body. The ledger identity exposes it rather than hiding it.
+    assert.ok(Math.abs(derived.realizedAssetPnL - 0.0001) < EPS);
+    assert.ok(Math.abs((inBodies + derived.realizedAssetPnL) - derived.ledgerNetAsset - 0.0001) < EPS,
+      'bodies + reserves exceed the ledger by exactly the double-counted holdback');
+  });
+});
+
+describe('legacy buy order split across bodies (issue #607)', () => {
+  it('seeds the first record with what other bodies already sold under sellOrderId closure', async () => {
+    // Pre-#607: order buy-s filled in two advancing partials that landed in two
+    // bodies. Body 1 (0.004) closed long ago; body 2 (0.006) is still open.
+    // Neither tranche carries consumedQty.
+    const eng = makeEngine({
+      getOrderFills: async (orderId) => (orderId === 'tp-2' ? [rawFill('sell', 'tp-2', 'tp-2-t1', 0.0059, 52000)] : []),
+    });
+    const pos = eng._getPositionState();
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-s', 'buy-s-t1', 0.004, 50000));
+    ledger.ingestFill(rawFill('buy', 'buy-s', 'buy-s-t2', 0.006, 50000));
+    ledger.ingestFill(rawFill('buy', 'buy-y', 'buy-y-t1', 0.1, 40000));
+    ledger.ingestFill(rawFill('sell', 'tp-1', 'tp-1-t1', 0.004, 52000));
+    ledger.annotateFillsByOrderId('tp-1', { bodyPnl: 8, bodyHoldbackAsset: 0, isBodyOwned: true });
+    ledger.annotateFillsByOrderId('buy-s', { sellOrderId: 'tp-2' });
+    const body2 = makeBody('body-22222222', 'buy-s', 0.006, 50000, 'tp-2');
+    delete body2.buyOrders[0].consumedQty; // a pre-#607 tranche
+    body2.assetOnOrder = 0.0059;
+    pos.celestialBodies = [body2, makeBody('body-yyyyyyyy', 'buy-y', 0.1, 40000, 'tp-y')];
+
+    await eng._test.handleOrderFill(sellFill('tp-2', 0.0059, 52000));
+
+    assert.deepEqual(ledger.getBuyOrderConsumption('buy-s').consumedBy, { __legacy__: 0.004, 'tp-2': 0.006 });
+    const derived = ledger.getDerivedRealizedPnL();
+    assert.ok(Math.abs(derived.heldOpenAssetQty - 0.1) < EPS, `body 1's sold tranche is not resurrected as open, got ${derived.heldOpenAssetQty}`);
+    assert.ok(Math.abs(derived.heldOpenBuyCostBasis - 4000) < 0.01);
+  });
+});

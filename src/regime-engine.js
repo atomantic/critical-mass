@@ -2577,6 +2577,49 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * What a PRE-#607 buy order had already lost before its first consumption
+   * record: everything the ledger bought on it that no live tranche still
+   * holds open. Only the tranches of the body being sold are in the plan, but
+   * an order filled in advancing partials can be split across bodies, one of
+   * them closed long ago under sellOrderId closure — seeding from this body
+   * alone would read that sold part as open forever. Orders whose every
+   * tranche was created under #607 (finite `consumedQty`) are not seeded this
+   * way: for them, ledger quantity no tranche holds is genuinely unsold and
+   * must stay visible.
+   * @param {{orders: Map<string, Object>, entries: Array<{entry: Object}>}} plan
+   * @param {(orderId: string) => (Object|null)} consumptionOf - Cached getBuyOrderConsumption
+   * @param {(entry: Object) => number} legacyFraction
+   * @returns {Map<string, number>} orderId → seed, only for legacy orders
+   */
+  const legacyConsumptionSeeds = (plan, consumptionOf, legacyFraction) => {
+    const seeds = new Map();
+    const tranchesByOrder = new Map();
+    const seen = new Set();
+    const addTranche = (entry) => {
+      if (!entry || seen.has(entry) || !plan.orders.has(entry.orderId)) return;
+      seen.add(entry);
+      if (!tranchesByOrder.has(entry.orderId)) tranchesByOrder.set(entry.orderId, []);
+      tranchesByOrder.get(entry.orderId).push(entry);
+    };
+    for (const { entry } of plan.entries) addTranche(entry);
+    for (const body of (positionState.celestialBodies || [])) {
+      for (const entry of (body.buyOrders || [])) addTranche(entry);
+    }
+    for (const [orderId, tranches] of tranchesByOrder) {
+      const ledger = consumptionOf(orderId);
+      if (!ledger || ledger.consumedBy) continue;
+      if (tranches.every(t => Number.isFinite(t.consumedQty))) continue;
+      const openAll = tranches.reduce((sum, t) => {
+        const size = Number(t.assetQty) || 0;
+        const prior = Number.isFinite(t.consumedQty) ? t.consumedQty : size * legacyFraction(t);
+        return sum + Math.max(0, size - prior);
+      }, 0);
+      seeds.set(orderId, Math.max(0, ledger.size - openAll));
+    }
+    return seeds;
+  };
+
+  /**
    * Record on the fill ledger which buy orders a body sale consumed, and how
    * much of each (issue #607). This is what lets computeRealizedFromCyclePairs
    * hold the unsold remainder of a partly-sold buy order open instead of
@@ -2597,13 +2640,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    *   consumedCostFraction closure.
    */
   const recordBodyConsumption = ({ entries, bodyQty, qty, closesBody, sellOrderId, bodyId }) => {
-    const plan = celestialHierarchy.planBodyConsumption(entries, bodyQty, qty,
-      (entry) => fillLedger.getBuyOrderConsumption(entry.orderId)?.consumedCostFraction ?? 0,
-      { closesBody });
+    // getBuyOrderConsumption scans the whole ledger; a collapsed body can hold
+    // hundreds of tranches, so look each order up once per sale.
+    const consumptionCache = new Map();
+    const consumptionOf = (orderId) => {
+      if (!consumptionCache.has(orderId)) consumptionCache.set(orderId, fillLedger.getBuyOrderConsumption(orderId));
+      return consumptionCache.get(orderId);
+    };
+    const legacyFraction = (entry) => consumptionOf(entry.orderId)?.consumedCostFraction ?? 0;
+    const plan = celestialHierarchy.planBodyConsumption(entries, bodyQty, qty, legacyFraction, { closesBody });
     if (plan) {
+      // Before the tranches advance: the seeds read their pre-sale state.
+      const legacySeeds = legacyConsumptionSeeds(plan, consumptionOf, legacyFraction);
       for (const { entry, next } of plan.entries) entry.consumedQty = roundAsset(next);
       for (const [orderId, { delta, prior }] of plan.orders) {
-        if (delta > 0) fillLedger.recordBuyConsumption(orderId, sellOrderId, delta, prior);
+        if (delta > 0) fillLedger.recordBuyConsumption(orderId, sellOrderId, delta, legacySeeds.get(orderId) ?? prior);
       }
     }
     const coverage = plan ? plan.coverage : 0;
@@ -3182,14 +3233,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // its buyOrders array is copied when the snapshot is taken, so a buy
         // folded onto the live body in the Race-3 window is not charged for a
         // TP it was never part of. The tranche objects themselves are shared
-        // with the live body, which is what advances its consumedQty. A true
-        // partial books no reserve, so it consumes only what sold; a complete
-        // fill also consumes the holdback it books as reserves (issue #607).
+        // with the live body, which is what advances its consumedQty.
+        //
+        // Consume exactly what leaves a body: with the live body still present
+        // that is only the sold qty (the block below deducts nothing else), so
+        // held cost keeps matching the bodies. On a complete fill that body
+        // still holds the holdback it also books as reserves — a model double
+        // count tracked in issue #718, which the ledger coverage reading then
+        // shows instead of hiding. With no live body the snapshot body closed:
+        // sold + booked holdback, every tranche in full (issue #607).
+        const snapshotClosed = !liveMerged;
         recordBodyConsumption({
           entries: mergeSnapshot.buyOrders,
           bodyQty: mergeSnapshot.assetQty,
-          qty: liveOwnsRemainder ? summary.totalSize : Math.max(mergeSnapshot.assetQty, summary.totalSize),
-          closesBody: !liveOwnsRemainder,
+          qty: snapshotClosed ? Math.max(mergeSnapshot.assetQty, summary.totalSize) : summary.totalSize,
+          closesBody: snapshotClosed,
           sellOrderId: fillData.orderId,
           bodyId: mergeSnapshot.id,
         });

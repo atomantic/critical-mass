@@ -164,7 +164,9 @@ buy fill rows of order "abc123"
 
 - **What counts as consumed:** sold quantity plus the holdback the sale books
   as reserves (`bodyHoldbackAsset`). A partial books no reserve and consumes
-  only what sold. So for sells booked this way,
+  only what sold. (One exception, issue #718: a merge-snapshot fill whose
+  live body survives consumes only the sold qty, matching what that body
+  deducts.) So for sells booked this way,
   `Σ buy size − Σ sell size == heldOpenAssetQty + realizedAssetPnL` holds by
   construction: the coverage identity from the ledger alone.
 - **How it is attributed:** each `body.buyOrders` entry is a tranche with its
@@ -186,8 +188,13 @@ buy fill rows of order "abc123"
   a closed body open.
 - **Legacy:** orders no sell has recorded against keep the boolean rule, and
   `consumedCostFraction` is now only stamped on those (composed per order,
-  issue #704). The first record on an order seeds `__legacy__` with what
-  earlier sales had already consumed (from `consumedCostFraction`). When a
+  issue #704). The first record on a pre-#607 order seeds `__legacy__` with
+  everything the order had already lost: its ledger size minus what its live
+  tranches (in any body) still hold open. An order filled in advancing
+  partials can be split across bodies, one of them closed long ago under
+  `sellOrderId` closure, and that sold part must not come back as open. Orders
+  whose tranches were all created under #607 are never seeded this way —
+  quantity no tranche holds is genuinely unsold and stays visible. When a
   body holds quantity no tranche accounts for (an adopted body merged in,
   tranches from before `buyOrders` tracked quantities), that share of each
   sale is left unrecorded rather than loaded onto the other tranches, and the
