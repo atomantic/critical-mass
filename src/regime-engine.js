@@ -4591,6 +4591,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * The execution a failed cancel-for-replace booking recorded for this
+   * body's current TP (see bookTpCancelExecution), when the exchange's
+   * CANCELLED status does not report MORE than it — a status that omits the
+   * size, or reports a smaller one, must not override what we already knew.
+   * @param {Object} body
+   * @param {Object|null} status - Exchange order status for body.tpOrderId
+   * @returns {Object|null}
+   */
+  const knownTpCancelExecution = (body, status) => {
+    const known = body.pendingTpCancelExecution;
+    if (!known || !body.tpOrderId || known.orderId !== body.tpOrderId) return null;
+    return (parseFloat(status?.filledSize) || 0) > known.filledSize ? null : known;
+  };
+
+  /**
    * Book a body TP's execution that was reported by a cancel (see
    * cancelBodyTpForReplace) through the normal body-TP sell path. The body
    * must still carry `tpOrderId = orderId`.
@@ -4608,21 +4623,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    *   itself running inside handleOrderFillImpl or a roll-up merge
    * @returns {Promise<'booked'|'booking_failed'>}
    */
-  /**
-   * The execution a failed cancel-for-replace booking recorded for this
-   * body's current TP (see bookTpCancelExecution), when the exchange's
-   * CANCELLED status does not report MORE than it — a status that omits the
-   * size, or reports a smaller one, must not override what we already knew.
-   * @param {Object} body
-   * @param {Object|null} status - Exchange order status for body.tpOrderId
-   * @returns {Object|null}
-   */
-  const knownTpCancelExecution = (body, status) => {
-    const known = body.pendingTpCancelExecution;
-    if (!known || !body.tpOrderId || known.orderId !== body.tpOrderId) return null;
-    return (parseFloat(status?.filledSize) || 0) > known.filledSize ? null : known;
-  };
-
   const bookTpCancelExecution = async (body, orderId, execution, context, { nested = false } = {}) => {
     // A TP that executed its whole planned size before the cancel landed
     // (the cancel-after-full-fill race) is a completed TP, not a partial:
