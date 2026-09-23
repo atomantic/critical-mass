@@ -187,4 +187,66 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
     assert.equal(pos.pendingEntryOrders.length, 0, 'a genuinely empty cancel must be purged, not left stranded');
     assert.equal(pos.celestialBodies.length, 0, 'no body should be created for an empty cancel');
   });
+
+  it('books a genuinely non-empty CANCELLED partial instead of purging it', async () => {
+    // The "empty cancel" purge only applies when NOTHING filled. A cancel
+    // with a real partial fill still owes an accounting entry — it must be
+    // routed through catchUpTerminalEntry's fill path (gap-synthesized from
+    // order-status data here, since getOrderFills is unavailable), not
+    // treated as safe to drop.
+    const orderId = 'e4';
+    const adapter = {
+      getOrderFills: async () => { throw new Error('trade scan unavailable'); },
+      getOrder: async () => ({
+        orderId, side: 'BUY', status: 'CANCELLED', filledSize: 0.7, filledValue: 1400, averageFilledPrice: 2000,
+      }),
+    };
+    const eng = makeEngine(adapter);
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [{ orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() }];
+
+    await eng._test.reconcileTick();
+
+    assert.equal(pos.pendingEntryOrders.length, 0, 'the terminal cancel-with-partial must be cleared from positionState once caught up');
+    const bodies = pos.celestialBodies.filter(b => (b.sourceOrderIds || []).includes(orderId));
+    assert.equal(bodies.length, 1, 'exactly one body must own the recovered partial');
+    assert.ok(Math.abs(bodies[0].assetQty - 0.7) < 1e-8, `the body must reflect the real 0.7 partial, not be purged as empty — got ${bodies[0].assetQty}`);
+  });
+
+  it('does not race an in-flight #679 engine-level retry for the same orderId', async () => {
+    // While the callback path's own bounded retry (issue #679) is still
+    // scheduled for this exact orderId, the sweep must not ALSO call
+    // adapter.getOrder/handleOrderFill for it — that would race a second
+    // handleOrderFillImpl pass against the pending retry. Use a long retry
+    // delay so the scheduled retry never actually fires during this test;
+    // clearTimers() in after() cancels it.
+    const orderId = 'e5';
+    let getOrderCalls = 0;
+    const adapter = {
+      getOrderFills: async () => { throw new Error('trade scan unavailable'); },
+      getOrder: async () => { getOrderCalls++; return { orderId, side: 'BUY', status: 'FILLED', filledSize: 1.5, averageFilledPrice: 2000, filledValue: 3000 }; },
+    };
+    const eng = makeEngine(adapter);
+    // Long delay (never fires within this test) + 1 allowed retry, so the
+    // first callback failure schedules a pending retry instead of giving up.
+    eng._test.setIncompleteFillRetryTiming(60000, 1);
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [{ orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() }];
+
+    // averageFilledPrice: 0 so this attempt is unbookable and fails, exactly
+    // like the first test, scheduling an engine-level retry instead of
+    // giving up outright.
+    await eng._test.handlePolledFill(orderId, {
+      orderId, side: 'BUY', status: 'FILLED', filledSize: 1.5, filledValue: 0, averageFilledPrice: 0, totalFees: 0,
+    });
+
+    assert.equal(eng._test.getIncompleteFillRetryCount(orderId), 1, 'a retry must be scheduled (not yet exhausted) for this test to be meaningful');
+    assert.equal(pos.pendingEntryOrders.length, 1, 'still orphaned going into the reconcile pass');
+
+    await eng._test.reconcileTick();
+
+    assert.equal(getOrderCalls, 0, 'the sweep must not call adapter.getOrder while a callback-path retry is pending for this orderId');
+    assert.equal(pos.pendingEntryOrders.length, 1, 'the sweep must leave the order alone while a retry is pending');
+    assert.equal(pos.celestialBodies.length, 0, 'nothing should be booked while the race guard defers to the pending retry');
+  });
 });

@@ -4759,12 +4759,38 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               .filter(o => o.type === 'entry' || o.type === 'ladder_entry')
               .map(o => o.orderId)
           );
-          const orphans = [
-            ...(positionState.pendingEntryOrders || []).map(savedEntry => ({ savedEntry, entryType: 'entry' })),
-            ...(positionState.pendingLadderOrders || []).map(savedEntry => ({ savedEntry, entryType: 'ladder_entry' })),
-          ].filter(({ savedEntry }) => !trackedIds.has(savedEntry.orderId));
+          // Dedupe by orderId (entry list wins ties) rather than concatenating
+          // both lists directly — an orderId should never legitimately sit in
+          // both, but if a stray duplicate row ever did, processing it twice
+          // in the same pass would waste a redundant getOrder/handleOrderFill
+          // round trip and, on a failure, let the second restorePendingOrder
+          // call silently overwrite the first with the wrong type/ladderIndex
+          // (claude review, issue #673).
+          const orphanMap = new Map();
+          for (const savedEntry of positionState.pendingEntryOrders || []) {
+            if (!orphanMap.has(savedEntry.orderId)) orphanMap.set(savedEntry.orderId, { savedEntry, entryType: 'entry' });
+          }
+          for (const savedEntry of positionState.pendingLadderOrders || []) {
+            if (!orphanMap.has(savedEntry.orderId)) orphanMap.set(savedEntry.orderId, { savedEntry, entryType: 'ladder_entry' });
+          }
+          const orphans = [...orphanMap.values()].filter(({ savedEntry }) => !trackedIds.has(savedEntry.orderId));
 
           for (const { savedEntry, entryType } of orphans) {
+            // The dedup key for any terminal buy collapses to the bare
+            // orderId (makeFillDedupKey), regardless of isPartialFill/size.
+            // If the polling callback path is already mid-flight or
+            // engine-level-retrying (issue #679) this exact order, skip it
+            // BEFORE spending a getOrder round trip — let it finish instead
+            // of racing a second handleOrderFill call for the same orderId.
+            // shouldSkipBuyRecommit dedups any true overlap that slips past
+            // this, but avoiding the race (and the wasted network call) is
+            // cheaper than relying on that alone. If it eventually exhausts
+            // its retries, both maps clear the key and this sweep catches it
+            // up on a later tick.
+            if (recentlyProcessedFills.has(savedEntry.orderId) || incompleteFillRetries.has(savedEntry.orderId)) {
+              continue;
+            }
+
             let orderStatus;
             try {
               orderStatus = await adapter.getOrder(savedEntry.orderId);
@@ -4776,18 +4802,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               continue;
             }
             if (!isTerminalStatus(orderStatus)) continue; // still resting — leave it for the ordinary path
-            // The dedup key for any terminal buy collapses to the bare
-            // orderId (makeFillDedupKey), regardless of isPartialFill/size.
-            // If the polling callback path is already mid-flight or
-            // engine-level-retrying (issue #679) this exact order, let it
-            // finish instead of racing a second handleOrderFill call for the
-            // same orderId — shouldSkipBuyRecommit dedups any true overlap,
-            // but avoiding it is cheaper than relying on that alone. If it
-            // eventually exhausts its retries, both maps clear the key and
-            // this sweep catches it up on a later tick.
-            if (recentlyProcessedFills.has(savedEntry.orderId) || incompleteFillRetries.has(savedEntry.orderId)) {
-              continue;
-            }
 
             logger.warn(
               `⚠️ [${exchange}] Reconcile: orphaned ${entryType} ${savedEntry.orderId.slice(0, 8)} is ${orderStatus.status} but missing from executor tracking — catching up`,
