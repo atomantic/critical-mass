@@ -425,3 +425,62 @@ describe('updateMetrics marketState retention on empty candles (issue #584)', ()
     assert.ok(tpPlaced > 0, 'ensureTakeProfitPlaced must be called on fetch failure');
   });
 });
+
+describe('injectBody duplicate refusal (issue #691, codex review follow-up)', () => {
+  // codex review: the original duplicate check only compared
+  // `sourceOrderIds[0]`, but mergeIntoBody (celestial-hierarchy.js) appends a
+  // merged-away body's sourceOrderIds onto the survivor's — so a buy order
+  // that was live in its own body, then rolled up into another body, can end
+  // up anywhere in the survivor's sourceOrderIds array, not just the front.
+  // injectBody must catch a retried import of that buy no matter where its
+  // order id sits (sourceOrderIds OR buyOrders), matching the canonical
+  // isBuyAlreadyCommitted predicate (issue #131). This path returns before
+  // placeBodyTp/saveLiveState ever run, so it needs no disk-writing engine
+  // startup — just isRunning + a hand-built positionState.
+  it('refuses a retried body whose buy order was merged into another body\'s sourceOrderIds at a non-zero index', async () => {
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    engine._test.setRunning(true);
+
+    const pos = engine._getPositionState();
+    // Simulates a body that absorbed 'buy-a' via a merge — 'buy-a' now sits
+    // at index 1 of sourceOrderIds, not index 0.
+    pos.celestialBodies = [
+      {
+        id: 'body-merged-survivor',
+        tier: 'satellite',
+        assetQty: 0.01,
+        avgPrice: 90000,
+        costBasis: 900,
+        tpOrderId: 'tp-existing',
+        sourceOrderIds: ['buy-original', 'buy-a'],
+        buyOrders: [
+          { orderId: 'buy-original', price: 89000, assetQty: 0.005, sizeUsdc: 445 },
+          { orderId: 'buy-a', price: 91000, assetQty: 0.005, sizeUsdc: 455 },
+        ],
+        mergeCount: 1,
+      },
+    ];
+
+    // A retried manual-buy import for 'buy-a' creates a brand-new phantom
+    // body with a different id but the same originating order.
+    const phantomBody = {
+      id: 'body-phantom-retry',
+      tier: 'satellite',
+      assetQty: 0.005,
+      avgPrice: 91000,
+      costBasis: 455,
+      tpOrderId: null,
+      assetOnOrder: 0,
+      sourceOrderIds: ['buy-a'],
+      buyOrders: [{ orderId: 'buy-a', price: 91000, assetQty: 0.005, sizeUsdc: 455 }],
+      mergeCount: 0,
+    };
+
+    const result = await engine.injectBody(phantomBody);
+
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'duplicate body');
+    assert.equal(result.bodyId, 'body-merged-survivor');
+    assert.equal(pos.celestialBodies.length, 1, 'the phantom body must never be pushed into the live position');
+  });
+});

@@ -6721,6 +6721,30 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const injectBody = async (body) => {
     if (!isRunning) return { success: false, error: 'Engine not running' };
     positionState.celestialBodies = positionState.celestialBodies || [];
+    // Defense in depth (issue #691): the caller (manual-trade-import's
+    // importBuy) is expected to guard against re-injecting a body for a
+    // retried buy, but a duplicate here would place a second live TP sell
+    // for the same fill, eating into other bodies' inventory/holdback. Refuse
+    // a body whose id already exists, or whose originating buy order is
+    // already committed to a live body — checking the FULL sourceOrderIds/
+    // buyOrders collections (codex review), not just index [0]: mergeIntoBody
+    // (celestial-hierarchy.js) concatenates a merged-away body's
+    // sourceOrderIds onto the survivor's, so a since-merged buy order can sit
+    // anywhere in that array, not only at the front. Same predicate as
+    // isBuyAlreadyCommitted (issue #131), inlined here to keep the matching
+    // body reference for the error result.
+    const injectedOrderId = body.sourceOrderIds?.[0];
+    const duplicate = positionState.celestialBodies.find(
+      (b) => b.id === body.id
+        || (injectedOrderId && (
+          (b.sourceOrderIds || []).includes(injectedOrderId)
+          || (b.buyOrders || []).some((bo) => bo.orderId === injectedOrderId)
+        ))
+    );
+    if (duplicate) {
+      logger.warn(`⚠️ [${exchange}] Injected body ${body.id} refused: duplicate of existing body ${duplicate.id} (source order ${duplicate.sourceOrderIds?.[0]})`);
+      return { success: false, error: 'duplicate body', bodyId: duplicate.id, tpPlaced: !!duplicate.tpOrderId };
+    }
     positionState.celestialBodies.push(body);
     celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
     const tpResult = await placeBodyTp(body);
