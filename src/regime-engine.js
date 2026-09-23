@@ -3036,6 +3036,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         orderExecutor.removeBodyTracking(fillData.orderId);
 
         if (liveMerged) {
+          // consumedCostFraction must reflect what fraction of the CURRENT live
+          // pool this sale just closed — NOT `soldRatio` above, which is scoped
+          // to `mergeSnapshot.assetQty` (a frozen scalar) and correctly prices
+          // the sold tranche's own cost/pnl against the snapshot. If another buy
+          // folded onto this SAME live body in the Race-3 window (the scenario
+          // the surrounding comment already accounts for when deducting qty/cost
+          // below — mergeSnapshot's array fields are shallow-copied, so
+          // sourceOrderIds/buyOrders are the SAME shared references as
+          // liveMerged's and reflect the fold-in too), `liveMerged.assetQty` here
+          // is larger than the frozen `mergeSnapshot.assetQty`. Using `soldRatio`
+          // would overstate the consumed fraction and silently zero
+          // heldOpenBuyCostBasis for a folded-in buy this sale never touched.
+          const liveSoldRatio = liveMerged.assetQty > 0
+            ? Math.min(summary.totalSize / liveMerged.assetQty, 1)
+            : 1;
+
           liveMerged.assetQty = roundAsset(Math.max(0, liveMerged.assetQty - summary.totalSize));
           liveMerged.costBasis = roundUSDC(Math.max(0, liveMerged.costBasis - proratedCostBasis));
 
@@ -3045,7 +3061,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // full buy cost as still-open while the sold tranche's prorated cost
           // is simultaneously realized via bodyPnl above — double-counting it.
           const prevConsumed = liveMerged.consumedCostFraction || 0;
-          liveMerged.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - soldRatio);
+          liveMerged.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - liveSoldRatio);
           for (const srcId of new Set([
             ...(liveMerged.sourceOrderIds || []),
             ...((liveMerged.buyOrders || []).map(b => b.orderId)),

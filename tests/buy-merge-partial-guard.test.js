@@ -225,12 +225,74 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
     const cs = eng._getPositionState().celestialState;
     assert.equal(cs.bodiesCompleted, 0, 'the body is still open — this sell did not complete a cycle');
     assert.equal(eng._getPositionState().realizedAssetPnL, 0, 'realizedAssetPnL must not count the still-held remainder as reserves');
+    // No fold-in occurred in this scenario — mergeSnapshot.assetQty (0.01) equals
+    // the live body's pre-deduction assetQty, so consumedCostFraction should
+    // equal the plain sold/total ratio: 0.004/0.01 = 0.4.
+    assert.ok(Math.abs(liveTarget.consumedCostFraction - 0.4) < 1e-9, `consumedCostFraction tracks the sold fraction, got ${liveTarget.consumedCostFraction}`);
 
     const newBody = bodies.find(b => b.id !== 'target');
     assert.ok(
       (newBody.sourceOrderIds || []).includes('buy-new') || (newBody.buyOrders || []).some(o => o.orderId === 'buy-new'),
       'the new body owns the incoming buy order',
     );
+  });
+
+  it('prices consumedCostFraction off the CURRENT live pool, not the frozen snapshot, when another buy folds onto the same body during the cancel race (issue #669 review finding)', async () => {
+    // Same #227-follow-up shape as above, except a SECOND buy successfully
+    // folds onto the SAME live target body (via the ordinary merge path,
+    // simulated directly here) while this buy's own merge attempt is awaiting
+    // the target TP cancel. mergeSnapshot.assetQty is a frozen scalar (0.01,
+    // as of snapshot time) but mergeSnapshot.sourceOrderIds/buyOrders are the
+    // SAME array references as the live body's (celestial-hierarchy.js pushes
+    // in place), so the fold-in buy is indistinguishable from the original
+    // buys by the time the merge-snapshot sell is booked. consumedCostFraction
+    // must be priced against the live body's GROWN pre-deduction assetQty
+    // (0.01 + 0.006 fold-in = 0.016), not the stale 0.01 snapshot value — the
+    // latter would overstate the consumed fraction and silently zero
+    // heldOpenBuyCostBasis for the folded-in buy, which this sale never sold.
+    const target = makeBody('target', 50000, 0.01, 'tp-target');
+    let getOrderCalls = 0;
+    const eng = makeEngine({
+      bodies: [target],
+      adapter: {
+        getOrder: async () => {
+          getOrderCalls++;
+          return getOrderCalls === 1
+            ? { filledSize: 0, status: 'OPEN' }
+            : { filledSize: 0.004, status: 'CANCELLED', averageFilledPrice: 50500 };
+        },
+        getOpenOrders: async () => [],
+        getOrderFills: async (orderId) => {
+          if (orderId === 'tp-target') {
+            return [{
+              tradeId: 'tp-target-t1', orderId: 'tp-target', side: 'sell', price: '50500', size: '0.004',
+              totalCommission: '0.02', rebate: '0', liquidityIndicator: 'MAKER', tradeTime: new Date().toISOString(),
+            }];
+          }
+          return buyFills('buy-new', 0.01, 50000);
+        },
+      },
+      executor: {
+        placeBodyTpOrder: async () => ({ success: true, orderId: `tp-new-${Math.random()}` }),
+        cancelBodyTpOrder: async () => {
+          // Simulate a concurrent successful fold-in landing on the SAME live
+          // body while this cancel is in flight — mutates in place exactly as
+          // celestial-hierarchy.js's real fold-in does (target.sourceOrderIds.push).
+          target.assetQty = target.assetQty + 0.006;
+          target.costBasis += 0.006 * 50000;
+          target.sourceOrderIds.push('buy-foldin');
+          return { cancelled: true, filled: false, filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 };
+        },
+      },
+    });
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+
+    const liveTarget = eng._getPositionState().celestialBodies.find(b => b.id === 'target');
+    assert.ok(liveTarget, 'target body survives');
+    // Pre-deduction pool was 0.01 (original) + 0.006 (fold-in) = 0.016; sold
+    // 0.004 of it => 0.25, NOT 0.004/0.01=0.4 (the stale-snapshot-denominator bug).
+    assert.ok(Math.abs(liveTarget.consumedCostFraction - 0.25) < 1e-9, `consumedCostFraction must use the live pre-deduction pool, got ${liveTarget.consumedCostFraction}`);
   });
 
   it('DOES merge when the target TP has no partial fill (guard is specific)', async () => {
