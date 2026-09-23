@@ -2083,12 +2083,16 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * is credited; a replay of an already-credited booking carries the same
    * size and is refused. Without it — and for an order credited before sizes
    * were recorded — the claim is per order: any prior credit refuses.
+   * `replay` (a pass that ingested no new rows and re-aggregates the whole
+   * order) also refuses on any prior credit — its size spans rows an earlier
+   * booking already credited — but still records its size when it is first.
    * @param {string} orderId - Sell order id whose pnl is about to be credited
    * @param {number} [creditedSize] - Cumulative booked size this credit covers
+   * @param {{replay?: boolean}} [opts]
    * @returns {boolean} true if the caller should apply the credit; false if it
    *   was already credited on a prior (pre-crash) run.
    */
-  const claimCapitalCredit = (orderId, creditedSize) => {
+  const claimCapitalCredit = (orderId, creditedSize, { replay = false } = {}) => {
     if (!orderId) return true;
     const sized = Number.isFinite(creditedSize);
     let matched = false;
@@ -2102,7 +2106,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       // A credited row without a size predates sized claims: fully credited.
       creditedUpTo = Math.max(creditedUpTo, Number.isFinite(fill.capitalCreditedSize) ? fill.capitalCreditedSize : Infinity);
     }
-    const alreadyCredited = credited && (!sized || creditedSize <= creditedUpTo + 1e-9);
+    const alreadyCredited = credited && (!sized || replay || creditedSize <= creditedUpTo + 1e-9);
     const stampSize = alreadyCredited ? creditedUpTo : (sized ? roundAsset(creditedSize) : Infinity);
     for (const fill of fills.values()) {
       if (fill.orderId !== orderId) continue;

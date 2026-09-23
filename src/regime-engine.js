@@ -1729,13 +1729,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * too, while a replay of an already-credited booking is not.
    * @param {string} sellOrderId
    * @param {number} pnl
-   * @param {number} [bookedSize] - The order's cumulative booked size once
-   *   this booking commits (see planSellBooking)
+   * @param {{bookedSize: number, replay: boolean}} [booking] - From
+   *   planSellBooking: the order's cumulative booked size once this booking
+   *   commits, and whether the pass re-aggregates the whole order (a replay
+   *   refuses on any prior credit)
    * @returns {number} maxUsdcDeployed BEFORE this credit (unchanged when already credited)
    */
-  const creditCapitalGrowth = (sellOrderId, pnl, bookedSize) => {
+  const creditCapitalGrowth = (sellOrderId, pnl, booking) => {
     const prevMaxUsdc = config.maxUsdcDeployed;
-    if (!fillLedger.claimCapitalCredit(sellOrderId, bookedSize)) {
+    if (!fillLedger.claimCapitalCredit(sellOrderId, booking?.bookedSize, { replay: !!booking?.replay })) {
       logger.info(
         `ℹ️ [${exchange}] Capital growth for ${sellOrderId?.slice(0, 8)} already credited — skipping re-apply (crash-replay idempotency #210-B)`,
         { orderId: sellOrderId }
@@ -1760,13 +1762,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @param {string} orderId - Sell order id
    * @param {number} soldSize - Base quantity this booking sold
    * @param {boolean} rowsAreNew - The booking aggregates only newly ingested rows
-   * @returns {{additive: boolean, bookedSize: number}} bookedSize is the
-   *   order's cumulative booked size once this booking commits
+   * @returns {{additive: boolean, replay: boolean, bookedSize: number}}
+   *   bookedSize is the order's cumulative booked size once this booking
+   *   commits; `replay` marks a pass that re-aggregated the whole order
    */
   const planSellBooking = (orderId, soldSize, rowsAreNew) => {
     const prior = rowsAreNew ? fillLedger.getSellBooking(orderId) : null;
     return {
       additive: !!prior,
+      replay: !rowsAreNew,
       bookedSize: roundAsset((prior ? prior.bookedSize : 0) + (Number(soldSize) || 0)),
     };
   };
@@ -4615,7 +4619,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (!liveOwnsRemainder) cs.bodiesCompleted += 1;
         positionState.celestialState = cs;
 
-        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl, booking.bookedSize);
+        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl, booking);
 
         orderExecutor.removeBodyTracking(fillData.orderId);
 
@@ -4917,7 +4921,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Partial fills are handled naturally — FIFO sees only the actual sold qty.
 
         // Grow capital (idempotent per booked amount — issues #210-B, #777)
-        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl, booking.bookedSize);
+        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl, booking);
 
         // Record per buy order what this sale consumed (issue #607), before
         // the body is reduced. A partial consumes only what sold (no reserve

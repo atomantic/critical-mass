@@ -2625,6 +2625,20 @@ describe('Fill Ledger', () => {
       assert.equal(createTestLedger().claimCapitalCredit('sell-A', 0.003), false, 'the sized marker survives a reload');
     });
 
+    it('refuses a replay re-aggregating more rows than an earlier credit covered', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A', size: '0.002' }));
+      assert.equal(ledger.claimCapitalCredit('sell-A', 0.002), true);
+      ledger.ingestFill(makeSellFill({ tradeId: 's2', orderId: 'sell-A', size: '0.001' }));
+      assert.equal(ledger.claimCapitalCredit('sell-A', 0.003, { replay: true }), false, 'the first tranche is never credited twice');
+      const fresh = createTestLedger();
+      fresh.ingestFill(makeSellFill({ tradeId: 't1', orderId: 'sell-B', size: '0.002' }));
+      assert.equal(fresh.claimCapitalCredit('sell-B', 0.002, { replay: true }), true, 'a first booking through a replay pass is credited');
+      fresh.ingestFill(makeSellFill({ tradeId: 't2', orderId: 'sell-B', size: '0.001' }));
+      assert.equal(fresh.claimCapitalCredit('sell-B', 0.003), true, 'and records its size, so later execution is still credited');
+    });
+
     it('treats a credit recorded before sizes existed as covering the whole order', () => {
       const ledger = createTestLedger();
       ledger.startNewCycle();
