@@ -1357,6 +1357,136 @@ describe('Fill Ledger', () => {
       'load() must backfill netFee from legacy fee field so direct fill.netFee reads work');
   });
 
+  it('createFillLedger repairs a legacy negative bodyHoldbackAsset into holdback 0 + bodyReservesSoldAsset on load, and persists the fix once (issue #779)', () => {
+    // Between #769 and #770 (both unreleased) a stale-TP oversell could be
+    // booked as a NEGATIVE bodyHoldbackAsset. #770 changed the engine to
+    // record this as holdback 0 + a non-negative bodyReservesSoldAsset
+    // instead — shared/cycle-pairing.mjs clamps a negative holdback to 0
+    // rather than crediting the sold reserves, so an un-repaired row
+    // silently overstates realizedAssetPnL by the oversold quantity.
+    const exchange = 'test-negative-holdback-repair';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'fill-ledger.json');
+    const legacyNegativeSell = {
+      tradeId: 'legacy-sell-1',
+      orderId: 'o-sell-1',
+      side: 'sell',
+      size: 0.4,
+      price: 100,
+      quoteAmount: 40,
+      netFee: 0,
+      timestamp: Date.now(),
+      bodyId: 'body-1',
+      isBodyOwned: true,
+      bodyPnl: 5,
+      bodyHoldbackAsset: -0.05, // legacy corrupt shape
+    };
+    fs.writeFileSync(filePath, JSON.stringify([legacyNegativeSell]));
+
+    const ledger = createTestLedger(exchange);
+    const [repaired] = ledger.getFillsForOrder('o-sell-1');
+    assert.equal(repaired.bodyHoldbackAsset, 0, 'negative holdback must be rewritten to 0');
+    assert.equal(repaired.bodyReservesSoldAsset, 0.05, 'the negative magnitude must move to bodyReservesSoldAsset');
+
+    // Persisted once, immediately — not deferred to some future dirtying
+    // mutation, unlike the netFee backfill above.
+    const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    assert.equal(onDisk.length, 1);
+    assert.equal(onDisk[0].bodyHoldbackAsset, 0, 'the repair must be flushed to disk');
+    assert.equal(onDisk[0].bodyReservesSoldAsset, 0.05, 'the repair must be flushed to disk');
+
+    // Idempotent: reloading the now-repaired file must not write again or
+    // touch the fields a second time.
+    const writesBefore = ledger._test.getWriteCount();
+    ledger.load();
+    assert.equal(ledger._test.getWriteCount(), writesBefore,
+      'a second load() over an already-repaired file must not persist again');
+    const [reloaded] = ledger.getFillsForOrder('o-sell-1');
+    assert.equal(reloaded.bodyHoldbackAsset, 0);
+    assert.equal(reloaded.bodyReservesSoldAsset, 0.05);
+  });
+
+  it('createFillLedger repairs a negative satelliteHoldbackAsset the same way, zeroing only the satellite field', () => {
+    const exchange = 'test-negative-holdback-repair-satellite';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'fill-ledger.json');
+    const legacyNegativeSell = {
+      tradeId: 'legacy-sell-sat-1',
+      orderId: 'o-sell-sat-1',
+      side: 'sell',
+      size: 0.4,
+      price: 100,
+      quoteAmount: 40,
+      netFee: 0,
+      timestamp: Date.now(),
+      isSatellite: true,
+      satellitePnl: 5,
+      satelliteHoldbackAsset: -0.02,
+    };
+    fs.writeFileSync(filePath, JSON.stringify([legacyNegativeSell]));
+
+    const ledger = createTestLedger(exchange);
+    const [repaired] = ledger.getFillsForOrder('o-sell-sat-1');
+    assert.equal(repaired.satelliteHoldbackAsset, 0);
+    assert.equal(repaired.bodyReservesSoldAsset, 0.02,
+      'the drawdown is always recorded as bodyReservesSoldAsset — the only field shared/cycle-pairing.mjs reads');
+    assert.equal(repaired.bodyHoldbackAsset, undefined,
+      'a satellite-owned row must not gain a bodyHoldbackAsset field it never had');
+  });
+
+  it('createFillLedger leaves a negative holdback untouched when bodyReservesSoldAsset is already positive (inconsistent state, not ours to guess at)', () => {
+    const exchange = 'test-negative-holdback-already-reserved';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'fill-ledger.json');
+    const alreadyAnnotated = {
+      tradeId: 'legacy-sell-preset',
+      orderId: 'o-sell-preset',
+      side: 'sell',
+      size: 0.4,
+      price: 100,
+      quoteAmount: 40,
+      netFee: 0,
+      timestamp: Date.now(),
+      bodyId: 'body-1',
+      bodyHoldbackAsset: -0.05,
+      bodyReservesSoldAsset: 0.1, // already set to something else — do not clobber
+    };
+    fs.writeFileSync(filePath, JSON.stringify([alreadyAnnotated]));
+
+    const ledger = createTestLedger(exchange);
+    const [untouched] = ledger.getFillsForOrder('o-sell-preset');
+    assert.equal(untouched.bodyHoldbackAsset, -0.05, 'must not rewrite when bodyReservesSoldAsset is already positive');
+    assert.equal(untouched.bodyReservesSoldAsset, 0.1, 'must not clobber an existing bodyReservesSoldAsset');
+  });
+
+  it('createFillLedger leaves buy-side and non-negative sell holdback annotations untouched', () => {
+    const exchange = 'test-negative-holdback-noop';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'fill-ledger.json');
+    const rows = [
+      {
+        tradeId: 'buy-1', orderId: 'o-buy-1', side: 'buy', size: 0.4, price: 100,
+        quoteAmount: 40, netFee: 0, timestamp: Date.now(), bodyHoldbackAsset: -0.05, // buy side: never repaired
+      },
+      {
+        tradeId: 'sell-healthy', orderId: 'o-sell-healthy', side: 'sell', size: 0.4, price: 100,
+        quoteAmount: 40, netFee: 0, timestamp: Date.now(), bodyHoldbackAsset: 0.1, // already non-negative
+      },
+    ];
+    fs.writeFileSync(filePath, JSON.stringify(rows));
+
+    const ledger = createTestLedger(exchange);
+    const [buyFill] = ledger.getFillsForOrder('o-buy-1');
+    const [sellFill] = ledger.getFillsForOrder('o-sell-healthy');
+    assert.equal(buyFill.bodyHoldbackAsset, -0.05, 'buy-side annotations are out of scope for this repair');
+    assert.equal(sellFill.bodyHoldbackAsset, 0.1, 'a non-negative holdback must be left alone');
+    assert.equal(sellFill.bodyReservesSoldAsset, undefined);
+  });
+
   it('createFillLedger throws on cold start when ledger contains duplicate tradeIds (Map dedup would silently undercount)', () => {
     // load() stores entries in a Map keyed by tradeId, so a duplicate would
     // silently overwrite the earlier row — undercount totalAsset / P&L
