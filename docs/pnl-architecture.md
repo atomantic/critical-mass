@@ -82,6 +82,16 @@ Realized USD profit + reserves marked-to-market. Reserves are zero-cost; their
 full mark-to-market value is profit. The UI's per-cycle rows and the grand
 total header are derived from the same pairing, so they always agree.
 
+### Foreign sells (issues #672, #750)
+
+A sell the engine did not place is annotated `untrackedSell`: no bodyPnl, no
+capital credit, no cycle close. Its source — reserves or managed position — is
+unknowable, so the position model (`totalAsset`/`totalCostBasis`,
+`realizedAssetPnL`) is **not** adjusted. The ledger carries it instead:
+`ledgerNetAsset` already nets it out, `untrackedSellQty` breaks it out, and the
+drift sweep surfaces it as `positionCoverage.ledger.untrackedSold` against the
+negative `unmodelled` gap it opens. Reconciling it is an operator action.
+
 ## Subordinate display sources
 
 These exist for UI/audit purposes. They may briefly diverge from the
