@@ -684,13 +684,18 @@ describe('Manual Trade Import', () => {
           bodies.push(body);
           return { tpPlaced: true };
         },
-        extendBody: (bodyId, extra, buyOrderId) => {
-          extendCalls.push({ bodyId, extra, buyOrderId });
+        extendBody: (bodyId, totals, buyOrderId) => {
+          extendCalls.push({ bodyId, totals, buyOrderId });
           const body = bodies.find((b) => b.id === bodyId);
           if (!body) return { success: false, error: 'Body not found' };
-          body.assetQty += extra.assetQty;
-          body.costBasis += extra.costBasis;
-          return { success: true, bodyId };
+          // Converges the body to the FULL totals passed in — the real
+          // extendBody's contract (issue #726, codex round 3): the caller
+          // now passes the buy order's complete current totals, not a
+          // delta, precisely so a retry can't double-count an
+          // already-applied portion.
+          body.assetQty = totals.assetQty;
+          body.costBasis = totals.costBasis;
+          return { success: true, bodyId, tier: body.tier };
         },
       });
 
@@ -710,14 +715,23 @@ describe('Manual Trade Import', () => {
       assert.equal(bodies.length, 1, 'no second body was ever created');
       assert.equal(extendCalls.length, 1, 'extendBody must be called exactly once');
       assert.equal(extendCalls[0].bodyId, first.trade.bodyId);
-      assert.ok(Math.abs(extendCalls[0].extra.assetQty - buyFills[1].size) < 1e-9, 'the delta must cover only the NEW fill, not the whole order again');
-      // costBasis must include the NEW fill's fee (0.25), not just its
+      // extendBody now receives the FULL current total for buy-1 (both
+      // fills), not just the delta — the fix for a round-3 review finding
+      // where a delta-only idempotency check could double-count an
+      // already-applied portion across a compounding retry.
+      assert.ok(
+        Math.abs(extendCalls[0].totals.assetQty - (buyFills[0].size + buyFills[1].size)) < 1e-9,
+        'extendBody must receive the FULL current total, not just the new fill'
+      );
+      // costBasis must include BOTH fills' fees (0.5 + 0.25), not just
       // notional — a bug caught by review where extraFees read raw-fill
       // field names off already-ingested ledger rows and silently read
       // undefined, dropping the fee from cost basis on every extension.
+      const expectedFullCostBasis = (buyFills[0].price * buyFills[0].size + buyFills[0].commission)
+        + (buyFills[1].price * buyFills[1].size + buyFills[1].commission);
       assert.ok(
-        Math.abs(extendCalls[0].extra.costBasis - (buyFills[1].price * buyFills[1].size + buyFills[1].commission)) < 1e-9,
-        'the delta cost basis must include the new fill\'s fee'
+        Math.abs(extendCalls[0].totals.costBasis - expectedFullCostBasis) < 1e-9,
+        'the full total cost basis must include both fills\' fees'
       );
       assert.ok(Math.abs(bodies[0].assetQty - (buyFills[0].size + buyFills[1].size)) < 1e-9, 'the body grew to include the new fill');
       // Both fill rows — old and new — must be linked to the body, not left
@@ -753,13 +767,24 @@ describe('Manual Trade Import', () => {
           bodies.push(body);
           return { tpPlaced: true };
         },
-        extendBody: (bodyId, extra) => {
-          extendCalls.push({ bodyId, extra });
+        extendBody: (bodyId, totals, buyOrderId) => {
+          extendCalls.push({ bodyId, totals });
           const body = bodies.find((b) => b.id === bodyId);
           if (!body) return { success: false, error: 'Body not found' };
-          body.assetQty += extra.assetQty;
-          body.costBasis += extra.costBasis;
-          return { success: true, bodyId };
+          // Mirrors the real extendBody's shortfall computation (issue #726,
+          // codex round 3): only add what THIS buyOrderId isn't already
+          // recorded for, so 'body-merged''s pre-existing, unrelated
+          // 0.05/4500 from other sources is never touched or double-counted.
+          body.buyOrders = body.buyOrders || [];
+          const recorded = body.buyOrders.filter((bo) => bo.orderId === buyOrderId)
+            .reduce((acc, bo) => ({ qty: acc.qty + bo.assetQty, cost: acc.cost + bo.sizeUsdc }), { qty: 0, cost: 0 });
+          const shortfallQty = totals.assetQty - recorded.qty;
+          if (shortfallQty <= 0.00000001) return { success: true, bodyId, tier: body.tier, alreadyApplied: true };
+          const shortfallCost = totals.costBasis - recorded.cost;
+          body.assetQty += shortfallQty;
+          body.costBasis += shortfallCost;
+          body.buyOrders.push({ orderId: buyOrderId, assetQty: shortfallQty, sizeUsdc: shortfallCost });
+          return { success: true, bodyId, tier: body.tier };
         },
       });
 
@@ -897,12 +922,14 @@ describe('Manual Trade Import', () => {
           bodies.push(body);
           return { tpPlaced: true };
         },
-        extendBody: (bodyId, extra) => {
+        extendBody: (bodyId, totals) => {
           extendAttempts++;
           const body = bodies.find((b) => b.id === bodyId);
           if (!body) return { success: false, error: 'Body not found' };
-          body.assetQty += extra.assetQty;
-          return { success: true, bodyId };
+          // extendBody receives the FULL current total, not a delta.
+          body.assetQty = totals.assetQty;
+          body.costBasis = totals.costBasis;
+          return { success: true, bodyId, tier: body.tier };
         },
       });
 

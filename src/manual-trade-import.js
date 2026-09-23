@@ -28,6 +28,7 @@ const { loadRegimeState, saveRegimeState } = require('./state-tracker');
 const { STATUS } = require('./manual-trades');
 const { readBooleanFlag } = require('./shared-utils');
 const { getRegimeConfig } = require('./config-utils');
+const { roundAsset, roundUSDC } = require('./volatility-utils');
 
 /** Logger used when a caller supplies none (tests, CLI paths). */
 const NOOP_LOGGER = { info: () => {}, warn: () => {}, error: () => {} };
@@ -278,36 +279,46 @@ const createManualTradeImporter = ({
    * #726 — mirrors regime-engine's own extendBody for the running-engine
    * case, but with no live TP to worry about since none was ever placed).
    *
-   * Idempotent the same way regime-engine's extendBody is (codex review): a
-   * crash between this write and the caller's own ledger-linkage write must
-   * not let a retry double-apply the same delta. `expectedTotalQty` — the
-   * buy order's full current fill size across ALL its fills — is checked
-   * against what the body's own `buyOrders` bookkeeping already recorded
-   * for that orderId before merging anything.
+   * Idempotent the same way regime-engine's extendBody is, INCLUDING across
+   * compounding retries where more of the order fills again before the
+   * ledger link ever lands (codex review, round 3 — a naive delta-based
+   * idempotency check still double-counted an already-applied portion in
+   * that case). `totals` is therefore the buy order's FULL current totals —
+   * every fill known for it, linked or not — not a delta. The exact
+   * shortfall (what `totals` says should be recorded, minus what this
+   * body's own `buyOrders` bookkeeping already shows recorded for that
+   * orderId) is what actually gets merged, so however many times this is
+   * called for the same buyOrderId the body converges to exactly `totals`,
+   * never more.
    * @param {string} bodyId - Body to extend, as previously written by persistBodyToDisk
-   * @param {{assetQty:number, costBasis:number, avgPrice:number}} extra - New fill totals to merge in
-   * @param {string} buyOrderId - The buy order the extra fills belong to
-   * @param {number} expectedTotalQty - buyOrderId's full current fill size (all fills, not just the delta in `extra`)
-   * @returns {{success: boolean, bodyId?: string, tier?: string, error?: string}}
+   * @param {{assetQty:number, costBasis:number, avgPrice:number}} totals - buyOrderId's FULL current fill totals (not a delta)
+   * @param {string} buyOrderId - The buy order `totals` describes
+   * @returns {{success: boolean, bodyId?: string, tier?: string, error?: string, alreadyApplied?: boolean}}
    */
-  const extendPersistedBody = (bodyId, extra, buyOrderId, expectedTotalQty) => {
+  const extendPersistedBody = (bodyId, totals, buyOrderId) => {
     const saved = loadRegimeState(exchange, pair);
     if (!saved.position) return { success: false, error: 'No position state on disk' };
     const body = (saved.position.celestialBodies || []).find((b) => b.id === bodyId);
     if (!body) return { success: false, error: 'Body not found' };
-    const alreadyRecordedQty = (body.buyOrders || [])
+    const recorded = (body.buyOrders || [])
       .filter((bo) => bo.orderId === buyOrderId)
-      .reduce((sum, bo) => sum + (bo.assetQty || 0), 0);
-    if (typeof expectedTotalQty === 'number' && alreadyRecordedQty >= expectedTotalQty - 0.00000001) {
-      return { success: true, bodyId: body.id, tier: body.tier }; // Already applied by a prior attempt.
+      .reduce((acc, bo) => ({ qty: acc.qty + (bo.assetQty || 0), cost: acc.cost + (bo.sizeUsdc || 0) }), { qty: 0, cost: 0 });
+    const shortfallQty = roundAsset(totals.assetQty - recorded.qty);
+    if (shortfallQty <= 0.00000001) {
+      return { success: true, bodyId: body.id, tier: body.tier, alreadyApplied: true };
     }
+    const shortfall = {
+      assetQty: shortfallQty,
+      costBasis: roundUSDC(totals.costBasis - recorded.cost),
+      avgPrice: totals.avgPrice,
+    };
     // maxUsdcDeployed lives in the regime config (adjusted at cycle-completion
     // time), not fundConfig — fetch it fresh rather than trusting a
     // constructor-time snapshot, since the engine (persisting its own
     // adjustments via updateRegimeConfig) is, by definition, not running on
     // this path.
     const { maxUsdcDeployed } = getRegimeConfig(exchange, pair);
-    mergeIntoBody(body, extra, maxUsdcDeployed, buyOrderId, log);
+    mergeIntoBody(body, shortfall, maxUsdcDeployed, buyOrderId, log);
     syncPositionState(saved.position, saved.position.celestialBodies);
     saveRegimeState(saved.position, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, pair);
     return { success: true, bodyId: body.id, tier: body.tier };
@@ -407,18 +418,23 @@ const createManualTradeImporter = ({
       // uses (e.g. fill-ledger.js:811) — reading the raw-fill field names off
       // an already-ingested row would silently read `undefined` and drop the
       // fee from cost basis on every reconciliation.
-      const extraSize = unlinkedRows.reduce((sum, r) => sum + r.size, 0);
-      const extraQuote = unlinkedRows.reduce((sum, r) => sum + r.quoteAmount, 0);
-      const extraCostBasis = unlinkedRows.reduce((sum, r) => sum + r.quoteAmount + r.netFee, 0);
-      const extra = { assetQty: extraSize, costBasis: extraCostBasis, avgPrice: averagePrice(extraQuote, extraSize) };
-      // The buy order's FULL current fill size (every row, linked or not) —
-      // passed through so extendBody/extendPersistedBody can verify a retry
-      // wasn't already applied (codex review): a crash between one of those
-      // succeeding and the ledger-linkage write just below would otherwise
-      // let a retry re-run mergeIntoBody on the identical delta and
-      // double-count it, since the ledger would still show these rows
-      // unlinked with nothing to tell the retry "this already happened."
-      const expectedTotalQty = orderRows.reduce((sum, r) => sum + r.size, 0);
+      const extraSize = unlinkedRows.reduce((sum, r) => sum + r.size, 0); // for logging only
+
+      // extendBody/extendPersistedBody take the buy order's FULL current
+      // totals (every row, linked or not) rather than a delta — a
+      // delta-only idempotency check still double-counts an already-applied
+      // portion when MORE fills arrive before a crashed extend's retry
+      // (codex review, round 3: extend #1 applies d1 but crashes before the
+      // ledger link; if d2 arrives before the retry, a delta of d1+d2 would
+      // re-add the already-applied d1). Both functions compute the exact
+      // shortfall themselves — `totals` minus what the body's own
+      // `buyOrders` bookkeeping already recorded for this orderId — so
+      // however many times this runs for the same buyOrderId, the body
+      // converges to exactly `totals`, never more.
+      const fullQty = orderRows.reduce((sum, r) => sum + r.size, 0);
+      const fullQuote = orderRows.reduce((sum, r) => sum + r.quoteAmount, 0);
+      const fullCostBasis = orderRows.reduce((sum, r) => sum + r.quoteAmount + r.netFee, 0);
+      const totals = { assetQty: fullQty, costBasis: fullCostBasis, avgPrice: averagePrice(fullQuote, fullQty) };
 
       // Attempt the extend BEFORE linking anything (codex review): linking
       // the ledger rows to currentBodyId unconditionally, win or lose, would
@@ -428,8 +444,8 @@ const createManualTradeImporter = ({
       // never trying again even after the underlying problem (e.g. the body
       // no longer exists) is fixed.
       const extended = extendBody
-        ? extendBody(currentBodyId, extra, buyOrderId, expectedTotalQty)
-        : extendPersistedBody(currentBodyId, extra, buyOrderId, expectedTotalQty);
+        ? extendBody(currentBodyId, totals, buyOrderId)
+        : extendPersistedBody(currentBodyId, totals, buyOrderId);
 
       if (!extended.success) {
         // The body no longer exists to extend — most likely its TP fully

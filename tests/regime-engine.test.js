@@ -1,9 +1,11 @@
 // @ts-check
-const { describe, it } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
 
 const { createRegimeEngine, cancelPartialFillOrder, resolveEntryBudget, makeFillDedupKey, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody } = require('../src/regime-engine');
 const { instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/health-monitor');
+const { getRegimeStateFile } = require('../src/state-tracker');
 
 describe('makeFillDedupKey', () => {
   it('uses order ID alone for terminal fills', () => {
@@ -486,6 +488,21 @@ describe('injectBody duplicate refusal (issue #691, codex review follow-up)', ()
 });
 
 describe('extendBody (issue #726)', () => {
+  // extendBody's success path calls saveLiveState(), which persists to the
+  // REAL (git-ignored, not the live trading fund's) data/gemini/BTC-USD/
+  // regime-state.json in this repo checkout — every other test in this
+  // file that reaches createRegimeEngine('gemini', 'BTC-USD', ...) never
+  // exercises a path that saves, so this is the first that needs isolation.
+  // saveRegimeState's optimistic version-locking merges PROTECTED_FIELDS
+  // (including celestialBodies) from whatever's already on disk whenever
+  // its version is ahead of this process's in-memory count — a leftover
+  // file from a prior test run would silently clobber the body state these
+  // tests just computed. Delete it before and after every test here so each
+  // one starts and ends from a clean slate.
+  const stateFile = getRegimeStateFile('gemini', 'BTC-USD');
+  beforeEach(() => { fs.rmSync(stateFile, { force: true }); });
+  afterEach(() => { fs.rmSync(stateFile, { force: true }); });
+
   // A retried manual-buy import can discover fills for a buy order that
   // arrived AFTER the body it already owns was created (the order was still
   // filling at first import). extendBody grows that body's
@@ -514,7 +531,11 @@ describe('extendBody (issue #726)', () => {
       },
     ];
 
-    const result = engine.extendBody('body-1', { assetQty: 0.001, costBasis: 92, avgPrice: 92000 }, 'buy-1');
+    // extendBody takes the buy order's FULL current totals (0.005 already
+    // recorded + 0.001 new = 0.006), not a delta — it computes the exact
+    // shortfall (0.001) itself against what body-1's own buyOrders
+    // bookkeeping already shows for buy-1.
+    const result = engine.extendBody('body-1', { assetQty: 0.006, costBasis: 542, avgPrice: 92000 }, 'buy-1');
 
     assert.equal(result.success, true);
     assert.equal(result.bodyId, 'body-1');
@@ -525,9 +546,12 @@ describe('extendBody (issue #726)', () => {
     assert.equal(body.tpOrderId, 'tp-existing');
     assert.equal(body.tpPrice, 95000);
     assert.equal(body.assetOnOrder, 0.004);
-    // mergeIntoBody bookkeeping still runs (sourceOrderIds/buyOrders/mergeCount).
+    // mergeIntoBody bookkeeping still runs (sourceOrderIds/buyOrders/mergeCount),
+    // fed only the 0.001/92 shortfall, not the full 0.006/542.
     assert.deepEqual(body.sourceOrderIds, ['buy-1', 'buy-1']);
     assert.equal(body.buyOrders.length, 2);
+    assert.ok(Math.abs(body.buyOrders[1].assetQty - 0.001) < 1e-9);
+    assert.ok(Math.abs(body.buyOrders[1].sizeUsdc - 92) < 1e-9);
     assert.equal(body.mergeCount, 1);
   });
 
@@ -551,13 +575,10 @@ describe('extendBody (issue #726)', () => {
     assert.equal(result.error, 'Engine not running');
   });
 
-  // codex review: a crash between extendBody's own saveLiveState() and the
-  // caller's fill-ledger linkage write must not let a retry for the SAME
-  // buyOrderId re-run mergeIntoBody on the identical delta and double-count
-  // it. expectedTotalQty (the buy order's full current fill size) lets a
-  // retry verify the delta was already folded in via the body's own
-  // buyOrders bookkeeping, and skip re-merging.
-  it('is idempotent across a retry for the same buyOrderId once expectedTotalQty is already covered', () => {
+  // codex review (round 2): a crash between extendBody's own saveLiveState()
+  // and the caller's fill-ledger linkage write must not let a retry for the
+  // SAME buyOrderId re-apply the same growth and double-count it.
+  it('is idempotent across a retry for the same buyOrderId once the full totals are already covered', () => {
     const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
     engine._test.setRunning(true);
     const pos = engine._getPositionState();
@@ -577,28 +598,80 @@ describe('extendBody (issue #726)', () => {
       },
     ];
 
-    const extra = { assetQty: 0.001, costBasis: 92, avgPrice: 92000 };
     // buy-1's full current fill size across ALL its fills is 0.006 (0.005
-    // already recorded + this 0.001 delta).
-    const first = engine.extendBody('body-1', extra, 'buy-1', 0.006);
+    // already recorded + 0.001 new).
+    const totals = { assetQty: 0.006, costBasis: 542, avgPrice: 92000 };
+    const first = engine.extendBody('body-1', totals, 'buy-1');
     assert.equal(first.success, true);
     assert.notEqual(first.alreadyApplied, true);
-    const afterFirst = pos.celestialBodies[0].assetQty;
-    assert.ok(Math.abs(afterFirst - 0.006) < 1e-9);
+    assert.ok(Math.abs(pos.celestialBodies[0].assetQty - 0.006) < 1e-9);
 
-    // Retry with the IDENTICAL delta and expectedTotalQty — simulating a
-    // crash right after the first call's saveLiveState() but before the
-    // ledger was ever marked linked, so a real caller would retry here.
-    const second = engine.extendBody('body-1', extra, 'buy-1', 0.006);
+    // Retry with the IDENTICAL totals — simulating a crash right after the
+    // first call's saveLiveState() but before the ledger was ever marked
+    // linked, so a real caller would retry here with the SAME totals (no
+    // new fills arrived in between).
+    const second = engine.extendBody('body-1', totals, 'buy-1');
     assert.equal(second.success, true);
     assert.equal(second.alreadyApplied, true, 'a retry that is already covered must be a verified no-op');
     assert.ok(
       Math.abs(pos.celestialBodies[0].assetQty - 0.006) < 1e-9,
-      'the delta must not be double-counted on retry'
+      'the delta must not be double-counted on an identical retry'
     );
     assert.ok(
       Math.abs(pos.celestialBodies[0].costBasis - 542) < 1e-9,
-      'costBasis must not be double-counted on retry either'
+      'costBasis must not be double-counted on an identical retry either'
+    );
+  });
+
+  // codex review round 3 — the specific compounding bug a naive
+  // delta-plus-expectedTotalQty check still had: if the SAME crash window
+  // is hit, but MORE fills arrive before the retry (the normal case for a
+  // still-filling order, which is this whole feature's premise), a
+  // delta-based retry would re-include the already-applied portion. Since
+  // extendBody now takes FULL totals and computes the shortfall itself
+  // against buyOrders bookkeeping, a growing total across repeated calls
+  // must converge to exactly the latest total — never more.
+  it('does not double-count an already-applied portion when a later call arrives with a LARGER total (compounding retry)', () => {
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    engine._test.setRunning(true);
+    const pos = engine._getPositionState();
+    pos.celestialBodies = [
+      {
+        id: 'body-1',
+        tier: 'satellite',
+        assetQty: 0.005,
+        avgPrice: 90000,
+        costBasis: 450,
+        tpOrderId: 'tp-existing',
+        tpPrice: 95000,
+        assetOnOrder: 0.004,
+        sourceOrderIds: ['buy-1'],
+        buyOrders: [{ orderId: 'buy-1', price: 90000, assetQty: 0.005, sizeUsdc: 450 }],
+        mergeCount: 0,
+      },
+    ];
+
+    // First extend applies d1 (0.001/$92) — simulates the call whose ledger
+    // link then crashed before persisting.
+    const first = engine.extendBody('body-1', { assetQty: 0.006, costBasis: 542, avgPrice: 92000 }, 'buy-1');
+    assert.equal(first.success, true);
+    assert.ok(Math.abs(pos.celestialBodies[0].assetQty - 0.006) < 1e-9);
+
+    // Before the retry, MORE of the order fills (d2 = 0.002/$184) — the
+    // retry's caller (manual-trade-import.js) recomputes totals from EVERY
+    // currently-unlinked ledger row, which now covers d1+d2, since d1's
+    // rows were never marked linked. The naive fix would merge d1+d2 again;
+    // the correct fix merges only the shortfall (d2).
+    const second = engine.extendBody('body-1', { assetQty: 0.008, costBasis: 726, avgPrice: 91000 }, 'buy-1');
+    assert.equal(second.success, true);
+    assert.notEqual(second.alreadyApplied, true, 'd2 is genuinely new and must actually be applied');
+    assert.ok(
+      Math.abs(pos.celestialBodies[0].assetQty - 0.008) < 1e-9,
+      'the body must converge to exactly the latest total (0.008), not overshoot from double-counting d1'
+    );
+    assert.ok(
+      Math.abs(pos.celestialBodies[0].costBasis - 726) < 1e-9,
+      'costBasis must converge to exactly the latest total (726), not overshoot from double-counting d1'
     );
   });
 });

@@ -7421,36 +7421,48 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * means no new fill-during-cancel race is introduced by this path.
    *
    * Idempotent across a crash between this call succeeding (saveLiveState
-   * below) and the caller's own fill-ledger linkage write (codex review): a
-   * retry that reaches here again for the SAME buyOrderId, before the
-   * ledger ever recorded the link, would otherwise call mergeIntoBody a
-   * second time and double-count the same delta. `expectedTotalQty` — the
-   * buy order's full, current known size across ALL its fills (linked or
-   * not) — is compared against what this body's own `buyOrders` bookkeeping
-   * already recorded for that orderId; if it's already caught up, this is a
-   * verified no-op rather than a second merge.
+   * below) and the caller's own fill-ledger linkage write, AND across
+   * compounding retries where more of the order fills again before the
+   * ledger link ever lands (codex review, round 3 — the naive "compare a
+   * caller-computed delta's total against already-recorded" version of this
+   * check still double-counted: if extend #1 applies d1 but crashes before
+   * the ledger link, and MORE fills (d2) arrive before the retry, the
+   * retry's caller-computed delta covers d1+d2 again, re-adding the
+   * already-applied d1). `totals` is therefore the buy order's FULL current
+   * totals — every fill known for it, linked or not — not a delta. This
+   * function computes the exact shortfall itself: what `totals` says should
+   * be recorded, minus what this body's own `buyOrders` bookkeeping already
+   * shows recorded for that orderId. That shortfall is merged (never
+   * `totals` directly), so however many times this is called for the same
+   * buyOrderId, in whatever order relative to crashes or new fills, the
+   * body converges to exactly `totals` — never more.
    *
    * @param {string} bodyId - Body to extend (must still be live in this engine)
-   * @param {{assetQty:number, costBasis:number, avgPrice:number}} extra - New fill totals to merge in
-   * @param {string} buyOrderId - The buy order the extra fills belong to
-   * @param {number} expectedTotalQty - buyOrderId's full current fill size (all fills, not just the delta in `extra`)
-   * @returns {{success: boolean, error?: string, bodyId?: string, alreadyApplied?: boolean}}
+   * @param {{assetQty:number, costBasis:number, avgPrice:number}} totals - buyOrderId's FULL current fill totals (not a delta)
+   * @param {string} buyOrderId - The buy order `totals` describes
+   * @returns {{success: boolean, error?: string, bodyId?: string, tier?: string, alreadyApplied?: boolean}}
    */
-  const extendBody = (bodyId, extra, buyOrderId, expectedTotalQty) => {
+  const extendBody = (bodyId, totals, buyOrderId) => {
     if (!isRunning) return { success: false, error: 'Engine not running' };
     const body = (positionState.celestialBodies || []).find((b) => b.id === bodyId);
     if (!body) return { success: false, error: 'Body not found' };
-    const alreadyRecordedQty = (body.buyOrders || [])
+    const recorded = (body.buyOrders || [])
       .filter((bo) => bo.orderId === buyOrderId)
-      .reduce((sum, bo) => sum + (bo.assetQty || 0), 0);
-    if (typeof expectedTotalQty === 'number' && alreadyRecordedQty >= expectedTotalQty - 0.00000001) {
-      logger.info(`📦 [${exchange}] Extend for body ${body.id} / buy ${buyOrderId} already applied (${alreadyRecordedQty} >= ${expectedTotalQty}) — no-op retry`);
+      .reduce((acc, bo) => ({ qty: acc.qty + (bo.assetQty || 0), cost: acc.cost + (bo.sizeUsdc || 0) }), { qty: 0, cost: 0 });
+    const shortfallQty = roundAsset(totals.assetQty - recorded.qty);
+    if (shortfallQty <= 0.00000001) {
+      logger.info(`📦 [${exchange}] Extend for body ${body.id} / buy ${buyOrderId} already applied (${recorded.qty} >= ${totals.assetQty}) — no-op retry`);
       return { success: true, bodyId: body.id, tier: body.tier, alreadyApplied: true };
     }
-    celestialHierarchy.mergeIntoBody(body, extra, config.maxUsdcDeployed, buyOrderId, logger);
+    const shortfall = {
+      assetQty: shortfallQty,
+      costBasis: roundUSDC(totals.costBasis - recorded.cost),
+      avgPrice: totals.avgPrice,
+    };
+    celestialHierarchy.mergeIntoBody(body, shortfall, config.maxUsdcDeployed, buyOrderId, logger);
     celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
     saveLiveState();
-    logger.info(`📦 [${exchange}] Extended body ${body.id} (${body.tier}) with ${extra.assetQty} additional ${baseCurrency} from buy ${buyOrderId} (now ${body.assetQty} ${baseCurrency} total)`);
+    logger.info(`📦 [${exchange}] Extended body ${body.id} (${body.tier}) with ${shortfall.assetQty} additional ${baseCurrency} from buy ${buyOrderId} (now ${body.assetQty} ${baseCurrency} total)`);
     return { success: true, bodyId: body.id, tier: body.tier };
   };
 

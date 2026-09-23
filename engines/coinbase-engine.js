@@ -614,7 +614,7 @@ const getManualTradeImporter = (exchange, resolvedPair) => {
     fundConfig: getFundConfig(exchange, resolvedPair),
     logger: engineLogger(exchange, resolvedPair),
     injectBody: engine?.injectBody ? (body) => engine.injectBody(body) : null,
-    extendBody: engine?.extendBody ? (bodyId, extra, buyOrderId) => engine.extendBody(bodyId, extra, buyOrderId) : null,
+    extendBody: engine?.extendBody ? (bodyId, totals, buyOrderId) => engine.extendBody(bodyId, totals, buyOrderId) : null,
   });
 };
 
