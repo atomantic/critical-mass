@@ -131,8 +131,25 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     const openOrders = await adapter.getOpenOrders(productId);
     for (const order of openOrders) {
       if (order.filledSize > 0) {
-        const orderFills = await adapter.getOrderFills(order.orderId);
-        fills.push(...orderFills);
+        // getOrderFills now rejects on a failed order lookup or an
+        // incomplete-fill mismatch (issue #679) instead of silently
+        // returning a partial set. recoverState() runs unconditionally on
+        // every engine start with no outer try/catch, so a single order's
+        // throw here would otherwise abort the entire startup recovery —
+        // leaving the engine registered but never started. Skip that one
+        // order's fills (best-effort) and keep recovering the rest; the
+        // ordinary WS/poll fill path and periodic reconcile pick this order
+        // back up once the engine is running.
+        try {
+          const orderFills = await adapter.getOrderFills(order.orderId);
+          fills.push(...orderFills);
+        } catch (err) {
+          logger.error(`❌ [${exchange}] Could not fetch fills for open order ${order.orderId} during startup recovery: ${err.message} — continuing without them`, {
+            orderId: order.orderId,
+            error: err.message,
+            incompleteFills: err.incompleteFills === true,
+          });
+        }
       }
     }
 

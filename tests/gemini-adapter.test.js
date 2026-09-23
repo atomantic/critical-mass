@@ -245,8 +245,31 @@ describe('gemini getOrderFills', () => {
       throw new Error(`unexpected endpoint ${endpoint}`);
     });
 
-    await assert.rejects(adapter.getOrderFills('555'), /order-status lookup failed/);
+    await assert.rejects(adapter.getOrderFills('555'), (err) => {
+      assert.match(err.message, /order-status lookup failed/);
+      // The wrapped error must still carry the original HTTP status —
+      // health-monitor's isAuthDeniedError reads err.status directly, and a
+      // fresh plain Error() here would silently discard it.
+      assert.equal(err.status, 400);
+      return true;
+    });
     assert.equal(mytradesCalled, false, 'must not fall back to scanning trades when the order lookup failed');
+  });
+
+  it('preserves the original error\'s status/responseData when rethrowing an order-status lookup failure, so auth denials are still detectable (issue #679)', async () => {
+    const adapter = createGeminiAdapter(keysPath);
+    installFetchMock((endpoint) => {
+      if (endpoint === '/v1/order/status') {
+        return { __error: true, status: 401 };
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`);
+    });
+
+    await assert.rejects(adapter.getOrderFills('555'), (err) => {
+      assert.equal(err.status, 401, 'status must survive the rethrow so isAuthDeniedError can classify it');
+      assert.match(err.message, /order-status lookup failed/);
+      return true;
+    });
   });
 
   it('rejects when matched fills fall short of the order\'s own executed_amount (issue #679)', async () => {

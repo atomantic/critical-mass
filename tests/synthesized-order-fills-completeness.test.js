@@ -138,11 +138,35 @@ describe('Crypto.com getOrderFills completeness (issue #679)', () => {
     });
   });
 
-  it('rejects instead of scanning a fallback window when the order-detail lookup fails', async () => {
+  it('rejects instead of scanning a fallback window when the order-detail lookup fails, preserving the original status', async () => {
     installFetchMock({ orderDetailFails: true });
     const adapter = createCryptocomAdapter(writeKeys('cryptocom'));
 
-    await assert.rejects(adapter.getOrderFills(ORDER_ID), /order-detail lookup failed/);
+    await assert.rejects(adapter.getOrderFills(ORDER_ID), (err) => {
+      assert.match(err.message, /order-detail lookup failed/);
+      // The wrapped error must still carry the original HTTP status —
+      // health-monitor's isAuthDeniedError reads err.status directly, and a
+      // fresh plain Error() here would silently discard it (issue #679).
+      assert.equal(err.status, 500);
+      return true;
+    });
+  });
+
+  it('preserves a 401 order-detail lookup failure\'s status so auth denials are still detectable (issue #679)', async () => {
+    global.fetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      if (body.method === 'private/get-order-detail') {
+        return { ok: false, status: 401, statusText: 'Unauthorized', text: async () => JSON.stringify({ message: 'invalid api key' }) };
+      }
+      throw new Error(`unexpected method ${body.method}`);
+    };
+    const adapter = createCryptocomAdapter(writeKeys('cryptocom'));
+
+    await assert.rejects(adapter.getOrderFills(ORDER_ID), (err) => {
+      assert.equal(err.status, 401, 'status must survive the rethrow so isAuthDeniedError can classify it');
+      assert.match(err.message, /order-detail lookup failed/);
+      return true;
+    });
   });
 });
 

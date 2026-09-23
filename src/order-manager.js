@@ -52,20 +52,36 @@ const orderLogger = (adapter, productId) => createContextLogger({
  * funds moved, and losing the record risks a duplicate re-buy/re-sell and an
  * untracked exchange position (the same "money moved, engine recorded
  * nothing" leak issue #208A guards against elsewhere in this file).
+ *
+ * A short bounded retry runs first: the most common cause of a rejection
+ * right after a fill is the exchange's own trade-history eventual
+ * consistency (the fill just landed and hasn't propagated to the trades
+ * endpoint yet), which normally clears within a couple of seconds. Only
+ * after retries are exhausted does this degrade to the $0-fee stub — a
+ * silently-wrong-but-permanent fee/proceeds figure is worse than a brief
+ * delay, so the retry exists to make the degraded path the rare case.
  * @param {ExchangeAdapter} adapter - Exchange adapter
  * @param {string} orderId - Order ID whose fee/fill detail to fetch
+ * @param {{retries?: number, retryDelayMs?: number}} [opts] - Retry tuning (tests only; defaults 2 retries / 500ms)
  * @returns {Promise<{totalFees: number, totalRebates: number, netFees: number, fills: Array<Object>}>}
  */
-const safeGetOrderFillSummary = async (adapter, orderId) => {
-  try {
-    return await adapter.getOrderFillSummary(orderId);
-  } catch (err) {
-    orderLogger(adapter).warn(
-      `⚠️ Could not fetch fee/fill detail for ${orderId}: ${err.message} — recording the fill with $0 fees; reconcile fees manually`,
-      { orderId, error: err.message, incompleteFills: err.incompleteFills === true }
-    );
-    return { totalFees: 0, totalRebates: 0, netFees: 0, fills: [] };
+const safeGetOrderFillSummary = async (adapter, orderId, { retries = 2, retryDelayMs = 500 } = {}) => {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await adapter.getOrderFillSummary(orderId);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) {
+        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+      }
+    }
   }
+  orderLogger(adapter).warn(
+    `⚠️ Could not fetch fee/fill detail for ${orderId} after ${retries + 1} attempt(s): ${lastErr.message} — recording the fill with $0 fees; reconcile fees manually`,
+    { orderId, error: lastErr.message, incompleteFills: lastErr.incompleteFills === true, attempts: retries + 1 }
+  );
+  return { totalFees: 0, totalRebates: 0, netFees: 0, fills: [] };
 };
 
 /**
@@ -1051,4 +1067,7 @@ module.exports = {
   // Fibonacci order management
   placeFibonacciSellOrder,
   checkFibonacciSellFill,
+  // Exported for direct unit coverage of its retry/degrade behavior
+  // (issue #679 follow-up) — not part of the adapter's public surface.
+  safeGetOrderFillSummary,
 };

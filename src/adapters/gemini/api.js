@@ -773,7 +773,14 @@ const createGeminiAdapter = (keysPath = null) => {
     try {
       order = await makeRestRequest('/v1/order/status', { order_id: orderId });
     } catch (err) {
-      throw new Error(`[gemini] getOrderFills: order-status lookup failed for ${orderId}: ${err.message}`);
+      // Prefix the message on the SAME error object rather than throwing a
+      // fresh plain Error — makeRestRequest attaches `status`/`responseData`
+      // that health-monitor's isAuthDeniedError relies on to route an auth
+      // rejection into non-self-healing AUTH_DENIED instead of treating it
+      // as a retryable REST error; a new Error() would silently discard
+      // that metadata.
+      err.message = `[gemini] getOrderFills: order-status lookup failed for ${orderId}: ${err.message}`;
+      throw err;
     }
     const symbol = order?.symbol ? order.symbol.toLowerCase() : null;
     const createdMs = Number(order?.timestampms || (order?.timestamp ? Number(order.timestamp) * 1000 : 0));

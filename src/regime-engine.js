@@ -1884,7 +1884,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // Check if order has any fills while offline (partial fills)
           if (order.filledSize && order.filledSize > 0) {
             logger.info(`✅ [${exchange}] Entry ${order.orderId} has partial fills (${order.filledSize})`);
-            const rawFills = await adapter.getOrderFills(order.orderId);
+            // getOrderFills now rejects on a failed lookup or an incomplete
+            // match (issue #679) instead of silently returning a partial
+            // set. A throw here must not abort engine startup — the
+            // restore above already tracked the order, so the ordinary
+            // WS/poll fill path and periodic reconcile pick up these fills
+            // once the engine is running; losing this best-effort catch-up
+            // step is far safer than leaving the engine registered but
+            // never started (regime-engine.js's start() has no outer
+            // try/catch of its own).
+            let rawFills = [];
+            try {
+              rawFills = await adapter.getOrderFills(order.orderId);
+            } catch (err) {
+              logger.error(`❌ [${exchange}] Could not fetch offline partial fills for entry ${order.orderId}: ${err.message} — will pick them up on the next reconcile/poll`, {
+                orderId: order.orderId,
+                error: err.message,
+                incompleteFills: err.incompleteFills === true,
+              });
+            }
             let orderHadNewFills = false;
             let lastFillPrice = 0;
             let lastFillTime = 0;
@@ -1922,8 +1940,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               sizeUsdc: order.size * order.price,
               placedAt: order.createdTime ? new Date(order.createdTime).getTime() : Date.now(),
             });
-            // Ingest any fills we don't already have
-            const rawFills = await adapter.getOrderFills(order.orderId);
+            // Ingest any fills we don't already have. See the sibling block
+            // above: a throw here (issue #679's rethrow-on-failure /
+            // incompleteFills contract) must not abort engine startup — the
+            // restore above already tracked the order, so the ordinary
+            // WS/poll fill path and periodic reconcile pick up these fills
+            // once the engine is running.
+            let rawFills = [];
+            try {
+              rawFills = await adapter.getOrderFills(order.orderId);
+            } catch (err) {
+              logger.error(`❌ [${exchange}] Could not fetch offline partial fills for orphan entry ${order.orderId}: ${err.message} — will pick them up on the next reconcile/poll`, {
+                orderId: order.orderId,
+                error: err.message,
+                incompleteFills: err.incompleteFills === true,
+              });
+            }
             let orderHadNewFills = false;
             let lastFillPrice = 0;
             let lastFillTime = 0;

@@ -100,7 +100,22 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     }
     regimeEngines.set(key, engine);
 
-    const startResult = await engine.start();
+    // engine.start() is expected to resolve { success: false, error } on a
+    // handled startup failure, but a rejection can still escape it (e.g. an
+    // unguarded exchange call deep in startup recovery). Since the engine was
+    // already registered above so regime:stop can find it mid-start, an
+    // uncaught rejection here must still unregister it — otherwise it's
+    // stranded as "already running" (blocking every future regime:start)
+    // while never actually running (no orders watched) until an operator
+    // manually intervenes.
+    let startResult;
+    try {
+      startResult = await engine.start();
+    } catch (err) {
+      regimeEngines.delete(key);
+      fundLogger.error(`❌ [${label}] regime:start threw during engine startup: ${err.message}`, { error: err.message });
+      return { success: false, error: `Engine startup failed for ${exchange}/${resolvedPair} — see engine logs for details` };
+    }
 
     if (!startResult.success) {
       regimeEngines.delete(key);

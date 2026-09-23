@@ -780,7 +780,14 @@ const createCryptocomAdapter = (keysPath = null) => {
     try {
       detail = await makePrivateRequest('private/get-order-detail', { order_id: orderId });
     } catch (err) {
-      throw new Error(`Crypto.com getOrderFills: order-detail lookup failed for ${orderId}: ${err.message}`);
+      // Prefix the message on the SAME error object rather than throwing a
+      // fresh plain Error — makePrivateRequest attaches `status`/`code`/
+      // `responseData` that health-monitor's isAuthDeniedError relies on to
+      // route an auth rejection into non-self-healing AUTH_DENIED instead of
+      // treating it as a retryable REST error; a new Error() would silently
+      // discard that metadata.
+      err.message = `Crypto.com getOrderFills: order-detail lookup failed for ${orderId}: ${err.message}`;
+      throw err;
     }
     const orderInfo = detail?.order_info || detail || {};
     const instrument = orderInfo.instrument_name;

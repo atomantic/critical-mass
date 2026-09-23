@@ -19,11 +19,46 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { waitForBuyFill, checkFilledOrders, checkFibonacciSellFill, placeFibonacciSellOrder } = require('../src/order-manager');
+const {
+  waitForBuyFill, checkFilledOrders, checkFibonacciSellFill, placeFibonacciSellOrder,
+  safeGetOrderFillSummary,
+} = require('../src/order-manager');
 const { getFibonacciSellQuantity } = require('../src/fibonacci-utils');
 
 const incompleteFillsError = (orderId) =>
   Object.assign(new Error(`fills incomplete for ${orderId}: 0.5 of 1.5`), { incompleteFills: true });
+
+describe('safeGetOrderFillSummary — bounded retry before degrading (issue #679 follow-up)', () => {
+  it('returns the real summary once a transient failure clears, without degrading', async () => {
+    let calls = 0;
+    const adapter = {
+      getOrderFillSummary: async () => {
+        calls++;
+        if (calls < 3) throw incompleteFillsError('order-x');
+        return { totalFees: 1.5, totalRebates: 0.1, netFees: 1.4, fills: [{ tradeId: 't1' }] };
+      },
+    };
+
+    const summary = await safeGetOrderFillSummary(adapter, 'order-x', { retries: 3, retryDelayMs: 1 });
+
+    assert.equal(calls, 3);
+    assert.equal(summary.totalFees, 1.5);
+    assert.equal(summary.netFees, 1.4);
+    assert.deepEqual(summary.fills, [{ tradeId: 't1' }]);
+  });
+
+  it('degrades to a $0-fee stub only after every retry is exhausted', async () => {
+    let calls = 0;
+    const adapter = {
+      getOrderFillSummary: async () => { calls++; throw incompleteFillsError('order-y'); },
+    };
+
+    const summary = await safeGetOrderFillSummary(adapter, 'order-y', { retries: 2, retryDelayMs: 1 });
+
+    assert.equal(calls, 3, 'must attempt the initial call plus every retry before degrading');
+    assert.deepEqual(summary, { totalFees: 0, totalRebates: 0, netFees: 0, fills: [] });
+  });
+});
 
 describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () => {
   it('waitForBuyFill still returns the fill when getOrderFillSummary rejects', async () => {
