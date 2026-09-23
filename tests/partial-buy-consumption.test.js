@@ -709,3 +709,52 @@ describe('legacy seal ordering at boot (issue #607)', () => {
     assert.equal(ledger.getBuyOrderConsumption('buy-s').consumedBy, null);
   });
 });
+
+describe('foreign sell with no bodies surfaces through position coverage, not the position model (issue #750)', () => {
+  it('leaves totalAsset/totalCostBasis/reserves untouched and attributes the ledger gap to untrackedSold', async () => {
+    const eng = makeEngine({
+      getOrderFills: async (orderId) => (orderId === 'manual-750' ? [rawFill('sell', 'manual-750', 'manual-750-t1', 0.3, 2600)] : []),
+      getAccountBalance: undefined,
+    });
+    const pos = eng._getPositionState();
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-l', 'buy-l-t1', 1.0, 2500));
+    // Legacy core position, no bodies: the ambiguous case the issue describes.
+    pos.celestialBodies = [];
+    pos.totalAsset = 1.0;
+    pos.totalCostBasis = 2500;
+    pos.avgCostBasis = 2500;
+    const reservesBefore = pos.realizedAssetPnL || 0;
+
+    await eng._test.handleOrderFill(sellFill('manual-750', 0.3, 2600));
+
+    assert.ok(ledger.getFillsForOrder('manual-750').every(f => f.untrackedSell === true), 'annotated untrackedSell');
+    assert.equal(pos.totalAsset, 1.0, 'totalAsset not guessed down');
+    assert.equal(pos.totalCostBasis, 2500, 'totalCostBasis not guessed down');
+    assert.equal(pos.realizedAssetPnL || 0, reservesBefore, 'reserves not guessed down');
+
+    const derived = ledger.getDerivedRealizedPnL();
+    assert.ok(Math.abs(derived.untrackedSellQty - 0.3) < EPS, `untrackedSellQty, got ${derived.untrackedSellQty}`);
+    assert.ok(Math.abs(derived.ledgerNetAsset - 0.7) < EPS, 'the sale is inside ledger net');
+
+    pos.engineStartTime = Date.now() - 86_400_000;
+    await eng._test.sweepLedgerDrift();
+    const cov = eng._test.getPositionCoverage();
+    assert.ok(Math.abs(cov.ledger.untrackedSold - 0.3) < EPS, `untrackedSold surfaced, got ${cov.ledger.untrackedSold}`);
+    assert.equal(eng.getState().positionCoverage.ledger.untrackedSold, cov.ledger.untrackedSold, 'surfaced on engine state');
+  });
+
+  it('counts a foreign order once per order, including a fill row ingested after the annotation', () => {
+    const eng = makeEngine({});
+    const ledger = eng.getFillLedger();
+    ledger.ingestFill(rawFill('buy', 'buy-m', 'buy-m-t1', 1.0, 2500));
+    ledger.ingestFill(rawFill('sell', 'manual-m', 'manual-m-t1', 0.2, 2600));
+    ledger.ingestFill(rawFill('sell', 'manual-m', 'manual-m-t2', 0.1, 2600));
+    ledger.annotateFillsByOrderId('manual-m', { untrackedSell: true });
+    ledger.ingestFill(rawFill('sell', 'manual-m', 'manual-m-t3', 0.05, 2600)); // late row, no flag
+    ledger.ingestFill(rawFill('sell', 'tp-own', 'tp-own-t1', 0.4, 2600)); // not foreign
+    const derived = ledger.getDerivedRealizedPnL();
+    assert.ok(Math.abs(derived.untrackedSellQty - 0.35) < EPS, `got ${derived.untrackedSellQty}`);
+  });
+});
