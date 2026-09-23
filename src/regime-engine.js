@@ -1955,65 +1955,70 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       let restoredEntries = 0;
       let orphanedEntries = 0;
 
+      /**
+       * Book the already-filled tranche of an entry that is still open on the
+       * exchange through the standard fill pipeline (issue #671), so it joins
+       * a celestial body, gets a TP, and shrinks the tracked pending entry.
+       * A failure is logged, not thrown: the caller has already restored the
+       * order's executor tracking, so the live poll/WS path books the fills
+       * once the engine is running — and since nothing was ingested here,
+       * that later pass sees every row as new instead of a deduped remainder.
+       * @param {Object} order - Open order from getOpenOrders
+       * @param {number} placedAt - Order placement time (ms)
+       * @param {string} label - Log label for the calling branch
+       * @returns {Promise<void>}
+       */
+      const bookStartupOpenEntryPartial = async (order, placedAt, label) => {
+        // Current-cycle ledger rows for this order that no body owns were
+        // ingested by the pre-#671 startup path, and the cycleBuys
+        // auto-correct above already counted the order from them —
+        // handleOrderFill's first commit for an unowned order would count it
+        // a second time.
+        const alreadyCounted = !isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)
+          && fillLedger.getCurrentCycleFills().some(f => f.side === 'buy' && f.orderId === order.orderId);
+        const cycleBuysBefore = positionState.cycleBuys;
+        try {
+          await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, {
+            status: order.status || 'OPEN',
+            isPartialFill: true,
+            placedAt,
+          }));
+          if (alreadyCounted && positionState.cycleBuys === cycleBuysBefore + 1) {
+            positionState.cycleBuys = cycleBuysBefore;
+          }
+        } catch (err) {
+          logger.error(`❌ [${exchange}] Could not book offline partial fills for ${label} ${order.orderId}: ${err.message} — will pick them up on the next reconcile/poll`, {
+            orderId: order.orderId,
+            error: err.message,
+            incompleteFills: err.incompleteFills === true,
+          });
+        }
+      };
+
       for (const order of openEntries) {
         if (savedOrderIds.has(order.orderId)) {
           // This is our order - restore tracking instead of canceling
           const savedEntry = savedPendingEntries.find(e => e.orderId === order.orderId);
+          const restoredPlacedAt = order.createdTime ? new Date(order.createdTime).getTime() : (savedEntry.placedAt || Date.now());
           orderExecutor.restorePendingOrder(order.orderId, {
             type: 'entry',
             price: savedEntry.price,
             size: savedEntry.assetQty,
             sizeUsdc: savedEntry.sizeUsdc,
-            placedAt: order.createdTime ? new Date(order.createdTime).getTime() : (savedEntry.placedAt || Date.now()),
+            placedAt: restoredPlacedAt,
           });
           restoredEntries++;
           logger.info(`🔄 [${exchange}] Restored pending entry: ${order.orderId} @ ${fmtPrice(savedEntry.price)}`);
 
-          // Check if order has any fills while offline (partial fills)
+          // Check if order has any fills while offline (partial fills).
+          // Route them through the standard fill pipeline (issue #671) so the
+          // tranche lands in a celestial body (with a TP) and shrinks the
+          // tracked entry. Ingesting straight into the ledger here left the
+          // tranche in no body: the later terminal fill deduped those rows
+          // and built its body from the new tranche alone.
           if (order.filledSize && order.filledSize > 0) {
             logger.info(`✅ [${exchange}] Entry ${order.orderId} has partial fills (${order.filledSize})`);
-            // getOrderFills now rejects on a failed lookup or an incomplete
-            // match (issue #679) instead of silently returning a partial
-            // set. A throw here must not abort engine startup — the
-            // restore above already tracked the order, so the ordinary
-            // WS/poll fill path and periodic reconcile pick up these fills
-            // once the engine is running; losing this best-effort catch-up
-            // step is far safer than leaving the engine registered but
-            // never started (regime-engine.js's start() has no outer
-            // try/catch of its own).
-            let rawFills = [];
-            try {
-              rawFills = await adapter.getOrderFills(order.orderId);
-            } catch (err) {
-              logger.error(`❌ [${exchange}] Could not fetch offline partial fills for entry ${order.orderId}: ${err.message} — will pick them up on the next reconcile/poll`, {
-                orderId: order.orderId,
-                error: err.message,
-                incompleteFills: err.incompleteFills === true,
-              });
-            }
-            let orderHadNewFills = false;
-            let lastFillPrice = 0;
-            let lastFillTime = 0;
-            for (const fill of rawFills) {
-              const result = fillLedger.ingestFill(fill);
-              if (result.ingested) {
-                positionState.totalAsset = roundAsset(positionState.totalAsset + fill.size);
-                positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + (fill.size * fill.price) + fill.netFee);
-                positionState.avgCostBasis = positionState.totalAsset > 0
-                  ? positionState.totalCostBasis / positionState.totalAsset
-                  : 0;
-                orderHadNewFills = true;
-                lastFillPrice = fill.price;
-                lastFillTime = fill.timestamp;
-                logger.info(`📝 [${exchange}] Ingested partial fill: ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)}`);
-              }
-            }
-            // Increment step once per order, not per fill
-            if (orderHadNewFills) {
-              positionState.cycleBuys += 1;
-              positionState.lastEntryPrice = lastFillPrice;
-              positionState.lastEntryTime = lastFillTime;
-            }
+            await bookStartupOpenEntryPartial(order, restoredPlacedAt, 'entry');
           }
         } else if (correctiveBuyIds.has(order.orderId)) {
           logger.info(`📋 [${exchange}] Skipping corrective buy order ${order.orderId.slice(0, 8)} (tracked in pending-corrective-buys)`);
@@ -2021,51 +2026,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // Check if this "orphan" has partial fills — if so, restore it instead of cancelling
           if (order.filledSize && order.filledSize > 0) {
             logger.info(`📦 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} has partial fills (${order.filledSize} ${baseCurrency}) — restoring instead of cancelling`);
+            const orphanPlacedAt = order.createdTime ? new Date(order.createdTime).getTime() : Date.now();
             orderExecutor.restorePendingOrder(order.orderId, {
               type: 'entry',
               price: order.price,
               size: order.size,
               sizeUsdc: order.size * order.price,
-              placedAt: order.createdTime ? new Date(order.createdTime).getTime() : Date.now(),
+              placedAt: orphanPlacedAt,
             });
-            // Ingest any fills we don't already have. See the sibling block
-            // above: a throw here (issue #679's rethrow-on-failure /
-            // incompleteFills contract) must not abort engine startup — the
-            // restore above already tracked the order, so the ordinary
-            // WS/poll fill path and periodic reconcile pick up these fills
-            // once the engine is running.
-            let rawFills = [];
-            try {
-              rawFills = await adapter.getOrderFills(order.orderId);
-            } catch (err) {
-              logger.error(`❌ [${exchange}] Could not fetch offline partial fills for orphan entry ${order.orderId}: ${err.message} — will pick them up on the next reconcile/poll`, {
+            // Keep the adopted order in the persisted pending list so it
+            // survives the next restart, then book its filled tranche through
+            // the standard pipeline (issue #671) — which also shrinks this
+            // entry to its unfilled remainder.
+            if (!positionState.pendingEntryOrders) positionState.pendingEntryOrders = [];
+            if (!positionState.pendingEntryOrders.some(e => e.orderId === order.orderId)) {
+              positionState.pendingEntryOrders.push({
                 orderId: order.orderId,
-                error: err.message,
-                incompleteFills: err.incompleteFills === true,
+                price: order.price,
+                assetQty: order.size,
+                sizeUsdc: order.size * order.price,
+                placedAt: orphanPlacedAt,
               });
             }
-            let orderHadNewFills = false;
-            let lastFillPrice = 0;
-            let lastFillTime = 0;
-            for (const fill of rawFills) {
-              const result = fillLedger.ingestFill(fill);
-              if (result.ingested) {
-                positionState.totalAsset = roundAsset(positionState.totalAsset + fill.size);
-                positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + (fill.size * fill.price) + fill.netFee);
-                positionState.avgCostBasis = positionState.totalAsset > 0
-                  ? positionState.totalCostBasis / positionState.totalAsset
-                  : 0;
-                orderHadNewFills = true;
-                lastFillPrice = fill.price;
-                lastFillTime = fill.timestamp;
-                logger.info(`📝 [${exchange}] Ingested partial fill from orphan: ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)}`);
-              }
-            }
-            if (orderHadNewFills) {
-              positionState.cycleBuys += 1;
-              positionState.lastEntryPrice = lastFillPrice;
-              positionState.lastEntryTime = lastFillTime;
-            }
+            await bookStartupOpenEntryPartial(order, orphanPlacedAt, 'orphan entry');
             restoredEntries++;
           } else {
             // Orphan entry with no fills — cancel it
@@ -2174,11 +2157,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // (filled or cancelled while engine was offline — fills already ingested above).
       // A failed catch-up (failedCatchUpIds) is retained even though it is
       // also not open on the exchange — it needs a retry, not a purge.
-      if (savedPendingEntries.length > 0) {
-        positionState.pendingEntryOrders = savedPendingEntries.filter(
+      // Filters the LIVE list, not the savedPendingEntries snapshot: the
+      // handleOrderFill calls above shrank partially-filled entries to their
+      // unfilled remainder and appended adopted orphans (issue #671), and
+      // re-filtering the stale snapshot would silently undo both. A failed
+      // catch-up may have thrown AFTER handleOrderFill already dropped its
+      // entry from the live list, so those are re-added from the snapshot.
+      const livePendingEntries = positionState.pendingEntryOrders || [];
+      const liveIds = new Set(livePendingEntries.map(e => e.orderId));
+      const currentPendingEntries = [
+        ...livePendingEntries,
+        ...savedPendingEntries.filter(e => failedCatchUpIds.has(e.orderId) && !liveIds.has(e.orderId)),
+      ];
+      if (currentPendingEntries.length > 0) {
+        positionState.pendingEntryOrders = currentPendingEntries.filter(
           e => allOpenIds.has(e.orderId) || failedCatchUpIds.has(e.orderId)
         );
-        const purged = savedPendingEntries.length - positionState.pendingEntryOrders.length;
+        const purged = currentPendingEntries.length - positionState.pendingEntryOrders.length;
         if (purged > 0) {
           logger.info(`🧹 [${exchange}] Purged ${purged} stale pending entry orders (filled/cancelled while offline)`);
         }
