@@ -763,13 +763,26 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       logger.warn(`🩹 [${exchange}] Repaired ${negativeHoldbackRepairCount} legacy negative-holdback fill(s) into bodyReservesSoldAsset (issue #779)`, {
         repairedCount: negativeHoldbackRepairCount,
       });
-      // Flush the repaired rows immediately, once — same contract as
-      // markDirty()'s external-mutation path, restricted to the same
-      // metadata-only fields (bodyHoldbackAsset / satelliteHoldbackAsset /
-      // bodyReservesSoldAsset feed no index), so a crash before the next
-      // natural persist can't lose the repair and redo it differently.
-      dirtySinceLastPersist = true;
-      persist();
+      // Only the owning engine/script instance flushes the repair to disk.
+      // `quiet: true` marks a throwaway, documented-read-only instance
+      // (getCachedFillLedger's per-request gateway ledger — see its "do
+      // not mutate" contract above `createFillLedger`'s opts.quiet doc);
+      // nothing before this change ever called persist() from that path,
+      // and this repair must not be what turns it into a second,
+      // uncoordinated writer of a live engine's ledger file. The in-memory
+      // fix still applies unconditionally so a quiet reader's own P&L
+      // computation is correct for this request; the owning engine's next
+      // load() (or this same repair, next boot) performs the real, once-
+      // only persist.
+      if (!quiet) {
+        // Flush the repaired rows immediately, once — same contract as
+        // markDirty()'s external-mutation path, restricted to the same
+        // metadata-only fields (bodyHoldbackAsset / satelliteHoldbackAsset /
+        // bodyReservesSoldAsset feed no index), so a crash before the next
+        // natural persist can't lose the repair and redo it differently.
+        dirtySinceLastPersist = true;
+        persist();
+      }
     }
     // Rebuild orderSizeIndex from the canonical fills Map AFTER population.
     // load() can be called multiple times on a live ledger (regime-engine.js

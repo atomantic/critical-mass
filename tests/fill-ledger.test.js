@@ -1487,6 +1487,46 @@ describe('Fill Ledger', () => {
     assert.equal(sellFill.bodyReservesSoldAsset, undefined);
   });
 
+  it('createFillLedger repairs a negative holdback in memory under quiet:true, but never writes it to disk (must not turn a read-only gateway ledger into a writer)', () => {
+    // getCachedFillLedger's per-request gateway instances are documented
+    // "read-only — do not mutate" and, before this change, nothing on the
+    // quiet path ever called persist(). The repair must not be what makes
+    // a dashboard poll silently start writing a live engine's ledger file.
+    const exchange = 'test-negative-holdback-quiet-no-persist';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'fill-ledger.json');
+    const legacyNegativeSell = {
+      tradeId: 'legacy-sell-quiet-1',
+      orderId: 'o-sell-quiet-1',
+      side: 'sell',
+      size: 0.4,
+      price: 100,
+      quoteAmount: 40,
+      netFee: 0,
+      timestamp: Date.now(),
+      bodyId: 'body-1',
+      bodyHoldbackAsset: -0.05,
+    };
+    fs.writeFileSync(filePath, JSON.stringify([legacyNegativeSell]));
+    const beforeMtime = fs.statSync(filePath).mtimeMs;
+
+    const { createFillLedger } = freshFillLedgerModule();
+    const ledger = createFillLedger(exchange, undefined, undefined, { quiet: true });
+
+    // In-memory read is still correct...
+    const [repaired] = ledger.getFillsForOrder('o-sell-quiet-1');
+    assert.equal(repaired.bodyHoldbackAsset, 0);
+    assert.equal(repaired.bodyReservesSoldAsset, 0.05);
+
+    // ...but the on-disk file (and its persist-write counter) must be untouched.
+    assert.equal(ledger._test.getWriteCount(), 0, 'a quiet/read-only load must never call persist()');
+    const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    assert.equal(onDisk[0].bodyHoldbackAsset, -0.05, 'the on-disk file must still carry the unrepaired legacy shape');
+    assert.equal(onDisk[0].bodyReservesSoldAsset, undefined);
+    assert.equal(fs.statSync(filePath).mtimeMs, beforeMtime, 'the file must not have been rewritten');
+  });
+
   it('createFillLedger throws on cold start when ledger contains duplicate tradeIds (Map dedup would silently undercount)', () => {
     // load() stores entries in a Map keyed by tradeId, so a duplicate would
     // silently overwrite the earlier row — undercount totalAsset / P&L
