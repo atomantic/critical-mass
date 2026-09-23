@@ -708,6 +708,34 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // disk authoritatively (handles "operator removed fills via manual
     // reconciliation, then reloaded" — those removals must take effect).
     resetCaches();
+    // Legacy negative-holdback repair (issue #779): between #769 and #770
+    // (both unreleased — never shipped in v2.25.0 or earlier) the engine
+    // could book a stale-TP oversell (a sale beyond what the body/satellite
+    // still held) as a NEGATIVE bodyHoldbackAsset/satelliteHoldbackAsset
+    // annotation. #770 changed the engine to record this instead as
+    // holdback 0 + a non-negative bodyReservesSoldAsset (see
+    // docs/pnl-architecture.md "Reserves sold by an oversized stale TP").
+    // Rows written in that window still carry the old negative shape, and
+    // the pairing (shared/cycle-pairing.mjs) clamps a negative holdback to
+    // 0 rather than crediting the sold reserves — silently overstating
+    // realizedAssetPnL by the oversold quantity. Rewrite in place, on
+    // every load, so every reader (including a read-only diagnostic script
+    // or getCachedFillLedger's gateway instance) computes correct P&L
+    // immediately. Idempotent: a fill already carrying a positive
+    // bodyReservesSoldAsset is left untouched (already repaired, or an
+    // inconsistent state not ours to guess at), and a repaired row has a
+    // non-negative holdback on the next load, so it is never touched twice.
+    // Deliberately NOT auto-persisted here — same reasoning as the netFee
+    // backfill just below: `quiet`/no-quiet is a logging hint, not an
+    // ownership signal (several read-only scripts, e.g.
+    // scripts/analyze-unaccounted.js, construct a non-quiet ledger purely
+    // to inspect it), so writing back from inside load() would make ANY
+    // caller — not just the owning engine — a second, uncoordinated writer
+    // of a live fund's ledger file, racing a running engine's own persists
+    // (codex/claude review, issue #779). The repair rides along on the
+    // owning engine's own next dirtying persist() instead, the same way
+    // the netFee backfill's in-memory-only fix eventually reaches disk.
+    let negativeHoldbackRepairCount = 0;
     for (const fill of data) {
       // Legacy-ledger backfill: pre-rebate-split fills only had `fee`,
       // not `netFee`. The pre-pass validator accepts either; here we
@@ -719,12 +747,33 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       if (typeof fill.netFee !== 'number' && typeof fill.fee === 'number') {
         fill.netFee = fill.fee;
       }
+      if (fill.side === 'sell') {
+        // Mirror the same body-first fallback shared/cycle-pairing.mjs
+        // uses to read the annotation, so we neutralize exactly the
+        // field the pairing would otherwise clamp to 0.
+        const annotatedHoldback = fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset;
+        if (typeof annotatedHoldback === 'number' && annotatedHoldback < 0
+          && !(Number(fill.bodyReservesSoldAsset) > 0)) {
+          if (fill.bodyHoldbackAsset != null) {
+            fill.bodyHoldbackAsset = 0;
+          } else {
+            fill.satelliteHoldbackAsset = 0;
+          }
+          fill.bodyReservesSoldAsset = roundAsset(Math.abs(annotatedHoldback));
+          negativeHoldbackRepairCount++;
+        }
+      }
       fills.set(fill.tradeId, fill);
       // Populate cycle index
       if (fill.cycleId) {
         if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
         cycleIndex.get(fill.cycleId).add(fill.tradeId);
       }
+    }
+    if (negativeHoldbackRepairCount > 0 && !quiet) {
+      logger.warn(`🩹 [${exchange}] Repaired ${negativeHoldbackRepairCount} legacy negative-holdback fill(s) into bodyReservesSoldAsset in memory (issue #779) — not written to disk by this load; reaches disk whenever this ledger instance is next persisted`, {
+        repairedCount: negativeHoldbackRepairCount,
+      });
     }
     // Rebuild orderSizeIndex from the canonical fills Map AFTER population.
     // load() can be called multiple times on a live ledger (regime-engine.js
