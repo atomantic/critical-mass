@@ -401,6 +401,28 @@ describe('createEngineLocks — ladder lock (#766)', () => {
     assert.equal(locks.isLadderBusy(), false);
   });
 
+  it('onTimeout proceed: a later waiter still waits for the stuck holder, not just the one that proceeded', async () => {
+    let nowMs = 1_000_000;
+    let clockRuns = true;
+    const locks = createEngineLocks({
+      now: () => nowMs,
+      sleep: async (ms) => { if (clockRuns) nowMs += ms; else await tick(); },
+    });
+    const stuck = deferred();
+    const holder = locks.withLadderLock(() => stuck.promise);
+    await locks.withLadderLock(async () => 'reset', { onTimeout: 'proceed' });
+    clockRuns = false;
+    const order = [];
+    const later = locks.withLadderLock(async () => { order.push('rebuild'); });
+    for (let i = 0; i < 5; i++) await tick();
+    assert.deepEqual(order, [], 'the rebuild did not slip in beside the stuck holder');
+    stuck.resolve();
+    await holder;
+    await later;
+    assert.deepEqual(order, ['rebuild']);
+    assert.equal(locks.isLadderBusy(), false);
+  });
+
   it('onTimeout refuse: gives up with the busy result, and later waiters stay queued behind the stuck holder', async () => {
     let nowMs = 1_000_000;
     let clockRuns = true;

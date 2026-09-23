@@ -814,6 +814,65 @@ describe('ladder sweeps serialise on the ladder lock (#766)', () => {
     assert.equal(ledger.getCurrentCycleAllBuysCount(), 0);
   });
 
+  it('a window buy whose TP only partly sold (body still open) is carried into the new cycle', async () => {
+    const placement = deferred();
+    const fillsByOrder = {
+      'tp-a': [rawFill('sell', 'tp-a', 't-sell-a', 0.0099, 52000)],
+      'new-rung-1-0': [rawFill('buy', 'new-rung-1-0', 't-w', 0.002, 49000)],
+    };
+    let failTpPlacement = false;
+    let tpSeq = 0;
+    const { eng, calls } = setupSerialEngine({ fillsByOrder, holdPlace: [placement] });
+    const executor = eng._test.getOrderExecutor();
+    executor.placeBodyTpOrder = async () => (failTpPlacement
+      ? { success: false, errorMessage: 'rejected' }
+      : { success: true, orderId: `tp-w-${++tpSeq}` });
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-a', 't-buy-a', 0.01, 50000));
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.celestialBodies = [makeBody('body-aaaaaaaa', 'buy-a', 0.01, 50000, 'tp-a')];
+    pos.cycleBuys = 1;
+    pos.ladderActive = true;
+
+    const rebuild = eng.rebuildLadder();
+    await until(() => calls.place === 1, 'the rebuild to start placing');
+    const tp = eng._test.handleOrderFill({ orderId: 'tp-a', side: 'sell', status: 'FILLED', filledSize: 0.0099, averageFilledPrice: 52000 });
+    await until(() => pos.celestialBodies.length === 0, 'the TP to close the last body');
+
+    await eng._test.handleOrderFill({ orderId: 'new-rung-1-0', side: 'buy', status: 'FILLED', filledSize: 0.002, averageFilledPrice: 49000, filledValue: 98 });
+    const w = pos.celestialBodies[0];
+    const wTp = w.tpOrderId;
+    assert.ok(wTp);
+    // Half of W's TP sells; re-placing the remainder's TP fails, so the buy
+    // still points at the partly filled order.
+    const half = Math.round((w.assetOnOrder / 2) * 1e8) / 1e8;
+    fillsByOrder[wTp] = [rawFill('sell', wTp, 't-sell-w-part', half, 51000)];
+    eng._test.setAdapter({
+      cancelOrder: async () => ({ success: true }),
+      getOpenOrders: async () => [],
+      getAccountBalance: async () => ({ available: '1000' }),
+      getOrder: async (id) => (id === wTp
+        ? { orderId: id, side: 'sell', status: 'CANCELLED', filledSize: half, filledValue: half * 51000, averageFilledPrice: 51000 }
+        : { filledSize: 0, status: 'OPEN' }),
+      getOrderFills: async (orderId) => fillsByOrder[orderId] || [],
+      getPositions: async () => [],
+    });
+    failTpPlacement = true;
+    await eng._test.handleOrderFill({ orderId: wTp, side: 'sell', status: 'CANCELLED', filledSize: half, averageFilledPrice: 51000, isPartialFill: true }).catch(() => {});
+    assert.equal(pos.celestialBodies.length, 1, 'W is still open');
+
+    placement.resolve();
+    assert.equal((await rebuild).success, true);
+    await tp;
+
+    const newCycle = ledger.getCurrentCycleId();
+    assert.notEqual(newCycle, closingCycle);
+    assert.equal(ledger.getFillsForOrder('new-rung-1-0')[0].cycleId, newCycle, 'the open body\'s buy opens the new cycle');
+    assert.equal(pos.cycleBuys, 1, 'and counts as its buy step');
+  });
+
   it('a second TP close queued behind the same rebuild does not close the cycle the first reset opened', async () => {
     const placement = deferred();
     const fillsByOrder = {

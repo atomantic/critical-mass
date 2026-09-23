@@ -249,6 +249,7 @@ const createEngineLocks = (opts = {}) => {
     ladderTail = new Promise((resolve) => { release = resolve; });
     ladderPending++;
 
+    let proceededPastHolder = false;
     if (busy) {
       let prevDone = false;
       prev.then(() => { prevDone = true; });
@@ -264,6 +265,7 @@ const createEngineLocks = (opts = {}) => {
           return { success: false, message: BUSY_LADDER };
         }
         logWarn(`⚠️ [${exchange}] ${label} proceeding after ${ladderWaitMs / 1000}s wait — ladder lock still held (possible stuck ladder sweep)`);
+        proceededPastHolder = true;
       }
     }
 
@@ -275,7 +277,10 @@ const createEngineLocks = (opts = {}) => {
       token.active = false;
       ladderHolders--;
       ladderPending--;
-      release();
+      // Having run alongside a stuck holder, hand the lock on only once that
+      // holder is done too — later waiters must not skip past it silently.
+      if (proceededPastHolder) prev.then(release);
+      else release();
     }
   };
 

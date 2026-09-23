@@ -7349,13 +7349,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Buys that landed during the sweep — ingested under the closing cycle
     // (ingestFill stamps the cycle live at ingest time) but not in the
     // pre-sweep snapshot. Sells stay put: a sell landing in that window closes
-    // buys of the cycle it was ingested under — so a window buy whose own TP
-    // already sold (possible across a queued reset's wait, #766) stays with
-    // that sell in the closing cycle rather than splitting the pair. A TP only
-    // placed (sellOrderId is stamped at placement) does not count as sold.
-    const soldBy = (f) => f.sellOrderId && fillLedger.getRecordedSizeForOrder(f.sellOrderId) > 0;
+    // buys of the cycle it was ingested under — so a window buy whose body a
+    // TP already closed (possible across a queued reset's wait, #766) stays
+    // with that sell in the closing cycle rather than splitting the pair. A
+    // TP only placed (sellOrderId is stamped at placement) does not count, and
+    // neither does a partial sale: a body that still owns the buy is open.
+    const closedBySale = (f) => f.sellOrderId
+      && fillLedger.getRecordedSizeForOrder(f.sellOrderId) > 0
+      && !isBuyAlreadyCommitted(bodies, f.orderId);
     const sweepBuys = preSweepTradeIds
-      ? closingCycleFills().filter(f => f.side === 'buy' && !preSweepTradeIds.has(f.tradeId) && !soldBy(f))
+      ? closingCycleFills().filter(f => f.side === 'buy' && !preSweepTradeIds.has(f.tradeId) && !closedBySale(f))
       : [];
 
     // Persist the boundary in regime-state.json with the other operator-owned
