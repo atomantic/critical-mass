@@ -629,6 +629,92 @@ const repairHistoricalFillAnnotations = ({
   }
 };
 
+/** Ledger rows the engine synthesized in place of real exchange fills. */
+const PSEUDO_FILL_TRADE_ID = /^(synthetic-|consolidated-sell-)/;
+
+/**
+ * Plan how live bodies must grow to cover recovered partial rows of their own
+ * buy orders (issue #752). recalculateCycles places a null-cycle buy row
+ * that shares its orderId with a body-owned order into that order's cycle
+ * and copies its ownership (`cycleAttribution: 'order'`, #705) — but the
+ * body's assetQty/costBasis were sized from the rows known when the fill was
+ * handled, so its TP stays sized for less than the position actually held.
+ *
+ * Guards — this is the engine's OWN linked order, never an unlinked import
+ * (R2 in docs/pnl-architecture.md):
+ *   - only orders with at least one `'order'`-attributed buy row are
+ *     considered ('link' / 'timeframe' rows never grow a body);
+ *   - the order has no synthetic gap row (which recovered rows may duplicate);
+ *   - every owned row of the order names ONE bodyId, and exactly one live
+ *     body — that one — records the order in its `buyOrders`;
+ *   - growth is the exact shortfall of the order's full ledger totals over
+ *     the body's recorded share (computeBuyOrderShortfall), so repeated
+ *     calls converge, and it may not exceed the attributed rows' own size —
+ *     a larger gap is some other discrepancy and is left for manual review.
+ * Pure: never mutates the ledger or a body.
+ * @param {Object} params
+ * @param {Object} params.fillLedger - Fill ledger instance
+ * @param {Object[]} params.celestialBodies - Live bodies
+ * @returns {{ plans: Array<{body: Object, buyOrderId: string, totals: {assetQty: number, costBasis: number, avgPrice: number}, shortfall: {assetQty: number, costBasis: number, avgPrice: number}}>, skipped: Array<{buyOrderId: string, reason: string}> }}
+ */
+const planBodyGrowthFromRecoveredBuyRows = ({ fillLedger, celestialBodies }) => {
+  const plans = [];
+  const skipped = [];
+  const bodies = celestialBodies || [];
+  const candidateOrderIds = new Set();
+  for (const f of fillLedger.getAllFills()) {
+    if (f.side === 'buy' && f.cycleAttribution === 'order' && f.bodyId && f.orderId
+      && !String(f.tradeId).startsWith('dca-convert')) {
+      candidateOrderIds.add(f.orderId);
+    }
+  }
+  for (const buyOrderId of candidateOrderIds) {
+    const rows = fillLedger.getFillsForOrder(buyOrderId).filter(r => r.side === 'buy');
+    // A pseudo row (`synthetic-<orderId>-<size>`, handleOrderFill's gap fill
+    // when the exchange returned no fills) stands in for real executions that
+    // sync-fills may since have re-imported under their real tradeIds — the
+    // very rows attributed here. Summing both would grow the body by asset it
+    // never bought, so leave such an order for manual review
+    // (scripts/backfill-missing-fills.js replaces pseudo rows).
+    if (rows.some(r => PSEUDO_FILL_TRADE_ID.test(String(r.tradeId)))) {
+      skipped.push({ buyOrderId, reason: 'order has a synthetic gap row that recovered rows may duplicate' });
+      continue;
+    }
+    const bodyIds = new Set(rows.map(r => r.bodyId).filter(Boolean));
+    if (bodyIds.size !== 1) {
+      skipped.push({ buyOrderId, reason: `rows name ${bodyIds.size} bodies` });
+      continue;
+    }
+    const [bodyId] = bodyIds;
+    const owners = bodies.filter(b => (b.buyOrders || []).some(bo => bo.orderId === buyOrderId));
+    // No owner: the body already closed (its TP sold) — nothing live to grow.
+    if (owners.length === 0) continue;
+    if (owners.length !== 1 || owners[0].id !== bodyId) {
+      skipped.push({ buyOrderId, reason: `order recorded by ${owners.length} live bodies, not only ${bodyId}` });
+      continue;
+    }
+    const body = owners[0];
+    const qty = rows.reduce((sum, r) => sum + (r.size || 0), 0);
+    const quote = rows.reduce((sum, r) => sum + (r.quoteAmount || 0), 0);
+    const totals = {
+      assetQty: roundAsset(qty),
+      costBasis: roundUSDC(rows.reduce((sum, r) => sum + (r.quoteAmount || 0) + (r.netFee || 0), 0)),
+      avgPrice: qty > 0 ? quote / qty : 0,
+    };
+    const { shortfall } = celestialHierarchy.computeBuyOrderShortfall(body, totals, buyOrderId);
+    if (!shortfall) continue;
+    const attributedQty = rows
+      .filter(r => r.cycleAttribution === 'order')
+      .reduce((sum, r) => sum + (r.size || 0), 0);
+    if (shortfall.assetQty > attributedQty + 0.00000001) {
+      skipped.push({ buyOrderId, reason: `shortfall ${shortfall.assetQty} exceeds recovered rows ${roundAsset(attributedQty)}` });
+      continue;
+    }
+    plans.push({ body, buyOrderId, totals, shortfall });
+  }
+  return { plans, skipped };
+};
+
 /** Floor for `fillDriftSweepMs` — one full-history exchange fetch per minute. */
 const MIN_FILL_DRIFT_SWEEP_MS = 60_000;
 
@@ -2647,6 +2733,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     isRunning = true;
+
+    // Recovered partial rows of a body's own buy order (#752) grow that body
+    // through extendBody now that the engine is live: it cancels the body's TP
+    // BEFORE growing it, so a stale TP that fills first can never book the
+    // recovered quantity as zero-cost holdback.
+    extendBodiesFromRecoveredBuyRows();
 
     // Start Gemini heartbeat to prevent order auto-cancellation.
     // Owner key: the adapter is a per-exchange singleton shared across funds,
@@ -7319,6 +7411,41 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     logger.info(`🔄 [${exchange}] Position updated externally: buys=${positionState.cycleBuys}, cycles=${positionState.cyclesCompleted}, ${baseCurrency} reserves=${positionState.realizedAssetPnL}`);
   };
 
+  /** Tail of the serialized extendBodiesFromRecoveredBuyRows runs. */
+  let recoveredGrowthChain = Promise.resolve();
+
+  /**
+   * Grow each body that owns recovered partial rows of its own buy order
+   * (planBodyGrowthFromRecoveredBuyRows, #752) via extendBody, which cancels
+   * the body's TP BEFORE growing it and re-places it at the new size. Runs at
+   * start (once live) and after an operator recalc. Fire-and-forget (callers
+   * don't wait on exchange round trips) but serialized, and idempotent —
+   * extendBody merges only the order's remaining shortfall, so a failed or
+   * repeated attempt is simply retried by the next recalc or start.
+   * @returns {Promise<void>}
+   */
+  const extendBodiesFromRecoveredBuyRows = () => {
+    // Chain onto any earlier run so back-to-back recalcs never overlap; each
+    // run plans against the bodies as they are when it starts.
+    recoveredGrowthChain = recoveredGrowthChain.then(async () => {
+      const { plans, skipped } = planBodyGrowthFromRecoveredBuyRows({ fillLedger, celestialBodies: positionState.celestialBodies });
+      for (const { buyOrderId, reason } of skipped) {
+        logger.warn(`⚠️ [${exchange}] Recovered buy rows of ${String(buyOrderId).slice(0, 8)} not merged into a body (${reason}) — manual review`, { buyOrderId, reason });
+      }
+      for (const { body, buyOrderId, totals } of plans) {
+        try {
+          const res = await extendBody(body.id, totals, buyOrderId);
+          if (!res.success) logger.warn(`⚠️ [${exchange}] Could not grow body ${body.id.slice(-8)} from recovered rows of buy ${String(buyOrderId).slice(0, 8)}: ${res.error}`, { bodyId: body.id, buyOrderId, error: res.error });
+        } catch (err) {
+          logger.error(`❌ [${exchange}] Growing body ${body.id.slice(-8)} from recovered rows of buy ${String(buyOrderId).slice(0, 8)} failed: ${err.message}`, { bodyId: body.id, buyOrderId, error: err.message });
+        }
+      }
+    }).catch((err) => {
+      logger.error(`❌ [${exchange}] Recovered-row body growth failed: ${err.message}`, { error: err.message });
+    });
+    return recoveredGrowthChain;
+  };
+
   /**
    * Recompute cycle boundaries on the engine's OWN ledger and re-derive P&L
    * from the cycle-pair source of truth. Used by the regime:recalculate
@@ -7327,7 +7454,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * realizedPnL, or (c) blind-merge a rebuilt position into the live engine
    * (which would null activeTpOrderId and resurrect stale bodies). It mutates
    * only realizedPnL / realizedAssetPnL / heldAssetCostBasis / cyclesCompleted
-   * — never order tracking, lifecycle, or ladder state (issue #96).
+   * — never order tracking, lifecycle, or ladder state (issue #96) — except
+   * that a body owning recovered rows of its own buy order is then grown
+   * through extendBody, which re-places that body's TP (#752).
    * @returns {{cyclesCompleted:number, realizedPnL:number, realizedAssetPnL:number, cycleDetails:any[], orphansFixed:number, activeCycleId:string|null}}
    */
   const recalculateAndRefresh = () => {
@@ -7342,6 +7471,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // realizedAssetPnL and heldAssetCostBasis and persists.
     refreshRealizedFromCyclePairs();
     saveLiveState();
+    extendBodiesFromRecoveredBuyRows();
     return {
       cyclesCompleted: recalc.cyclesCompleted,
       realizedPnL: positionState.realizedPnL,
@@ -8036,6 +8166,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     return { success: true, bodyId: body.id, tpPlaced: !!tpResult };
   };
 
+  /** Body ids with an extendBody in progress. */
+  const extendInFlight = new Set();
+
   /**
    * Extend an already-live body with fills for its OWN buy order that
    * arrived after the body was first created (issue #726): the buy order
@@ -8085,19 +8218,34 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (!isRunning) return { success: false, error: 'Engine not running' };
     const body = (positionState.celestialBodies || []).find((b) => b.id === bodyId);
     if (!body) return { success: false, error: 'Body not found' };
-    const recorded = (body.buyOrders || [])
-      .filter((bo) => bo.orderId === buyOrderId)
-      .reduce((acc, bo) => ({ qty: acc.qty + (bo.assetQty || 0), cost: acc.cost + (bo.sizeUsdc || 0) }), { qty: 0, cost: 0 });
-    const shortfallQty = roundAsset(totals.assetQty - recorded.qty);
-    if (shortfallQty <= 0.00000001) {
-      logger.info(`📦 [${exchange}] Extend for body ${body.id} / buy ${buyOrderId} already applied (${recorded.qty} >= ${totals.assetQty}) — no-op retry`);
+    // One extend per body at a time (#752): a second caller (a recalc's
+    // recovered-row growth, a manual import) would compute the same shortfall
+    // before the first merged it, then merge it again after its own cancel —
+    // and its cancel could null a TP the first had just re-placed.
+    if (extendInFlight.has(body.id)) {
+      return { success: false, error: 'Extend already in progress for this body — retry once it settles' };
+    }
+    extendInFlight.add(body.id);
+    try {
+      return await extendBodyLocked(body, totals, buyOrderId);
+    } finally {
+      extendInFlight.delete(body.id);
+    }
+  };
+
+  /**
+   * extendBody's work, run while the body holds its extendInFlight slot.
+   * @param {Object} body
+   * @param {{assetQty:number, costBasis:number, avgPrice:number}} totals
+   * @param {string} buyOrderId
+   * @returns {Promise<{success: boolean, error?: string, bodyId?: string, tier?: string, alreadyApplied?: boolean, tpPlaced?: boolean}>}
+   */
+  const extendBodyLocked = async (body, totals, buyOrderId) => {
+    const { recordedQty, shortfall } = celestialHierarchy.computeBuyOrderShortfall(body, totals, buyOrderId);
+    if (!shortfall) {
+      logger.info(`📦 [${exchange}] Extend for body ${body.id} / buy ${buyOrderId} already applied (${recordedQty} >= ${totals.assetQty}) — no-op retry`);
       return { success: true, bodyId: body.id, tier: body.tier, alreadyApplied: true };
     }
-    const shortfall = {
-      assetQty: shortfallQty,
-      costBasis: roundUSDC(totals.costBasis - recorded.cost),
-      avgPrice: totals.avgPrice,
-    };
 
     // Cancel the existing TP BEFORE growing the body, so the re-place below
     // sizes against the grown assetQty, not the stale one.
@@ -8223,6 +8371,7 @@ module.exports = {
   createInitialPositionState,
   restorePersistedCycleId,
   repairHistoricalFillAnnotations,
+  planBodyGrowthFromRecoveredBuyRows,
   cancelPartialFillOrder,
   buildPartialFillData,
   makeFillDedupKey,

@@ -23,12 +23,11 @@
  *     self-healing.
  */
 
-const { createNewBody, syncPositionState, mergeIntoBody } = require('./celestial-hierarchy');
+const { createNewBody, syncPositionState, mergeIntoBody, computeBuyOrderShortfall } = require('./celestial-hierarchy');
 const { loadRegimeState, saveRegimeState } = require('./state-tracker');
 const { STATUS } = require('./manual-trades');
 const { readBooleanFlag } = require('./shared-utils');
 const { getRegimeConfig } = require('./config-utils');
-const { roundAsset, roundUSDC } = require('./volatility-utils');
 
 /** Logger used when a caller supplies none (tests, CLI paths). */
 const NOOP_LOGGER = { info: () => {}, warn: () => {}, error: () => {} };
@@ -325,18 +324,10 @@ const createManualTradeImporter = ({
     if (!saved.position) return { success: false, error: 'No position state on disk' };
     const body = (saved.position.celestialBodies || []).find((b) => b.id === bodyId);
     if (!body) return { success: false, error: 'Body not found' };
-    const recorded = (body.buyOrders || [])
-      .filter((bo) => bo.orderId === buyOrderId)
-      .reduce((acc, bo) => ({ qty: acc.qty + (bo.assetQty || 0), cost: acc.cost + (bo.sizeUsdc || 0) }), { qty: 0, cost: 0 });
-    const shortfallQty = roundAsset(totals.assetQty - recorded.qty);
-    if (shortfallQty <= 0.00000001) {
+    const { shortfall } = computeBuyOrderShortfall(body, totals, buyOrderId);
+    if (!shortfall) {
       return { success: true, bodyId: body.id, tier: body.tier, alreadyApplied: true, needsTpReprice: !!body.needsTpReprice };
     }
-    const shortfall = {
-      assetQty: shortfallQty,
-      costBasis: roundUSDC(totals.costBasis - recorded.cost),
-      avgPrice: totals.avgPrice,
-    };
     // maxUsdcDeployed lives in the regime config (adjusted at cycle-completion
     // time), not fundConfig — fetch it fresh rather than trusting a
     // constructor-time snapshot, since the engine (persisting its own
