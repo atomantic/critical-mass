@@ -63,7 +63,7 @@ test('sellOrderId linkage aggregates partials per order, using the shared pairin
   assert.deepEqual(fills, original, 'inputs are never mutated');
 });
 
-test('live fallback: core buys since the last core sell, ignoring body fills, restarting at a cycle boundary', async () => {
+test('live fallback: core buys since the last core sell, ignoring body fills, within the live cycle only', async () => {
   const { relatedBuysForOrder } = await load();
   const fills = [
     buy('old', { timestamp: 1 }),
@@ -82,6 +82,20 @@ test('live fallback: core buys since the last core sell, ignoring body fills, re
     buy('no-cycle', { timestamp: 3, cycleId: null }),
   ];
   assert.deepEqual(ids(relatedBuysForOrder(tp('core-tp'), { bodyLookup: new Map(), fills: crossCycle })), ['this-cycle', 'no-cycle']);
+
+  // An out-of-order fill attributed to an older (or recovered) cycle neither joins nor resets the live walk.
+  const outOfOrder = [
+    buy('A', { cycleId: 'cycle-2', timestamp: 3 }),
+    buy('B', { cycleId: 'cycle-2', timestamp: 4 }),
+    buy('X', { cycleId: 'cycle-1', timestamp: 5 }),
+    sell('R', { cycleId: 'cycle-1700000000000-recovered-1', timestamp: 5.5 }),
+    buy('C', { cycleId: 'cycle-2', timestamp: 6 }),
+  ];
+  assert.deepEqual(ids(relatedBuysForOrder(tp('core-tp'), { bodyLookup: new Map(), fills: outOfOrder })), ['A', 'B', 'C']);
+
+  // No numbered cycle at all: every core fill is walked (legacy ledgers).
+  const unnumbered = [buy('u1', { cycleId: null }), sell('s', { cycleId: null, timestamp: 2 }), buy('u2', { cycleId: null, timestamp: 3 })];
+  assert.deepEqual(ids(relatedBuysForOrder(tp('core-tp'), { bodyLookup: new Map(), fills: unnumbered })), ['u2']);
 });
 
 test('dry-run: no ledger stamps, fallback is the buys no core TP has consumed', async () => {

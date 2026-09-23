@@ -14,9 +14,9 @@
  *        - dry-run: the simulated buys no core sell has consumed yet
  *          (deriveDryRunFillGroups' `pendingBuys`);
  *        - live: core (non-body) buys since the last core sell, walked
- *          chronologically. Cycles are atomic (CLAUDE.md "P&L model"), so the
- *          walk also restarts at a cycle boundary: a core TP never rests on a
- *          previous cycle's buys.
+ *          chronologically. Cycles are atomic (CLAUDE.md "P&L model"), so only
+ *          the live (highest-numbered) cycle's fills are walked: a core TP
+ *          never rests on a previous cycle's buys.
  *
  * Callers pass the UNFILTERED fill ledger: which buys a resting TP covers must
  * not depend on the Filled Orders "current cycle only" display toggle.
@@ -56,18 +56,33 @@ function aggregateBuyRows(fills) {
   return rows
 }
 
-/** Live fallback: core buys since the last core sell, within the latest cycle run. */
+// Sequence number of a live cycle id ('cycle-12' → 12). Recovered/imported ids
+// ('cycle-<ts>-recovered-N') are historical and never the live cycle → null.
+const liveCycleNumber = (cycleId) => {
+  const m = /^cycle-(\d+)$/.exec(cycleId || '')
+  return m ? Number(m[1]) : null
+}
+
+/**
+ * Live fallback: core buys since the last core sell, within the live cycle.
+ * Cycles are atomic, so only the highest-numbered cycle's fills (plus fills
+ * with no cycleId) are walked — an out-of-order fill attributed to an older or
+ * recovered cycle neither joins nor resets the walk. With no numbered cycle at
+ * all, every core fill is walked.
+ */
 function unconsumedCoreBuys(fills) {
-  const sorted = fills
-    .filter(f => (f.side === 'buy' || f.side === 'sell') && !isBodyOwnedFill(f))
+  const core = fills.filter(f => (f.side === 'buy' || f.side === 'sell') && !isBodyOwnedFill(f))
+  let liveCycleId = null
+  let liveNumber = -1
+  core.forEach(f => {
+    const n = liveCycleNumber(f.cycleId)
+    if (n != null && n > liveNumber) { liveNumber = n; liveCycleId = f.cycleId }
+  })
+  const sorted = core
+    .filter(f => !liveCycleId || !f.cycleId || f.cycleId === liveCycleId)
     .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
   let pending = []
-  let runCycleId = null
   sorted.forEach(f => {
-    if (f.cycleId) {
-      if (runCycleId && f.cycleId !== runCycleId) pending = []
-      runCycleId = f.cycleId
-    }
     if (f.side === 'buy') pending.push(f)
     else pending = []
   })
