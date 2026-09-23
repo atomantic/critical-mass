@@ -76,11 +76,55 @@ test('search recomputes visible totals and pending TP visibility never mutates c
   assert.deepEqual(history, snapshot);
 });
 
+// Issue #700: the dry-run Filled Orders walk moved out of a render closure.
+test('dry-run groups: core sells consume accumulated buys, body sells consume none, input untouched', async () => {
+  const { deriveDryRunFillGroups } = await load();
+  const orders = [
+    { orderId: 'b2', side: 'buy', size: 1, filledAt: 20 },
+    { orderId: 'b1', side: 'buy', size: 1, placedAt: 10 },
+    { orderId: 'core-1', side: 'sell', type: 'take_profit', pnl: 5, holdbackAsset: 0.1, filledAt: 30 },
+    { orderId: 'body-1', side: 'sell', type: 'body_tp', pnl: 2, holdbackAsset: 0.05, filledAt: 40 },
+    { orderId: 'sat-1', side: 'sell', type: 'take_profit', isSatellite: true, pnl: 1, filledAt: 45 },
+    { orderId: 'b3', side: 'buy', size: 1, filledAt: 50 },
+  ];
+  const original = structuredClone(orders);
+  Object.freeze(orders);
+  const result = deriveDryRunFillGroups(orders);
+  assert.deepEqual(result.sellGroups.map(g => g.sell.orderId), ['sat-1', 'body-1', 'core-1']);
+  assert.deepEqual(result.sellGroups.map(g => g.key), ['fill-sat-1', 'fill-body-1', 'fill-core-1']);
+  assert.deepEqual(result.sellGroups[2].buys.map(b => b.orderId), ['b1', 'b2']);
+  assert.deepEqual(result.sellGroups[0].buys, []);
+  assert.deepEqual(result.sellGroups[1].buys, []);
+  assert.deepEqual(result.pendingBuys.map(b => b.orderId), ['b3']);
+  assert.equal(result.totalPnl, 8);
+  assert.ok(Math.abs(result.totalHoldback - 0.15) < 1e-12);
+  assert.deepEqual(orders, original);
+  assert.deepEqual(deriveDryRunFillGroups(), { sellGroups: [], pendingBuys: [], totalPnl: 0, totalHoldback: 0 });
+});
+
+test('dry-run search matches sell or buy IDs case-insensitively and recomputes totals', async () => {
+  const { deriveDryRunFillGroups, searchDryRunFillGroups } = await load();
+  const history = deriveDryRunFillGroups([
+    { orderId: 'BUY-A', side: 'buy', filledAt: 1 },
+    { orderId: 'tp-1', side: 'sell', type: 'take_profit', pnl: 3, holdbackAsset: 0.2, filledAt: 2 },
+    { orderId: 'tp-2', side: 'sell', type: 'body_tp', pnl: 7, holdbackAsset: 0.4, filledAt: 3 },
+  ]);
+  assert.equal(searchDryRunFillGroups(history, ''), history);
+  const byBuy = searchDryRunFillGroups(history, 'buy-a');
+  assert.deepEqual(byBuy.sellGroups.map(g => g.sell.orderId), ['tp-1']);
+  assert.equal(byBuy.totalPnl, 3);
+  assert.equal(byBuy.totalHoldback, 0.2);
+  assert.equal(searchDryRunFillGroups(history, 'TP-2').totalPnl, 7);
+  assert.equal(searchDryRunFillGroups(history, 'missing').sellGroups.length, 0);
+  assert.equal(history.totalPnl, 10);
+});
+
 // Execute the production memo declarations with a dependency-aware hook harness.
 // This records invocation counts, not browser/React scheduling or DOM timings.
 test('60 price updates reuse history; fills, cycle selection and remount invalidate independently', async () => {
   const utils = await load();
-  const source = fs.readFileSync(path.join(__dirname, '../admin/src/components/RegimeDashboard.jsx'), 'utf8');
+  // The Filled Orders memos moved out of RegimeDashboard.jsx with the section (#700).
+  const source = fs.readFileSync(path.join(__dirname, '../admin/src/components/regime/FilledOrdersSection.jsx'), 'utf8');
   const memoSource = source.slice(source.indexOf('  const filteredFills = useMemo'), source.indexOf('  // Derive the most recent cycle ID'));
   assert.ok(memoSource.includes('historicalFillGroups'));
   const reserveSource = source.match(/const reservesUsd = .*\n/)[0];

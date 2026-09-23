@@ -250,6 +250,48 @@ const measureUnbookedOrderQty = (bodies, orderId, ledger) => {
 };
 
 /**
+ * Pure predicate: did a body TP execute its whole PLANNED size? A TP is placed
+ * for `body.assetOnOrder` (body.assetQty minus the designed holdback), so a
+ * fill that covers ≥99% of it is a completed TP — its body closes and the
+ * holdback is booked as reserves — even when the order was later reported
+ * CANCELLED (the cancel-after-full-fill race). Mirrors the sell handler's own
+ * isPartial check, including its legacy fallback for bodies with no recorded
+ * assetOnOrder (issues #670, #744).
+ * @param {{assetOnOrder?: number, assetQty?: number}|null|undefined} body
+ * @param {number} filledSize - Cumulative size the TP executed
+ * @returns {boolean}
+ */
+const isFullTpExecution = (body, filledSize) => {
+  if (!body || !(filledSize > 0)) return false;
+  const onOrder = body.assetOnOrder || 0;
+  return onOrder > 0
+    ? filledSize >= onOrder * 0.99
+    : body.assetQty > 0 && filledSize / body.assetQty >= 0.95;
+};
+
+/**
+ * Drop a persisted `pendingTpCancelExecution` marker once the body's TP has
+ * moved off the order it was recorded for (issue #744). The marker is only
+ * ever honoured while `body.tpOrderId === marker.orderId` (see
+ * knownTpCancelExecution), and order ids are never reused, so after the TP
+ * moves (booked through a plain status branch, re-placed, cleared) it is dead
+ * state that would otherwise ride along in every save forever.
+ * @param {Array<Object>|null|undefined} bodies
+ * @returns {number} How many markers were dropped
+ */
+const pruneStaleTpCancelMarkers = (bodies) => {
+  let pruned = 0;
+  for (const body of bodies || []) {
+    const marker = body && body.pendingTpCancelExecution;
+    if (marker && marker.orderId !== body.tpOrderId) {
+      delete body.pendingTpCancelExecution;
+      pruned += 1;
+    }
+  }
+  return pruned;
+};
+
+/**
  * Pure predicate: is this body stranded sub-min "dust"? — it has a positive qty,
  * no resting TP order, AND its entire qty rounds below the exchange minimum order
  * size, so a TP can never be placed for it on its own. Such a body must be
@@ -841,7 +883,33 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }, productId)
     : createOrderExecutor(exchange, config, adapter, productId, {
         onFillDetected: (orderId, status) => liveCallbacks.onFillDetected && liveCallbacks.onFillDetected(orderId, status),
-        onEntryCancelled: (orderId) => {
+        onEntryCancelled: (orderId, info) => {
+          // A cancel that also carries a fill (info.filledSize > 0) is about
+          // to be routed through onFillDetected right after this fires —
+          // purging the saved row here, before that fill's outcome is known,
+          // would orphan a real buy with nothing left to rediscover it if
+          // processing fails and the #679 engine-level retry exhausts (issue
+          // #673). Leave it: a successful fill removes it via
+          // handleOrderFillImpl's own terminal-entry filter, and a failure
+          // leaves it for reconcileTick's orphan sweep to catch up. Only a
+          // genuinely empty cancel (nothing to book) is safe to purge here.
+          const filledSize = info?.filledSize || 0;
+          if (filledSize > 0) {
+            // Stamp the resolved high-water mark onto the saved row itself
+            // (issue #673 codex round 3): handleCancelledOrder resolved this
+            // value via order-executor's own partialFillTracker fallback,
+            // which it then deletes. A LATER independent re-poll of this
+            // same (already-cancelled) order — this sweep, or startImpl's
+            // offline catch-up — can get a status whose filledSize reads
+            // back as 0/missing (the same adapter quirk
+            // handleCancelledOrder's fallback exists for), and would
+            // otherwise misread a real partial as an empty cancel and purge
+            // it with nothing booked. Persisting it here survives a restart
+            // too, since positionState is saved to disk.
+            const entry = positionState.pendingEntryOrders?.find(e => e.orderId === orderId);
+            if (entry) entry.knownFilledSize = Math.max(entry.knownFilledSize || 0, filledSize);
+            return;
+          }
           if (positionState.pendingEntryOrders?.length > 0) {
             positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(e => e.orderId !== orderId);
           }
@@ -1334,6 +1402,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Refresh realized P&L (USD + asset reserves) from cycle pairs before persisting
     refreshRealizedFromCyclePairs();
+
+    // A cancel-execution marker whose TP has since moved is dead state (#744).
+    pruneStaleTpCancelMarkers(positionState.celestialBodies);
 
     const regimeState = regimeDetector.getState();
     const tpOptimizerState = tpOptimizer.exportState();
@@ -3425,6 +3496,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         throw new Error(`Partial TP ${fillData.orderId} final fills incomplete; retry reconciliation`);
       }
       fillData.confirmedFills = finalFills;
+      // A body TP that executed its whole planned size is a completed TP,
+      // not a partial, even when the exchange reports it CANCELLED (or still
+      // OPEN with a sub-1% sliver, now frozen) and carries no
+      // completionPercentage for isFilledStatus to read. Without this, the
+      // reconcile / startup partial routes force the partial branch: the
+      // designed holdback stays an active body and is re-listed for sale
+      // (issue #744). Same classification as bookTpCancelExecution (#670).
+      if (fillData.isPartialFill) {
+        const tpBody = (positionState.celestialBodies || []).find(b => b.tpOrderId === fillData.orderId);
+        if (isFullTpExecution(tpBody, fillData.filledSize)) fillData.isPartialFill = false;
+      }
     }
 
     // getOrderFills now rejects (issue #679) instead of silently returning a
@@ -4190,9 +4272,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             stampConsumedCostFraction(liveMerged, liveConsumedRatio);
           }
 
-          // The resting TP was sized for the pre-deduction (oversized) qty — cancel
-          // and clear it so a correctly-sized TP is re-placed for the remaining body.
-          if (liveMerged.tpOrderId) {
+          if (liveMerged.tpOrderId && liveMerged.tpOrderId === fillData.orderId) {
+            // The body still points at the snapshotted order itself: this
+            // fill landed while a buy-merge / roll-up cancel of that same
+            // order is still in flight (issue #744). Its execution is the one
+            // THIS handler is booking, and the merge continuation owns the
+            // cancel and the re-place — cancelling, booking or re-placing here
+            // would double-book the sale or leave a second TP live next to
+            // the one the continuation places. Only a body this sale drained
+            // drops the identity (nothing left to re-arm), so it is removed
+            // below and reconcile can never re-book the order against it.
+            if (snapshotClosed && !(liveMerged.assetQty > 0)) {
+              liveMerged.tpOrderId = null;
+              liveMerged.tpPrice = 0;
+              liveMerged.assetOnOrder = 0;
+              if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(fillData.orderId);
+            }
+          } else if (liveMerged.tpOrderId) {
+            // The resting TP was sized for the pre-deduction (oversized) qty — cancel
+            // and clear it so a correctly-sized TP is re-placed for the remaining body.
             const staleTp = liveMerged.tpOrderId;
             let cancelResult;
             try {
@@ -4204,11 +4302,36 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               );
             }
 
-            if (cancelResult?.cancelled) {
+            const staleOutcome = cancelResult ? classifyBodyTpCancellation(cancelResult) : null;
+            if (staleOutcome === 'cancelled') {
               liveMerged.tpOrderId = null;
               liveMerged.tpPrice = 0;
               liveMerged.assetOnOrder = 0;
               if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(staleTp);
+            } else if (staleOutcome === 'cancelled_with_execution') {
+              // The stale TP sold a tranche while we cancelled it, and
+              // cancelBodyTpOrder has already dropped its executor tracking —
+              // no poll will ever find that sale (issue #744, the #670 class).
+              // Book it now through the normal body-TP sell path: liveMerged
+              // still carries tpOrderId = staleTp, so that path deducts the
+              // tranche from the (already snapshot-deducted) live body, records
+              // its consumption, and re-places a right-sized TP — or closes the
+              // body on a full-size fill. Nested: we are already inside a fill
+              // or a roll-up, so the fill gate must not be re-entered. On a
+              // booking failure the body keeps tpOrderId = staleTp plus the
+              // pendingTpCancelExecution marker, and reconcile retries it.
+              logger.warn(
+                `⚠️ [${exchange}] Merge-snapshot: body ${liveMerged.id.slice(-8)} TP ${staleTp.slice(0, 8)} sold ${cancelResult.filledSize} ${baseCurrency} during its stale-size cancel — booking before re-place (#744)`,
+                { bodyId: liveMerged.id, orderId: staleTp, filledSize: cancelResult.filledSize }
+              );
+              // The stale TP was sized for the PRE-deduction body, so its
+              // assetOnOrder can exceed what the live body still holds. Cap it
+              // at the body before booking: the sell handler classifies
+              // full-vs-partial against assetOnOrder, and a sale covering the
+              // whole remaining body must close it — as a partial it would
+              // drive assetQty negative.
+              if (liveMerged.assetOnOrder > liveMerged.assetQty) liveMerged.assetOnOrder = liveMerged.assetQty;
+              await bookTpCancelExecution(liveMerged, staleTp, cancelResult, 'Merge-snapshot stale-size', { nested: true });
             } else if (cancelResult) {
               logger.error(
                 `❌ [${exchange}] Merge-snapshot body TP cancellation was not confirmed for ${staleTp} — keeping the existing TP identity and skipping replacement`,
@@ -4240,8 +4363,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
-        // Re-place a correctly-sized TP on the deducted body (issue #201).
-        if (liveMerged && liveMerged.assetQty > 0 && !liveMerged.tpOrderId) {
+        // Re-place a correctly-sized TP on the deducted body (issue #201) —
+        // unless booking its stale TP's cancel-race execution just closed and
+        // removed it (issue #744): a detached body must not list a TP.
+        if (liveMerged && liveMerged.assetQty > 0 && !liveMerged.tpOrderId
+          && (positionState.celestialBodies || []).includes(liveMerged)) {
           await placeBodyTp(liveMerged);
         }
 
@@ -4798,22 +4924,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Book a body TP's execution that was reported by a cancel (see
-   * cancelBodyTpForReplace) through the normal body-TP sell path. The body
-   * must still carry `tpOrderId = orderId`.
-   *
-   * On failure the known execution is kept on the body as
-   * `pendingTpCancelExecution` (persisted with it), so the reconcile loop can
-   * retry the booking even when the exchange's CANCELLED status omits the
-   * filled size — otherwise it would read "cancelled, nothing filled", clear
-   * the TP and re-place against the unreduced body, losing the sale.
-   * @param {Object} body
-   * @param {string} orderId - The cancelled TP
-   * @param {{filledSize: number, filledValue?: number, averageFilledPrice?: number, totalFees?: number}} execution
-   * @param {string} context - Log label
-   * @returns {Promise<'booked'|'booking_failed'>}
-   */
-  /**
    * The execution a failed cancel-for-replace booking recorded for this
    * body's current TP (see bookTpCancelExecution), when the exchange's
    * CANCELLED status does not report MORE than it — a status that omits the
@@ -4828,26 +4938,55 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     return (parseFloat(status?.filledSize) || 0) > known.filledSize ? null : known;
   };
 
-  const bookTpCancelExecution = async (body, orderId, execution, context) => {
+  /**
+   * Book a body TP's execution that was reported by a cancel (see
+   * cancelBodyTpForReplace) through the normal body-TP sell path. The body
+   * must still carry `tpOrderId = orderId`.
+   *
+   * On failure the known execution is kept on the body as
+   * `pendingTpCancelExecution` (persisted with it), so the reconcile loop can
+   * retry the booking even when the exchange's CANCELLED status omits the
+   * filled size — otherwise it would read "cancelled, nothing filled", clear
+   * the TP and re-place against the unreduced body, losing the sale.
+   * @param {Object} body
+   * @param {string} orderId - The cancelled TP
+   * @param {{filledSize: number, filledValue?: number, averageFilledPrice?: number, totalFees?: number}} execution
+   * @param {string} context - Log label
+   * @param {{nested?: boolean}} [opts] - `nested: true` when the caller is
+   *   itself running inside handleOrderFillImpl or a roll-up merge
+   * @returns {Promise<'booked'|'booking_failed'>}
+   */
+  const bookTpCancelExecution = async (body, orderId, execution, context, { nested = false } = {}) => {
     // A TP that executed its whole planned size before the cancel landed
     // (the cancel-after-full-fill race) is a completed TP, not a partial:
     // route it as terminal so the sell handler closes the body and books its
     // designed holdback as reserves instead of re-listing that holdback. The
     // partial-fill flag would otherwise force the partial branch whenever the
-    // exchange's status carries no completionPercentage. Mirrors the sell
-    // handler's classification, including its legacy fallback for bodies
-    // with no recorded assetOnOrder.
-    const onOrder = body.assetOnOrder || 0;
-    const executedFullTp = onOrder > 0
-      ? execution.filledSize >= onOrder * 0.99
-      : body.assetQty > 0 && execution.filledSize / body.assetQty >= 0.95;
+    // exchange's status carries no completionPercentage.
+    const executedFullTp = isFullTpExecution(body, execution.filledSize);
+    const fillData = buildPartialFillData(orderId, 'sell', {
+      status: executedFullTp ? 'FILLED' : 'CANCELLED',
+      filledSize: execution.filledSize,
+      filledValue: execution.filledValue,
+      averageFilledPrice: execution.averageFilledPrice,
+    }, { totalFees: execution.totalFees || 0, ...(executedFullTp && { isPartialFill: false }) });
     try {
-      await handleOrderFill(buildPartialFillData(orderId, 'sell', {
-        status: executedFullTp ? 'FILLED' : 'CANCELLED',
-        filledSize: execution.filledSize,
-        filledValue: execution.filledValue,
-        averageFilledPrice: execution.averageFilledPrice,
-      }, { totalFees: execution.totalFees || 0, ...(executedFullTp && { isPartialFill: false }) }));
+      if (nested) {
+        // Already inside a fill (fill gate held) or a roll-up (merge lock
+        // held): the wrapper's fill gate would wait on that same merge hold
+        // for its full window (see bookExecutionDuringCancel), so run the
+        // handler directly and release its dedup key on failure ourselves,
+        // exactly as the wrapper would.
+        const dedupRef = { set: null, key: null };
+        try {
+          await handleOrderFillImpl(fillData, dedupRef);
+        } catch (err) {
+          if (dedupRef.set) dedupRef.set.delete(dedupRef.key);
+          throw err;
+        }
+      } else {
+        await handleOrderFill(fillData);
+      }
     } catch (err) {
       body.pendingTpCancelExecution = {
         orderId,
@@ -5357,6 +5496,91 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Build the payload orderExecutor.restorePendingOrder expects from a saved
+   * pendingEntryOrders/pendingLadderOrders row, shared by catchUpTerminalEntry's
+   * failure path and reconcileTick's still-resting orphan re-arm.
+   * @param {{price?: number, assetQty?: number, sizeUsdc?: number, placedAt?: number, ladderIndex?: number}} savedEntry
+   * @param {'entry'|'ladder_entry'} entryType
+   */
+  const buildRestoreSpec = (savedEntry, entryType) => {
+    const restoreSpec = {
+      type: entryType,
+      price: savedEntry.price,
+      size: savedEntry.assetQty,
+      sizeUsdc: savedEntry.sizeUsdc,
+      placedAt: savedEntry.placedAt || Date.now(),
+    };
+    if (entryType === 'ladder_entry' && savedEntry.ladderIndex !== undefined) {
+      restoreSpec.ladderIndex = savedEntry.ladderIndex;
+    }
+    return restoreSpec;
+  };
+
+  /**
+   * Route a single already-terminal (FILLED, or CANCELLED/EXPIRED with a
+   * partial) saved entry/ladder order through the canonical fill pipeline —
+   * or report it safe to retire when it's a genuinely empty cancel.
+   *
+   * Mirrors the shape of startImpl's own offline entry catch-up (issue #679's
+   * stricter getOrderFills contract applies identically here: a throw from
+   * handleOrderFill must not silently drop a real fill). Factored out as its
+   * own function so reconcileTick's orphan sweep (issue #673) gets the same
+   * retry-safe handling without duplicating it; startImpl is concurrently
+   * being edited elsewhere (issue #671), so it isn't switched over to this
+   * helper in this change.
+   *
+   * @param {{orderId: string, price?: number, assetQty?: number, sizeUsdc?: number, placedAt?: number, ladderIndex?: number, knownFilledSize?: number}} savedEntry
+   * @param {{status?: string, filledSize?: number}} orderStatus - already known to be terminal (FILLED/CANCELLED/EXPIRED/FAILED)
+   * @param {'entry'|'ladder_entry'} [entryType]
+   * @returns {Promise<{outcome: 'filled'|'empty'|'failed', error?: Error}>}
+   */
+  const catchUpTerminalEntry = async (savedEntry, orderStatus, entryType = 'entry') => {
+    const isFullFilled = isFilledStatus(orderStatus);
+    // A later independent poll of an already-cancelled order can under-report
+    // filledSize versus what was already resolved (via order-executor's own
+    // partialFillTracker high-water mark) at the moment it was first detected
+    // cancelled — the same adapter quirk handleCancelledOrder's own fallback
+    // exists for. onEntryCancelled stamps that resolved value onto the saved
+    // row as knownFilledSize before this function ever sees it; never trust a
+    // fresh read that's SMALLER than what's already confirmed known (codex
+    // review, issue #673 round 3).
+    const partialSize = Math.max(parseFloat(orderStatus.filledSize || 0), savedEntry.knownFilledSize || 0);
+    if (!isFullFilled && partialSize <= 0) {
+      return { outcome: 'empty' }; // truly empty cancel — safe for the caller to purge, no fill to record
+    }
+    logger.info(
+      `📥 [${exchange}] Catching up terminal ${entryType} ${savedEntry.orderId.slice(0, 8)}: status=${orderStatus.status}, filled=${partialSize}`,
+      { orderId: savedEntry.orderId, entryType, status: orderStatus.status, filledSize: partialSize }
+    );
+    orderExecutor.markSettled(savedEntry.orderId);
+    try {
+      await handleOrderFill(buildPartialFillData(savedEntry.orderId, 'buy', orderStatus, {
+        status: isFullFilled ? 'FILLED' : orderStatus.status,
+        isPartialFill: !isFullFilled,
+        placedAt: savedEntry.placedAt,
+        // Override with the max-of-known size computed above — orderStatus's
+        // own (possibly stale) filledSize must not silently win over a
+        // confirmed higher known value.
+        filledSize: partialSize,
+      }));
+      return { outcome: 'filled' };
+    } catch (err) {
+      // The status lookup above already proved this order has a real fill —
+      // losing this catch-up attempt must not silently drop it. Re-arm
+      // executor tracking for the SAME orderId so the ordinary live polling
+      // path (checkPendingOrderFills → onFillDetected, with its own #679
+      // bounded engine-level retry) rediscovers and re-processes it on the
+      // next tick, instead of leaving it an orphan indefinitely.
+      logger.warn(
+        `⚠️ [${exchange}] Failed to catch up terminal ${entryType} ${savedEntry.orderId.slice(0, 8)}: ${err.message} — re-arming tracking for retry instead of dropping it`,
+        { orderId: savedEntry.orderId, entryType, error: err.message, incompleteFills: err.incompleteFills === true }
+      );
+      orderExecutor.restorePendingOrder(savedEntry.orderId, buildRestoreSpec(savedEntry, entryType));
+      return { outcome: 'failed', error: err };
+    }
+  };
+
+  /**
    * One reconciliation pass. Extracted from the setInterval callback so the
    * #196 lock-release integration test can drive a single tick directly (via the
    * _test hooks) without a lingering interval. Behaviour is identical to the
@@ -5396,6 +5620,104 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           .catch(err => {
             logger.error(`❌ [${exchange}] Fill check failed: ${err.message}`, { error: err.message });
           }));
+      }
+
+      // Sweep for saved entry/ladder orders that have fallen out of the
+      // executor's own tracking without ever reaching a terminal outcome in
+      // positionState (issue #673). checkPendingOrderFills (above) and
+      // handleCancelledOrder both delete a terminal order from
+      // orderExecutor's pendingOrders BEFORE invoking onFillDetected, and
+      // onFillDetected's engine-level retry (issue #679) is bounded — once it
+      // exhausts its retries it gives up, but only a SUCCESSFUL
+      // handleOrderFill removes the row from positionState.pendingEntryOrders
+      // / pendingLadderOrders. Nothing else re-polled those lists at
+      // runtime — only the startup catch-up did — so a transient error after
+      // a buy fill could leave it invisible to both the executor and the
+      // fill pipeline until the process restarted. This sweep re-detects the
+      // gap every reconcile tick instead.
+      if (orderExecutor.capabilities?.liveReconciliation) {
+        pending.push((async () => {
+          const trackedIds = new Set(
+            orderExecutor.getPendingOrdersList()
+              .filter(o => o.type === 'entry' || o.type === 'ladder_entry')
+              .map(o => o.orderId)
+          );
+          // Dedupe by orderId (entry list wins ties) rather than concatenating
+          // both lists directly — an orderId should never legitimately sit in
+          // both, but if a stray duplicate row ever did, processing it twice
+          // in the same pass would waste a redundant getOrder/handleOrderFill
+          // round trip and, on a failure, let the second restorePendingOrder
+          // call silently overwrite the first with the wrong type/ladderIndex
+          // (claude review, issue #673).
+          const orphanMap = new Map();
+          for (const savedEntry of positionState.pendingEntryOrders || []) {
+            if (!orphanMap.has(savedEntry.orderId)) orphanMap.set(savedEntry.orderId, { savedEntry, entryType: 'entry' });
+          }
+          for (const savedEntry of positionState.pendingLadderOrders || []) {
+            if (!orphanMap.has(savedEntry.orderId)) orphanMap.set(savedEntry.orderId, { savedEntry, entryType: 'ladder_entry' });
+          }
+          const orphans = [...orphanMap.values()].filter(({ savedEntry }) => !trackedIds.has(savedEntry.orderId));
+
+          for (const { savedEntry, entryType } of orphans) {
+            // The dedup key for any terminal buy collapses to the bare
+            // orderId (makeFillDedupKey), regardless of isPartialFill/size.
+            // If the polling callback path is already mid-flight or
+            // engine-level-retrying (issue #679) this exact order, skip it
+            // BEFORE spending a getOrder round trip — let it finish instead
+            // of racing a second handleOrderFill call for the same orderId.
+            // shouldSkipBuyRecommit dedups any true overlap that slips past
+            // this, but avoiding the race (and the wasted network call) is
+            // cheaper than relying on that alone. If it eventually exhausts
+            // its retries, both maps clear the key and this sweep catches it
+            // up on a later tick.
+            if (recentlyProcessedFills.has(savedEntry.orderId) || incompleteFillRetries.has(savedEntry.orderId)) {
+              continue;
+            }
+
+            let orderStatus;
+            try {
+              orderStatus = await adapter.getOrder(savedEntry.orderId);
+            } catch (err) {
+              logger.warn(
+                `⚠️ [${exchange}] Reconcile: could not check orphaned ${entryType} ${savedEntry.orderId.slice(0, 8)} (untracked by executor): ${err.message} — will retry next tick`,
+                { orderId: savedEntry.orderId, entryType, error: err.message }
+              );
+              continue;
+            }
+            if (!isTerminalStatus(orderStatus)) {
+              // Still live on the exchange (OPEN/PARTIALLY_FILLED) — re-arm
+              // executor tracking instead of merely skipping it, so the
+              // ordinary checkPendingOrderFills polling path (with its own
+              // advancing-partial routing via partialFillTracker) picks it
+              // back up on the next tick. Without this, an order that fell
+              // out of tracking while still resting would only ever be
+              // re-checked by THIS sweep's own terminal-only gate, silently
+              // missing any intermediate partial fill until it eventually
+              // reaches a terminal state (codex review, issue #673 round 2).
+              orderExecutor.restorePendingOrder(savedEntry.orderId, buildRestoreSpec(savedEntry, entryType));
+              continue;
+            }
+
+            logger.warn(
+              `⚠️ [${exchange}] Reconcile: orphaned ${entryType} ${savedEntry.orderId.slice(0, 8)} is ${orderStatus.status} but missing from executor tracking — catching up`,
+              { orderId: savedEntry.orderId, entryType, status: orderStatus.status }
+            );
+            const result = await catchUpTerminalEntry(savedEntry, orderStatus, entryType);
+            if (result.outcome === 'empty') {
+              // Truly empty cancel — safe to purge, nothing to record.
+              if (entryType === 'ladder_entry') {
+                positionState.pendingLadderOrders = (positionState.pendingLadderOrders || [])
+                  .filter(o => o.orderId !== savedEntry.orderId);
+              } else {
+                positionState.pendingEntryOrders = (positionState.pendingEntryOrders || [])
+                  .filter(e => e.orderId !== savedEntry.orderId);
+              }
+              saveLiveState();
+            }
+          }
+        })().catch(err => {
+          logger.error(`❌ [${exchange}] Orphaned entry/ladder sweep failed: ${err.message}`, { error: err.message });
+        }));
       }
 
       // Check for TP order fill that WebSocket might have missed
@@ -7243,6 +7565,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (isDryRun) {
       orderExecutor.resetDryRunState();
       positionState = createInitialPositionState();
+      // Drop the in-memory risk manager's drawdown peak/pause too — otherwise
+      // it survives the positionState wipe and the next metrics tick writes
+      // the stale peak/pause right back into the fresh state (issue #742).
+      riskManager.resetDrawdown();
       // Clear saved state file
       dryRunState.clearState(exchange, pair);
       return true;
@@ -8216,4 +8542,6 @@ module.exports = {
   measureUnbookedOrderQty,
   shouldSkipBuyRecommit,
   isStrandedDustBody,
+  isFullTpExecution,
+  pruneStaleTpCancelMarkers,
 };

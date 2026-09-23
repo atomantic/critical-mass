@@ -1,42 +1,24 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense, useId } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from 'react'
 import { useRegimeEvents } from '../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
 import { useToast } from './Toast'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { createRequestOwner } from '../utils/requestOwner.mjs'
-import { deriveRegimeFillGroups, searchRegimeFillGroups, visibleOrphanBuys } from '../utils/regimeFillGroups.mjs'
 import { resolveElapsedDisplay } from '../utils/liveTimerElapsed.mjs'
-import { computeOpenOrderEstimate, DEFAULT_FEE_RATE_PER_SIDE } from '../utils/openOrderEstimates.mjs'
-import { computeCapitalAdjustment } from '../utils/capitalAdjustment.mjs'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
 import RegimeActionModals from './regime/RegimeActionModals'
-import { getPriceDecimals, formatPriceByMagnitude, formatCurrency } from './charts/chartUtils'
+import OpenOrdersTable from './regime/OpenOrdersTable'
+import FilledOrdersSection from './regime/FilledOrdersSection'
+import PositionCard from './regime/PositionCard'
+import LadderPanel from './regime/LadderPanel'
+import { formatDuration, formatTimestamp } from './regime/regimeFormat'
+import { formatPriceByMagnitude, formatCurrency } from './charts/chartUtils'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
-const REGIME_ORDER_TOUCH_TARGET = 'min-h-11 min-w-11 inline-flex items-center justify-center regime-order-touch-target'
-
-// Format duration in human readable form
-const formatDuration = (ms) => {
-  if (!ms || ms < 0) return '0s'
-  const seconds = Math.floor(ms / 1000)
-  const minutes = Math.floor(seconds / 60)
-  const hours = Math.floor(minutes / 60)
-
-  if (hours > 0) return `${hours}h ${minutes % 60}m`
-  if (minutes > 0) return `${minutes}m ${seconds % 60}s`
-  return `${seconds}s`
-}
-
-// Format timestamp as YYYY-MM-DD HH:MM:SS local time
-const formatTimestamp = (ts) => {
-  if (!ts) return '-'
-  const d = new Date(ts)
-  const pad = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
+const EMPTY_BODIES = []
 
 // Format countdown timer
 const formatCountdown = (ms) => {
@@ -652,23 +634,12 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
 }
 
 function RegimeDashboard({ exchange = 'coinbase', pair }) {
-  const capitalAdjustInputId = useId()
-  const athDropId = useId()
-  const spacingModeId = useId()
-  const sizeModeId = useId()
-  const minSpacingId = useId()
   const pairQuery = buildPairQuery(pair)
   const [localStatus, setLocalStatus] = useState(null)
   const [config, setConfig] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [liveFills, setLiveFills] = useState([])
-  const [showAllCycles, setShowAllCycles] = useState(true)
-  const [recalculating, setRecalculating] = useState(false)
-  const [recalcPreview, setRecalcPreview] = useState(null)
-  const [expandedOrders, setExpandedOrders] = useState(new Set())
-  const [expandedFills, setExpandedFills] = useState(new Set())
-  const [expandedCycles, setExpandedCycles] = useState(new Set())
   const [presets, setPresets] = useState(null)
   const [rollUpConfirm, setRollUpConfirm] = useState(null)
   const [rollingUp, setRollingUp] = useState(false)
@@ -683,24 +654,13 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const [reconcilingIntent, setReconcilingIntent] = useState(false)
   const [tpEditModal, setTpEditModal] = useState(null) // { bodyId, currentTpPct, currentPrice, avgPrice, bodyLabel, inputValue, priceValue, mode: 'pct'|'price' }
   const [settingTp, setSettingTp] = useState(false)
-  const [fillSearchId, setFillSearchId] = useState('')
   const [openSearchId, setOpenSearchId] = useState('')
   const [dcaState, setDcaState] = useState(null)
   const [convertPreview, setConvertPreview] = useState(null)
   const [converting, setConverting] = useState(false)
   const [showConvertConfirm, setShowConvertConfirm] = useState(false)
-  const [showLadderPanel, setShowLadderPanel] = useState(false)
-  const [ladderPreview, setLadderPreview] = useState(null)
-  const [ladderEdits, setLadderEdits] = useState(null)
-  // Raw in-progress text for the numeric ladder inputs, so clearing the field to
-  // retype doesn't commit/persist 0 (mirrors ConfigEditor's FormInput draft pattern).
-  const [ladderNumberDraft, setLadderNumberDraft] = useState({})
-  const [placingLadder, setPlacingLadder] = useState(false)
   const [cancellingLadder, setCancellingLadder] = useState(false)
   const [cancelLadderConfirm, setCancelLadderConfirm] = useState(false)
-  const [capitalAdjustMode, setCapitalAdjustMode] = useState(false)
-  const [capitalAdjustValue, setCapitalAdjustValue] = useState('')
-  const [capitalAdjusting, setCapitalAdjusting] = useState(false)
   const prevPriceRef = useRef(null)
   // Per-mount ownership fence for fills reads (#508). Initial load, the live
   // fill marker refresh and action handlers all refetch fills concurrently; only
@@ -724,50 +684,6 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
       setConfig(prev => prev ? { ...prev, ...status.config } : status.config)
     }
   }, [status?.config])
-
-  // Compute filtered fills for display based on cycle toggle
-  const filteredFills = useMemo(() => {
-    if (!liveFills || liveFills.length === 0) {
-      return []
-    }
-    if (showAllCycles) {
-      return liveFills
-    }
-    // Find the most recent cycleId by comparing cycle numbers
-    const currentCycleId = liveFills.reduce((latest, f) => {
-      if (!f.cycleId) return latest
-      if (!latest) return f.cycleId
-      const latestNum = parseInt(latest.replace('cycle-', '')) || 0
-      const fillNum = parseInt(f.cycleId.replace('cycle-', '')) || 0
-      return fillNum > latestNum ? f.cycleId : latest
-    }, null)
-    return liveFills.filter(f => f.cycleId === currentCycleId)
-  }, [liveFills, showAllCycles])
-
-  // Historical work depends only on the selected fill snapshot, never ticker status.
-  const historicalFillGroups = useMemo(() => deriveRegimeFillGroups(filteredFills), [filteredFills])
-  const searchedFillGroups = useMemo(() => searchRegimeFillGroups(historicalFillGroups, fillSearchId), [historicalFillGroups, fillSearchId])
-
-  // Derive the most recent cycle ID from filtered fills
-  const mostRecentCycleId = useMemo(() => {
-    if (!filteredFills || filteredFills.length === 0) return null
-    return filteredFills.reduce((latest, f) => {
-      if (!f.cycleId) return latest
-      if (!latest) return f.cycleId
-      const latestNum = parseInt(latest.replace('cycle-', '')) || 0
-      const fillNum = parseInt(f.cycleId.replace('cycle-', '')) || 0
-      return fillNum > latestNum ? f.cycleId : latest
-    }, null)
-  }, [filteredFills])
-
-  // Auto-expand most recent cycle on mount / when cycle list changes
-  const cycleInitRef = useRef(false)
-  useEffect(() => {
-    if (mostRecentCycleId && !cycleInitRef.current) {
-      setExpandedCycles(new Set([mostRecentCycleId]))
-      cycleInitRef.current = true
-    }
-  }, [mostRecentCycleId])
 
   // Track previous price for animation
   useEffect(() => {
@@ -931,8 +847,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     setDrawdownResumeConfirm(false)
     try {
       const res = await fetch(`/api/${exchange}/regime/resume-drawdown${pairQuery}`, { method: 'POST' })
+      const data = await res.json().catch(() => ({ success: false, message: 'Bad response' }))
       if (res.ok) await fetchStatus()
-      else addToast({ type: 'error', title: 'Resume failed', message: `HTTP ${res.status}` })
+      // Surface the engine's actual reason (e.g. "Fund equity is depleted ($0.00)
+      // — cannot re-base the drawdown peak") instead of a bare HTTP status —
+      // that reason is the whole point of a failed resume attempt.
+      else addToast({ type: 'error', title: 'Resume failed', message: data.message || data.error || `HTTP ${res.status}` })
     } catch (err) {
       addToast({ type: 'error', title: 'Resume failed', message: err.message || 'Network error' })
     }
@@ -955,51 +875,6 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
       addToast({ type: 'error', title: 'Resume failed', message: err.message || 'Network error' })
     } finally {
       setResumingAuth(false)
-    }
-  }
-
-  // Preview recalculate
-  const handleRecalculatePreview = async () => {
-    setRecalculating(true)
-    try {
-      const res = await fetch(`/api/${exchange}/regime/recalculate${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apply: false }),
-      })
-      const data = await res.json().catch(() => ({ success: false, error: 'Bad response' }))
-      if (res.ok && data.success) {
-        setRecalcPreview(data)
-      } else {
-        addToast({ type: 'error', title: 'Recalculate failed', message: data.error || data.message || `HTTP ${res.status}` })
-      }
-    } catch (err) {
-      addToast({ type: 'error', title: 'Recalculate failed', message: err.message })
-    } finally {
-      setRecalculating(false)
-    }
-  }
-
-  // Apply recalculate
-  const handleRecalculateApply = async () => {
-    setRecalculating(true)
-    try {
-      const res = await fetch(`/api/${exchange}/regime/recalculate${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apply: true }),
-      })
-      const data = await res.json().catch(() => ({ success: false, error: 'Bad response' }))
-      if (res.ok && data.success) {
-        setRecalcPreview(null)
-        await fetchStatus()
-      } else {
-        addToast({ type: 'error', title: 'Recalculate failed', message: data.error || data.message || `HTTP ${res.status}` })
-      }
-    } catch (err) {
-      addToast({ type: 'error', title: 'Recalculate failed', message: err.message })
-    } finally {
-      setRecalculating(false)
     }
   }
 
@@ -1151,66 +1026,6 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     }
   }
 
-  // Fetch ladder preview
-  const fetchLadderPreview = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/${exchange}/regime/preview-ladder${pairQuery}`)
-      const data = await res.json().catch(() => ({ success: false, message: 'Bad response' }))
-      if (data.success) {
-        setLadderPreview(data.preview)
-      } else {
-        setLadderPreview(null)
-        addToast({ type: 'error', title: 'Preview Failed', message: data.message || 'Could not preview ladder' })
-      }
-    } catch (err) {
-      setLadderPreview(null)
-      addToast({ type: 'error', title: 'Preview Failed', message: err.message })
-    }
-  }, [exchange, addToast])
-
-  // Save ladder config edits
-  const saveLadderEdits = useCallback(async (edits) => {
-    try {
-      const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(edits),
-      })
-      if (res.ok) {
-        await fetchConfig()
-        await fetchLadderPreview()
-      } else {
-        addToast({ type: 'error', title: 'Save Failed', message: `Could not save ladder settings (HTTP ${res.status})` })
-      }
-    } catch (err) {
-      addToast({ type: 'error', title: 'Save Failed', message: err.message })
-    }
-  }, [exchange, fetchConfig, fetchLadderPreview, addToast])
-
-  // Place ladder orders
-  const handlePlaceLadder = async () => {
-    setPlacingLadder(true)
-    try {
-      const res = await fetch(`/api/${exchange}/regime/rebuild-ladder${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      })
-      const data = await res.json().catch(() => ({ success: false, message: 'Bad response' }))
-      if (data.success) {
-        addToast({ type: 'success', title: 'Ladder Placed', message: data.message })
-        if (data.status) setSocketStatus(data.status)
-        setShowLadderPanel(false)
-        setLadderPreview(null)
-      } else {
-        addToast({ type: 'error', title: 'Ladder Failed', message: data.message || 'Could not place ladder orders' })
-      }
-    } catch (err) {
-      addToast({ type: 'error', title: 'Ladder Failed', message: err.message })
-    } finally {
-      setPlacingLadder(false)
-    }
-  }
-
   const handleCancelLadder = () => {
     setCancelLadderConfirm(true)
   }
@@ -1274,47 +1089,6 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const apy = status?.apy || {}
   const tpOptimizer = status?.tpOptimizer || {}
   const sizeOptimizer = status?.sizeOptimizer || {}
-
-  const handleCapitalAdjust = async () => {
-    const newAvailable = parseFloat(capitalAdjustValue)
-    const adjustment = computeCapitalAdjustment(apy, newAvailable)
-    if (!adjustment.ok) {
-      addToast({ type: 'error', title: 'Invalid Amount', message: adjustment.error })
-      return
-    }
-    if (adjustment.noop) {
-      setCapitalAdjustMode(false)
-      return
-    }
-    const { delta, updates } = adjustment
-    setCapitalAdjusting(true)
-    try {
-      const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      })
-      const data = await res.json()
-      if (data.success) {
-        // Report the values the server actually applied (data.config), not
-        // just what we sent — the source of truth after persistence (#701).
-        const appliedDeposited = data.config?.depositedCapital ?? updates.depositedCapital
-        const appliedMax = data.config?.maxUsdcDeployed ?? updates.maxUsdcDeployed
-        addToast({
-          type: 'success',
-          title: 'Capital Adjusted',
-          message: `${delta >= 0 ? '+' : ''}$${delta.toLocaleString()} applied — deposited: $${appliedDeposited.toLocaleString()}, max: $${appliedMax.toLocaleString()}`,
-        })
-        await Promise.all([fetchConfig(), fetchStatus()])
-      } else {
-        addToast({ type: 'error', title: 'Adjust Failed', message: data.errors?.join(', ') || 'Unknown error' })
-      }
-    } catch (err) {
-      addToast({ type: 'error', title: 'Adjust Failed', message: err.message })
-    }
-    setCapitalAdjusting(false)
-    setCapitalAdjustMode(false)
-  }
 
   return (
     <div className="space-y-6">
@@ -1954,12 +1728,21 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-xs font-medium text-gray-400">Risk Limits</h3>
                 {risk.isDrawdownPaused && (
-                  <button onClick={() => setDrawdownResumeConfirm(true)} className="px-2 py-0.5 bg-green-800 hover:bg-green-900 text-white text-[10px] rounded flex items-center gap-1">
+                  <button
+                    onClick={() => setDrawdownResumeConfirm(true)}
+                    title={risk.equityDepleted ? 'Fund equity is depleted — the time-based auto-reset does not apply; resume manually once equity recovers.' : undefined}
+                    className="px-2 py-0.5 bg-green-800 hover:bg-green-900 text-white text-[10px] rounded flex items-center gap-1"
+                  >
                     <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
                     Resume
                   </button>
                 )}
               </div>
+              {risk.isDrawdownPaused && risk.equityDepleted && (
+                <div className="text-[9px] text-red-400 mb-2">
+                  Equity depleted (100% drawdown) — no auto-reset; requires manual resume once funded.
+                </div>
+              )}
               <div className="grid grid-cols-3 gap-2">
                 <div className="text-center">
                   <div className="text-[10px] text-gray-400 mb-1">{asset}</div>
@@ -2025,257 +1808,21 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             )}
 
             {/* Position */}
-            <div className="bg-gray-800 rounded-lg p-4 overflow-hidden">
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sm font-medium text-gray-400">Position</h3>
-                <div className="flex items-center gap-2">
-                  {isDryRun && <span className="text-xs text-purple-400">(Simulated)</span>}
-                  <span className="text-xs text-gray-400">Buys {position.cycleBuys || position.ladderStep || 0}/{config?.maxCycleBuys || 10}</span>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
-                <div className="min-w-0">
-                  <div className="text-gray-400">{asset} Held</div>
-                  <div className="text-orange-400 font-mono truncate">{position.totalAsset?.toFixed(8) || '0'}</div>
-                </div>
-                <div className="min-w-0">
-                  <div className="text-gray-400">On Order</div>
-                  <div className="text-yellow-400 font-mono truncate">{(isDryRun && dryRunState?.pnl?.assetOnOrder ? dryRunState.pnl.assetOnOrder : position.assetOnOrder || 0).toFixed(8)}</div>
-                </div>
-                <div className="min-w-0">
-                  <div className="text-gray-400">Reserves</div>
-                  <div className="text-cyan-400 font-mono truncate">{(position.realizedAssetPnL || 0).toFixed(8)}</div>
-                </div>
-                <div className="min-w-0">
-                  <div className="text-gray-400">Cost Basis</div>
-                  <div className="text-white font-mono truncate">${position.totalCostBasis?.toFixed(2) || '0'}</div>
-                </div>
-                <div className="min-w-0">
-                  <div className="text-gray-400">Avg Cost</div>
-                  <div className="text-white font-mono truncate">${formatPriceByMagnitude(position.avgCostBasis)}</div>
-                </div>
-                <div className="min-w-0">
-                  <div className="text-gray-400">Cycle</div>
-                  <div className="text-white font-mono">{(position.cyclesCompleted || 0) + 1}</div>
-                </div>
-              </div>
-              <div className="mt-2 pt-2 border-t border-gray-700 grid grid-cols-2 gap-2 text-xs">
-                <div className="bg-gray-900/50 rounded p-2 min-w-0">
-                  <div className="text-gray-400">Unrealized P&L</div>
-                  <div className={`font-mono text-base ${position.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {formatCurrency(position.unrealizedPnL || 0)}
-                  </div>
-                </div>
-                <div className="bg-gray-900/50 rounded p-2 min-w-0">
-                  {(() => {
-                    const usdPnL = position.realizedPnL || 0
-                    const assetPnL = position.realizedAssetPnL || 0
-                    const assetUsd = assetPnL * (market.lastPrice || 0)
-                    // Percent should match the displayed USD figure: realized USD over what was actually deposited.
-                    // Don't conflate with held-asset value at current price (volatile, grows with BTC price).
-                    const denom = apy.depositedCapital || apy.originalCapital || apy.initialCapital || 0
-                    const pct = denom > 0 ? (usdPnL / denom) * 100 : 0
-                    return <>
-                      <div className="text-gray-400 truncate">Realized P&L {pct ? `(${pct.toFixed(2)}%)` : ''}</div>
-                      <div className={`font-mono text-base ${usdPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {formatCurrency(usdPnL)}
-                      </div>
-                      {assetPnL > 0 && (
-                        <div className="text-orange-400 text-xs font-mono">
-                          <div className="truncate">Holdback: +{assetPnL.toFixed(8)} {asset}</div>
-                          {assetUsd > 0 && <div className="truncate">{formatCurrency(assetUsd)}</div>}
-                        </div>
-                      )}
-                    </>
-                  })()}
-                </div>
-              </div>
-
-              {/* Celestial Bodies Summary */}
-              {status?.celestial?.enabled && (
-                <div className="mt-2 pt-2 border-t border-gray-700 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="text-gray-400">Celestial Bodies</span>
-                    <span className="text-cyan-400 font-mono">{status.celestial.bodiesActive || 0} active / {status.celestial.bodiesCompleted || 0} completed</span>
-                  </div>
-                </div>
-              )}
-
-              {/* Recalculate Button */}
-              {!recalcPreview && (
-                <button
-                  onClick={handleRecalculatePreview}
-                  disabled={recalculating}
-                  className="mt-2 w-full text-xs px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 disabled:opacity-50 transition-colors"
-                >
-                  {recalculating ? 'Calculating...' : 'Recalculate from Fills'}
-                </button>
-              )}
-
-              {/* Recalculate Preview Modal */}
-              {recalcPreview && (
-                <div className="mt-3 p-3 bg-gray-900 rounded border border-yellow-600/50">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-yellow-400">Recalculate Preview</span>
-                    <button
-                      onClick={() => setRecalcPreview(null)}
-                      className="text-gray-400 hover:text-white"
-                    >
-                      ×
-                    </button>
-                  </div>
-
-                  {recalcPreview.orphansFixed > 0 && (
-                    <div className="text-xs text-blue-400 mb-2">
-                      Will fix {recalcPreview.orphansFixed} fills with missing cycle ID
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-3 gap-2 text-xs mb-3">
-                    <div className="text-gray-400">Field</div>
-                    <div className="text-gray-400">Before</div>
-                    <div className="text-gray-400">After</div>
-
-                    <div className="text-gray-300">Cycles</div>
-                    <div className="text-gray-400">{recalcPreview.changes?.cyclesCompleted?.before}</div>
-                    <div className={recalcPreview.changes?.cyclesCompleted?.before !== recalcPreview.changes?.cyclesCompleted?.after ? 'text-yellow-400' : 'text-gray-400'}>
-                      {recalcPreview.changes?.cyclesCompleted?.after}
-                    </div>
-
-                    <div className="text-gray-300">P&L</div>
-                    <div className="text-gray-400">{formatCurrency(recalcPreview.changes?.realizedPnL?.before)}</div>
-                    <div className={recalcPreview.changes?.realizedPnL?.before !== recalcPreview.changes?.realizedPnL?.after ? 'text-yellow-400' : 'text-gray-400'}>
-                      {formatCurrency(recalcPreview.changes?.realizedPnL?.after)}
-                    </div>
-
-                    <div className="text-gray-300">{asset} Reserves</div>
-                    <div className="text-gray-400">{recalcPreview.changes?.realizedAssetPnL?.before?.toFixed(8)}</div>
-                    <div className={recalcPreview.changes?.realizedAssetPnL?.before !== recalcPreview.changes?.realizedAssetPnL?.after ? 'text-cyan-400' : 'text-gray-400'}>
-                      {recalcPreview.changes?.realizedAssetPnL?.after?.toFixed(8)}
-                    </div>
-
-                    <div className="text-gray-300">Cycle Buys</div>
-                    <div className="text-gray-400">{recalcPreview.changes?.cycleBuys?.before ?? recalcPreview.changes?.ladderStep?.before}</div>
-                    <div className={(recalcPreview.changes?.cycleBuys?.before ?? recalcPreview.changes?.ladderStep?.before) !== (recalcPreview.changes?.cycleBuys?.after ?? recalcPreview.changes?.ladderStep?.after) ? 'text-yellow-400' : 'text-gray-400'}>
-                      {recalcPreview.changes?.cycleBuys?.after ?? recalcPreview.changes?.ladderStep?.after}
-                    </div>
-                  </div>
-
-                  {recalcPreview.cycleDetails?.length > 0 && (
-                    <div className="mb-3">
-                      <div className="text-xs text-gray-400 mb-1">Completed Cycles:</div>
-                      {recalcPreview.cycleDetails.map((cycle, i) => (
-                        <div key={i} className="text-xs text-gray-400 pl-2">
-                          {cycle.cycleId?.replace('cycle-', '#')} - {cycle.buys} buys, P&L: ${cycle.pnl?.toFixed(2)}, holdback: {cycle.holdbackAsset?.toFixed(8)} {asset}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="flex gap-2">
-                    <button
-                      onClick={handleRecalculateApply}
-                      disabled={recalculating}
-                      className="flex-1 text-xs px-3 py-1.5 rounded bg-yellow-800 hover:bg-yellow-900 text-white disabled:opacity-50"
-                    >
-                      {recalculating ? 'Applying...' : 'Apply Changes'}
-                    </button>
-                    <button
-                      onClick={() => setRecalcPreview(null)}
-                      className="text-xs px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* APY & Returns Section */}
-              {apy.engineStartTime && (
-                <div className="mt-2 pt-2 border-t border-gray-700 text-xs">
-                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-400 mb-2">
-                    <span>Deposited: ${(apy.depositedCapital || apy.originalCapital || apy.initialCapital)?.toLocaleString()}</span>
-                    <span className="text-green-400">Max: ${(apy.maxUsdcDeployed || apy.currentCapital)?.toLocaleString()}</span>
-                    {capitalAdjustMode ? (
-                      <span className="inline-flex items-center gap-1">
-                        <label htmlFor={capitalAdjustInputId} className="text-cyan-400">Available: $</label>
-                        <input
-                          id={capitalAdjustInputId}
-                          type="number"
-                          className="w-24 bg-gray-700 border border-cyan-500 rounded px-1 py-0.5 text-cyan-400 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                          value={capitalAdjustValue}
-                          onChange={(e) => setCapitalAdjustValue(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleCapitalAdjust()
-                            if (e.key === 'Escape') setCapitalAdjustMode(false)
-                          }}
-                          autoFocus
-                          disabled={capitalAdjusting}
-                        />
-                        <button
-                          onClick={handleCapitalAdjust}
-                          disabled={capitalAdjusting}
-                          className="text-green-400 hover:text-green-300 disabled:opacity-50"
-                          title="Apply"
-                        >
-                          {capitalAdjusting ? '...' : '\u2713'}
-                        </button>
-                        <button
-                          onClick={() => setCapitalAdjustMode(false)}
-                          className="text-gray-400 hover:text-gray-300"
-                          title="Cancel"
-                        >
-                          {'\u2717'}
-                        </button>
-                      </span>
-                    ) : (
-                      <span
-                        className="text-cyan-400 cursor-pointer hover:underline"
-                        onClick={() => {
-                          setCapitalAdjustValue(String(Math.round(apy.availableCapital || 0)))
-                          setCapitalAdjustMode(true)
-                        }}
-                        title="Click to adjust available capital (updates deposited & max)"
-                      >
-                        Available: ${apy.availableCapital?.toLocaleString()}
-                      </span>
-                    )}
-                    <span>Running: {apy.elapsedDays?.toFixed(1)}d</span>
-                    <span>{apy.cyclesPerDay?.toFixed(1)} cycles/day</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5 min-w-0">
-                      <div className="text-green-400/70 text-[10px]">Daily ({(apy.dailyReturnPercent || 0).toFixed(2)}%)</div>
-                      <div className="flex flex-col font-mono text-xs min-w-0">
-                        <span className="text-green-400">{formatCurrency(apy.estimatedDailyUsdc || 0)} + <span className="text-orange-400">{(apy.estimatedDailyAsset || 0).toFixed(8)}</span></span>
-                        <span className="text-green-400">= {formatCurrency((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0))}</span>
-                      </div>
-                    </div>
-                    <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5 min-w-0">
-                      <div className="text-cyan-400/70 text-[10px]">Annual ({(apy.estimatedApy || 0) > 9999 ? '>9999' : (apy.estimatedApy || 0).toFixed(0)}% APY)</div>
-                      <div className="flex flex-col font-mono text-xs min-w-0">
-                        <span className="text-green-400">{formatCurrency((apy.estimatedDailyUsdc || 0) * 365)} + <span className="text-orange-400">{((apy.estimatedDailyAsset || 0) * 365).toFixed(6)} {asset}</span></span>
-                        <span className="text-cyan-400">= {formatCurrency(((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0)) * 365)}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {isDryRun && dryRunState?.pnl && (
-                <div className="mt-3 pt-3 border-t border-gray-700 text-xs">
-                  <div className="text-purple-400 mb-1">Dry-Run Stats</div>
-                  <div className="grid grid-cols-2 gap-2 text-gray-400">
-                    <div className="min-w-0 truncate">Simulated Buys: {dryRunState.pnl.totalBought?.toFixed(8) || 0} {asset}</div>
-                    <div className="min-w-0 truncate">Simulated Sells: {dryRunState.pnl.totalSold?.toFixed(8) || 0} {asset}</div>
-                    <div className="min-w-0 truncate">{asset} on Order: <span className="text-yellow-400">{dryRunState.pnl.assetOnOrder?.toFixed(8) || 0}</span></div>
-                    <div className="min-w-0 truncate">{asset} Reserves: <span className="text-cyan-400">{position.realizedAssetPnL?.toFixed(8) || 0}</span></div>
-                    <div>Filled Orders: {dryRunState.pnl.filledOrderCount || 0}</div>
-                    <div>Avg Entry: ${formatPriceByMagnitude(dryRunState.pnl.avgEntryPrice)}</div>
-                  </div>
-                </div>
-              )}
-            </div>
+            <PositionCard
+              position={position}
+              apy={apy}
+              market={market}
+              celestial={status?.celestial}
+              config={config}
+              asset={asset}
+              isDryRun={isDryRun}
+              dryRunState={dryRunState}
+              exchange={exchange}
+              pairQuery={pairQuery}
+              fetchConfig={fetchConfig}
+              fetchStatus={fetchStatus}
+              addToast={addToast}
+            />
 
           </div>
 
@@ -2451,27 +1998,6 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               <h3 className="text-sm font-medium text-gray-400">Open Orders</h3>
               <div className="flex items-center gap-2">
                 {isDryRun && <span className="text-xs text-purple-400">(Simulated)</span>}
-                {status?.config?.entryMode === 'ladder' && status?.isRunning && (
-                  <button
-                    onClick={() => {
-                      const opening = !showLadderPanel
-                      setShowLadderPanel(opening)
-                      if (opening) {
-                        setLadderEdits({
-                          ladderMaxAthDropPct: config?.ladderMaxAthDropPct ?? status?.config?.ladderMaxAthDropPct ?? 80,
-                          ladderSpacingMode: config?.ladderSpacingMode ?? status?.config?.ladderSpacingMode ?? 'sqrt',
-                          ladderSizeMode: config?.ladderSizeMode ?? status?.config?.ladderSizeMode ?? 'fibonacci',
-                          ladderMinSpacingPct: config?.ladderMinSpacingPct ?? status?.config?.ladderMinSpacingPct ?? 0.5,
-                        })
-                        setLadderNumberDraft({})
-                        fetchLadderPreview()
-                      }
-                    }}
-                    className="px-2 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-colors"
-                  >
-                    {showLadderPanel ? 'Close' : 'Rebuild Ladder'}
-                  </button>
-                )}
                 {status?.position?.ladderActive && status?.isRunning && (
                   <button
                     onClick={handleCancelLadder}
@@ -2503,486 +2029,33 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 )}
               </div>
             </div>
-            {/* Ladder Settings/Preview Panel */}
-            {showLadderPanel && ladderEdits && (
-              <div className="mb-4 p-3 bg-indigo-900/20 border border-indigo-700/50 rounded-lg space-y-3">
-                <div className="text-xs font-medium text-indigo-300">Ladder Settings</div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div>
-                    <label htmlFor={athDropId} className="text-[10px] text-gray-400 block mb-1">ATH Drop %</label>
-                    <input
-                      id={athDropId}
-                      type="text"
-                      inputMode="decimal"
-                      value={ladderNumberDraft.ladderMaxAthDropPct ?? ladderEdits.ladderMaxAthDropPct}
-                      onChange={e => {
-                        const raw = e.target.value
-                        setLadderNumberDraft(prev => ({ ...prev, ladderMaxAthDropPct: raw }))
-                        if (raw.trim() === '') return // don't commit 0 on clear
-                        const n = parseFloat(raw)
-                        if (Number.isFinite(n)) setLadderEdits(prev => ({ ...prev, ladderMaxAthDropPct: n }))
-                      }}
-                      onBlur={() => {
-                        setLadderNumberDraft(prev => ({ ...prev, ladderMaxAthDropPct: undefined }))
-                        saveLadderEdits({ ladderMaxAthDropPct: ladderEdits.ladderMaxAthDropPct })
-                      }}
-                      className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor={spacingModeId} className="text-[10px] text-gray-400 block mb-1">Spacing Mode</label>
-                    <select
-                      id={spacingModeId}
-                      value={ladderEdits.ladderSpacingMode}
-                      onChange={e => {
-                        const val = e.target.value
-                        setLadderEdits(prev => ({ ...prev, ladderSpacingMode: val }))
-                        saveLadderEdits({ ladderSpacingMode: val })
-                      }}
-                      className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
-                    >
-                      <option value="linear">Linear</option>
-                      <option value="sqrt">Sqrt</option>
-                      <option value="exponential">Exponential</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label htmlFor={sizeModeId} className="text-[10px] text-gray-400 block mb-1">Size Mode</label>
-                    <select
-                      id={sizeModeId}
-                      value={ladderEdits.ladderSizeMode}
-                      onChange={e => {
-                        const val = e.target.value
-                        setLadderEdits(prev => ({ ...prev, ladderSizeMode: val }))
-                        saveLadderEdits({ ladderSizeMode: val })
-                      }}
-                      className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
-                    >
-                      <option value="flat">Flat</option>
-                      <option value="linear">Linear</option>
-                      <option value="sqrt">Sqrt</option>
-                      <option value="fibonacci">Fibonacci</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label htmlFor={minSpacingId} className="text-[10px] text-gray-400 block mb-1">Min Spacing %</label>
-                    <input
-                      id={minSpacingId}
-                      type="text"
-                      inputMode="decimal"
-                      value={ladderNumberDraft.ladderMinSpacingPct ?? ladderEdits.ladderMinSpacingPct}
-                      onChange={e => {
-                        const raw = e.target.value
-                        setLadderNumberDraft(prev => ({ ...prev, ladderMinSpacingPct: raw }))
-                        if (raw.trim() === '') return // don't commit 0 on clear
-                        const n = parseFloat(raw)
-                        if (Number.isFinite(n)) setLadderEdits(prev => ({ ...prev, ladderMinSpacingPct: n }))
-                      }}
-                      onBlur={() => {
-                        setLadderNumberDraft(prev => ({ ...prev, ladderMinSpacingPct: undefined }))
-                        saveLadderEdits({ ladderMinSpacingPct: ladderEdits.ladderMinSpacingPct })
-                      }}
-                      className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
-                    />
-                  </div>
-                </div>
-                {/* Preview */}
-                {ladderPreview ? (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-4 text-xs text-gray-300">
-                      <span>{ladderPreview.levelCount} levels</span>
-                      <span>{formatPriceByMagnitude(ladderPreview.levels[0]?.price)} — {formatPriceByMagnitude(ladderPreview.levels[ladderPreview.levels.length - 1]?.price)}</span>
-                      <span title={`Max: ${formatCurrency(ladderPreview.maxUsdcDeployed)} − Allocated: ${formatCurrency(ladderPreview.allocatedCapital)}`}>Budget: {formatCurrency(ladderPreview.totalBudget)}</span>
-                      <span>Range: {ladderPreview.lowerBoundPct?.toFixed(1)}%</span>
-                    </div>
-                    <div className="max-h-40 overflow-y-auto">
-                      <table className="w-full text-xs">
-                        <thead>
-                          <tr className="text-gray-400 border-b border-gray-700">
-                            <th className="text-left py-1 pr-2">#</th>
-                            <th className="text-right py-1 pr-2">Price</th>
-                            <th className="text-right py-1 pr-2">Size (USDC)</th>
-                            <th className="text-right py-1 pr-2">Qty</th>
-                            <th className="text-right py-1">Distance</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {ladderPreview.levels.map((level, i) => (
-                            <tr key={i} className="border-b border-gray-700/30 text-gray-300">
-                              <td className="py-1 pr-2 text-gray-400">{i + 1}</td>
-                              <td className="text-right py-1 pr-2 font-mono">{formatPriceByMagnitude(level.price)}</td>
-                              <td className="text-right py-1 pr-2 font-mono">${level.sizeUsdc?.toFixed(2)}</td>
-                              <td className="text-right py-1 pr-2 font-mono">{level.assetQty?.toFixed(8)}</td>
-                              <td className="text-right py-1 font-mono text-gray-400">{level.distancePct?.toFixed(2)}%</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    <button
-                      onClick={handlePlaceLadder}
-                      disabled={placingLadder}
-                      className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded transition-colors"
-                    >
-                      {placingLadder ? 'Placing...' : `Place ${ladderPreview.levelCount} Orders`}
-                    </button>
-                  </div>
-                ) : (
-                  <div className="text-xs text-gray-400">Loading preview...</div>
-                )}
-              </div>
-            )}
-            {pendingOrdersList.length === 0 ? (
-              <div className="text-gray-400 text-sm text-center py-4">No open orders</div>
-            ) : (
-              <div className="overflow-x-auto">
-                {(() => {
-                  const openOrders = pendingOrdersList.filter(o => o.status === 'open')
-                  const avgCost = position.avgCostBasis || 0
-                  const holdbackRatio = config?.holdbackRatio ?? 0.5
-                  const feeRatePerSide = config?.feeRatePerSide ?? config?.feeRate ?? DEFAULT_FEE_RATE_PER_SIDE
-
-                  // Build body lookup from status.celestial.bodies for fallback
-                  const celestialBodies = status?.celestial?.bodies || []
-                  const bodyLookup = new Map(celestialBodies.map(b => [b.tpOrderId, b]))
-                  const renderTpEditBtn = (order, mode) => {
-                    const isBodyTp = order.type === 'body_tp' || order.type === 'satellite_tp'
-                    if (!isBodyTp || !isRunning) return null
-                    const bd = bodyLookup.get(order.orderId)
-                    if (!bd) return null
-                    return (
-                      <button
-                        title="Edit TP target"
-                        className={`${REGIME_ORDER_TOUCH_TARGET} text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded text-sm leading-none`}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setTpEditModal({ bodyId: bd.id, currentTpPct: order.tpPercent, currentPrice: order.price, avgPrice: bd.avgPrice, bodyLabel: bd.id.slice(-8), inputValue: String(order.tpPercent ?? ''), priceValue: String(order.price ?? ''), mode })
-                        }}
-                      >
-                        ✎
-                      </button>
-                    )
-                  }
-
-                  // Build buy orders for each open TP
-                  // For body TPs: use body.buyOrders (filter migration artifacts)
-                  // For core TPs: use unconsumed buys from current position
-                  const getRelatedBuys = (order) => {
-                    const bodyData = (order.type === 'body_tp' || order.type === 'satellite_tp' || order.type === 'take_profit') ? bodyLookup.get(order.orderId) : null
-                    if (bodyData?.buyOrders?.length > 0) {
-                      const bodyBuys = bodyData.buyOrders.filter(bo => bo.assetQty > 0 && bo.orderId && bo.orderId !== 'core-migration')
-                      if (bodyBuys.length > 0) return bodyBuys
-                    }
-
-                    // sellOrderId-based lookup from fill ledger (works for all TP types)
-                    if (!isDryRun && (order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp')) {
-                      const linkedBuys = filteredFills
-                        .filter(f => f.side === 'buy' && f.sellOrderId === order.orderId)
-                      // Aggregate partial fills by orderId
-                      const byOrderId = new Map()
-                      linkedBuys.forEach(f => {
-                        const ex = byOrderId.get(f.orderId)
-                        if (ex) { ex.assetQty += f.size; ex.sizeUsdc += (f.quoteAmount || f.size * f.price) }
-                        else byOrderId.set(f.orderId, { orderId: f.orderId, price: f.price, assetQty: f.size, sizeUsdc: f.quoteAmount || f.size * f.price, filledAt: f.timestamp })
-                      })
-                      if (byOrderId.size > 0) return Array.from(byOrderId.values())
-                    }
-
-                    if (order.type === 'take_profit' || order.type === 'body_tp' || order.type === 'satellite_tp') {
-                      // Fallback: chronological walk for buys without sellOrderId
-                      if (isDryRun) {
-                        const sorted = [...(dryRunState?.filledOrders || [])].sort((a, b) => (a.filledAt || a.placedAt || 0) - (b.filledAt || b.placedAt || 0))
-                        let pending = []
-                        sorted.forEach(o => {
-                          if (o.side === 'buy') pending.push({ orderId: o.orderId, price: o.fillPrice || o.price, assetQty: o.size, sizeUsdc: (o.size || 0) * (o.fillPrice || o.price || 0), filledAt: o.filledAt })
-                          else if (o.type === 'take_profit') pending = []
-                        })
-                        return pending
-                      }
-                      const sorted = [...filteredFills].sort((a, b) => a.timestamp - b.timestamp)
-                      const pendingMap = new Map()
-                      sorted.forEach(f => {
-                        if (f.side === 'buy' && !(f.isBodyOwned ?? f.isSatellite)) {
-                          const ex = pendingMap.get(f.orderId)
-                          if (ex) { ex.assetQty += f.size; ex.sizeUsdc += (f.quoteAmount || f.size * f.price) }
-                          else pendingMap.set(f.orderId, { orderId: f.orderId, price: f.price, assetQty: f.size, sizeUsdc: f.quoteAmount || f.size * f.price, filledAt: f.timestamp })
-                        } else if (f.side === 'sell' && !(f.isBodyOwned ?? f.isSatellite)) {
-                          pendingMap.clear()
-                        }
-                      })
-                      return Array.from(pendingMap.values())
-                    }
-                    return []
-                  }
-
-                  const toggleOrder = (orderId) => {
-                    setExpandedOrders(prev => {
-                      const next = new Set(prev)
-                      if (next.has(orderId)) next.delete(orderId)
-                      else next.add(orderId)
-                      return next
-                    })
-                  }
-
-                  // Find highest body TP price for roll-up button visibility
-                  const bodyTpOrders = openOrders.filter(o => o.type === 'body_tp' || o.type === 'satellite_tp')
-                  const highestBodyTpPrice = bodyTpOrders.reduce((max, o) => Math.max(max, o.price || 0), 0)
-
-                  const ordersWithCalcs = openOrders.map(order => {
-                    const age = Date.now() - order.placedAt
-                    const isTpOrder = order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp'
-                    const bodyData = (order.type === 'body_tp' || order.type === 'satellite_tp' || order.type === 'take_profit') ? bodyLookup.get(order.orderId) : null
-                    const { estSellFee, estPnl, estHoldback, estHoldbackValue, tpPercent } = computeOpenOrderEstimate(
-                      order, bodyData, { avgCost, holdbackRatio, feeRatePerSide }
-                    )
-                    const relatedBuys = isTpOrder ? getRelatedBuys(order) : []
-
-                    return { ...order, age, estPnl, estSellFee, estHoldback, estHoldbackValue, tpPercent, relatedBuys }
-                  }).sort((a, b) => (b.price || 0) - (a.price || 0))
-
-                  const openFilter = openSearchId.toLowerCase()
-                  const matchesOpenSearch = (order) => {
-                    if (!openFilter) return true
-                    if (order.orderId?.toLowerCase().includes(openFilter)) return true
-                    if (order.relatedBuys?.some(b => b.orderId?.toLowerCase().includes(openFilter))) return true
-                    return false
-                  }
-                  const isEntry = (o) => o.type === 'entry' || o.type === 'ladder_entry'
-                  const sellOrders = ordersWithCalcs.filter(o => !isEntry(o) && matchesOpenSearch(o))
-                  const entryOrders = ordersWithCalcs.filter(o => isEntry(o) && matchesOpenSearch(o))
-
-                  // Sell order totals
-                  const totalSellSize = sellOrders.reduce((sum, o) => sum + (o.size || 0), 0)
-                  const totalSellValue = sellOrders.reduce((sum, o) => sum + (o.size || 0) * (o.price || 0), 0)
-                  const totalSellPnl = sellOrders.reduce((sum, o) => sum + (o.estPnl || 0), 0)
-                  const hasPnl = sellOrders.some(o => o.estPnl !== null)
-                  const totalSellFees = sellOrders.reduce((sum, o) => sum + (o.estSellFee || 0), 0)
-                  const totalHoldback = sellOrders.reduce((sum, o) => sum + (o.estHoldback || 0), 0)
-                  const totalHoldbackValue = sellOrders.reduce((sum, o) => sum + (o.estHoldbackValue || 0), 0)
-                  const hasHoldback = sellOrders.some(o => o.estHoldback !== null)
-
-                  return (
-                    <div className="space-y-4">
-                    {/* Sell Orders Table */}
-                    {sellOrders.length > 0 && (
-                    <div>
-                      <div className="text-xs text-gray-400 mb-1">{sellOrders.length} sell {sellOrders.length === 1 ? 'order' : 'orders'}</div>
-                      <table className="w-full text-sm">
-                      <thead>
-                        <tr className="text-gray-400 text-xs border-b border-gray-700">
-                          <th className="text-left py-2 pr-1 w-6"></th>
-                          <th className="text-left py-2 pr-2">Order ID</th>
-                          <th className="text-left py-2 pr-2">Type</th>
-                          <th className="text-right py-2 pr-2">TP%</th>
-                          <th className="text-right py-2 pr-2">Size ({asset})</th>
-                          <th className="text-right py-2 pr-2">Price</th>
-                          <th className="text-right py-2 pr-2">Value</th>
-                          <th className="text-right py-2 pr-2">Est. P&L</th>
-                          <th className="text-right py-2 pr-2">Holdback</th>
-                          <th className="text-right py-2 pr-2">Age</th>
-                          <th className="py-2 w-6"></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sellOrders.map((order) => {
-                          const isExpanded = expandedOrders.has(order.orderId)
-                          const isTp = order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp'
-                          const hasBuys = order.relatedBuys.length > 0
-
-                          return (
-                            <React.Fragment key={order.orderId}>
-                              <tr
-                                className={`border-b border-gray-700/50 ${isTp && hasBuys ? 'cursor-pointer' : ''} hover:bg-gray-700/30`}
-                                onClick={isTp && hasBuys ? () => toggleOrder(order.orderId) : undefined}
-                              >
-                                <td className="py-2 pr-1 text-gray-400 text-xs">
-                                  {isTp && hasBuys ? (
-                                    <span className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
-                                  ) : null}
-                                </td>
-                                <td className="py-2 pr-2 font-mono text-gray-400 text-xs">
-                                  {order.orderId}
-                                  {hasBuys && <span className="text-gray-400 ml-1">({order.relatedBuys.length} {order.relatedBuys.length === 1 ? 'buy' : 'buys'})</span>}
-                                </td>
-                                <td className="py-2 pr-2">
-                                  {(() => {
-                                    const bodyInfo = (order.type === 'body_tp' || order.type === 'satellite_tp' || order.type === 'take_profit') ? bodyLookup.get(order.orderId) : null;
-                                    const tier = bodyInfo?.tier || order.bodyTier || (order.type === 'satellite_tp' ? 'satellite' : null);
-                                    const tierStyles = {
-                                      satellite:  { bg: 'bg-gray-700/60',    text: 'text-gray-300',    tooltip: 'Satellite — individual order, 1–3× base' },
-                                      asteroid:   { bg: 'bg-amber-900/40',   text: 'text-amber-600',   tooltip: 'Asteroid — small cluster, 2–3× base' },
-                                      moon:       { bg: 'bg-slate-600/50',   text: 'text-slate-300',   tooltip: 'Moon — cluster, 3–10× base' },
-                                      planet:     { bg: 'bg-blue-900/50',    text: 'text-blue-400',    tooltip: 'Planet — substantial mass, 10–100× base' },
-                                      sun:        { bg: 'bg-amber-900/50',   text: 'text-amber-400',   tooltip: 'Sun — large mass, 100–500× base' },
-                                      hypergiant: { bg: 'bg-purple-900/50',  text: 'text-purple-400',  tooltip: 'Hypergiant — massive mass, 500–1000× base' },
-                                      nebula:     { bg: 'bg-cyan-900/50',    text: 'text-cyan-400',    tooltip: 'Nebula — vast mass, 1000–5000× base' },
-                                      galaxy:     { bg: 'bg-pink-900/50',    text: 'text-pink-400',    tooltip: 'Galaxy — galactic mass, 5000–10000× base' },
-                                      black_hole: { bg: 'bg-red-900/50',     text: 'text-red-400',     tooltip: 'Black Hole — critical mass, 10000×+ base' },
-                                    };
-                                    if (tier && tierStyles[tier]) {
-                                      const s = tierStyles[tier];
-                                      const emoji = order.tierEmoji || bodyInfo?.emoji || '🛰️';
-                                      return <span className={`px-1.5 py-0.5 rounded text-xs ${s.bg} ${s.text}`} title={s.tooltip}>{emoji}</span>;
-                                    }
-                                    return <span className="px-1.5 py-0.5 rounded text-xs bg-cyan-900/50 text-cyan-400" title="Take-profit sell order">TP</span>;
-                                  })()}
-                                </td>
-                                <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
-                                  <span className="inline-flex items-center gap-1 justify-end">
-                                    {order.tpPercent ? `${order.tpPercent}%` : '—'}
-                                    {renderTpEditBtn(order, 'pct')}
-                                  </span>
-                                </td>
-                                <td className="text-right py-2 pr-2 font-mono text-white">
-                                  {order.size?.toFixed(8)}
-                                  {order.filledSize > 0 && (
-                                    <span className="ml-1 px-1 py-0.5 rounded text-[10px] bg-orange-900/50 text-orange-400" title={`${order.filledSize.toFixed(8)} of ${order.size?.toFixed(8)} filled`}>
-                                      {order.filledSize.toFixed(8)} filled
-                                    </span>
-                                  )}
-                                </td>
-                                <td className="text-right py-2 pr-2 font-mono text-white">
-                                  <span className="inline-flex items-center gap-1 justify-end">
-                                    ${order.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
-                                    {renderTpEditBtn(order, 'price')}
-                                  </span>
-                                </td>
-                                <td className="text-right py-2 pr-2 font-mono text-gray-300 text-xs">
-                                  ${(order.size * order.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                </td>
-                                <td className={`text-right py-2 pr-2 font-mono text-xs ${order.estPnl !== null ? (order.estPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-400'}`} title={order.estSellFee ? `After est. sell fee: $${order.estSellFee.toFixed(4)}` : undefined}>
-                                  {order.estPnl !== null ? `${order.estPnl >= 0 ? '+' : ''}${formatCurrency(order.estPnl)}` : '—'}
-                                </td>
-                                <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
-                                  {order.estHoldback !== null ? (
-                                    <span title={`≈${formatCurrency(order.estHoldbackValue)}`}>+{order.estHoldback.toFixed(8)}</span>
-                                  ) : '—'}
-                                </td>
-                                <td className="text-right py-2 pr-2 font-mono text-gray-400 text-xs">
-                                  {formatDuration(order.age)}
-                                </td>
-                                <td className="py-2 text-center">
-                                  {(() => {
-                                    const isBodyTp = order.type === 'body_tp' || order.type === 'satellite_tp'
-                                    const hasPartialFill = order.filledSize > 0
-                                    const canRollUp = isBodyTp && isRunning && celestialBodies.length >= 2 && order.price < highestBodyTpPrice && !hasPartialFill
-                                    if (!canRollUp) return null
-                                    const bodyData = bodyLookup.get(order.orderId)
-                                    if (!bodyData) return null
-                                    const targetBody = celestialBodies
-                                      .filter(b => b.tpPrice > (bodyData.tpPrice || order.price))
-                                      .sort((a, b) => a.tpPrice - b.tpPrice)[0]
-                                    if (!targetBody) return null
-                                    // Check if target order is partially filled
-                                    const targetOrder = sellOrders.find(o => o.orderId === targetBody.tpOrderId)
-                                    if (targetOrder?.filledSize > 0) return null
-                                    const srcLabel = `${bodyData.id?.slice(-8)} ($${bodyData.costBasis?.toFixed(0)})`
-                                    const tgtLabel = `${targetBody.id?.slice(-8)} ($${targetBody.costBasis?.toFixed(0)})`
-                                    return (
-                                      <button
-                                        title={`Roll up into ${tgtLabel}`}
-                                        className={`${REGIME_ORDER_TOUCH_TARGET} px-1 py-0.5 text-xs text-yellow-400 hover:text-yellow-300 hover:bg-yellow-900/30 rounded transition-colors`}
-                                        onClick={(e) => {
-                                          e.stopPropagation()
-                                          setRollUpConfirm({ bodyId: bodyData.id, bodyLabel: srcLabel, targetLabel: tgtLabel })
-                                        }}
-                                      >
-                                        ↑
-                                      </button>
-                                    )
-                                  })()}
-                                </td>
-                              </tr>
-                              {/* Buy sub-rows */}
-                              {isExpanded && order.relatedBuys.map((buy, idx) => (
-                                <tr key={`${order.orderId}-buy-${buy.orderId}-${idx}`} className="border-b border-gray-700/30 bg-gray-750/20">
-                                  <td className="py-1 pr-1"></td>
-                                  <td className="py-1 pr-2 font-mono text-xs text-gray-400 pl-4">
-                                    <span className="text-green-400/70 mr-1">BUY</span>
-                                    {buy.orderId}
-                                  </td>
-                                  <td className="py-1 pr-2"></td>
-                                  <td className="py-1 pr-2"></td>
-                                  <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                                    {buy.assetQty?.toFixed(8)}
-                                  </td>
-                                  <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                                    ${buy.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
-                                  </td>
-                                  <td className="text-right py-1 pr-2 font-mono text-xs text-gray-400">
-                                    ${buy.sizeUsdc?.toFixed(2)}
-                                  </td>
-                                  <td className="py-1 pr-2"></td>
-                                  <td className="text-right py-1 font-mono text-xs text-gray-400">
-                                    {formatTimestamp(buy.filledAt)}
-                                  </td>
-                                  <td className="py-1"></td>
-                                </tr>
-                              ))}
-                            </React.Fragment>
-                          )
-                        })}
-                      </tbody>
-                      <tfoot>
-                        <tr className="border-t border-gray-600 text-xs font-semibold">
-                          <td className="py-2 pr-1"></td>
-                          <td className="py-2 pr-2 text-gray-400">Totals</td>
-                          <td className="py-2 pr-2"></td>
-                          <td className="py-2 pr-2"></td>
-                          <td className="text-right py-2 pr-2 font-mono text-white">{totalSellSize.toFixed(8)}</td>
-                          <td className="py-2 pr-2"></td>
-                          <td className="text-right py-2 pr-2 font-mono text-gray-300">${totalSellValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                          <td className={`text-right py-2 pr-2 font-mono ${hasPnl ? (totalSellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-400'}`} title={totalSellFees ? `After est. sell fees: $${totalSellFees.toFixed(4)}` : undefined}>
-                            {hasPnl ? `${totalSellPnl >= 0 ? '+' : ''}${formatCurrency(totalSellPnl)}` : '—'}
-                          </td>
-                          <td className="text-right py-2 pr-2 font-mono text-cyan-400">
-                            {hasHoldback ? <span title={`≈${formatCurrency(totalHoldbackValue)}`}>+{totalHoldback.toFixed(8)}</span> : '—'}
-                          </td>
-                          <td className="py-2 pr-2"></td>
-                          <td className="py-2"></td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                    </div>
-                    )}
-
-                    {/* Entry Orders Table */}
-                    {entryOrders.length > 0 && (
-                    <div>
-                      <div className="text-xs text-gray-400 mb-1">{entryOrders.length} entry {entryOrders.length === 1 ? 'order' : 'orders'}</div>
-                      <table className="w-full text-sm">
-                      <thead>
-                        <tr className="text-gray-400 text-xs border-b border-gray-700">
-                          <th className="text-left py-2 pr-2">Order ID</th>
-                          <th className="text-right py-2 pr-2">Size ({asset})</th>
-                          <th className="text-right py-2 pr-2">Price</th>
-                          <th className="text-right py-2 pr-2">Value</th>
-                          <th className="text-right py-2 pr-2">Age</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {entryOrders.map((order) => (
-                          <tr key={order.orderId} className="border-b border-gray-700/50 hover:bg-gray-700/30">
-                            <td className="py-2 pr-2 font-mono text-gray-400 text-xs">{order.orderId}</td>
-                            <td className="text-right py-2 pr-2 font-mono text-white">{order.size?.toFixed(8)}</td>
-                            <td className="text-right py-2 pr-2 font-mono text-white">
-                              ${order.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
-                            </td>
-                            <td className="text-right py-2 pr-2 font-mono text-gray-300 text-xs">
-                              ${(order.size * order.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </td>
-                            <td className="text-right py-2 pr-2 font-mono text-gray-400 text-xs">{formatDuration(order.age)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    </div>
-                    )}
-                    </div>
-                  )
-                })()}
-              </div>
-            )}
+            {/* Rebuild Ladder toggle + settings/preview panel — kept out of the
+                buttons row above so opening it never shifts Cancel Ladder /
+                Collapse All / the order filter input. */}
+            <LadderPanel
+              config={config}
+              status={status}
+              exchange={exchange}
+              pairQuery={pairQuery}
+              addToast={addToast}
+              fetchConfig={fetchConfig}
+              setSocketStatus={setSocketStatus}
+            />
+            <OpenOrdersTable
+              pendingOrdersList={pendingOrdersList}
+              liveFills={liveFills}
+              dryRunFilled={dryRunState?.filledOrders}
+              isDryRun={isDryRun}
+              celestialBodies={status?.celestial?.bodies || EMPTY_BODIES}
+              position={position}
+              config={config}
+              market={market}
+              asset={asset}
+              isRunning={isRunning}
+              openSearchId={openSearchId}
+              setTpEditModal={setTpEditModal}
+              setRollUpConfirm={setRollUpConfirm}
+            />
           </div>
 
           {/* Unresolved placement intents — while any exist the fund refuses new placements */}
@@ -3038,432 +2111,14 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             </div>
           )}
 
-          {/* Filled Orders */}
-          <div className="bg-gray-800 rounded-lg p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-medium text-gray-400">Filled Orders</h3>
-              <div className="flex items-center gap-3">
-                {!isDryRun && liveFills?.length > 0 && (
-                  <button
-                    onClick={() => { setShowAllCycles(!showAllCycles); setExpandedCycles(new Set()); cycleInitRef.current = false }}
-                    className={`text-xs px-2 py-1 rounded transition-colors ${
-                      showAllCycles
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                    }`}
-                  >
-                    {showAllCycles ? 'All Cycles' : 'Current Cycle'}
-                  </button>
-                )}
-                {((isDryRun && dryRunState?.filledOrders?.length > 0) || (!isDryRun && filteredFills.length > 0)) && (
-                  <span className="text-xs text-gray-400">
-                    {isDryRun
-                      ? dryRunState.filledOrders.length
-                      : filteredFills.length
-                    } fills
-                    {!isDryRun && (() => {
-                      const cc = new Set(filteredFills.map(f => f.cycleId).filter(Boolean)).size
-                      return cc > 0 ? ` (${cc} ${cc === 1 ? 'cycle' : 'cycles'})` : ''
-                    })()}
-                  </span>
-                )}
-                <input
-                  aria-label="Filter fills by ID"
-                  type="text"
-                  value={fillSearchId}
-                  onChange={e => setFillSearchId(e.target.value)}
-                  placeholder="Filter by ID…"
-                  className="bg-gray-700 text-gray-200 text-xs rounded px-2 py-1 placeholder-gray-400 w-36"
-                />
-              </div>
-            </div>
-            {(isDryRun
-              ? (dryRunState?.filledOrders?.length || 0)
-              : filteredFills.length
-            ) === 0 ? (
-              <div className="text-gray-400 text-sm text-center py-4">
-                {!isDryRun && liveFills?.length > 0 && !showAllCycles
-                  ? 'No fills in current cycle (toggle to see all cycles)'
-                  : 'No filled orders yet'
-                }
-              </div>
-            ) : (
-              /* Filled Sells with expandable buy sub-rows */
-              <div>
-                {(() => {
-                  const toggleFill = (key) => {
-                    setExpandedFills(prev => {
-                      const next = new Set(prev)
-                      if (next.has(key)) next.delete(key)
-                      else next.add(key)
-                      return next
-                    })
-                  }
-
-                  // Build sell groups: each = { sell, buys[], key }
-                  let sellGroups = []
-                  let orphanedBuys = []
-
-                  if (isDryRun) {
-                    // Walk chronologically: buys accumulate until a core sell consumes them
-                    // Body sells don't consume from the buy pool
-                    const sorted = [...(dryRunState?.filledOrders || [])].sort((a, b) => (a.filledAt || a.placedAt || 0) - (b.filledAt || b.placedAt || 0))
-                    let pendingBuys = []
-                    sorted.forEach(order => {
-                      if (order.side === 'buy') {
-                        pendingBuys.push(order)
-                      } else if ((order.isBodyOwned ?? order.isSatellite) || order.type === 'satellite_tp' || order.type === 'body_tp') {
-                        // Body sell: doesn't consume core buys, show with empty buys
-                        sellGroups.push({ sell: order, buys: [], key: `fill-${order.orderId}` })
-                      } else {
-                        // Core sell: consumes accumulated buys
-                        sellGroups.push({ sell: order, buys: [...pendingBuys], key: `fill-${order.orderId}` })
-                        pendingBuys = []
-                      }
-                    })
-                    sellGroups.reverse()
-                  } else {
-                    sellGroups = searchedFillGroups.sellGroups
-                    orphanedBuys = visibleOrphanBuys(searchedFillGroups.orphanCandidates, pendingOrdersList)
-                  }
-
-                  // Apply fill search filter
-                  if (isDryRun && fillSearchId) {
-                    const fillFilter = fillSearchId.toLowerCase()
-                    sellGroups = sellGroups.filter(g =>
-                      g.sell.orderId?.toLowerCase().includes(fillFilter) ||
-                      g.buys.some(b => b.orderId?.toLowerCase().includes(fillFilter))
-                    )
-                    orphanedBuys = orphanedBuys.filter(b =>
-                      b.orderId?.toLowerCase().includes(fillFilter)
-                    )
-                  }
-
-                  if (sellGroups.length === 0 && orphanedBuys.length === 0) {
-                    return <div className="text-gray-400 text-sm text-center py-4">{fillSearchId ? 'No matching orders' : 'No filled sells yet'}</div>
-                  }
-
-                  // Source of truth: sum of per-sell pnl across all cycles. The engine's
-                  // contract is buy(n)→sell(1) per cycle, so each sell's pnl reflects its
-                  // paired buys' cost basis. Summing across cycles gives total realized USD.
-                  const totalPnl = isDryRun
-                    ? sellGroups.reduce((s, g) => s + (g.sell.pnl || 0), 0)
-                    : searchedFillGroups.totalPnl
-
-                  // Shared sell + buy row renderer
-                  const renderSellRow = (group) => {
-                    const isExpanded = expandedFills.has(group.key)
-                    const sell = group.sell
-                    const buys = group.buys
-                    const sellPrice = sell.fillPrice || sell.price
-                    const sellValue = sell.quoteAmount || ((sell.size || 0) * (sellPrice || 0))
-                    const sellPnl = sell.pnl ?? sell.bodyPnl ?? sell.satellitePnl ?? null
-                    const sellHoldback = isDryRun ? sell.holdbackAsset : sell.holdback
-                    const sellTime = sell.filledAt || sell.timestamp
-
-                    return (
-                      <React.Fragment key={group.key}>
-                        <tr
-                          className="border-b border-gray-700 cursor-pointer hover:bg-gray-700/40 transition-colors"
-                          onClick={() => toggleFill(group.key)}
-                        >
-                          <td className="py-1.5 pr-1 text-gray-400 text-xs">
-                            <span className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
-                          </td>
-                          <td className="py-1.5 pr-2 font-mono text-xs text-gray-400">
-                            {sell.orderId}
-                            {buys.length > 0 && <span className="text-gray-400 ml-1">({buys.length} {buys.length === 1 ? 'buy' : 'buys'})</span>}
-                            {buys.length === 0 && sell.duplicateTpNote && <span className="text-yellow-600/70 ml-1" title={sell.duplicateTpNote}>(dup TP)</span>}
-                            {buys.length === 0 && sell.untrackedSell && !sell.duplicateTpNote && <span className="text-yellow-600/70 ml-1">(orphan)</span>}
-                          </td>
-                          <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                            {sell.size?.toFixed(8)}
-                          </td>
-                          <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                            ${sellPrice?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
-                          </td>
-                          <td className="text-right py-1.5 pr-2 font-mono text-gray-400 text-xs">
-                            ${sellValue.toFixed(2)}
-                          </td>
-                          <td className={`text-right py-1.5 pr-2 font-mono text-xs ${
-                            sellPnl !== null ? (sellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-400'
-                          }`}>
-                            {sellPnl !== null ? `${sellPnl >= 0 ? '+' : ''}${formatCurrency(sellPnl)}` : '—'}
-                            {sellHoldback > 0 && <span className="ml-1 text-cyan-400" title={`Holdback ${asset}`}>+{sellHoldback.toFixed(8)}</span>}
-                          </td>
-                          <td className="text-right py-1.5 font-mono text-gray-400 text-xs">
-                            {formatTimestamp(sellTime)}
-                          </td>
-                        </tr>
-                        {isExpanded && buys.length === 0 && (sell.duplicateTpNote || sell.untrackedSell) && (
-                          <tr className="border-b border-gray-700/30 bg-gray-750/20">
-                            <td className="py-1 pr-1"></td>
-                            <td colSpan={6} className="py-1.5 pl-5 text-xs text-yellow-600/70 italic">
-                              {sell.duplicateTpNote || 'Untracked sell — buy orders linked to original TP'}
-                              {(sell.bodyCostBasis ?? sell.satelliteCostBasis) > 0 && <span className="ml-2 text-gray-400">Cost basis: ${(sell.bodyCostBasis ?? sell.satelliteCostBasis).toFixed(2)}</span>}
-                            </td>
-                          </tr>
-                        )}
-                        {isExpanded && buys.map((buy, idx) => {
-                          const buyPrice = buy.fillPrice || buy.price
-                          const buyValue = buy.quoteAmount || ((buy.size || 0) * (buyPrice || 0))
-                          const buyTime = buy.filledAt || buy.timestamp
-                          const fillTimeMs = isDryRun
-                            ? (buy.filledAt && buy.placedAt ? buy.filledAt - buy.placedAt : null)
-                            : buy.fillTimeMs
-                          return (
-                            <tr key={`${group.key}-buy-${buy.orderId || buy.tradeId}-${idx}`}
-                              className="border-b border-gray-700/30 bg-gray-750/20"
-                            >
-                              <td className="py-1 pr-1"></td>
-                              <td className="py-1 pr-2 font-mono text-xs text-gray-400 pl-5">
-                                <span className="text-green-400/70 mr-1">BUY</span>
-                                {buy.orderId}
-                              </td>
-                              <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                                {buy.size?.toFixed(8)}
-                              </td>
-                              <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                                ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
-                              </td>
-                              <td className="text-right py-1 pr-2 font-mono text-xs text-gray-400">
-                                ${buyValue.toFixed(2)}
-                              </td>
-                              <td className="text-right py-1 pr-2 font-mono text-xs text-gray-400">
-                                {fillTimeMs !== null ? formatDuration(fillTimeMs) : ''}
-                              </td>
-                              <td className="text-right py-1 font-mono text-xs text-gray-400">
-                                {formatTimestamp(buyTime)}
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </React.Fragment>
-                    )
-                  }
-
-                  const tableHeader = (
-                    <tr className="text-gray-400 text-xs border-b border-gray-700">
-                      <th className="text-left py-1.5 pr-1 w-6"></th>
-                      <th className="text-left py-1.5 pr-2">Order ID</th>
-                      <th className="text-right py-1.5 pr-2">Size ({asset})</th>
-                      <th className="text-right py-1.5 pr-2">Price</th>
-                      <th className="text-right py-1.5 pr-2">Value</th>
-                      <th className="text-right py-1.5 pr-2">P&L</th>
-                      <th className="text-right py-1.5">Filled</th>
-                    </tr>
-                  )
-
-                  // --- DryRun: flat table (no cycle grouping) ---
-                  if (isDryRun) {
-                    const totalHoldback = sellGroups.reduce((s, g) => s + (g.sell.holdbackAsset || 0), 0)
-                    return (
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
-                          <thead>
-                            {tableHeader}
-                          </thead>
-                          <tbody>
-                            {sellGroups.length > 1 && (
-                              <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
-                                <td className="py-1.5 pr-1"></td>
-                                <td className="py-1.5 pr-2 text-gray-400 text-xs" colSpan={4}>Totals ({sellGroups.length} sells)</td>
-                                <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                  {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)}` : '—'}
-                                  {totalHoldback > 0 && <span className="ml-1 text-cyan-400" title="Total holdback">+{totalHoldback.toFixed(8)}</span>}
-                                </td>
-                                <td className="text-right py-1.5"></td>
-                              </tr>
-                            )}
-                            {sellGroups.map(renderSellRow)}
-                          </tbody>
-                        </table>
-                      </div>
-                    )
-                  }
-
-                  // --- Live: cycle-grouped layout ---
-                  const { cycleGroups, totalHoldback } = searchedFillGroups
-
-                  return (
-                    <div className="overflow-x-auto space-y-2">
-                      {/* Grand totals bar */}
-                      {cycleGroups.length > 0 && (() => {
-                        const reservesUsd = (totalHoldback || 0) * (market.lastPrice || 0)
-                        const grandTotal = totalPnl + reservesUsd
-                        const showReserves = totalHoldback > 0
-                        return (
-                          <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded text-xs">
-                            <span className="text-gray-400">{sellGroups.length} sells across {cycleGroups.length} {cycleGroups.length === 1 ? 'cycle' : 'cycles'}</span>
-                            <span className="font-mono">
-                              <span className={totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}>
-                                {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)}` : '—'}
-                              </span>
-                              {showReserves && (
-                                <>
-                                  <span className="ml-1 text-cyan-400">+{totalHoldback.toFixed(8)} {asset}</span>
-                                  {reservesUsd > 0 && (
-                                    <>
-                                      <span className="ml-1 text-cyan-400/70">({formatCurrency(reservesUsd)})</span>
-                                      <span className={`ml-2 font-bold ${grandTotal >= 0 ? 'text-green-300' : 'text-red-300'}`}>
-                                        = {grandTotal >= 0 ? '+' : ''}{formatCurrency(grandTotal)}
-                                      </span>
-                                    </>
-                                  )}
-                                </>
-                              )}
-                            </span>
-                          </div>
-                        )
-                      })()}
-                      {/* Orphaned buys (not linked to any sell) */}
-                      {!isDryRun && orphanedBuys && orphanedBuys.length > 0 && (
-                        <div className="border border-yellow-700/40 rounded-lg overflow-hidden">
-                          <div
-                            className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-gray-700/40 transition-colors"
-                            onClick={() => {
-                              setExpandedCycles(prev => {
-                                const next = new Set(prev)
-                                if (next.has('orphans')) next.delete('orphans')
-                                else next.add('orphans')
-                                return next
-                              })
-                            }}
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className={`inline-block transition-transform text-xs text-gray-500 ${expandedCycles.has('orphans') ? 'rotate-90' : ''}`}>&#9654;</span>
-                              <span className="px-2 py-0.5 rounded text-xs bg-yellow-900/50 text-yellow-400">Orphaned</span>
-                              <span className="text-xs text-gray-400">{orphanedBuys.length} buys not linked to any sell</span>
-                            </div>
-                            <span className="font-mono text-xs text-yellow-400">{orphanedBuys.reduce((s, b) => s + (b.size || 0), 0).toFixed(8)} {asset}</span>
-                          </div>
-                          {expandedCycles.has('orphans') && (
-                            <div className="border-t border-gray-700">
-                              <table className="w-full text-sm">
-                                <thead>
-                                  <tr className="text-gray-400 text-xs border-b border-gray-700">
-                                    <th className="text-left py-1.5 pr-1 w-6"></th>
-                                    <th className="text-left py-1.5 pr-2">Order ID</th>
-                                    <th className="text-right py-1.5 pr-2">Size ({asset})</th>
-                                    <th className="text-right py-1.5 pr-2">Price</th>
-                                    <th className="text-right py-1.5 pr-2">Value</th>
-                                    <th className="text-right py-1.5 pr-2">Cycle</th>
-                                    <th className="text-right py-1.5">Filled</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {orphanedBuys.map((buy, idx) => {
-                                    const buyPrice = buy.fillPrice || buy.price
-                                    const buyValue = buy.quoteAmount || ((buy.size || 0) * (buyPrice || 0))
-                                    return (
-                                      <tr key={`orphan-${buy.orderId}-${idx}`} className="border-b border-gray-700/30">
-                                        <td className="py-1 pr-1"></td>
-                                        <td className="py-1 pr-2 font-mono text-xs text-yellow-400/70">
-                                          {buy.orderId}
-                                        </td>
-                                        <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                                          {buy.size?.toFixed(8)}
-                                        </td>
-                                        <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                                          ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
-                                        </td>
-                                        <td className="text-right py-1 pr-2 font-mono text-xs text-gray-400">
-                                          ${buyValue.toFixed(2)}
-                                        </td>
-                                        <td className="text-right py-1 pr-2 font-mono text-xs text-gray-400">
-                                          {buy.cycleId?.replace('cycle-', '#') || '—'}
-                                        </td>
-                                        <td className="text-right py-1 font-mono text-xs text-gray-400">
-                                          {formatTimestamp(buy.timestamp || buy.filledAt)}
-                                        </td>
-                                      </tr>
-                                    )
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {cycleGroups.map(cycle => {
-                        const isCurrentCycle = cycle.cycleId === mostRecentCycleId
-                        const isCycleExpanded = expandedCycles.has(cycle.cycleId)
-                        const cycleLabel = cycle.cycleId === 'unknown' ? 'Unassigned' : cycle.cycleId.replace('cycle-', '#')
-
-                        return (
-                          <div key={cycle.cycleId} className="border border-gray-700 rounded-lg overflow-hidden">
-                            <div
-                              className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-gray-700/40 transition-colors"
-                              onClick={() => {
-                                setExpandedCycles(prev => {
-                                  const next = new Set(prev)
-                                  if (next.has(cycle.cycleId)) next.delete(cycle.cycleId)
-                                  else next.add(cycle.cycleId)
-                                  return next
-                                })
-                              }}
-                            >
-                              <div className="flex items-center gap-2">
-                                <span className={`inline-block transition-transform text-xs text-gray-500 ${isCycleExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
-                                <span className={`px-2 py-0.5 rounded text-xs ${
-                                  cycle.cycleId === 'unknown'
-                                    ? 'bg-gray-700 text-gray-400'
-                                    : isCurrentCycle
-                                      ? 'bg-blue-900/50 text-blue-400'
-                                      : 'bg-green-900/50 text-green-400'
-                                }`}>
-                                  {cycleLabel}
-                                </span>
-                                <span className="text-xs text-gray-400">
-                                  {cycle.sells.length} {cycle.sells.length === 1 ? 'sell' : 'sells'}, {cycle.buyCount} {cycle.buyCount === 1 ? 'buy' : 'buys'}
-                                </span>
-                                {cycle.minTs < Infinity && (
-                                  <span className="text-[10px] text-gray-400 font-mono">
-                                    {new Date(cycle.minTs).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                    {cycle.maxTs > cycle.minTs && ` – ${new Date(cycle.maxTs).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`}
-                                  </span>
-                                )}
-                              </div>
-                              <span className={`font-mono text-xs ${cycle.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}${formatCurrency(cycle.totalPnl)}` : '—'}
-                                {cycle.totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{cycle.totalHoldback.toFixed(8)}</span>}
-                              </span>
-                            </div>
-                            {isCycleExpanded && (
-                              <div className="border-t border-gray-700">
-                                <table className="w-full text-sm">
-                                  <thead>
-                                    {tableHeader}
-                                  </thead>
-                                  <tbody>
-                                    {cycle.sells.map(renderSellRow)}
-                                    {cycle.sells.length > 1 && (
-                                      <tr className="border-t border-gray-600 bg-gray-700/20">
-                                        <td className="py-1.5 pr-1"></td>
-                                        <td className="py-1.5 pr-2 text-gray-400 text-xs">Subtotal ({cycle.sells.length} sells)</td>
-                                        <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">{cycle.totalSize.toFixed(8)}</td>
-                                        <td className="text-right py-1.5 pr-2"></td>
-                                        <td className="text-right py-1.5 pr-2"></td>
-                                        <td className={`text-right py-1.5 pr-2 font-mono text-xs ${cycle.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                          {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}${formatCurrency(cycle.totalPnl)}` : '—'}
-                                          {cycle.totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{cycle.totalHoldback.toFixed(8)}</span>}
-                                        </td>
-                                        <td className="text-right py-1.5"></td>
-                                      </tr>
-                                    )}
-                                  </tbody>
-                                </table>
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )
-                })()}
-              </div>
-            )}
-          </div>
+          <FilledOrdersSection
+            liveFills={liveFills}
+            isDryRun={isDryRun}
+            dryRunFilled={dryRunState?.filledOrders}
+            pendingOrdersList={pendingOrdersList}
+            market={market}
+            asset={asset}
+          />
         </div>
         </>
       )}

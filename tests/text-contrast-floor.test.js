@@ -143,8 +143,8 @@ const TEXT_GRAY_ALLOWLIST = new Set([
   'admin/src/components/charts/BTCPriceChart.jsx::<span className="text-gray-600 text-xs px-1">/</span>',
   // decorative expand/collapse disclosure chevrons (not informational text)
   "admin/src/components/ConfigEditor.jsx::<span className=\"text-gray-500 text-xs\">{isExpanded ? '▼' : '▶'}</span>",
-  "admin/src/components/RegimeDashboard.jsx::<span className={`inline-block transition-transform text-xs text-gray-500 ${expandedCycles.has('orphans') ? 'rotate-90' : ''}`}>&#9654;</span>",
-  "admin/src/components/RegimeDashboard.jsx::<span className={`inline-block transition-transform text-xs text-gray-500 ${isCycleExpanded ? 'rotate-90' : ''}`}>&#9654;</span>",
+  "admin/src/components/regime/FilledOrdersSection.jsx::<span className={`inline-block transition-transform text-xs text-gray-500 ${expandedCycles.has('orphans') ? 'rotate-90' : ''}`}>&#9654;</span>",
+  "admin/src/components/regime/FilledOrdersSection.jsx::<span className={`inline-block transition-transform text-xs text-gray-500 ${isCycleExpanded ? 'rotate-90' : ''}`}>&#9654;</span>",
   // icon-only elements: color sets an SVG stroke/fill via currentColor, not a text node
   'admin/src/components/ChartsRegime.jsx::<svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">',
   'admin/src/components/Overview.jsx::<ExternalLink className="w-3.5 h-3.5 text-gray-500" />',

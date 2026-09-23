@@ -120,3 +120,50 @@ export function searchRegimeFillGroups(history, search) {
     buy.orderId?.toLowerCase().includes(query))
   return { sellGroups, orphanCandidates, ...summarizeRegimeFillGroups(sellGroups) }
 }
+
+// Chronological order for dry-run simulated orders (fill time, else placement time).
+const dryRunTime = (order) => order.filledAt || order.placedAt || 0
+
+// A dry-run sell that belongs to a celestial body (its own TP) rather than the core position.
+const isDryRunBodySell = (order) =>
+  Boolean(order.isBodyOwned ?? order.isSatellite) || order.type === 'satellite_tp' || order.type === 'body_tp'
+
+function summarizeDryRunSellGroups(sellGroups) {
+  const totalPnl = sellGroups.reduce((sum, group) => sum + (group.sell.pnl || 0), 0)
+  const totalHoldback = sellGroups.reduce((sum, group) => sum + (group.sell.holdbackAsset || 0), 0)
+  return { totalPnl, totalHoldback }
+}
+
+// Dry-run Filled Orders. The simulator's filledOrders carry no fill-ledger
+// linkage (no sellOrderId/bodyId on buys), so pairing is a chronological walk:
+// buys accumulate until a CORE sell consumes them; a body sell (body_tp /
+// satellite_tp / body-owned) consumes nothing and is shown with no buys. The
+// simulator already priced every sell (pnl / holdbackAsset), so this only
+// groups rows. `pendingBuys` are the buys no core sell has consumed yet — the
+// buys an open core TP is resting against. Input is never mutated.
+export function deriveDryRunFillGroups(filledOrders) {
+  const sorted = [...(filledOrders || [])].sort((a, b) => dryRunTime(a) - dryRunTime(b))
+  const sellGroups = []
+  let pendingBuys = []
+  sorted.forEach(order => {
+    if (order.side === 'buy') {
+      pendingBuys.push(order)
+    } else if (isDryRunBodySell(order)) {
+      sellGroups.push({ sell: order, buys: [], key: `fill-${order.orderId}` })
+    } else {
+      sellGroups.push({ sell: order, buys: pendingBuys, key: `fill-${order.orderId}` })
+      pendingBuys = []
+    }
+  })
+  sellGroups.reverse()
+  return { sellGroups, pendingBuys, ...summarizeDryRunSellGroups(sellGroups) }
+}
+
+export function searchDryRunFillGroups(history, search) {
+  if (!search) return history
+  const query = search.toLowerCase()
+  const sellGroups = history.sellGroups.filter(group =>
+    group.sell.orderId?.toLowerCase().includes(query) ||
+    group.buys.some(buy => buy.orderId?.toLowerCase().includes(query)))
+  return { ...history, sellGroups, ...summarizeDryRunSellGroups(sellGroups) }
+}

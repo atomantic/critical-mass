@@ -36,6 +36,7 @@ const createRiskManager = (exchange, config, productId) => {
   let drawdownPausedAt = null; // Timestamp when drawdown pause started
   let lastCapitalBase = null; // capitalBase seen on the previous updateDrawdown (peak re-basing)
   let lastDrawdownPercent = 0; // drawdown on the most recent observation (dashboard)
+  let isEquityDepleted = false; // true while paused because fund equity is <= 0 (fail-closed; no auto-reset — see updateDrawdown)
   let cycleBuysLimitReachedAt = null; // Timestamp when ladder limit was first reached
 
   /**
@@ -183,6 +184,7 @@ const createRiskManager = (exchange, config, productId) => {
     if (Number.isFinite(currentEquity) && currentEquity <= 0 && peakEquity !== null && peakEquity > 0) {
       lastDrawdownPercent = 100;
       maxDrawdownSeen = 100;
+      isEquityDepleted = true;
       if (!isDrawdownPaused) {
         isDrawdownPaused = true;
         drawdownPausedAt = Date.now();
@@ -202,6 +204,10 @@ const createRiskManager = (exchange, config, productId) => {
         drawdownPausedAt,
       };
     }
+
+    // Equity is meaningfully positive again — no longer in the depleted,
+    // fail-closed state (whether or not the pause itself has cleared yet).
+    isEquityDepleted = false;
 
     // Re-base the peak on a capital change so deposits/withdrawals are neutral.
     if (Number.isFinite(capitalBase)) {
@@ -415,7 +421,7 @@ const createRiskManager = (exchange, config, productId) => {
 
   /**
    * Get current risk state
-   * @returns {{peakEquity: number, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, drawdownPausedHours: number|null}}
+   * @returns {{peakEquity: number, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, drawdownPausedHours: number|null, equityDepleted: boolean}}
    */
   const getState = () => {
     let drawdownPausedHours = null;
@@ -430,13 +436,18 @@ const createRiskManager = (exchange, config, productId) => {
       drawdownPausedAt,
       drawdownPausedHours,
       drawdownResetHours: config.drawdownResetHours,
+      // True while the pause is the fail-closed depleted-equity case (updateDrawdown),
+      // which the drawdownResetHours auto-reset deliberately never clears — the
+      // dashboard uses this to explain why "Resume" needs a manual operator
+      // decision instead of just waiting out the reset window.
+      equityDepleted: isEquityDepleted,
     };
   };
 
   /**
    * Snapshot of the drawdown tracker for persistence in positionState, so a
    * restart neither clears an active pause nor forgets the peak.
-   * @returns {{peakEquity: number|null, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, capitalBase: number|null}}
+   * @returns {{peakEquity: number|null, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, capitalBase: number|null, equityDepleted: boolean}}
    */
   const getPersistedState = () => ({
     peakEquity,
@@ -444,6 +455,7 @@ const createRiskManager = (exchange, config, productId) => {
     isDrawdownPaused,
     drawdownPausedAt,
     capitalBase: lastCapitalBase,
+    equityDepleted: isEquityDepleted,
   });
 
   /**
@@ -463,6 +475,10 @@ const createRiskManager = (exchange, config, productId) => {
     if (saved.isDrawdownPaused === true) {
       isDrawdownPaused = true;
       drawdownPausedAt = num(saved.drawdownPausedAt) ?? Date.now();
+      // Restore the depleted-equity flag too, so a restart into an active
+      // depleted pause shows the dashboard's notice immediately instead of
+      // only after the next metrics tick re-derives it (issue #742 review).
+      isEquityDepleted = saved.equityDepleted === true;
     }
   };
 
@@ -476,6 +492,7 @@ const createRiskManager = (exchange, config, productId) => {
     if (isDrawdownPaused) {
       isDrawdownPaused = false;
       drawdownPausedAt = null;
+      isEquityDepleted = false;
       if (Number.isFinite(currentEquity) && currentEquity > 0) {
         peakEquity = currentEquity; // Reset peak to current equity
         lastDrawdownPercent = 0;
@@ -485,6 +502,23 @@ const createRiskManager = (exchange, config, productId) => {
         peakEquity, resumeType: 'manual',
       });
     }
+  };
+
+  /**
+   * Fully reset the drawdown tracker — dry-run reset only (regime-engine's
+   * resetDryRun). Clears the peak, pause, accumulated max-seen and capital-base
+   * baseline so a fresh dry run doesn't inherit whatever peak/pause the prior
+   * run left behind; the next updateDrawdown re-initializes from its first
+   * observation exactly as a brand-new risk manager would.
+   */
+  const resetDrawdown = () => {
+    peakEquity = null;
+    maxDrawdownSeen = 0;
+    isDrawdownPaused = false;
+    drawdownPausedAt = null;
+    lastCapitalBase = null;
+    lastDrawdownPercent = 0;
+    isEquityDepleted = false;
   };
 
   return {
@@ -502,6 +536,7 @@ const createRiskManager = (exchange, config, productId) => {
     getPersistedState,
     restoreState,
     forceResume,
+    resetDrawdown,
   };
 };
 
