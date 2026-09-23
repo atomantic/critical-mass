@@ -218,18 +218,22 @@ const createManualTradeStore = (exchange, pair) => {
     // (issue #691; mirrors addManualBuy/addManualSell's per-order idempotency).
     for (const t of trades.values()) {
       if (t.buyOrderId === buyData.buyOrderId && t.sellOrderId === sellData.sellOrderId) {
-        if (t.status === STATUS.COMPLETED) {
-          // A genuine prior paired import of this exact pair — nothing to do.
+        if (t.status === STATUS.COMPLETED || t.status === STATUS.DISMISSED) {
+          // COMPLETED: a genuine prior paired import of this exact pair —
+          // nothing to do. DISMISSED: the operator explicitly dismissed this
+          // pair — promoting it back to COMPLETED would silently resurrect a
+          // record they chose to discard; leave it exactly as they left it.
           return t;
         }
-        // A non-completed record for this exact (buyOrderId, sellOrderId)
-        // already exists — most likely importSell's sell-first recovery flow
-        // created it (status BUY_PENDING) while waiting on the recovery buy
-        // to fill, and the operator has now imported the same pair directly
-        // via importPair, which already fetched and linked both legs' fills.
-        // Promote it in place instead of returning it unchanged (issue #726)
-        // — otherwise it stays stuck at its old status forever despite
-        // nothing being left to do.
+        // A non-completed, non-dismissed record for this exact
+        // (buyOrderId, sellOrderId) already exists — most likely
+        // importSell's sell-first recovery flow created it (status
+        // BUY_PENDING) while waiting on the recovery buy to fill, and the
+        // operator has now imported the same pair directly via importPair,
+        // which already fetched and linked both legs' fills. Promote it in
+        // place instead of returning it unchanged (issue #726) — otherwise
+        // it stays stuck at its old status forever despite nothing being
+        // left to do.
         t.sellPrice = sellData.sellPrice;
         t.sellSize = sellData.sellSize;
         t.sellQuoteAmount = sellData.sellQuoteAmount;
@@ -274,6 +278,32 @@ const createManualTradeStore = (exchange, pair) => {
     };
 
     trades.set(trade.id, trade);
+    persist();
+    return trade;
+  };
+
+  /**
+   * Refresh a buy-first trade's recorded fill totals to match a fuller fill
+   * set discovered on a retried import (issue #726 — the buy order was
+   * still filling when the trade record was first written, so its
+   * buyPrice/buySize/buyQuoteAmount/buyFillTradeIds reflected only the
+   * fills seen at that time). Only called once a retry's extra fills have
+   * actually been folded into the body they belong to, so the two never
+   * drift apart.
+   * @param {string} tradeId
+   * @param {{buyPrice:number, buySize:number, buyQuoteAmount:number, buyFillTradeIds:string[]}} totals
+   * @returns {ManualTrade|null}
+   */
+  const refreshBuyTotals = (tradeId, totals) => {
+    const trade = trades.get(tradeId);
+    if (!trade) return null;
+
+    trade.buyPrice = totals.buyPrice;
+    trade.buySize = totals.buySize;
+    trade.buyQuoteAmount = totals.buyQuoteAmount;
+    trade.buyFillTradeIds = totals.buyFillTradeIds || trade.buyFillTradeIds;
+    trade.updatedAt = Date.now();
+
     persist();
     return trade;
   };
@@ -440,6 +470,7 @@ const createManualTradeStore = (exchange, pair) => {
     linkExistingBuy,
     markBuyFilled,
     markTpPlaced,
+    refreshBuyTotals,
     dismiss,
     dismissFills,
     isFillDismissed,

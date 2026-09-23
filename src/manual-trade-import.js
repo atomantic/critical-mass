@@ -385,47 +385,72 @@ const createManualTradeImporter = ({
         return ok({ trade: store.getById(trade.id), alreadyImported: true });
       }
 
+      // Ledger rows carry `quoteAmount` (price × size) and `netFee` (fee net
+      // of rebate) — NOT the raw adapter field names `totalCommission` /
+      // `commission` that ingestAdapterFills maps INTO those on ingest
+      // (fill-ledger.js:637-644). Mirror the same `quoteAmount + netFee`
+      // cost-basis convention every other ledger-row reducer in this codebase
+      // uses (e.g. fill-ledger.js:811) — reading the raw-fill field names off
+      // an already-ingested row would silently read `undefined` and drop the
+      // fee from cost basis on every reconciliation.
       const extraSize = unlinkedRows.reduce((sum, r) => sum + r.size, 0);
-      const extraQuote = unlinkedRows.reduce((sum, r) => sum + r.price * r.size, 0);
-      const extraFees = unlinkedRows.reduce((sum, r) => sum + (r.totalCommission || r.commission || 0), 0);
-      const extra = { assetQty: extraSize, costBasis: extraQuote + extraFees, avgPrice: averagePrice(extraQuote, extraSize) };
+      const extraQuote = unlinkedRows.reduce((sum, r) => sum + r.quoteAmount, 0);
+      const extraCostBasis = unlinkedRows.reduce((sum, r) => sum + r.quoteAmount + r.netFee, 0);
+      const extra = { assetQty: extraSize, costBasis: extraCostBasis, avgPrice: averagePrice(extraQuote, extraSize) };
 
-      // Link the new rows to the body's current (post-merge-aware) id
-      // regardless of how the extend below resolves — they DO belong to this
-      // buy/body pairing, and leaving them unlinked would make every future
-      // retry re-detect this exact same gap without ever fixing it.
-      fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: currentBodyId, isBodyOwned: true, isSatellite: true });
-      fillLedger.persist();
-      // Keep the trade record's own bodyId pointer in sync too, mirroring
-      // the durable close-check re-link a few lines below.
-      if (currentBodyId !== trade.bodyId) store.markTpPlaced(trade.id, currentBodyId);
-
+      // Attempt the extend BEFORE linking anything (codex review): linking
+      // the ledger rows to currentBodyId unconditionally, win or lose, would
+      // make a FAILED extend permanently unrecoverable — the next retry
+      // would find these same rows already "linked" and skip straight past
+      // this whole block via the unlinkedRows.length === 0 fast path above,
+      // never trying again even after the underlying problem (e.g. the body
+      // no longer exists) is fixed.
       const extended = extendBody
         ? extendBody(currentBodyId, extra, buyOrderId)
         : { success: extendPersistedBody(currentBodyId, extra, buyOrderId), bodyId: currentBodyId };
 
-      if (extended.success) {
-        log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} extended body ${currentBodyId} with ${extraSize} additional fill(s) instead of creating a duplicate`, {
-          bodyId: currentBodyId,
-          buyOrderId,
-          extraSize,
-        });
-      } else {
+      if (!extended.success) {
         // The body no longer exists to extend — most likely its TP fully
         // closed and it was spliced out of the live position between the
-        // first import and this retry. The new rows are still correctly
-        // linked/recorded above; the extra asset just isn't reflected in any
-        // live-manageable body. Surface this loudly rather than pretending
-        // the extension succeeded.
-        log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} has ${extraSize} new fill(s) beyond body ${currentBodyId}, but that body could not be extended (${extended.error || 'not found'}) — fills are linked in the ledger but not reflected in any live body`, {
+        // first import and this retry. Leave the new fill rows UNLINKED (not
+        // pointed at a body that couldn't absorb them) so a future retry
+        // keeps re-detecting this exact gap and can try again once it's
+        // fixable, and fail the call outright rather than reporting success
+        // — the caller (the admin import UI) treats `success: true` as
+        // "done, remove this order from the unaccounted list," which would
+        // permanently hide an asset that ended up nowhere.
+        log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} has ${extraSize} new fill(s) beyond body ${currentBodyId}, but that body could not be extended (${extended.error || 'not found'}) — leaving the fills unlinked and the import retryable`, {
           bodyId: currentBodyId,
           buyOrderId,
           extraSize,
           error: extended.error,
         });
+        return fail(`Failed to extend body ${currentBodyId} with ${extraSize} additional fill(s) for buy ${buyOrderId}: ${extended.error || 'body not found'}`);
       }
 
-      return ok({ trade: store.getById(trade.id), alreadyImported: true, extended: extended.success });
+      // Extend succeeded — NOW link the new rows to the body's current
+      // (post-merge-aware) id, keep the trade record's own bodyId pointer in
+      // sync, and refresh its recorded buy totals to the FULL current fill
+      // set (totalSize/totalQuote/avgBuyPrice/tradeIds, computed above from
+      // every fill fetched this call) instead of leaving them stuck at
+      // whatever partial amount was known when the trade was first created
+      // (issue #726 codex review).
+      fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: currentBodyId, isBodyOwned: true, isSatellite: true });
+      fillLedger.persist();
+      if (currentBodyId !== trade.bodyId) store.markTpPlaced(trade.id, currentBodyId);
+      store.refreshBuyTotals(trade.id, {
+        buyPrice: avgBuyPrice,
+        buySize: totalSize,
+        buyQuoteAmount: totalQuote,
+        buyFillTradeIds: tradeIds,
+      });
+      log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} extended body ${currentBodyId} with ${extraSize} additional fill(s) instead of creating a duplicate`, {
+        bodyId: currentBodyId,
+        buyOrderId,
+        extraSize,
+      });
+
+      return ok({ trade: store.getById(trade.id), alreadyImported: true, extended: true });
     }
 
     // Durable close-check (issue #691, codex review, refined across two
