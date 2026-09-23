@@ -3594,23 +3594,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // TP it was never part of. The tranche objects themselves are shared
         // with the live body, which is what advances its consumedQty.
         //
-        // Consume exactly what leaves a body: with the live body still present
-        // that is only the sold qty (the block below deducts nothing else), so
-        // held cost keeps matching the bodies. On a complete fill that body
-        // still holds the holdback it also books as reserves — a model double
-        // count tracked in issue #718, which the ledger coverage reading then
-        // shows instead of hiding. Only when no live body holds its tranches
-        // did the snapshot body close: sold + booked holdback, every tranche in
-        // full (issue #607).
-        // A roll-up moves the snapshot's tranche objects into the surviving
-        // target, so "the snapshot body's id is gone" does not mean its asset
-        // left the model: a late fill of the source's old TP (the
-        // completedMergeTpOrders window) must not close tranches a live body
-        // still carries.
+        // Consume exactly what leaves a body. A true partial with the live body
+        // still present consumes only the sold qty (the block below deducts
+        // nothing else), so held cost keeps matching the bodies. A complete
+        // fill closes the snapshot body even though its live object remains:
+        // sold + booked holdback, every tranche it covered in full — and the
+        // block below removes the same whole snapshot from the live body, so
+        // the holdback is not also left in it as inventory (issue #718).
+        // With no live body, the snapshot body closed only if no other body
+        // holds its tranches (issue #607): a roll-up moves the snapshot's
+        // tranche objects into the surviving target, so "the snapshot body's
+        // id is gone" does not mean its asset left the model — a late fill of
+        // the source's old TP (the completedMergeTpOrders window) must not
+        // close tranches a live body still carries.
         const snapshotTranches = new Set(mergeSnapshot.buyOrders || []);
         const heldElsewhere = (positionState.celestialBodies || [])
           .some(b => (b.buyOrders || []).some(e => snapshotTranches.has(e)));
-        const snapshotClosed = !liveMerged && !heldElsewhere;
+        const snapshotClosed = liveMerged ? !liveOwnsRemainder : !heldElsewhere;
         recordBodyConsumption({
           entries: mergeSnapshot.buyOrders,
           bodyQty: mergeSnapshot.assetQty,
@@ -3634,12 +3634,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // the dollar amount removed (proratedCostBasis / pre-deduction
           // liveMerged.costBasis) makes that reconciliation exact by
           // construction, regardless of the fold-in's price.
+          //
+          // What leaves the live pool depends on whether the snapshot body
+          // closed. A true partial removes only the sold tranche at its
+          // prorated cost. A complete fill removes the WHOLE snapshot — sold
+          // qty plus the designed holdback just booked as zero-cost reserves,
+          // at its full cost — exactly as the normal path splices a filled
+          // body out entirely. Deducting only the sold qty there left the
+          // holdback in the live body as well as in reserves, so it was
+          // counted twice and re-listed for sale (issue #718). Only a fold-in
+          // the snapshot's TP never covered stays behind.
+          const removedQty = snapshotClosed
+            ? Math.max(mergeSnapshot.assetQty, summary.totalSize)
+            : summary.totalSize;
+          const removedCost = snapshotClosed ? mergeSnapshot.costBasis : proratedCostBasis;
           const liveConsumedRatio = liveMerged.costBasis > 0
-            ? Math.min(proratedCostBasis / liveMerged.costBasis, 1)
+            ? Math.min(removedCost / liveMerged.costBasis, 1)
             : 1;
 
-          liveMerged.assetQty = roundAsset(Math.max(0, liveMerged.assetQty - summary.totalSize));
-          liveMerged.costBasis = roundUSDC(Math.max(0, liveMerged.costBasis - proratedCostBasis));
+          liveMerged.assetQty = roundAsset(Math.max(0, liveMerged.assetQty - removedQty));
+          liveMerged.costBasis = roundUSDC(Math.max(0, liveMerged.costBasis - removedCost));
 
           // Track the cumulative fraction of the body's ORIGINAL cost basis
           // already realized via partial sells (mirrors the normal partial-fill
@@ -3648,10 +3662,34 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // is simultaneously realized via bodyPnl above — double-counting it.
           const prevConsumed = liveMerged.consumedCostFraction || 0;
           liveMerged.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - liveConsumedRatio);
-          // Legacy fallback for buys the sale could not record per order. A
-          // tracked buy ignores this fraction — and a tracked fold-in the
-          // snapshot's TP never covered must not be charged it at all.
-          stampConsumedCostFraction(liveMerged, liveConsumedRatio);
+          if (snapshotClosed) {
+            // The closed snapshot's tranches (consumed in full above) leave
+            // the live body with its asset, so its next TP neither re-links
+            // them nor spreads a later sale over them. Link them to THIS sell
+            // like the normal full-fill path does: a TP re-placed on the live
+            // body after the snapshot re-stamped them with an order this
+            // branch cancels, which would leave an untracked buy held open
+            // with no body to re-link it. The untouched fold-in pool must not
+            // be charged this sale's cost fraction.
+            liveMerged.buyOrders = (liveMerged.buyOrders || []).filter(e => !snapshotTranches.has(e));
+            const keptIds = new Set(liveMerged.buyOrders.map(e => e && e.orderId));
+            const closedIds = new Set([
+              ...(mergeSnapshot.sourceOrderIds || []),
+              ...(mergeSnapshot.buyOrders || []).map(e => e && e.orderId),
+            ]);
+            liveMerged.sourceOrderIds = (liveMerged.sourceOrderIds || [])
+              .filter(id => keptIds.has(id) || !closedIds.has(id));
+            const closedOnlyIds = [...closedIds].filter(id => id && id !== 'core-migration' && !keptIds.has(id));
+            if (closedOnlyIds.length > 0) {
+              fillLedger.annotateFillsByOrderIds(closedOnlyIds, { sellOrderId: fillData.orderId });
+            }
+            liveMerged.avgPrice = liveMerged.assetQty > 0 ? liveMerged.costBasis / liveMerged.assetQty : 0;
+          } else {
+            // Legacy fallback for buys the sale could not record per order. A
+            // tracked buy ignores this fraction — and a tracked fold-in the
+            // snapshot's TP never covered must not be charged it at all.
+            stampConsumedCostFraction(liveMerged, liveConsumedRatio);
+          }
 
           // The resting TP was sized for the pre-deduction (oversized) qty — cancel
           // and clear it so a correctly-sized TP is re-placed for the remaining body.
@@ -3686,6 +3724,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               );
             }
           }
+        }
+
+        // A closed snapshot with no fold-in drains the live body to zero: drop
+        // it like the normal full-fill path does rather than leave an empty
+        // body that never re-arms (issue #718). No cycle reset here: a body
+        // drains to zero only when its TP executed during a merge cancel, and
+        // that caller is either a buy-merge about to create the buy's own body
+        // or a roll-up whose other body remains. A TP whose cancel was not
+        // confirmed keeps the body so reconciliation can still find that order.
+        if (liveMerged && snapshotClosed && !(liveMerged.assetQty > 0) && !liveMerged.tpOrderId) {
+          // In place: the buy-merge caller still holds this array.
+          const drainedIdx = positionState.celestialBodies.indexOf(liveMerged);
+          if (drainedIdx !== -1) positionState.celestialBodies.splice(drainedIdx, 1);
         }
 
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
