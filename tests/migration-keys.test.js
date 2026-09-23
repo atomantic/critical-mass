@@ -147,6 +147,23 @@ describe('migrateKeys — degrades gracefully on a mid-sequence filesystem failu
     assert.ok(fs.existsSync(rootKeysFile()), 'root keys.json must stay in place after a failed rename, for the next retry');
     assert.ok(!fs.existsSync(migratedKeysFile()), 'keys.json.migrated must not exist when the rename failed');
   });
+
+  it('runMigrationIfNeeded reports keysMigrated: false when the copy itself fails (codex review finding)', () => {
+    fs.writeFileSync(rootKeysFile(), FAKE_KEYS);
+
+    mock.method(fs, 'copyFileSync', () => {
+      throw new Error('ENOSPC: simulated copy failure');
+    });
+
+    const result = migration.runMigrationIfNeeded();
+
+    // Before this fix, runMigrationIfNeeded() set keysMigrated: true
+    // unconditionally whenever needsKeysMigration() was true, regardless of
+    // whether migrateKeys() actually succeeded — so a caller would believe
+    // the credential was migrated when nothing was copied at all.
+    assert.equal(result.keysMigrated, false, 'must reflect that no key was actually copied');
+    assert.ok(!fs.existsSync(newKeysFile()), 'no key file should exist after a failed copy');
+  });
 });
 
 describe('backfillKeysFilePermissions (issue #688)', () => {

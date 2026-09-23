@@ -286,8 +286,11 @@ const runMigrationIfNeeded = () => {
 
   if (needsKeysMigration()) {
     console.log('\n[Migration] Migrating API keys to new location...');
-    migrateKeys();
-    result.keysMigrated = true;
+    // Reflect migrateKeys()'s real outcome (issue #688, codex review finding)
+    // — it can now return false on a caught filesystem error mid-sequence,
+    // and a caller told keysMigrated: true when no key was actually copied
+    // would wrongly believe the credential is in place.
+    result.keysMigrated = migrateKeys();
   }
 
   // Independent of the gate above — reconciles an install already migrated
