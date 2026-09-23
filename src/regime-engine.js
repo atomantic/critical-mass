@@ -1970,21 +1970,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
        */
       const bookStartupOpenEntryPartial = async (order, placedAt, label) => {
         const fillArgs = { status: order.status || 'OPEN', isPartialFill: true, placedAt };
-        const ledgerBuys = isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)
-          ? []
-          : fillLedger.getFillsForOrder(order.orderId).filter(f => f.side === 'buy');
-        // Rows a body already booked are settled — handleOrderFill refuses to
-        // rebook them once that body is gone.
-        const wasBooked = (f) => Boolean(f.bodyId || f.isBodyOwned || f.isSatellite || f.sellOrderId);
-        // Rows no body ever owned were ingested by the pre-#671 startup path.
+        // Rows no body ever booked were ingested by the pre-#671 startup path.
         // The normal pass below would dedup them away and build the body from
         // only the newer tranches, so commit them into a body first, on their
-        // own. If they are in the current cycle, the cycleBuys auto-correct
-        // above already counted the order from them, and handleOrderFill's
-        // first commit would count it again.
-        const legacyRows = ledgerBuys.filter(f => !wasBooked(f));
+        // own. Rows a body already booked are settled and never rebooked.
+        const legacyRows = isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)
+          ? []
+          : fillLedger.getFillsForOrder(order.orderId)
+            .filter(f => f.side === 'buy' && !(f.bodyId || f.isBodyOwned || f.isSatellite || f.sellOrderId));
         try {
           if (legacyRows.length > 0) {
+            // A current-cycle order was already counted by the cycleBuys
+            // auto-correct above; a first commit here would count it again.
             const alreadyCounted = fillLedger.getCurrentCycleFills()
               .some(f => f.side === 'buy' && f.orderId === order.orderId);
             const cycleBuysBefore = positionState.cycleBuys;
@@ -2007,6 +2004,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             error: err.message,
             incompleteFills: err.incompleteFills === true,
           });
+          // A throw after a body took the tranche (but before the pending
+          // entry was shrunk) would leave the entry at its full notional
+          // beside that body, overstating deployed capital. The exchange's
+          // own unfilled remainder is the exact figure to keep.
+          if (isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)) {
+            const remaining = Math.max(0, Number(order.size || 0) - Number(order.filledSize || 0));
+            positionState.pendingEntryOrders = (positionState.pendingEntryOrders || []).map(e => (
+              e.orderId !== order.orderId ? e : { ...e, assetQty: remaining, sizeUsdc: remaining * Number(e.price || order.price || 0) }
+            ));
+          }
         }
       };
 
