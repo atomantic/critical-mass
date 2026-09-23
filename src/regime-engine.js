@@ -17,7 +17,7 @@
 const { getAdapter } = require('./adapters');
 const { getUnaccountedFills } = require('./sync-fills');
 const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency, getConfiguredFunds, loadConfig, normalizeExchangeBlock } = require('./config-utils');
-const { createFillLedger } = require('./fill-ledger');
+const { createFillLedger, LEGACY_CONSUMPTION_KEY } = require('./fill-ledger');
 const { createClosedTrades } = require('./closed-trades');
 const {
   createHealthMonitor,
@@ -3329,6 +3329,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * report the unsold tranche folded into it as holdback profit. Its TP is
    * placed with every other TP-less body at the end of startup.
    *
+   * An order NO live body owns, whose every row a gone body stamped (issue
+   * #772), has no live tranche to measure against. Its gone bodies' closed-
+   * trade records stand in for them, but only when they prove how much of
+   * the order those bodies held (provenGoneBodyHolding): each held nothing
+   * but this order, closed with a live-recorded sale, and no other body
+   * sale since the order started filling can have drawn from it. That
+   * figure and the entry's measure must agree, and #607 consumption, where
+   * recorded, must match it; the tranche is then booked at the order's
+   * average cost. Anything short of that is only reported.
+   *
    * Runs BEFORE sealLegacyClosure so the seal counts the tranche as open
    * rather than as closed by an earlier sale, and before anything that
    * books fills or places TPs. Orders it cannot prove are logged and left
@@ -3337,6 +3347,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const recoverUnbookedOwnedEntryTranches = async () => {
     const EPS = 1e-8;
+    // Two independent quantity measures must agree to within this — a few
+    // roundAsset() steps (8 dp each) of summed closed-trade figures.
+    const HOLDING_TOLERANCE = 5e-8;
     const candidates = [];
     const seenOrders = new Set();
     // Ladder rungs are tracked and shrunk exactly like entries.
@@ -3354,8 +3367,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (!measure.owned) {
         // A body that owned the order and stamped every row of it may be gone
         // (its TP sold) while a tranche it never held is still in the ledger.
-        // Nothing live bounds how much the gone bodies held, so this is only
-        // reported, never booked. Rows no body stamped are booked this boot by
+        // Nothing live bounds how much the gone bodies held, so this is booked
+        // only when their closed-trade records prove it (issue #772), and
+        // reported otherwise. Rows no body stamped are booked this boot by
         // bookStartupOpenEntryPartial / the orphan-buy recovery instead.
         if (!fillLedger.getFillsForOrder(orderId).some(isUnsettledBuyRow)) {
           candidates.push({ entry, list, orderId, ledger, measure, reportOnly: true });
@@ -3387,12 +3401,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // closed-trade record lists its buy orders without this one.
     const liveBodyIds = new Set((positionState.celestialBodies || []).map(b => b.id));
     let tradeBySell = null;
-    const goneBodySaleMayHold = (orderId, ledger) => {
-      if (ledger.consumedBy) return false;
-      if (!tradeBySell) {
-        closedTrades.load();
-        tradeBySell = new Map(closedTrades.getAll().filter(t => t.sellOrderId).map(t => [t.sellOrderId, t]));
-      }
+    let allTrades = null;
+    const loadTrades = () => {
+      if (tradeBySell) return;
+      closedTrades.load();
+      allTrades = closedTrades.getAll();
+      tradeBySell = new Map(allTrades.filter(t => t.sellOrderId).map(t => [t.sellOrderId, t]));
+    };
+    /**
+     * Find the first body sale since the order started filling that is not
+     * proven to exclude it. `provenBodyIds` are gone bodies whose share of
+     * the order is already accounted for (the unowned case below).
+     * @returns {Object|null} the offending sell row, or null when none
+     */
+    const unprovenBodySale = (orderId, { skipLiveBodies, provenBodyIds = new Set() }) => {
+      loadTrades();
       const firstFillAt = Math.min(...fillLedger.getFillsForOrder(orderId).filter(f => f.side === 'buy').map(f => f.timestamp || 0));
       for (const f of fillLedger.getAllFills()) {
         if (f.side !== 'sell' || !f.orderId || (f.timestamp || 0) < firstFillAt) continue;
@@ -3401,11 +3424,111 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const trade = tradeBySell.get(f.orderId);
         const bodyId = f.bodyId || trade?.bodyId;
         if (!trade && !(f.bodyId || f.isBodyOwned || f.isSatellite)) continue;
-        if (bodyId && liveBodyIds.has(bodyId)) continue;
+        if (skipLiveBodies && bodyId && liveBodyIds.has(bodyId)) continue;
+        if (trade && trade.bodyId && provenBodyIds.has(trade.bodyId)) continue;
         if (Array.isArray(trade?.buyOrderIds) && !trade.buyOrderIds.includes(orderId)) continue;
-        return true;
+        return f;
       }
-      return false;
+      return null;
+    };
+    const goneBodySaleMayHold = (orderId, ledger) => {
+      if (ledger.consumedBy) return false;
+      return unprovenBodySale(orderId, { skipLiveBodies: true }) !== null;
+    };
+
+    /**
+     * How much of an order no live body owns the gone bodies that held it
+     * are PROVEN to have held (issue #772), from their closed-trade records.
+     *
+     * Every row of such an order carries a gone body's stamp, so nothing on
+     * the rows or in live state bounds that body's share. A closed-trade
+     * record does, but only when the body held nothing else: `qtySold` and
+     * `holdbackAsset` are body-wide, and a body mixing orders cannot say which
+     * order its sale drew from. So the figure is proven only when:
+     *   - at least one closed-trade record lists the order, every such record
+     *     belongs to a gone body, and every record of those bodies (all their
+     *     sales, partial or full) lists this order and no other;
+     *   - each such body closed (a full, non-partial sale) and every record is
+     *     `source: 'live'` — the migration backfill writes holdbackAsset 0
+     *     because it cannot know it, so its figure is not a held quantity;
+     *   - every row of the order that names a body names one of them;
+     *   - every body sale since the order started filling — a live body's
+     *     too — is one of theirs or is recorded as excluding the order (a
+     *     merge-snapshot sale writes no closed-trade record, and a live body
+     *     whose snapshot sold part of this order no longer lists it); and
+     *   - #607 consumption, where recorded, agrees: no `__legacy__` seed (the
+     *     seal, or a first sale's seed, already counted the unbooked tranche
+     *     as sold) and Σ consumedBy equals the held figure.
+     * A body's held quantity is what its sales consumed: sold, plus the
+     * holdback booked as reserves on the full fill.
+     * @returns {{heldQty: number}|{reason: string}}
+     */
+    const provenGoneBodyHolding = (orderId, ledger) => {
+      if (ledger.consumedBy && Object.prototype.hasOwnProperty.call(ledger.consumedBy, LEGACY_CONSUMPTION_KEY)) {
+        return { reason: 'its consumption record already counts pre-#607 sales as a lump that may include the tranche' };
+      }
+      loadTrades();
+      const listing = allTrades.filter(t => Array.isArray(t.buyOrderIds) && t.buyOrderIds.includes(orderId));
+      if (listing.length === 0) return { reason: 'no closed-trade record says which body sold its booked part' };
+      const bodyIds = new Set();
+      for (const t of listing) {
+        if (!t.bodyId) return { reason: 'a non-body sale lists it' };
+        if (liveBodyIds.has(t.bodyId)) return { reason: 'a live body sold part of it' };
+        bodyIds.add(t.bodyId);
+      }
+      let heldQty = 0;
+      for (const bodyId of bodyIds) {
+        const sales = allTrades.filter(t => t.bodyId === bodyId);
+        let closed = false;
+        for (const t of sales) {
+          const ids = Array.isArray(t.buyOrderIds) ? t.buyOrderIds : [];
+          if (ids.length === 0 || ids.some(id => id !== orderId)) {
+            return { reason: `body ${String(bodyId).slice(-8)} also held other buys, so its sales do not say how much of this order it held` };
+          }
+          if (t.source !== 'live') return { reason: `body ${String(bodyId).slice(-8)} has a sale with no recorded holdback` };
+          const sold = Number(t.qtySold) || 0;
+          if (t.isPartial) {
+            heldQty += sold;
+          } else {
+            closed = true;
+            heldQty += Math.max(sold + (Number(t.holdbackAsset) || 0), sold);
+          }
+        }
+        if (!closed) return { reason: `body ${String(bodyId).slice(-8)} has no closing sale on record` };
+      }
+      const strayRow = fillLedger.getFillsForOrder(orderId)
+        .find(f => f.side === 'buy' && f.bodyId && !bodyIds.has(f.bodyId));
+      if (strayRow) return { reason: `body ${String(strayRow.bodyId).slice(-8)} stamped it but has no sale on record listing it` };
+      const sale = unprovenBodySale(orderId, { skipLiveBodies: false, provenBodyIds: bodyIds });
+      if (sale) return { reason: `sale ${String(sale.orderId).slice(0, 8)} since it started filling is not proven to exclude it` };
+      if (ledger.consumedBy && Math.abs((Number(ledger.consumedQty) || 0) - heldQty) > HOLDING_TOLERANCE) {
+        return { reason: `its consumption record (${roundAsset(Number(ledger.consumedQty) || 0)}) disagrees with the closed trades (${roundAsset(heldQty)})` };
+      }
+      return { heldQty };
+    };
+
+    /**
+     * Book `qty` of the order into a body of its own and shrink the tracked
+     * entry by it (saved by the caller together with the body).
+     */
+    const bookMissedTranche = ({ list, orderId, qty, unitCost, buyRows }) => {
+      const costBasis = roundUSDC(unitCost * qty);
+      const body = celestialHierarchy.createNewBody({ assetQty: qty, costBasis, avgPrice: costBasis / qty }, orderId);
+      // Date the tranche by the order's latest fill (the missed tranche is
+      // not identifiable row by row), not by this startup.
+      const lastFillAt = Math.max(...buyRows.map(f => f.timestamp || 0));
+      if (lastFillAt > 0) {
+        body.lastMergedAt = lastFillAt;
+        body.buyOrders[0].filledAt = lastFillAt;
+      }
+      positionState.celestialBodies = positionState.celestialBodies || [];
+      positionState.celestialBodies.push(body);
+      positionState[list] = positionState[list].map(e => (e.orderId !== orderId ? e : {
+        ...e,
+        assetQty: Math.max(0, (Number(e.assetQty) || 0) - qty),
+        sizeUsdc: Math.max(0, (Number(e.sizeUsdc) || 0) - costBasis),
+      }));
+      return body;
     };
 
     let recovered = 0;
@@ -3426,11 +3549,35 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         continue;
       }
       const everBooked = placedQty - (Number(entry.assetQty) || 0);
+      const buyRows = fillLedger.getFillsForOrder(orderId).filter(f => f.side === 'buy' && f.size > 0);
       if (reportOnly) {
+        // No live body owns the order and gone bodies stamped every row of it
+        // (issue #772). Book only when the closed trades prove what those
+        // bodies held AND that agrees with the entry's own measure; anything
+        // short of that is reported for manual review.
         const gap = roundAsset(ledger.size - everBooked);
-        if (gap > EPS) {
-          logger.warn(`⚠️ [${exchange}] Entry ${orderId.slice(0, 8)}: ledger holds ${gap} ${baseCurrency} more than its tracked remainder says was ever booked, and no live body owns the order — possibly a tranche a closed body never held; manual review required`, { orderId, placedQty, entryQty: entry.assetQty, ledgerQty: ledger.size });
+        if (!(gap > EPS)) continue;
+        const details = { orderId, placedQty, entryQty: entry.assetQty, ledgerQty: ledger.size };
+        const proof = provenGoneBodyHolding(orderId, ledger);
+        if (!('heldQty' in proof)) {
+          logger.warn(`⚠️ [${exchange}] Entry ${orderId.slice(0, 8)}: ledger holds ${gap} ${baseCurrency} more than its tracked remainder says was ever booked, and no live body owns the order — possibly a tranche a closed body never held, but ${proof.reason}; manual review required`, { ...details, reason: proof.reason });
+          continue;
         }
+        const closedGap = roundAsset(ledger.size - proof.heldQty);
+        if (Math.abs(closedGap - gap) > HOLDING_TOLERANCE) {
+          // The entry shrank for more or less than the closed bodies held: a
+          // body committed without the shrink, or one gone without a sale.
+          logger.warn(`⚠️ [${exchange}] Entry ${orderId.slice(0, 8)}: its tracked remainder says ${gap} ${baseCurrency} was never booked, but the closed bodies that held it leave ${closedGap} ${baseCurrency} — the measures disagree, manual review required`, { ...details, heldQty: proof.heldQty });
+          continue;
+        }
+        const qty = roundAsset(Math.min(gap, closedGap));
+        // The missed rows are not identifiable, and no live tranche's cost can
+        // be subtracted out: the order's average stands in.
+        const body = bookMissedTranche({ list, orderId, qty, unitCost: ledger.cost / ledger.size, buyRows });
+        recovered++;
+        logger.warn(`🔧 [${exchange}] Entry ${orderId.slice(0, 8)}: booked ${qty} ${baseCurrency} the ledger held but neither a live body nor the closed bodies that owned the order recorded (pre-#671 startup ingest) → body ${body.id.slice(-8)} @ ${fmtPrice(body.avgPrice)}`, {
+          ...details, bodyId: body.id, qty, costBasis: body.costBasis, heldQty: proof.heldQty,
+        });
         continue;
       }
       if (everBooked < measure.trancheQty - EPS) {
@@ -3454,32 +3601,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // gone body's share mixed in) and its tranche records are sane (a
       // fill-price spread bounds the residual). Otherwise the order's average
       // stands in.
-      const buyRows = fillLedger.getFillsForOrder(orderId).filter(f => f.side === 'buy' && f.size > 0);
       const rowUnitCosts = buyRows.map(f => ((f.quoteAmount || 0) + (f.netFee || 0)) / f.size);
       const residualQty = ledger.size - measure.trancheQty;
       const residualUnit = Math.abs(residualQty - qty) <= EPS ? (ledger.cost - measure.trancheCost) / residualQty : NaN;
       const unitCost = residualUnit >= Math.min(...rowUnitCosts) * (1 - 1e-6) && residualUnit <= Math.max(...rowUnitCosts) * (1 + 1e-6)
         ? residualUnit
         : ledger.cost / ledger.size;
-      const costBasis = roundUSDC(unitCost * qty);
-      const body = celestialHierarchy.createNewBody({ assetQty: qty, costBasis, avgPrice: costBasis / qty }, orderId);
-      // Date the tranche by the order's latest fill (the missed tranche is
-      // not identifiable row by row), not by this startup.
-      const lastFillAt = Math.max(...buyRows.map(f => f.timestamp || 0));
-      if (lastFillAt > 0) {
-        body.lastMergedAt = lastFillAt;
-        body.buyOrders[0].filledAt = lastFillAt;
-      }
-      positionState.celestialBodies = positionState.celestialBodies || [];
-      positionState.celestialBodies.push(body);
-      positionState[list] = positionState[list].map(e => (e.orderId !== orderId ? e : {
-        ...e,
-        assetQty: Math.max(0, (Number(e.assetQty) || 0) - qty),
-        sizeUsdc: Math.max(0, (Number(e.sizeUsdc) || 0) - costBasis),
-      }));
+      const body = bookMissedTranche({ list, orderId, qty, unitCost, buyRows });
       recovered++;
       logger.warn(`🔧 [${exchange}] Entry ${orderId.slice(0, 8)}: booked ${qty} ${baseCurrency} the ledger held but no body recorded (pre-#671 startup ingest) → body ${body.id.slice(-8)} @ ${fmtPrice(body.avgPrice)}`, {
-        orderId, bodyId: body.id, qty, costBasis, placedQty, trancheQty: measure.trancheQty, ledgerQty: ledger.size,
+        orderId, bodyId: body.id, qty, costBasis: body.costBasis, placedQty, trancheQty: measure.trancheQty, ledgerQty: ledger.size,
       });
     }
     if (recovered > 0) {
