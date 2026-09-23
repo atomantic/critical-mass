@@ -7190,12 +7190,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // ladder the in-flight rebuild just placed. Snapshot the closing cycle
     // before queueing so they are carried too. Uncontended, the lock is taken
     // synchronously and no snapshot is needed.
-    const queuedFrom = engineLocks.isLadderBusy()
-      ? (() => {
-        const cycleId = fillLedger.getCurrentCycleId();
-        return { cycleId, tradeIds: new Set(cycleFillsFor(cycleId).map(f => f.tradeId)) };
-      })()
-      : null;
+    let queuedFrom = null;
+    if (engineLocks.isLadderBusy()) {
+      const cycleId = fillLedger.getCurrentCycleId();
+      queuedFrom = { cycleId, tradeIds: new Set(cycleFillsFor(cycleId).map(f => f.tradeId)) };
+    }
     return engineLocks.withLadderLock(() => resetCycleLocked(queuedFrom), {
       onTimeout: 'proceed',
       label: 'Cycle reset',

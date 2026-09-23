@@ -245,8 +245,8 @@ const createEngineLocks = (opts = {}) => {
     ladderTail = new Promise((resolve) => { release = resolve; });
     ladderPending++;
 
-    let prevDone = !busy;
     if (busy) {
+      let prevDone = false;
       prev.then(() => { prevDone = true; });
       const waitDeadline = now() + ladderWaitMs;
       while (!prevDone && now() < waitDeadline) {
