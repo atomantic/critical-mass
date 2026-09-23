@@ -4,7 +4,7 @@ const path = require('path');
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const { getWebSocketAuthHeaders, getRestAuthHeaders } = require('./auth');
-const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
+const { createBaseAdapter, createAmbiguousPlacementError, restQueueTiming } = require('../base-adapter');
 const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
@@ -44,6 +44,24 @@ const RATE_LIMIT_BACKOFF_MS = 500;  // linear: 500ms, 1000ms
 const ORDER_PLACEMENT_ENDPOINT = '/v1/order/new';
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Await `waitPromise` (if any) and, when running inside a
+ * `restQueueTiming.run(...)` store (see base-adapter.js), add the elapsed
+ * time to `store.queuedMs` so `instrumentAdapterForHealth` can subtract
+ * client-side throttle/backoff wait from the latency it attributes to the
+ * exchange (issue #680). A no-op — and therefore harmless — when no store is
+ * present (e.g. a call made outside health instrumentation, or in tests).
+ * @param {Promise<void>|null|undefined} waitPromise
+ * @returns {Promise<void>}
+ */
+const awaitAndAccountQueuedTime = async (waitPromise) => {
+  if (!waitPromise) return;
+  const startedAt = Date.now();
+  await waitPromise;
+  const store = restQueueTiming.getStore();
+  if (store) store.queuedMs += Date.now() - startedAt;
+};
 
 /**
  * Build a self-spacing gate that serializes callers to at most one request per
@@ -175,7 +193,13 @@ const createGeminiAdapter = (keysPath = null) => {
     // increases (Gemini rejects a reused/stale nonce).
     for (let attempt = 0; ; attempt++) {
       const slotWait = acquireRestSlot();
-      if (slotWait) await slotWait;
+      // Preserve the original "no wait needed → no await at all" fast path:
+      // an unconditional `await awaitAndAccountQueuedTime(slotWait)` would
+      // add a microtask tick even when slotWait is null, which desyncs
+      // callers (e.g. the heartbeat refcount tests) that assert immediately
+      // after a call that expects to land synchronously when no throttle
+      // wait is needed.
+      if (slotWait) await awaitAndAccountQueuedTime(slotWait);
       const { apiKey, apiSecret } = adapter.loadCredentials();
       const headers = getRestAuthHeaders(apiKey, apiSecret, endpoint, payload);
 
@@ -209,7 +233,7 @@ const createGeminiAdapter = (keysPath = null) => {
 
       if (!response.ok) {
         if (retryRateLimit && isRetryableRateLimit(response.status, attempt, RATE_LIMIT_MAX_RETRIES)) {
-          await defaultSleep(RATE_LIMIT_BACKOFF_MS * (attempt + 1));
+          await awaitAndAccountQueuedTime(defaultSleep(RATE_LIMIT_BACKOFF_MS * (attempt + 1)));
           continue;
         }
         let errData;
