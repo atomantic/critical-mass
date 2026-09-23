@@ -63,3 +63,15 @@ test('a sell larger than its linked buys charges their full cost, never more', (
   assert.equal(p.sells.get('s')?.pnl, 120);
   assert.equal(p.sells.get('s')?.holdback, 0);
 });
+
+test('a consumedBy record limits the linked share, so an open remainder is not booked as holdback', () => {
+  // Buy of 2 partly sold by the earlier (unannotated) TP, then re-linked to a
+  // resting replacement TP; the bodyId redirect pairs it with the earlier sell.
+  const p = pairCycleFills([
+    buy('b', { size: 2, quoteAmount: 200, sellOrderId: 'tp-resting', bodyId: 'body', consumedBy: { 'tp-partial': 1 } }),
+    sell('tp-partial', { bodyId: 'body', size: 1, quoteAmount: 110 }),
+  ]);
+  assert.equal(p.buys.get('b')?.pairedSellOrderId, 'tp-partial');
+  assert.equal(p.sells.get('tp-partial')?.holdback, 0);
+  assert.equal(p.sells.get('tp-partial')?.pnl, 10);
+});

@@ -19,7 +19,8 @@
  *     that orphaned sellOrderId when the buy itself carries none.
  *   - Per-sell pnl: the bodyPnl/satellitePnl annotation, taken ONCE per
  *     orderId (it is written identically to every partial row). Otherwise
- *     proceeds − linked buy cost PRORATED by the quantity sold:
+ *     proceeds − linked buy cost PRORATED by the quantity sold, where a buy
+ *     whose `consumedBy` record names the sell links only that consumed share:
  *     cost × min(1, sold / linked size) — the engine's own proration
  *     (regime-engine.js proratedCostBasis). A sell with neither an annotation
  *     nor linked buys has no pnl (null) and counts toward unpairedSellQty.
@@ -74,6 +75,7 @@ export const sellFillProceeds = (fill) => quoteOf(fill) - feeOf(fill);
  * @property {number} cost
  * @property {string|null} sellOrderId - first non-empty stamp across rows
  * @property {string|null} bodyId
+ * @property {Object<string, number>|null} consumedBy - sellOrderId → qty consumed (#607), unioned across rows
  * @property {string|null} pairedSellOrderId - the filled sell it pairs with, or null
  *
  * @typedef {Object} PairedSell
@@ -118,6 +120,7 @@ export function pairCycleFills(fills) {
         ex.cost += buyFillCost(f);
         if (f.sellOrderId && !ex.sellOrderId) ex.sellOrderId = f.sellOrderId;
         if (f.bodyId && !ex.bodyId) ex.bodyId = f.bodyId;
+        if (f.consumedBy && typeof f.consumedBy === 'object') ex.consumedBy = { ...(ex.consumedBy || {}), ...f.consumedBy };
       } else {
         buys.set(key, {
           key,
@@ -125,6 +128,7 @@ export function pairCycleFills(fills) {
           cost: buyFillCost(f),
           sellOrderId: f.sellOrderId || null,
           bodyId: f.bodyId || null,
+          consumedBy: f.consumedBy && typeof f.consumedBy === 'object' ? { ...f.consumedBy } : null,
           pairedSellOrderId: null,
         });
       }
@@ -196,8 +200,15 @@ export function pairCycleFills(fills) {
     const sell = /** @type {any} */ (sells.get(target));
     buy.pairedSellOrderId = target;
     sell.buyKeys.push(buy.key);
-    sell.linkedSize += buy.size;
-    sell.linkedCost += buy.cost;
+    // When the sell recorded what it consumed from this order (#607), only
+    // that share is linked: a partly-sold order's unsold remainder is still
+    // held open and must not read as this sell's holdback or cost.
+    const consumedQty = buy.consumedBy ? buy.consumedBy[target] : undefined;
+    const share = Number.isFinite(consumedQty) && buy.size > 0
+      ? Math.min(Math.max(/** @type {number} */ (consumedQty), 0), buy.size) / buy.size
+      : 1;
+    sell.linkedSize += buy.size * share;
+    sell.linkedCost += buy.cost * share;
   }
 
   let realizedPnL = 0;
