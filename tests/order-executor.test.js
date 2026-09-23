@@ -139,35 +139,38 @@ describe('checkPendingOrderFills — CANCELLED with partial fills', () => {
     assert.equal(captured[1].status.isPartialFill, true);
     assert.equal(captured[1].status.filledSize, 0.03, 'falls back to tracker value');
   });
-});
 
-describe('refreshStaleOrders — CANCELLED with partial fills', () => {
-  it('routes partial fills through onFillDetected before clearing', async () => {
+  // The two tests below used to exercise this exact routing (handleCancelledOrder)
+  // through the now-deleted refreshStaleOrders sweep, using a stale 'entry'/BUY
+  // order instead of a 'body_tp'/SELL one. handleCancelledOrder is shared code —
+  // checkPendingOrderFills is now the only production path that reaches it for an
+  // externally-cancelled order — so they are ported here rather than dropped
+  // (issue #678 Fix step 2: preserve the partial-fill routing behavior on the live
+  // polling path).
+  it('routes partial fills through onFillDetected before clearing (entry/BUY order)', async () => {
     const captured = [];
     const adapter = makeAdapter({ status: 'CANCELLED', filledSize: 0.04, completionPercentage: 40, side: 'BUY' });
     const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
       onFillDetected: (orderId, status) => captured.push({ orderId, status }),
     });
-    // Place an order that is older than staleOrderMs so refreshStaleOrders
-    // actually inspects it.
     exec.restorePendingOrder('order-stale', {
       type: 'entry',
       price: 2300,
       size: 0.1,
       sizeUsdc: 230,
-      placedAt: Date.now() - 10 * 60_000, // 10 minutes ago, stale
+      placedAt: Date.now() - 10 * 60_000,
     });
 
-    const refreshed = await exec.refreshStaleOrders();
+    const result = await exec.checkPendingOrderFills();
 
-    assert.equal(refreshed, 1);
+    assert.equal(result.cancelled, 1);
     assert.equal(captured.length, 1);
     assert.equal(captured[0].orderId, 'order-stale');
     assert.equal(captured[0].status.isPartialFill, true);
     assert.equal(captured[0].status.filledSize, 0.04);
   });
 
-  it('skips onFillDetected when filledSize is zero', async () => {
+  it('skips onFillDetected when filledSize is zero (entry/BUY order)', async () => {
     const captured = [];
     const adapter = makeAdapter({ status: 'CANCELLED', filledSize: 0, completionPercentage: 0, side: 'BUY' });
     const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
@@ -181,131 +184,10 @@ describe('refreshStaleOrders — CANCELLED with partial fills', () => {
       placedAt: Date.now() - 10 * 60_000,
     });
 
-    const refreshed = await exec.refreshStaleOrders();
+    const result = await exec.checkPendingOrderFills();
 
-    assert.equal(refreshed, 1);
+    assert.equal(result.cancelled, 1);
     assert.equal(captured.length, 0);
-  });
-});
-
-describe('refreshStaleOrders — refused cancel on an OPEN stale entry (issue #674)', () => {
-  const restoreStaleEntry = (exec, orderId) =>
-    exec.restorePendingOrder(orderId, {
-      type: 'entry', price: 2300, size: 0.1, sizeUsdc: 230,
-      placedAt: Date.now() - 10 * 60_000, // stale
-    });
-
-  it('routes a fill through onFillDetected — not onEntryCancelled — when the OPEN-sweep cancel is refused because the order already filled', async () => {
-    const captured = [];
-    const entryCancelled = [];
-    let getOrderCalls = 0;
-    const adapter = {
-      cancelOrder: async () => ({ success: false }),
-      getOrder: async () => {
-        getOrderCalls++;
-        // First read is refreshStaleOrders' own top-of-loop snapshot (still
-        // OPEN, so it decides to cancel). Every read after that (inside
-        // safeCancelOrder's refused-cancel check) sees the fill.
-        return getOrderCalls === 1
-          ? { status: 'OPEN', filledSize: 0, completionPercentage: 0, side: 'BUY' }
-          : { status: 'FILLED', filledSize: 0.1, completionPercentage: 100, side: 'BUY', filledValue: 230, averageFilledPrice: 2300, totalFees: 0.05 };
-      },
-    };
-    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
-      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
-      onEntryCancelled: (orderId) => entryCancelled.push(orderId),
-    });
-    restoreStaleEntry(exec, 'order-refused-filled');
-
-    const refreshed = await exec.refreshStaleOrders();
-
-    assert.equal(refreshed, 1);
-    assert.equal(captured.length, 1, 'the fill is routed through onFillDetected');
-    assert.equal(captured[0].orderId, 'order-refused-filled');
-    assert.equal(captured[0].status.side, 'buy');
-    assert.equal(captured[0].status.filledSize, 0.1);
-    assert.deepEqual(entryCancelled, [], 'a filled order is not an entry-cancellation');
-    assert.equal(exec.getPendingCounts().entries, 0);
-  });
-
-  it('clears the partialFillTracker entry on a refused-because-filled cancel, not just pendingOrders (issue #674 codex review finding)', async () => {
-    // Reuse the SAME orderId across two unrelated episodes to detect a leak:
-    // seed partialFillTracker via a PARTIALLY_FILLED poll, let the
-    // refused-cancel-because-filled branch run (which must clear the
-    // tracker as well as pendingOrders), then restore a fresh order under
-    // the same id and confirm a later clean cancel does NOT fall back to
-    // the stale high-water mark from the first episode.
-    const orderId = 'order-tracker-reuse';
-    let phase = 'seed';
-    const adapter = {
-      cancelOrder: async () => ({ success: false }),
-      getOrder: async () => {
-        if (phase === 'seed') return { status: 'PARTIALLY_FILLED', filledSize: 0.05, completionPercentage: 50, side: 'BUY' };
-        if (phase === 'refresh-open') return { status: 'OPEN', filledSize: 0, completionPercentage: 0, side: 'BUY' };
-        if (phase === 'refresh-filled') return { status: 'FILLED', filledSize: 0.1, completionPercentage: 100, side: 'BUY', filledValue: 230, averageFilledPrice: 2300, totalFees: 0.05 };
-        return { status: 'CANCELLED', filledSize: 0, side: 'BUY' }; // phase === 'verify'
-      },
-    };
-    const captured = [];
-    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
-      onFillDetected: (orderId2, status) => captured.push({ orderId: orderId2, status }),
-    });
-
-    // 1. Seed the tracker with a partial-fill poll.
-    exec.restorePendingOrder(orderId, { type: 'entry', price: 2300, size: 0.1, sizeUsdc: 230, placedAt: Date.now() - 10 * 60_000 });
-    await exec.checkPendingOrderFills();
-    assert.equal(captured.length, 1, 'seed poll fires the partial-fill callback');
-
-    // 2. Refused-cancel-because-filled: first read OPEN (decide to cancel),
-    // then FILLED (safeCancelOrder's refused-check) — lands in refreshStaleOrders'
-    // cancelResult.filled branch, which must also clear partialFillTracker.
-    exec.restorePendingOrder(orderId, { type: 'entry', price: 2300, size: 0.1, sizeUsdc: 230, placedAt: Date.now() - 10 * 60_000 });
-    phase = 'refresh-open';
-    let getOrderCallsInPhase = 0;
-    adapter.getOrder = async () => {
-      getOrderCallsInPhase++;
-      return getOrderCallsInPhase === 1
-        ? { status: 'OPEN', filledSize: 0, completionPercentage: 0, side: 'BUY' }
-        : { status: 'FILLED', filledSize: 0.1, completionPercentage: 100, side: 'BUY', filledValue: 230, averageFilledPrice: 2300, totalFees: 0.05 };
-    };
-    await exec.refreshStaleOrders();
-    assert.equal(captured.length, 2, 'the refused-because-filled cancel also fires onFillDetected');
-
-    // 3. Restore a FRESH order under the same id and force a clean cancel
-    // with filledSize 0 — if the tracker leaked the 0.05 from step 1, this
-    // would incorrectly report a partial fill.
-    exec.restorePendingOrder(orderId, { type: 'entry', price: 2300, size: 0.1, sizeUsdc: 230, placedAt: Date.now() - 10 * 60_000 });
-    phase = 'verify';
-    adapter.getOrder = async () => ({ status: 'CANCELLED', filledSize: 0, side: 'BUY' });
-    await exec.checkPendingOrderFills();
-
-    assert.equal(captured.length, 2, 'no stale partialFillTracker leak — the clean cancel must not fire onFillDetected a third time');
-  });
-
-  it('keeps the order tracked when the cancel is neither filled nor cancelled (ack\'d but never settled)', async () => {
-    // cancelOrder is refused and getOrder never converges to a terminal
-    // state — safeCancelOrder exhausts its ack-retry budget and returns
-    // {cancelled:false, filled:false}. The old raw-cancel code would have
-    // dropped the order from tracking unconditionally; it must now stay
-    // tracked for the polling backstop instead.
-    const captured = [];
-    const entryCancelled = [];
-    const adapter = {
-      cancelOrder: async () => ({ success: false }),
-      getOrder: async () => ({ status: 'OPEN', filledSize: 0, completionPercentage: 0, side: 'BUY' }),
-    };
-    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
-      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
-      onEntryCancelled: (orderId) => entryCancelled.push(orderId),
-    });
-    restoreStaleEntry(exec, 'order-refused-unresolved');
-
-    const refreshed = await exec.refreshStaleOrders();
-
-    assert.equal(refreshed, 0, 'an unresolved cancel is not counted as refreshed');
-    assert.equal(captured.length, 0);
-    assert.deepEqual(entryCancelled, []);
-    assert.equal(exec.getPendingCounts().entries, 1, 'order stays tracked for the polling backstop');
   });
 });
 
@@ -727,57 +609,60 @@ describe('order-executor placement paths — unknown-outcome reconciliation (iss
   });
 });
 
-describe('refreshStaleOrders — per-order adaptive stale timeout', () => {
+describe('scheduleStaleOrderTimeout — per-order adaptive stale timeout (issue #678)', () => {
+  // Ported from the now-deleted refreshStaleOrders' equivalent test (issue
+  // #678 Fix step 2): the per-order staleMs override must still take
+  // precedence over the global regime-adjusted timeout on the LIVE path —
+  // scheduleStaleOrderTimeout, scheduled once per order by placeEntryBid —
+  // now that refreshStaleOrders (a redundant, never-called sweep of the same
+  // logic) is gone.
   it('honors order.staleMs over the global regime-adjusted timeout', async () => {
     const cancelled = [];
-    // refreshStaleOrders now routes its cancel through safeCancelOrder (issue
-    // #674), so cancelOrder must return the {success} shape it expects, and
-    // getOrder must converge to CANCELLED once a cancel has been attempted —
-    // otherwise safeCancelOrder's ack'd-poll branch would spin for real
-    // seconds waiting for a status that never changes. Returning
-    // {success:false} takes the zero-delay refused-cancel branch instead,
-    // which reads getOrder once more immediately.
     const cancelledIds = new Set();
+    let placeCalls = 0;
+    // Returning {success:false} from cancelOrder takes safeCancelOrder's
+    // zero-delay refused-cancel branch, which reads getOrder once more
+    // immediately and sees CANCELLED once cancelOrder has recorded the id —
+    // same trick the original test used to avoid a real multi-second retry
+    // sleep.
     const adapter = {
+      placeLimitBuy: async () => ({ success: true, orderId: placeCalls++ === 0 ? 'adaptive-entry' : 'default-entry' }),
+      cancelOrder: async (orderId) => { cancelledIds.add(orderId); cancelled.push(orderId); return { success: false }; },
       getOrder: async (orderId) => cancelledIds.has(orderId)
         ? { status: 'CANCELLED', filledSize: 0, completionPercentage: 0 }
         : { status: 'OPEN', filledSize: 0, completionPercentage: 0 },
-      cancelOrder: async (orderId) => { cancelledIds.add(orderId); cancelled.push(orderId); return { success: false }; },
-      placeLimitBuy: async () => { throw new Error('placeLimitBuy should not be called'); },
-      placeLimitSell: async () => { throw new Error('placeLimitSell should not be called'); },
       getOrderFills: async () => [],
+      getBidAsk: async () => ({ bid: 30000, ask: 30010 }),
     };
-    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+    const exec = createOrderExecutor('coinbase', {
+      entryOffsetBps: 10,
+      entryMaxRetries: 3,
+      orderStaleMs: 60_000, // unused — staleMs is passed per-call below
+      cancelRateLimitMs: 0,
+    }, adapter, 'ZZZ-TEST-678-adaptive', {});
 
-    // Deep bid with a 5-minute adaptive window, aged past the 60s global timeout.
-    exec.restorePendingOrder('adaptive-entry', {
-      type: 'entry',
-      price: 62_000,
-      size: 0.01,
-      sizeUsdc: 620,
-      placedAt: Date.now() - 120_000,
-      staleMs: 300_000,
-    });
-    // Tight bid without a per-order timeout, aged the same — expires on the global 60s.
-    exec.restorePendingOrder('default-entry', {
-      type: 'entry',
-      price: 62_900,
-      size: 0.01,
-      sizeUsdc: 629,
-      placedAt: Date.now() - 120_000,
-    });
+    // A deep bid with a long per-order timeout — must NOT go stale within
+    // this test's window. staleMs must exceed placeEntryBid's own fixed
+    // 750ms immediate-cancel-verify delay for BOTH orders, or the stale
+    // timer can race that verify's own getOrder call and be misread as an
+    // immediate post-only rejection (a real, but unrelated, production edge
+    // case — not what this test targets).
+    const adaptive = await exec.placeEntryBid(1000, 30000, 30010, 0, null, 3000);
+    assert.equal(adaptive.success, true);
+    // A tight bid with a short (but still >750ms) per-order timeout.
+    const short = await exec.placeEntryBid(1000, 30000, 30010, 0, null, 900);
+    assert.equal(short.success, true);
 
-    const refreshed = await exec.refreshStaleOrders();
+    // Both placeEntryBid calls together already waited ~1500ms (750ms verify
+    // each) since the short order was placed at the ~750ms mark — wait past
+    // its 900ms stale window (and the zero-delay refused-cancel round trip)
+    // without approaching the long order's 3000ms window.
+    await new Promise(r => setTimeout(r, 500));
 
-    assert.equal(refreshed, 1, 'only the default-timeout order goes stale');
-    assert.deepStrictEqual(cancelled, ['default-entry']);
-    assert.ok(exec.getPendingEntries().has('adaptive-entry'), 'adaptive order must keep resting');
+    assert.deepStrictEqual(cancelled, ['default-entry'], 'only the short-staleMs order is cancelled');
+    assert.equal(exec.getPendingCounts().entries, 1, 'the long-staleMs order stays resting');
 
-    // Once the adaptive window elapses, the same sweep cancels it.
-    exec.getPendingEntries().get('adaptive-entry').placedAt = Date.now() - 400_000;
-    const secondPass = await exec.refreshStaleOrders();
-    assert.equal(secondPass, 1);
-    assert.deepStrictEqual(cancelled, ['default-entry', 'adaptive-entry']);
+    exec.clearTimers();
   });
 });
 
@@ -881,6 +766,67 @@ describe('scheduleStaleOrderTimeout — refused cancel during stale check (issue
 
     exec.clearTimers();
   });
+
+  it('clears the partialFillTracker entry on a refused-because-filled cancel, not just pendingOrders (issue #674 codex review finding, ported to the live path by issue #678)', async () => {
+    // Ported from the now-deleted refreshStaleOrders' equivalent test (issue
+    // #678 Fix step 2) onto scheduleStaleOrderTimeout, the only live path
+    // left that reaches this branch. Reuse the SAME orderId across two
+    // unrelated episodes to detect a leak: seed partialFillTracker via a
+    // PARTIALLY_FILLED poll, let the refused-cancel-because-filled branch
+    // run (which must clear the tracker as well as pendingOrders), then
+    // restore a fresh order under the same id and confirm a later clean
+    // cancel does NOT fall back to the stale high-water mark from the first
+    // episode.
+    const orderId = 'order-tracker-reuse-678';
+    const captured = [];
+    const adapter = {
+      placeLimitBuy: async () => ({ success: true, orderId }),
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => ({ status: 'PARTIALLY_FILLED', filledSize: 0.05, completionPercentage: 50, side: 'BUY' }), // phase 'seed' default
+      getOrderFills: async () => [],
+      getBidAsk: async () => ({ bid: 30000, ask: 30010 }),
+    };
+    const exec = createOrderExecutor('coinbase', {
+      entryOffsetBps: 10,
+      entryMaxRetries: 3,
+      orderStaleMs: 60_000,
+      cancelRateLimitMs: 0,
+    }, adapter, 'ZZZ-TEST-678-tracker', {
+      onFillDetected: (orderId2, status) => captured.push({ orderId: orderId2, status }),
+    });
+
+    // 1. Seed the tracker with a partial-fill poll.
+    exec.restorePendingOrder(orderId, { type: 'entry', price: 2300, size: 0.1, sizeUsdc: 230, placedAt: Date.now() });
+    await exec.checkPendingOrderFills();
+    assert.equal(captured.length, 1, 'seed poll fires the partial-fill callback');
+
+    // 2. Refused-cancel-because-filled via a real short-staleMs timer: first
+    // read OPEN (the stale-timeout's own snapshot), then FILLED (every read
+    // after — safeCancelOrder's refused-cancel check, and placeEntryBid's own
+    // 750ms immediate-cancel verify) — lands in scheduleStaleOrderTimeout's
+    // cancelResult.filled branch, which must also clear partialFillTracker.
+    let getOrderCallsInPhase = 0;
+    adapter.getOrder = async () => {
+      getOrderCallsInPhase++;
+      return getOrderCallsInPhase === 1
+        ? { status: 'OPEN', filledSize: 0, completionPercentage: 0, side: 'BUY' }
+        : { status: 'FILLED', filledSize: 0.1, completionPercentage: 100, side: 'BUY', filledValue: 230, averageFilledPrice: 2300, totalFees: 0.05 };
+    };
+    const result = await exec.placeEntryBid(1000, 30000, 30010, 0, null, 60);
+    assert.equal(result.success, true);
+    assert.equal(captured.length, 2, 'the refused-because-filled cancel also fires onFillDetected');
+
+    // 3. Restore a FRESH order under the same id and force a clean cancel
+    // with filledSize 0 — if the tracker leaked the 0.05 from step 1, this
+    // would incorrectly report a partial fill.
+    exec.restorePendingOrder(orderId, { type: 'entry', price: 2300, size: 0.1, sizeUsdc: 230, placedAt: Date.now() });
+    adapter.getOrder = async () => ({ status: 'CANCELLED', filledSize: 0, side: 'BUY' });
+    await exec.checkPendingOrderFills();
+
+    assert.equal(captured.length, 2, 'no stale partialFillTracker leak — the clean cancel must not fire onFillDetected a third time');
+
+    exec.clearTimers();
+  });
 });
 
 describe('cancelAllLadderOrders — partial fill during a successful cancel (issue #674)', () => {
@@ -972,8 +918,8 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
   it('drops tracking BEFORE awaiting a slow fill callback, not after (issue #674 codex review finding)', async () => {
     // handleCancelledOrder is now awaitable so cancelAllLadderOrders can wait
     // for the fill to fully book, but that must not delay when the order
-    // leaves pendingOrders: a concurrent sweep (checkPendingOrderFills,
-    // another refreshStaleOrders pass) reads pendingOrders synchronously, and
+    // leaves pendingOrders: a concurrent sweep (another checkPendingOrderFills
+    // pass, or a second stale timer) reads pendingOrders synchronously, and
     // if the order were still tracked while a slow fill/TP-placement callback
     // is in flight, that concurrent pass could rediscover the same
     // "cancelled" order and re-run this same booking a second time. Assert
