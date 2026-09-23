@@ -605,7 +605,8 @@ describe('#744 merge-snapshot stale-TP cancel books an execution during the canc
     const orderStatus = { status, filledSize: sold, filledValue: sold * 50500, averageFilledPrice: 50500 };
     let cancelCalls = 0;
     let eng;
-    ({ eng } = makeEngine({
+    let placed;
+    ({ eng, placed } = makeEngine({
       pair,
       cancelResult: null,
       adapter: {
@@ -637,6 +638,9 @@ describe('#744 merge-snapshot stale-TP cancel books an execution during the canc
     }
     const total = bodies.reduce((sum, b) => sum + b.assetQty, 0);
     assert.ok(Math.abs(total - expectedTotal) < 1e-9, `the ${sold} sale is deducted exactly once, got ${total}`);
+    assert.equal(cancelCalls, 1, 'the in-flight merge cancel owns the order — the snapshot handler does not cancel it again');
+    assert.equal(placed.length, 1, 'exactly one TP is placed — no orphaned second TP next to the merge continuation\'s');
+    assert.equal(bodies.filter(b => b.tpOrderId).length, 1, 'one live TP, on the one surviving body');
   });
 
   it('keeps the stale TP identity and a retry marker when booking the execution fails', async () => {

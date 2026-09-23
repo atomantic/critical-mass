@@ -3962,9 +3962,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             stampConsumedCostFraction(liveMerged, liveConsumedRatio);
           }
 
-          // The resting TP was sized for the pre-deduction (oversized) qty — cancel
-          // and clear it so a correctly-sized TP is re-placed for the remaining body.
-          if (liveMerged.tpOrderId) {
+          if (liveMerged.tpOrderId && liveMerged.tpOrderId === fillData.orderId) {
+            // The body still points at the snapshotted order itself: this
+            // fill landed while a buy-merge / roll-up cancel of that same
+            // order is still in flight (issue #744). Its execution is the one
+            // THIS handler is booking, and the merge continuation owns the
+            // cancel and the re-place — cancelling, booking or re-placing here
+            // would double-book the sale or leave a second TP live next to
+            // the one the continuation places. Only a body this sale drained
+            // drops the identity (nothing left to re-arm), so it is removed
+            // below and reconcile can never re-book the order against it.
+            if (snapshotClosed && !(liveMerged.assetQty > 0)) {
+              liveMerged.tpOrderId = null;
+              liveMerged.tpPrice = 0;
+              liveMerged.assetOnOrder = 0;
+              if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(fillData.orderId);
+            }
+          } else if (liveMerged.tpOrderId) {
+            // The resting TP was sized for the pre-deduction (oversized) qty — cancel
+            // and clear it so a correctly-sized TP is re-placed for the remaining body.
             const staleTp = liveMerged.tpOrderId;
             let cancelResult;
             try {
@@ -3977,15 +3993,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             }
 
             const staleOutcome = cancelResult ? classifyBodyTpCancellation(cancelResult) : null;
-            // A fill for the snapshotted TP can land while a buy-merge's cancel
-            // of that same order is still in flight — the body then still
-            // points at it. Its execution (partial or complete) is the one
-            // THIS handler is booking: never book it a second time as a
-            // "stale" TP sale, and never leave the body pointing at it, or
-            // reconcile re-books it once the dedup key expires.
-            const isOwnOrder = staleTp === fillData.orderId
-              && (staleOutcome === 'cancelled_with_execution' || staleOutcome === 'filled');
-            if (staleOutcome === 'cancelled' || isOwnOrder) {
+            if (staleOutcome === 'cancelled') {
               liveMerged.tpOrderId = null;
               liveMerged.tpPrice = 0;
               liveMerged.assetOnOrder = 0;
