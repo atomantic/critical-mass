@@ -1033,6 +1033,31 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * After fillLedger.recalculateCycles(), re-point the durable
+   * positionState.activeCycleId at the ledger's live cycle. Orphan recovery
+   * can renumber every cycle (returned as `idMap`), and the persisted
+   * boundary is otherwise only written by resetCycle — so without this the
+   * next restart's restorePersistedCycleId would select whatever cycle now
+   * holds the old name, possibly a completed one (#675). Legacy state files
+   * without the marker are only upgraded when the recalc actually moved IDs.
+   * @param {{orphansFixed?: number, idMap?: Object<string, string>}} recalc
+   * @returns {boolean} Whether activeCycleId changed (caller should persist)
+   */
+  const syncActiveCycleIdAfterRecalc = (recalc) => {
+    const hasMarker = typeof positionState.activeCycleId === 'string';
+    const renamed = Object.keys(recalc?.idMap || {}).length > 0;
+    if (!hasMarker && !renamed) return false;
+    const liveCycleId = fillLedger.getCurrentCycleId();
+    if (!liveCycleId || positionState.activeCycleId === liveCycleId) return false;
+    logger.info(`🔢 [${exchange}] Re-pointing persisted active cycle after recalc: ${positionState.activeCycleId ?? 'none'} → ${liveCycleId}`, {
+      previousCycleId: positionState.activeCycleId ?? null,
+      cycleId: liveCycleId,
+    });
+    positionState.activeCycleId = liveCycleId;
+    return true;
+  };
+
+  /**
    * Save live state to disk (for faster recovery on restarts)
    */
   const saveLiveState = () => {
@@ -1798,6 +1823,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       // Recalculate cycles from fill ledger for cycle counting and per-cycle details.
       const recalcResult = fillLedger.recalculateCycles();
+      // Orphan recovery may renumber cycles. Re-point the durable boundary
+      // (#606) at the ledger's live cycle and persist it now, or the next
+      // restart restores a stale ID that names a different cycle (#675).
+      if (syncActiveCycleIdAfterRecalc(recalcResult)) saveLiveState();
       if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0) {
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         refreshRealizedFromCyclePairs();
@@ -5640,6 +5669,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const recalculateAndRefresh = () => {
     const recalc = fillLedger.recalculateCycles();
+    syncActiveCycleIdAfterRecalc(recalc);
     positionState.cyclesCompleted = recalc.cyclesCompleted;
     // Source of truth — cycle pairs, NOT FIFO/closed-trades. Also updates
     // realizedAssetPnL and heldAssetCostBasis and persists.

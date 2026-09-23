@@ -252,3 +252,42 @@ describe('#232 resetCycleBuys() — operator reset to resume buying', () => {
     assert.ok(eng._getPositionState().celestialBodies.every(b => b.tpOrderId), 'TP orders preserved');
   });
 });
+
+describe('#675 recalculateAndRefresh re-points the persisted activeCycleId', () => {
+  // Own throwaway pair so the ledger starts empty (the #232 tests above leave
+  // fills in TEST_PAIR's ledger).
+  const PAIR_675 = '__test675__';
+  after(() => fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', PAIR_675), { recursive: true, force: true }));
+
+  it('follows the live cycle through orphan-recovery renumbering and persists it', () => {
+    const eng = createRegimeEngine('coinbase', PAIR_675, { dryRun: false, productId: PAIR_675, maxCycleBuys: 3 }, {});
+    engines.push(eng);
+    const ledger = eng.getFillLedger();
+    const at = (h) => new Date(Date.parse('2026-01-01T00:00:00.000Z') + h * 3600_000).toISOString();
+    const fill = (tradeId, orderId, side, h, cycleId) => ledger.ingestFill(
+      { tradeId, orderId, side, price: '50000', size: '0.01', tradeTime: at(h) }, null, { cycleId, skipPersist: true });
+    fill('r675-c1b', 'r675-c1-buy', 'buy', 10, 'cycle-1');
+    fill('r675-c1s', 'r675-c1-sell', 'sell', 11, 'cycle-1');
+    fill('r675-c2b1', 'r675-c2-buy-1', 'buy', 20, 'cycle-2');
+    fill('r675-c2b2', 'r675-c2-buy-2', 'buy', 21, 'cycle-2');
+    // Historical orphan pair (sync-fills / manual import stamp these null).
+    fill('r675-o1b', 'r675-o1-buy', 'buy', 0, null);
+    fill('r675-o1s', 'r675-o1-sell', 'sell', 1, null);
+    ledger.setCurrentCycleId('cycle-2');
+    eng._getPositionState().activeCycleId = 'cycle-2';
+
+    const result = eng.recalculateAndRefresh();
+
+    const live = ledger.getCurrentCycleId();
+    assert.notEqual(live, 'cycle-2', 'orphan recovery renumbered the live cycle');
+    assert.equal(result.activeCycleId, live);
+    assert.equal(ledger.getCurrentCycleAllBuysCount(), 2, 'live cycle still holds its two buys');
+    assert.equal(eng._getPositionState().activeCycleId, live, 'durable boundary follows the rename');
+    assert.equal(loadRegimeState('coinbase', PAIR_675).position.activeCycleId, live, 'and is persisted');
+
+    // Simulated restart restores the persisted ID onto the correct cycle.
+    ledger.setCurrentCycleId('cycle-1');
+    restorePersistedCycleId(ledger, loadRegimeState('coinbase', PAIR_675).position, { info: () => {} }, 'coinbase');
+    assert.equal(ledger.getCurrentCycleAllBuysCount(), 2);
+  });
+});
