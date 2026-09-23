@@ -820,6 +820,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let placementIntentCache = { at: 0, intents: [] };
   let insufficientFundsCooldownUntil = 0; // Cooldown after InsufficientFunds to prevent rapid retry spam
   const recentlyProcessedFills = new Set(); // Dedup guard: prevents double-processing when stale check and fill check race
+  // Bounded engine-level retry for a polled fill whose adapter-side
+  // completeness check (issue #679) still comes up short after the
+  // adapter's own brief internal retry. Keyed by the SAME dedup key as
+  // recentlyProcessedFills. A terminal order is already removed from
+  // orderExecutor's pendingOrders by the time this callback runs
+  // (checkPendingOrderFills deletes before invoking it), and exchanges
+  // like Gemini have no order-event WebSocket — so "will retry on next
+  // reconcile" is not actually true for this failure mode, and this map
+  // exists to make it true.
+  const incompleteFillRetries = new Map(); // dedupKey -> attempt count
+  let incompleteFillMaxRetries = 5;
+  let incompleteFillRetryDelayMs = 10000; // overridable via _test.setIncompleteFillRetryTiming for fast tests
   const recentlyProcessedSellFills = new Set(); // Dedup guard: prevents sell orders from being processed twice across WS/reconcile/polling
   const recentlyProcessedBuyFills = new Set(); // Dedup guard: prevents buy orders from being processed twice across WS/polling (would duplicate the body at full size)
   const tpPlacementInFlight = new Set(); // Dedup guard: prevents concurrent placeBodyTp calls for the same body
@@ -5129,18 +5141,53 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // and handleOrderFill awaits network + fs work that can reject on a
       // routine API blip. An unhandled rejection here crashes the process
       // (Node ≥15) mid-fill, leaving state partially mutated. Contain it and
-      // DELETE this outer polling dedup key so the next reconcile poll
-      // re-detects and re-processes (ingestFill dedups by tradeId, so
+      // DELETE this outer polling dedup key so a still-pending order (a
+      // partial fill) is re-detected and re-processed by the next reconcile's
+      // checkPendingOrderFills poll (ingestFill dedups by tradeId, so
       // already-ingested fills aren't double-counted on retry). handleOrderFill
       // clears its OWN inner buy/sell dedup key on throw (see its wrapper), so
       // every caller path retries cleanly. Note: a reject after the buy
       // branch's cycleBuys++/body push but during TP placement can still
       // double-count those in-memory — tracked for an ingest-guarded refactor
       // (issue #131).
+      //
+      // A TERMINAL fill is different: checkPendingOrderFills already deleted
+      // this order from pendingOrders before invoking this callback (issue
+      // #679 follow-up, codex review), so "next reconcile" can no longer
+      // rediscover it — a rejection here would otherwise strand it forever on
+      // an exchange with no order-event WS (Gemini/Crypto.com). getOrderFills
+      // already retries its own trade-history scan briefly (see the adapters);
+      // an incompleteFills rejection this far out means that budget was
+      // exhausted, so schedule a bounded, longer-interval engine-level retry
+      // of this SAME callback instead of only logging.
       try {
         await handleOrderFill(fillData);
+        incompleteFillRetries.delete(dedupKey);
       } catch (err) {
         recentlyProcessedFills.delete(dedupKey);
+        if (err.incompleteFills === true) {
+          const attempt = (incompleteFillRetries.get(dedupKey) || 0) + 1;
+          if (attempt <= incompleteFillMaxRetries) {
+            incompleteFillRetries.set(dedupKey, attempt);
+            logger.warn(
+              `⚠️ [${exchange}] Fill scan for ${orderId} still incomplete (${err.message}) — scheduling engine-level retry ${attempt}/${incompleteFillMaxRetries} in ${incompleteFillRetryDelayMs}ms`,
+              { orderId, side: status.side, error: err.message, attempt }
+            );
+            const retryTimer = setTimeout(() => {
+              ttlTimers.delete(retryTimer);
+              if (!isRunning) return; // engine stopped while this retry was pending
+              liveCallbacks.onFillDetected(orderId, status);
+            }, incompleteFillRetryDelayMs);
+            ttlTimers.add(retryTimer);
+            return;
+          }
+          incompleteFillRetries.delete(dedupKey);
+          logger.error(
+            `❌ [${exchange}] Fill scan for ${orderId} still incomplete after ${attempt - 1} engine-level retries — giving up automatically; operator must reconcile (scripts/backfill-missing-fills.js, and the periodic ledger-drift sweep will also surface this)`,
+            { orderId, side: status.side, error: err.message }
+          );
+          return;
+        }
         logger.error(
           `❌ [${exchange}] Error processing polled fill ${orderId} (side=${status.side}): ${err.message} — will retry on next reconcile`,
           { orderId, side: status.side, error: err.message }
@@ -6371,6 +6418,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       setReconcileInProgress: engineLocks._test.setReconcileInProgress,
       setFillInProgress: engineLocks._test.setFillInProgress,
       setDustMergeRetryAfter: (v) => { dustMergeRetryAfter = v; },
+      // Speeds up the incompleteFills engine-level retry (issue #679
+      // follow-up) for tests — production keeps the 10s/5-attempt default.
+      setIncompleteFillRetryTiming: (delayMs, maxRetries) => {
+        incompleteFillRetryDelayMs = delayMs;
+        if (maxRetries !== undefined) incompleteFillMaxRetries = maxRetries;
+      },
+      getIncompleteFillRetryCount: (dedupKey) => incompleteFillRetries.get(dedupKey) || 0,
       getFlags: () => ({ isRunning, dustMergeRetryAfter, ...engineLocks.getFlags() }),
       consolidateDustBodies,
       mergeBody: _mergeBodyImpl,
