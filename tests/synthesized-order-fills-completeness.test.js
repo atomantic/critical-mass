@@ -168,6 +168,52 @@ describe('Crypto.com getOrderFills completeness (issue #679)', () => {
       return true;
     });
   });
+
+  it('retries the trade scan and succeeds once a lagging fill is indexed, instead of rejecting immediately (issue #679 follow-up)', async () => {
+    // A fresh order (30 min ago) — its window fits in a single 24h bucket,
+    // so exactly one private/get-trades call happens per retry attempt,
+    // making "the fill appears on the Nth call" straightforward to model.
+    const freshOrderCreateTime = now - 30 * 60 * 1000;
+    const freshTrade = {
+      trade_id: 'cdc-fresh', order_id: 'FRESH-ORDER', side: 'SELL', traded_price: '2',
+      traded_quantity: '500', fees: '-0.25', fee_instrument_name: 'USDT',
+      create_time: now - 60_000, taker_side: 'TAKER',
+    };
+    let getTradesCalls = 0;
+    global.fetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      if (body.method === 'private/get-order-detail') {
+        return {
+          ok: true,
+          text: async () => JSON.stringify({
+            code: 0,
+            result: {
+              order_info: {
+                order_id: 'FRESH-ORDER', instrument_name: 'BTC_USDT',
+                create_time: freshOrderCreateTime, update_time: now,
+                cumulative_quantity: '500', status: 'FILLED',
+              },
+            },
+          }),
+        };
+      }
+      if (body.method === 'private/get-trades') {
+        getTradesCalls++;
+        // The trade is not yet indexed on the first two calls — only from
+        // the third call onward (i.e. after two retries).
+        const data = getTradesCalls >= 3 ? [freshTrade] : [];
+        return { ok: true, text: async () => JSON.stringify({ code: 0, result: { data } }) };
+      }
+      throw new Error(`unexpected method ${body.method}`);
+    };
+    const adapter = createCryptocomAdapter(writeKeys('cryptocom'));
+
+    const fills = await adapter.getOrderFills('FRESH-ORDER');
+
+    assert.equal(getTradesCalls, 3, 'must have retried twice before the fill was indexed');
+    assert.equal(fills.length, 1);
+    assert.equal(fills[0].tradeId, 'cdc-fresh');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -240,5 +286,34 @@ describe('Gemini getOrderFills completeness (issue #679)', () => {
     const adapter = createGeminiAdapter(writeKeys('gemini'));
 
     await assert.rejects(adapter.getOrderFills(ORDER_ID), /order-status lookup failed/);
+  });
+
+  it('retries the trade scan and succeeds once a lagging fill is indexed, instead of rejecting immediately (issue #679 follow-up)', async () => {
+    const freshTrade = { tid: 9001, order_id: '888', symbol: 'ethusd', type: 'Sell', price: '2500.00', amount: '500', fee_amount: '2.5', timestampms: now - 60_000, is_maker: false };
+    let mytradesCalls = 0;
+    global.fetch = async (url) => {
+      const endpoint = new URL(url).pathname;
+      if (endpoint === '/v1/order/status') {
+        return {
+          ok: true, status: 200, statusText: 'OK',
+          text: async () => JSON.stringify({ order_id: '888', symbol: 'ETHUSD', timestampms: now - 30 * 60 * 1000, executed_amount: '500' }),
+        };
+      }
+      if (endpoint === '/v1/mytrades') {
+        mytradesCalls++;
+        // Not yet indexed on the first two calls — only from the third call
+        // onward (i.e. after two retries).
+        const trades = mytradesCalls >= 3 ? [freshTrade] : [];
+        return { ok: true, status: 200, statusText: 'OK', text: async () => JSON.stringify(trades) };
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`);
+    };
+    const adapter = createGeminiAdapter(writeKeys('gemini'));
+
+    const fills = await adapter.getOrderFills('888');
+
+    assert.equal(mytradesCalls, 3, 'must have retried twice before the fill was indexed');
+    assert.equal(fills.length, 1);
+    assert.equal(fills[0].tradeId, '9001');
   });
 });

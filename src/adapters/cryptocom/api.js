@@ -806,18 +806,37 @@ const createCryptocomAdapter = (keysPath = null) => {
     const NS_PER_MS = 1_000_000n;
 
     // Step 2: walk the window, then filter to this order.
-    const rawTrades = await walkTrades({
-      instrument,
-      startNs: BigInt(Math.trunc(windowStartMs)) * NS_PER_MS,
-      endNs: BigInt(Math.trunc(windowEndMs)) * NS_PER_MS,
-    });
-    const matching = rawTrades.filter(t => String(t.order_id) === String(orderId));
-
     // Step 3: verify the matched fills actually account for everything the
-    // exchange says filled — a short sum here is the "partial fill" case
-    // worth guarding against (distinct from designed holdback, which is
-    // computed downstream from the fills this function returns).
-    const totalMatched = matching.reduce((sum, t) => sum + parseFloat(t.traded_quantity || t.quantity || 0), 0);
+    // exchange says filled — a short sum is the "partial fill" case worth
+    // guarding against (distinct from designed holdback, which is computed
+    // downstream from the fills this function returns). The most common
+    // cause of a short match right after a fill is Crypto.com's own
+    // trade-history indexing lag (the fill just landed and
+    // private/get-trades hasn't surfaced it yet), which normally clears
+    // within a couple of seconds — retry briefly before rejecting. The
+    // window itself does not need to move: updateTime already bounds it
+    // past the trade's own timestamp, so a retry only needs to re-poll for
+    // a record the backend hasn't indexed yet. This matters beyond this
+    // call alone: order-executor's polling-based fill detection
+    // (checkPendingOrderFills) removes a terminal order from tracking
+    // BEFORE invoking its fill callback, so a reject here on a merely
+    // transient gap can strand that fill with no automatic retry path.
+    const FILL_SCAN_RETRIES = 2;
+    const FILL_SCAN_RETRY_DELAY_MS = 750;
+    let matching;
+    let totalMatched;
+    for (let attempt = 0; ; attempt++) {
+      const rawTrades = await walkTrades({
+        instrument,
+        startNs: BigInt(Math.trunc(windowStartMs)) * NS_PER_MS,
+        endNs: BigInt(Math.trunc(windowEndMs)) * NS_PER_MS,
+      });
+      matching = rawTrades.filter(t => String(t.order_id) === String(orderId));
+      totalMatched = matching.reduce((sum, t) => sum + parseFloat(t.traded_quantity || t.quantity || 0), 0);
+      if (totalMatched >= cumulativeQuantity - 1e-9 || attempt >= FILL_SCAN_RETRIES) break;
+      await new Promise(resolve => setTimeout(resolve, FILL_SCAN_RETRY_DELAY_MS));
+    }
+
     if (totalMatched < cumulativeQuantity - 1e-9) {
       throw Object.assign(
         new Error(`Crypto.com getOrderFills: fills incomplete for ${orderId}: ${totalMatched} of ${cumulativeQuantity}`),

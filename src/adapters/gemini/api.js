@@ -787,38 +787,54 @@ const createGeminiAdapter = (keysPath = null) => {
     const sinceMs = createdMs > 0 ? createdMs - 60000 : Date.now() - 60 * 60 * 1000; // 60s pad, or last hour/all symbols when order carries no timestamp
     const executedAmount = parseFloat(order?.executed_amount || 0);
 
-    // Step 2: paginate trades since order creation and filter by order
-    const trades = await fetchTradesSince(symbol, sinceMs);
-
-    const fills = trades
-      .filter(trade => trade.order_id?.toString() === orderId.toString())
-      .map(trade => {
-        const price = parseFloat(trade.price || 0);
-        const size = parseFloat(trade.amount || 0);
-        const feeAmount = parseFloat(trade.fee_amount || 0);
-
-        return {
-          tradeId: trade.tid?.toString(),
-          orderId: trade.order_id?.toString(),
-          productId: trade.symbol,
-          side: trade.type?.toUpperCase(),
-          price,
-          size,
-          sizeInQuote: price * size,
-          commission: feeAmount,
-          totalCommission: feeAmount,
-          rebate: 0, // Gemini doesn't have maker rebates in the same way
-          netFee: feeAmount,
-          tradeTime: new Date(trade.timestampms).toISOString(),
-          liquidityIndicator: trade.is_maker ? 'MAKER' : 'TAKER',
-        };
-      });
-
+    // Step 2: paginate trades since order creation and filter by order.
     // Step 3: verify the matched fills actually account for everything the
-    // exchange says executed — a short sum here is the "partial fill" case
-    // worth guarding against (distinct from designed holdback, which is
-    // computed downstream from the fills this function returns).
-    const totalMatched = fills.reduce((sum, fill) => sum + Number(fill.size || 0), 0);
+    // exchange says executed — a short sum is the "partial fill" case worth
+    // guarding against (distinct from designed holdback, which is computed
+    // downstream from the fills this function returns). The most common
+    // cause of a short match right after a fill is Gemini's own
+    // trade-history eventual consistency (the fill just landed and
+    // /v1/mytrades hasn't caught up yet), which normally clears within a
+    // couple of seconds — retry briefly before rejecting. This matters
+    // beyond this call alone: order-executor's polling-based fill detection
+    // (checkPendingOrderFills) removes a terminal order from tracking
+    // BEFORE invoking its fill callback, and Gemini has no order-event
+    // WebSocket to rediscover it afterward, so a reject here on a merely
+    // transient gap can strand that fill with no automatic retry path.
+    const FILL_SCAN_RETRIES = 2;
+    const FILL_SCAN_RETRY_DELAY_MS = 750;
+    let fills;
+    let totalMatched;
+    for (let attempt = 0; ; attempt++) {
+      const trades = await fetchTradesSince(symbol, sinceMs);
+      fills = trades
+        .filter(trade => trade.order_id?.toString() === orderId.toString())
+        .map(trade => {
+          const price = parseFloat(trade.price || 0);
+          const size = parseFloat(trade.amount || 0);
+          const feeAmount = parseFloat(trade.fee_amount || 0);
+
+          return {
+            tradeId: trade.tid?.toString(),
+            orderId: trade.order_id?.toString(),
+            productId: trade.symbol,
+            side: trade.type?.toUpperCase(),
+            price,
+            size,
+            sizeInQuote: price * size,
+            commission: feeAmount,
+            totalCommission: feeAmount,
+            rebate: 0, // Gemini doesn't have maker rebates in the same way
+            netFee: feeAmount,
+            tradeTime: new Date(trade.timestampms).toISOString(),
+            liquidityIndicator: trade.is_maker ? 'MAKER' : 'TAKER',
+          };
+        });
+      totalMatched = fills.reduce((sum, fill) => sum + Number(fill.size || 0), 0);
+      if (totalMatched >= executedAmount - 1e-9 || attempt >= FILL_SCAN_RETRIES) break;
+      await new Promise(resolve => setTimeout(resolve, FILL_SCAN_RETRY_DELAY_MS));
+    }
+
     if (totalMatched < executedAmount - 1e-9) {
       throw Object.assign(
         new Error(`[gemini] getOrderFills: fills incomplete for ${orderId}: ${totalMatched} of ${executedAmount}`),
