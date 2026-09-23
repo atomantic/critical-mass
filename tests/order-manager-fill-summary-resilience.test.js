@@ -19,7 +19,8 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { waitForBuyFill, checkFilledOrders, checkFibonacciSellFill } = require('../src/order-manager');
+const { waitForBuyFill, checkFilledOrders, checkFibonacciSellFill, placeFibonacciSellOrder } = require('../src/order-manager');
+const { getFibonacciSellQuantity } = require('../src/fibonacci-utils');
 
 const incompleteFillsError = (orderId) =>
   Object.assign(new Error(`fills incomplete for ${orderId}: 0.5 of 1.5`), { incompleteFills: true });
@@ -113,5 +114,35 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
     assert.equal(fill.filledSize, 0.5);
     assert.equal(fill.fees, 0);
     assert.equal(fill.netProceeds, 1000);
+  });
+
+  it('placeFibonacciSellOrder still credits a partially-filled, cancelled previous sell when getOrderFillSummary rejects', async () => {
+    // Prev cycle sell for 1.0 ETH, 40% executed (0.4 ETH) at 2000, still live —
+    // mirrors tests/fibonacci-sell-consolidation.test.js's Bug-B "PARTIALLY_FILLED"
+    // case, but with a rejecting getOrderFillSummary instead of a stubbed one.
+    const config = { productId: 'ETH-USD', holdbackPercent: 15, sellMarkupPercent: 5 };
+    const adapter = {
+      getOrder: async () => ({ status: 'PARTIALLY_FILLED', filledSize: 0.4, filledValue: 800, averageFilledPrice: 2000 }),
+      cancelOrder: async () => ({ success: true }),
+      getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
+      getCurrentPrice: async () => 2000,
+      placeLimitSell: async (productId, qty, price) => ({ success: true, orderId: `new-sell-${qty.toFixed(8)}`, baseSize: qty, limitPrice: price }),
+    };
+
+    const cumulativeAsset = 1.05;
+    const result = await placeFibonacciSellOrder(config, cumulativeAsset, 1900, 'prev-partial', adapter);
+
+    assert.equal(result.alreadyFilled, false);
+    assert.ok(result.prevFill, 'the executed portion of the cancelled prev sell must still be credited');
+    assert.equal(result.prevFill.filledSize, 0.4);
+    assert.equal(result.prevFill.fillValue, 800);
+    assert.equal(result.prevFill.fees, 0);
+    assert.equal(result.prevFill.netFees, 0);
+    // netProceeds = fillValue - netFees, degraded netFees is 0.
+    assert.equal(result.prevFill.netProceeds, 800);
+    // New sell still correctly shrunk by the already-sold 0.4, independent of
+    // the degraded fee detail.
+    const target = getFibonacciSellQuantity(cumulativeAsset, config.holdbackPercent);
+    assert.ok(Math.abs(result.sellQuantity - (target - 0.4)) < 1e-9);
   });
 });
