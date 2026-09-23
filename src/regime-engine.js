@@ -3058,6 +3058,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    *     size is what was ever booked, and the ledger's excess over it is not.
    *     Blind to a body committed without the entry shrinking — rejected
    *     below when it books less than live tranches hold.
+   * Both are blind to a pre-#607 sale by a body that is gone AND held a
+   * tranche the entry never shrank for, so an order is also skipped when any
+   * gone body's sale since it started filling is not proven (by its
+   * closed-trade record) to exclude it.
    * The missing quantity becomes a body of its own at the order's average
    * ledger cost, and the entry shrinks by it (both saved together, so a
    * restart finds nothing missing). A new body, not a merge: this runs before
@@ -3110,6 +3114,31 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return 0;
     }
 
+    // A body sale that predates #607 left no consumption record, so neither
+    // measure sees a closed body's share of an order — and a body committed
+    // without the entry shrinking (a post-commit throw, or the pre-#756
+    // orphan recovery) inflates the entry's measure by that same share. Only
+    // book an order no gone body's sale could have held part of: one whose
+    // closed-trade record lists its buy orders without this one.
+    const liveBodyIds = new Set((positionState.celestialBodies || []).map(b => b.id));
+    let tradeBySell = null;
+    const goneBodySaleMayHold = (orderId, ledger) => {
+      if (ledger.consumedBy) return false;
+      if (!tradeBySell) {
+        closedTrades.load();
+        tradeBySell = new Map(closedTrades.getAll().filter(t => t.sellOrderId).map(t => [t.sellOrderId, t]));
+      }
+      const firstFillAt = Math.min(...fillLedger.getFillsForOrder(orderId).filter(f => f.side === 'buy').map(f => f.timestamp || 0));
+      for (const f of fillLedger.getAllFills()) {
+        if (f.side !== 'sell' || !f.orderId || !(f.bodyId || f.isBodyOwned || f.isSatellite)) continue;
+        if ((f.bodyId && liveBodyIds.has(f.bodyId)) || (f.timestamp || 0) < firstFillAt) continue;
+        const trade = tradeBySell.get(f.orderId);
+        if (Array.isArray(trade?.buyOrderIds) && !trade.buyOrderIds.includes(orderId)) continue;
+        return true;
+      }
+      return false;
+    };
+
     let recovered = 0;
     for (const { entry, orderId, ledger, measure, reportOnly } of candidates) {
       let placedQty = 0;
@@ -3144,6 +3173,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Bodies miss part of the ledger but the entry says it was all booked:
         // most likely a pre-#607 sale by a body that is gone.
         logger.info(`ℹ️ [${exchange}] Entry ${orderId.slice(0, 8)}: bodies hold ${roundAsset(measure.shortfall)} ${baseCurrency} less than its ledger, but its tracked remainder shows nothing unbooked — nothing booked (review manually if it persists)`, { orderId, placedQty, entryQty: entry.assetQty, ledgerQty: ledger.size });
+        continue;
+      }
+      if (goneBodySaleMayHold(orderId, ledger)) {
+        logger.warn(`⚠️ [${exchange}] Entry ${orderId.slice(0, 8)}: bodies hold ${roundAsset(measure.shortfall)} ${baseCurrency} less than its ledger, but a closed body may have sold part of it before consumption records existed — cannot prove the gap unbooked, manual review required`, { orderId, placedQty, entryQty: entry.assetQty, ledgerQty: ledger.size });
         continue;
       }
 

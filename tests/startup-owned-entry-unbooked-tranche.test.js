@@ -39,6 +39,7 @@ const { createFillLedger } = require('../src/fill-ledger');
 const { saveRegimeState, loadRegimeState } = require('../src/state-tracker');
 const { tradeEvents } = require('../src/trade-events');
 const { createRecoveryModule } = require('../src/recovery');
+const { createClosedTrades } = require('../src/closed-trades');
 
 const engines = [];
 after(async () => {
@@ -517,5 +518,43 @@ describe('offline tranches the boot-time recovery ingests (issue #756)', () => {
     const pos = eng._getPositionState();
     const booked = pos.celestialBodies.flatMap(b => b.buyOrders || []).filter(bo => bo.orderId === ORDER_ID).length;
     assert.equal(booked, 0, 'reported for manual review, never booked');
+  });
+});
+
+describe('a closed body that may have held part of the order (issue #756)', () => {
+  /** A closed body's sale after the entry started filling. */
+  const goneSale = (seed) => {
+    seed.ingestFill({ tradeId: 'tp-gone-1', orderId: 'tp-gone', side: 'sell', size: 0.004, price: 51000, netFee: 0, tradeTime: new Date(Date.now() - 42000).toISOString() });
+    seed.annotateFillsByOrderId('tp-gone', { isBodyOwned: true, bodyId: 'body-gone', bodyPnl: 4, bodyHoldbackAsset: 0 });
+  };
+
+  it('books nothing when a gone body\'s sale is not proven to exclude the order', async () => {
+    const pair = '__teststartupowned756_l__';
+    // t1 went to a body that sold and closed while the entry was never shrunk
+    // for it; t2 is held by B, and the entry shrank for t2 only. Both
+    // measures read t1 as missing — it was sold.
+    writePreFixFund(pair, {
+      ledger: (seed) => {
+        seed.ingestFill(T1, Date.now() - 60000);
+        goneSale(seed);
+        seed.ingestFill(T2, Date.now() - 60000);
+        seed.annotateFillsByOrderId(ORDER_ID, { isBodyOwned: true, bodyId: 'body-b-756', sellOrderId: BODY_TP });
+      },
+      bodies: [legacyBody(0.006)],
+      entry: { orderId: ORDER_ID, price: PRICE, assetQty: 0.014, sizeUsdc: 700, placedAt: Date.now() - 60000 },
+    });
+    const { eng } = await bootEngine(pair, { openOrders: [OPEN_ENTRY], orders: {}, fills: [T1, T2] });
+    const pos = eng._getPositionState();
+    assert.equal(pos.celestialBodies.length, 1, 'the sold tranche is not rebooked');
+    assert.ok(near(bookedQty(pos), 0.006));
+  });
+
+  it('still books when the gone body\'s closed-trade record lists other buys only', async () => {
+    const pair = '__teststartupowned756_m__';
+    writeSplitFund(pair, { ledgerExtra: goneSale });
+    const trades = createClosedTrades(EXCHANGE, pair);
+    trades.record({ sellOrderId: 'tp-gone', timestamp: Date.now() - 42000, qtySold: 0.004, bodyId: 'body-gone', buyOrderIds: ['other-buy'], source: 'live' });
+    const { eng } = await bootEngine(pair, { openOrders: [OPEN_ENTRY], orders: {}, fills: [T1, T2] });
+    assert.ok(near(bookedQty(eng._getPositionState()), 0.01), 'the unbooked t2 is recovered');
   });
 });
