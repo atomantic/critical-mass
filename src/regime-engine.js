@@ -1978,6 +1978,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           ? []
           : fillLedger.getFillsForOrder(order.orderId)
             .filter(f => f.side === 'buy' && !(f.bodyId || f.isBodyOwned || f.isSatellite || f.sellOrderId));
+        let mainPassStarted = false;
         try {
           if (legacyRows.length > 0) {
             // A current-cycle order was already counted by the cycleBuys
@@ -1997,6 +1998,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               }
             }
           }
+          mainPassStarted = true;
           await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, fillArgs));
         } catch (err) {
           logger.error(`❌ [${exchange}] Could not book offline partial fills for ${label} ${order.orderId}: ${err.message} — will pick them up on the next reconcile/poll`, {
@@ -2006,9 +2008,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           });
           // A throw after a body took the tranche (but before the pending
           // entry was shrunk) would leave the entry at its full notional
-          // beside that body, overstating deployed capital. The exchange's
-          // own unfilled remainder is the exact figure to keep.
-          if (isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)) {
+          // beside that body, overstating deployed capital. The main pass
+          // books everything the exchange reported, so the exchange's own
+          // unfilled remainder is the exact figure to keep. (Not after a
+          // legacy-row failure: tranches the ledger lacks are still unbooked,
+          // and the later pass that books them shrinks the entry itself.)
+          if (mainPassStarted && isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)) {
             const remaining = Math.max(0, Number(order.size || 0) - Number(order.filledSize || 0));
             positionState.pendingEntryOrders = (positionState.pendingEntryOrders || []).map(e => (
               e.orderId !== order.orderId ? e : { ...e, assetQty: remaining, sizeUsdc: remaining * Number(e.price || order.price || 0) }
