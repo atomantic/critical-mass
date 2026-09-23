@@ -863,8 +863,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     setDrawdownResumeConfirm(false)
     try {
       const res = await fetch(`/api/${exchange}/regime/resume-drawdown${pairQuery}`, { method: 'POST' })
+      const data = await res.json().catch(() => ({ success: false, message: 'Bad response' }))
       if (res.ok) await fetchStatus()
-      else addToast({ type: 'error', title: 'Resume failed', message: `HTTP ${res.status}` })
+      // Surface the engine's actual reason (e.g. "Fund equity is depleted ($0.00)
+      // — cannot re-base the drawdown peak") instead of a bare HTTP status —
+      // that reason is the whole point of a failed resume attempt.
+      else addToast({ type: 'error', title: 'Resume failed', message: data.message || data.error || `HTTP ${res.status}` })
     } catch (err) {
       addToast({ type: 'error', title: 'Resume failed', message: err.message || 'Network error' })
     }
@@ -1886,12 +1890,21 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-xs font-medium text-gray-400">Risk Limits</h3>
                 {risk.isDrawdownPaused && (
-                  <button onClick={() => setDrawdownResumeConfirm(true)} className="px-2 py-0.5 bg-green-800 hover:bg-green-900 text-white text-[10px] rounded flex items-center gap-1">
+                  <button
+                    onClick={() => setDrawdownResumeConfirm(true)}
+                    title={risk.equityDepleted ? 'Fund equity is depleted — the time-based auto-reset does not apply; resume manually once equity recovers.' : undefined}
+                    className="px-2 py-0.5 bg-green-800 hover:bg-green-900 text-white text-[10px] rounded flex items-center gap-1"
+                  >
                     <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
                     Resume
                   </button>
                 )}
               </div>
+              {risk.isDrawdownPaused && risk.equityDepleted && (
+                <div className="text-[9px] text-red-400 mb-2">
+                  Equity depleted (100% drawdown) — no auto-reset; requires manual resume once funded.
+                </div>
+              )}
               <div className="grid grid-cols-3 gap-2">
                 <div className="text-center">
                   <div className="text-[10px] text-gray-400 mb-1">{asset}</div>
