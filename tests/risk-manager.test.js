@@ -516,6 +516,36 @@ describe('risk-manager equity-depleted fail-closed state (issue #742)', () => {
     assert.equal(riskManager.getState().equityDepleted, false);
     assert.equal(riskManager.getState().isDrawdownPaused, false);
   });
+
+  it('round-trips a depleted-equity pause through getPersistedState / restoreState (review finding)', (t) => {
+    const a = setup(t, { maxDrawdownPercent: 10 });
+    a.updateDrawdown(1000, 1000);
+    a.updateDrawdown(-5, 1000); // paused, depleted
+    assert.equal(a.getState().equityDepleted, true);
+    const snapshot = JSON.parse(JSON.stringify(a.getPersistedState()));
+
+    // A restarted engine must see the depleted notice immediately, before its
+    // first post-restart updateDrawdown call re-derives it.
+    const b = createRiskManager('coinbase', makeConfig({ maxDrawdownPercent: 10 }), 'BTC-USDC');
+    b.restoreState(snapshot);
+    const state = b.getState();
+    assert.equal(state.isDrawdownPaused, true);
+    assert.equal(state.equityDepleted, true);
+  });
+
+  it('does not restore equityDepleted for a non-depleted persisted pause', (t) => {
+    const a = setup(t, { maxDrawdownPercent: 10 });
+    a.updateDrawdown(1000, 1000);
+    a.updateDrawdown(850, 1000); // paused, NOT depleted (equity still positive)
+    assert.equal(a.getState().equityDepleted, false);
+    const snapshot = JSON.parse(JSON.stringify(a.getPersistedState()));
+
+    const b = createRiskManager('coinbase', makeConfig({ maxDrawdownPercent: 10 }), 'BTC-USDC');
+    b.restoreState(snapshot);
+    const state = b.getState();
+    assert.equal(state.isDrawdownPaused, true);
+    assert.equal(state.equityDepleted, false);
+  });
 });
 
 describe('risk-manager resetDrawdown (issue #742)', () => {

@@ -447,7 +447,7 @@ const createRiskManager = (exchange, config, productId) => {
   /**
    * Snapshot of the drawdown tracker for persistence in positionState, so a
    * restart neither clears an active pause nor forgets the peak.
-   * @returns {{peakEquity: number|null, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, capitalBase: number|null}}
+   * @returns {{peakEquity: number|null, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, capitalBase: number|null, equityDepleted: boolean}}
    */
   const getPersistedState = () => ({
     peakEquity,
@@ -455,6 +455,7 @@ const createRiskManager = (exchange, config, productId) => {
     isDrawdownPaused,
     drawdownPausedAt,
     capitalBase: lastCapitalBase,
+    equityDepleted: isEquityDepleted,
   });
 
   /**
@@ -474,6 +475,10 @@ const createRiskManager = (exchange, config, productId) => {
     if (saved.isDrawdownPaused === true) {
       isDrawdownPaused = true;
       drawdownPausedAt = num(saved.drawdownPausedAt) ?? Date.now();
+      // Restore the depleted-equity flag too, so a restart into an active
+      // depleted pause shows the dashboard's notice immediately instead of
+      // only after the next metrics tick re-derives it (issue #742 review).
+      isEquityDepleted = saved.equityDepleted === true;
     }
   };
 
