@@ -1064,6 +1064,36 @@ describe('ladder sweeps serialise on the ladder lock (#766)', () => {
     assert.deepEqual(pos.pendingLadderOrders, []);
   });
 
+  it('two resets that both timed out on the ladder lock turn the cycle over once', async () => {
+    const sweeps = [deferred(), deferred()];
+    let n = 0;
+    const eng = makeEngine({
+      executor: {
+        cancelAllLadderOrders: async () => {
+          await sweeps[n++].promise;
+          return { cancelled: 0, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [] };
+        },
+      },
+    });
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.ladderActive = true;
+    const started = [];
+    const origStart = ledger.startNewCycle;
+    ledger.startNewCycle = (...args) => { const id = origStart(...args); started.push(id); return id; };
+
+    const a = eng._test.resetCycleUnserialised();
+    const b = eng._test.resetCycleUnserialised();
+    sweeps[0].resolve();
+    await a;
+    sweeps[1].resolve();
+    await b;
+    assert.equal(started.length, 1, 'one turnover for one closing cycle');
+    assert.equal(ledger.getCurrentCycleId(), started[0]);
+  });
+
   it('a rebuild requested mid-reset runs after the reset instead of refusing or interleaving', async () => {
     const sweep = deferred();
     const { eng, calls } = setupSerialEngine({ holdCancel: [sweep] });

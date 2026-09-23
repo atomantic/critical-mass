@@ -7305,6 +7305,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     const closingCycleFills = () => cycleFillsFor(closingCycleId);
     let preSweepTradeIds = queuedFrom ? queuedFrom.tradeIds : null;
+    const generationAtEntry = cycleResetGeneration;
 
     // Cancel remaining ladder orders - check both positionState and executor tracking
     const executorLadderOrders = orderExecutor.getPendingLadderOrders ? orderExecutor.getPendingLadderOrders() : [];
@@ -7313,6 +7314,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       preSweepTradeIds = preSweepTradeIds || new Set(closingCycleFills().map(f => f.tradeId));
       const { cancelled, partialFills = 0 } = orderExecutor.cancelAllLadderOrders ? await orderExecutor.cancelAllLadderOrders() : { cancelled: 0 };
       if (cancelled > 0) logger.info(`🧹 [${exchange}] Cancelled ${cancelled} unfilled ladder orders${partialFills > 0 ? ` (${partialFills} partially filled during the cancel and were booked)` : ''}`);
+      // Two resets that both timed out on the ladder lock can overlap here;
+      // only the first to finish its sweep turns the cycle over (#766).
+      if (cycleResetGeneration !== generationAtEntry) {
+        logger.info(`🔄 [${exchange}] Cycle reset skipped after its sweep — a concurrent reset already turned the cycle over`);
+        return;
+      }
     }
 
     // Reset ladder state
