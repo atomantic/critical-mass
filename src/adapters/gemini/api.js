@@ -655,9 +655,13 @@ const createGeminiAdapter = (keysPath = null) => {
         // the raw field is non-null — a present-but-unparseable value (e.g.
         // "", "N/A") would otherwise take this branch and still yield NaN.
         const remainingParsed = parseFloat(order.remaining_amount);
+        // Clamp the fallback at zero too, same as Coinbase's getOpenOrders —
+        // a payload missing/unparseable original_amount can leave
+        // originalSize at its 0 fallback while executed_amount is still
+        // reported nonzero, which would otherwise go negative.
         const size = Number.isFinite(remainingParsed)
           ? remainingParsed
-          : originalSize - filledSize;
+          : Math.max(0, originalSize - filledSize);
         return {
           orderId: order.order_id?.toString(),
           productId: order.symbol,

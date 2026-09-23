@@ -76,6 +76,42 @@ describe('adapter getOpenOrders() shape parity (issue #684)', () => {
     }
   });
 
+  it('Coinbase clamps size at zero instead of going negative when an unrecognized order_configuration leaves originalSize at its 0 fallback', async () => {
+    const { privateKey } = crypto.generateKeyPairSync('ec', {
+      namedCurve: 'prime256v1',
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    });
+    const keysPath = path.join(os.tmpdir(), `coinbase-open-orders-shape-clamp-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(keysPath, JSON.stringify({ name: 'organizations/test/apiKeys/test-key', privateKey }));
+    try {
+      const adapter = createCoinbaseAdapter(keysPath);
+      global.fetch = async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          orders: [{
+            order_id: 'CB-2',
+            product_id: 'BTC-USDC',
+            side: 'SELL',
+            status: 'OPEN',
+            filled_size: String(FILLED), // nonzero filled...
+            created_time: '2026-01-01T00:00:00Z',
+            order_configuration: {}, // ...but no recognized shape, so originalSize falls back to 0
+          }],
+        }),
+      });
+
+      const orders = await adapter.getOpenOrders('BTC-USDC');
+      assert.equal(orders.length, 1);
+      assert.equal(orders[0].originalSize, 0);
+      assert.equal(orders[0].size, 0, 'size must clamp at 0, not go negative (0 - FILLED)');
+    } finally {
+      fs.rmSync(keysPath, { force: true });
+    }
+  });
+
   it('Gemini reports the remaining unfilled size, plus originalSize and price', async () => {
     const keysPath = path.join(os.tmpdir(), `gemini-open-orders-shape-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
     fs.writeFileSync(keysPath, JSON.stringify({ apiKey: 'test-api-key-123', apiSecret: 'test-api-secret-456' }));

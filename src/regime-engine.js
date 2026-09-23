@@ -2010,11 +2010,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // Check if this "orphan" has partial fills — if so, restore it instead of cancelling
           if (order.filledSize && order.filledSize > 0) {
             logger.info(`📦 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} has partial fills (${order.filledSize} ${baseCurrency}) — restoring instead of cancelling`);
+            // Every sibling restorePendingOrder({type: 'entry', ...}) call in
+            // this file sets `size` to the order's ORIGINAL placed quantity
+            // (e.g. savedEntry.assetQty above), not what's left unfilled —
+            // the dashboard reads it as the "of N" denominator alongside
+            // filledSize (RegimeDashboard.jsx: "X of Y filled"). order.size
+            // is now the REMAINING unfilled quantity (issue #684); use
+            // order.originalSize here to match the established convention.
             orderExecutor.restorePendingOrder(order.orderId, {
               type: 'entry',
               price: order.price,
-              size: order.size,
-              sizeUsdc: order.size * order.price,
+              size: order.originalSize,
+              sizeUsdc: order.originalSize * order.price,
               placedAt: order.createdTime ? new Date(order.createdTime).getTime() : Date.now(),
             });
             // Ingest any fills we don't already have. See the sibling block
