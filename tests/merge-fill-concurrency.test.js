@@ -927,7 +927,7 @@ describe('#368 _mergeBodyImpl — execution-bearing cancellation during roll-up'
     // asserted directly against 0 here (shared cross-test ledger).
   });
 
-  it('fully consuming the source body during cancel leaves it deducted to zero with no TP re-armed', async () => {
+  it('fully consuming the source body during cancel removes it with no TP re-armed', async () => {
     const source = makeBody('src3', 50000, 0.01, 'tp-src3');
     const target = makeBody('tgt3', 51000, 0.02, 'tp-tgt3');
     let getOrderSrcCalls = 0;
@@ -969,18 +969,100 @@ describe('#368 _mergeBodyImpl — execution-bearing cancellation during roll-up'
     const result = await eng.manualMergeBody('src3', { targetId: 'tgt3' });
 
     assert.equal(result.success, false, 'roll-up aborts on the fully-consumed source');
-    const liveSource = eng._getPositionState().celestialBodies.find(b => b.id === 'src3');
-    assert.ok(liveSource, 'the body itself is not removed by this booking path');
-    assert.ok(Math.abs(liveSource.assetQty) < 1e-9, 'source body fully deducted to zero');
-    assert.equal(liveSource.tpOrderId, null, 'no TP is re-armed on a zero-qty body');
+    const bodies = eng._getPositionState().celestialBodies;
+    // Issue #718: a sale that closes the body removes it, like the normal
+    // full-fill path — no zero-qty ghost left that never re-arms.
+    assert.equal(bodies.find(b => b.id === 'src3'), undefined, 'the drained source body is removed');
+    assert.equal(bodies.length, 1, 'only the untouched target remains');
     assert.equal(placeCalls, 0, 'placeBodyTpOrder is never called for a fully-consumed body');
 
-    // Issue #669 (review finding on #617): the body OBJECT is still present in
-    // celestialBodies (this branch never splices it out — just at zero qty),
-    // but a sale that fully drains it to zero IS a completed cycle — object
-    // presence alone must not gate "still open." Counting it as still-open
-    // would leave a permanent zero-qty ghost body that's never re-armed and
-    // never counted.
-    assert.equal(eng._getPositionState().celestialState.bodiesCompleted, 1, 'a sale that fully drains the body to zero IS counted as completed, even though the object lingers');
+    // Issue #669 (review finding on #617): a sale that fully drains the body
+    // IS a completed cycle.
+    assert.equal(eng._getPositionState().celestialState.bodiesCompleted, 1, 'a sale that fully drains the body is counted as completed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #718: a COMPLETE merge-snapshot TP fill must close the whole snapshot
+// body — the holdback it books as reserves must not also stay in the live body
+// ---------------------------------------------------------------------------
+
+describe('#718 merge-snapshot complete fill during a roll-up cancel', () => {
+  it('removes the whole snapshot body so bodies + reserves match the ledger net position', async () => {
+    const celestialHierarchy = require('../src/celestial-hierarchy');
+    const PAIR = '__test718__';
+    const raw = (side, orderId, tradeId, size, price) => ({
+      tradeId, orderId, side, price: String(price), size: String(size),
+      totalCommission: '0', rebate: '0', liquidityIndicator: side === 'buy' ? 'TAKER' : 'MAKER',
+      tradeTime: new Date().toISOString(),
+    });
+    const body = (id, orderId, qty, price, tpOrderId) => ({
+      ...celestialHierarchy.createNewBody({ assetQty: qty, costBasis: qty * price, avgPrice: price }, orderId),
+      id, tier: 'ASTEROID', tpOrderId, tpPrice: price * 1.01, assetOnOrder: qty,
+    });
+
+    let srcStatusCalls = 0;
+    let placeCalls = 0;
+    const eng = createRegimeEngine('coinbase', PAIR, { dryRun: false, productId: PAIR }, {});
+    engines.push(eng);
+    eng._test.setRunning(true);
+    eng._test.setProductDetails(PRODUCT_DETAILS);
+    eng._test.setAdapter(makeAdapter({
+      getOrder: async (orderId) => {
+        if (orderId === 'tp-src718' && ++srcStatusCalls > 1) {
+          return { status: 'CANCELLED', filledSize: 0.0099, averageFilledPrice: 50500, totalFees: 0 };
+        }
+        return { filledSize: 0, status: 'OPEN' };
+      },
+      getOpenOrders: async () => [],
+      cancelOrder: async () => {},
+      getOrderFills: async (orderId) => (orderId === 'tp-src718' ? [raw('sell', 'tp-src718', 'tp-src718-t1', 0.0099, 50500)] : []),
+    }));
+    eng._test.setOrderExecutor(makeExecutor({
+      // The source TP executed its full planned size (0.0099 of a 0.01 body;
+      // 0.0001 is designed holdback) before the roll-up's cancel landed.
+      cancelBodyTpOrder: async () => ({ cancelled: true, filled: false, filledSize: 0.0099, filledValue: 499.95, averageFilledPrice: 50500, totalFees: 0 }),
+      placeBodyTpOrder: async () => { placeCalls++; return { success: true, orderId: `tp-718-${placeCalls}` }; },
+    }));
+
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(raw('buy', 'buy-src718', 'buy-src718-t1', 0.01, 50000));
+    ledger.ingestFill(raw('buy', 'buy-tgt718', 'buy-tgt718-t1', 0.02, 51000));
+    ledger.annotateFillsByOrderId('buy-src718', { sellOrderId: 'tp-src718' });
+    ledger.annotateFillsByOrderId('buy-tgt718', { sellOrderId: 'tp-tgt718' });
+
+    const source = body('src718', 'buy-src718', 0.01, 50000, 'tp-src718');
+    source.assetOnOrder = 0.0099;
+    const target = body('tgt718', 'buy-tgt718', 0.02, 51000, 'tp-tgt718');
+    target.assetOnOrder = 0.0198;
+    const pos = eng._getPositionState();
+    pos.celestialBodies = [source, target];
+    pos.totalAsset = 0.03;
+
+    const result = await eng.manualMergeBody('src718', { targetId: 'tgt718' });
+    assert.equal(result.success, false, 'the roll-up aborts once the source TP is found executed');
+    assert.match(result.message, /Source TP filled during cancel/);
+
+    // Before #718 the source body kept the 0.0001 holdback AND booked it as
+    // reserves, and a fresh TP re-listed it for sale.
+    assert.equal(pos.celestialBodies.find(b => b.id === 'src718'), undefined, 'the closed source body is removed');
+    assert.equal(placeCalls, 0, 'no TP re-lists the holdback');
+    assert.deepEqual(pos.celestialBodies.map(b => b.id), ['tgt718'], 'the target is untouched');
+    assert.equal(pos.celestialState.bodiesCompleted, 1);
+
+    const sell = ledger.getFillsForOrder('tp-src718')[0];
+    assert.ok(Math.abs(sell.bodyHoldbackAsset - 0.0001) < 1e-9, 'the holdback is booked as reserves');
+    assert.deepEqual(ledger.getBuyOrderConsumption('buy-src718').consumedBy, { 'tp-src718': 0.01 },
+      'the snapshot buy is consumed in full: sold + booked holdback');
+
+    const derived = ledger.getDerivedRealizedPnL();
+    const inBodies = pos.celestialBodies.reduce((sum, b) => sum + b.assetQty, 0);
+    assert.ok(Math.abs(derived.realizedAssetPnL - 0.0001) < 1e-9);
+    assert.ok(Math.abs((inBodies + derived.realizedAssetPnL) - derived.ledgerNetAsset) < 1e-9,
+      `bodies ${inBodies} + reserves ${derived.realizedAssetPnL} must equal the ledger net ${derived.ledgerNetAsset}`);
+    assert.ok(Math.abs(derived.heldOpenAssetQty - inBodies) < 1e-9, 'held open inventory matches the bodies');
+    const bodyCost = pos.celestialBodies.reduce((sum, b) => sum + b.costBasis, 0);
+    assert.ok(Math.abs(derived.heldOpenBuyCostBasis - bodyCost) < 0.01, 'held cost matches the bodies');
   });
 });

@@ -21,11 +21,10 @@ const { roundUSDC } = require('../src/volatility-utils');
 
 /**
  * Baseline config mirroring src/size-optimizer.js's defaults.
- * `sizeAutoManaged` is off by default so recordCycle()/updateBalance()'s
- * internal evaluate() calls never fire unexpectedly while seeding cycle
- * data — clamp behavior is asserted via the exposed `_calculateAdjustment`
- * test hook instead, isolating it from the (separately tested) balance/
- * evaluation-trigger gating.
+ * `sizeAutoManaged` is off by default so recordCycle()'s internal evaluate()
+ * calls never fire unexpectedly while seeding cycle data — clamp behavior is
+ * asserted via the exposed `_calculateAdjustment` test hook instead,
+ * isolating it from the (separately tested) evaluation-trigger gating.
  */
 const defaultConfig = () => ({
   sizeAutoManaged: false,
@@ -145,34 +144,125 @@ describe('size-optimizer sizeAutoManaged off-switch', () => {
     assert.notEqual(enabled.recordCycle(cycleData), null, 'sizeAutoManaged:true must be able to produce an adjustment');
     assert.equal(disabled.recordCycle(cycleData), null, 'sizeAutoManaged:false must never write an adjustment');
   });
-
-  it('updateBalance()/evaluateForBalance() only ever propose an adjustment when sizeAutoManaged is true', () => {
-    const enabled = makeOptimizer({ sizeAutoManaged: true });
-    const disabled = makeOptimizer({ sizeAutoManaged: false });
-
-    enabled.updateBalance(1000); // seed lastKnownBalance; first call never evaluates (no prior balance)
-    disabled.updateBalance(1000);
-
-    assert.notEqual(enabled.updateBalance(1_000_000), null, 'a >=10% balance swing with sizeAutoManaged:true must be able to propose');
-    assert.equal(disabled.updateBalance(1_000_000), null, 'a >=10% balance swing with sizeAutoManaged:false must never write an adjustment');
-  });
 });
 
 // ============================================================================
 // adjustmentHistory cap
 // ============================================================================
 describe('size-optimizer adjustmentHistory cap', () => {
-  it('never grows past 50 entries even after many triggering balance swings', () => {
-    const optimizer = makeOptimizer({ sizeAutoManaged: true, sizeMaxChangePercent: 25 });
-    optimizer.updateBalance(500); // seed; distinct from both alternating values below so every loop iteration swings >=10%
+  it('never grows past 50 entries even after many triggering cycle completions', () => {
+    // sizeEvaluationCycles/sizeMinSampleSize:1 make every recordCycle() call
+    // eligible to evaluate; config.baseSizeUsdc is never written back here,
+    // so each alternating availableBalance recomputes against the same fixed
+    // current base (100) and rate-limits to a different value every time —
+    // guaranteeing a non-null adjustment on every iteration.
+    const optimizer = makeOptimizer({
+      sizeAutoManaged: true,
+      sizeMaxChangePercent: 25,
+      sizeEvaluationCycles: 1,
+      sizeMinSampleSize: 1,
+    });
 
     for (let i = 0; i < 60; i++) {
-      const result = optimizer.updateBalance(i % 2 === 0 ? 100 : 1_000_000);
+      const result = optimizer.recordCycle({
+        stepsUsed: 5,
+        capitalDeployed: 100,
+        completedAt: 1_700_000_000_000 + i * 60_000,
+        availableBalance: i % 2 === 0 ? 100 : 1_000_000,
+      });
       assert.notEqual(result, null, `iteration ${i} was expected to trigger an adjustment`);
     }
 
     const { adjustmentHistory } = optimizer.exportState();
     assert.equal(adjustmentHistory.length, 50);
+  });
+});
+
+// ============================================================================
+// issue #694 — no compounding maxUsdcDeployed shrink across evaluations
+// ============================================================================
+describe('size-optimizer no-compounding-shrink regression (issue #694)', () => {
+  it('does not ratchet maxUsdcDeployed down across repeated evaluations when fed a stable real balance', () => {
+    // Mirrors what regime-engine.js's recordCycleForSizeOptimizer() now does:
+    // feed the REAL (externally-sourced) available balance — here modeled as
+    // a fixed value equal to the starting config.maxUsdcDeployed, i.e. a real
+    // exchange balance that happens to equal the configured cap — and, like
+    // the engine's handleSizeAdjustment(), write any returned adjustment back
+    // into config before the next cycle. Before the fix, the engine instead
+    // fed the (already-shrunk) cap back in as "availableBalance" every time,
+    // so each evaluation computed 90% of the previous evaluation's OWN
+    // output — a compounding decrease. With a stable real balance instead,
+    // the cap should settle near targetUtilization * realBalance on the
+    // first evaluation and then hold — never decrease again afterward.
+    const config = { ...defaultConfig(), sizeAutoManaged: true, sizeEvaluationCycles: 5, sizeMinSampleSize: 5 };
+    const optimizer = createSizeOptimizer('test-exchange', config, {}, 'BTC-USDC');
+    const realBalance = config.maxUsdcDeployed; // availableBalance = config.maxUsdcDeployed, per the issue's repro
+
+    const caps = [];
+    for (let i = 0; i < 20; i++) {
+      // Flat +$1/cycle profit tracked as capitalDeployed growth — independent
+      // of the (constant) balance reading, exactly like the real engine.
+      const adjustment = optimizer.recordCycle({
+        stepsUsed: 5,
+        capitalDeployed: 100 + i,
+        completedAt: 1_700_000_000_000 + i * 60_000,
+        availableBalance: realBalance,
+      });
+
+      if (adjustment) {
+        config.baseSizeUsdc = adjustment.baseSizeUsdc;
+        if (adjustment.maxUsdcDeployed !== undefined) {
+          config.maxUsdcDeployed = adjustment.maxUsdcDeployed;
+        }
+      }
+
+      caps.push(config.maxUsdcDeployed);
+    }
+
+    // A single equilibrating correction toward targetUtilization * realBalance
+    // is expected and fine (the cap starts at the RAW config value, not yet
+    // at 90% of the real balance). What issue #694 must never reproduce is a
+    // SECOND decrease once the cap has already converged — that's the
+    // compounding "$1005 → $905 → $819 → …" pattern from the bug report,
+    // which only happens when the cap is fed back in as its own "balance".
+    const decreases = caps.slice(1).filter((cap, i) => cap < caps[i]);
+    assert.ok(
+      decreases.length <= 1,
+      `expected at most one (initial, equilibrating) decrease, saw ${decreases.length}: ${JSON.stringify(caps)}`
+    );
+    // And the cap must settle, not keep drifting down cycle after cycle.
+    assert.equal(caps[caps.length - 1], caps[caps.length - 2], 'cap must have stabilized by the last cycle, not still be shrinking');
+  });
+});
+
+// ============================================================================
+// issue #694 — evaluate() skips rather than zero-floors on an unverified balance
+// ============================================================================
+describe('size-optimizer evaluate() with no verified balance yet (issue #694)', () => {
+  it('never proposes an adjustment while every recordCycle() call has arrived with availableBalance <= 0', () => {
+    const optimizer = makeOptimizer({ sizeAutoManaged: true, sizeMinSampleSize: 3, sizeEvaluationCycles: 3 });
+
+    let lastAdjustment;
+    for (let i = 0; i < 10; i++) {
+      // Models every balance fetch failing (the engine now passes 0 in that
+      // case) — lastKnownBalance never becomes a verified positive reading.
+      lastAdjustment = optimizer.recordCycle({
+        stepsUsed: 5,
+        capitalDeployed: 100,
+        completedAt: 1_700_000_000_000 + i * 60_000,
+        availableBalance: 0,
+      });
+      assert.equal(lastAdjustment, null, `iteration ${i} must not propose an adjustment with no verified balance`);
+    }
+
+    // Once a real balance arrives, evaluation resumes normally.
+    const adjustment = optimizer.recordCycle({
+      stepsUsed: 5,
+      capitalDeployed: 100,
+      completedAt: 1_700_000_001_000,
+      availableBalance: 1000,
+    });
+    assert.ok(adjustment, 'a verified positive balance must allow evaluation to proceed');
   });
 });
 

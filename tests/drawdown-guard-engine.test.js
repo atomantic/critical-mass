@@ -232,4 +232,27 @@ describe('drawdown guard wired into the engine (issue #693)', () => {
     setPrice(eng, 70);
     assert.equal(eng.forceResumeDrawdown().success, true);
   });
+
+  it('resetDryRun() also clears the risk manager drawdown tracker (issue #742)', async () => {
+    const { eng } = makeEngine();
+    setPrice(eng, 100);
+    await eng._test.updateMetrics();
+    setPrice(eng, 70);
+    await eng._test.updateMetrics();
+    assert.equal(eng.getState().risk.isDrawdownPaused, true);
+    assert.ok(eng.getState().risk.maxDrawdownSeen > 0);
+
+    assert.equal(eng.resetDryRun(), true);
+    const risk = eng.getState().risk;
+    assert.equal(risk.isDrawdownPaused, false);
+    assert.equal(risk.peakEquity, null);
+    assert.equal(risk.maxDrawdownSeen, 0);
+    assert.equal(risk.drawdownPausedAt, null);
+
+    // A fresh metrics tick must NOT resurrect the old peak/pause — the
+    // in-memory risk manager, not just positionState, was reset.
+    setPrice(eng, 70);
+    await eng._test.updateMetrics();
+    assert.equal(eng.getState().risk.isDrawdownPaused, false);
+  });
 });

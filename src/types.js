@@ -429,6 +429,7 @@
  * @property {number} avgCostBasis - Average cost per BTC
  * @property {number} cycleBuys - Number of buy orders filled in current cycle
  * @property {string|null} [activeCycleId] - Durable operator-selected cycle boundary
+ * @property {number|null} [activeCycleStartedAt] - When activeCycleId began (ms); live-cycle fill-attribution boundary (#705)
  * @property {number} lastEntryPrice - Price of last entry
  * @property {number} lastEntryTime - Timestamp of last entry
  * @property {number} anchorPrice - Price anchor for volatility clock
@@ -440,7 +441,7 @@
  * @property {number} realizedAssetPnL - Cumulative realized P&L in BTC (holdback reserves)
  * @property {number} assetOnOrder - BTC currently in open sell orders
  * @property {number} maxDrawdownSeen - Maximum drawdown observed
- * @property {{peakEquity: number|null, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, capitalBase: number|null}|null} [drawdownGuard] - Persisted drawdown-guard tracker (risk-manager getPersistedState; fund-equity unit)
+ * @property {{peakEquity: number|null, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, capitalBase: number|null, equityDepleted: boolean}|null} [drawdownGuard] - Persisted drawdown-guard tracker (risk-manager getPersistedState; fund-equity unit)
  * @property {boolean} scalingDisabled - Whether scaling is temporarily disabled
  * @property {string|null} scalingDisabledReason - Reason scaling is disabled
  * @property {MacroRegimeState|null} [macroRegime] - Macro regime state for persistence
@@ -494,6 +495,7 @@
  * @property {number} timestamp - Exchange timestamp
  * @property {number} ingestedAt - When fill was ingested
  * @property {string|null} cycleId - Trading cycle ID
+ * @property {'order'|'link'|'timeframe'} [cycleAttribution] - How recalculateCycles placed a null-cycle fill into an existing cycle (#705)
  */
 
 /**
@@ -819,7 +821,8 @@
  * @property {() => {entries: number, ladderEntries: number, takeProfits: number, bodies: number, total: number}} getPendingCounts
  * @property {() => Map<string, any>} getPendingEntries
  * @property {(orderId: string, orderData: any) => void} restorePendingOrder
- * @property {(orderId: string) => void} markSettled
+ * @property {(orderId: string, type?: string) => void} markSettled
+ * @property {(orderId: string) => boolean} isTrackedTpOrder - true when orderId is/was this executor's legacy core take_profit (issue #672)
  * @property {(orderId: string) => number|null} getOrderPlacedAt
  * @property {(assetQty: number, tpPrice: number, bodyId: string) => Promise<{success: boolean, orderId?: string, errorMessage?: string}>} placeBodyTpOrder
  * @property {(bodyId: string, tpOrderId: string) => Promise<{cancelled: boolean, filled: boolean, filledSize?: number}>} cancelBodyTpOrder

@@ -388,6 +388,66 @@ describe('Manual Trade Import', () => {
       assert.equal(second.trade.id, first.trade.id);
       assert.equal(store.getAll().length, 1, 'only one paired trade must exist across the retry');
     });
+
+    // Issue #726: addPairedTrade's (buyOrderId, sellOrderId) dedup matched
+    // ANY existing record, including one importSell's sell-first recovery
+    // flow left at BUY_PENDING while waiting on the recovery buy to fill. An
+    // operator who later imports the same pair directly via importPair (which
+    // already fetches and links both legs' fills) got that stale BUY_PENDING
+    // record handed back unchanged — permanently stuck pending despite
+    // nothing left to do. It must be promoted to completed instead.
+    it('promotes an existing BUY_PENDING recovery trade to completed instead of leaving it stuck', async () => {
+      const recoveryBuyFills = [makeFill({ tradeId: 'recovery-buy-1', side: 'buy', price: 91000, size: 0.004 })];
+      const adapter = createFakeAdapter({
+        fillsByOrder: { 'sell-1': sellFills, 'recovery-1': recoveryBuyFills },
+      });
+      const importer = createImporter({ adapter });
+
+      // Sell-first recovery flow: places a recovery buy, trade sits at BUY_PENDING.
+      const sellResult = await importer.importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '91000' });
+      assert.equal(sellResult.success, true);
+      assert.equal(sellResult.trade.status, STATUS.BUY_PENDING);
+      const recoveryBuyOrderId = sellResult.trade.buyOrderId;
+      assert.equal(store.getAll().length, 1);
+
+      // Operator later imports the SAME pair directly via importPair (e.g.
+      // from the unaccounted-fills view) instead of waiting on checkPendingBuy.
+      const pairResult = await importer.importPair({ buyOrderId: recoveryBuyOrderId, sellOrderId: 'sell-1' });
+
+      assert.equal(pairResult.success, true);
+      // The SAME record is promoted in place, not a second one created.
+      assert.equal(store.getAll().length, 1);
+      assert.equal(pairResult.trade.id, sellResult.trade.id);
+      assert.equal(pairResult.trade.status, STATUS.COMPLETED);
+      assert.equal(pairResult.trade.tradeType, 'paired');
+      assert.equal(pairResult.trade.buySize, 0.004);
+      assert.equal(pairResult.trade.buyOrderId, recoveryBuyOrderId);
+      assert.equal(pairResult.trade.sellOrderId, 'sell-1');
+    });
+
+    // Issue #726 codex review follow-up: the promotion above must not
+    // resurrect a record the operator explicitly dismissed. Dedup should
+    // treat DISMISSED the same as COMPLETED — a terminal state, not a
+    // pending one to promote.
+    it('does not resurrect a DISMISSED recovery trade back to completed', async () => {
+      const recoveryBuyFills = [makeFill({ tradeId: 'recovery-buy-2', side: 'buy', price: 91000, size: 0.004 })];
+      const adapter = createFakeAdapter({
+        fillsByOrder: { 'sell-1': sellFills, 'recovery-1': recoveryBuyFills },
+      });
+      const importer = createImporter({ adapter });
+
+      const sellResult = await importer.importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '91000' });
+      const recoveryBuyOrderId = sellResult.trade.buyOrderId;
+      store.dismiss(sellResult.trade.id);
+      assert.equal(store.getById(sellResult.trade.id).status, STATUS.DISMISSED);
+
+      const pairResult = await importer.importPair({ buyOrderId: recoveryBuyOrderId, sellOrderId: 'sell-1' });
+
+      assert.equal(pairResult.success, true);
+      assert.equal(store.getAll().length, 1, 'no second record was created');
+      assert.equal(pairResult.trade.id, sellResult.trade.id);
+      assert.equal(pairResult.trade.status, STATUS.DISMISSED, 'a dismissed trade must stay dismissed, not be promoted to completed');
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -605,6 +665,454 @@ describe('Manual Trade Import', () => {
       assert.equal(second.trade.bodyId, injected[0].id);
       assert.equal(second.alreadyImported, true);
       assert.equal(store.getAll().length, 1);
+    });
+
+    // Issue #726: the top-of-function retry guard only checks whether a body
+    // already exists for this buyOrderId — it never asks whether MORE of the
+    // order has filled since. If the order was still filling when first
+    // imported (body sized to the earlier partial fill set), a later retry
+    // must extend the existing body with the newly-arrived fills instead of
+    // treating them as already handled and dropping them.
+    it('extends the existing body with fills that arrived since it was created, instead of dropping them (engine running)', async () => {
+      const bodies = [];
+      const extendCalls = [];
+      const fillsByOrder = { 'buy-1': [buyFills[0]] }; // only the first fill known at first import
+      const adapter = createFakeAdapter({ fillsByOrder });
+      const importer = createImporter({
+        adapter,
+        injectBody: async (body) => {
+          bodies.push(body);
+          return { tpPlaced: true };
+        },
+        extendBody: (bodyId, totals, buyOrderId) => {
+          extendCalls.push({ bodyId, totals, buyOrderId });
+          const body = bodies.find((b) => b.id === bodyId);
+          if (!body) return { success: false, error: 'Body not found' };
+          // Converges the body to the FULL totals passed in — the real
+          // extendBody's contract (issue #726, codex round 3): the caller
+          // now passes the buy order's complete current totals, not a
+          // delta, precisely so a retry can't double-count an
+          // already-applied portion.
+          body.assetQty = totals.assetQty;
+          body.costBasis = totals.costBasis;
+          return { success: true, bodyId, tier: body.tier };
+        },
+      });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, true);
+      assert.equal(bodies.length, 1);
+      assert.equal(bodies[0].assetQty, buyFills[0].size);
+
+      // More of the order filled since the first import.
+      fillsByOrder['buy-1'] = buyFills;
+
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.alreadyImported, true);
+      assert.equal(second.extended, true);
+      assert.equal(bodies.length, 1, 'no second body was ever created');
+      assert.equal(extendCalls.length, 1, 'extendBody must be called exactly once');
+      assert.equal(extendCalls[0].bodyId, first.trade.bodyId);
+      // extendBody now receives the FULL current total for buy-1 (both
+      // fills), not just the delta — the fix for a round-3 review finding
+      // where a delta-only idempotency check could double-count an
+      // already-applied portion across a compounding retry.
+      assert.ok(
+        Math.abs(extendCalls[0].totals.assetQty - (buyFills[0].size + buyFills[1].size)) < 1e-9,
+        'extendBody must receive the FULL current total, not just the new fill'
+      );
+      // costBasis must include BOTH fills' fees (0.5 + 0.25), not just
+      // notional — a bug caught by review where extraFees read raw-fill
+      // field names off already-ingested ledger rows and silently read
+      // undefined, dropping the fee from cost basis on every extension.
+      const expectedFullCostBasis = (buyFills[0].price * buyFills[0].size + buyFills[0].commission)
+        + (buyFills[1].price * buyFills[1].size + buyFills[1].commission);
+      assert.ok(
+        Math.abs(extendCalls[0].totals.costBasis - expectedFullCostBasis) < 1e-9,
+        'the full total cost basis must include both fills\' fees'
+      );
+      assert.ok(Math.abs(bodies[0].assetQty - (buyFills[0].size + buyFills[1].size)) < 1e-9, 'the body grew to include the new fill');
+      // Both fill rows — old and new — must be linked to the body, not left
+      // dangling (the whole point of this fix: no unmanaged, unlinked asset).
+      const rows = fillLedger.getFillsForOrder('buy-1');
+      assert.equal(rows.length, 2);
+      for (const row of rows) {
+        assert.equal(row.bodyId, second.trade.bodyId);
+        assert.equal(row.isBodyOwned, true);
+      }
+      // The trade record's own buy totals are refreshed to the FULL current
+      // fill set, not left stuck at the partial amount known at creation.
+      assert.equal(second.trade.buySize, buyFills[0].size + buyFills[1].size);
+      assert.deepEqual(second.trade.buyFillTradeIds.slice().sort(), [buyFills[0].tradeId, buyFills[1].tradeId].sort());
+    });
+
+    // Issue #726 follow-up (self-review): a Collapse-All merge re-stamps a
+    // buy order's ledger rows onto the SURVIVOR body's id
+    // (regime-engine.js's mergeBodies path) without ever updating this trade
+    // record's bodyId — so trade.bodyId can be stale relative to the
+    // ledger's own bodyId after a merge. The extend logic must treat the
+    // ledger's own bodyId as authoritative, never re-stamp already-linked
+    // rows back onto the stale pre-merge id, and extend the CURRENT
+    // (merged) body instead of a defunct one.
+    it('uses the ledger\'s current bodyId, not the trade record\'s stale one, after a Collapse-All merge', async () => {
+      const bodies = [{ id: 'body-merged', assetQty: 0.05, costBasis: 4500 }];
+      const extendCalls = [];
+      const fillsByOrder = { 'buy-1': [buyFills[0]] };
+      const adapter = createFakeAdapter({ fillsByOrder });
+      const importer = createImporter({
+        adapter,
+        injectBody: async (body) => {
+          bodies.push(body);
+          return { tpPlaced: true };
+        },
+        extendBody: (bodyId, totals, buyOrderId) => {
+          extendCalls.push({ bodyId, totals });
+          const body = bodies.find((b) => b.id === bodyId);
+          if (!body) return { success: false, error: 'Body not found' };
+          // Mirrors the real extendBody's shortfall computation (issue #726,
+          // codex round 3): only add what THIS buyOrderId isn't already
+          // recorded for, so 'body-merged''s pre-existing, unrelated
+          // 0.05/4500 from other sources is never touched or double-counted.
+          body.buyOrders = body.buyOrders || [];
+          const recorded = body.buyOrders.filter((bo) => bo.orderId === buyOrderId)
+            .reduce((acc, bo) => ({ qty: acc.qty + bo.assetQty, cost: acc.cost + bo.sizeUsdc }), { qty: 0, cost: 0 });
+          const shortfallQty = totals.assetQty - recorded.qty;
+          if (shortfallQty <= 0.00000001) return { success: true, bodyId, tier: body.tier, alreadyApplied: true };
+          const shortfallCost = totals.costBasis - recorded.cost;
+          body.assetQty += shortfallQty;
+          body.costBasis += shortfallCost;
+          body.buyOrders.push({ orderId: buyOrderId, assetQty: shortfallQty, sizeUsdc: shortfallCost });
+          return { success: true, bodyId, tier: body.tier };
+        },
+      });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, true);
+      const originalBodyId = first.trade.bodyId;
+      assert.notEqual(originalBodyId, 'body-merged');
+
+      // Simulate an operator Collapse-All merge absorbing the manually
+      // imported body into 'body-merged' — this is exactly what
+      // regime-engine's mergeBodies path does to the ledger, independent of
+      // the manual-trades store record.
+      fillLedger.annotateFillsByOrderId('buy-1', { bodyId: 'body-merged', bodyTier: 'planet' });
+      fillLedger.persist();
+
+      // More of the order filled since, and the trade record still points
+      // at the pre-merge (now-defunct) body id.
+      fillsByOrder['buy-1'] = buyFills;
+
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.extended, true);
+      assert.equal(extendCalls.length, 1);
+      assert.equal(extendCalls[0].bodyId, 'body-merged', 'must extend the CURRENT (merged) body, not the stale pre-merge id');
+
+      // The pre-existing, already-linked fill row must still read
+      // 'body-merged' — never reverted to the stale trade.bodyId.
+      const rows = fillLedger.getFillsForOrder('buy-1');
+      assert.equal(rows.length, 2);
+      for (const row of rows) {
+        assert.equal(row.bodyId, 'body-merged', 'no row may be re-stamped onto the defunct pre-merge body id');
+      }
+
+      // The trade record itself is kept in sync with the merge too.
+      assert.equal(second.trade.bodyId, 'body-merged');
+      assert.equal(second.trade.buySize, buyFills[0].size + buyFills[1].size);
+    });
+
+    // Codex delta review (round 4): a ledger row's bodyId is NOT a durable
+    // "already reconciled" signal on its own — placeBodyTp's TP-placement
+    // annotation, the startup re-annotator, and Collapse-All's re-stamp
+    // (regime-engine.js) all blanket-stamp bodyId onto EVERY row for an
+    // orderId once a body exists for it, including a fill that arrived
+    // AFTER the body's assetQty was last actually grown (a slow out-of-band
+    // ingest, e.g. sync-fills). The OLD "unlinked ledger rows" gate would
+    // have taken the fast path here and hidden the gap for good. The gate
+    // must instead be trade.buySize (refreshed only on a CONFIRMED
+    // reconciliation) vs the ledger's current full fill total.
+    it('detects growth even when every ledger row already carries a bodyId from an unrelated process', async () => {
+      const bodies = [];
+      const fillsByOrder = { 'buy-1': [buyFills[0]] };
+      const adapter = createFakeAdapter({ fillsByOrder });
+      const importer = createImporter({
+        adapter,
+        injectBody: async (body) => {
+          bodies.push(body);
+          return { tpPlaced: true };
+        },
+        extendBody: (bodyId, totals) => {
+          const body = bodies.find((b) => b.id === bodyId);
+          if (!body) return { success: false, error: 'Body not found' };
+          body.assetQty = totals.assetQty;
+          body.costBasis = totals.costBasis;
+          return { success: true, bodyId, tier: body.tier };
+        },
+      });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, true);
+      const bodyId = first.trade.bodyId;
+      assert.equal(bodies[0].assetQty, buyFills[0].size);
+
+      // Simulate the second fill arriving out-of-band (e.g. a sync-fills
+      // sweep) — ingested directly into the ledger, NOT through this
+      // importer's own ingestAdapterFills.
+      fillLedger.ingestFill({
+        tradeId: buyFills[1].tradeId,
+        orderId: 'buy-1',
+        side: 'buy',
+        price: buyFills[1].price,
+        size: buyFills[1].size,
+        totalCommission: buyFills[1].commission,
+        commission: buyFills[1].commission,
+        rebate: 0,
+        tradeTime: buyFills[1].tradeTime,
+      }, null, { skipPersist: true, cycleId: null });
+
+      // Simulate an UNRELATED process blanket-stamping bodyId onto EVERY
+      // row for this order — including the new one above — without the
+      // body ever actually absorbing it.
+      fillLedger.annotateFillsByOrderId('buy-1', { bodyId, isBodyOwned: true, isSatellite: true });
+      fillLedger.persist();
+      assert.equal(bodies[0].assetQty, buyFills[0].size, 'the body has NOT actually absorbed the new fill yet, despite the row now carrying a bodyId');
+
+      fillsByOrder['buy-1'] = buyFills; // this call's own ingest is a no-op (tradeId already present)
+
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.extended, true, 'the gap must still be detected despite every row already carrying a bodyId');
+      assert.ok(Math.abs(bodies[0].assetQty - (buyFills[0].size + buyFills[1].size)) < 1e-9);
+      assert.equal(second.trade.buySize, buyFills[0].size + buyFills[1].size);
+    });
+
+    // Codex delta review (round 4): createNewBody's cost basis used to sum
+    // GROSS adapter commission from raw buyFills, while the extend path
+    // sums `quoteAmount + netFee` (net of rebate) from ledger rows. A
+    // rebated first fill would then make a later shortfall computation
+    // (`totals.costBasis - recorded.cost`) absorb that gross/net mismatch —
+    // both sides must use the identical, net-of-rebate convention.
+    it('uses net-of-rebate fee consistently between body creation and extend', async () => {
+      const rebatedFill = makeFill({ tradeId: 'imp-buy-rebate', side: 'buy', price: 90000, size: 0.002, commission: 0.5, totalCommission: 0.5, rebate: 0.1 });
+      const secondFill = makeFill({ tradeId: 'imp-buy-second', side: 'buy', price: 92000, size: 0.001, commission: 0.25, totalCommission: 0.25, rebate: 0 });
+      const fillsByOrder = { 'buy-1': [rebatedFill] };
+      const adapter = createFakeAdapter({ fillsByOrder });
+      const importer = createImporter({ adapter, injectBody: null });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, true);
+      const netFee0 = rebatedFill.commission - rebatedFill.rebate; // 0.4, not the gross 0.5
+      const expectedFirstCostBasis = rebatedFill.price * rebatedFill.size + netFee0;
+      const firstSaved = readRegimeStateFile();
+      assert.ok(
+        Math.abs(firstSaved.position.celestialBodies[0].costBasis - expectedFirstCostBasis) < 1e-9,
+        'body creation must use NET (rebate-adjusted) fee, not gross commission'
+      );
+
+      fillsByOrder['buy-1'] = [rebatedFill, secondFill];
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(second.success, true);
+      assert.equal(second.extended, true);
+
+      const expectedSecondCostBasis = expectedFirstCostBasis + (secondFill.price * secondFill.size + secondFill.commission);
+      const saved = readRegimeStateFile();
+      assert.ok(
+        Math.abs(saved.position.celestialBodies[0].costBasis - expectedSecondCostBasis) < 1e-9,
+        'the shortfall must not be corrupted by a gross/net fee mismatch between the two fills'
+      );
+      assert.ok(saved.position.celestialBodies[0].costBasis > 0, 'costBasis must never go negative from the convention mismatch');
+    });
+
+    // Codex delta review (round 4): extendPersistedBody has no
+    // adapter/executor to safely cancel a resting TP with — a persisted
+    // body CAN already carry a real tpOrderId (placed while the engine was
+    // running, before it was stopped). It must flag needsTpReprice for the
+    // engine's startup reprice pass instead of touching that live order.
+    it('flags needsTpReprice instead of touching a persisted body\'s existing tpOrderId (engine not running)', async () => {
+      const fillsByOrder = { 'buy-1': [buyFills[0]] };
+      const adapter = createFakeAdapter({ fillsByOrder });
+      const importer = createImporter({ adapter, injectBody: null });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, true);
+      const bodyId = first.trade.bodyId;
+
+      // Simulate the engine having been running long enough to place a REAL
+      // TP for this body, then getting stopped.
+      const preStop = readRegimeStateFile();
+      const body = preStop.position.celestialBodies.find((b) => b.id === bodyId);
+      body.tpOrderId = 'tp-live-on-exchange';
+      body.tpPrice = 95000;
+      body.assetOnOrder = buyFills[0].size;
+      fs.writeFileSync(path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json'), JSON.stringify(preStop, null, 2));
+
+      fillsByOrder['buy-1'] = buyFills;
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.extended, true);
+      assert.equal(second.needsTpReprice, true);
+
+      const saved = readRegimeStateFile();
+      const savedBody = saved.position.celestialBodies.find((b) => b.id === bodyId);
+      assert.equal(savedBody.tpOrderId, 'tp-live-on-exchange', 'the real, still-resting exchange order must not be touched or orphaned');
+      assert.equal(savedBody.needsTpReprice, true, 'flagged for the engine\'s startup reprice pass to pick up');
+      assert.ok(
+        Math.abs(savedBody.assetQty - (buyFills[0].size + buyFills[1].size)) < 1e-9,
+        'the body still grows to include the new fill'
+      );
+    });
+
+    it('extends the persisted body on regime-state.json with fills that arrived since it was created (engine not running)', async () => {
+      const fillsByOrder = { 'buy-1': [buyFills[0]] };
+      const adapter = createFakeAdapter({ fillsByOrder });
+      const importer = createImporter({ adapter, injectBody: null });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, true);
+      const firstBodyId = first.trade.bodyId;
+      const firstSaved = readRegimeStateFile();
+      assert.equal(firstSaved.position.celestialBodies.length, 1);
+      assert.equal(firstSaved.position.celestialBodies[0].assetQty, buyFills[0].size);
+
+      fillsByOrder['buy-1'] = buyFills;
+
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.extended, true);
+      assert.equal(second.trade.bodyId, firstBodyId);
+
+      const saved = readRegimeStateFile();
+      assert.equal(saved.position.celestialBodies.length, 1, 'no second body may be persisted');
+      assert.ok(
+        Math.abs(saved.position.celestialBodies[0].assetQty - (buyFills[0].size + buyFills[1].size)) < 1e-9,
+        'the persisted body grew to include the new fill'
+      );
+      for (const row of fillLedger.getFillsForOrder('buy-1')) {
+        assert.equal(row.bodyId, firstBodyId);
+      }
+      assert.equal(second.trade.buySize, buyFills[0].size + buyFills[1].size);
+    });
+
+    // Codex review: a crash between extendPersistedBody's own
+    // saveRegimeState() and this file's ledger-linkage write must not let a
+    // retry double-count the same delta. Simulates that exact crash window
+    // by hand-editing regime-state.json to already reflect the extension
+    // (as extendPersistedBody would have left it) while the ledger still
+    // shows the new fill unlinked — the state a process crash right between
+    // those two writes would leave behind.
+    it('does not double-count a body extension when regime-state.json was already updated but the ledger link never landed (crash window)', async () => {
+      const fillsByOrder = { 'buy-1': [buyFills[0]] };
+      const adapter = createFakeAdapter({ fillsByOrder });
+      const importer = createImporter({ adapter, injectBody: null });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, true);
+      const bodyId = first.trade.bodyId;
+
+      // Simulate the crash: apply the SAME growth extendPersistedBody would
+      // (mergeIntoBody's exact bookkeeping) directly to regime-state.json,
+      // but leave the fill-ledger row for buy-fill-2 unlinked — exactly as
+      // if the process died right after saveRegimeState() but before
+      // fillLedger.persist() ran.
+      const preCrash = readRegimeStateFile();
+      const body = preCrash.position.celestialBodies.find((b) => b.id === bodyId);
+      body.assetQty += buyFills[1].size;
+      body.costBasis += buyFills[1].price * buyFills[1].size + buyFills[1].commission;
+      body.buyOrders.push({ orderId: 'buy-1', price: buyFills[1].price, assetQty: buyFills[1].size, sizeUsdc: buyFills[1].price * buyFills[1].size + buyFills[1].commission });
+      fs.writeFileSync(path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json'), JSON.stringify(preCrash, null, 2));
+
+      fillsByOrder['buy-1'] = buyFills;
+
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, true);
+      assert.equal(second.extended, true);
+      const saved = readRegimeStateFile();
+      assert.equal(saved.position.celestialBodies.length, 1);
+      assert.ok(
+        Math.abs(saved.position.celestialBodies[0].assetQty - (buyFills[0].size + buyFills[1].size)) < 1e-9,
+        'the second fill must be counted exactly once, not twice'
+      );
+      // The ledger link that was actually missing before this retry is now
+      // present — the whole point of retrying at all.
+      for (const row of fillLedger.getFillsForOrder('buy-1')) {
+        assert.equal(row.bodyId, bodyId);
+      }
+    });
+
+    // A retry can find new fills for a body that no longer exists anywhere
+    // live — e.g. its TP fully closed between the first import and this
+    // retry, splicing it out of the engine's position. There is nothing to
+    // extend, so the call must FAIL (not report success) and must NOT link
+    // the new rows to the defunct body — codex review: linking them
+    // unconditionally would make the next retry find zero "unlinked" rows
+    // and skip straight past this whole block, permanently hiding the gap
+    // even after whatever made the body disappear is fixed.
+    it('fails without linking the new fills when the existing body can no longer be found, and stays retryable', async () => {
+      const fillsByOrder = { 'buy-1': [buyFills[0]] };
+      const adapter = createFakeAdapter({ fillsByOrder });
+      let extendAttempts = 0;
+      const bodies = [];
+      const importer = createImporter({
+        adapter,
+        injectBody: async (body) => {
+          bodies.push(body);
+          return { tpPlaced: true };
+        },
+        extendBody: (bodyId, totals) => {
+          extendAttempts++;
+          const body = bodies.find((b) => b.id === bodyId);
+          if (!body) return { success: false, error: 'Body not found' };
+          // extendBody receives the FULL current total, not a delta.
+          body.assetQty = totals.assetQty;
+          body.costBasis = totals.costBasis;
+          return { success: true, bodyId, tier: body.tier };
+        },
+      });
+
+      const first = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(first.success, true);
+      const bodyId = first.trade.bodyId;
+
+      // The body closed and was spliced out of the live position before the
+      // retry — simulated by removing it from the fake engine's bodies.
+      bodies.length = 0;
+
+      fillsByOrder['buy-1'] = buyFills;
+
+      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+      assert.equal(second.success, false);
+      assert.match(second.error, /Failed to extend body/);
+      assert.equal(extendAttempts, 1);
+      // The new (second) fill row must stay UNLINKED — not stamped onto the
+      // defunct body id — so a future retry still sees it as new.
+      const rows = fillLedger.getFillsForOrder('buy-1');
+      assert.equal(rows.length, 2);
+      const oldRow = rows.find((r) => r.tradeId === buyFills[0].tradeId);
+      const newRow = rows.find((r) => r.tradeId === buyFills[1].tradeId);
+      assert.equal(oldRow.bodyId, bodyId, 'the original fill stays linked to its original body');
+      assert.equal(newRow.bodyId, undefined, 'the new fill must NOT be linked to a body that failed to absorb it');
+      // The trade record's totals must NOT have been refreshed on a failed extend.
+      const stillStored = store.getById(first.trade.id);
+      assert.equal(stillStored.buySize, buyFills[0].size);
+
+      // Self-healing: once a body exists again to extend, a further retry
+      // must pick the still-unlinked fill back up and succeed.
+      bodies.push({ id: bodyId, assetQty: buyFills[0].size, costBasis: buyFills[0].price * buyFills[0].size });
+      const third = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      assert.equal(third.success, true);
+      assert.equal(third.extended, true);
+      assert.equal(extendAttempts, 2);
+      for (const row of fillLedger.getFillsForOrder('buy-1')) {
+        assert.equal(row.bodyId, bodyId);
+      }
     });
 
     // Issue #691 review follow-up: the top-of-function retry guard (trade.bodyId

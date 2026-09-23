@@ -10,7 +10,8 @@
  * Features:
  * - Calculates optimal baseSizeUsdc for target utilization
  * - Optionally adjusts maxCycleBuys based on historical buy depth
- * - Tracks USDC balance changes and triggers recalculation
+ * - Evaluates for a new size adjustment at cycle-completion boundaries
+ *   (recordCycle()), fed the real adapter balance
  * - Rate-limited adjustments with safety bounds
  * - State persistence for continuity across restarts
  */
@@ -45,7 +46,6 @@ const { createContextLogger } = require('./logger');
  */
 
 const MAX_RECENT_CYCLES = 50;
-const BALANCE_CHANGE_THRESHOLD = 0.10; // 10% balance change triggers re-evaluation
 
 /**
  * Calculate the total ladder multiplier for a given number of steps
@@ -120,28 +120,21 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
   };
 
   /**
-   * Update balance and check for significant change
-   * @param {number} currentBalance - Current available USDC balance
-   * @returns {SizeAdjustment|null} Adjustment if triggered
+   * Invalidate the cached balance reading (issue #694 review round 2).
+   *
+   * A caller can lose the ability to attribute the shared exchange wallet to
+   * this fund alone (e.g. a sibling fund on the same exchange/quote currency
+   * gets added after this fund already had a verified balance) — at that
+   * point the previously-recorded `lastKnownBalance` is no longer sound to
+   * evaluate against, even though it's still a positive number. Without an
+   * explicit reset, `evaluate()`'s `lastKnownBalance <= 0` guard would never
+   * catch this: it only guards "never observed a balance," not "observed one
+   * that's since become unsound." Reset it back to the same unset state a
+   * fresh optimizer starts in, so evaluate() skips until a fresh, unambiguous
+   * balance is observed again.
    */
-  const updateBalance = (currentBalance) => {
-    if (currentBalance <= 0) return null;
-
-    const previousBalance = lastKnownBalance;
-    lastKnownBalance = currentBalance;
-
-    // Check for significant balance change
-    if (previousBalance > 0) {
-      const changeRatio = Math.abs(currentBalance - previousBalance) / previousBalance;
-      if (changeRatio >= BALANCE_CHANGE_THRESHOLD) {
-        logger.info(`📊 [${exchange}] Balance changed ${(changeRatio * 100).toFixed(1)}%: $${previousBalance.toFixed(2)} → $${currentBalance.toFixed(2)}`, {
-          previousBalance, currentBalance, changeRatio,
-        });
-        return evaluateForBalance(currentBalance);
-      }
-    }
-
-    return null;
+  const invalidateBalance = () => {
+    lastKnownBalance = 0;
   };
 
   /**
@@ -191,6 +184,18 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
       return null;
     }
 
+    // No real balance has ever been observed yet (every recordCycle() call so
+    // far arrived with availableBalance <= 0 — e.g. a failed/unavailable
+    // exchange balance fetch — so lastKnownBalance is still its 0 initial
+    // value, never a verified reading). Evaluating against 0 here would floor
+    // baseSizeUsdc to sizeAbsoluteMinBase and (unlike the deliberate,
+    // explicit balance=0 case covered by calculateAdjustment's own tests)
+    // slash maxUsdcDeployed to 0 with no real signal behind it. Skip this
+    // evaluation and wait for a verified balance instead (issue #694 item 2).
+    if (lastKnownBalance <= 0) {
+      return null;
+    }
+
     const adjustment = calculateAdjustment(lastKnownBalance);
 
     if (adjustment) {
@@ -206,42 +211,6 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
       });
 
       // Keep history manageable
-      if (adjustmentHistory.length > 50) {
-        adjustmentHistory.shift();
-      }
-
-      if (callbacks.onAdjustment) {
-        callbacks.onAdjustment(adjustment);
-      }
-    }
-
-    return adjustment;
-  };
-
-  /**
-   * Evaluate specifically for balance change
-   * @param {number} currentBalance - Current balance
-   * @returns {SizeAdjustment|null}
-   */
-  const evaluateForBalance = (currentBalance) => {
-    if (!config.sizeAutoManaged) {
-      return null;
-    }
-
-    const adjustment = calculateAdjustment(currentBalance);
-
-    if (adjustment) {
-      const now = Date.now();
-      lastEvaluationTime = now;
-
-      adjustmentHistory.push({
-        timestamp: now,
-        baseSizeUsdc: adjustment.baseSizeUsdc,
-        maxUsdcDeployed: adjustment.maxUsdcDeployed,
-        maxCycleBuys: adjustment.maxCycleBuys,
-        reason: adjustment.reason,
-      });
-
       if (adjustmentHistory.length > 50) {
         adjustmentHistory.shift();
       }
@@ -474,7 +443,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
 
   return {
     recordCycle,
-    updateBalance,
+    invalidateBalance,
     evaluate,
     previewSizing,
     getStatus,
