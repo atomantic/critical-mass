@@ -2750,9 +2750,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
       }
 
-      // Restore or cancel persisted ladder orders
+      // Restore or cancel persisted ladder orders. Gated on the PRE-catch-up
+      // snapshot: a catch-up that booked (and so removed) every rung must still
+      // reach the ladderActive=false reset below, exactly as the old purge of
+      // those same no-longer-open rungs did.
       const savedLadderOrders = positionState.pendingLadderOrders || [];
-      if (positionState.ladderActive && savedLadderOrders.length > 0) {
+      if (positionState.ladderActive && savedLadderSnapshot.length > 0) {
         let restoredLadder = 0;
         let cancelledLadder = 0;
 

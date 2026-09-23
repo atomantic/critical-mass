@@ -213,6 +213,7 @@ describe('startup catch-up for saved entries that went terminal offline (issue #
 
     const finalPos = eng._getPositionState();
     assert.equal((finalPos.pendingLadderOrders || []).length, 0, 'the caught-up rung is cleared once booked');
+    assert.equal(finalPos.ladderActive, false, 'with no rungs left, ladder mode must be cleared as the old purge did');
     const bodies = finalPos.celestialBodies.filter(b => (b.sourceOrderIds || []).includes(RUNG_ID));
     assert.equal(bodies.length, 1, 'the rung\'s known partial must be booked into a body, not dropped by the ladder restore');
     assert.ok(Math.abs(bodies[0].assetQty - 0.4) < 1e-8, `the body must reflect the known 0.4 partial — got ${bodies[0].assetQty}`);
@@ -260,6 +261,7 @@ describe('startup catch-up for saved entries that went terminal offline (issue #
     const finalPos = eng._getPositionState();
     const kept = (finalPos.pendingLadderOrders || []).find(o => o.orderId === RUNG_ID);
     assert.ok(kept, 'a rung whose catch-up failed must be retained, not purged as no-longer-open');
+    assert.equal(finalPos.ladderActive, true, 'a retained rung keeps the ladder active until it is booked');
     assert.equal(kept.knownFilledSize, 1.5, 'the failed catch-up must record the size it observed');
     assert.ok(
       restoreCalls.some(c => c.orderId === RUNG_ID && c.spec.type === 'ladder_entry' && c.spec.ladderIndex === 0),
