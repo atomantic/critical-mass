@@ -179,3 +179,60 @@ describe('backfillKeysFilePermissions (issue #688)', () => {
     assert.equal(mode, 0o600, 'existing key file must be backfilled to 0600');
   });
 });
+
+describe('retireLegacyKeysFileIfAlreadyMigrated — codex review finding (issue #688)', () => {
+  // A pre-#688 build copied keys.json -> data/coinbase-keys.json but never
+  // renamed the root file away ("don't delete original for safety"), so an
+  // install migrated by that code has BOTH files present. Without this
+  // reconciliation step, deleting data/coinbase-keys.json on such an
+  // install would make needsKeysMigration() true again (the still-present
+  // root file looks like a pending migration) and resurrect the deleted
+  // key on the next startup — the exact bug this issue fixes, from a
+  // different starting state.
+
+  it('renames the root keys.json away the moment both files are found to coexist', () => {
+    fs.mkdirSync(path.join(tmpDir, 'data'), { recursive: true });
+    fs.writeFileSync(rootKeysFile(), FAKE_KEYS);   // pre-#688 install: never renamed
+    fs.writeFileSync(newKeysFile(), FAKE_KEYS);    // ...but already copied
+
+    migration.retireLegacyKeysFileIfAlreadyMigrated();
+
+    assert.ok(!fs.existsSync(rootKeysFile()), 'root keys.json must be retired once the copy is confirmed to exist');
+    assert.ok(fs.existsSync(migratedKeysFile()), 'keys.json.migrated must exist');
+  });
+
+  it('is a no-op when only the root file exists (a real migration is still pending)', () => {
+    fs.writeFileSync(rootKeysFile(), FAKE_KEYS);
+    // data/coinbase-keys.json deliberately absent.
+
+    migration.retireLegacyKeysFileIfAlreadyMigrated();
+
+    assert.ok(fs.existsSync(rootKeysFile()), 'must not touch the root file while migration is still pending');
+  });
+
+  it('is a no-op when neither file exists', () => {
+    assert.doesNotThrow(() => migration.retireLegacyKeysFileIfAlreadyMigrated());
+  });
+
+  it('end-to-end: a pre-#688 install survives an operator deleting the key, across a simulated restart', () => {
+    fs.mkdirSync(path.join(tmpDir, 'data'), { recursive: true });
+    fs.writeFileSync(rootKeysFile(), FAKE_KEYS);   // simulates a pre-#688 install's leftover root file
+    fs.writeFileSync(newKeysFile(), FAKE_KEYS);
+
+    // "Startup" on the new build — this is the fix: it must retire the
+    // root file even though no fresh migration ran (newKeysFile already
+    // existed, so needsKeysMigration() is false and migrateKeys() never fires).
+    const first = migration.runMigrationIfNeeded();
+    assert.equal(first.keysMigrated, false);
+    assert.ok(!fs.existsSync(rootKeysFile()), 'the leftover root file must be retired on first contact with the new build');
+
+    // Operator deletes the key via the API.
+    fs.rmSync(newKeysFile());
+
+    // "Restart" — must NOT resurrect the deleted key, because the root
+    // file is already gone.
+    const second = migration.runMigrationIfNeeded();
+    assert.equal(second.keysMigrated, false, 'a second run must not re-migrate');
+    assert.ok(!fs.existsSync(newKeysFile()), 'data/coinbase-keys.json must stay deleted');
+  });
+});
