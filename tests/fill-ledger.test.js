@@ -1537,6 +1537,89 @@ describe('Fill Ledger', () => {
     });
   });
 
+  describe('per-buy consumption records (issue #607)', () => {
+    // An order that bought 0.002 but whose body only ever attributed 0.001 of
+    // it (the first tranche) — the TP that closed that body sold less than the
+    // order bought. sellOrderId is stamped across EVERY fill of the order and
+    // names a sell with fills, so the boolean rule reads the whole order closed.
+    const seedPartlySoldOrder = (ledger) => {
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'c-b1', orderId: 'buy-c', price: '100000', size: '0.001', totalCommission: '0.10' }));
+      ledger.ingestFill(makeBuyFill({ tradeId: 'c-b2', orderId: 'buy-c', price: '100000', size: '0.001', totalCommission: '0.10' }));
+      ledger.annotateFillsByOrderId('buy-c', { sellOrderId: 'tp-c', bodyId: 'body-c' });
+      // Body held 0.001: TP sold 0.0009, holdback 0.0001 booked as reserves.
+      ledger.ingestFill(makeSellFill({ tradeId: 'c-s1', orderId: 'tp-c', price: '110000', size: '0.0009', totalCommission: '0.10' }));
+      ledger.annotateFillsByOrderId('tp-c', { bodyPnl: 8.8, bodyHoldbackAsset: 0.0001, isBodyOwned: true });
+    };
+
+    it('without a record, the boolean rule loses the unsold remainder (the defect)', () => {
+      const ledger = createTestLedger();
+      seedPartlySoldOrder(ledger);
+      const derived = ledger.getDerivedRealizedPnL();
+      assert.equal(derived.heldOpenBuyCostBasis, 0, 'legacy closure reads the whole order closed');
+      assert.equal(derived.heldOpenAssetQty, 0);
+      // The identity breaks by exactly the lost remainder.
+      assert.ok(Math.abs(derived.ledgerNetAsset - (derived.heldOpenAssetQty + derived.realizedAssetPnL) - 0.001) < 1e-12);
+    });
+
+    it('holds the unsold remainder of an order whose TP sold less than the order bought', () => {
+      const ledger = createTestLedger();
+      seedPartlySoldOrder(ledger);
+      // The sale consumed the body's 0.001 tranche: 0.0009 sold + 0.0001 holdback.
+      assert.equal(ledger.recordBuyConsumption('buy-c', 'tp-c', 0.001), true);
+
+      const derived = ledger.getDerivedRealizedPnL();
+      assert.equal(derived.heldOpenAssetQty, 0.001, 'the second tranche is still held');
+      assert.equal(derived.heldOpenBuyCostBasis, 100.10, 'at its own pro-rata cost (half of $200.20)');
+      assert.equal(derived.realizedPnL, 8.8, 'realized P&L is untouched');
+      assert.equal(derived.realizedAssetPnL, 0.0001, 'reserves are untouched');
+      assert.equal(derived.ledgerNetAsset, 0.0011);
+      assert.ok(
+        Math.abs(derived.ledgerNetAsset - derived.heldOpenAssetQty - derived.realizedAssetPnL) < 1e-12,
+        'net ledger position == held open + reserves, from the ledger alone',
+      );
+    });
+
+    it('is idempotent per sell order and survives rows ingested after the record', () => {
+      const ledger = createTestLedger();
+      seedPartlySoldOrder(ledger);
+      ledger.recordBuyConsumption('buy-c', 'tp-c', 0.001);
+      ledger.recordBuyConsumption('buy-c', 'tp-c', 0.001); // crash replay of the same sell
+      // A late tranche of the same order lands after the record: no consumedBy
+      // on its row, but it must neither reset nor duplicate the order's record.
+      ledger.ingestFill(makeBuyFill({ tradeId: 'c-b3', orderId: 'buy-c', price: '100000', size: '0.001', totalCommission: '0.10' }));
+
+      const consumption = ledger.getBuyOrderConsumption('buy-c');
+      assert.deepEqual(consumption.consumedBy, { 'tp-c': 0.001 });
+      assert.ok(Math.abs(consumption.size - 0.003) < 1e-12);
+      assert.equal(ledger.getDerivedRealizedPnL().heldOpenAssetQty, 0.002);
+
+      // A second sale adds its own entry; the late row picks the map up too.
+      ledger.recordBuyConsumption('buy-c', 'tp-c2', 0.002);
+      assert.equal(ledger.getDerivedRealizedPnL().heldOpenAssetQty, 0);
+      assert.equal(ledger.getDerivedRealizedPnL().heldOpenBuyCostBasis, 0);
+      assert.ok(ledger.getFillsForOrder('buy-c').every(f => f.consumedBy && f.consumedBy['tp-c2'] === 0.002));
+    });
+
+    it('seeds prior legacy consumption once, from the first record', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'l-b1', orderId: 'buy-l', price: '100000', size: '0.002', totalCommission: '0.20' }));
+      ledger.annotateFillsByOrderId('buy-l', { sellOrderId: 'tp-l2', consumedCostFraction: 0.5 });
+      ledger.recordBuyConsumption('buy-l', 'tp-l2', 0.0005, 0.001);
+      ledger.recordBuyConsumption('buy-l', 'tp-l3', 0.0001, 0.001); // seed ignored once a record exists
+      assert.deepEqual(ledger.getBuyOrderConsumption('buy-l').consumedBy, { __legacy__: 0.001, 'tp-l2': 0.0005, 'tp-l3': 0.0001 });
+      assert.equal(ledger.getDerivedRealizedPnL().heldOpenAssetQty, 0.0004);
+      assert.equal(ledger.getDerivedRealizedPnL().heldOpenBuyCostBasis, 40.04, 'consumedCostFraction is not applied on top');
+    });
+
+    it('refuses to record against an order the ledger does not hold', () => {
+      const ledger = createTestLedger();
+      assert.equal(ledger.recordBuyConsumption('no-such-order', 'tp-x', 0.001), false);
+      assert.equal(ledger.getBuyOrderConsumption('no-such-order'), null);
+    });
+  });
+
   describe('historical-fill cycle assignment (issue #108)', () => {
     it('stamps the live cycle by default', () => {
       const ledger = createTestLedger();

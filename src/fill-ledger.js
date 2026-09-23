@@ -22,6 +22,20 @@ const { createContextLogger } = require('./logger');
  */
 
 /**
+ * `consumedBy` key for consumption that sells recorded before per-order
+ * consumption tracking existed (issue #607) had already taken from a buy.
+ */
+const LEGACY_CONSUMPTION_KEY = '__legacy__';
+
+/**
+ * Total base quantity recorded in a buy's `consumedBy` map.
+ * @param {Object<string, number>} consumedBy
+ * @returns {number}
+ */
+const sumConsumedBy = (consumedBy) => Object.values(consumedBy)
+  .reduce((sum, qty) => sum + (Number.isFinite(qty) && qty > 0 ? qty : 0), 0);
+
+/**
  * Get fill ledger file path for a fund (exchange + pair).
  * Read-only path resolution — does NOT create the directory. The persist()
  * function below mkdirs before writing.
@@ -1389,6 +1403,66 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   const annotateFillsByOrderId = (orderId, metadata) => annotateFillsByOrderIds([orderId], metadata);
 
   /**
+   * Consumption state of one buy order, aggregated over its fill rows.
+   * `consumedBy` maps sellOrderId → base quantity of this order that sell
+   * consumed (sold + booked holdback). Rows ingested after a consumption was
+   * recorded carry no map, so the maps are unioned across rows; every row
+   * that has one carries the same keys/values.
+   * @param {string} orderId - Buy order id
+   * @returns {{size: number, cost: number, consumedBy: Object<string, number>|null, consumedQty: number|undefined, consumedCostFraction: number|undefined}|null}
+   *   null when the ledger holds no buy fills for the order
+   */
+  const getBuyOrderConsumption = (orderId) => {
+    let size = 0;
+    let cost = 0;
+    let consumedBy = null;
+    let consumedCostFraction;
+    let found = false;
+    for (const f of fills.values()) {
+      if (f.orderId !== orderId || f.side !== 'buy') continue;
+      found = true;
+      size += f.size || 0;
+      cost += (f.quoteAmount || 0) + (f.netFee || 0);
+      if (f.consumedBy && typeof f.consumedBy === 'object') consumedBy = { ...(consumedBy || {}), ...f.consumedBy };
+      if (f.consumedCostFraction != null) consumedCostFraction = f.consumedCostFraction;
+    }
+    if (!found) return null;
+    const consumedQty = consumedBy ? sumConsumedBy(consumedBy) : undefined;
+    return { size, cost, consumedBy, consumedQty, consumedCostFraction };
+  };
+
+  /**
+   * Record that sell `sellOrderId` consumed `qty` of buy order `buyOrderId`
+   * (issue #607). This is the consumption record `sellOrderId` never was: a
+   * buy order can be PARTLY closed, and computeRealizedFromCyclePairs holds
+   * `size − Σ consumedBy` of it open instead of deciding closure on a boolean.
+   *
+   * Keyed by sell order, so re-booking the same sell (crash replay) overwrites
+   * its own entry rather than consuming the buy twice. `legacySeedQty` is what
+   * sells recorded before this field existed had already consumed; it seeds
+   * the map only the first time a consumption is recorded for the order.
+   * @param {string} buyOrderId
+   * @param {string} sellOrderId
+   * @param {number} qty - Base quantity this sell consumed from the order
+   * @param {number} [legacySeedQty=0]
+   * @returns {boolean} false when the ledger holds no buy fills for the order
+   */
+  const recordBuyConsumption = (buyOrderId, sellOrderId, qty, legacySeedQty = 0) => {
+    if (!buyOrderId || !sellOrderId || !Number.isFinite(qty)) return false;
+    const existing = getBuyOrderConsumption(buyOrderId);
+    if (!existing) return false;
+    const consumedBy = { ...(existing.consumedBy || {}) };
+    if (!existing.consumedBy && legacySeedQty > 0) consumedBy[LEGACY_CONSUMPTION_KEY] = roundAsset(legacySeedQty);
+    consumedBy[sellOrderId] = roundAsset(Math.max(0, qty));
+    for (const f of fills.values()) {
+      if (f.orderId === buyOrderId && f.side === 'buy') f.consumedBy = { ...consumedBy };
+    }
+    dirtySinceLastPersist = true;
+    bumpLedgerVersion();
+    return true;
+  };
+
+  /**
    * Idempotency guard for capital-growth credit (issue #210-B). Capital growth
    * (config.maxUsdcDeployed += pnl) is a non-idempotent config.json write that
    * happens mid-fill, before the fill-processed state is saved — so a crash
@@ -1436,15 +1510,27 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    *   realizedPnL          = Σ per-sell pnl
    *   realizedAssetPnL     = Σ holdback per sell (server annotation when present,
    *                          else max(0, Σ paired_buy_size − sell_size))
-   *   heldOpenBuyCostBasis = Σ cost over buys whose sellOrderId is absent or
-   *                          has no sell fills yet (open positions in active
-   *                          bodies whose TP is resting or was cancelled)
+   *   heldOpenBuyCostBasis = per buy order:
+   *                          - with a `consumedBy` record (issue #607):
+   *                            cost × (size − Σ consumedBy) / size — the
+   *                            unsold remainder of a partly-sold order stays held
+   *                          - otherwise (legacy): full cost × (1 − consumedCostFraction)
+   *                            when sellOrderId is absent or has no sell fills yet
+   *   heldOpenAssetQty     = the same, in base quantity
+   *   ledgerNetAsset       = Σ buy size − Σ sell size over the whole ledger
+   *
+   * Every body sale records sold + booked holdback as consumed, so wherever
+   * sells were booked with `consumedBy` records,
+   * `ledgerNetAsset == heldOpenAssetQty + realizedAssetPnL` holds by
+   * construction — the position-coverage identity, from the ledger alone.
+   * Legacy boolean closure is what can break it (a partly-sold order read as
+   * fully closed).
    *
    * Reserves (realizedAssetPnL) are treated as zero-cost: the cost was already
    * attributed to the paired sell's basis.
    *
    * Side-effect-free — safe to call on every status emit and state save.
-   * @returns {{realizedPnL: number, realizedAssetPnL: number, heldOpenBuyCostBasis: number, unpairedSellQty: number}}
+   * @returns {{realizedPnL: number, realizedAssetPnL: number, heldOpenBuyCostBasis: number, heldOpenAssetQty: number, ledgerNetAsset: number, unpairedSellQty: number}}
    */
   const computeRealizedFromCyclePairsUncached = () => {
     // bodyPnl/satellitePnl annotations are written by annotateFillsByOrderId
@@ -1452,6 +1538,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // we take ONE value per orderId — not summed.
     const buyAggByOrderId = new Map();
     const sellAggByOrderId = new Map();
+    let ledgerNetAsset = 0;
     for (const f of fills.values()) {
       if (f.side === 'buy') {
         // Buys without an orderId (legacy/manual rows) must NOT all collapse
@@ -1469,14 +1556,19 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
           // consumedCostFraction is annotated identically on every row of the
           // orderId (like bodyPnl) — take the latest non-null, not summed.
           if (f.consumedCostFraction != null) ex.consumedCostFraction = f.consumedCostFraction;
+          // consumedBy is written to every row that existed when a sell was
+          // booked; later-ingested rows of the same order carry none. Union.
+          if (f.consumedBy && typeof f.consumedBy === 'object') ex.consumedBy = { ...(ex.consumedBy || {}), ...f.consumedBy };
         } else {
           buyAggByOrderId.set(aggKey, {
             size: f.size || 0,
             cost: (f.quoteAmount || 0) + (f.netFee || 0),
             sellOrderId: f.sellOrderId || null,
             consumedCostFraction: f.consumedCostFraction ?? 0,
+            consumedBy: f.consumedBy && typeof f.consumedBy === 'object' ? { ...f.consumedBy } : null,
           });
         }
+        ledgerNetAsset += f.size || 0;
       } else if (f.side === 'sell') {
         const annotatedPnl = f.bodyPnl ?? f.satellitePnl;
         const annotatedHoldback = f.bodyHoldbackAsset ?? f.satelliteHoldbackAsset;
@@ -1502,6 +1594,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
             hasHoldbackAnnotation: annotatedHoldback != null,
           });
         }
+        ledgerNetAsset -= f.size || 0;
       }
     }
 
@@ -1515,8 +1608,28 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // as closed the moment its TP rests, zeroing heldOpenBuyCostBasis.
     const pairedBySellOrderId = new Map();
     let heldOpenBuyCostBasis = 0;
+    let heldOpenAssetQty = 0;
     for (const buy of buyAggByOrderId.values()) {
-      if (!buy.sellOrderId || !sellAggByOrderId.has(buy.sellOrderId)) {
+      const hasSellFills = !!buy.sellOrderId && sellAggByOrderId.has(buy.sellOrderId);
+      if (buy.consumedBy && Object.keys(buy.consumedBy).length > 0) {
+        // Quantity-aware closure (issue #607). Sells record what they consumed
+        // from each buy order, so a buy order can be PARTLY closed: its unsold
+        // remainder stays held at its own pro-rata cost. sellOrderId plays no
+        // part in closure here — it is a crash-resilience breadcrumb that is
+        // re-stamped across merges and TP replacements, and a partly-sold
+        // order carries it just like a fully-sold one.
+        const consumed = Math.min(sumConsumedBy(buy.consumedBy), buy.size);
+        const openQty = Math.max(0, buy.size - consumed);
+        if (buy.size > 0) heldOpenBuyCostBasis += buy.cost * (openQty / buy.size);
+        heldOpenAssetQty += openQty;
+        // Pairing below feeds only the fallback P&L of sells WITHOUT a
+        // server annotation — unchanged from the boolean model.
+        if (!hasSellFills) continue;
+      } else if (!hasSellFills) {
+        // Legacy boolean closure for buy orders no sell has recorded
+        // consumption against (pre-#607 history, or a body whose tranches
+        // could not account for its quantity): open until the linked sell
+        // order has fills.
         // Held cost = the buy's cost MINUS the fraction already realized via
         // prior partial body-TP fills (issue #128). On a partial body-TP fill
         // the engine re-links the buy to a fresh resting TP and stamps
@@ -1527,6 +1640,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         // fraction holds only the genuinely-open remainder.
         const consumed = buy.consumedCostFraction > 0 ? Math.min(buy.consumedCostFraction, 1) : 0;
         heldOpenBuyCostBasis += buy.cost * (1 - consumed);
+        heldOpenAssetQty += buy.size * (1 - consumed);
         continue;
       }
       const ex = pairedBySellOrderId.get(buy.sellOrderId);
@@ -1563,6 +1677,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       realizedPnL: roundUSDC(realizedPnL),
       realizedAssetPnL: roundAsset(realizedAssetPnL),
       heldOpenBuyCostBasis: roundUSDC(heldOpenBuyCostBasis),
+      heldOpenAssetQty: roundAsset(heldOpenAssetQty),
+      ledgerNetAsset: roundAsset(ledgerNetAsset),
       unpairedSellQty: roundAsset(unpairedSellQty),
     };
   };
@@ -1648,7 +1764,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
   /**
    * Source-of-truth derivation for position.realizedPnL and realizedAssetPnL.
-   * @returns {{realizedPnL: number, realizedAssetPnL: number, unpairedSellQty: number, heldOpenBuyCostBasis: number}}
+   * @returns {{realizedPnL: number, realizedAssetPnL: number, unpairedSellQty: number, heldOpenBuyCostBasis: number, heldOpenAssetQty: number, ledgerNetAsset: number}}
    */
   const getDerivedRealizedPnL = () => computeRealizedFromCyclePairs();
 
@@ -1715,6 +1831,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     computeRealizedFromCyclePairs,
     getDerivedRealizedPnL,
     updateFillCycleId,
+    getBuyOrderConsumption,
+    recordBuyConsumption,
     annotateFillsByOrderId,
     annotateFillsByOrderIds,
     claimCapitalCredit,

@@ -133,6 +133,10 @@ const createNewBody = (newBuy, buyOrderId) => {
       assetQty,
       sizeUsdc: costBasis,
       filledAt: Date.now(),
+      // Quantity of THIS tranche already consumed by the body's sells
+      // (sold + booked holdback). Starts at 0 so a later fold-in never
+      // inherits consumption from sales it was not part of (issue #704).
+      consumedQty: 0,
     }],
     mergeCount: 0,
   };
@@ -232,6 +236,7 @@ const mergeIntoBody = (target, newBuy, maxUsdcDeployed, buyOrderId, logger = cel
       assetQty: newBtcQty,
       sizeUsdc: newCost,
       filledAt: Date.now(),
+      consumedQty: 0,
     });
   }
   target.mergeCount += 1;
@@ -290,6 +295,70 @@ const mergeBodies = (target, source, maxUsdcDeployed, logger = celestialHierarch
   }
 
   return target;
+};
+
+/**
+ * Plan how a body sale consumes the body's buy tranches (issue #607). Pure:
+ * returns what to write, mutates nothing.
+ *
+ * Each `body.buyOrders` entry is one tranche the body attributed from a buy
+ * order, with `consumedQty` recording how much of it earlier sales took. A
+ * sale consuming `qty` (sold + booked holdback) is spread across the tranches
+ * in proportion to their open quantity — the same proration the body applies
+ * to its own `costBasis` (`costBasis × qty / assetQty`), so the tranches keep
+ * reconciling with the body, and a tranche folded in after an earlier sale
+ * never inherits that sale's consumption (issue #704).
+ *
+ * The share is taken over `max(bodyQty, Σ open)`: when the body holds more
+ * than its tranches (an adopted body merged in, tranches that predate
+ * quantity tracking), the untracked part keeps its own pro-rata share of the
+ * sale unrecorded instead of loading it onto the tranches. A sale that closes
+ * the body (`closesBody`) consumes every tranche in full, so rounding or an
+ * approximate legacy seed can never strand a sliver of a closed body open.
+ *
+ * Tranches recorded before `consumedQty` existed are seeded from
+ * `legacyConsumedFraction(entry)` (the order's consumedCostFraction).
+ *
+ * @param {Array<{orderId?: string, assetQty?: number, consumedQty?: number}>} entries - body.buyOrders
+ * @param {number} bodyQty - body.assetQty BEFORE the sale
+ * @param {number} qty - Base quantity the sale consumed
+ * @param {(entry: Object) => number} [legacyConsumedFraction]
+ * @param {{closesBody?: boolean}} [opts]
+ * @returns {{entries: Array<{entry: Object, next: number}>, orders: Map<string, {delta: number, prior: number}>, coverage: number}|null}
+ *   `coverage` is the fraction of the body its open tranches account for
+ *   (capped at 1). null when no tranche has open quantity or nothing was
+ *   consumed — the caller then leaves the buys on legacy closure.
+ */
+const planBodyConsumption = (entries, bodyQty, qty, legacyConsumedFraction = () => 0, { closesBody = false } = {}) => {
+  if (!(qty > 0) && !closesBody) return null;
+  const rows = [];
+  let open = 0;
+  for (const entry of entries || []) {
+    if (!entry || !entry.orderId || entry.orderId === 'core-migration') continue;
+    const size = Number(entry.assetQty) || 0;
+    if (!(size > 0)) continue;
+    const legacyFraction = Math.min(Math.max(Number(legacyConsumedFraction(entry)) || 0, 0), 1);
+    const prior = Number.isFinite(entry.consumedQty)
+      ? Math.min(Math.max(entry.consumedQty, 0), size)
+      : size * legacyFraction;
+    const rowOpen = Math.max(0, size - prior);
+    rows.push({ entry, size, prior, open: rowOpen });
+    open += rowOpen;
+  }
+  if (!(open > 0)) return null;
+  const pool = Math.max(Number(bodyQty) || 0, open);
+
+  const plannedEntries = [];
+  const orders = new Map();
+  for (const row of rows) {
+    const next = closesBody ? row.size : Math.min(row.size, row.prior + qty * (row.open / pool));
+    plannedEntries.push({ entry: row.entry, next });
+    const order = orders.get(row.entry.orderId) || { delta: 0, prior: 0 };
+    order.delta += next - row.prior;
+    order.prior += row.prior;
+    orders.set(row.entry.orderId, order);
+  }
+  return { entries: plannedEntries, orders, coverage: open / pool };
 };
 
 /**
@@ -614,6 +683,7 @@ module.exports = {
   findMergeTarget,
   mergeIntoBody,
   mergeBodies,
+  planBodyConsumption,
   calculateBodyTpPercent,
   checkPromotions,
   syncPositionState,

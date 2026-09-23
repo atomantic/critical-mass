@@ -211,6 +211,16 @@ const isStrandedDustBody = (body, baseMinSize, baseIncrement) => {
 };
 
 /**
+ * Freeze a body for the Race-3 merge-snapshot maps. Scalars are copied by the
+ * spread; `buyOrders` gets its own array so a buy folded onto the live body
+ * after the snapshot is not counted among the tranches the snapshot's TP
+ * covered (issue #607). The tranche objects stay shared with the live body.
+ * @param {Object} body
+ * @returns {Object}
+ */
+const snapshotBody = (body) => ({ ...body, buyOrders: [...(body.buyOrders || [])] });
+
+/**
  * Decide whether a buy-fill handling pass is a RETRY that must be skipped to
  * avoid double-counting (issue #131), vs. a legitimate new tranche (including an
  * advancing partial) that must process. The distinguishing signal is whether
@@ -1020,8 +1030,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const derived = fillLedger.getDerivedRealizedPnL();
     positionState.realizedPnL = derived.realizedPnL;
     positionState.realizedAssetPnL = derived.realizedAssetPnL;
-    // Cost basis of currently-held bot position (buys whose linked sell order
-    // has not filled — sellOrderId alone means a TP was *placed*, not fired).
+    // Cost basis of currently-held bot position: each buy order's unconsumed
+    // remainder per its consumedBy record (issue #607), or — for orders no
+    // sell has recorded against — buys whose linked sell order has not filled
+    // (sellOrderId alone means a TP was *placed*, not fired).
     // Used by APY calc for unrealized P&L of body assets:
     //   unrealizedReturn = body_qty × current_price − heldAssetCostBasis.
     // Reserves are zero-cost; their full mark-to-market value is profit.
@@ -2565,6 +2577,76 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Record on the fill ledger which buy orders a body sale consumed, and how
+   * much of each (issue #607). This is what lets computeRealizedFromCyclePairs
+   * hold the unsold remainder of a partly-sold buy order open instead of
+   * reading `sellOrderId` as "fully closed". The consumption is spread over
+   * the body's tranches (`body.buyOrders`) by celestialHierarchy.planBodyConsumption,
+   * and each tranche's `consumedQty` is advanced to match.
+   *
+   * Call BEFORE the body's assetQty/costBasis are reduced for this sale.
+   * @param {Object} args
+   * @param {Array} args.entries - The tranches the sold TP covered (body.buyOrders)
+   * @param {number} args.bodyQty - Body assetQty before this sale
+   * @param {number} args.qty - Base quantity consumed: sold + booked holdback
+   * @param {boolean} args.closesBody - The sale closed the TP's body: every
+   *   tranche it covered is consumed in full
+   * @param {string} args.sellOrderId
+   * @param {string} args.bodyId - For logging
+   * @returns {void} Buys with no open tranche stay on legacy sellOrderId /
+   *   consumedCostFraction closure.
+   */
+  const recordBodyConsumption = ({ entries, bodyQty, qty, closesBody, sellOrderId, bodyId }) => {
+    const plan = celestialHierarchy.planBodyConsumption(entries, bodyQty, qty,
+      (entry) => fillLedger.getBuyOrderConsumption(entry.orderId)?.consumedCostFraction ?? 0,
+      { closesBody });
+    if (plan) {
+      for (const { entry, next } of plan.entries) entry.consumedQty = roundAsset(next);
+      for (const [orderId, { delta, prior }] of plan.orders) {
+        if (delta > 0) fillLedger.recordBuyConsumption(orderId, sellOrderId, delta, prior);
+      }
+    }
+    const coverage = plan ? plan.coverage : 0;
+    if (coverage < 0.99) {
+      logger.warn(
+        `⚠️ [${exchange}] Body ${String(bodyId).slice(-8)} tranches account for ${(coverage * 100).toFixed(1)}% of its ${roundAsset(bodyQty)} ${baseCurrency} — the rest of sale ${String(sellOrderId).slice(0, 8)} is not recorded per buy order (legacy closure)`,
+        { bodyId, sellOrderId, bodyQty, qty, coverage, tranches: (entries || []).length }
+      );
+    }
+  };
+
+  /**
+   * Compose a body sale's consumed-cost ratio into each source buy's OWN
+   * consumedCostFraction (issue #704) — the legacy fallback for buys a sale
+   * cannot record per order. Stamping one body-level scalar on every buy
+   * retroactively charged a buy folded in after an earlier partial sale with
+   * that sale's consumption.
+   *
+   * Skips every buy the per-order model tracks: one with a consumedBy record
+   * (the fraction is ignored for it) or a tranche with a `consumedQty` (it
+   * would seed that tranche's first record, charging it twice — and a fold-in
+   * a merge-snapshot TP never covered must not be charged at all).
+   * @param {Object} body - Body whose source buys to annotate
+   * @param {number} ratio - Fraction of the pool's remaining cost this sale removed
+   */
+  const stampConsumedCostFraction = (body, ratio) => {
+    const tracked = new Set((body.buyOrders || [])
+      .filter(e => e && e.orderId && (Number(e.assetQty) || 0) > 0 && Number.isFinite(e.consumedQty))
+      .map(e => e.orderId));
+    for (const srcId of new Set([
+      ...(body.sourceOrderIds || []),
+      ...((body.buyOrders || []).map(b => b.orderId)),
+    ])) {
+      if (!srcId || srcId === 'core-migration' || tracked.has(srcId)) continue;
+      const prior = fillLedger.getBuyOrderConsumption(srcId);
+      if (!prior || prior.consumedBy) continue;
+      fillLedger.annotateFillsByOrderId(srcId, {
+        consumedCostFraction: 1 - (1 - (prior.consumedCostFraction ?? 0)) * (1 - ratio),
+      });
+    }
+  };
+
+  /**
    * Handle order fill
    * @param {Object} fillData - Fill data
    */
@@ -2794,7 +2876,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (mergeTarget) {
         // Race 3: snapshot merge target before cancel in case TP fills in-flight
         if (mergeTarget.tpOrderId) {
-          pendingMergeTpOrders.set(mergeTarget.tpOrderId, { ...mergeTarget });
+          pendingMergeTpOrders.set(mergeTarget.tpOrderId, snapshotBody(mergeTarget));
         }
         const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id, mergeTarget.tpOrderId);
         const cancellationOutcome = classifyBodyTpCancellation(cancelResult);
@@ -2816,7 +2898,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const soldTp = mergeTarget.tpOrderId;
           if (soldTp) {
             pendingMergeTpOrders.delete(soldTp);
-            completedMergeTpOrders.set(soldTp, { ...mergeTarget });
+            completedMergeTpOrders.set(soldTp, snapshotBody(mergeTarget));
             const t = setTimeout(() => { completedMergeTpOrders.delete(soldTp); ttlTimers.delete(t); }, 300000);
             ttlTimers.add(t);
           }
@@ -2853,7 +2935,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // Cancel succeeded — move to completed with TTL
           if (mergeTarget.tpOrderId) {
             pendingMergeTpOrders.delete(mergeTarget.tpOrderId);
-            completedMergeTpOrders.set(mergeTarget.tpOrderId, { ...mergeTarget });
+            completedMergeTpOrders.set(mergeTarget.tpOrderId, snapshotBody(mergeTarget));
             const t = setTimeout(() => { completedMergeTpOrders.delete(mergeTarget.tpOrderId); ttlTimers.delete(t); }, 300000);
             ttlTimers.add(t);
           }
@@ -3096,15 +3178,30 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
         orderExecutor.removeBodyTracking(fillData.orderId);
 
+        // Record the consumption against the tranches the SNAPSHOT covered —
+        // its buyOrders array is copied when the snapshot is taken, so a buy
+        // folded onto the live body in the Race-3 window is not charged for a
+        // TP it was never part of. The tranche objects themselves are shared
+        // with the live body, which is what advances its consumedQty. A true
+        // partial books no reserve, so it consumes only what sold; a complete
+        // fill also consumes the holdback it books as reserves (issue #607).
+        recordBodyConsumption({
+          entries: mergeSnapshot.buyOrders,
+          bodyQty: mergeSnapshot.assetQty,
+          qty: liveOwnsRemainder ? summary.totalSize : Math.max(mergeSnapshot.assetQty, summary.totalSize),
+          closesBody: !liveOwnsRemainder,
+          sellOrderId: fillData.orderId,
+          bodyId: mergeSnapshot.id,
+        });
+
         if (liveMerged) {
           // consumedCostFraction must reflect what FRACTION OF THE DOLLAR COST
           // this sale actually removed from the live pool — NOT a quantity
           // ratio. `proratedCostBasis` (below) is priced off the frozen
           // `mergeSnapshot.costBasis`, so when a buy folded onto this SAME live
           // body in the Race-3 window at a DIFFERENT price than the original
-          // body's avg price (mergeSnapshot's array fields are shallow-copied,
-          // so sourceOrderIds/buyOrders are the SAME shared references as
-          // liveMerged's and reflect the fold-in too), a quantity-based ratio
+          // body's avg price (the fold-in is part of liveMerged's pool and its
+          // sourceOrderIds, which this stamps), a quantity-based ratio
           // (sold-size / live-qty) diverges from the dollar fraction actually
           // deducted, and Σ buy.cost*(1-consumedCostFraction) would no longer
           // reconcile to liveMerged.costBasis. Pricing the ratio directly off
@@ -3125,14 +3222,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // is simultaneously realized via bodyPnl above — double-counting it.
           const prevConsumed = liveMerged.consumedCostFraction || 0;
           liveMerged.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - liveConsumedRatio);
-          for (const srcId of new Set([
-            ...(liveMerged.sourceOrderIds || []),
-            ...((liveMerged.buyOrders || []).map(b => b.orderId)),
-          ])) {
-            if (srcId && srcId !== 'core-migration') {
-              fillLedger.annotateFillsByOrderId(srcId, { consumedCostFraction: liveMerged.consumedCostFraction });
-            }
-          }
+          // Legacy fallback for buys the sale could not record per order. A
+          // tracked buy ignores this fraction — and a tracked fold-in the
+          // snapshot's TP never covered must not be charged it at all.
+          stampConsumedCostFraction(liveMerged, liveConsumedRatio);
 
           // The resting TP was sized for the pre-deduction (oversized) qty — cancel
           // and clear it so a correctly-sized TP is re-placed for the remaining body.
@@ -3253,6 +3346,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Grow capital (idempotent per sellOrderId — issue #210-B)
         const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
 
+        // Record per buy order what this sale consumed (issue #607), before
+        // the body is reduced. A partial consumes only what sold (no reserve
+        // is booked); a full fill consumes the whole body — sold + the
+        // holdback booked as reserves.
+        recordBodyConsumption({
+          entries: body.buyOrders,
+          bodyQty: body.assetQty,
+          qty: isPartial ? summary.totalSize : Math.max(body.assetQty, summary.totalSize),
+          closesBody: !isPartial,
+          sellOrderId: fillData.orderId,
+          bodyId: body.id,
+        });
+
         if (isPartial) {
           // PARTIAL FILL: reduce body size, keep body active, re-place TP for remaining
           const remainingAsset = roundAsset(body.assetQty - summary.totalSize);
@@ -3269,14 +3375,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // realized via bodyPnl, once held), transiently understating return.
           const prevConsumed = body.consumedCostFraction || 0;
           body.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - soldRatio);
-          for (const srcId of new Set([
-            ...(body.sourceOrderIds || []),
-            ...((body.buyOrders || []).map(b => b.orderId)),
-          ])) {
-            if (srcId && srcId !== 'core-migration') {
-              fillLedger.annotateFillsByOrderId(srcId, { consumedCostFraction: body.consumedCostFraction });
-            }
-          }
+          // Legacy fallback for buys the sale could not record per order.
+          stampConsumedCostFraction(body, soldRatio);
 
           body.assetQty = remainingAsset;
           body.costBasis = remainingCostBasis;
@@ -3780,15 +3880,68 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Ledger-only position coverage (issue #607). `net` is Σ buys − Σ sells over
+   * the fill ledger; `heldOpen` is the quantity the per-buy consumption model
+   * still holds open. Two readings:
+   *   unmodelled    = net − inBodies − reserves — the exchange-balance
+   *                   identity with the ledger standing in for the balance
+   *   untrackedOpen = heldOpen − inBodies — open buy inventory no body tracks
+   *                   (exact for sells booked with consumption records;
+   *                   pre-#607 history still closes on sellOrderId)
+   * @param {number} inBodies - Σ body.assetQty
+   * @returns {{net: number, heldOpen: number, inBodies: number, reserves: number, unmodelled: number, untrackedOpen: number}}
+   */
+  const computeLedgerCoverage = (inBodies) => {
+    const derived = fillLedger.getDerivedRealizedPnL();
+    const net = derived.ledgerNetAsset || 0;
+    const heldOpen = derived.heldOpenAssetQty || 0;
+    const reserves = derived.realizedAssetPnL || 0;
+    return {
+      net: roundAsset(net),
+      heldOpen: roundAsset(heldOpen),
+      inBodies: roundAsset(inBodies),
+      reserves: roundAsset(reserves),
+      unmodelled: roundAsset(net - inBodies - reserves),
+      untrackedOpen: roundAsset(heldOpen - inBodies),
+    };
+  };
+
+  /**
    * Assert the position model covers every unit of base currency the account
    * actually holds: `balance == Σ body.assetQty + realizedAssetPnL (reserves)`.
    * Anything left over is asset the engine bought and never sold but no longer
    * tracks — it will never get a take-profit and shows up nowhere in the UI.
+   * The ledger-only reading of the same identity (computeLedgerCoverage) is
+   * always surfaced as `positionCoverage.ledger`, and warned on when the
+   * exchange balance cannot be used.
    * Detect-only, like the rest of this sweep.
    * @returns {Promise<void>}
    */
   const checkPositionCoverage = async () => {
-    if (typeof adapter.getAccountBalance !== 'function') return;
+    const inBodies = (positionState.celestialBodies || []).reduce((sum, b) => sum + (b.assetQty || 0), 0);
+    // A resting TP holds asset the body still owns, so tiny rounding is normal;
+    // anything the exchange min-size could trade is not.
+    const tolerance = Number(productDetails?.baseMinSize) || 0;
+
+    // The same identity from the fill ledger alone (issue #607): the ledger's
+    // net position stands in for the exchange balance, and the per-buy
+    // consumption model says which of it is still open. Needs no exchange
+    // call, so it also covers funds the balance check below cannot.
+    const ledger = computeLedgerCoverage(inBodies);
+    const reportLedgerGap = () => {
+      if (Math.abs(ledger.unmodelled) <= tolerance) return;
+      logger.warn(
+        `⚖️ [${exchange}] Ledger coverage gap: ledger nets ${ledger.net} ${baseCurrency}, model accounts for ${roundAsset(ledger.inBodies + ledger.reserves)} `
+        + `(${ledger.inBodies} in bodies + ${ledger.reserves} reserves) — ${ledger.unmodelled} ${baseCurrency} untracked; ledger holds ${ledger.heldOpen} ${baseCurrency} of buys open`,
+        { pair: productId, ...ledger }
+      );
+    };
+
+    if (typeof adapter.getAccountBalance !== 'function') {
+      positionCoverage = { checkedAt: Date.now(), skipped: 'adapter has no account balance', ledger };
+      reportLedgerGap();
+      return;
+    }
     // getAccountBalance is ACCOUNT-wide, not fund-scoped. With two funds on one
     // exchange sharing a base currency, the sibling's holdings read as this
     // fund's coverage gap, so the invariant is unsound and the check is skipped
@@ -3796,14 +3949,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const sharingBase = getConfiguredFunds()
       .filter(f => f.exchange === exchange && getBaseCurrency(f.pair) === baseCurrency);
     if (sharingBase.length > 1) {
-      positionCoverage = { checkedAt: Date.now(), skipped: `${sharingBase.length} funds on ${exchange} share ${baseCurrency}` };
+      positionCoverage = { checkedAt: Date.now(), skipped: `${sharingBase.length} funds on ${exchange} share ${baseCurrency}`, ledger };
+      reportLedgerGap();
       return;
     }
     const balance = await adapter.getAccountBalance(baseCurrency);
     const onExchange = Number(balance?.total);
-    if (!Number.isFinite(onExchange)) return;
+    if (!Number.isFinite(onExchange)) {
+      positionCoverage = { checkedAt: Date.now(), skipped: 'account balance unavailable', ledger };
+      reportLedgerGap();
+      return;
+    }
 
-    const inBodies = (positionState.celestialBodies || []).reduce((sum, b) => sum + (b.assetQty || 0), 0);
     const reserves = positionState.realizedAssetPnL || 0;
     const unmodelled = roundAsset(onExchange - inBodies - reserves);
     positionCoverage = {
@@ -3812,11 +3969,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       inBodies: roundAsset(inBodies),
       reserves: roundAsset(reserves),
       unmodelled,
+      ledger,
     };
 
-    // A resting TP holds asset the body still owns, so tiny rounding is normal;
-    // anything the exchange min-size could trade is not.
-    const tolerance = Number(productDetails?.baseMinSize) || 0;
     if (Math.abs(unmodelled) <= tolerance) return;
 
     logger.warn(
@@ -3841,14 +3996,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    *
    * It also checks the second, independent way asset can go missing: the ledger
    * can be complete while the POSITION MODEL still fails to represent what the
-   * account holds. `heldOpenBuyCostBasis` decides a buy is closed on a boolean
-   * — `sellOrderId` is set and that sell has fills — with no quantity check, and
-   * `sellOrderId` is re-stamped across merges and TP replacements. So a buy
-   * order only partly sold counts as fully closed and its unsold remainder
-   * disappears from the model: bought, never sold, in no body, no TP, invisible.
-   * gemini/ETHUSD was carrying 1.14 ETH in that state. The only identity that
-   * cannot lie is `balance == Σ body.assetQty + reserves`, so that is what this
-   * asserts.
+   * account holds. Before issue #607, `heldOpenBuyCostBasis` decided a buy was
+   * closed on a boolean — `sellOrderId` set and that sell has fills — with no
+   * quantity check, and `sellOrderId` is re-stamped across merges and TP
+   * replacements. So a buy order only partly sold counted as fully closed and
+   * its unsold remainder disappeared from the model: bought, never sold, in no
+   * body, no TP, invisible. gemini/ETHUSD was carrying 1.14 ETH in that state.
+   * Sells now record per-buy consumption, but pre-#607 history still closes on
+   * the boolean, so this asserts `balance == Σ body.assetQty + reserves`.
    * @returns {Promise<void>}
    */
   const sweepLedgerDrift = async () => {
@@ -5828,8 +5983,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Race 3: snapshot both bodies before cancelling TPs
     // If a TP fills between cancel and state removal, the fill handler uses the snapshot
-    const sourceSnapshot = { ...source };
-    const targetSnapshot = { ...target };
+    const sourceSnapshot = snapshotBody(source);
+    const targetSnapshot = snapshotBody(target);
     if (source.tpOrderId) pendingMergeTpOrders.set(source.tpOrderId, sourceSnapshot);
     if (target.tpOrderId) pendingMergeTpOrders.set(target.tpOrderId, targetSnapshot);
 

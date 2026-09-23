@@ -45,10 +45,16 @@ before something interrupted) — distinct from designed holdback.
 ```
 position.realizedPnL       ← Σ per-sell bodyPnl across the fill ledger
 position.realizedAssetPnL  ← Σ per-sell bodyHoldbackAsset
-position.heldAssetCostBasis ← Σ cost over buys whose sellOrderId is absent
-                              or has no sell fills yet (sellOrderId is stamped
-                              at TP placement, not fill)
+position.heldAssetCostBasis ← per buy order: cost × (size − Σ consumedBy) / size
+                              when sells recorded consumption against it;
+                              otherwise (legacy) its cost when sellOrderId is
+                              absent or has no sell fills yet (sellOrderId is
+                              stamped at TP placement, not fill)
 ```
+
+`consumedBy` (issue #607) is written by every body sale: the base quantity
+it consumed from each buy order (sold + booked holdback), so a buy order can
+be partly closed. See `docs/fill-ledger-sell-linkage.md`.
 
 All three are derived in `src/fill-ledger.js:computeRealizedFromCyclePairs()`,
 invoked by `src/regime-engine.js:refreshRealizedFromCyclePairs()` on every

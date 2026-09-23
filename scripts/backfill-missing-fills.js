@@ -66,7 +66,7 @@ const ANNOTATION_KEYS = [
   'bodyPnl', 'bodyHoldbackAsset', 'bodyCostBasis', 'bodyAvgPrice', 'bodyBtcQty',
   'bodyTier', 'bodyId', 'satellitePnl', 'satelliteHoldbackAsset', 'satelliteCostBasis',
   'satelliteAvgPrice', 'satelliteBtcQty', 'isBodyOwned', 'isSatellite', 'sellOrderId',
-  'consumedCostFraction',
+  'consumedCostFraction', 'consumedBy',
 ];
 
 // Rows the ENGINE writes as a stand-in for a real exchange fill it could not

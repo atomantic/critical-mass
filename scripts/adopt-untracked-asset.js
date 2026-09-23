@@ -3,14 +3,16 @@
  * Adopt base currency the account holds but the position model has lost track
  * of, into a celestial body so the engine manages it again.
  *
- * A complete fill ledger does not imply a complete position model.
- * `heldOpenBuyCostBasis` decides a buy is closed on a boolean — `sellOrderId`
- * is set and that sell has fills — with no quantity check, and `sellOrderId` is
- * re-stamped across merges and TP replacements. So a buy order that was only
- * partly sold counts as fully closed, and its unsold remainder leaves the
- * model: in no body, no take-profit, absent from the UI. A quantity-aware
- * version of that rule does not recover it either, because the linkage is a
- * crash-resilience breadcrumb, not a consumption record.
+ * A complete fill ledger does not imply a complete position model. Before
+ * issue #607, `heldOpenBuyCostBasis` decided a buy was closed on a boolean —
+ * `sellOrderId` set and that sell has fills — with no quantity check, and
+ * `sellOrderId` is re-stamped across merges and TP replacements. So a buy
+ * order that was only partly sold counted as fully closed, and its unsold
+ * remainder left the model: in no body, no take-profit, absent from the UI.
+ * Sells now record per-buy consumption (`consumedBy`), but history booked
+ * before that still closes on the boolean, and a quantity-aware reading of
+ * `sellOrderId` cannot recover it, because the linkage is a crash-resilience
+ * breadcrumb, not a consumption record.
  *
  * The one identity that cannot lie is
  *
@@ -225,12 +227,24 @@ async function main() {
   const bodyOrderIds = new Set(bodies
     .flatMap(b => [...(b.sourceOrderIds || []), ...(b.buyOrders || []).map(o => o.orderId)])
     .map(String));
+  // Same closure rule as computeRealizedFromCyclePairs: an order a sell has
+  // recorded consumption against (issue #607) holds `size − Σ consumedBy`
+  // open — the unsold remainder of a partly-sold order included; older orders
+  // close on the sellOrderId boolean.
   const sellOrderIdsWithFills = new Set(fills.filter(f => f.side === 'sell').map(f => String(f.orderId)));
-  const heldOpenQty = fills
-    .filter(f => f.side === 'buy'
-      && !bodyOrderIds.has(String(f.orderId))
-      && (!f.sellOrderId || !sellOrderIdsWithFills.has(String(f.sellOrderId))))
-    .reduce((sum, f) => sum + f.size, 0);
+  const unclaimedBuys = new Map();
+  for (const f of fills) {
+    if (f.side !== 'buy' || bodyOrderIds.has(String(f.orderId))) continue;
+    const key = f.orderId ? String(f.orderId) : `__noorder__:${f.tradeId}`;
+    const agg = unclaimedBuys.get(key) || { size: 0, consumedBy: null, legacyOpen: 0 };
+    agg.size += f.size;
+    if (f.consumedBy && typeof f.consumedBy === 'object') agg.consumedBy = { ...(agg.consumedBy || {}), ...f.consumedBy };
+    if (!f.sellOrderId || !sellOrderIdsWithFills.has(String(f.sellOrderId))) agg.legacyOpen += f.size;
+    unclaimedBuys.set(key, agg);
+  }
+  const heldOpenQty = [...unclaimedBuys.values()].reduce((sum, agg) => sum + (agg.consumedBy
+    ? Math.max(0, agg.size - Object.values(agg.consumedBy).reduce((s, q) => s + (q > 0 ? q : 0), 0))
+    : agg.legacyOpen), 0);
   if (heldOpenQty > tolerance) {
     console.error(
       `\n❌ the ledger still shows ${roundAsset(heldOpenQty)} ${BASE} of buys as OPEN (no sell behind their sellOrderId).`
