@@ -1861,6 +1861,111 @@ describe('Fill Ledger', () => {
   });
 
   // =======================================================================
+  // recalculateCycles auto-link must not close still-open body buys (issue #677)
+  // =======================================================================
+  describe('recalculateCycles auto-link skips body/satellite buys (issue #677)', () => {
+    it("does not stamp an open body buy with another body's sell when the cycle crosses the completion ratio", () => {
+      const ledger = createTestLedger('autolink-body');
+
+      // Body A: buy 1.0, TP sell fills 0.95 with a bodyPnl annotation — the
+      // healthy holdback shape (CLAUDE.md "Holdback is the design").
+      ledger.ingestFill(makeBuyFill({
+        tradeId: 'ba-buy', orderId: 'bodyA-buy', price: '100', size: '1.0',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T00:00:00Z',
+      }), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('bodyA-buy', { sellOrderId: 'bodyA-sell', bodyId: 'body-A', isBodyOwned: true });
+      ledger.ingestFill(makeSellFill({
+        tradeId: 'ba-sell', orderId: 'bodyA-sell', price: '105', size: '0.95',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T01:00:00Z',
+      }), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('bodyA-sell', { bodyId: 'body-A', isBodyOwned: true, bodyPnl: 9.5, bodyHoldbackAsset: 0.05 });
+
+      // Body B: buy 0.5 in the SAME cycle. Its TP was never placed (min-size
+      // body / placement failure / crash), so it legitimately carries no
+      // sellOrderId — this is not a crash-repair case.
+      ledger.ingestFill(makeBuyFill({
+        tradeId: 'bb-buy', orderId: 'bodyB-buy', price: '90', size: '0.5',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T02:00:00Z',
+      }), null, { cycleId: 'cycle-1' });
+      ledger.annotateFillsByOrderId('bodyB-buy', { bodyId: 'body-B', isBodyOwned: true });
+
+      // The cycle's sell ratio (0.95 / 1.5 ≈ 0.63) crosses
+      // CYCLE_COMPLETE_SELL_RATIO (0.5), so recalculateCycles classifies
+      // cycle-1 as "completed" even though body B's buy is still open.
+      const result = ledger.recalculateCycles();
+      assert.ok(result.cyclesCompleted >= 1, 'cycle-1 must be classified as completed');
+
+      const buyB = ledger.getFillsForOrder('bodyB-buy')[0];
+      assert.equal(buyB.sellOrderId, undefined,
+        "body B's still-open buy must NOT be auto-linked to body A's sell");
+
+      const derived = ledger.computeRealizedFromCyclePairs();
+      assert.equal(derived.heldOpenBuyCostBasis, 45,
+        "body B's full cost (0.5 * 90) must stay held, not attributed to sellA");
+      assert.equal(derived.realizedPnL, 9.5,
+        "body A's realizedPnL from the bodyPnl annotation is unaffected");
+    });
+
+    it('never picks a body/satellite sell as the anchor for a legacy buy, even when it is the first sell recorded', () => {
+      const ledger = createTestLedger('autolink-sell-anchor');
+
+      // A body-owned sell lands in cycle-3 FIRST (insertion order), so a
+      // pre-fix `cycleSellIds` scan (no ownership check on the sell side)
+      // would anchor the cycle on it.
+      ledger.ingestFill(makeSellFill({
+        tradeId: 'x-body-sell', orderId: 'body-sell-x', price: '105', size: '0.3',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T00:00:00Z',
+      }), null, { cycleId: 'cycle-3' });
+      ledger.annotateFillsByOrderId('body-sell-x', { bodyId: 'body-X', isBodyOwned: true, bodyPnl: 1, bodyHoldbackAsset: 0 });
+
+      // A legacy (non-body) buy with no sellOrderId — the orphan this
+      // heuristic exists to repair.
+      ledger.ingestFill(makeBuyFill({
+        tradeId: 'x-legacy-buy', orderId: 'legacy-buy-x', price: '100', size: '1.0',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T01:00:00Z',
+      }), null, { cycleId: 'cycle-3' });
+
+      // A legacy sell arrives after the body sell. It is the only correct
+      // anchor for the legacy buy.
+      ledger.ingestFill(makeSellFill({
+        tradeId: 'x-legacy-sell', orderId: 'legacy-sell-x', price: '110', size: '0.3',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T02:00:00Z',
+      }), null, { cycleId: 'cycle-3' });
+
+      // Sell ratio: (0.3 + 0.3) / 1.0 = 0.6, crosses CYCLE_COMPLETE_SELL_RATIO.
+      ledger.recalculateCycles();
+
+      const legacyBuy = ledger.getFillsForOrder('legacy-buy-x')[0];
+      assert.equal(legacyBuy.sellOrderId, 'legacy-sell-x',
+        'the legacy buy must anchor to the legacy sell, never the body-owned sell that happened to be recorded first');
+    });
+
+    it("does not auto-link within the ledger's current (still-live) cycle, even after it crosses the completion ratio", () => {
+      const ledger = createTestLedger('autolink-livecycle');
+
+      ledger.ingestFill(makeBuyFill({
+        tradeId: 'lc-buy', orderId: 'lc-buy-order', price: '100', size: '1.0',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T00:00:00Z',
+      }), null, { cycleId: 'cycle-1' });
+      ledger.ingestFill(makeSellFill({
+        tradeId: 'lc-sell', orderId: 'lc-sell-order', price: '105', size: '0.6',
+        totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T01:00:00Z',
+      }), null, { cycleId: 'cycle-1' });
+      ledger.setCurrentCycleId('cycle-1');
+
+      // Sell ratio (0.6 / 1.0 = 0.6) already crosses CYCLE_COMPLETE_SELL_RATIO
+      // (0.5), but cycle-1 is still the LIVE cycle — more buys/sells can still
+      // land in it, so the buy must stay open rather than adopt a premature link.
+      const result = ledger.recalculateCycles();
+      assert.equal(result.activeCycleId, 'cycle-1');
+
+      const buy = ledger.getFillsForOrder('lc-buy-order')[0];
+      assert.equal(buy.sellOrderId, undefined,
+        'a buy inside the still-live cycle must not be auto-linked even though the ratio crosses the completion threshold');
+    });
+  });
+
+  // =======================================================================
   // Cycle recalculation parity & shared rules (issue #582)
   // =======================================================================
   describe('previewRecalculateCycles and recalculateCycles parity (issue #582)', () => {

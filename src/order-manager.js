@@ -251,6 +251,29 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
   };
 
   /**
+   * Drop the intent, swallowing (never propagating) a failure to do so.
+   * Clearing the intent is pure local housekeeping (a disk write) performed
+   * AFTER the exchange-side outcome is already known — a disk-full/permission
+   * failure here must never masquerade as a placement failure and cost the
+   * caller a placement result (or a genuine rejection error) it already has.
+   * The stale intent row is left on disk; an operator reconciles it manually
+   * (it no longer blocks anything once a later placement clears/replaces it,
+   * but `describePlacementIntents` will keep surfacing it until then).
+   * @param {string} context - Human label for what just happened, for the log line
+   */
+  const safeClearIntent = (context) => {
+    try {
+      clearIntent();
+    } catch (clearErr) {
+      logger.error(`⚠️ Placement outcome resolved (${context}) but clearing its placement intent failed (${clearErr.message}) — reconcile the stale intent manually`, {
+        context,
+        error: clearErr.message,
+        intentId: intent?.id ?? null,
+      });
+    }
+  };
+
+  /**
    * Keep the intent on disk and hand the caller a PENDING result. `success` is
    * still false (nothing may be tracked), but `pending` marks it as "not safe
    * to re-place" — and the disk record enforces that regardless of what the
@@ -272,14 +295,18 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
     if (err?.status === 'unknown' || err?.unknownOutcome === true) {
       return { __unknownError: err };
     }
-    clearIntent();
+    safeClearIntent('definitive rejection');
     throw err;
   });
 
   if (!placement?.__unknownError) {
     // Accepted, or cleanly rejected by the exchange — either way the outcome
-    // is known and the intent has served its purpose.
-    clearIntent();
+    // is known and the intent has served its purpose. Clearing it is pure
+    // housekeeping at this point (issue #710): if it throws — e.g. the
+    // exchange genuinely accepted the order but the intent-file write then
+    // hit a disk error — that must not cost the caller its successful
+    // `placement`, so it's swallowed rather than allowed to escape here.
+    safeClearIntent('accepted or cleanly rejected');
     return placement;
   }
 
@@ -333,7 +360,7 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
     // would double-spend against the already-executing order). Clearing the
     // intent here is what makes adoption exactly-once: the row is gone, so no
     // later recovery pass or operator action can adopt the same order twice.
-    clearIntent();
+    safeClearIntent('reconciled adoption');
     logger.info(`ℹ️ ✅ Reconciled unknown placement — adopting exchange order ${found.orderId} (status ${found.status})`, {
       orderId: found.orderId,
       clientOrderId,
@@ -347,7 +374,7 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
   // a terminally-failed order is a DEFINITIVE outcome — the exchange never
   // holds a live order for this id, so the intent is cleared and the caller may
   // re-place on its next cycle.
-  clearIntent();
+  safeClearIntent('reconciled — not found live, safe to re-place');
   logger.warn(`❌ Unknown placement not found live on exchange (client_order_id ${clientOrderId}, status ${found?.status ?? 'absent'}) — treating as failed, safe to re-place next cycle`, {
     clientOrderId,
     status: found?.status ?? 'absent',
