@@ -336,6 +336,7 @@ describe('consolidatePendingOrders — ordered public contracts', () => {
       cancelledOrderIds: ['a', 'b', 'c'], skippedOrderIds: [], filledDuringCancelOrderIds: ['gap'],
       restoredOrders: [{ oldOrderId: 'a', newOrderId: 'restored-a' }, { oldOrderId: 'c', newOrderId: 'restored-c' }],
       failedRestoreOrderIds: ['b'],
+      unresolvedRestoreOrderIds: [],
     });
     script.assertComplete();
   });
@@ -388,6 +389,7 @@ describe('consolidatePendingOrders — placement-throw recovery (issue #676)', (
         { oldOrderId: 'c', newOrderId: 'restored-c' },
       ],
       failedRestoreOrderIds: ['b'],
+      unresolvedRestoreOrderIds: [],
     });
     script.assertComplete();
   });
@@ -449,6 +451,7 @@ describe('consolidatePendingOrders — placement-throw recovery (issue #676)', (
       { oldOrderId: 'b', newOrderId: 'restored-2' },
     ]);
     assert.deepEqual(result.failedRestoreOrderIds, []);
+    assert.deepEqual(result.unresolvedRestoreOrderIds, []);
   });
 
   it('does NOT restore the originals when the consolidated outcome is unknown and unresolvable (may already be live)', async () => {
@@ -477,7 +480,12 @@ describe('consolidatePendingOrders — placement-throw recovery (issue #676)', (
     assert.equal(restoreAttempts, 0, 'must not re-place over a possibly-live consolidated order');
     assert.deepEqual(result.cancelledOrderIds, ['a', 'b']);
     assert.deepEqual(result.restoredOrders, []);
-    assert.deepEqual(result.failedRestoreOrderIds, ['a', 'b']);
+    // Unresolved, NOT a definitive failure — no restore was ever attempted
+    // because the consolidated order itself might already be live (#676 review
+    // round 2: this must be reported distinctly from failedRestoreOrderIds so
+    // an operator is never misled into manually re-placing over a live order).
+    assert.deepEqual(result.failedRestoreOrderIds, []);
+    assert.deepEqual(result.unresolvedRestoreOrderIds, ['a', 'b']);
   });
 });
 
@@ -548,5 +556,66 @@ describe('consolidatePendingOrders — refuses to cancel while a placement inten
 
     assert.equal(result.success, true);
     assert.equal(result.newOrderId, 'consolidated-1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #676 review round 2 — a per-order restore with an ambiguous, unreconcilable
+// outcome must be reported as UNRESOLVED, not lumped into failedRestoreOrderIds
+// as though it were a definitive rejection. Once that happens, the fund's
+// durable placement intent also blocks every later restore attempt in the SAME
+// batch, and those must land as unresolved too (never reaching the exchange),
+// not as false "restore rejected" failures.
+// ---------------------------------------------------------------------------
+describe('restoreCancelledSellOrders — distinguishes unresolved restores from definitive failures (issue #676 follow-up)', () => {
+  const EXCHANGE = 'coinbase';
+  const PAIR = 'BTC-USD';
+  let tmpRoot;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'consolidate-unresolved-restore-'));
+    mock.method(migration, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
+  });
+
+  afterEach(() => {
+    mock.restoreAll();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('routes an unreconcilable restore, and every later restore it blocks, into unresolvedRestoreOrderIds', async () => {
+    const orders = [order('a', 0.1, 2400), order('b', 0.2, 2500), order('c', 0.3, 2600)];
+    let placeCalls = 0;
+    const adapter = {
+      getOrder: async () => ({ completionPercentage: 0 }),
+      cancelOrder: async () => ({ success: true }),
+      placeLimitSell: async (productId, qty) => {
+        placeCalls += 1;
+        // The consolidated place (0.6) is rejected outright — a definitive
+        // failure, triggering the restore loop below.
+        if (qty > 0.5) return { success: false, errorMessage: 'rejected' };
+        // Restore 'a' (0.1) succeeds.
+        if (Math.abs(qty - 0.1) < 1e-9) return { success: true, orderId: 'restored-a' };
+        // Restore 'b' (0.2) is ambiguous and unreconcilable (no client_order_id).
+        if (Math.abs(qty - 0.2) < 1e-9) {
+          throw Object.assign(new Error('unknown order outcome'), {
+            status: 'unknown', unknownOutcome: true, clientOrderId: undefined,
+          });
+        }
+        // Restore 'c' (0.3) should never actually reach the exchange — the
+        // fund's placement intent (recorded by 'b's unresolved attempt) must
+        // refuse it before dispatch.
+        return { success: true, orderId: 'should-not-be-called' };
+      },
+    };
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter, { exchange: EXCHANGE, pair: PAIR });
+
+    assert.equal(result.success, false);
+    assert.deepEqual(result.restoredOrders, [{ oldOrderId: 'a', newOrderId: 'restored-a' }]);
+    assert.deepEqual(result.failedRestoreOrderIds, [], 'neither b nor c is a DEFINITIVE failure');
+    assert.deepEqual(result.unresolvedRestoreOrderIds, ['b', 'c']);
+    // 3 placeLimitSell calls total: the consolidated place, restore-a, and
+    // restore-b's ambiguous attempt — restore-c must never dispatch.
+    assert.equal(placeCalls, 3, 'restore-c must be refused before reaching the exchange');
   });
 });

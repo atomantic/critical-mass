@@ -659,11 +659,21 @@ const cancelOrdersForConsolidation = async (eligibleOrders, skippedOrderIds, ada
  * @param {ExchangeAdapter} adapter
  * @param {ReturnType<typeof orderLogger>} logger
  * @param {{exchange: string, pair?: string}|null} [scope] - Fund scope for durable placement intents (#472)
- * @returns {Promise<{restoredOrders: {oldOrderId: string, newOrderId: string}[], failedRestoreOrderIds: string[]}>}
+ * @returns {Promise<{restoredOrders: {oldOrderId: string, newOrderId: string}[], failedRestoreOrderIds: string[], unresolvedRestoreOrderIds: string[]}>}
  */
 const restoreCancelledSellOrders = async (productId, cancelledOrders, adapter, logger, scope = null) => {
   const restoredOrders = [];
   const failedRestoreOrderIds = [];
+  // A restore whose outcome is ambiguous and could not be reconciled (ideally
+  // no client_order_id, or the reconcile lookup itself failed) is NOT a
+  // definitive failure — the order may already be resting live on the
+  // exchange, so collapsing it into failedRestoreOrderIds would flag it with
+  // the same "could not be re-placed" reason as a genuine rejection and could
+  // invite an operator to manually re-place it, risking a double-sell (#676
+  // review round 2). Once one restore in this loop lands here, the fund's
+  // durable placement intent blocks every later restore attempt too — those
+  // land here as well, never having reached the exchange.
+  const unresolvedRestoreOrderIds = [];
   for (const order of cancelledOrders) {
     let restoreResult;
     try {
@@ -689,6 +699,16 @@ const restoreCancelledSellOrders = async (productId, cancelledOrders, adapter, l
       // Capture the old→new mapping so the caller can re-point tracked state
       // at the new exchange order IDs (the cancelled IDs no longer exist).
       restoredOrders.push({ oldOrderId: order.orderId, newOrderId: restoreResult.orderId });
+    } else if (restoreResult.pending) {
+      unresolvedRestoreOrderIds.push(order.orderId);
+      logger.error(`❌ Restore for cancelled order ${order.orderId} has an unknown/unresolved outcome (${restoreResult.errorMessage}) — NOT a definitive failure; it may already be resting live on the exchange`, {
+        orderId: order.orderId,
+        sellQuantity: order.sellQuantity,
+        sellPrice: order.sellPrice,
+        error: restoreResult.errorMessage,
+        pending: true,
+        intentId: restoreResult.intentId ?? null,
+      });
     } else {
       failedRestoreOrderIds.push(order.orderId);
       logger.error(`❌ Failed to restore sell for cancelled order ${order.orderId}: ${restoreResult.errorMessage}`, {
@@ -696,11 +716,10 @@ const restoreCancelledSellOrders = async (productId, cancelledOrders, adapter, l
         sellQuantity: order.sellQuantity,
         sellPrice: order.sellPrice,
         error: restoreResult.errorMessage,
-        pending: restoreResult.pending ?? false,
       });
     }
   }
-  return { restoredOrders, failedRestoreOrderIds };
+  return { restoredOrders, failedRestoreOrderIds, unresolvedRestoreOrderIds };
 };
 
 /**
@@ -856,11 +875,13 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter, scope = 
     // client_order_id, or the reconcile lookup itself failed). The
     // consolidated order MAY be live on the exchange — restoring the
     // originals now risks resting a duplicate sell on top of it, so do NOT
-    // restore. Mark every confirmed-cancelled order as failed-to-restore so
-    // `applyConsolidationRecovery` stops tracking them as pending and flags
-    // them for operator reconciliation; the durable placement intent already
-    // recorded above blocks further consolidate placements on this fund
-    // until it's resolved.
+    // restore. Mark every confirmed-cancelled order as unresolved (NOT a
+    // definitive failure — same channel `restoreCancelledSellOrders` uses for
+    // an unresolvable restore, #676 review round 2) so `applyConsolidationRecovery`
+    // stops tracking them as pending and flags them for operator reconciliation
+    // with a reason that does not imply a normal restore was attempted and
+    // failed; the durable placement intent already recorded above blocks
+    // further consolidate placements on this fund until it's resolved.
     logger.error(`❌ Consolidated placement outcome unknown and unresolved (${sellResult.errorMessage}) — NOT re-placing originals (the consolidated order may be live); operator must reconcile`, {
       cancelledOrderIds,
       pending: true,
@@ -874,7 +895,8 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter, scope = 
       skippedOrderIds,
       filledDuringCancelOrderIds,
       restoredOrders: [],
-      failedRestoreOrderIds: [...cancelledOrderIds],
+      failedRestoreOrderIds: [],
+      unresolvedRestoreOrderIds: [...cancelledOrderIds],
     };
   }
 
@@ -892,7 +914,7 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter, scope = 
       nakedOrderCount: cancelledOrders.length,
       cancelledOrderIds,
     });
-    const { restoredOrders, failedRestoreOrderIds } = await restoreCancelledSellOrders(
+    const { restoredOrders, failedRestoreOrderIds, unresolvedRestoreOrderIds } = await restoreCancelledSellOrders(
       config.productId, cancelledOrders, adapter, logger, scope,
     );
 
@@ -904,6 +926,7 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter, scope = 
       filledDuringCancelOrderIds,
       restoredOrders,
       failedRestoreOrderIds,
+      unresolvedRestoreOrderIds,
     };
   }
 
