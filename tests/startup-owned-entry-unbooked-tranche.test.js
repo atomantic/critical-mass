@@ -618,3 +618,32 @@ describe('codex review coverage (issue #756)', () => {
     assert.equal(recovered.buyOrders[0].filledAt, new Date(T2CHEAP.tradeTime).getTime(), 'the tranche is dated by its fill, not by startup');
   });
 });
+
+describe('an adopted orphan entry the orphan-buy recovery already booked (issue #756)', () => {
+  it('is tracked at the quantity no body holds', async () => {
+    const pair = '__teststartupowned756_q__';
+    // The order is not in the saved pending list; its t1 row is in the
+    // ledger with no body, and another body gives the orphan recovery a
+    // merge target.
+    writePreFixFund(pair, {
+      ledger: (seed) => {
+        seed.ingestFill({ ...T1, orderId: 'other-buy', tradeId: 'other-buy-t1' }, Date.now() - 60000);
+        seed.annotateFillsByOrderId('other-buy', { isBodyOwned: true, bodyId: 'body-other-756', sellOrderId: 'tp-other' });
+        seed.ingestFill(T1);
+      },
+      bodies: [legacyBody(0.004, {
+        id: 'body-other-756', tpOrderId: 'tp-other', sourceOrderIds: ['other-buy'], createdAt: Date.now() - 120000,
+        buyOrders: [{ orderId: 'other-buy', price: PRICE, assetQty: 0.004, sizeUsdc: 200, filledAt: Date.now() - 45000 }],
+      })],
+      entry: null,
+    });
+    const { eng } = await bootEngine(pair, {
+      openOrders: [{ ...OPEN_ENTRY, size: 0.006, originalSize: 0.01, filledSize: 0.004, filledValue: 200 }],
+      orders: {},
+      fills: [T1],
+    });
+    const pos = eng._getPositionState();
+    assert.ok(near(bookedQty(pos), 0.004), `t1 is booked once (got ${bookedQty(pos)})`);
+    assert.ok(near(entryOf(pos).assetQty, 0.006), `the adopted order tracks only its unfilled 0.006 (got ${entryOf(pos).assetQty})`);
+  });
+});

@@ -2368,11 +2368,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             // entry from its original quantity to its unfilled remainder.
             if (!positionState.pendingEntryOrders) positionState.pendingEntryOrders = [];
             if (!positionState.pendingEntryOrders.some(e => e.orderId === order.orderId)) {
+              // The orphan-buy recovery above may already have booked some of
+              // it into a body; track only what no body holds (issue #756).
+              const held = (positionState.celestialBodies || [])
+                .flatMap(b => b.buyOrders || [])
+                .filter(bo => bo && bo.orderId === order.orderId);
+              const heldQty = held.reduce((sum, bo) => sum + (Number(bo.assetQty) || 0), 0);
+              const heldCost = held.reduce((sum, bo) => sum + (Number(bo.sizeUsdc) || 0), 0);
               positionState.pendingEntryOrders.push({
                 orderId: order.orderId,
                 price: order.price,
-                assetQty: order.originalSize,
-                sizeUsdc: order.originalSize * order.price,
+                assetQty: Math.max(0, order.originalSize - heldQty),
+                sizeUsdc: Math.max(0, order.originalSize * order.price - heldCost),
                 placedAt: orphanPlacedAt,
               });
             }
