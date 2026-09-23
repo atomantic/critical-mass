@@ -269,6 +269,11 @@ const createManualTradeImporter = ({
    * Buy-first import: record a manual buy and, by default, turn it into a
    * celestial body so the engine places a take-profit against it.
    *
+   * Idempotent by buyOrderId end-to-end (issue #691): a retry (IPC timeout,
+   * or a thrown injectBody after the ledger/store writes) returns the
+   * already-imported trade with `alreadyImported: true` instead of creating
+   * a second body and placing a second live TP sell for the same fill.
+   *
    * @param {Object} payload
    * @param {string} payload.buyOrderId
    * @param {string} [payload.note]
