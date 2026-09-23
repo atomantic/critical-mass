@@ -1344,7 +1344,23 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       remaining: orphanFills,
       liveCount: liveCycleOrphansAttributed,
     } = attributeOrphansIntoCycleMap(cycleMap, allOrphanFills);
+    // Order-level annotations live on EVERY row of an order (TP placement,
+    // body annotation and #607 consumption all write per-orderId), so a
+    // recovered partial row of an already-annotated buy order inherits them —
+    // otherwise it reads as an unowned core buy (core totals, legacy TP
+    // linkage, boot orphan adoption) while its siblings belong to a body.
+    const ORDER_LEVEL_BUY_FIELDS = ['isBodyOwned', 'bodyId', 'bodyTier', 'isSatellite', 'sellOrderId', 'consumedBy', 'consumedCostFraction'];
     for (const { fill, cycleId, reason } of attributed) {
+      if (reason === 'order' && fill.side === 'buy') {
+        const sibling = (cycleMap.get(cycleId) || []).find(f => f !== fill && f.orderId === fill.orderId && f.side === 'buy' && f.cycleId === cycleId);
+        if (sibling) {
+          for (const field of ORDER_LEVEL_BUY_FIELDS) {
+            if (sibling[field] !== undefined && fill[field] === undefined) {
+              fill[field] = field === 'consumedBy' ? { ...sibling[field] } : sibling[field];
+            }
+          }
+        }
+      }
       fill.cycleId = cycleId;
       // Record HOW the cycle was chosen. A 'timeframe' fold has no linkage to
       // any engine order — sync-fills imports every trade on the pair, manual

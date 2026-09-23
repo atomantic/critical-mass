@@ -1974,6 +1974,25 @@ describe('Fill Ledger', () => {
       assert.equal(preview.orphansAttributed, result.orphansAttributed);
     });
 
+    it('a recovered partial row of a body-owned buy order inherits the order\'s ownership annotations', () => {
+      const ledger = createTestLedger('fold-body-row');
+      seedCompletedCycle1(ledger);
+      ledger.setCurrentCycleId('cycle-2', T0 + 30 * HOUR);
+      ledger.ingestFill(buy('bb-1', 'body-buy', 31), null, { cycleId: 'cycle-2' });
+      ledger.annotateFillsByOrderId('body-buy', { isBodyOwned: true, bodyId: 'body-A', bodyTier: 'moon', sellOrderId: 'body-tp' });
+      ledger.ingestFill(buy('bb-2', 'body-buy', 32), null, { cycleId: null });
+
+      ledger.recalculateCycles();
+
+      const row = ledger.getAllFills().find(f => f.tradeId === 'bb-2');
+      assert.equal(row.cycleId, 'cycle-2');
+      assert.equal(row.cycleAttribution, 'order');
+      assert.equal(row.bodyId, 'body-A');
+      assert.equal(row.isBodyOwned, true);
+      assert.equal(row.sellOrderId, 'body-tp');
+      assert.equal(ledger.rebuildPositionFromFills().totalAsset, 0, 'body-owned rows stay out of the core position');
+    });
+
     it('attributes a buy linked only via sellOrderId to its sell\'s cycle', () => {
       const ledger = createTestLedger('fold-link-only');
       seedCompletedCycle1(ledger);
