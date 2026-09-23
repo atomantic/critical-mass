@@ -105,13 +105,26 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * the fill through the engine, which then runs orderExecutor.handleOrderFill
    * at the end of its chain) fires a misleading "untracked order" warning. */
   const recentlySettled = new Map();
+  /** @type {Map<string, number>} orderId -> settlement timestamp, for settled
+   * orders the executor itself placed as the legacy core `take_profit`. Lets
+   * the engine prove a sell with no owning body was its OWN TP (issue #672)
+   * even after the polling backstop / cancel-race path already dropped it
+   * from pendingOrders and cleared activeTpOrderId. */
+  const recentlySettledTps = new Map();
   const SETTLED_TTL_MS = 5 * 60 * 1000;
-  const markSettled = (orderId) => {
+  const pruneSettled = (map) => {
+    if (map.size > 256) {
+      const cutoff = Date.now() - SETTLED_TTL_MS;
+      for (const [id, ts] of map) if (ts < cutoff) map.delete(id);
+    }
+  };
+  const markSettled = (orderId, type) => {
     if (!orderId) return;
     recentlySettled.set(orderId, Date.now());
-    if (recentlySettled.size > 256) {
-      const cutoff = Date.now() - SETTLED_TTL_MS;
-      for (const [id, ts] of recentlySettled) if (ts < cutoff) recentlySettled.delete(id);
+    pruneSettled(recentlySettled);
+    if (type === 'take_profit') {
+      recentlySettledTps.set(orderId, Date.now());
+      pruneSettled(recentlySettledTps);
     }
   };
 
@@ -598,6 +611,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         filledSize: result.filledSize || 0,
       });
       pendingOrders.delete(orderToCancel);
+      markSettled(orderToCancel, 'take_profit');
       activeTpOrderId = null;
       lastTpSize = 0;
       return {
@@ -674,7 +688,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     partialFillTracker.delete(orderId);
     if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId);
     if (filledSize > 0 && callbacks.onFillDetected) {
-      markSettled(orderId);
+      markSettled(orderId, order.type);
       // Await the fill callback (async in live mode) before returning. Most
       // callers fire-and-forget this (they have no synchronous continuation
       // that depends on ledger state), but cancelAllLadderOrders is awaited
@@ -720,7 +734,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             // Capture placedAt BEFORE deleting from pendingOrders
             const placedAt = order.placedAt;
             pendingOrders.delete(orderId);
-            markSettled(orderId);
+            markSettled(orderId, order.type);
             if (callbacks.onFillDetected) {
               callbacks.onFillDetected(orderId, { ...status, placedAt });
             }
@@ -756,7 +770,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
                 const placedAt = order.placedAt;
                 pendingOrders.delete(orderId);
                 partialFillTracker.delete(orderId);
-                markSettled(orderId);
+                markSettled(orderId, order.type);
                 if (callbacks.onFillDetected) {
                   callbacks.onFillDetected(orderId, { status: 'FILLED', side: 'buy', ...details, placedAt });
                 }
@@ -808,7 +822,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         });
         const placedAt = order.placedAt;
         pendingOrders.delete(orderId);
-        markSettled(orderId);
+        markSettled(orderId, order.type);
         partialFillTracker.delete(orderId);
         if (callbacks.onFillDetected) {
           callbacks.onFillDetected(orderId, { ...status, placedAt });
@@ -904,7 +918,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           const placedAt = order.placedAt;
           pendingOrders.delete(orderId);
           partialFillTracker.delete(orderId);
-          markSettled(orderId);
+          markSettled(orderId, order.type);
           if (callbacks.onFillDetected) {
             await callbacks.onFillDetected(orderId, { ...cancelledStatus, placedAt });
           }
@@ -946,7 +960,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         const placedAt = order.placedAt;
         pendingOrders.delete(orderId);
         partialFillTracker.delete(orderId);
-        markSettled(orderId);
+        markSettled(orderId, order.type);
         if (callbacks.onFillDetected) {
           callbacks.onFillDetected(orderId, { ...status, placedAt });
         }
@@ -990,7 +1004,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const order = pendingOrders.get(orderId);
     if (order) {
       pendingOrders.delete(orderId);
-      markSettled(orderId);
+      markSettled(orderId, order.type);
 
       if (order.type === 'take_profit') {
         activeTpOrderId = null;
@@ -1083,6 +1097,23 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @returns {string|null}
    */
   const getActiveTpOrderId = () => activeTpOrderId;
+
+  /**
+   * Whether `orderId` is (or recently was) the legacy core take-profit this
+   * executor placed — pending as `take_profit`, the current activeTpOrderId, or
+   * settled as a `take_profit` within SETTLED_TTL_MS. The engine uses this to
+   * refuse closing a cycle on a foreign sell (manual/DCA/script) that merely
+   * shares the product (issue #672).
+   * @param {string} orderId
+   * @returns {boolean}
+   */
+  const isTrackedTpOrder = (orderId) => {
+    if (!orderId) return false;
+    if (orderId === activeTpOrderId) return true;
+    if (pendingOrders.get(orderId)?.type === 'take_profit') return true;
+    const ts = recentlySettledTps.get(orderId);
+    return ts !== undefined && Date.now() - ts < SETTLED_TTL_MS;
+  };
 
   /**
    * Restore pending order (for recovery from exchange)
@@ -1569,6 +1600,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     getPendingEntries,
     getPendingOrdersList,
     getActiveTpOrderId,
+    isTrackedTpOrder,
     restorePendingOrder,
     checkPendingOrderFills,
     // Fill time tracking

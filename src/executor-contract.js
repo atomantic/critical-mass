@@ -18,6 +18,7 @@ const REQUIRED_EXECUTOR_METHODS = [
   'getPendingEntries',
   'restorePendingOrder',
   'markSettled',
+  'isTrackedTpOrder',
   'getOrderPlacedAt',
   'placeBodyTpOrder',
   'cancelBodyTpOrder',
