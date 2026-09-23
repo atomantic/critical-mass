@@ -398,6 +398,11 @@ describe('#367 offline recovery — legacy TP', () => {
 
   for (const failure of ['status', 'fills']) {
     it(`contains legacy ${failure} lookup failure and recovers the next entry`, async () => {
+      // Per-iteration order id: both iterations share TEST_PAIR's ledger, and
+      // reusing one trade would hand the second iteration only a row the first
+      // already booked into a (since discarded) body — which handleOrderFill
+      // rightly refuses to rebook (issue #671).
+      const nextEntry = `entry-after-legacy-${failure}`;
       const eng = makeEngine({
         adapter: {
           getOrder: async (id) => {
@@ -406,10 +411,10 @@ describe('#367 offline recovery — legacy TP', () => {
           },
           getOrderFills: async (id) => {
             if (id === 'legacy-failed') throw new Error('fills unavailable');
-            return buyFill('entry-after-legacy', 0.01, 50000);
+            return buyFill(nextEntry, 0.01, 50000);
           },
         },
-        executor: { getPendingEntries: () => new Map([['entry-after-legacy', {}]]) },
+        executor: { getPendingEntries: () => new Map([[nextEntry, {}]]) },
       });
       setupLegacyTp(eng, 'legacy-failed');
       const result = await eng._test.checkOfflineOrderFills();

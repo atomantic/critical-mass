@@ -15,6 +15,8 @@ const { atomicWriteSync } = require('./state-tracker');
 const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
+// Canonical cycle pairing shared with the admin Filled Orders view (issue #697).
+const { pairCycleFills, buyPairKey } = require('../shared/cycle-pairing.mjs');
 
 /**
  * @typedef {import('./types').Fill} Fill
@@ -1874,12 +1876,15 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * crash-resilient linkage); the buy only counts as closed once that sell
    * order has fills in this ledger.
    *
-   * Per-sell pnl rules (mirrors RegimeDashboard.jsx):
-   *   - Body/satellite sells: use server-annotated bodyPnl/satellitePnl. The
+   * Pairing and per-sell pnl/holdback are shared/cycle-pairing.mjs
+   * (pairCycleFills) — the same rules the dashboard's Filled Orders view uses
+   * (issue #697):
+   *   - Annotated sells: bodyPnl/satellitePnl, taken once per orderId. The
    *     engine prorates body cost basis when a TP sells less than full body
-   *     content (regime-engine.js:803-806), so the linked buys' total cost
-   *     would over-attribute cost. The annotation reflects the prorated calc.
-   *   - Other sells: pnl = proceeds − Σ paired buy cost.
+   *     content, so the annotation reflects the prorated calc.
+   *   - Other sells: proceeds − linked buy cost × min(1, sold / linked size).
+   *   - Buys pair by sellOrderId; an orphaned sellOrderId (re-placed TP) is
+   *     redirected via bodyId to that body's latest filled sell.
    *
    *   realizedPnL          = Σ per-sell pnl
    *   realizedAssetPnL     = Σ holdback per sell (server annotation when present,
@@ -1889,9 +1894,17 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    *                            cost × (size − Σ consumedBy) / size — the
    *                            unsold remainder of a partly-sold order stays held
    *                          - otherwise (legacy): full cost × (1 − consumedCostFraction)
-   *                            when sellOrderId is absent or has no sell fills yet
+   *                            when sellOrderId is absent or has no sell fills yet,
+   *                            unless the pairing redirected it onto an unannotated
+   *                            sell (its cost is then already in realizedPnL)
    *   heldOpenAssetQty     = the same, in base quantity
    *   ledgerNetAsset       = Σ buy size − Σ sell size over the whole ledger
+   *   untrackedSellQty     = Σ size of sell orders annotated `untrackedSell`
+   *                          (foreign sells — manual/tooling — that closed no
+   *                          cycle; issues #672/#750). Already inside
+   *                          ledgerNetAsset; broken out so position coverage
+   *                          can attribute the gap they open instead of the
+   *                          engine guessing which holding they drew down.
    *
    * Every body sale records sold + booked holdback as consumed, so wherever
    * sells were booked with `consumedBy` records,
@@ -1904,24 +1917,23 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * attributed to the paired sell's basis.
    *
    * Side-effect-free — safe to call on every status emit and state save.
-   * @returns {{realizedPnL: number, realizedAssetPnL: number, heldOpenBuyCostBasis: number, heldOpenAssetQty: number, ledgerNetAsset: number, unpairedSellQty: number}}
+   * @returns {{realizedPnL: number, realizedAssetPnL: number, heldOpenBuyCostBasis: number, heldOpenAssetQty: number, ledgerNetAsset: number, unpairedSellQty: number, untrackedSellQty: number}}
    */
   const computeRealizedFromCyclePairsUncached = () => {
-    // bodyPnl/satellitePnl annotations are written by annotateFillsByOrderId
-    // to ALL partial fill rows of the same orderId (same value on each), so
-    // we take ONE value per orderId — not summed.
+    // Pairing and per-sell pnl/holdback come from the shared rule set the
+    // dashboard's Filled Orders rows also use (issue #697), so the Position
+    // card and the Filled Orders grand total can never disagree.
+    const pairing = pairCycleFills(fills.values());
+
+    // Held-open cost is a ledger-only concern: aggregate buys per order
+    // (keyed the same way as the pairing — tradeId for no-orderId rows, #108)
+    // with their consumption records.
     const buyAggByOrderId = new Map();
-    const sellAggByOrderId = new Map();
     let ledgerNetAsset = 0;
+    const untrackedSellOrderIds = new Set();
     for (const f of fills.values()) {
       if (f.side === 'buy') {
-        // Buys without an orderId (legacy/manual rows) must NOT all collapse
-        // under a single `undefined` key — that merges every no-orderId buy's
-        // cost into one aggregate where the first row's sellOrderId wins,
-        // attributing the whole blob's cost to one sell (or stranding it all
-        // as held). Key each by its unique tradeId so it carries its OWN
-        // sellOrderId / held-vs-paired classification (issue #108).
-        const aggKey = f.orderId || `__noorder__:${f.tradeId}`;
+        const aggKey = buyPairKey(f);
         const ex = buyAggByOrderId.get(aggKey);
         if (ex) {
           ex.size += f.size || 0;
@@ -1944,47 +1956,21 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         }
         ledgerNetAsset += f.size || 0;
       } else if (f.side === 'sell') {
-        const annotatedPnl = f.bodyPnl ?? f.satellitePnl;
-        const annotatedHoldback = f.bodyHoldbackAsset ?? f.satelliteHoldbackAsset;
-        const ex = sellAggByOrderId.get(f.orderId);
-        if (ex) {
-          ex.size += f.size || 0;
-          ex.proceeds += (f.quoteAmount || 0) - (f.netFee || 0);
-          if (!ex.hasPnlAnnotation && annotatedPnl != null) {
-            ex.annotatedPnl = annotatedPnl;
-            ex.hasPnlAnnotation = true;
-          }
-          if (!ex.hasHoldbackAnnotation && annotatedHoldback != null) {
-            ex.annotatedHoldback = annotatedHoldback;
-            ex.hasHoldbackAnnotation = true;
-          }
-        } else {
-          sellAggByOrderId.set(f.orderId, {
-            size: f.size || 0,
-            proceeds: (f.quoteAmount || 0) - (f.netFee || 0),
-            annotatedPnl: annotatedPnl ?? 0,
-            hasPnlAnnotation: annotatedPnl != null,
-            annotatedHoldback: annotatedHoldback ?? 0,
-            hasHoldbackAnnotation: annotatedHoldback != null,
-          });
-        }
+        // Flag is per orderId: a row ingested after annotateFillsByOrderId ran
+        // carries none, yet belongs to the same foreign order.
+        if (f.untrackedSell && f.orderId) untrackedSellOrderIds.add(f.orderId);
         ledgerNetAsset -= f.size || 0;
       }
     }
 
-    // Index buys by sellOrderId, pre-summing cost+size to keep the per-sell
-    // loop O(1) instead of re-reducing each paired buy list.
-    //
     // sellOrderId is stamped at TP *placement* (crash-resilient buy→sell
     // linkage), not at fill — so a stamp alone doesn't mean the buy closed.
     // A buy is still open until its linked sell order has actual sell fills
     // in this ledger. Without this check every buy in an active body counts
     // as closed the moment its TP rests, zeroing heldOpenBuyCostBasis.
-    const pairedBySellOrderId = new Map();
     let heldOpenBuyCostBasis = 0;
     let heldOpenAssetQty = 0;
-    for (const buy of buyAggByOrderId.values()) {
-      const hasSellFills = !!buy.sellOrderId && sellAggByOrderId.has(buy.sellOrderId);
+    for (const [aggKey, buy] of buyAggByOrderId) {
       if (buy.consumedBy && Object.keys(buy.consumedBy).length > 0) {
         // Quantity-aware closure (issue #607). Sells record what they consumed
         // from each buy order, so a buy order can be PARTLY closed: its unsold
@@ -1996,64 +1982,47 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         const openQty = Math.max(0, buy.size - consumed);
         if (buy.size > 0) heldOpenBuyCostBasis += buy.cost * (openQty / buy.size);
         heldOpenAssetQty += openQty;
-        // Pairing below feeds only the fallback P&L of sells WITHOUT a
-        // server annotation — unchanged from the boolean model.
-        if (!hasSellFills) continue;
-      } else if (!hasSellFills) {
-        // Legacy boolean closure for buy orders no sell has recorded
-        // consumption against (pre-#607 history, or a body whose tranches
-        // could not account for its quantity): open until the linked sell
-        // order has fills.
-        // Held cost = the buy's cost MINUS the fraction already realized via
-        // prior partial body-TP fills (issue #128). On a partial body-TP fill
-        // the engine re-links the buy to a fresh resting TP and stamps
-        // consumedCostFraction = realized-so-far / original. Counting the full
-        // cost as held while that sold tranche's prorated cost is already in
-        // realizedPnL (via bodyPnl) double-counts it, transiently understating
-        // total return until the residual TP fills. Subtracting the consumed
-        // fraction holds only the genuinely-open remainder.
-        const consumed = buy.consumedCostFraction > 0 ? Math.min(buy.consumedCostFraction, 1) : 0;
-        heldOpenBuyCostBasis += buy.cost * (1 - consumed);
-        heldOpenAssetQty += buy.size * (1 - consumed);
         continue;
       }
-      const ex = pairedBySellOrderId.get(buy.sellOrderId);
-      if (ex) { ex.cost += buy.cost; ex.size += buy.size; }
-      else pairedBySellOrderId.set(buy.sellOrderId, { cost: buy.cost, size: buy.size });
+      const hasSellFills = !!buy.sellOrderId && pairing.sells.has(buy.sellOrderId);
+      if (hasSellFills) continue;
+      // A buy whose stamped TP id never filled but that the pairing redirected
+      // (via bodyId) to an UNANNOTATED sell had its cost charged to that sell's
+      // realized pnl — sold share as cost, the rest booked as holdback. Holding
+      // it open too would count its cost twice. Redirects onto annotated sells
+      // never priced this buy (e.g. a partial TP whose buys were re-linked to a
+      // still-resting TP), so those keep the legacy rule below.
+      const pairedSellOrderId = pairing.buys.get(aggKey)?.pairedSellOrderId;
+      if (pairedSellOrderId && !pairing.sells.get(pairedSellOrderId)?.hasPnlAnnotation) continue;
+      // Legacy boolean closure for buy orders no sell has recorded
+      // consumption against (pre-#607 history, or a body whose tranches
+      // could not account for its quantity): open until the linked sell
+      // order has fills.
+      // Held cost = the buy's cost MINUS the fraction already realized via
+      // prior partial body-TP fills (issue #128). On a partial body-TP fill
+      // the engine re-links the buy to a fresh resting TP and stamps
+      // consumedCostFraction = realized-so-far / original. Counting the full
+      // cost as held while that sold tranche's prorated cost is already in
+      // realizedPnL (via bodyPnl) double-counts it, transiently understating
+      // total return until the residual TP fills. Subtracting the consumed
+      // fraction holds only the genuinely-open remainder.
+      const consumed = buy.consumedCostFraction > 0 ? Math.min(buy.consumedCostFraction, 1) : 0;
+      heldOpenBuyCostBasis += buy.cost * (1 - consumed);
+      heldOpenAssetQty += buy.size * (1 - consumed);
     }
 
-    let realizedPnL = 0;
-    let realizedAssetPnL = 0;
-    let unpairedSellQty = 0;
-    for (const [sellOrderId, sell] of sellAggByOrderId) {
-      const paired = pairedBySellOrderId.get(sellOrderId);
-
-      // Pnl: prefer server annotation (handles body proration). Fall back to
-      // proceeds − linked buy cost for sells without annotation.
-      if (sell.hasPnlAnnotation) {
-        realizedPnL += sell.annotatedPnl;
-      } else if (paired) {
-        realizedPnL += sell.proceeds - paired.cost;
-      } else {
-        unpairedSellQty += sell.size;
-      }
-
-      // Holdback: prefer server annotation; else derive from buy/sell size diff.
-      if (sell.hasHoldbackAnnotation) {
-        if (sell.annotatedHoldback > 0) realizedAssetPnL += sell.annotatedHoldback;
-      } else if (paired) {
-        const holdback = paired.size - sell.size;
-        if (holdback > 0) realizedAssetPnL += holdback;
-      }
-    }
+    // Foreign sells (issues #672/#750): every row of a flagged order counts.
+    let untrackedSellQty = 0;
+    for (const orderId of untrackedSellOrderIds) untrackedSellQty += pairing.sells.get(orderId)?.size || 0;
 
     return {
-      realizedPnL: roundUSDC(realizedPnL),
-      realizedAssetPnL: roundAsset(realizedAssetPnL),
+      realizedPnL: roundUSDC(pairing.realizedPnL),
+      realizedAssetPnL: roundAsset(pairing.realizedAssetPnL),
       heldOpenBuyCostBasis: roundUSDC(heldOpenBuyCostBasis),
       heldOpenAssetQty: roundAsset(heldOpenAssetQty),
       ledgerNetAsset: roundAsset(ledgerNetAsset),
-      unpairedSellQty: roundAsset(unpairedSellQty),
+      unpairedSellQty: roundAsset(pairing.unpairedSellQty),
+      untrackedSellQty: roundAsset(untrackedSellQty),
     };
   };
 
@@ -2138,7 +2107,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
   /**
    * Source-of-truth derivation for position.realizedPnL and realizedAssetPnL.
-   * @returns {{realizedPnL: number, realizedAssetPnL: number, unpairedSellQty: number, heldOpenBuyCostBasis: number, heldOpenAssetQty: number, ledgerNetAsset: number}}
+   * @returns {{realizedPnL: number, realizedAssetPnL: number, unpairedSellQty: number, heldOpenBuyCostBasis: number, heldOpenAssetQty: number, ledgerNetAsset: number, untrackedSellQty: number}}
    */
   const getDerivedRealizedPnL = () => computeRealizedFromCyclePairs();
 
