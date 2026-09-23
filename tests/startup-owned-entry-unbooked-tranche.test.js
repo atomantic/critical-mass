@@ -38,6 +38,7 @@ const { createRegimeEngine, measureUnbookedOrderQty } = require('../src/regime-e
 const { createFillLedger } = require('../src/fill-ledger');
 const { saveRegimeState, loadRegimeState } = require('../src/state-tracker');
 const { tradeEvents } = require('../src/trade-events');
+const { createRecoveryModule } = require('../src/recovery');
 
 const engines = [];
 after(async () => {
@@ -123,9 +124,9 @@ const writePreFixFund = (pair, { ledger, bodies, entry }) => {
  * @param {{ openOrders: Object[], orders: Object<string, Object>, fills: Object[] }} exchange
  *   `orders` answers getOrder by id (anything else reads as a resting TP).
  */
-const bootEngine = async (pair, exchange) => {
+const bootEngine = async (pair, exchange, { realRecovery = false } = {}) => {
   const eng = createRegimeEngine(EXCHANGE, pair, { dryRun: false, productId: pair }, {});
-  eng._test.setAdapter({
+  const adapter = {
     getProductDetails: async () => ({ baseMinSize: '0.0001', baseIncrement: '0.00000001', quoteIncrement: '0.01' }),
     getCurrentPrice: async () => PRICE,
     getOpenOrders: async () => exchange.openOrders,
@@ -134,7 +135,8 @@ const bootEngine = async (pair, exchange) => {
     getOrderFills: async (id) => exchange.fills.filter(f => f.orderId === id),
     cancelOrder: async () => ({ success: true }),
     loadCredentials: () => ({ apiKey: 'test', apiSecret: 'test' }),
-  });
+  };
+  eng._test.setAdapter(adapter);
   const placedTps = [];
   let tpSeq = 0;
   eng._test.setOrderExecutor({
@@ -161,7 +163,9 @@ const bootEngine = async (pair, exchange) => {
     cancelTpOrder: async () => ({ cancelled: true }),
     handleOrderCancel: () => {},
   });
-  eng._test.setRecoveryModule({
+  // The real recovery module ingests every open order's fills into the
+  // ledger at boot without booking them — as production does.
+  eng._test.setRecoveryModule(realRecovery ? createRecoveryModule(EXCHANGE, adapter, pair) : {
     recoverState: async () => ({
       position: { totalAsset: 0, totalCostBasis: 0, avgCostBasis: 0, cycleBuys: 0, lastEntryPrice: 0, lastEntryTime: 0 },
       openOrders: new Map(),
@@ -183,6 +187,11 @@ const shutdown = async (eng) => {
 const heldBy = (pos) => (pos.celestialBodies || [])
   .filter(b => (b.buyOrders || []).some(bo => bo.orderId === ORDER_ID))
   .reduce((sum, b) => sum + b.assetQty, 0);
+/** Quantity of the order the bodies' tranches record. */
+const bookedQty = (pos) => (pos.celestialBodies || [])
+  .flatMap(b => b.buyOrders || [])
+  .filter(bo => bo.orderId === ORDER_ID)
+  .reduce((sum, bo) => sum + bo.assetQty, 0);
 const entryOf = (pos) => (pos.pendingEntryOrders || []).find(e => e.orderId === ORDER_ID);
 
 /** The entry still resting: placed 0.02, t1 + t2 = 0.01 filled. */
@@ -435,5 +444,78 @@ describe('a startup booking that throws after committing (issue #756)', () => {
     assert.ok(near(booked, 0.004), `the legacy tranche is in a body (got ${booked})`);
     assert.ok(near(entryOf(pos).assetQty, 0.016), `entry shrinks by the committed 0.004 only (got ${entryOf(pos).assetQty})`);
     assert.ok(near(entryOf(pos).sizeUsdc, 800));
+  });
+});
+
+describe('offline tranches the boot-time recovery ingests (issue #756)', () => {
+  it('a tranche that filled while a current engine was down is booked on restart', async () => {
+    const pair = '__teststartupowned756_i__';
+    // Current-engine state: the live path booked t1 and shrank the entry.
+    // While stopped, t2 filled; the recovery module ingests it at boot
+    // before the entry is booked, so the booking pass sees only duplicates.
+    writePreFixFund(pair, {
+      ledger: (seed) => {
+        seed.ingestFill(T1, Date.now() - 60000);
+        seed.annotateFillsByOrderId(ORDER_ID, { isBodyOwned: true, bodyId: 'body-b-756', sellOrderId: BODY_TP });
+      },
+      bodies: [legacyBody(0.004, { buyOrders: [{ orderId: ORDER_ID, price: PRICE, assetQty: 0.004, sizeUsdc: 200, filledAt: Date.now() - 45000, consumedQty: 0 }] })],
+      entry: { orderId: ORDER_ID, price: PRICE, assetQty: 0.016, sizeUsdc: 800, placedAt: Date.now() - 60000 },
+    });
+    const { eng } = await bootEngine(pair, { openOrders: [OPEN_ENTRY], orders: {}, fills: [T1, T2] }, { realRecovery: true });
+    const pos = eng._getPositionState();
+    assert.ok(near(heldBy(pos), 0.01), `bodies hold t1 + t2 (got ${heldBy(pos)})`);
+    assert.ok(near(entryOf(pos).assetQty, 0.01));
+  });
+
+  it('a first tranche adopted by the orphan-buy recovery shrinks the entry, so the next offline tranche is provable', async () => {
+    const pair = '__teststartupowned756_j__';
+    // A body for another order gives the orphan recovery a merge target.
+    const other = legacyBody(0.004, {
+      id: 'body-other-756', tpOrderId: 'tp-other', sourceOrderIds: ['other-buy'],
+      buyOrders: [{ orderId: 'other-buy', price: PRICE, assetQty: 0.004, sizeUsdc: 200, filledAt: Date.now() - 45000 }],
+    });
+    writePreFixFund(pair, {
+      ledger: (seed) => {
+        seed.ingestFill({ ...T1, orderId: 'other-buy', tradeId: 'other-buy-t1' }, Date.now() - 60000);
+        seed.annotateFillsByOrderId('other-buy', { isBodyOwned: true, bodyId: 'body-other-756', sellOrderId: 'tp-other' });
+      },
+      bodies: [other],
+      entry: { orderId: ORDER_ID, price: PRICE, assetQty: 0.02, sizeUsdc: 1000, placedAt: Date.now() - 60000 },
+    });
+    // Boot 1: t1 filled while stopped.
+    const exchange = { openOrders: [{ ...OPEN_ENTRY, size: 0.016, filledSize: 0.004, filledValue: 200 }], orders: {}, fills: [T1] };
+    const first = await bootEngine(pair, exchange, { realRecovery: true });
+    let pos = first.eng._getPositionState();
+    assert.ok(near(bookedQty(pos), 0.004), `t1 is booked (got ${bookedQty(pos)})`);
+    assert.ok(near(entryOf(pos).assetQty, 0.016), `entry shrinks by t1 (got ${entryOf(pos).assetQty})`);
+    await shutdown(first.eng);
+
+    // Boot 2: t2 filled while stopped.
+    exchange.openOrders = [OPEN_ENTRY];
+    exchange.fills = [T1, T2];
+    const second = await bootEngine(pair, exchange, { realRecovery: true });
+    pos = second.eng._getPositionState();
+    assert.ok(near(bookedQty(pos), 0.01), `t1 + t2 are booked (got ${bookedQty(pos)})`);
+    assert.ok(near(entryOf(pos).assetQty, 0.01));
+  });
+
+  it('never books for an unowned entry whose every row a gone body stamped', async () => {
+    const pair = '__teststartupowned756_k__';
+    // B held t1 and was stamped onto t2 as well, then sold and closed.
+    writePreFixFund(pair, {
+      ledger: (seed) => {
+        seed.ingestFill(T1, Date.now() - 60000);
+        seed.ingestFill(T2);
+        seed.annotateFillsByOrderId(ORDER_ID, { isBodyOwned: true, bodyId: 'body-gone', sellOrderId: 'tp-gone' });
+        seed.ingestFill({ tradeId: 'tp-gone-1', orderId: 'tp-gone', side: 'sell', size: 0.004, price: 51000, netFee: 0, tradeTime: new Date(Date.now() - 30000).toISOString() });
+        seed.annotateFillsByOrderId('tp-gone', { isBodyOwned: true, bodyId: 'body-gone', bodyPnl: 4, bodyHoldbackAsset: 0 });
+      },
+      bodies: [legacyBody(0.001, { id: 'body-other', tpOrderId: 'tp-other', sourceOrderIds: ['other-buy'], buyOrders: [{ orderId: 'other-buy', price: PRICE, assetQty: 0.001, sizeUsdc: 50, filledAt: Date.now() }] })],
+      entry: { orderId: ORDER_ID, price: PRICE, assetQty: 0.016, sizeUsdc: 800, placedAt: Date.now() - 60000 },
+    });
+    const { eng } = await bootEngine(pair, { openOrders: [OPEN_ENTRY], orders: {}, fills: [T1, T2] });
+    const pos = eng._getPositionState();
+    const booked = pos.celestialBodies.flatMap(b => b.buyOrders || []).filter(bo => bo.orderId === ORDER_ID).length;
+    assert.equal(booked, 0, 'reported for manual review, never booked');
   });
 });

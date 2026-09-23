@@ -536,6 +536,17 @@ const repairHistoricalFillAnnotations = ({
       if (merged.tpOrderId) annotation.sellOrderId = merged.tpOrderId;
       fillLedger.annotateFillsByOrderId(orderId, annotation);
 
+      // A still-tracked entry shrinks by what was just booked from it, as the
+      // live fill path does — its remainder is the evidence startup uses to
+      // prove a later tranche unbooked (issue #756).
+      if (positionState.pendingEntryOrders?.some(e => e.orderId === orderId)) {
+        positionState.pendingEntryOrders = positionState.pendingEntryOrders.map(e => (e.orderId !== orderId ? e : {
+          ...e,
+          assetQty: Math.max(0, (Number(e.assetQty) || 0) - newBuy.assetQty),
+          sizeUsdc: Math.max(0, (Number(e.sizeUsdc) || 0) - newBuy.costBasis),
+        }));
+      }
+
       const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
       logger.info(`🔧 [${exchange}] Recovered orphan buy ${orderId.slice(0, 8)} (${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}) → body ${merged.id.slice(-8)} ${tierCfg.emoji} ${merged.tier}`);
       recoveredCount++;
@@ -3071,7 +3082,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const ledger = fillLedger.getBuyOrderConsumption(orderId);
       if (!ledger || !(ledger.size > 0)) continue;
       const measure = measureUnbookedOrderQty(positionState.celestialBodies, orderId, ledger);
-      if (!measure.owned || !(measure.shortfall > EPS)) continue;
+      if (!measure.owned) {
+        // A body that owned the order and stamped every row of it may be gone
+        // (its TP sold) while a tranche it never held is still in the ledger.
+        // Nothing live bounds how much the gone bodies held, so this is only
+        // reported, never booked. Rows no body stamped are booked this boot by
+        // bookStartupOpenEntryPartial / the orphan-buy recovery instead.
+        if (!fillLedger.getFillsForOrder(orderId).some(isUnsettledBuyRow)) {
+          candidates.push({ entry, orderId, ledger, measure, reportOnly: true });
+        }
+        continue;
+      }
+      if (!(measure.shortfall > EPS)) continue;
       if (!measure.measurable) {
         logger.warn(`⚠️ [${exchange}] Entry ${orderId.slice(0, 8)}: ledger holds ${roundAsset(measure.shortfall)} ${baseCurrency} more than its bodies record, but a body references it without a tranche quantity — manual review required`, { orderId });
         continue;
@@ -3089,7 +3111,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     let recovered = 0;
-    for (const { entry, orderId, ledger, measure } of candidates) {
+    for (const { entry, orderId, ledger, measure, reportOnly } of candidates) {
       let placedQty = 0;
       const open = (openOrders || []).find(o => o.orderId === orderId);
       if (open) {
@@ -3100,16 +3122,30 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (status && isFilledStatus(status)) placedQty = Number(status.filledSize) || 0;
       }
       if (!(placedQty > 0)) {
-        logger.warn(`⚠️ [${exchange}] Entry ${orderId.slice(0, 8)}: ledger holds ${roundAsset(measure.shortfall)} ${baseCurrency} its bodies do not record, but the order's placed size is unknown — left for manual review`, { orderId });
+        if (!reportOnly) {
+          logger.warn(`⚠️ [${exchange}] Entry ${orderId.slice(0, 8)}: ledger holds ${roundAsset(measure.shortfall)} ${baseCurrency} its bodies do not record, but the order's placed size is unknown — left for manual review`, { orderId });
+        }
         continue;
       }
       const everBooked = placedQty - (Number(entry.assetQty) || 0);
+      if (reportOnly) {
+        const gap = roundAsset(ledger.size - everBooked);
+        if (gap > EPS) {
+          logger.warn(`⚠️ [${exchange}] Entry ${orderId.slice(0, 8)}: ledger holds ${gap} ${baseCurrency} more than its tracked remainder says was ever booked, and no live body owns the order — possibly a tranche a closed body never held; manual review required`, { orderId, placedQty, entryQty: entry.assetQty, ledgerQty: ledger.size });
+        }
+        continue;
+      }
       if (everBooked < measure.trancheQty - EPS) {
         logger.warn(`⚠️ [${exchange}] Entry ${orderId.slice(0, 8)}: its tracked remainder says ${roundAsset(Math.max(0, everBooked))} ${baseCurrency} was booked, less than its bodies hold (${roundAsset(measure.trancheQty)}) — cannot prove the ${roundAsset(measure.shortfall)} ${baseCurrency} gap unbooked, left for manual review`, { orderId, placedQty, entryQty: entry.assetQty, trancheQty: measure.trancheQty });
         continue;
       }
       const qty = roundAsset(Math.min(measure.shortfall, ledger.size - everBooked));
-      if (!(qty > EPS)) continue;
+      if (!(qty > EPS)) {
+        // Bodies miss part of the ledger but the entry says it was all booked:
+        // most likely a pre-#607 sale by a body that is gone.
+        logger.info(`ℹ️ [${exchange}] Entry ${orderId.slice(0, 8)}: bodies hold ${roundAsset(measure.shortfall)} ${baseCurrency} less than its ledger, but its tracked remainder shows nothing unbooked — nothing booked (review manually if it persists)`, { orderId, placedQty, entryQty: entry.assetQty, ledgerQty: ledger.size });
+        continue;
+      }
 
       const costBasis = roundUSDC(ledger.cost * (qty / ledger.size));
       const body = celestialHierarchy.createNewBody({ assetQty: qty, costBasis, avgPrice: costBasis / qty }, orderId);
