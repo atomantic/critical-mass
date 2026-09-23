@@ -805,10 +805,8 @@
  * @typedef {Object} OrderExecutor
  * @property {{liveReconciliation: boolean}} capabilities - Executor feature metadata
  * @property {(sizeUsdc: number, currentBid: number, currentAsk: number, retryCount?: number, effectiveOffsetBps?: number|null, staleMs?: number|null) => Promise<{success: boolean, orderId?: string, price?: number, assetQty?: number, errorMessage?: string}>} placeEntryBid
- * @property {(assetQty: number, tpPrice: number, options?: {forceUpdate?: boolean}) => Promise<{success: boolean, orderId?: string, price?: number, wasUpdated?: boolean, errorMessage?: string}>} placeTakeProfitOrder
+ * @property {(assetQty: number, tpPrice: number, options?: {forceUpdate?: boolean}) => Promise<{success: boolean, orderId?: string, price?: number, updated?: boolean, errorMessage?: string}>} placeTakeProfitOrder
  * @property {() => Promise<{cancelled: boolean, filled: boolean, filledDuringCancel?: boolean, filledSize?: number}>} cancelTpOrder
- * @property {(currentBid: number) => Promise<{cancelled: number, refreshed: number, filled: number, failed: number}>} refreshStaleOrders
- * @property {(orderId: string, currentBid: number, currentAsk: number, effectiveOffsetBps?: number|null, staleMs?: number|null) => Promise<{success: boolean, newOrderId?: string, reason?: string, filledDuringCancel?: boolean}>} atomicReplace
  * @property {() => Promise<{cancelled: number, filled?: number, failed?: number}>} cancelAllEntries
  * @property {(orderId: string, size?: number) => void} handleOrderFill
  * @property {(orderId: string) => void} handleOrderCancel
@@ -823,7 +821,6 @@
  * @property {(orderId: string) => number|null} getOrderPlacedAt
  * @property {(assetQty: number, tpPrice: number, bodyId: string) => Promise<{success: boolean, orderId?: string, errorMessage?: string}>} placeBodyTpOrder
  * @property {(bodyId: string, tpOrderId: string) => Promise<{cancelled: boolean, filled: boolean, filledSize?: number}>} cancelBodyTpOrder
- * @property {() => Promise<{cancelled: number, filled: number, failed: number}>} cancelAllBodyTpOrders
  * @property {(orderId: string) => boolean} isBodyTpOrder
  * @property {(tpOrderId: string) => Object|null} getBodyByTpOrderId
  * @property {(bodyId: string, tpOrderId: string, assetQty: number, tpPrice: number, placedAt?: number) => void} restoreBodyTpOrder

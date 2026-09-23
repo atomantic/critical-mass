@@ -74,14 +74,12 @@ const makeMockAdapter = (overrides = {}) => ({
 describe('Order Executor Contract - Interface Parity', () => {
   it('declares all required methods in REQUIRED_EXECUTOR_METHODS', () => {
     assert.ok(Array.isArray(REQUIRED_EXECUTOR_METHODS));
-    assert.ok(REQUIRED_EXECUTOR_METHODS.length >= 30);
+    assert.ok(REQUIRED_EXECUTOR_METHODS.length >= 27);
 
     const expectedMethods = [
       'placeEntryBid',
       'placeTakeProfitOrder',
       'cancelTpOrder',
-      'refreshStaleOrders',
-      'atomicReplace',
       'cancelAllEntries',
       'handleOrderFill',
       'handleOrderCancel',
@@ -96,7 +94,6 @@ describe('Order Executor Contract - Interface Parity', () => {
       'getOrderPlacedAt',
       'placeBodyTpOrder',
       'cancelBodyTpOrder',
-      'cancelAllBodyTpOrders',
       'isBodyTpOrder',
       'getBodyByTpOrderId',
       'restoreBodyTpOrder',
@@ -193,6 +190,62 @@ describe('Order Executor Contract - Interface Parity', () => {
         assert.ok(!err.message.includes('placeEntryBid'));
         return true;
       }
+    );
+  });
+});
+
+describe('Required methods stay live-called (issue #678)', () => {
+  // `refreshStaleOrders`, `atomicReplace` and `cancelAllBodyTpOrders` were
+  // required by this contract and implemented (with drifted, stale-fixed
+  // behavior) in both executors, but nothing in src/ or scripts/ ever called
+  // them — only this test file and order-executor.test.js did. This test
+  // guards against that recurring: every REQUIRED_EXECUTOR_METHODS entry
+  // must be reachable from src/regime-engine.js, the only production caller
+  // of the executor contract, unless explicitly carved out below.
+  const regimeEngineSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'regime-engine.js'), 'utf8');
+  const calledByEngine = new Set(
+    [...regimeEngineSource.matchAll(/orderExecutor\.([a-zA-Z]+)/g)].map(m => m[1])
+  );
+
+  // Methods required by the contract but not directly invoked by name in
+  // regime-engine.js today. Each is exercised by a dedicated test suite
+  // (order-executor.test.js / dry-run-executor.test.js / placement-intents /
+  // race-conditions / regime-placement-adoption) rather than by the engine,
+  // so they are not dead in the same sense #678's three deletions were —
+  // this allowlist exists so a FUTURE required-but-truly-unused method fails
+  // this test loudly instead of silently drifting the way the three did.
+  // Pin the exact set; growing it silently defeats the guard.
+  const ALLOWED_UNCALLED_BY_ENGINE = new Set([
+    'checkInvariants',
+    'getActiveTpOrderId',
+    'getSummary',
+    'clearPendingOrders',
+    'isBodyTpOrder',
+    'getBodyByTpOrderId',
+  ]);
+
+  it('every REQUIRED_EXECUTOR_METHODS entry is called by regime-engine.js or explicitly allowlisted', () => {
+    const unexplained = REQUIRED_EXECUTOR_METHODS.filter(
+      method => !calledByEngine.has(method) && !ALLOWED_UNCALLED_BY_ENGINE.has(method)
+    );
+    assert.deepEqual(
+      unexplained,
+      [],
+      `REQUIRED_EXECUTOR_METHODS contains methods regime-engine.js never calls and that ` +
+      `are not in ALLOWED_UNCALLED_BY_ENGINE: ${unexplained.join(', ')}. Either wire them ` +
+      `into regime-engine.js, add them to the allowlist with a reason, or delete them from ` +
+      `the contract (see issue #678).`
+    );
+  });
+
+  it('the allowlist does not carry a method that regime-engine.js actually DOES call', () => {
+    // Keeps the allowlist honest — a method that's since been wired up
+    // should be dropped from it rather than left as a stale exception.
+    const staleAllowlistEntries = [...ALLOWED_UNCALLED_BY_ENGINE].filter(method => calledByEngine.has(method));
+    assert.deepEqual(
+      staleAllowlistEntries,
+      [],
+      `These ALLOWED_UNCALLED_BY_ENGINE entries are now called by regime-engine.js — remove them from the allowlist: ${staleAllowlistEntries.join(', ')}`
     );
   });
 });
