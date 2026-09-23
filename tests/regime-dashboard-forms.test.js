@@ -94,9 +94,6 @@ function createDashboard({ apy: apyOverrides = {} } = {}) {
     '../App': { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' },
     '../utils/api': { pairQuery: pair => `?pair=${encodeURIComponent(pair)}` },
     '../utils/requestOwner.mjs': { createRequestOwner: () => ({ read: async () => ({ owned: true, data: { fills: [] } }), invalidate() {} }) },
-    '../utils/regimeFillGroups.mjs': {
-      deriveRegimeFillGroups: () => ({}), searchRegimeFillGroups: () => ({}), visibleOrphanBuys: () => [],
-    },
     '../utils/liveTimerElapsed.mjs': {},
     '../utils/capitalAdjustment.mjs': { computeCapitalAdjustment },
     './charts/chartUtils': {
