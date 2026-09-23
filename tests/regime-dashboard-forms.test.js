@@ -8,6 +8,7 @@ const { pathToFileURL } = require('node:url')
 const adminRequire = createRequire(path.join(__dirname, '..', 'admin', 'package.json'))
 const React = adminRequire('react')
 let dashboardCode
+let computeCapitalAdjustment
 
 before(async () => {
   // Use the admin build's JSX compiler, with dependencies left external so no
@@ -24,12 +25,20 @@ before(async () => {
   } finally {
     await bundle.close()
   }
+  // Wire in the REAL pure calculation (issue #701), not a stub, so this
+  // integration-level harness exercises the same clamp-detection the
+  // component actually ships with — see tests/capital-adjustment.test.js
+  // for the pure function's own unit coverage.
+  ;({ computeCapitalAdjustment } = await import(
+    pathToFileURL(path.join(__dirname, '..', 'admin', 'src', 'utils', 'capitalAdjustment.mjs')).href
+  ))
 })
 
-function createDashboard() {
+function createDashboard({ apy: apyOverrides = {} } = {}) {
   const states = []
   const effects = []
   const writes = []
+  const toasts = []
   let stateIndex = 0
   let idIndex = 0
   let mounted = false
@@ -43,7 +52,7 @@ function createDashboard() {
     isRunning: true, config, market: { lastPrice: 100 },
     position: { cycleBuys: 1, lastEntryTime: 1, cyclesCompleted: 0, totalAsset: 0 },
     health: { mode: 'ACTIVE' },
-    apy: { engineStartTime: 1, availableCapital: 500, depositedCapital: 1000, maxUsdcDeployed: 1000 },
+    apy: { engineStartTime: 1, availableCapital: 500, depositedCapital: 1000, maxUsdcDeployed: 1000, ...apyOverrides },
   }
   const hooks = {
     ...React,
@@ -62,7 +71,14 @@ function createDashboard() {
     lazy: () => () => null,
   }
   const fetch = async (url, options = {}) => {
-    if (options.method === 'PUT') writes.push({ url, body: JSON.parse(options.body) })
+    if (options.method === 'PUT') {
+      const body = JSON.parse(options.body)
+      writes.push({ url, body })
+      // Mirror the real PUT /regime/config handler's merge-and-echo-back
+      // behavior (buildClientConfig) so a toast built from data.config
+      // reflects what was actually persisted, not stale mock state.
+      Object.assign(config, body)
+    }
     const data = url.includes('/preview-ladder')
       ? { success: true, preview: { levels: [{ price: 90, sizeUsdc: 10, assetQty: 0.1 }], levelCount: 1 } }
       : { success: true, status, config, fills: [], presets: {} }
@@ -74,7 +90,7 @@ function createDashboard() {
     '../hooks/useChartDataBuffer': {
       useChartDataBuffer: () => ({ priceHistory: [], atrHistory: [], regimeHistory: [], initializeFromCache() {} }),
     },
-    './Toast': { useToast: () => ({ addToast() {} }) },
+    './Toast': { useToast: () => ({ addToast: toast => toasts.push(toast) }) },
     '../App': { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' },
     '../utils/api': { pairQuery: pair => `?pair=${encodeURIComponent(pair)}` },
     '../utils/requestOwner.mjs': { createRequestOwner: () => ({ read: async () => ({ owned: true, data: { fills: [] } }), invalidate() {} }) },
@@ -82,6 +98,7 @@ function createDashboard() {
       deriveRegimeFillGroups: () => ({}), searchRegimeFillGroups: () => ({}), visibleOrphanBuys: () => [],
     },
     '../utils/liveTimerElapsed.mjs': {},
+    '../utils/capitalAdjustment.mjs': { computeCapitalAdjustment },
     './charts/chartUtils': {
       getPriceDecimals: () => 2, formatPriceByMagnitude: value => String(value ?? 0),
       formatCurrency: value => `$${value ?? 0}`,
@@ -102,7 +119,7 @@ function createDashboard() {
     return tree
   }
   return {
-    render, writes,
+    render, writes, toasts,
     async mount() {
       render()
       for (const effect of effects) effect()
@@ -146,6 +163,57 @@ describe('RegimeDashboard expanded operational forms', () => {
     assert.equal(dashboard.writes.length, 1)
     assert.equal(dashboard.writes[0].url, '/api/coinbase/regime/config?pair=BTC-USD')
     assert.deepEqual(dashboard.writes[0].body, { depositedCapital: 1250, maxUsdcDeployed: 1250 })
+  })
+
+  it('blocks — rather than silently clamps — a capital adjust that would drop max deployed below $1000 (#701)', async () => {
+    // maxUsdcDeployed would go 1200 -> 900 (below the $1000 floor). The OLD
+    // code silently floored it to 1000 and toasted the full delta anyway.
+    const dashboard = createDashboard({ apy: { availableCapital: 1200, depositedCapital: 5000, maxUsdcDeployed: 1200 } })
+    let tree = await dashboard.mount()
+    findElement(tree, node => node.props.title === 'Click to adjust available capital (updates deposited & max)').props.onClick()
+    tree = dashboard.render()
+    const input = labeledControl(tree, 'Available: $')
+    input.props.onChange({ target: { value: '900' } })
+    tree = dashboard.render()
+    await findElement(tree, node => node.type === 'button' && node.props.title === 'Apply').props.onClick()
+
+    assert.equal(dashboard.writes.length, 0, 'must not send the clamped write to the server')
+    assert.equal(dashboard.toasts.length, 1)
+    assert.equal(dashboard.toasts[0].type, 'error')
+    assert.match(dashboard.toasts[0].message, /\$1000/)
+  })
+
+  it('blocks — rather than silently zeros — a capital adjust that would land deposited capital between $0 and $100 (#701)', async () => {
+    // depositedCapital would go 1000 -> 50 (below the $100 floor but not 0).
+    // The OLD code silently wrote 0 (auto-derive) and toasted the full delta.
+    const dashboard = createDashboard({ apy: { availableCapital: 1000, depositedCapital: 1000, maxUsdcDeployed: 1000 } })
+    let tree = await dashboard.mount()
+    findElement(tree, node => node.props.title === 'Click to adjust available capital (updates deposited & max)').props.onClick()
+    tree = dashboard.render()
+    const input = labeledControl(tree, 'Available: $')
+    input.props.onChange({ target: { value: '50' } })
+    tree = dashboard.render()
+    await findElement(tree, node => node.type === 'button' && node.props.title === 'Apply').props.onClick()
+
+    assert.equal(dashboard.writes.length, 0, 'must not send the clamped write to the server')
+    assert.equal(dashboard.toasts.length, 1)
+    assert.equal(dashboard.toasts[0].type, 'error')
+    assert.match(dashboard.toasts[0].message, /\$100/)
+  })
+
+  it('reports the server-applied deposited/max values in the success toast (#701)', async () => {
+    const dashboard = createDashboard()
+    let tree = await dashboard.mount()
+    findElement(tree, node => node.props.title === 'Click to adjust available capital (updates deposited & max)').props.onClick()
+    tree = dashboard.render()
+    const input = labeledControl(tree, 'Available: $')
+    input.props.onChange({ target: { value: '750' } })
+    tree = dashboard.render()
+    await findElement(tree, node => node.type === 'button' && node.props.title === 'Apply').props.onClick()
+
+    assert.equal(dashboard.toasts.length, 1)
+    assert.equal(dashboard.toasts[0].type, 'success')
+    assert.match(dashboard.toasts[0].message, /deposited: \$1,250, max: \$1,250/)
   })
 
   it('opens Rebuild Ladder with distinct label targets and saves a spacing selection', async () => {
