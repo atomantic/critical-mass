@@ -5073,7 +5073,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           }
         }
 
-        // Record immutable closed trade
+        // Record the aggregate closed trade. A second booking of the same
+        // order adds its newly-booked tranche; a replay remains idempotent.
         closedTrades.record({
           sellOrderId: fillData.orderId,
           ...sellTradeStamp(summary),
@@ -5091,7 +5092,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           bodyTier: body.tier,
           buyOrderIds: [...(body.sourceOrderIds || []), ...(body.buyOrders || []).map(b => b.orderId)].filter(id => id !== 'core-migration'),
           source: 'live',
-        });
+        }, { additive: booking.additive });
 
         // If no bodies remain, do a full cycle reset — AFTER the bookkeeping
         // above, persisted first: resetCycle can wait on the ladder lock behind
@@ -5331,11 +5332,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           }
 
           // Preserve the legacy audit record before resetCycle clears its
-          // cost basis. Safe to call every pass — record() dedupes by
-          // sellOrderId alone (dedupKeyFor in closed-trades.js), so a retry
-          // after the capital credit was already claimed still re-attempts
-          // this (and resetCycle below) without duplicating the audit
-          // entry.
+          // cost basis. Safe to call every pass — record() accumulates only a
+          // newly-booked tranche and leaves a replay unchanged.
           closedTrades.record({
             sellOrderId: fillData.orderId,
             ...sellTradeStamp(summary2),
@@ -5352,7 +5350,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             bodyTier: null,
             buyOrderIds: [...buyOrderIds],
             source: fillData.source || 'live',
-          });
+          }, { additive: booking.additive });
 
           // try/finally: if resetCycle() throws (its only network call — the
           // ladder cancel — runs before any state mutation, so a throw there

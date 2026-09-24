@@ -125,7 +125,7 @@ to match them.
 
 | Source | What it is | When it diverges |
 |---|---|---|
-| `closed-trades.json` | Append-only audit log: one entry per closed body | Recorded at close time using body.costBasis snapshot; should match cycle-pair sum within rounding when data is clean |
+| `closed-trades.json` | Audit log with one aggregate entry per sell order | A newly booked tranche updates the existing row; replays remain unchanged. It should match cycle-pair sums within rounding when data is clean |
 | `closedTradesSummary.totalPnl` API field | Σ over closed-trades entries | May lag if recovery scripts inserted bodies but didn't backfill closed-trades |
 | `body.avgPrice` | Weighted average of body's recorded buys | Drifts when bodies consolidate; only meaningful for the current snapshot |
 | FIFO replay (`computeFifoRealized`) | Lot-consumption over the entire ledger by timestamp, ignoring cycle boundaries | RETAINED for diagnostics only. Disagrees with cycle pairing when sells span cycles or when a single body's TP retains designed holdback |
@@ -311,8 +311,10 @@ When reviewing changes that touch P&L code, verify:
    execution; a pass with no unbooked rows (a crash replay) still replaces.
 4. **Exchange balance is never used to compute bot metrics.** Only for
    reality-check logging or by rectification scripts.
-5. **`closed-trades.json` writes are append-only at sell time** (in the
-   `handleOrderFill` path). Audit log, not state mutator.
+5. **`closed-trades.json` has one aggregate row per sell order** (written in
+   the `handleOrderFill` path). A second booking updates that row's quantities,
+   proceeds, cost, P&L and reserve fields; a replay is a no-op. It remains an
+   audit log, not a state mutator.
 6. **`migrateFromFills()` is callable at every startup** (no `length > 0`
    gate). Dedup happens in `record()`.
 7. **UI summary totals are summed from per-cycle pnl**, not sourced

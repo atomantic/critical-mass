@@ -2,9 +2,10 @@
 /**
  * Closed Trades Ledger
  *
- * Immutable records of completed sell trades with their matched buy costs.
- * Written once at fill time, never modified. Total realized P&L is simply
- * the sum of all closed trade pnl fields.
+ * Aggregated records of completed sell trades with their matched buy costs.
+ * A second booking of the same sell order updates its existing record so
+ * status totals stay aligned with the fill ledger; a replay remains a no-op.
+ * Total realized P&L is simply the sum of all closed trade pnl fields.
  */
 
 const fs = require('fs');
@@ -16,9 +17,10 @@ const { roundAsset, roundUSDC } = require('./volatility-utils');
 
 /**
  * Dedup key for a closed trade. Keyed on sellOrderId ALONE — each sell order
- * closes exactly one cycle's worth of buys and is recorded once. (A true
- * partial body-TP fill re-places its residual under a NEW orderId, so a single
- * sellOrderId never legitimately yields two records.) Keying on
+ * closes exactly one cycle's worth of buys and has one aggregate record. (A
+ * true partial body-TP fill normally re-places its residual under a NEW
+ * orderId; when a second booking keeps the same orderId, record() updates the
+ * existing aggregate instead of creating a second record.) Keying on
  * `sellOrderId:qtySold` instead let the live path (qtySold = size over the
  * newly-ingested fills) and migrateFromFills (qtySold = size over ALL rows for
  * the orderId) compute different qtys for the same sell → different keys →
@@ -69,7 +71,7 @@ const createClosedTrades = (exchange, pair) => {
   const logger = createContextLogger({ exchange, pair });
   /** @type {ClosedTrade[]} */
   const trades = [];
-  /** @type {Set<string>} Dedup keys (see dedupKeyFor — keyed on sellOrderId) */
+  /** @type {Set<string>} Aggregate keys (see dedupKeyFor — keyed on sellOrderId) */
   const dedupKeys = new Set();
 
   const load = () => {
@@ -107,15 +109,62 @@ const createClosedTrades = (exchange, pair) => {
   };
 
   /**
-   * Record a closed trade. Deduplicates on sellOrderId alone (falls back to
-   * sellOrderId:qtySold:timestamp only when sellOrderId is missing — see
-   * dedupKeyFor above).
+   * Record a closed trade. New sell orders append a record. A booking that
+   * adds newly-ingested execution to an existing sell order passes `additive`
+   * so its quantities and realized values merge in place; a replay leaves the
+   * existing record untouched.
    * @param {ClosedTrade} trade
-   * @returns {boolean} Whether the trade was added (false if duplicate)
+   * @param {{additive?: boolean}} [options]
+   * @returns {boolean} Whether the ledger changed (false for a replay)
    */
-  const record = (trade) => {
+  const record = (trade, { additive = false } = {}) => {
     const key = dedupKeyFor(trade);
-    if (dedupKeys.has(key)) return false;
+    if (dedupKeys.has(key)) {
+      if (!additive) return false;
+
+      const existing = trades.find(t => dedupKeyFor(t) === key);
+      if (!existing) return false;
+
+      const number = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+      const add = (field, round) => {
+        existing[field] = round(number(existing[field]) + number(trade[field]));
+      };
+
+      add('qtySold', roundAsset);
+      add('sellProceeds', roundUSDC);
+      add('sellFees', roundUSDC);
+      add('costBasis', roundUSDC);
+      add('pnl', roundUSDC);
+      add('holdbackAsset', roundAsset);
+
+      const reservesSoldAsset = roundAsset(
+        number(existing.reservesSoldAsset) + number(trade.reservesSoldAsset)
+      );
+      if (reservesSoldAsset > 0 || existing.reservesSoldAsset != null || trade.reservesSoldAsset != null) {
+        existing.reservesSoldAsset = reservesSoldAsset;
+      }
+
+      if (Number.isFinite(Number(trade.timestamp))
+        && (!Number.isFinite(Number(existing.timestamp)) || trade.timestamp > existing.timestamp)) {
+        existing.timestamp = trade.timestamp;
+      }
+      if (Number.isFinite(Number(trade.recordedAt))
+        && (!Number.isFinite(Number(existing.recordedAt)) || trade.recordedAt > existing.recordedAt)) {
+        existing.recordedAt = trade.recordedAt;
+      }
+      if (Number.isFinite(Number(trade.buyAvgPrice))) existing.buyAvgPrice = trade.buyAvgPrice;
+      if (trade.isPartial !== undefined) existing.isPartial = trade.isPartial;
+      for (const field of ['bodyId', 'bodyTier', 'cycleId', 'source']) {
+        if (trade[field] != null) existing[field] = trade[field];
+      }
+      existing.buyOrderIds = [...new Set([
+        ...(existing.buyOrderIds || []),
+        ...(trade.buyOrderIds || []),
+      ])];
+
+      persist();
+      return true;
+    }
     dedupKeys.add(key);
     trades.push(trade);
     persist();
