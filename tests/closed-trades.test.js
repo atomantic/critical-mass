@@ -6,6 +6,7 @@ const path = require('path');
 const os = require('os');
 
 const closedTradesPath = require.resolve('../src/closed-trades');
+const fillLedgerPath = require.resolve('../src/fill-ledger');
 const migration = require('../src/migration');
 const originalGetExchangeDataDir = migration.getExchangeDataDir;
 
@@ -17,7 +18,12 @@ const freshModule = () => {
   return require('../src/closed-trades');
 };
 
-describe('Closed Trades dedup key (issue #108)', () => {
+const freshFillLedgerModule = () => {
+  delete require.cache[fillLedgerPath];
+  return require('../src/fill-ledger');
+};
+
+describe('Closed Trades dedup and aggregation', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'closed-trades-test-'));
     migration.getExchangeDataDir = (exchange) => {
@@ -32,6 +38,7 @@ describe('Closed Trades dedup key (issue #108)', () => {
     if (tmpDir && fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = null;
     delete require.cache[closedTradesPath];
+    delete require.cache[fillLedgerPath];
   });
 
   const baseTrade = (overrides = {}) => ({
@@ -66,6 +73,67 @@ describe('Closed Trades dedup key (issue #108)', () => {
 
     assert.equal(ct.getCount(), 1);
     assert.equal(ct.getTotalPnL(), 5, 'totalPnl must not double-count the same sell');
+  });
+
+  it('accumulates two bookings into one row and matches ledger-derived totals (issue #786)', () => {
+    const { createClosedTrades } = freshModule();
+    const { createFillLedger } = freshFillLedgerModule();
+    const ct = createClosedTrades('test-exchange');
+    const ledger = createFillLedger('test-exchange', 'BTC-USDC', 'BTC-USDC', { quiet: true });
+    ledger.startNewCycle();
+
+    ledger.ingestFill({
+      tradeId: 'buy-1', orderId: 'buy-1', side: 'buy', price: '100000', size: '0.003',
+      totalCommission: '0', rebate: '0', liquidityIndicator: 'TAKER', tradeTime: new Date(1000).toISOString(),
+    });
+    ledger.ingestFill({
+      tradeId: 'sell-1', orderId: 'sell-1', side: 'sell', price: '50500', size: '0.002',
+      totalCommission: '0.02', rebate: '0', liquidityIndicator: 'MAKER', tradeTime: new Date(2000).toISOString(),
+    });
+    ledger.ingestFill({
+      tradeId: 'sell-2', orderId: 'sell-1', side: 'sell', price: '50500', size: '0.001',
+      totalCommission: '0.02', rebate: '0', liquidityIndicator: 'MAKER', tradeTime: new Date(3000).toISOString(),
+    });
+    ledger.annotateFillsByOrderId('buy-1', { sellOrderId: 'sell-1', bodyId: 'body-1', isBodyOwned: true });
+    ledger.annotateFillsByOrderId('sell-1', {
+      bodyId: 'body-1',
+      bodyPnl: 1.46,
+      bodyHoldbackAsset: 0.0005,
+      bodyReservesSoldAsset: 0.0001,
+    });
+    const ledgerDerived = ledger.getDerivedRealizedPnL();
+
+    const first = baseTrade({
+      qtySold: 0.002,
+      sellProceeds: 100.98,
+      sellFees: 0.02,
+      costBasis: 100,
+      pnl: 0.98,
+      holdbackAsset: 0.0002,
+      timestamp: 2000,
+    });
+    const second = baseTrade({
+      qtySold: 0.001,
+      sellProceeds: 50.48,
+      sellFees: 0.02,
+      costBasis: 50,
+      pnl: 0.48,
+      holdbackAsset: 0.0003,
+      reservesSoldAsset: 0.0001,
+      timestamp: 3000,
+      buyOrderIds: ['buy-1', 'buy-2'],
+    });
+
+    assert.equal(ct.record(first), true);
+    assert.equal(ct.record(second, { additive: true }), true);
+    assert.equal(ct.getCount(), 1, 'one sell order keeps one aggregate row');
+    assert.equal(ct.getTotalPnL(), ledgerDerived.realizedPnL, 'audit P&L matches the ledger');
+    assert.equal(ct.getTotalHoldback(), ledgerDerived.realizedAssetPnL, 'audit reserves match the ledger');
+    assert.equal(ct.getAll()[0].qtySold, 0.003, 'both tranches are represented');
+    assert.deepEqual(ct.getAll()[0].buyOrderIds, ['buy-1', 'buy-2']);
+
+    assert.equal(ct.record(second), false, 'a replay does not add the second tranche again');
+    assert.equal(ct.getTotalPnL(), ledgerDerived.realizedPnL);
   });
 
   it('nets a stale-TP reserves drawdown out of the total holdback (#770)', () => {
