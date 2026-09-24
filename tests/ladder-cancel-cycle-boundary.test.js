@@ -14,7 +14,9 @@
 //   4. rebuildLadder's budget accounts for quote spent by fills during the
 //      cancel (a post-cancel balance re-read, and a reserve for rungs that
 //      filled completely and polling has yet to book);
-//   5. rebuildLadder/cancelLadder refuse to sweep mid-fill/merge/reconcile.
+//   5. a polled partial still in flight across rebuild's sweep stays reserved
+//      under the deployed cap (#776);
+//   6. rebuildLadder/cancelLadder refuse to sweep mid-fill/merge/reconcile.
 //
 // Disk safety: throwaway pairs under a disposable temp data root.
 const { describe, it, after } = require('node:test');
@@ -34,6 +36,7 @@ const originalGetAdapter = adapters.getAdapter;
 adapters.getAdapter = () => ({ getReconciliationFills: async () => [] });
 
 const { createRegimeEngine } = require('../src/regime-engine');
+const { createOrderExecutor } = require('../src/order-executor');
 const celestialHierarchy = require('../src/celestial-hierarchy');
 
 let pairSeq = 0;
@@ -500,6 +503,80 @@ describe('rebuildLadder — budget after a fill during the cancel (#711)', () =>
     const total = placedTotal(placed);
     assert.ok(total > 0);
     assert.ok(total <= 600 + 1e-6, `must leave room for the $400 polling has yet to book, got $${total.toFixed(2)}`);
+  });
+
+  it('reserves a polled partial whose booking is still in flight across the rebuild sweep', async () => {
+    let resolveFillRows;
+    let signalFillRowsRead;
+    const fillRowsRead = new Promise(resolve => { signalFillRowsRead = resolve; });
+    const fillRows = new Promise(resolve => { resolveFillRows = resolve; });
+    let booking;
+    let poll;
+    let orderStatusPolls = 0;
+    let balanceReads = 0;
+    const orderId = 'rung-polled-inflight';
+    const { eng, placed } = setupLadderEngine({
+      balances: [100000],
+      maxUsdc: 1000,
+    });
+    const adapter = {
+      getAccountBalance: async () => ({ available: String(++balanceReads === 1 ? 100000 : 99900) }),
+      getOrder: async () => {
+        orderStatusPolls++;
+        return orderStatusPolls === 1
+          ? { status: 'PARTIALLY_FILLED', filledSize: 0.002, filledValue: 100, averageFilledPrice: 50000, totalFees: 0, side: 'BUY' }
+          : { status: 'CANCELLED', filledSize: 0.002, filledValue: 100, averageFilledPrice: 50000, totalFees: 0, side: 'BUY' };
+      },
+      cancelOrder: async () => {
+        // The polling pass begins inside the already-started sweep, after the
+        // rebuild has passed its last position-mutation check.
+        poll = executor.checkPendingOrderFills();
+        await fillRowsRead;
+        return { success: false };
+      },
+      getOrderFills: async () => {
+        signalFillRowsRead();
+        return fillRows;
+      },
+      getPositions: async () => [],
+    };
+    eng._test.setAdapter(adapter);
+    const executor = createOrderExecutor('coinbase', eng._getConfig(), adapter, 'ETH-USD', {
+      getRecordedSizeForOrder: (id) => eng.getFillLedger().getRecordedSizeForOrder(id),
+      onFillDetected: (id, status) => {
+        if (status.status === 'PARTIALLY_FILLED') {
+          booking = eng._test.handleOrderFill({ orderId: id, ...status });
+          return booking;
+        }
+      },
+    });
+    executor.restorePendingOrder(orderId, {
+      type: 'ladder_entry', price: 50000, size: 0.002, sizeUsdc: 100, ladderIndex: 0, placedAt: Date.now(),
+    });
+    executor.placeLadderOrders = async (levels) => {
+      placed.push(...levels);
+      return { orders: levels.map((level, i) => ({ orderId: `new-rung-${i}`, ...level })), failedCount: 0 };
+    };
+    eng._test.setOrderExecutor(executor);
+    eng._getPositionState().pendingLadderOrders = [{ orderId, price: 50000, sizeUsdc: 100, ladderIndex: 0 }];
+
+    try {
+      // Start the rebuild; cancelOrder triggers checkPendingOrderFills while
+      // the sweep is running. The poll returns with the booking still blocked
+      // on getOrderFills, so the ladder must reserve the $100 tranche.
+      const res = await eng.rebuildLadder();
+      await poll;
+
+      assert.equal(res.success, true, res.message);
+      assert.equal(eng.getFillLedger().getRecordedSizeForOrder(orderId), 0, 'the fill callback remains open during budget derivation');
+      const total = placedTotal(placed);
+      assert.ok(total > 0, 'a ladder was placed');
+      assert.ok(total <= 900 + 1e-6, `the unbooked $100 tranche is reserved under the $1,000 cap, got $${total.toFixed(2)}`);
+    } finally {
+      resolveFillRows([rawFill('buy', orderId, 't-rung-polled-inflight', 0.002, 50000)]);
+      await booking;
+      executor.clearTimers();
+    }
   });
 
   it('still reserves the unbooked remainder of a rung whose earlier partial already has a body', async () => {
