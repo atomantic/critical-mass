@@ -30,6 +30,7 @@ const { createContextLogger } = require('./logger');
  * @param {string} productId - Product to trade
  * @param {Object} [callbacks] - Event callbacks
  * @param {Function} [callbacks.onFillDetected] - Called when fill is detected via polling: (orderId, orderStatus)
+ * @param {(orderId: string) => number} [callbacks.getRecordedSizeForOrder] - Durable fill-ledger size, used to distinguish detected partials from booked partials during a cancel sweep
  * @param {Function} [callbacks.onEntryCancelled] - Called when an entry order is cancelled (stale timeout, refresh, etc.): (orderId, {filledSize})
  * @param {string} [pair] - Fund pair name (the `data/<exchange>/<pair>/` directory), used to scope durable placement intents; defaults to productId
  * @returns {Object} Order executor instance
@@ -1520,26 +1521,59 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * the caller can reserve exactly what its persisted fill ledger does not
    * hold yet (this executor's tracker is empty after a restart).
    * `partialFillsCost` and each entry's `cost` cover only what was not
-   * already booked as an earlier partial (the tracker's high-water mark): an
-   * earlier tranche is already in a body's costBasis and in the caller's
-   * balance snapshot.
-   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number, partialFillOrderIds: string[], partialFillsCost: number, unbookedFills: Array<{orderId: string, filledSize: number, unitCost: number, cost: number}>}>} Cancel results
+   * already recorded in the fill ledger. The polling tracker's high-water
+   * mark means only that a callback was started; it must not make an in-flight
+   * booking disappear from the caller's budget. `partialFillReservations`
+   * carries the partial rungs' cumulative sizes so the caller can re-check the
+   * ledger after the sweep and reserve any tranche still waiting to be booked.
+   * @returns {Promise<{cancelled: number, remainingTracked: number, partialFills: number, partialFillOrderIds: string[], partialFillsCost: number, partialFillReservations: Array<{orderId: string, filledSize: number, unitCost: number}>, unbookedFills: Array<{orderId: string, filledSize: number, unitCost: number, cost: number}>}>} Cancel results
    */
   const cancelAllLadderOrders = async () => {
     let cancelled = 0;
     let partialFills = 0;
     const partialFillOrderIds = [];
     let partialFillsCost = 0;
+    const partialFillReservations = [];
     const unbookedFills = [];
 
+    // The poller's tracker is advanced before its fire-and-forget booking
+    // callback resolves. Use persisted fill rows as the booked watermark when
+    // the engine provides it; retain the tracker fallback for standalone
+    // executor users that do not own a ledger.
+    const alreadyRecordedSize = (orderId, filledSize) => {
+      let recordedSize = partialFillTracker.get(orderId) || 0;
+      if (typeof callbacks.getRecordedSizeForOrder === 'function') {
+        try {
+          const value = Number(callbacks.getRecordedSizeForOrder(orderId));
+          recordedSize = Number.isFinite(value) && value > 0 ? value : 0;
+        } catch {
+          // An unavailable ledger read must fail closed for budget accounting:
+          // treat the fill as unrecorded and reserve it.
+          recordedSize = 0;
+        }
+      }
+      return Math.min(Math.max(0, recordedSize), filledSize);
+    };
+
+    const fillUnitCost = (order, result) => {
+      const filledSize = Number(result.filledSize) || 0;
+      const averagePrice = Math.max(
+        Number(result.averageFilledPrice) || 0,
+        filledSize > 0 ? (Number(result.filledValue) || 0) / filledSize : 0,
+        Number(order.price) || 0,
+      );
+      return averagePrice + (filledSize > 0 ? (Number(result.totalFees) || 0) / filledSize : 0);
+    };
+
     // Quote spent by the part of a cancel-time fill not already booked as a
-    // partial. Read before handleCancelledOrder, which clears the tracker.
+    // partial. The tracker is only a poll high-water mark, not proof the fill
+    // callback completed; use the ledger-backed watermark when available.
     // Prorating the cumulative value by size assumes every tranche filled at
     // the same price; a rung is a buy LIMIT, so no tranche can fill above
     // `order.price` — never report less than the new size at that price.
     const newFillCost = (orderId, order, result) => {
       const filledSize = Number(result.filledSize) || 0;
-      const alreadyBooked = Math.min(partialFillTracker.get(orderId) || 0, filledSize);
+      const alreadyBooked = alreadyRecordedSize(orderId, filledSize);
       const newSize = filledSize - alreadyBooked;
       const newShare = filledSize > 0 ? newSize / filledSize : 1;
       const fees = (Number(result.totalFees) || 0) * newShare;
@@ -1556,6 +1590,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       if (result.cancelled) {
         if (result.filledSize > 0) {
           const cost = newFillCost(orderId, order, result);
+          const filledSize = Number(result.filledSize) || 0;
+          partialFillReservations.push({ orderId, filledSize, unitCost: fillUnitCost(order, result) });
           // Await the booking. resetCycle/rebuildLadder/cancelLadder all
           // await this whole function then immediately reset cycle state and
           // call fillLedger.startNewCycle() — an un-awaited fire-and-forget
@@ -1589,8 +1625,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         const filledSize = Number(result.filledSize) || 0;
         // Upper-bound quote per unit: a buy limit never fills above
         // order.price, plus the order's average fee per unit.
-        const unitCost = Math.max(filledSize > 0 ? (Number(result.filledValue) || 0) / filledSize : 0, Number(order.price) || 0)
-          + (filledSize > 0 ? (Number(result.totalFees) || 0) / filledSize : 0);
+        const unitCost = fillUnitCost(order, result);
         unbookedFills.push({ orderId, filledSize, unitCost, cost: newFillCost(orderId, order, result) });
         logger.info(`📋 [${exchange}] Ladder order ${orderId.slice(0, 8)} filled during cancel — polling will process`, {
           orderId,
@@ -1605,7 +1640,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const remainingTracked = Array.from(pendingOrders.values())
       .filter(o => o.type === 'ladder_entry').length;
 
-    return { cancelled, remainingTracked, partialFills, partialFillOrderIds, partialFillsCost, unbookedFills };
+    return { cancelled, remainingTracked, partialFills, partialFillOrderIds, partialFillsCost, partialFillReservations, unbookedFills };
   };
 
   /**

@@ -1024,6 +1024,39 @@ describe('cancelAllLadderOrders — partial fill during a successful cancel (iss
     exec.clearTimers();
   });
 
+  it('keeps an in-flight polled partial in the sweep cost and returns a deployed-cap reservation', async () => {
+    let releaseBooking;
+    const booking = new Promise(resolve => { releaseBooking = resolve; });
+    let recordedSize = 0;
+    let callbackStarted = false;
+    let status = { status: 'PARTIALLY_FILLED', filledSize: 0.004, filledValue: 204, averageFilledPrice: 51000, totalFees: 0.01, side: 'BUY' };
+    const adapter = {
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => status,
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      getRecordedSizeForOrder: () => recordedSize,
+      onFillDetected: (_orderId, fillStatus) => {
+        if (fillStatus.status === 'PARTIALLY_FILLED') {
+          callbackStarted = true;
+          return booking;
+        }
+      },
+    });
+    restoreLadder(exec, 'ladder-inflight-partial');
+
+    await exec.checkPendingOrderFills();
+    assert.equal(callbackStarted, true, 'the partial booking callback has started but is not committed');
+    status = { status: 'CANCELLED', filledSize: 0.004, filledValue: 204, averageFilledPrice: 51000, totalFees: 0.01, side: 'BUY' };
+
+    const result = await exec.cancelAllLadderOrders();
+
+    assert.ok(Math.abs(result.partialFillsCost - 204.01) < 1e-9, 'the poller high-water mark is not treated as booked');
+    assert.deepEqual(result.partialFillReservations, [{ orderId: 'ladder-inflight-partial', filledSize: 0.004, unitCost: 51002.5 }]);
+    releaseBooking();
+    exec.clearTimers();
+  });
+
   it('never costs the new tranche below the rung\'s limit price when the earlier one filled cheaper (issue #711)', async () => {
     // Earlier 0.004 filled at 50000 ($200); the remaining 0.002 at the 51000
     // limit ($102). Size-prorating the cumulative $302 would say $100.67.
