@@ -847,6 +847,44 @@ describe('ladder sweeps serialise on the ladder lock (#766)', () => {
     assert.equal(eng._test.getFlags().ladderPending, 0);
   });
 
+  it('an operator reset ahead of a TP close does not suppress that close accounting', async () => {
+    const cancellation = deferred();
+    const { eng, calls } = setupSerialEngine({
+      fillsByOrder: { 'tp-a': [rawFill('sell', 'tp-a', 't-sell-a', 0.0099, 52000)] },
+      holdCancel: [cancellation],
+    });
+    eng._getConfig().tpAutoManaged = true;
+    eng._getConfig().sizeAutoManaged = true;
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-a', 't-buy-a', 0.01, 50000));
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.celestialBodies = [makeBody('body-aaaaaaaa', 'buy-a', 0.01, 50000, 'tp-a')];
+    pos.cycleBuys = 1;
+    pos.ladderActive = true;
+
+    // The operator starts first and owns the ladder lock while its cancellation
+    // is in flight. A TP can still arrive after that action passed its initial
+    // fill/busy checks, so its reset queues behind the operator boundary.
+    const operatorReset = eng.resetCycleBuys();
+    await until(() => calls.cancel === 1, 'the operator reset to start sweeping');
+    const tp = eng._test.handleOrderFill({
+      orderId: 'tp-a', side: 'sell', status: 'FILLED', filledSize: 0.0099, averageFilledPrice: 52000,
+    });
+    await until(() => pos.celestialBodies.length === 0, 'the TP to close the last body');
+    assert.equal(ledger.getCurrentCycleId(), closingCycle, 'the TP reset is queued behind the operator boundary');
+
+    cancellation.resolve();
+    assert.equal((await operatorReset).success, true);
+    await tp;
+
+    assert.notEqual(ledger.getCurrentCycleId(), closingCycle);
+    assert.equal(pos.cyclesCompleted, 1, 'the genuine TP close remains counted');
+    assert.equal(eng.getStatus().tpOptimizer.sampleCount, 1, 'the close still reaches the TP optimizer');
+    await until(() => eng.getStatus().sizeOptimizer.totalCycleCount === 1, 'the close to reach the size optimizer');
+  });
+
   it('a window buy whose own TP sold while the reset queued stays with that sell in the closing cycle', async () => {
     const placement = deferred();
     const fillsByOrder = {
