@@ -847,6 +847,44 @@ describe('ladder sweeps serialise on the ladder lock (#766)', () => {
     assert.equal(eng._test.getFlags().ladderPending, 0);
   });
 
+  it('an operator reset ahead of a TP close does not suppress that close accounting', async () => {
+    const cancellation = deferred();
+    const { eng, calls } = setupSerialEngine({
+      fillsByOrder: { 'tp-a': [rawFill('sell', 'tp-a', 't-sell-a', 0.0099, 52000)] },
+      holdCancel: [cancellation],
+    });
+    eng._getConfig().tpAutoManaged = true;
+    eng._getConfig().sizeAutoManaged = true;
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-a', 't-buy-a', 0.01, 50000));
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.celestialBodies = [makeBody('body-aaaaaaaa', 'buy-a', 0.01, 50000, 'tp-a')];
+    pos.cycleBuys = 1;
+    pos.ladderActive = true;
+
+    // The operator starts first and owns the ladder lock while its cancellation
+    // is in flight. A TP can still arrive after that action passed its initial
+    // fill/busy checks, so its reset queues behind the operator boundary.
+    const operatorReset = eng.resetCycleBuys();
+    await until(() => calls.cancel === 1, 'the operator reset to start sweeping');
+    const tp = eng._test.handleOrderFill({
+      orderId: 'tp-a', side: 'sell', status: 'FILLED', filledSize: 0.0099, averageFilledPrice: 52000,
+    });
+    await until(() => pos.celestialBodies.length === 0, 'the TP to close the last body');
+    assert.equal(ledger.getCurrentCycleId(), closingCycle, 'the TP reset is queued behind the operator boundary');
+
+    cancellation.resolve();
+    assert.equal((await operatorReset).success, true);
+    await tp;
+
+    assert.notEqual(ledger.getCurrentCycleId(), closingCycle);
+    assert.equal(pos.cyclesCompleted, 1, 'the genuine TP close remains counted');
+    assert.equal(eng.getStatus().tpOptimizer.sampleCount, 1, 'the close still reaches the TP optimizer');
+    await until(() => eng.getStatus().sizeOptimizer.totalCycleCount === 1, 'the close to reach the size optimizer');
+  });
+
   it('a window buy whose own TP sold while the reset queued stays with that sell in the closing cycle', async () => {
     const placement = deferred();
     const fillsByOrder = {
@@ -1234,6 +1272,46 @@ describe('ladder sweeps serialise on the ladder lock (#766)', () => {
     await b;
     assert.equal(started.length, 1, 'one turnover for one closing cycle');
     assert.equal(ledger.getCurrentCycleId(), started[0]);
+  });
+
+  it('a close reset on a later cycle does not suppress an earlier timed-out close', async () => {
+    const sweeps = [deferred(), deferred(), deferred()];
+    let sweepCount = 0;
+    const eng = makeEngine({
+      executor: {
+        cancelAllLadderOrders: async () => {
+          const sweep = sweeps[sweepCount++];
+          await sweep.promise;
+          return { cancelled: 0, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [] };
+        },
+      },
+    });
+    const ledger = eng.getFillLedger();
+    const firstCycle = ledger.startNewCycle();
+    const pos = eng._getPositionState();
+    pos.activeCycleId = firstCycle;
+    pos.ladderActive = true;
+
+    // A starts sweeping the original cycle. B is an operator boundary that
+    // wins the race, then C closes the distinct cycle B created before A's
+    // timed-out sweep returns.
+    const firstClose = eng._test.resetCycleUnserialised();
+    await until(() => sweepCount === 1, 'the first close reset to start sweeping');
+    const operatorReset = eng._test.resetCycleUnserialised({ resetKind: 'operator' });
+    await until(() => sweepCount === 2, 'the operator boundary to start sweeping');
+    sweeps[1].resolve();
+    assert.equal((await operatorReset).turnedOver, true);
+
+    pos.ladderActive = true;
+    const laterClose = eng._test.resetCycleUnserialised();
+    await until(() => sweepCount === 3, 'the later close reset to start sweeping');
+    sweeps[2].resolve();
+    assert.equal((await laterClose).turnedOver, true);
+
+    sweeps[0].resolve();
+    const firstResult = await firstClose;
+    assert.equal(firstResult.turnedOver, false, 'the earlier reset cannot turn over a later cycle');
+    assert.equal(firstResult.duplicateClose, false, 'a close on the later cycle is not a duplicate of the first cycle');
   });
 
   it('a rebuild requested mid-reset runs after the reset instead of refusing or interleaving', async () => {
