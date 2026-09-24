@@ -394,7 +394,17 @@ const createManualTradeImporter = ({
     // was already created for this trade iff bodyId is set (markTpPlaced
     // stamps it right after the first successful injectBody/persistBodyToDisk
     // below) or the status already advanced to TP_PENDING.
-    if (trade.bodyId || trade.status === STATUS.TP_PENDING) {
+    const orderRows = fillLedger.getFillsForOrder(buyOrderId);
+    const ledgerBodyId = orderRows.find((row) => row.bodyId)?.bodyId;
+    // A crash after persisting a body but before markTpPlaced leaves the
+    // store without its bodyId. The ledger normally retains the link; the
+    // persisted body's order bookkeeping also recovers a missing annotation.
+    const persistedBodyId = !trade.bodyId && !ledgerBodyId
+      ? loadRegimeState(exchange, pair).position?.celestialBodies?.find((body) =>
+        body.sourceOrderIds?.includes(buyOrderId) || body.buyOrders?.some((order) => order.orderId === buyOrderId))?.id
+      : null;
+    const currentBodyId = ledgerBodyId || trade.bodyId || persistedBodyId;
+    if (currentBodyId || trade.status === STATUS.TP_PENDING) {
       // The buy order may have still been FILLING when the body above was
       // created — ingestAdapterFills already wrote any fills that arrived
       // since into the ledger (it runs unconditionally, before this guard).
@@ -416,12 +426,11 @@ const createManualTradeImporter = ({
       // Such a row would already show a bodyId despite the body never
       // having actually absorbed it, and the old unlinked-row check would
       // have taken the fast path below and hidden the gap for good.
-      const orderRows = trade.bodyId ? fillLedger.getFillsForOrder(buyOrderId) : [];
-      const currentBodyId = orderRows.find((r) => r.bodyId)?.bodyId || trade.bodyId;
       const fullQty = orderRows.reduce((sum, r) => sum + r.size, 0);
       const priorRecordedQty = trade.buySize || 0;
 
       if (fullQty <= priorRecordedQty + 0.00000001) {
+        if (currentBodyId && currentBodyId !== trade.bodyId) store.markTpPlaced(trade.id, currentBodyId);
         log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} already has body ${currentBodyId} — skipping duplicate body creation`, {
           bodyId: currentBodyId,
           buyOrderId,

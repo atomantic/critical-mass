@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **[issue-788] Manual buy import retries recover a persisted body before reconciling later fills** — If the process crashed after saving a body but before recording its ID on the trade, a subsequent fill could be left outside that body. Retry now finds the body through the ledger or persisted order bookkeeping and extends it to the order's full fill total.
+
 ### Removed
 - **[issue-746] Removed the size optimizer's unused balance-poll re-evaluation path** — `src/size-optimizer.js` exported `updateBalance()`/`evaluateForBalance()`, a reactive path meant to re-evaluate sizing on a live balance swing between cycle completions, but no engine code ever called it — `src/regime-engine.js` only ever drives sizing through the cycle-completion path (`recordCycle()`), and #694 deliberately left it unwired when it fixed that path's balance-feed bug. Rather than build a new polling trigger for a feature nothing asked for, it and its now-dead `BALANCE_CHANGE_THRESHOLD` constant are deleted; sizing re-evaluation is cycle-based only. `tests/size-optimizer.test.js` no longer exercises it, and its `adjustmentHistory`-cap regression coverage now drives the cap through `recordCycle()` instead.
 

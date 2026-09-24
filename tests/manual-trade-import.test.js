@@ -1332,14 +1332,26 @@ describe('Manual Trade Import', () => {
       assert.ok(savedBefore, 'the body was persisted to regime-state.json despite the later crash');
       assert.equal(savedBefore.position.celestialBodies.length, 1);
 
+      // The order fills again before the operator retries the crashed import.
+      adapter.getOrderFills = async () => [
+        ...buyFills,
+        makeFill({ tradeId: 'late-buy-fill', size: 0.002, price: 101000 }),
+      ];
+
       const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
 
       assert.equal(second.success, true);
       assert.equal(second.alreadyImported, true);
+      assert.equal(second.extended, true);
       const savedAfter = readRegimeStateFile();
       assert.equal(savedAfter.position.celestialBodies.length, 1, 'no second body may be persisted');
       assert.equal(second.trade.bodyId, savedBefore.position.celestialBodies[0].id, 'the retry must link the trade record to the already-persisted body');
       assert.equal(second.trade.status, STATUS.TP_PENDING);
+      const fullSize = buyFills.reduce((sum, fill) => sum + fill.size, 0) + 0.002;
+      assert.equal(savedAfter.position.celestialBodies[0].assetQty, fullSize);
+      assert.equal(second.trade.buySize, fullSize);
+      assert.equal(fillLedger.getFillsForOrder('buy-1').length, buyFills.length + 1);
+      assert.ok(fillLedger.getFillsForOrder('buy-1').every((row) => row.bodyId === second.trade.bodyId));
     });
 
     it('requires a buyOrderId', async () => {
