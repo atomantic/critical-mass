@@ -5104,7 +5104,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const actualTpPct = body.avgPrice > 0
             ? ((summary.avgPrice - body.avgPrice) / body.avgPrice) * 100
             : 0;
-          recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
           // Durable "this close still owes a cycle reset" marker: once the sell
           // is annotated, a retry of this fill (after resetCycle throws) takes
           // the already-processed branch below, which finishes the reset from
@@ -5128,7 +5127,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // `finally` means a resetCycle() failure (the sell itself is
           // already booked and persisted above, so it is never re-booked)
           // can never permanently drop this cycle from the optimizer's stats
-          // (codex review round 1).
+          // (codex review round 1). A reset that reports it was stale skips
+          // those samples below because another close already counted it.
           // Deliberately NOT awaited: the caller's own saveLiveState()/
           // fillLedger.persist() (below) durably persist this already-
           // completed sell/cycle-close before the optimizer's balance-fetch
@@ -5141,14 +5141,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // left ONLY in memory until some unrelated future save happens to
           // pick it up (codex review round 3) — cheap and idempotent, same
           // as the periodic save timer already does.
+          let resetResult;
           try {
-            await resetCycle();
-            positionState.pendingCycleResetFor = null;
+            resetResult = await resetCycle();
           } finally {
-            recordCycleForSizeOptimizer({
-              stepsUsed: cycleBuysAtClose,
-              capitalDeployed: body.costBasis,
-            }).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
+            // Keep the close count persisted before the reset wait above, but
+            // undo it when a queued reset discovers that an earlier reset
+            // already turned over this cycle. Optimizer samples describe a
+            // completed cycle too, so the stale close must not feed either.
+            if (resetResult?.turnedOver === false) {
+              positionState.cyclesCompleted -= 1;
+            } else {
+              recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
+              recordCycleForSizeOptimizer({
+                stepsUsed: cycleBuysAtClose,
+                capitalDeployed: body.costBasis,
+              }).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
+            }
           }
         }
 
@@ -7286,43 +7295,45 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const completeOwedCycleReset = async () => {
     const owedFor = positionState.pendingCycleResetFor;
     if (!owedFor) return;
-    if ((positionState.celestialBodies || []).length > 0) {
-      // A new body opened before the reset ran; closing the cycle now would
-      // cut it off from its own sell. Drop the debt and leave a trace.
-      logger.warn(`⚠️ [${exchange}] Owed cycle reset for ${String(owedFor).slice(0, 8)} abandoned — a body opened before it could run`);
-      positionState.pendingCycleResetFor = null;
-      saveLiveState();
-      return;
-    }
     if (engineLocks.isLadderBusy() || engineLocks.getFlags().fillInProgress > 0) return;
+    const preserveOpenBodyBuys = (positionState.celestialBodies || []).length > 0;
+    if (preserveOpenBodyBuys) {
+      logger.warn(`⚠️ [${exchange}] Owed cycle reset for ${String(owedFor).slice(0, 8)} will carry buys owned by the open body into the new cycle`);
+    }
     logger.warn(`🔁 [${exchange}] Completing the cycle reset owed by ${String(owedFor).slice(0, 8)}`);
-    await resetCycle();
+    await resetCycle({ preserveOpenBodyBuys });
     saveLiveState();
     fillLedger.persist();
   };
 
   /**
-   * Reset for new cycle.
+   * Reset for new cycle. Serialised with every other ladder sweep (#766):
+   * a TP close that lands mid-rebuild waits for it to finish, then cancels
+   * the ladder it just placed. Reentrant, so a reset reached from inside a
+   * sweep's own mid-cancel booking runs through.
    *
-   * Serialised with every other ladder sweep (rebuildLadder, cancelLadder,
-   * ladder placement) on the engine's ladder lock (#766): a TP close that
-   * lands mid-rebuild waits for the rebuild to finish, then cancels the
-   * ladder it just placed — rather than sweeping underneath it and leaving
-   * the rebuild to mark a cancelled ladder active. Reentrant, so a reset
-   * reached from inside a sweep's own mid-cancel booking runs through.
+   * @param {{preserveOpenBodyBuys?: boolean}} [opts] - Treat buys owned by
+   *   currently open bodies as post-close fills when paying an owed reset.
+   * @returns {Promise<{turnedOver: boolean}>}
    */
-  const resetCycle = async () => {
+  const resetCycle = async ({ preserveOpenBodyBuys = false } = {}) => {
     // Buys that land while this reset waits its turn postdate the close just
     // like the sweep's own (#711 — see resetCycleLocked), e.g. a rung of the
     // ladder the in-flight rebuild just placed. Snapshot the closing cycle
-    // before queueing so they are carried too. Uncontended, the lock is taken
-    // synchronously and no snapshot is needed.
+    // before queueing so they are carried too. An owed reset can also mark
+    // buys owned by currently open bodies as post-close fills.
     let queuedFrom = null;
-    if (engineLocks.isLadderBusy()) {
+    if (engineLocks.isLadderBusy() || preserveOpenBodyBuys) {
       const cycleId = fillLedger.getCurrentCycleId();
+      const cycleFills = cycleFillsFor(cycleId);
+      const openBodyBuyTradeIds = preserveOpenBodyBuys
+        ? new Set(cycleFills
+          .filter(fill => fill.side === 'buy' && isBuyAlreadyCommitted(positionState.celestialBodies, fill.orderId))
+          .map(fill => fill.tradeId))
+        : new Set();
       queuedFrom = {
         generation: cycleResetGeneration,
-        tradeIds: new Set(cycleFillsFor(cycleId).map(f => f.tradeId)),
+        tradeIds: new Set(cycleFills.filter(fill => !openBodyBuyTradeIds.has(fill.tradeId)).map(fill => fill.tradeId)),
       };
     }
     return engineLocks.withLadderLock(() => resetCycleLocked(queuedFrom), {
@@ -7333,9 +7344,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Number of cycle turnovers resetCycleLocked has performed. A queued reset
-   * compares it (not the cycle id, which an operator recalculation can
-   * rename) to tell whether a reset ahead of it already closed its cycle.
+   * Number of cycle turnovers resetCycleLocked has performed. A reset with a
+   * captured baseline compares it (not the cycle id, which an operator
+   * recalculation can rename) to tell whether an earlier reset closed its cycle.
    */
   let cycleResetGeneration = 0;
 
@@ -7350,7 +7361,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   /**
    * @param {{generation: number, tradeIds: Set<string>}|null} queuedFrom -
-   *   the closing cycle's rows when this reset queued behind another sweep
+   *   the baseline rows when this reset queued or preserves open-body buys
+   * @returns {Promise<{turnedOver: boolean}>}
    */
   const resetCycleLocked = async (queuedFrom) => {
     // The closing cycle's rows as they stand BEFORE the ladder sweep below —
@@ -7362,14 +7374,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // A reset that queued for the ladder lock uses its pre-queue snapshot
     // instead (#766).
     const closingCycleId = fillLedger.getCurrentCycleId();
-    // A reset that queued behind another sweep is stale if a reset ahead of
-    // it in the queue already closed the cycle it was asked to close (two TP
-    // closes during one rebuild). Running it anyway would close the NEW cycle
-    // under a body still open in it, splitting that body's buy from its sell.
+    // A reset with a captured baseline is stale if another reset already
+    // closed the cycle it was asked to close (for example, two TP closes
+    // during one rebuild). Running it anyway would close the NEW cycle under
+    // a body still open in it, splitting that body's buy from its sell.
     if (queuedFrom && queuedFrom.generation !== cycleResetGeneration) {
       logger.info(`🔄 [${exchange}] Queued cycle reset skipped — the cycle it was asked to close was already closed while it waited (now ${closingCycleId})`);
       positionState.pendingCycleResetFor = null;
-      return;
+      return { turnedOver: false };
     }
     const closingCycleFills = () => cycleFillsFor(closingCycleId);
     let preSweepTradeIds = queuedFrom ? queuedFrom.tradeIds : null;
@@ -7386,7 +7398,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // only the first to finish its sweep turns the cycle over (#766).
       if (cycleResetGeneration !== generationAtEntry) {
         logger.info(`🔄 [${exchange}] Cycle reset skipped after its sweep — a concurrent reset already turned the cycle over`);
-        return;
+        return { turnedOver: false };
       }
     }
 
@@ -7495,6 +7507,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         });
       }
     }
+    return { turnedOver: true };
   };
 
   /**

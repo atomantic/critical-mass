@@ -958,6 +958,14 @@ describe('ladder sweeps serialise on the ladder lock (#766)', () => {
       'new-rung-1-1': [rawFill('buy', 'new-rung-1-1', 't-w2', 0.002, 48000)],
     };
     const { eng, calls } = setupSerialEngine({ fillsByOrder, holdPlace: [placement] });
+    eng._getConfig().tpAutoManaged = true;
+    eng._getConfig().sizeAutoManaged = true;
+    eng._test.setAdapter({
+      getOrder: async () => ({ filledSize: 0, status: 'OPEN' }),
+      getOrderFills: async orderId => fillsByOrder[orderId] || [],
+      getPositions: async () => [],
+      getAccountBalance: async () => ({ available: '1000' }),
+    });
     const ledger = eng.getFillLedger();
     const closingCycle = ledger.startNewCycle();
     ledger.ingestFill(rawFill('buy', 'buy-a', 't-buy-a', 0.01, 50000));
@@ -997,6 +1005,11 @@ describe('ladder sweeps serialise on the ladder lock (#766)', () => {
     assert.equal(pos.cycleBuys, 1, 'W2 is the new cycle\'s one buy step — not zeroed by a stale reset');
     assert.equal(pos.celestialBodies.length, 1);
     assert.equal(pos.pendingCycleResetFor, null);
+    assert.equal(pos.cyclesCompleted, 1, 'the stale close does not count the cycle twice');
+    assert.equal(eng.getStatus().tpOptimizer.sampleCount, 1, 'the stale close is not recorded by the TP optimizer');
+    await until(() => eng.getStatus().sizeOptimizer.totalCycleCount === 1, 'the completed cycle to reach the size optimizer');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(eng.getStatus().sizeOptimizer.totalCycleCount, 1, 'the stale close is not recorded by the size optimizer');
   });
 
   it('a TP close whose cycle reset throws is completed by the fill\'s retry, not skipped as already processed', async () => {
@@ -1042,6 +1055,7 @@ describe('ladder sweeps serialise on the ladder lock (#766)', () => {
     let failSweep = true;
     const eng = makeEngine({
       fillsByOrder: { 'tp-a': [rawFill('sell', 'tp-a', 't-sell-a', 0.0099, 52000)] },
+      adapter: { getAccountBalance: async () => ({ available: '1000' }) },
       executor: {
         cancelAllLadderOrders: async () => {
           if (failSweep) { failSweep = false; throw new Error('exchange down'); }
@@ -1049,6 +1063,7 @@ describe('ladder sweeps serialise on the ladder lock (#766)', () => {
         },
       },
     });
+    eng._test.setRecoveryModule({ reconcile: async () => ({ updated: false }) });
     const ledger = eng.getFillLedger();
     const closingCycle = ledger.startNewCycle();
     ledger.ingestFill(rawFill('buy', 'buy-a', 't-buy-a', 0.01, 50000));
@@ -1073,6 +1088,56 @@ describe('ladder sweeps serialise on the ladder lock (#766)', () => {
     const cycleAfter = ledger.getCurrentCycleId();
     await eng._test.reconcileTick();
     assert.equal(ledger.getCurrentCycleId(), cycleAfter);
+  });
+
+  it('an owed reset carries a body opened before reconciliation into the new cycle', async () => {
+    let failSweep = true;
+    const newBodyBuy = rawFill('buy', 'buy-new', 't-buy-new', 0.002, 49000);
+    const eng = makeEngine({
+      fillsByOrder: {
+        'tp-a': [rawFill('sell', 'tp-a', 't-sell-a', 0.0099, 52000)],
+        'buy-new': [newBodyBuy],
+      },
+      adapter: { getAccountBalance: async () => ({ available: '1000' }) },
+      executor: {
+        cancelAllLadderOrders: async () => {
+          if (failSweep) { failSweep = false; throw new Error('exchange down'); }
+          return { cancelled: 1, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [] };
+        },
+      },
+    });
+    eng._test.setRecoveryModule({ reconcile: async () => ({ updated: false }) });
+    const ledger = eng.getFillLedger();
+    const closingCycle = ledger.startNewCycle();
+    ledger.ingestFill(rawFill('buy', 'buy-a', 't-buy-a', 0.01, 50000));
+    const pos = eng._getPositionState();
+    pos.activeCycleId = closingCycle;
+    pos.celestialBodies = [makeBody('body-aaaaaaaa', 'buy-a', 0.01, 50000, 'tp-a')];
+    pos.cycleBuys = 1;
+    pos.ladderActive = true;
+
+    await assert.rejects(
+      eng._test.handleOrderFill({ orderId: 'tp-a', side: 'sell', status: 'FILLED', filledSize: 0.0099, averageFilledPrice: 52000 }),
+      /exchange down/
+    );
+    assert.equal(pos.pendingCycleResetFor, 'tp-a');
+
+    await eng._test.handleOrderFill({
+      orderId: 'buy-new', side: 'buy', status: 'FILLED', filledSize: 0.002, averageFilledPrice: 49000, filledValue: 98,
+    });
+    assert.equal(pos.celestialBodies.length, 1, 'the new body opens before the owed reset is reconciled');
+    assert.equal(ledger.getFillsForOrder('buy-new')[0].cycleId, closingCycle, 'the buy is initially stamped in the closing cycle');
+
+    await eng._test.reconcileTick();
+
+    const newCycle = ledger.getCurrentCycleId();
+    assert.notEqual(newCycle, closingCycle);
+    assert.equal(ledger.getFillsForOrder('tp-a')[0].cycleId, closingCycle, 'the closing sell stays with its original cycle');
+    assert.equal(ledger.getFillsForOrder('buy-new')[0].cycleId, newCycle, 'the open body buy moves to the new cycle');
+    assert.equal(pos.celestialBodies.length, 1, 'the body survives the reset');
+    assert.equal(pos.celestialBodies[0].buyOrders.some(order => order.orderId === 'buy-new'), true);
+    assert.equal(pos.cycleBuys, 1, 'the carried body counts as one buy step');
+    assert.equal(pos.pendingCycleResetFor, null);
   });
 
   it('any completed cycle turnover pays off an owed reset', async () => {
