@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { createAuthenticatedRequest } = require('./auth');
-const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
+const { createBaseAdapter, createAmbiguousPlacementError, restQueueTiming } = require('../base-adapter');
 const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
@@ -28,6 +28,9 @@ const REST_BASE_URL = 'https://api.crypto.com/exchange/v1';
 // surfaces as an unknown outcome carrying the client_oid instead of a plain
 // network error a caller would read as "it never happened". (#427)
 const ORDER_PLACEMENT_METHOD = 'private/create-order';
+const TRADE_SCAN_INTERVAL_MS = 200;
+const TRADE_SCAN_MAX_PAGES = 64;
+const FILL_SCAN_RETRY_DELAY_MS = 750;
 
 /**
  * Custom JSON parser that converts large integers to strings to avoid precision loss.
@@ -54,6 +57,19 @@ const createCryptocomAdapter = (keysPath = null) => {
   // Start with base adapter
   const adapter = createBaseAdapter('cryptocom');
   const logger = createContextLogger({ exchange: 'cryptocom' });
+  let nextTradeRequestAt = 0;
+
+  const waitForTradeRequest = async () => {
+    const now = Date.now();
+    const waitMs = Math.max(0, nextTradeRequestAt - now);
+    nextTradeRequestAt = Math.max(now, nextTradeRequestAt) + TRADE_SCAN_INTERVAL_MS;
+    if (waitMs > 0) {
+      const startedAt = Date.now();
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+      const store = restQueueTiming.getStore();
+      if (store) store.queuedMs += Date.now() - startedAt;
+    }
+  };
 
   /**
    * Check if keys file exists and contains valid-looking credentials
@@ -718,17 +734,19 @@ const createCryptocomAdapter = (keysPath = null) => {
    * Walk `private/get-trades` backward from `endNs` to `startNs`, in
    * nanosecond-precision windows, halving any window that saturates the
    * API's 100-row response cap and throwing rather than silently accepting
-   * an under-sampled bucket. Shared by `getOrderFills` (bounded to one
-   * order's own lifetime) and `getReconciliationFills` (bounded to a
-   * reconciliation start time) so the two walkers can no longer drift apart
-   * on acceptance thresholds (issue #679).
+   * an under-sampled bucket. Requests are spaced and capped per call; exhausting
+   * the cap throws `incompleteFills` rather than returning a partial scan.
+   * Shared by `getOrderFills` (bounded to one order's own lifetime) and
+   * `getReconciliationFills` (bounded to a reconciliation start time) so
+   * the two walkers use the same acceptance thresholds (issues #679, #787).
    * @param {Object} params
    * @param {string} [params.instrument] - instrument_name filter, or every product when omitted
    * @param {bigint} params.startNs - lower bound, nanoseconds
    * @param {bigint} params.endNs - upper bound, nanoseconds
+   * @param {{remaining:number}} [params.budget] - shared page budget across fill retries
    * @returns {Promise<any[]>} Raw trade rows in the window, deduped by trade_id
    */
-  const walkTrades = async ({ instrument, startNs, endNs }) => {
+  const walkTrades = async ({ instrument, startNs, endNs, budget = { remaining: TRADE_SCAN_MAX_PAGES } }) => {
     const NS_PER_MS = 1_000_000n;
     const DAY_NS = 24n * 60n * 60n * 1000n * NS_PER_MS;
     const baseParams = instrument ? { instrument_name: instrument } : {};
@@ -740,6 +758,11 @@ const createCryptocomAdapter = (keysPath = null) => {
       let span = cursor - startNs < DAY_NS ? cursor - startNs : DAY_NS;
       let trades = [];
       while (true) {
+        if (budget.remaining <= 0) {
+          throw Object.assign(new Error(`Crypto.com trade scan exceeded ${TRADE_SCAN_MAX_PAGES} pages; fills may be incomplete`), { incompleteFills: true });
+        }
+        budget.remaining--;
+        await waitForTradeRequest();
         const ws = cursor - span;
         const result = await makePrivateRequest('private/get-trades', {
           ...baseParams,
@@ -750,7 +773,7 @@ const createCryptocomAdapter = (keysPath = null) => {
         trades = result?.data || [];
         if (trades.length < 100) break;
         if (span <= 1n) {
-          throw new Error(`Crypto.com trade scan is still saturated at 1ns for ${instrument || 'all instruments'} in [${ws}, ${cursor}]; refusing to return incomplete fills`);
+          throw Object.assign(new Error(`Crypto.com trade scan is still saturated at 1ns for ${instrument || 'all instruments'} in [${ws}, ${cursor}]; refusing to return incomplete fills`), { incompleteFills: true });
         }
         span /= 2n;
       }
@@ -781,8 +804,8 @@ const createCryptocomAdapter = (keysPath = null) => {
    * the window (via the shared `walkTrades`) in 24h buckets with halving if a
    * bucket hits the 100-trade cap — throwing rather than accepting a
    * still-saturated bucket. The scan is bounded by the order's own
-   * `create_time`, not an artificial lookback cap, so a GTC order that rests
-   * for weeks is still scanned in full (issue #679).
+   * `create_time`, not an artificial lookback cap; page-budget exhaustion
+   * fails explicitly for unusually long or dense scans (issues #679, #787).
    *
    * A failed order-detail lookup, or a matched-fill total short of the
    * order's own `cumulative_quantity`, throws `{ incompleteFills: true }`
@@ -843,7 +866,7 @@ const createCryptocomAdapter = (keysPath = null) => {
     // BEFORE invoking its fill callback, so a reject here on a merely
     // transient gap can strand that fill with no automatic retry path.
     const FILL_SCAN_RETRIES = 2;
-    const FILL_SCAN_RETRY_DELAY_MS = 750;
+    const budget = { remaining: TRADE_SCAN_MAX_PAGES };
     let matching;
     let totalMatched;
     for (let attempt = 0; ; attempt++) {
@@ -851,11 +874,15 @@ const createCryptocomAdapter = (keysPath = null) => {
         instrument,
         startNs: BigInt(Math.trunc(windowStartMs)) * NS_PER_MS,
         endNs: BigInt(Math.trunc(windowEndMs)) * NS_PER_MS,
+        budget,
       });
       matching = rawTrades.filter(t => String(t.order_id) === String(orderId));
       totalMatched = matching.reduce((sum, t) => sum + parseFloat(t.traded_quantity || t.quantity || 0), 0);
       if (totalMatched >= cumulativeQuantity - 1e-9 || attempt >= FILL_SCAN_RETRIES) break;
+      const startedAt = Date.now();
       await new Promise(resolve => setTimeout(resolve, FILL_SCAN_RETRY_DELAY_MS));
+      const store = restQueueTiming.getStore();
+      if (store) store.queuedMs += Date.now() - startedAt;
     }
 
     if (totalMatched < cumulativeQuantity - 1e-9) {

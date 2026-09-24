@@ -884,7 +884,7 @@ const createGeminiAdapter = (keysPath = null) => {
         });
       totalMatched = fills.reduce((sum, fill) => sum + Number(fill.size || 0), 0);
       if (totalMatched >= executedAmount - 1e-9 || attempt >= FILL_SCAN_RETRIES) break;
-      await new Promise(resolve => setTimeout(resolve, FILL_SCAN_RETRY_DELAY_MS));
+      await awaitAndAccountQueuedTime(defaultSleep(FILL_SCAN_RETRY_DELAY_MS));
     }
 
     if (totalMatched < executedAmount - 1e-9) {
