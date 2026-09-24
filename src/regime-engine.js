@@ -1078,6 +1078,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }, productId)
     : createOrderExecutor(exchange, config, adapter, productId, {
         onFillDetected: (orderId, status) => liveCallbacks.onFillDetected && liveCallbacks.onFillDetected(orderId, status),
+        getRecordedSizeForOrder: (orderId) => fillLedger.getRecordedSizeForOrder(orderId),
         onEntryCancelled: (orderId, info) => handleEntryCancelled(orderId, info),
       }, pair);
 
@@ -8987,14 +8988,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Cancel existing ladder orders
     let midCancelSpend = 0;
+    let partialFillReservations = [];
     let unbookedFills = [];
     if (positionState.ladderActive) {
       const cancelResult = await orderExecutor.cancelAllLadderOrders();
-      // Booked mid-cancel partials already sit in a body's costBasis
-      // (getAllocatedCapital below) but not in the pre-cancel balance; rungs
-      // that filled completely are left for polling to book, so neither term
-      // sees them yet.
+      // The cost estimate covers newly recorded partial tranches for the
+      // balance clamp. The reservation details let the deployed-cap check
+      // below distinguish a booked body from a poll callback still in flight.
       midCancelSpend = Number(cancelResult.partialFillsCost) || 0;
+      partialFillReservations = Array.isArray(cancelResult.partialFillReservations) ? cancelResult.partialFillReservations : [];
       unbookedFills = Array.isArray(cancelResult.unbookedFills) ? cancelResult.unbookedFills : [];
       const filledDuringCancel = midCancelSpend + unbookedFills.reduce((sum, u) => sum + (Number(u.cost) || 0), 0);
       const spendNote = filledDuringCancel > 0 ? ` ($${filledDuringCancel.toFixed(2)} filled during the cancel)` : '';
@@ -9031,13 +9033,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     // Deployed cap: derived after that await, so a fill committed during it
     // is counted and the new ladder can't push deployed capital past
-    // maxUsdcDeployed. A rung that filled completely is reserved until polling
-    // books it into a body — only the part the persisted fill ledger does not
-    // hold yet: a tranche booked earlier (as a partial, before a restart, or
-    // by polling while the sweep ran) is already in a body's costBasis or was
-    // sold and its capital returned, so reserving it again would undersize
-    // the ladder.
-    const unbookedSpend = unbookedFills.reduce((sum, u) => {
+    // maxUsdcDeployed. Partial and fully-filled rungs both reserve only the
+    // size the persisted ledger still lacks; any recorded tranche is already
+    // represented in a body's costBasis or was sold and its capital returned.
+    // A polled partial may still be waiting on its fire-and-forget booking
+    // callback when the cancel sweep returns. Reserve that tranche just like a
+    // completely-filled rung, re-reading the ledger now so a callback that
+    // finished during the sweep is not counted twice. Do not await those
+    // callbacks here: a TP-close booking can be queued on the ladder lock this
+    // rebuild owns.
+    const unbookedSpend = [...unbookedFills, ...partialFillReservations].reduce((sum, u) => {
       const unbookedSize = Math.max(0, (Number(u.filledSize) || 0) - fillLedger.getRecordedSizeForOrder(u.orderId));
       return sum + unbookedSize * (Number(u.unitCost) || 0);
     }, 0);
