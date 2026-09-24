@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-782] Keep ladder reset accounting on the completed cycle** — Stale queued resets no longer double-count `cyclesCompleted` or optimizer samples, and reconciliation carries buys owned by a body that opened before its owed reset completed.
 - **[issue-788] Manual buy import retries recover a persisted body before reconciling later fills** — If the process crashed after saving a body but before recording its ID on the trade, a subsequent fill could be left outside that body. Retry now finds the body through the ledger or persisted order bookkeeping and extends it to the order's full fill total.
 
 ### Removed
