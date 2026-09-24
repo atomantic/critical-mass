@@ -24,6 +24,8 @@ const path = require('path');
 
 const { createCryptocomAdapter } = require('../src/adapters/cryptocom/api');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
+const { restQueueTiming } = require('../src/adapters/base-adapter');
+const { createHealthMonitor, instrumentAdapterForHealth } = require('../src/health-monitor');
 
 let originalFetch;
 let keysPaths;
@@ -214,6 +216,66 @@ describe('Crypto.com getOrderFills completeness (issue #679)', () => {
     assert.equal(fills.length, 1);
     assert.equal(fills[0].tradeId, 'cdc-fresh');
   });
+
+  it('paces day-walk pages and accounts for both pacing and retry waits', async () => {
+    const requestTimes = [];
+    const created = Date.now() - 2 * 24 * 60 * 60 * 1000;
+    global.fetch = async (_url, options) => {
+      const { method } = JSON.parse(options.body);
+      if (method === 'private/get-order-detail') return {
+        ok: true, text: async () => JSON.stringify({ code: 0, result: { order_info: {
+          order_id: ORDER_ID, instrument_name: 'BTC_USDT', create_time: created,
+          update_time: Date.now(), cumulative_quantity: '1',
+        } } }),
+      };
+      if (method === 'private/get-trades') {
+        requestTimes.push(Date.now());
+        const data = requestTimes.length >= 4 ? [{
+          trade_id: 'paced', order_id: ORDER_ID, traded_quantity: '1',
+          traded_price: '10', create_time: Date.now(),
+        }] : [];
+        return { ok: true, text: async () => JSON.stringify({ code: 0, result: { data } }) };
+      }
+      throw new Error(`unexpected method ${method}`);
+    };
+    const timing = { queuedMs: 0 };
+    const fills = await restQueueTiming.run(timing, () => createCryptocomAdapter(writeKeys('cryptocom')).getOrderFills(ORDER_ID));
+    assert.equal(fills.length, 1);
+    assert.ok(requestTimes.length >= 6);
+    for (let i = 1; i < requestTimes.length; i++) {
+      assert.ok(requestTimes[i] - requestTimes[i - 1] >= 175, 'trade pages must be paced');
+    }
+    assert.ok(timing.queuedMs >= 900, 'client wait must be available for health latency exclusion');
+
+    // The health wrapper uses the same async timing store. A fresh run
+    // should record network work while subtracting the deliberate waits.
+    const monitor = createHealthMonitor('cryptocom', { maxLatencyMs: 500 });
+    const wrapped = instrumentAdapterForHealth(createCryptocomAdapter(writeKeys('cryptocom')), monitor);
+    await wrapped.getOrderFills(ORDER_ID);
+    assert.ok(monitor.getState().healthChecks.avgLatencyMs < 250);
+  });
+
+  it('fails closed when a long trade walk reaches its page budget', async () => {
+    const created = Date.now() - 70 * 24 * 60 * 60 * 1000;
+    let pages = 0;
+    global.fetch = async (_url, options) => {
+      const { method } = JSON.parse(options.body);
+      if (method === 'private/get-order-detail') return {
+        ok: true, text: async () => JSON.stringify({ code: 0, result: { order_info: {
+          order_id: ORDER_ID, instrument_name: 'BTC_USDT', create_time: created,
+          update_time: Date.now(), cumulative_quantity: '1',
+        } } }),
+      };
+      if (method === 'private/get-trades') {
+        pages++;
+        return { ok: true, text: async () => JSON.stringify({ code: 0, result: { data: [] } }) };
+      }
+      throw new Error(`unexpected method ${method}`);
+    };
+    await assert.rejects(createCryptocomAdapter(writeKeys('cryptocom')).getOrderFills(ORDER_ID),
+      err => err.incompleteFills === true && /exceeded 64 pages/.test(err.message));
+    assert.equal(pages, 64);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -315,5 +377,28 @@ describe('Gemini getOrderFills completeness (issue #679)', () => {
     assert.equal(mytradesCalls, 3, 'must have retried twice before the fill was indexed');
     assert.equal(fills.length, 1);
     assert.equal(fills[0].tradeId, '9001');
+  });
+
+  it('accounts for short-fill retry sleep in health timing', async () => {
+    const freshTrade = { tid: 9002, order_id: '889', symbol: 'ethusd', type: 'Sell', price: '2', amount: '1', timestampms: Date.now() };
+    let calls = 0;
+    global.fetch = async (url) => {
+      const endpoint = new URL(url).pathname;
+      if (endpoint === '/v1/order/status') return {
+        ok: true, status: 200, text: async () => JSON.stringify({ order_id: '889', symbol: 'ETHUSD', timestampms: Date.now() - 60_000, executed_amount: '1' }),
+      };
+      if (endpoint === '/v1/mytrades') return {
+        ok: true, status: 200, text: async () => JSON.stringify(++calls >= 2 ? [freshTrade] : []),
+      };
+      throw new Error(`unexpected endpoint ${endpoint}`);
+    };
+    const timing = { queuedMs: 0 };
+    const fills = await restQueueTiming.run(timing, () => createGeminiAdapter(writeKeys('gemini')).getOrderFills('889'));
+    assert.equal(fills.length, 1);
+    assert.ok(timing.queuedMs >= 700, 'retry sleep must be available for health latency exclusion');
+    const monitor = createHealthMonitor('gemini', { maxLatencyMs: 500 });
+    const wrapped = instrumentAdapterForHealth(createGeminiAdapter(writeKeys('gemini')), monitor);
+    await wrapped.getOrderFills('889');
+    assert.ok(monitor.getState().healthChecks.avgLatencyMs < 250);
   });
 });
