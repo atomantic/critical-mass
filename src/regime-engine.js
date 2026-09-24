@@ -7334,6 +7334,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           .map(fill => fill.tradeId))
         : new Set();
       queuedFrom = {
+        cycleId,
         generation: cycleResetGeneration,
         tradeIds: new Set(cycleFills.filter(fill => !openBodyBuyTradeIds.has(fill.tradeId)).map(fill => fill.tradeId)),
       };
@@ -7351,10 +7352,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * recalculation can rename) to tell whether an earlier reset closed its cycle.
    */
   let cycleResetGeneration = 0;
-  // The latest generation created by a completed TP/close reset. An operator
-  // turnover can supersede a queued TP reset without making that TP close a
-  // duplicate, so generation alone is not enough for close accounting.
-  let lastCloseResetGeneration = -1;
+  // The generation that closed each cycle. An operator turnover can supersede
+  // a queued TP reset without making that TP close a duplicate, and a later TP
+  // can close a different cycle before an earlier timed-out reset returns, so
+  // a single latest-close generation is not enough for close accounting.
+  const closeResetGenerationByCycleId = new Map();
 
   /**
    * A fresh ledger has no live cycle until its first reset: its fills are
@@ -7366,7 +7368,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     : fillLedger.getAllFills().filter(f => f.cycleId == null));
 
   /**
-   * @param {{generation: number, tradeIds: Set<string>}|null} queuedFrom -
+   * @param {{cycleId: string|null, generation: number, tradeIds: Set<string>}|null} queuedFrom -
    *   the baseline rows when this reset queued or preserves open-body buys
    * @param {'close'|'operator'} [resetKind='close'] - What caused the
    *   turnover, for distinguishing operator boundaries from TP closes.
@@ -7382,6 +7384,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // A reset that queued for the ladder lock uses its pre-queue snapshot
     // instead (#766).
     const closingCycleId = fillLedger.getCurrentCycleId();
+    const targetCycleId = queuedFrom ? queuedFrom.cycleId : closingCycleId;
     // A reset with a captured baseline is stale if another reset already
     // closed the cycle it was asked to close (for example, two TP closes
     // during one rebuild). Running it anyway would close the NEW cycle under
@@ -7393,7 +7396,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.pendingCycleResetFor = null;
       return {
         turnedOver: false,
-        duplicateClose: lastCloseResetGeneration > queuedFrom.generation,
+        duplicateClose: (closeResetGenerationByCycleId.get(targetCycleId) ?? -1) > queuedFrom.generation,
       };
     }
     const closingCycleFills = () => cycleFillsFor(closingCycleId);
@@ -7413,7 +7416,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         logger.info(`🔄 [${exchange}] Cycle reset skipped after its sweep — a concurrent reset already turned the cycle over`);
         return {
           turnedOver: false,
-          duplicateClose: lastCloseResetGeneration > generationAtEntry,
+          duplicateClose: (closeResetGenerationByCycleId.get(targetCycleId) ?? -1) > generationAtEntry,
         };
       }
     }
@@ -7471,7 +7474,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // files that predate this marker.
     positionState.activeCycleId = fillLedger.startNewCycle();
     cycleResetGeneration++;
-    if (resetKind === 'close') lastCloseResetGeneration = cycleResetGeneration;
+    if (resetKind === 'close') closeResetGenerationByCycleId.set(closingCycleId, cycleResetGeneration);
     // Any completed turnover pays off a body TP close's owed reset (#766).
     positionState.pendingCycleResetFor = null;
     // Persist WHEN the cycle began too: it is the boundary recalculateCycles
@@ -9423,7 +9426,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       getOrderExecutor: () => orderExecutor,
       resetCycle: () => resetCycle(),
       // A reset that timed out on the ladder lock and proceeded unserialised.
-      resetCycleUnserialised: () => resetCycleLocked(null),
+      resetCycleUnserialised: (opts = {}) => resetCycleLocked(null, opts.resetKind || 'close'),
       checkAllCaps: () => riskManager.checkAllCaps(positionState),
     },
   };

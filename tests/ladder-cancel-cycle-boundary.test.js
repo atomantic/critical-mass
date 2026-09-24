@@ -1274,6 +1274,46 @@ describe('ladder sweeps serialise on the ladder lock (#766)', () => {
     assert.equal(ledger.getCurrentCycleId(), started[0]);
   });
 
+  it('a close reset on a later cycle does not suppress an earlier timed-out close', async () => {
+    const sweeps = [deferred(), deferred(), deferred()];
+    let sweepCount = 0;
+    const eng = makeEngine({
+      executor: {
+        cancelAllLadderOrders: async () => {
+          const sweep = sweeps[sweepCount++];
+          await sweep.promise;
+          return { cancelled: 0, remainingTracked: 0, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [] };
+        },
+      },
+    });
+    const ledger = eng.getFillLedger();
+    const firstCycle = ledger.startNewCycle();
+    const pos = eng._getPositionState();
+    pos.activeCycleId = firstCycle;
+    pos.ladderActive = true;
+
+    // A starts sweeping the original cycle. B is an operator boundary that
+    // wins the race, then C closes the distinct cycle B created before A's
+    // timed-out sweep returns.
+    const firstClose = eng._test.resetCycleUnserialised();
+    await until(() => sweepCount === 1, 'the first close reset to start sweeping');
+    const operatorReset = eng._test.resetCycleUnserialised({ resetKind: 'operator' });
+    await until(() => sweepCount === 2, 'the operator boundary to start sweeping');
+    sweeps[1].resolve();
+    assert.equal((await operatorReset).turnedOver, true);
+
+    pos.ladderActive = true;
+    const laterClose = eng._test.resetCycleUnserialised();
+    await until(() => sweepCount === 3, 'the later close reset to start sweeping');
+    sweeps[2].resolve();
+    assert.equal((await laterClose).turnedOver, true);
+
+    sweeps[0].resolve();
+    const firstResult = await firstClose;
+    assert.equal(firstResult.turnedOver, false, 'the earlier reset cannot turn over a later cycle');
+    assert.equal(firstResult.duplicateClose, false, 'a close on the later cycle is not a duplicate of the first cycle');
+  });
+
   it('a rebuild requested mid-reset runs after the reset instead of refusing or interleaving', async () => {
     const sweep = deferred();
     const { eng, calls } = setupSerialEngine({ holdCancel: [sweep] });
