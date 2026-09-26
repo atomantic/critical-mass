@@ -229,8 +229,8 @@ const validateRegimeConfig = (config) => {
   // Legacy satellite config aliases silently accepted (mapped to celestial equivalents)
 
   // Celestial Hierarchy validation
-  if (config.maxCelestialBodies !== undefined && (!Number.isInteger(config.maxCelestialBodies) || config.maxCelestialBodies < 1 || config.maxCelestialBodies > 15)) {
-    errors.push('maxCelestialBodies must be an integer between 1 and 15');
+  if (config.maxCelestialBodies !== undefined && (!Number.isInteger(config.maxCelestialBodies) || config.maxCelestialBodies < 1 || config.maxCelestialBodies > 1000)) {
+    errors.push('maxCelestialBodies must be an integer between 1 and 1000');
   }
 
   // Ladder / Entry Mode validation
@@ -295,8 +295,8 @@ const validateRegimeConfig = (config) => {
   if (config.maxUsdcDeployed !== undefined && config.maxUsdcDeployed < 1000) {
     errors.push('maxUsdcDeployed must be at least 1000');
   }
-  if (config.maxDrawdownPercent !== undefined && (config.maxDrawdownPercent < 10 || config.maxDrawdownPercent > 30)) {
-    errors.push('maxDrawdownPercent must be between 10 and 30');
+  if (config.maxDrawdownPercent !== undefined && (!(config.maxDrawdownPercent > 0) || config.maxDrawdownPercent > 100)) {
+    errors.push('maxDrawdownPercent must be greater than 0 and at most 100');
   }
   if (config.drawdownResetHours !== undefined && (config.drawdownResetHours < 0 || config.drawdownResetHours > 720)) {
     errors.push('drawdownResetHours must be between 0 (disabled) and 720 (30 days)');
@@ -348,7 +348,7 @@ const REGIME_CROSS_FIELD_PARTNERS = {
  * `PUT /api/:exchange/regime/config`, the full-config `PUT /api/:exchange/config`
  * and legacy `PUT /api/config`, and fund creation's regime seed — must route
  * through this before persistence or IPC. Without it, a value rejected by one
- * save surface (e.g. `maxDrawdownPercent: 999`, outside the documented 10-30
+ * save surface (e.g. `maxDrawdownPercent: 999`, outside the documented 0-100
  * range) could still be persisted and forwarded to the live engine through
  * another, defeating a safety limit it's supposed to enforce (issue #452).
  *

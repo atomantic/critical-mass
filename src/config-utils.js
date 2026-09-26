@@ -168,7 +168,7 @@ const REGIME_DEFAULTS = {
 
   // Celestial Hierarchy
   celestialEnabled: true,             // Enable multi-tier position management
-  maxCelestialBodies: 10,             // Maximum concurrent celestial bodies (1-15)
+  maxCelestialBodies: 10,             // Maximum concurrent celestial bodies (1-1000)
   mergeProximityScale: MERGE_PROXIMITY_BOUNDS.default,  // Scale factor for merge proximity (range: see MERGE_PROXIMITY_BOUNDS)
 
   // TP Auto-Management
