@@ -21,18 +21,23 @@ function fmtDate(d) {
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
+function isExpression(str) {
+  return typeof str === 'string' && str.includes('+')
+}
+
+const INVALID_AMOUNT_MESSAGE = 'Enter a finite number or sum, such as 200+300.'
+
+// "2026-01-02" in the browser's timezone, for the date input
+function toLocalDate(dt) {
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
+}
+
 // "14:05" in the browser's timezone, for the time input
 function toLocalTime(iso) {
   const dt = new Date(iso)
   if (Number.isNaN(dt.getTime())) return ''
   return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`
 }
-
-function isExpression(str) {
-  return typeof str === 'string' && str.includes('+')
-}
-
-const INVALID_AMOUNT_MESSAGE = 'Enter a finite number or sum, such as 200+300.'
 
 export default function TradeHistory() {
   const dateId = useId()
@@ -66,7 +71,9 @@ export default function TradeHistory() {
   useEffect(() => { fetchTrades() }, [fetchTrades])
 
   const resetForm = () => {
-    setForm({ date: new Date().toISOString().slice(0, 10), cost: '', returnAmount: '', note: '', direction: '', boughtTime: '' })
+    // Local calendar date: "Bought at" is a local time on this date, and the
+    // UTC date is already tomorrow on a US evening.
+    setForm({ date: toLocalDate(new Date()), cost: '', returnAmount: '', note: '', direction: '', boughtTime: '' })
     setShowForm(false)
     setEditId(null)
     setValidationErrors({})

@@ -616,6 +616,9 @@ const createUpDownService = (io, deps) => {
       const candle = candleCache.getCandles('coinbase', tf).find(c => ts >= c.timestamp && ts < c.timestamp + intervalMs);
       if (candle) return candle.close;
     }
+    // The forming minute is not in any completed buffer yet.
+    const now = Date.now();
+    if (ts >= now - 60_000 && isFreshPrice(lastPrice, lastTickAt, now)) return lastPrice;
     return null;
   };
 
