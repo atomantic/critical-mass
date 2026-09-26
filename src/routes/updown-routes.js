@@ -49,6 +49,22 @@ const parseFiniteNumber = (v) => {
   return NaN;
 };
 
+/**
+ * Operator-entered buy time ("Bought at"). Trades are logged after they close,
+ * so the log time is not the entry — this is what the flush-setup calibration
+ * needs to line up entries with the chart. Accepts ISO strings or epoch ms;
+ * rejects unparseable and future times.
+ * @param {unknown} value
+ * @param {number} [now]
+ * @returns {number|null|undefined} ms, null when invalid, undefined when absent
+ */
+const parseBoughtAt = (value, now = Date.now()) => {
+  if (value == null || value === '') return undefined;
+  const ms = typeof value === 'number' ? value : Date.parse(String(value));
+  if (!Number.isFinite(ms) || ms > now + 60_000) return null;
+  return ms;
+};
+
 // Promisified child_process.exec for use in async routes
 const execAsync = promisify(exec);
 
@@ -655,6 +671,10 @@ module.exports = (app, deps) => {
     if (!Number.isFinite(costNum) || !Number.isFinite(returnNum)) {
       return res.status(400).json({ success: false, error: 'cost and returnAmount must be numbers' });
     }
+    const boughtAtMs = parseBoughtAt(req.body?.boughtAt);
+    if (boughtAtMs === null) {
+      return res.status(400).json({ success: false, error: 'boughtAt must be a valid time that is not in the future' });
+    }
     try {
       const data = readTrades();
 
@@ -673,9 +693,15 @@ module.exports = (app, deps) => {
         pnl: returnNum - costNum,
         note: note || '',
         direction: inferredDirection || null,
-        entryTime: new Date().toISOString(),
+        // Without an operator buy time, entryTime/btcPriceAtEntry are the log
+        // moment (usually after the exit) — entryTimeSource says which.
+        entryTime: new Date(boughtAtMs ?? Date.now()).toISOString(),
+        entryTimeSource: boughtAtMs != null ? 'operator' : 'logged',
+        loggedAt: new Date().toISOString(),
         exitTime: null,
-        btcPriceAtEntry: ctx.lastPrice || null,
+        btcPriceAtEntry: boughtAtMs != null
+          ? (updownService.getPriceAt?.(boughtAtMs) ?? null)
+          : (ctx.lastPrice || null),
         btcPriceAtExit: null,
         contract: ctx.contract?.target ? {
           target: ctx.contract.target,
@@ -723,6 +749,16 @@ module.exports = (app, deps) => {
         }
       }
 
+      const boughtAtMs = parseBoughtAt(body.boughtAt);
+      if (boughtAtMs === null) {
+        return res.status(400).json({ success: false, error: 'boughtAt must be a valid time that is not in the future' });
+      }
+
+      if (boughtAtMs !== undefined) {
+        trade.entryTime = new Date(boughtAtMs).toISOString();
+        trade.entryTimeSource = 'operator';
+        trade.btcPriceAtEntry = updownService.getPriceAt?.(boughtAtMs) ?? null;
+      }
       if (body.date != null) trade.date = body.date;
       if (body.cost != null) trade.cost = parseFiniteNumber(body.cost);
       if (body.returnAmount != null) trade.returnAmount = parseFiniteNumber(body.returnAmount);
@@ -764,3 +800,4 @@ module.exports.readBodyWithLimit = readBodyWithLimit;
 module.exports.MAX_SCREENSHOT_BYTES = MAX_SCREENSHOT_BYTES;
 module.exports.buildIndicatorTimeframeHeatmap = buildIndicatorTimeframeHeatmap;
 module.exports.parseFiniteNumber = parseFiniteNumber;
+module.exports.parseBoughtAt = parseBoughtAt;
