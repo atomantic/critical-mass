@@ -46,7 +46,7 @@ const invoke = async (app, key, req = {}) => {
  * now directly reads and parses files, we mock fs operations to simulate a
  * virtual filesystem.
  */
-const setup = (initialTrades = { trades: [], nextId: 1 }) => {
+const setup = (initialTrades = { trades: [], nextId: 1 }, updownService = { getTradeContext: () => ({}) }) => {
   let stored = JSON.parse(JSON.stringify(initialTrades));
   let written = null;
   const tradesPath = '/tmp/updown-test/updown-trades.json';
@@ -72,7 +72,7 @@ const setup = (initialTrades = { trades: [], nextId: 1 }) => {
 
   const app = createFakeApp();
   registerUpdownRoutes(app, {
-    updownService: { getTradeContext: () => ({}) },
+    updownService,
     candleCache: { getAllCandles: () => [] },
     readJSON: () => JSON.parse(JSON.stringify(stored)),
     writeJSON: (filepath, data) => {
@@ -84,6 +84,46 @@ const setup = (initialTrades = { trades: [], nextId: 1 }) => {
   });
   return { app, getWritten: () => written };
 };
+
+describe('operator buy time ("Bought at")', () => {
+  afterEach(() => mock.restoreAll());
+  const boughtAt = Date.parse('2026-01-02T03:04:00Z');
+  const service = {
+    getTradeContext: () => ({ lastPrice: 101_000 }),
+    getPriceAt: (ts) => (ts === boughtAt ? 100_000 : null),
+  };
+
+  it('records the chart price at the buy time instead of the log-time price', async () => {
+    const { app } = setup(undefined, service);
+    const res = await invoke(app, 'POST /api/updown/trades', {
+      body: { cost: 100, returnAmount: 125, boughtAt: new Date(boughtAt).toISOString() },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.trade.entryTime, '2026-01-02T03:04:00.000Z');
+    assert.equal(res.body.trade.entryTimeSource, 'operator');
+    assert.equal(res.body.trade.btcPriceAtEntry, 100_000);
+  });
+
+  it('flags log-time entries when no buy time is given', async () => {
+    const { app } = setup(undefined, service);
+    const res = await invoke(app, 'POST /api/updown/trades', { body: { cost: 100, returnAmount: 125 } });
+    assert.equal(res.body.trade.entryTimeSource, 'logged');
+    assert.equal(res.body.trade.btcPriceAtEntry, 101_000);
+  });
+
+  it('backfills a buy time on an existing trade and rejects future or junk times', async () => {
+    const { app, getWritten } = setup({ trades: [{ id: 1, cost: 100, returnAmount: 125, pnl: 25 }], nextId: 2 }, service);
+    for (const bad of ['not a time', new Date(Date.now() + 3_600_000).toISOString()]) {
+      const res = await invoke(app, 'PUT /api/updown/trades/:id', { params: { id: '1' }, body: { boughtAt: bad } });
+      assert.equal(res.statusCode, 400, bad);
+    }
+    assert.equal(getWritten(), null);
+    const res = await invoke(app, 'PUT /api/updown/trades/:id', { params: { id: '1' }, body: { boughtAt } });
+    assert.equal(res.statusCode, 200);
+    assert.equal(getWritten().trades[0].btcPriceAtEntry, 100_000);
+    assert.equal(getWritten().trades[0].entryTimeSource, 'operator');
+  });
+});
 
 describe('POST /api/updown/trades rejects non-numeric values (issue #151)', () => {
   afterEach(() => mock.restoreAll());

@@ -37,6 +37,9 @@ const isFreshPrice = (price, lastTickAt, now = Date.now(), maxAgeMs = PRICE_STAL
  * Adjust the original result without letting transient ticks create or cancel a direction.
  */
 const applyTickMomentumAdjustment = (result, tickMomentum, position) => {
+  // A flush-setup BUY is a rule decision with its own exit, not a composite
+  // score: a tick-damped score must not flip it to SELL (= CLOSE).
+  if (result.source === 'flush-setup') return;
   const typeBeforeTick = result.type;
   if (Math.abs(result.score) >= 5 && tickMomentum.magnitude > 0) {
     const scoreDir = result.score > 0 ? 'up' : 'down';
@@ -140,6 +143,9 @@ const createUpDownService = (io, deps) => {
     if (saved.stability) {
       signalEngine.setStabilityState(saved.stability);
     }
+    if (saved.flushSetup) {
+      signalEngine.setFlushSetupState?.(saved.flushSetup);
+    }
     if (saved.perpBook) {
       perpBook.hydrate(saved.perpBook);
     }
@@ -167,11 +173,13 @@ const createUpDownService = (io, deps) => {
    * Persist current state to disk
    */
   const persistState = () => {
+    const flushSetup = signalEngine.getFlushSetupState?.();
     writeJSON(stateFilePath, {
       contract,
       position,
       signalHistory: signalHistory.slice(-MAX_SIGNAL_HISTORY),
       stability: signalEngine.getStabilityState(),
+      ...(flushSetup ? { flushSetup } : {}),
       perpBook: perpBook.serialize(),
     });
   };
@@ -275,6 +283,7 @@ const createUpDownService = (io, deps) => {
         signalHistory.push({
           type: result.type,
           action,
+          ...(result.source === 'flush-setup' ? { source: 'flush-setup' } : {}),
           score: result.score,
           confidence: result.confidence,
           timestamp: result.timestamp,
@@ -379,6 +388,9 @@ const createUpDownService = (io, deps) => {
       confluence: result.confluence,
       horizonPrediction: result.horizonPrediction,
       trendGate: result.trendGate,
+      source: result.source ?? 'composite',
+      flushSetup: result.flushSetup ?? null,
+      contractExpired: !!result.contractExpired,
       perp: perpSnap,
     });
 
@@ -410,6 +422,8 @@ const createUpDownService = (io, deps) => {
         pivotPoints: result.pivotPoints,
       horizonPrediction: result.horizonPrediction,
         trendGate: result.trendGate,
+        source: result.source ?? 'composite',
+        flushSetup: result.flushSetup ?? null,
         perp: perpSnap,
       });
     }
@@ -587,7 +601,26 @@ const createUpDownService = (io, deps) => {
     } : null,
     trendFilter: lastSignalResult?.trendFilter ?? null,
     volatility: lastSignalResult?.volatility ?? null,
+    flushSetup: lastSignalResult?.flushSetup ?? null,
   });
+
+  /**
+   * BTC price at a past moment, from the finest cached timeframe that still
+   * covers it (1m ≈ 3h, 1h ≈ 9 days). Null when no buffer reaches back.
+   * @param {number} ts - epoch ms
+   * @returns {number|null}
+   */
+  const getPriceAt = (ts) => {
+    if (!Number.isFinite(ts)) return null;
+    for (const [tf, intervalMs] of [['1m', 60_000], ['5m', 300_000], ['15m', 900_000], ['1h', 3_600_000]]) {
+      const candle = candleCache.getCandles('coinbase', tf).find(c => ts >= c.timestamp && ts < c.timestamp + intervalMs);
+      if (candle) return candle.close;
+    }
+    // The forming minute is not in any completed buffer yet.
+    const now = Date.now();
+    if (ts >= now - 60_000 && isFreshPrice(lastPrice, lastTickAt, now)) return lastPrice;
+    return null;
+  };
 
   /**
    * Clear current position
@@ -608,6 +641,7 @@ const createUpDownService = (io, deps) => {
     setPosition,
     clearPosition,
     getTradeContext,
+    getPriceAt,
   };
 };
 

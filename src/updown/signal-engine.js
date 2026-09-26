@@ -22,7 +22,8 @@ const { detectDivergence, detectMACDDivergence } = require('./divergence');
 const { calculatePivotPoints, computePivotDampening } = require('./pivot-points');
 const { INDICATOR_WEIGHTS } = require('./indicator-config');
 const { createStabilityState, stabilizeSignal } = require('./signal-stability');
-const { resolveActionLabel } = require('./signal-actions');
+const { resolveActionLabel, isBuyType } = require('./signal-actions');
+const { createFlushSetupTracker } = require('./flush-setup');
 
 const TIMEFRAME_WEIGHTS = {
   '1m': 0.10,
@@ -566,6 +567,26 @@ const resolveNoTradeZoneType = (rawType, noTradeZone, heldPosition) => {
 };
 
 /**
+ * Time left on the configured contract. A contract whose expiry has already
+ * passed is stale setup, not an imminent settlement: the operator is trading
+ * a newer contract the dashboard was never told about. Treating the stale
+ * expiry as "inside the no-trade zone" muted every BUY indefinitely (the
+ * engine published nothing but NO_TRADE_ZONE once the configured contract
+ * lapsed), so an expired contract gates nothing and is surfaced as
+ * `contractExpired` for the UI to prompt a refresh. A live expiry still opens the warning/no-trade
+ * zones exactly as before.
+ * @param {number|null|undefined} contractExpiry - epoch ms
+ * @param {number} now - epoch ms
+ * @returns {{timeToExpiry: number, contractExpired: boolean}}
+ */
+const resolveContractTiming = (contractExpiry, now) => {
+  if (!Number.isFinite(contractExpiry)) return { timeToExpiry: Infinity, contractExpired: false };
+  const timeToExpiry = /** @type {number} */ (contractExpiry) - now;
+  if (timeToExpiry <= 0) return { timeToExpiry: Infinity, contractExpired: true };
+  return { timeToExpiry, contractExpired: false };
+};
+
+/**
  * UP-only long gate: closed when the higher-TF tape is bearish so we never
  * publish BUY against it. SELL still passes (that's EXIT for a held long).
  * @param {{trendBias?: string}|null} trendFilter
@@ -911,6 +932,9 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
 
   let stabilityState = createStabilityState();
 
+  // The operator's 1m-vs-daily dip buy, tracked independently of the composite.
+  const flushTracker = createFlushSetupTracker();
+
   /**
    * Update indicator weights (called from updown-service after scorecard computes adaptive weights)
    * @param {Record<string, number>} weights
@@ -926,7 +950,7 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
    */
   const computeSignals = (contractExpiry = null, scorecardMetrics = null, heldPosition = null) => {
     const now = clock();
-    const timeToExpiry = Number.isFinite(contractExpiry) ? contractExpiry - now : Infinity;
+    const { timeToExpiry, contractExpired } = resolveContractTiming(contractExpiry, now);
     const noTradeZone = timeToExpiry <= NO_TRADE_ZONE_MS;
     const warningZone = timeToExpiry <= WARNING_ZONE_MS;
 
@@ -1017,7 +1041,26 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
       stabilityState,
     );
     stabilityState = stabilized.state;
-    const type = stabilized.type;
+    let type = stabilized.type;
+
+    // Flush-reversal setup (flush-setup.js). The composite reads a 1m flush as
+    // bearish and the trend gate is closed during one, so an active setup
+    // publishes BUY directly and holds it until its own exit — the stabilizer
+    // is re-seeded so the next composite cycle continues from what was printed.
+    // A real near-expiry contract still wins: no setup BUY inside the zone.
+    const { state: flushState, events: flushEvents } = flushTracker.update(candleAggregator);
+    let source = 'composite';
+    if (flushState.phase === 'active' && !noTradeZone) {
+      type = 'BUY';
+      source = 'flush-setup';
+      stabilityState = { publishedType: 'BUY', publishedAt: flushState.enteredAt ?? now, pendingType: null, pendingSince: 0 };
+    } else if (flushEvents.includes('exited') && isBuyType(type)) {
+      // Take the bounce: the setup's exit closes the long even if the
+      // composite would keep holding it.
+      type = 'NEUTRAL';
+      source = 'flush-setup';
+      stabilityState = { publishedType: 'NEUTRAL', publishedAt: now, pendingType: null, pendingSince: 0 };
+    }
 
     // Multi-factor confidence: score magnitude (0-0.5) + TF agreement (0-0.3) + ADX regime (0-0.2)
     const scoreFactor = Math.min(0.5, Math.abs(compositeScore) / 100);
@@ -1039,6 +1082,7 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
       timeframes,
       noTradeZone,
       warningZone,
+      contractExpired,
       timestamp: now,
       trendFilter,
       weeklyTrend,
@@ -1050,6 +1094,8 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
       todMultiplier,
       horizonPrediction,
       trendGate,
+      source,
+      flushSetup: flushState,
     };
   };
 
@@ -1059,7 +1105,14 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
     stabilityState = { ...createStabilityState(), ...next };
   };
 
-  return { computeSignals, setIndicatorWeights, getStabilityState, setStabilityState };
+  return {
+    computeSignals,
+    setIndicatorWeights,
+    getStabilityState,
+    setStabilityState,
+    getFlushSetupState: flushTracker.getState,
+    setFlushSetupState: flushTracker.setState,
+  };
 };
 
 module.exports = {

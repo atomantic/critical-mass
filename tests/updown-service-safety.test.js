@@ -233,9 +233,11 @@ describe('UpDown cycle history and side-effect characterization', () => {
       timeframes: {}, timestamp: ts, trendFilter: { trendBias: 'neutral' }, weeklyTrend: undefined,
       dailySMA: undefined, adxRegime: undefined, volatility: { ratio: 1 }, pivotPoints: undefined,
       horizonPrediction: undefined, trendGate: { open: true }, perp: book,
+      source: 'composite', flushSetup: null,
     }
     assert.deepEqual(calls.find(c => c.name === 'updown:indicators').payload, {
       ...common, tickMomentum: { direction: 'neutral', magnitude: 0, velocity: 0 }, confluence: undefined,
+      contractExpired: false,
     })
     assert.deepEqual(calls.find(c => c.name === 'updown:signal').payload, { ...common, filled: true })
     assert.deepEqual(calls.find(c => c.name === 'prediction').payload, {

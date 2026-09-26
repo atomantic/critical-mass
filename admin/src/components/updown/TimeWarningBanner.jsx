@@ -40,7 +40,7 @@ export default function TimeWarningBanner({ timeRemaining, expiry }) {
     return (
       <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-3 flex items-center gap-3">
         <Clock size={16} className="text-gray-500" />
-        <span className="text-sm text-gray-400">Contract has expired</span>
+        <span className="text-sm text-gray-400">Contract has expired — signals are not expiry-gated until you set the contract you are trading in Contract Setup</span>
       </div>
     )
   }

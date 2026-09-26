@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { TrendingUp, TrendingDown, Minus, Plus, CircleDot, Clock } from 'lucide-react'
 import { formatCountdown } from './TimeWarningBanner'
 import { getActionLabel } from '../../constants/signals'
+import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 
 const BANNER_COLORS = {
   OPEN: 'bg-green-900/40 border-green-600/50',
@@ -54,6 +55,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
   const confluence = indicators?.confluence
   const horizonPrediction = signal?.horizonPrediction
   const dailySMA = indicators?.dailySMA
+  const flushSetup = indicators?.flushSetup
 
   const horizons = useMemo(() => {
     const tf = indicators?.timeframes
@@ -117,6 +119,24 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
                 </div>
               )
             })}
+          </div>
+        )}
+
+        {/* Flush-reversal setup (1m flush vs prior daily close) */}
+        {flushSetup?.phase === 'armed' && (
+          <div
+            className="px-2 py-1 rounded text-xs font-bold bg-amber-900/40 text-amber-300 border border-amber-700/40"
+            title={`1m flushed ${flushSetup.armedMetrics?.dropPct ?? '?'}% to a fresh 24h low, ${flushSetup.armedMetrics?.belowDailyPct ?? '?'}% under the prior daily close (1m RSI ${flushSetup.armedMetrics?.rsi ?? '?'}). Waiting for a bounce off ${formatCurrency(flushSetup.flushLow)} to confirm the turn.`}
+          >
+            FLUSH ARMED
+          </div>
+        )}
+        {flushSetup?.phase === 'active' && (
+          <div
+            className="px-2 py-1 rounded text-xs font-bold bg-green-900/50 text-green-300 border border-green-600/50"
+            title={`Dip buy confirmed off the ${formatCurrency(flushSetup.flushLow)} flush low. Entry ${formatCurrency(flushSetup.entryPrice)}, take profit ${formatCurrency(flushSetup.targetPrice)}, stop ${formatCurrency(flushSetup.stopPrice)}.`}
+          >
+            DIP BUY {formatCurrency(flushSetup.entryPrice)} → {formatCurrency(flushSetup.targetPrice)}
           </div>
         )}
 

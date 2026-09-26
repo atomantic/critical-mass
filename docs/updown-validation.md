@@ -34,6 +34,20 @@ A cost stress run at $0.30 per contract per side and 3 bp slippage produced **-$
 
 Baseline completed 45 trades. Two of three folds lost money. The threshold candidate underperformed baseline; baseline underperformed buy-and-hold on this rising-price sample, with very different exposure. No return-seeking coefficient changes were promoted. Directional samples numbered only 14/28/9 per fold, with 71.4%/71.4%/44.4% hit rates: insufficient evidence of a reliable edge. A second, larger cache was rejected for invalid continuity at row 12,562 rather than generating a misleading result.
 
+## Flush-reversal setup (operator dip buy)
+
+The operator's manually logged UP-option wins were almost never composite BUYs: the engine printed NEUTRAL or NO_TRADE_ZONE at the time. Trades are logged after the exit, so the logged time and price are the exit side. Reconstructed against the 1m chart, the winning days share one shape: a sharp 1m flush (roughly 1-3% off the 2h high) to a fresh 24h low, below the prior daily close, with 1m RSI oversold. A bounce followed. The composite reads that moment as bearish, and the 15m/1h trend gate is closed during it.
+
+`src/updown/flush-setup.js` models it as an explicit rule, independent of the composite. Arm on that flush; enter on a 0.15% bounce off the trailing low within 60 minutes; exit at +1% / -1% or after 12 hours; wait 4 hours between entries. An active setup publishes BUY (`source: 'flush-setup'`) until its own exit, which publishes NEUTRAL (CLOSE). A live contract's no-trade zone still suppresses it.
+
+```sh
+node scripts/backtest-flush-setup.js /absolute/path/to/1m-candles.json [param=value ...]
+```
+
+Calibration on Coinbase BTC-USD 1m (2026-02-15..04-05, 07-10..07-19, 08-08..09-26; 107 days): 61 entries, 35 target / 20 stop / 6 timeout. Average +0.27% BTC per entry. Unconditional entries under the same exits averaged -0.05%. Each period was positive on its own (+0.27 / 0.00 / +0.31). This is BTC spot movement, not option P&L. Option premium, spread and time decay are not modeled. The rule does not model breakout-style entries. Record the real buy time with **Bought at** on a trade, so future records can be checked against the chart. Without it, `entryTimeSource: 'logged'` marks the price as log-time.
+
+**Expired contract.** An expiry already in the past no longer holds the engine in NO_TRADE_ZONE. Previously a lapsed expiry muted every signal until the contract was re-entered. The result carries `contractExpired: true`, and the dashboard asks for the contract currently being traded. A future expiry still opens the 8h warning and 6h no-trade zones.
+
 ## Inventory and findings
 
 Inventory found 104 source/engine files. This was a focused behavioral audit with a full regression-suite run, not a claim that all code or exchange interactions are defect-free.

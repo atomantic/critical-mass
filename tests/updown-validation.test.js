@@ -26,14 +26,21 @@ test('invalid close preserves lots, side and accounting for a valid retry', () =
     assert.equal(book.applySignal('SELL', 101000, 3).trade.pnl, 10)
   }
 })
-test('injected clocks are isolated and expired contracts stay in no-trade zone', () => {
+test('injected clocks are isolated; live expiry gates, stale expiry does not mute signals', () => {
   const a = createSignalEngine({ getCandles: () => [] }, { now: () => 1000 })
   const b = createSignalEngine({ getCandles: () => [] }, { now: () => 2000 })
   const clock = Date.now
-  assert.equal(a.computeSignals(1000).noTradeZone, true)
-  assert.equal(a.computeSignals(999).type, 'NO_TRADE_ZONE')
-  assert.equal(b.computeSignals(1000).noTradeZone, true)
+  // An expiry 1s away is inside the no-trade zone.
+  assert.equal(a.computeSignals(2000).noTradeZone, true)
+  assert.equal(a.computeSignals(2000).type, 'NO_TRADE_ZONE')
+  // A contract that already expired is stale setup: it must not pin the
+  // engine in NO_TRADE_ZONE forever, but it is flagged for the operator.
+  const stale = b.computeSignals(1000)
+  assert.equal(stale.noTradeZone, false)
+  assert.equal(stale.contractExpired, true)
+  assert.notEqual(stale.type, 'NO_TRADE_ZONE')
   assert.equal(a.computeSignals().noTradeZone, false)
+  assert.equal(a.computeSignals().contractExpired, false)
   assert.equal(a.computeSignals().timestamp, 1000)
   assert.equal(b.computeSignals().timestamp, 2000)
   assert.equal(Date.now, clock)

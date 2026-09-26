@@ -27,11 +27,24 @@ function isExpression(str) {
 
 const INVALID_AMOUNT_MESSAGE = 'Enter a finite number or sum, such as 200+300.'
 
+// "2026-01-02" in the browser's timezone, for the date input
+function toLocalDate(dt) {
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
+}
+
+// "14:05" in the browser's timezone, for the time input
+function toLocalTime(iso) {
+  const dt = new Date(iso)
+  if (Number.isNaN(dt.getTime())) return ''
+  return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`
+}
+
 export default function TradeHistory() {
   const dateId = useId()
   const costId = useId()
   const returnId = useId()
   const noteId = useId()
+  const boughtId = useId()
   const costErrorId = useId()
   const returnErrorId = useId()
   const { addToast } = useToast()
@@ -40,7 +53,7 @@ export default function TradeHistory() {
   const [summary, setSummary] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const [editId, setEditId] = useState(null)
-  const [form, setForm] = useState({ date: '', cost: '', returnAmount: '', note: '', direction: '' })
+  const [form, setForm] = useState({ date: '', cost: '', returnAmount: '', note: '', direction: '', boughtTime: '' })
   const [validationErrors, setValidationErrors] = useState({})
   const parsedCost = parseTradeAmountExpression(form.cost)
   const parsedReturnAmount = parseTradeAmountExpression(form.returnAmount)
@@ -58,7 +71,9 @@ export default function TradeHistory() {
   useEffect(() => { fetchTrades() }, [fetchTrades])
 
   const resetForm = () => {
-    setForm({ date: new Date().toISOString().slice(0, 10), cost: '', returnAmount: '', note: '', direction: '' })
+    // Local calendar date: "Bought at" is a local time on this date, and the
+    // UTC date is already tomorrow on a US evening.
+    setForm({ date: toLocalDate(new Date()), cost: '', returnAmount: '', note: '', direction: '', boughtTime: '' })
     setShowForm(false)
     setEditId(null)
     setValidationErrors({})
@@ -86,6 +101,9 @@ export default function TradeHistory() {
       returnAmount: parsedReturnAmount,
       note: form.note,
       direction: form.direction || undefined,
+      // Local date + time the option was bought; lets the server record the
+      // chart price at the real entry instead of at log time.
+      boughtAt: form.date && form.boughtTime ? new Date(`${form.date}T${form.boughtTime}`).toISOString() : undefined,
     }
 
     await runDashboardAction({
@@ -113,6 +131,7 @@ export default function TradeHistory() {
       returnAmount: trade.returnAmount?.toString() || '',
       note: trade.note || '',
       direction: trade.direction || '',
+      boughtTime: trade.entryTimeSource === 'operator' && trade.entryTime ? toLocalTime(trade.entryTime) : '',
     })
     setEditId(trade.id)
     setShowForm(true)
@@ -261,6 +280,17 @@ export default function TradeHistory() {
                 <div className="text-[10px] text-emerald-400 mt-0.5">= {fmt(parsedReturnAmount)}</div>
               )}
             </div>
+          </div>
+          <div>
+            <label htmlFor={boughtId} className="text-[10px] text-gray-400 block mb-0.5">Bought at (optional — teaches the dip-buy detector your entry)</label>
+            <input
+              id={boughtId}
+              disabled={busy}
+              type="time"
+              value={form.boughtTime}
+              onChange={e => setForm({ ...form, boughtTime: e.target.value })}
+              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-emerald-500"
+            />
           </div>
           <div>
             <label className="text-[10px] text-gray-400 block mb-0.5">Direction</label>
