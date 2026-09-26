@@ -354,7 +354,8 @@ describe('validateRegimeConfig', () => {
 
   it('reports maxCelestialBodies out of range', () => {
     assert.equal(validateRegimeConfig({ maxCelestialBodies: 0 }).valid, false);
-    assert.equal(validateRegimeConfig({ maxCelestialBodies: 16 }).valid, false);
+    assert.equal(validateRegimeConfig({ maxCelestialBodies: 1001 }).valid, false);
+    assert.equal(validateRegimeConfig({ maxCelestialBodies: 50 }).valid, true);
     assert.equal(validateRegimeConfig({ maxCelestialBodies: 10 }).valid, true);
   });
 
@@ -381,8 +382,10 @@ describe('validateRegimeConfig', () => {
   });
 
   it('reports maxDrawdownPercent out of range', () => {
-    assert.equal(validateRegimeConfig({ maxDrawdownPercent: 5 }).valid, false);
-    assert.equal(validateRegimeConfig({ maxDrawdownPercent: 35 }).valid, false);
+    assert.equal(validateRegimeConfig({ maxDrawdownPercent: 0 }).valid, false);
+    assert.equal(validateRegimeConfig({ maxDrawdownPercent: 101 }).valid, false);
+    assert.equal(validateRegimeConfig({ maxDrawdownPercent: 5 }).valid, true);
+    assert.equal(validateRegimeConfig({ maxDrawdownPercent: 50 }).valid, true);
     assert.equal(validateRegimeConfig({ maxDrawdownPercent: 20 }).valid, true);
   });
 
