@@ -84,6 +84,30 @@ npm run install:all   # Install both server and admin UI dependencies
 cp config.example.json config.json  # Copy example config and customize
 ```
 
+### Docker Compose on Linux
+
+The rootful Docker daemon creates missing bind-mount sources as root-owned
+directories. Prepare the persistent directories before the first Compose
+start:
+
+```bash
+sudo ./scripts/prepare-docker-storage.sh
+docker compose up -d --build
+# With alpine:3.20 and node:22-alpine already cached:
+npm run test:docker-storage
+```
+
+The application container runs as numeric UID/GID `1000:1000`. The preparation
+script creates new `data/` and `logs/` directories with that ownership and mode
+`700`. It never recursively changes an existing directory: if either path
+already exists with another owner, it stops and prints the explicit ownership
+correction needed. The Compose bind mounts also refuse missing paths, and the
+entrypoint reports an actionable error before generating a bootstrap secret if
+the mounted paths are not writable.
+
+This preparation step is for the rootful Linux Compose deployment only. Do not
+run it against an Umbrel-managed `APP_DATA_DIR`; Umbrel owns those host paths.
+
 ## Configuration
 
 ### API Keys
