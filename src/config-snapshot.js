@@ -58,6 +58,8 @@ const SNAPSHOT_REGIME_KEYS = Object.freeze([
   // Omitting it from a restored pending correction would apply its delta again.
   'appliedBuyCorrections',
   'buyCorrectionCapitalRemainder',
+  'appliedSellCorrections',
+  'sellCorrectionCapitalRemainder',
 ]);
 
 /**
@@ -87,7 +89,7 @@ const SNAPSHOT_GLOBAL_KEYS = Object.freeze([
  * SNAPSHOT_GLOBAL_KEYS.length` fails CI the moment a field is added to
  * DEFAULTS / REGIME_DEFAULTS / GLOBAL_DEFAULTS without bumping it.
  */
-const CONFIG_SNAPSHOT_FIELD_REVISION = 117;
+const CONFIG_SNAPSHOT_FIELD_REVISION = 119;
 
 /**
  * Copy only the allowlisted, defined keys of `source`, in allowlist order (so
