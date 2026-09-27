@@ -267,7 +267,7 @@ describe('createNotifier() integration (fs-mocked config, stubbed fetch)', () =>
   let notifier;
 
   afterEach(async () => {
-    if (notifier) notifier.stop();
+    if (notifier) await notifier.stop();
     notifier = null;
     global.fetch = originalFetch;
     mock.restoreAll();
@@ -392,6 +392,54 @@ describe('createNotifier() integration (fs-mocked config, stubbed fetch)', () =>
       assert.ok(calls[0].body.text.includes('pending message'));
       assert.equal(notifier.getStats().queueDepth, 0);
     });
+  });
+
+  it('stop() drains an already sending multi-batch flush plus newly queued messages', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    setupFsMocks(RUNNING_CONFIG);
+    const completions = [];
+    const calls = stubFetch(() => new Promise((resolve) => completions.push(() => resolve({ ok: true, json: async () => ({}) }))));
+    notifier = createNotifier();
+    notifier.start();
+    emit('buy_filled', 'a'.repeat(2500));
+    emit('buy_filled', 'b'.repeat(2500));
+    t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+    await flushMicrotasks();
+    assert.equal(calls.length, 1);
+    emit('buy_filled', 'queued during the first send');
+    const drain = notifier.stop();
+    assert.equal(notifier.stop(), drain);
+    let stopped = false;
+    drain.then(() => { stopped = true; });
+    await flushMicrotasks();
+    assert.equal(calls.length, 2, 'stop starts the newly queued batch');
+    assert.equal(stopped, false);
+    completions.shift()();
+    await flushMicrotasks();
+    assert.equal(calls.length, 3, 'the prior flush still owns its second batch');
+    completions.shift()();
+    await flushMicrotasks();
+    assert.equal(stopped, false);
+    completions.shift()();
+    assert.equal(await drain, true);
+    assert.equal(stopped, true);
+  });
+
+  it('stop() waits for an already sending test notification', async () => {
+    setupFsMocks(RUNNING_CONFIG);
+    let complete;
+    stubFetch(() => new Promise((resolve) => { complete = () => resolve({ ok: true, json: async () => ({}) }); }));
+    notifier = createNotifier();
+    await notifier.stop(); // Settings may have disabled it before the test send.
+    const sending = notifier.sendTest();
+    let stopped = false;
+    const drain = notifier.stop().then(() => { stopped = true; });
+    await flushMicrotasks();
+    assert.equal(stopped, false);
+    complete();
+    await sending;
+    await drain;
+    assert.equal(stopped, true);
   });
 
   it('stop() removes the tradeEvents listener so a later emit produces no fetch', (t) => {

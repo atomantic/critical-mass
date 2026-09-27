@@ -188,6 +188,14 @@ const createNotifier = () => {
   let dailySummaryTimer = null;
   let tradeHandler = null;
   let getEngines = null;
+  const pendingSends = new Set();
+  let stopPromise = null;
+
+  const trackSend = (promise) => {
+    pendingSends.add(promise);
+    promise.then(() => pendingSends.delete(promise), () => pendingSends.delete(promise));
+    return promise;
+  };
 
   // Stats
   let stats = {
@@ -220,7 +228,7 @@ const createNotifier = () => {
    * @param {string} text - Message text
    * @returns {Promise<boolean>}
    */
-  const sendTelegram = async (text) => {
+  const sendTelegram = (text) => trackSend((async () => {
     const url = `${TELEGRAM_API}${config.telegram.botToken}/sendMessage`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
@@ -266,7 +274,7 @@ const createNotifier = () => {
       });
       return false;
     }
-  };
+  })());
 
   /**
    * Flush queued messages
@@ -293,10 +301,10 @@ const createNotifier = () => {
     if (batch) batches.push(batch);
 
     // Send each batch
-    return batches.reduce(
-      (chain, b) => chain.then(() => sendTelegram(b)),
+    return trackSend(batches.reduce(
+      (chain, b) => chain.then(async (sent) => (await sendTelegram(b)) && sent),
       Promise.resolve(true)
-    );
+    ));
   };
 
   /**
@@ -322,12 +330,18 @@ const createNotifier = () => {
    * the fault that is killing the process.
    * @returns {Promise<boolean>}
    */
-  const flush = () => {
+  const flush = async () => {
     if (flushTimer) {
       clearTimeout(flushTimer);
       flushTimer = null;
     }
-    return Promise.resolve(flushQueue()).then((sent) => sent !== false);
+    flushQueue();
+    let successful = true;
+    while (pendingSends.size) {
+      const results = await Promise.allSettled([...pendingSends]);
+      successful = results.every((result) => result.status === 'fulfilled' && result.value !== false) && successful;
+    }
+    return successful;
   };
 
   /**
@@ -402,6 +416,7 @@ const createNotifier = () => {
    * @param {Function} [engineGetter] - Callback to access regime engines
    */
   const start = (engineGetter) => {
+    stopPromise = null;
     config = getNotificationConfig();
     getEngines = engineGetter || null;
 
@@ -433,6 +448,7 @@ const createNotifier = () => {
    * Stop the notifier
    */
   const stop = () => {
+    if (stopPromise) return stopPromise;
     if (tradeHandler) {
       tradeEvents.removeListener('trade', tradeHandler);
       tradeHandler = null;
@@ -443,14 +459,21 @@ const createNotifier = () => {
       dailySummaryTimer = null;
     }
 
-    // Flush remaining messages (also clears the pending rate-limit timer).
-    // Fire-and-forget, but never as a bare promise: an unhandled rejection on a
-    // shutdown path is now fatal via the process guards (issue #532).
-    flush().catch((err) => {
+    // Own queued batches and sends that already left the queue (including
+    // daily summaries and test notifications), sharing one drain on repeats.
+    const drain = flush().catch((err) => {
       notifierLogger.error(`❌ 📨 Flush on stop failed: ${err.message}`, { action: 'stop', error: err.message });
+      return false;
+    }).then((sent) => {
+      notifierLogger.info('ℹ️ 📨 Notifier stopped', { action: 'stop' });
+      return sent;
+    }).finally(() => {
+      // A disabled notifier can later send a test message without start().
+      // A subsequent stop must drain that new work, not reuse a stale result.
+      if (stopPromise === drain) stopPromise = null;
     });
-
-    notifierLogger.info('ℹ️ 📨 Notifier stopped', { action: 'stop' });
+    stopPromise = drain;
+    return drain;
   };
 
   /**
@@ -477,7 +500,7 @@ const createNotifier = () => {
    * Send a test notification
    * @returns {Promise<{success: boolean, error?: string}>}
    */
-  const sendTest = async () => {
+  const sendTest = () => trackSend((async () => {
     config = getNotificationConfig();
 
     if (!config.telegram.botToken || !config.telegram.chatId) {
@@ -509,7 +532,7 @@ const createNotifier = () => {
       clearTimeout(timeout);
       return { success: false, error: err.message };
     }
-  };
+  })());
 
   /**
    * Get notifier stats

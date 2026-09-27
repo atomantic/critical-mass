@@ -52,6 +52,7 @@ const { resolveListenHosts, isGatewayOrigin } = require('./src/gateway-listen');
 const { registerProcessGuards } = require('./src/process-guard');
 const { resolveIpcPort } = require('./src/ipc-port-defaults');
 const { PORTS } = require('./ecosystem.config.cjs');
+const { createGatewayShutdown, closeGatewayListeners } = require('./src/gateway-shutdown');
 
 // A backup restore that a crash interrupted leaves data/ as a mix of
 // archive-era and current-era files. Finish its rollback BEFORE anything reads
@@ -89,10 +90,37 @@ const io = new Server(server, {
   cors: { origin: (origin, cb) => cb(null, isGatewayOrigin(origin, CORS_ORIGINS)) },
 });
 
+// Each attach creates an Engine.IO transport owner; retain all of them.
+const socketEngines = [io.engine];
+
 // Notification system
 const notifier = createNotifier();
 
+// Callbacks resolve their owners only when shutdown is requested, after startup.
+let schedulerTimer = null;
+const gatewayShutdown = createGatewayShutdown({
+  cancelSchedules: () => {
+    for (const timer of [schedulerTimer, exchangeRefreshTimer, backupTimer, fundStateBackupTimer]) clearInterval(timer);
+    schedulerTimer = backupTimer = fundStateBackupTimer = null;
+  },
+  stopProducers: () => {
+    updownService.stop();
+    sentinelService.stop();
+    for (const [, entry] of activeLogStreams) entry.process?.kill();
+    activeLogStreams.clear();
+  },
+  stopNotifier: () => notifier.stop(),
+  disconnectIPC: () => {
+    for (const ipc of Object.values(exchangeIPCMap)) ipc.disconnect();
+  },
+  closeListeners: () => closeGatewayListeners(io, [server, ...extraServers], socketEngines),
+  log,
+});
+const routes = gatewayShutdown.routes(app);
+
 // ============ Middleware ============
+
+app.use(gatewayShutdown.middleware);
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -107,12 +135,13 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-operatorAuth.registerSessionRoutes(app);
-app.use('/api', operatorAuth.requireAuth);
+operatorAuth.registerSessionRoutes(routes);
+app.use('/api', gatewayShutdown.handler(operatorAuth.requireAuth));
 // Hold every mutating API request while a backup restore is applying files, so
 // nothing can land between "writers confirmed stopped" and "archive applied"
 // and silently overwrite the recovered snapshot (issue #429).
 app.use('/api', maintenanceGuard);
+io.use((socket, next) => gatewayShutdown.isStopping() ? next(new Error('Gateway is shutting down')) : next());
 io.use(operatorAuth.socketMiddleware);
 log('INFO', operatorAuth.hasPassword()
   ? '🔐 Operator sign-in is required (password in data/operator-auth.json)'
@@ -122,7 +151,7 @@ log('INFO', operatorAuth.hasPassword()
 
 // Exchange param validation middleware
 const KNOWN_EXCHANGES = new Set(getConfiguredExchanges());
-setInterval(() => { for (const e of getConfiguredExchanges()) KNOWN_EXCHANGES.add(e); }, 60_000);
+const exchangeRefreshTimer = setInterval(() => { for (const e of getConfiguredExchanges()) KNOWN_EXCHANGES.add(e); }, 60_000);
 
 app.param('exchange', (req, res, next, exchange) => {
   if (!/^[a-z0-9_-]+$/.test(exchange)) {
@@ -140,6 +169,7 @@ let backupTimer = null;
 let fundStateBackupTimer = null;
 
 const rescheduleBackupTimer = () => {
+  if (gatewayShutdown.isStopping()) return;
   if (backupTimer) {
     clearInterval(backupTimer);
     backupTimer = null;
@@ -269,7 +299,7 @@ ipcEventListeners.push((name, msg) => {
   }
 });
 
-updownService.start();
+gatewayShutdown.track(updownService.start()).catch((err) => log('ERROR', `UpDown startup failed: ${err.message}`));
 
 // ============ Sentinel Service ============
 
@@ -280,20 +310,20 @@ sentinelService.start();
 
 const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, exchangeIPCMap, rescheduleBackupTimer };
 
-require('./src/routes/sentinel-routes')(app, { ...sharedDeps, sentinelService, getSentinelConfig, updateSentinelConfig });
-require('./src/routes/ai-routes')(app, sharedDeps);
-require('./src/routes/settings-routes')(app, { ...sharedDeps, updownService, sentinelService, candleCache });
-require('./src/routes/candle-routes')(app, { candleCache });
-require('./src/routes/updown-routes')(app, { ...sharedDeps, updownService, candleCache });
-require('./src/routes/exchange-routes')(app, sharedDeps);
-require('./src/routes/regime-routes')(app, sharedDeps);
-require('./src/routes/keys-routes')(app, sharedDeps);
-require('./src/routes/backtest-routes')(app, sharedDeps);
-require('./src/routes/legacy-routes')(app, sharedDeps);
+require('./src/routes/sentinel-routes')(routes, { ...sharedDeps, sentinelService, getSentinelConfig, updateSentinelConfig });
+require('./src/routes/ai-routes')(routes, sharedDeps);
+require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, candleCache });
+require('./src/routes/candle-routes')(routes, { candleCache });
+require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache });
+require('./src/routes/exchange-routes')(routes, sharedDeps);
+require('./src/routes/regime-routes')(routes, sharedDeps);
+require('./src/routes/keys-routes')(routes, sharedDeps);
+require('./src/routes/backtest-routes')(routes, sharedDeps);
+require('./src/routes/legacy-routes')(routes, sharedDeps);
 
 // ============ Health Aggregation ============
 
-app.get('/api/health', asyncRoute(async (req, res) => {
+routes.get('/api/health', asyncRoute(async (req, res) => {
   const timeout = 3000;
   const engines = {};
   let overallStatus = 'ok';
@@ -396,6 +426,7 @@ tradeEvents.on('trade', (event) => {
 });
 
 io.on('connection', (socket) => {
+  socket.use((packet, next) => gatewayShutdown.isStopping() ? next(new Error('Gateway is shutting down')) : next());
   log('INFO', `WebSocket client connected: ${socket.id}`);
   socket.on('disconnect', () => {
     disconnectLogStream({ socket, registry: activeLogStreams, log });
@@ -430,6 +461,7 @@ io.on('connection', (socket) => {
 const schedulerState = {};
 
 const checkAndRunIntervalTrade = () => {
+  if (gatewayShutdown.isStopping()) return;
   if (!getGlobalConfig().simpleDcaEnabled) return;
   // A scheduled DCA buy writes the same files a restore is replacing.
   if (isMaintenanceActive()) {
@@ -464,7 +496,7 @@ const checkAndRunIntervalTrade = () => {
       schedulerState[key].lastRunId = getRunIdentifier(intervalType);
       schedulerState[key].nextExecutionTime = getNextExecutionTime(intervalType);
 
-      runIntervalCycle(exchange, pair)
+      gatewayShutdown.track(runIntervalCycle(exchange, pair))
         .then(result => {
           log('INFO', `[${label}] Scheduled trade complete: ${result.status}`);
         })
@@ -482,6 +514,7 @@ LISTEN_HOSTS.forEach((host, i) => {
   const s = i === 0 ? server : http.createServer(app);
   if (i > 0) {
     io.attach(s);
+    socketEngines.push(io.engine);
     extraServers.push(s);
   }
   s.listen(PORT, host, () => {
@@ -516,7 +549,7 @@ LISTEN_HOSTS.forEach((host, i) => {
 
   // Check for scheduled trades every 30 seconds
   const globalConfig = getGlobalConfig();
-  setInterval(checkAndRunIntervalTrade, globalConfig.schedulerInterval || 30000);
+  schedulerTimer = setInterval(checkAndRunIntervalTrade, globalConfig.schedulerInterval || 30000);
 
   // Check immediately on startup
   checkAndRunIntervalTrade();
@@ -524,45 +557,7 @@ LISTEN_HOSTS.forEach((host, i) => {
 
 // ============ Graceful Shutdown ============
 
-const gracefulShutdown = async (signal) => {
-  log('INFO', `Received ${signal}, shutting down gracefully...`);
-
-  // Engine processes handle their own shutdown via PM2
-  coinbaseIPC.disconnect();
-  geminiIPC.disconnect();
-  cryptocomIPC.disconnect();
-
-  updownService.stop();
-  sentinelService.stop();
-
-  // Kill all active log streams
-  for (const [, entry] of activeLogStreams.entries()) {
-    entry.process?.kill();
-  }
-  activeLogStreams.clear();
-
-  notifier.stop();
-
-  if (backupTimer) {
-    clearInterval(backupTimer);
-    backupTimer = null;
-  }
-  if (fundStateBackupTimer) {
-    clearInterval(fundStateBackupTimer);
-    fundStateBackupTimer = null;
-  }
-
-  extraServers.forEach((s) => s.close());
-  server.close(() => {
-    log('INFO', 'Server closed');
-    process.exit(0);
-  });
-
-  setTimeout(() => {
-    log('WARN', 'Forcing exit after timeout');
-    process.exit(1);
-  }, 5000);
-};
+const gracefulShutdown = gatewayShutdown.shutdown;
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
