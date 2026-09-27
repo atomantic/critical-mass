@@ -128,7 +128,7 @@ describe('support module structured logging', () => {
     // running engine.
     const server = createIPCServer(0, 'coinbase-engine');
     const { lines } = await captureLogs(async () => {
-      server.start();
+      await server.start();
       server.stop();
     });
 
