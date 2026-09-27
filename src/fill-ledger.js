@@ -994,7 +994,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * @param {Object} fillData - Raw fill data from exchange
    * @param {number} [orderPlacedAt] - Optional timestamp when the order was placed (for fill time tracking)
    * @param {Object} [options]
-   * @param {boolean} [options.skipPersist] - Skip the auto-persist (batch ingestion flushes once at the end)
+   * @param {boolean} [options.skipPersist] - Batch ordinary fills until the caller flushes.
+   *   Synthetic identity replacements always persist atomically before returning.
    * @param {string|null} [options.cycleId] - Explicit cycle assignment. Defaults to the live
    *   currentCycleId. Pass `null` for fills that may be historical (sync/manual reconciliation):
    *   stamping a days-old fill with the live cycleId inflates current-cycle totals and can trip
@@ -1088,7 +1089,11 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     }
     dirtySinceLastPersist = true;
     bumpLedgerVersion();
-    if (!options.skipPersist) {
+    // Replacement changes which trade IDs own already-booked execution. A
+    // later row in a batch can reject before the caller's final persist, so
+    // this transition must publish now even when ordinary rows are batched.
+    // The rollback snapshot keeps memory/indexes retryable if publication fails.
+    if (!options.skipPersist || replacements.length > 0) {
       try {
         persist();
       } catch (err) {

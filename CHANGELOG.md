@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-834] Batched synthetic replacements persist before ingestion continues** — Manual and sync imports now publish replacement identities and residual coverage immediately; failed publication restores ledger rows and indexes so a later rejected row or restart cannot leave replacement state only in memory.
 - **[issue-820] Sensitive JSON parse failures no longer expose credential excerpts** — Provider/auth reads, configuration reloads and saves, and backup configuration diagnostics now report a logical file and error code without retaining parser messages, stacks or causes; default and last-good recovery behavior is preserved.
 - **[issue-814] FIFO realized-P&L repair now commits a recoverable fund cohort** — Apply verifies stopped writers, stages every fund, and atomically writes states with a durable before/after journal. Interrupted repairs support explicit resume or rollback, and pending recovery blocks engine mutations and process startup.
 - **[issue-807] Equivalent real executions replace terminal synthetic coverage** — Preserve unresolved residuals, cycle/body ownership, consumption and sell-booking markers without growing inventory again. Quote/fee corrections and ambiguous coverage fail before mutation pending the remaining accounting reconciliation work.
