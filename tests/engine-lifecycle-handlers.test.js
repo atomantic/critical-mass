@@ -64,7 +64,7 @@ const createFakeEngine = (calls, exchange, pair, { startResult = { success: true
  * regime:start/regime:stop handlers triggered, in what order, without
  * touching real exchanges, disk, or PM2.
  */
-const createHarness = () => {
+const createHarness = (overrides = {}) => {
   const regimeEngines = new Map();
   const runningFlags = new Map(); // fundKey -> boolean
   const lifecycleByKey = new Map(); // fundKey -> lifecycle string
@@ -140,9 +140,10 @@ const createHarness = () => {
   };
 
   const registry = createFakeRegistry();
-  registerEngineLifecycleHandlers(registry, deps);
+  const lifecycle = registerEngineLifecycleHandlers(registry, { ...deps, ...overrides });
 
   return {
+    ...lifecycle,
     start: registry.handlers.get('regime:start'),
     stop: registry.handlers.get('regime:stop'),
     regimeEngines,
@@ -179,7 +180,7 @@ describe('engine-lifecycle-handlers', () => {
 
       const result = await h.start({}, EXCHANGE, PAIR_A);
 
-      assert.deepEqual(result, { success: false, error: 'Fund is closed — call regime:reopen before starting' });
+      assert.deepEqual(result, { success: false, error: 'Fund is closed — call regime:reopen before starting', needsOperator: true });
       assert.equal(firstIndex(h.calls, 'createRegimeEngine'), -1);
     });
 
@@ -189,7 +190,7 @@ describe('engine-lifecycle-handlers', () => {
 
       const result = await h.start({}, EXCHANGE, PAIR_A);
 
-      assert.deepEqual(result, { success: false, error: 'API keys not configured for this exchange' });
+      assert.deepEqual(result, { success: false, error: 'API keys not configured for this exchange', needsOperator: true });
       assert.equal(firstIndex(h.calls, 'createRegimeEngine'), -1);
     });
 
@@ -263,7 +264,7 @@ describe('engine-lifecycle-handlers', () => {
 
       assert.deepEqual(result, { success: true, exchange: EXCHANGE, pair: PAIR_A, autoClosed: true });
       assert.equal(h.regimeEngines.has(fundKey(EXCHANGE, PAIR_A)), false);
-      assert.equal(firstIndex(h.calls, 'saveRegimeRunningFlag'), -1);
+      assert.equal(h.runningFlags.get(fundKey(EXCHANGE, PAIR_A)), false);
     });
 
     it('on success, transfers the fund from the standalone service to the engine and persists the running flag', async () => {
@@ -438,4 +439,153 @@ describe('engine-lifecycle-handlers', () => {
       assert.equal(callsFor(h.calls, PAIR_B).length, 0);
     });
   });
+});
+
+const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+const settle = () => new Promise(resolve => setImmediate(resolve));
+const retryHarness = (overrides = {}) => {
+  const timers = new Map();
+  let timerId = 0;
+  const h = createHarness({ setTimer: (run, delay) => { const id = ++timerId; timers.set(id, { run, delay }); return id; }, clearTimer: id => timers.delete(id), isPaused: () => false, ...overrides });
+  h.timers = timers;
+  h.fire = async () => { const [id, timer] = timers.entries().next().value; timers.delete(id); timer.run(); await settle(); };
+  return h;
+};
+
+describe('automatic fund startup supervision', () => {
+  it('isolates a transient failure, cleans it before retry, and recovers once', async () => {
+    const h = retryHarness();
+    const cleanup = deferred();
+    let attempts = 0;
+    h.runningFlags.set(fundKey(EXCHANGE, PAIR_A), true);
+    h.engineFactories.set(fundKey(EXCHANGE, PAIR_A), () => {
+      attempts++;
+      return attempts === 1 ? {
+        start: async () => { throw Object.assign(new Error('connection reset'), { code: 'ECONNRESET' }); },
+        stop: () => cleanup.promise,
+      } : createFakeEngine(h.calls, EXCHANGE, PAIR_A);
+    });
+    h.engineFactories.set(fundKey(EXCHANGE, PAIR_B), () => createFakeEngine(h.calls, EXCHANGE, PAIR_B));
+    const failed = h.autoResumeFund(EXCHANGE, PAIR_A);
+    await settle();
+    assert.equal(h.timers.size, 0, 'no retry before failed ownership is released');
+    assert.equal((await h.start({}, EXCHANGE, PAIR_A)).success, false);
+    assert.equal((await h.autoResumeFund(EXCHANGE, PAIR_B)).success, true);
+    cleanup.resolve();
+    assert.equal((await failed).success, false);
+    assert.equal(h.runningFlags.get(fundKey(EXCHANGE, PAIR_A)), true);
+    assert.equal(h.getStartStatus(EXCHANGE, PAIR_A).state, 'retrying');
+    assert.equal(h.timers.size, 1);
+    assert.equal([...h.timers.values()][0].delay, 5000);
+    await h.fire();
+    assert.equal(attempts, 2);
+    assert.equal(h.getStartStatus(EXCHANGE, PAIR_A).state, 'running');
+    assert.equal(h.timers.size, 0);
+  });
+
+  for (const mode of ['stop', 'shutdown']) {
+    it(`${mode} fences a late successful start and prevents replacement until cleanup`, async () => {
+      const h = retryHarness();
+      const ready = deferred();
+      const cleaned = deferred();
+      let stops = 0;
+      h.engineFactories.set(fundKey(EXCHANGE, PAIR_A), () => ({ start: () => ready.promise, stop: () => { stops++; return cleaned.promise; } }));
+      const started = h.autoResumeFund(EXCHANGE, PAIR_A);
+      await settle();
+      const stopped = mode === 'stop' ? h.stop({}, EXCHANGE, PAIR_A) : h.cancelStarts({ shutdown: true });
+      ready.resolve({ success: true });
+      await settle();
+      assert.equal(stops, 1);
+      assert.equal((await h.start({}, EXCHANGE, PAIR_A)).success, false);
+      cleaned.resolve();
+      await Promise.all([started, stopped]);
+      assert.equal(h.regimeEngines.size, 0);
+      assert.equal(h.timers.size, 0);
+      assert.equal(h.calls.some(c => c.op === 'saveRegimeRunningFlag' && c.isRunning), false);
+    });
+  }
+
+  it('cancels a retry on explicit stop and lets a manual start replace a pending retry', async () => {
+    const h = retryHarness();
+    let attempts = 0;
+    h.engineFactories.set(fundKey(EXCHANGE, PAIR_A), () => ({ start: async () => { attempts++; throw new Error('fetch failed'); }, stop: async () => {} }));
+    await h.autoResumeFund(EXCHANGE, PAIR_A);
+    assert.equal(h.timers.size, 1);
+    const staleCallback = [...h.timers.values()][0].run;
+    assert.equal((await h.stop({}, EXCHANGE, PAIR_A)).success, true);
+    staleCallback();
+    await settle();
+    assert.equal(attempts, 1);
+    assert.equal(h.runningFlags.get(fundKey(EXCHANGE, PAIR_A)), false);
+    await h.autoResumeFund(EXCHANGE, PAIR_A);
+    await h.start({}, EXCHANGE, PAIR_A);
+    assert.equal(h.timers.size, 0);
+    assert.equal(attempts, 3);
+  });
+
+  it('caps exponential retry delays and keeps one timer', async () => {
+    const h = retryHarness();
+    h.engineFactories.set(fundKey(EXCHANGE, PAIR_A), () => ({ start: async () => { throw new Error('fetch failed'); }, stop: async () => {} }));
+    await h.autoResumeFund(EXCHANGE, PAIR_A);
+    for (const delay of [5000, 10000, 20000, 40000, 80000, 160000, 300000, 300000]) {
+      assert.equal(h.timers.size, 1);
+      assert.equal([...h.timers.values()][0].delay, delay);
+      await h.fire();
+    }
+    await h.cancelStarts({ shutdown: true });
+  });
+
+  for (const failure of ['corrupt', 'auth', 'cleanup']) {
+    it(`blocks ${failure} failures without releasing unsafe ownership or retrying`, async () => {
+      const h = retryHarness();
+      h.engineFactories.set(fundKey(EXCHANGE, PAIR_A), () => {
+        if (failure === 'corrupt') throw new Error('corrupted ledger');
+        return { start: async () => { throw Object.assign(new Error(failure === 'auth' ? 'unauthorized' : 'fetch failed'), { status: failure === 'auth' ? 401 : 503 }); }, stop: async () => { if (failure === 'cleanup') throw new Error('still owns socket'); } };
+      });
+      await h.autoResumeFund(EXCHANGE, PAIR_A);
+      assert.equal(h.getStartStatus(EXCHANGE, PAIR_A).state, 'blocked');
+      assert.equal(h.timers.size, 0);
+      assert.equal(h.regimeEngines.has(fundKey(EXCHANGE, PAIR_A)), failure === 'cleanup');
+    });
+  }
+});
+
+
+it('holds retry ownership while accepted fund callbacks drain', async () => {
+  const drain = deferred();
+  const h = retryHarness({ drainFundWrites: () => drain.promise });
+  h.engineFactories.set(fundKey(EXCHANGE, PAIR_A), () => ({ start: async () => { throw new Error('fetch failed'); }, stop: async () => {} }));
+  const started = h.autoResumeFund(EXCHANGE, PAIR_A);
+  await settle();
+  assert.equal(h.regimeEngines.size, 1);
+  assert.equal(h.timers.size, 0);
+  assert.equal((await h.start({}, EXCHANGE, PAIR_A)).success, false);
+  drain.resolve({ drained: true });
+  await started;
+  assert.equal(h.regimeEngines.size, 0);
+  assert.equal(h.timers.size, 1);
+});
+
+it('defers retries during maintenance and backup pause even after the maintenance TTL ends', async () => {
+  const { setEngineMaintenance, setEngineBackupPaused } = require('../src/engine-maintenance');
+  const h = retryHarness({ isPaused: undefined });
+  let attempts = 0;
+  h.engineFactories.set(fundKey(EXCHANGE, PAIR_A), () => ({ start: async () => { attempts++; throw new Error('fetch failed'); }, stop: async () => {} }));
+  try {
+    await h.autoResumeFund(EXCHANGE, PAIR_A);
+    setEngineMaintenance({ active: true, reason: 'backup test' });
+    await h.fire();
+    assert.equal(attempts, 1);
+    setEngineBackupPaused(true);
+    setEngineMaintenance({ active: false });
+    await h.fire();
+    assert.equal(attempts, 1);
+    setEngineBackupPaused(false);
+    await h.fire();
+    assert.equal(attempts, 2);
+  } finally {
+    setEngineMaintenance({ active: false });
+    setEngineBackupPaused(false);
+    await h.cancelStarts({ shutdown: true });
+  }
 });

@@ -8,7 +8,7 @@ const protocol = require('../src/ipc/ipc-protocol');
 
 // Evaluate the production modules with explicit dependency mocks. No real
 // listener, exchange adapter, config, ledger or state file is reachable here.
-const createHarness = (exchange = 'coinbase') => {
+const createHarness = (exchange = 'coinbase', failFirst = false) => {
   const servers = [];
   const logs = [];
   const calls = [];
@@ -61,14 +61,14 @@ const createHarness = (exchange = 'coinbase') => {
     '../src/logger': { createContextLogger: () => logger },
     '../src/config-utils': {
       getFundConfig: () => { calls.push('fund-config'); return {}; },
-      getFundsForExchange: () => { calls.push('funds'); return ['BTC-USD']; },
-      resolveConfiguredPair: () => ({ pair: 'BTC-USD' }),
+      getFundsForExchange: () => { calls.push('funds'); return failFirst ? ['BTC-USD', 'ETH-USD'] : ['BTC-USD']; },
+      resolveConfiguredPair: (_, pair) => ({ pair }),
     },
-    '../src/regime-engine': { createRegimeEngine: () => {
+    '../src/regime-engine': { createRegimeEngine: (_, pair) => {
       calls.push('construct');
-      return { start: () => { calls.push('trade'); return fundStarted; } };
+      return { start: () => { calls.push('trade'); if (failFirst && pair === 'BTC-USD') return Promise.reject(new Error('fetch failed')); return fundStarted; }, stop: async () => { calls.push('cleanup'); }, getStatus: () => ({}) };
     } },
-    '../src/market-data-service': {},
+    '../src/market-data-service': { stopMarketDataService: () => {} },
     '../src/chart-data-buffer': {},
     '../src/fill-ledger': {},
     '../src/manual-trade-import': {},
@@ -77,16 +77,17 @@ const createHarness = (exchange = 'coinbase') => {
     '../src/shared-utils': {
       fundKey: (name, pair) => `${name}::${pair}`,
       fundLabel: (name, pair) => `${name}/${pair}`,
+      saveRegimeRunningFlag: () => {},
       shouldAutoResumeRegime: () => { calls.push('running-flag'); return true; },
     },
     '../src/engine-stop-all': {},
     '../src/engine-backup-window': { registerEngineBackupHandlers: () => {} },
-    '../src/pending-writes': {},
-    '../src/engine-lifecycle-handlers': { registerEngineLifecycleHandlers: () => ({ startFund: () => {} }) },
+    '../src/pending-writes': { drainPendingWrites: async () => ({ drained: true }) },
+    '../src/engine-lifecycle-handlers': { registerEngineLifecycleHandlers: (registry, deps) => require('../src/engine-lifecycle-handlers').registerEngineLifecycleHandlers(registry, { ...deps, setTimer: () => ({ unref() {} }), clearTimer: () => {} }) },
     '../src/engine-recalculate-handler': { registerEngineRecalculateHandler: () => {} },
     '../src/migration': { migrateExchangeToPairs: () => { calls.push('migration'); return {}; } },
     '../src/restore-apply': { guardIncompleteRestore: () => { calls.push('restore'); } },
-    '../src/state-tracker': { LIFECYCLE: { CLOSED: 'closed' }, loadRegimeStateSafe: () => { calls.push('state'); return {}; } },
+    '../src/state-tracker': { LIFECYCLE: { CLOSED: 'closed' }, loadRegimeState: () => { calls.push('state'); return {}; }, loadRegimeStateSafe: () => { calls.push('state'); return {}; } },
     '../src/adapters': { getAdapter: () => { calls.push('adapter'); return { hasValidKeys: () => true }; } },
     '../src/process-guard': { registerProcessGuards: () => {} },
     '../src/ipc-port-defaults': { resolveIpcPort: () => 12345 },
@@ -179,6 +180,19 @@ describe('IPC bind ownership and exchange startup', () => {
       assert.deepEqual(h.exits, [1]);
       assert.deepEqual(h.calls, []);
       assert.equal(h.servers[0].closed, true);
+    });
+
+    it(`${exchange} contains a failed fund and starts the next fund through the shared supervisor`, async () => {
+      const h = createHarness(exchange, true);
+      const done = h.run();
+      h.servers[0].emit('listening');
+      await settle();
+      assert.equal(h.calls.filter(call => call === 'trade').length, 2);
+      assert.equal(h.calls.filter(call => call === 'cleanup').length, 1);
+      h.finishFund({ success: true });
+      await done;
+      assert.deepEqual(h.exits, []);
+      h.ipc.stop();
     });
 
     it(`${exchange} starts once after binding and blocks requests until funds recover`, async () => {
