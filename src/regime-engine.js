@@ -3024,6 +3024,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * start RETRYABLE instead of permanently bricking the engine instance (#113).
    * @returns {Promise<{success: boolean, error?: string}>}
    */
+  let startPromise = null;
   const start = async () => {
     if (isRunning || isStarting) {
       logger.warn(`⚠️ [${exchange}] ${modeLabel}Regime engine already ${isRunning ? 'running' : 'starting'}`);
@@ -3031,8 +3032,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     isStarting = true;
     try {
-      return await startImpl();
+      startPromise = startImpl();
+      return await startPromise;
     } finally {
+      startPromise = null;
       isStarting = false;
     }
   };
@@ -3041,7 +3044,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Stop the regime engine
    */
   const stop = async ({ keepHeartbeat = false } = {}) => {
-    if (!isRunning) return;
+    // A stop must outlive startup before releasing its resources. Failed
+    // partial starts also own sockets/timers even though isRunning is false.
+    if (startPromise) await startPromise.catch(() => {});
+    const wasRunning = isRunning;
 
     logger.info(`🛑 [${exchange}] Stopping regime engine`);
 
@@ -3054,6 +3060,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // reaches callers (the backup-restore quiescence gate, issue #429) — the
     // engine is quiet, but its last state was not saved.
     try {
+      // A partial recovery is not a valid snapshot: never overwrite durable
+      // state merely to dispose an attempt that failed before running.
+      if (!wasRunning) return;
       // Save state before stopping
       if (isDryRun) {
         dryRunState.forceSave(exchange, {
@@ -3076,13 +3085,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // existed. force=true rewrites the healthy snapshot unconditionally.
         fillLedger.persist({ force: true });
         logger.info(`💾 [${exchange}] Saved live state and fill ledger`);
-        // Remove SIGUSR1 handler
-        if (positionState._sigusr1Handler) {
-          process.removeListener('SIGUSR1', positionState._sigusr1Handler);
-          delete positionState._sigusr1Handler;
-        }
       }
     } finally {
+      if (positionState._sigusr1Handler) {
+        process.removeListener('SIGUSR1', positionState._sigusr1Handler);
+        delete positionState._sigusr1Handler;
+      }
       // Deregister this fund from the shared heartbeat (the adapter only
       // clears the timer when no other fund still needs it). Mirrors the
       // !isDryRun condition in start() so a dry-run engine can never

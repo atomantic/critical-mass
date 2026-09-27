@@ -7,11 +7,13 @@
  * around engine stop, failure teardown, and post-stop retry — can be
  * exercised directly against the real production callbacks instead of only
  * through HTTP-proxy tests (which stub IPC) or isolated service tests
- * (which never invoke these handlers at all). Behavior is unchanged from the
- * inline handlers this replaces; every dependency below is injected so
+ * (which never invoke these handlers at all). Automatic and manual starts
+ * share the same supervision and cleanup; dependencies are injected so
  * `regime:start`/`regime:stop` for other exchange processes (gemini,
  * cryptocom) keep working unmodified.
  */
+
+const { createFundStartSupervisor, isTransientStartError } = require('./fund-start-supervisor');
 
 /**
  * @typedef {Object} EngineLifecycleDeps
@@ -31,6 +33,10 @@
  * @property {(exchange: string, pair: string) => void} wireMarketDataCallbacks - Wires a running standalone market-data service's callbacks
  * @property {(exchange: string, pair: string) => void} invalidateStandaloneLedger - Drops the cached standalone fill ledger for a fund
  * @property {(exchange: string, pair: string, isRunning: boolean) => void} saveRegimeRunningFlag - Persists the fund's running flag to disk
+ * @property {(exchange: string, pair: string) => Promise<{drained: boolean}>} [drainFundWrites] - Waits for accepted fund callbacks before releasing ownership
+ * @property {Function} [isPaused] - Retry maintenance gate
+ * @property {Function} [setTimer] - Injectable retry timer
+ * @property {Function} [clearTimer] - Injectable retry cancellation
  */
 
 /**
@@ -59,9 +65,10 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     wireMarketDataCallbacks,
     invalidateStandaloneLedger,
     saveRegimeRunningFlag,
+    drainFundWrites = async () => ({ drained: true }),
   } = deps;
 
-  const startFund = async (payload, exchange, pair) => {
+  const startAttempt = async (payload, exchange, pair, isCurrent) => {
     const resolvedPair = resolvePair(exchange, pair);
     const key = fundKey(exchange, resolvedPair);
     const label = fundLabel(exchange, resolvedPair);
@@ -74,14 +81,15 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     // Refuse to start a closed fund — operator must reopen it first.
     const savedState = loadRegimeState(exchange, resolvedPair);
     if (savedState?.position?.lifecycle === LIFECYCLE.CLOSED) {
-      return { success: false, error: 'Fund is closed — call regime:reopen before starting' };
+      saveRegimeRunningFlag(exchange, resolvedPair, false);
+      return { success: false, error: 'Fund is closed — call regime:reopen before starting', needsOperator: true };
     }
 
     const fundConfig = getFundConfig(exchange, resolvedPair);
     const adapter = getAdapter(exchange);
 
     if (!adapter.hasValidKeys || !adapter.hasValidKeys()) {
-      return { success: false, error: 'API keys not configured for this exchange' };
+      return { success: false, error: 'API keys not configured for this exchange', needsOperator: true };
     }
 
     // createRegimeEngine builds its fill ledger eagerly in the constructor
@@ -96,49 +104,64 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
       engine = createRegimeEngine(exchange, resolvedPair, fundConfig, createEngineCallbacks(exchange, resolvedPair));
     } catch (err) {
       fundLogger.error(`❌ [${label}] Fill ledger init failed on regime:start: ${err.message}`, { error: err.message });
-      return { success: false, error: `Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details` };
+      return { success: false, error: `Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details`, needsOperator: true };
     }
     regimeEngines.set(key, engine);
 
-    // engine.start() is expected to resolve { success: false, error } on a
-    // handled startup failure, but a rejection can still escape it (e.g. an
-    // unguarded exchange call deep in startup recovery). Since the engine was
-    // already registered above so regime:stop can find it mid-start, an
-    // uncaught rejection here must still unregister it — otherwise it's
-    // stranded as "already running" (blocking every future regime:start)
-    // while never actually running (no orders watched) until an operator
-    // manually intervenes.
+    // Retain registry ownership until teardown has completed. A failed stop
+    // must block replacement: the old object may still own callbacks/writers.
+    const releaseAttempt = async () => {
+      const stopped = await engine.stop();
+      if (stopped?.error) throw new Error(stopped.error);
+      const drain = await drainFundWrites(exchange, resolvedPair);
+      if (!drain.drained) throw new Error('Fund startup writers are still draining');
+      if (regimeEngines.get(key) === engine) regimeEngines.delete(key);
+      invalidateStandaloneLedger(exchange, resolvedPair);
+    };
     let startResult;
     try {
       startResult = await engine.start();
     } catch (err) {
-      regimeEngines.delete(key);
       fundLogger.error(`❌ [${label}] regime:start threw during engine startup: ${err.message}`, { error: err.message });
-      return { success: false, error: `Engine startup failed for ${exchange}/${resolvedPair} — see engine logs for details` };
+      startResult = { success: false, error: `Engine startup failed for ${exchange}/${resolvedPair} — see engine logs for details`, retryable: isTransientStartError(err) };
+    }
+    if (!startResult?.success || startResult.autoClosed || !isCurrent()) {
+      try {
+        await releaseAttempt();
+      } catch (err) {
+        fundLogger.error(`❌ [${label}] Failed startup cleanup: ${err.message}`, { error: err.message });
+        return { success: false, error: 'Engine cleanup failed — operator action required', needsOperator: true };
+      }
+      if (!isCurrent()) return { success: false, error: 'Engine start cancelled' };
+      if (startResult?.autoClosed) {
+        saveRegimeRunningFlag(exchange, resolvedPair, false);
+        return { success: true, exchange, pair: resolvedPair, autoClosed: true };
+      }
+      return { ...startResult, success: false, error: startResult?.error || 'Failed to start regime engine' };
     }
 
-    if (!startResult.success) {
-      regimeEngines.delete(key);
-      return { success: false, error: startResult.error || 'Failed to start regime engine' };
+    try {
+      stopMarketDataService(exchange, resolvedPair);
+      invalidateStandaloneLedger(exchange, resolvedPair);
+      saveRegimeRunningFlag(exchange, resolvedPair, true);
+      fundLogger.info(`ℹ️ 🚀 [${label}] Regime engine started`);
+      return { success: true, exchange, pair: resolvedPair, status: engine.getStatus() };
+    } catch (err) {
+      fundLogger.error(`❌ [${label}] Failed startup handover: ${err.message}`, { error: err.message });
+      await releaseAttempt();
+      return { success: false, error: 'Engine startup handover failed — operator action required', needsOperator: true };
     }
-
-    // Auto-close: engine detected a drained fund and closed it instead of running
-    if (startResult.autoClosed) {
-      regimeEngines.delete(key);
-      fundLogger.info(`ℹ️ 🛑 [${label}] Fund auto-closed (empty draining position)`);
-      return { success: true, exchange, pair: resolvedPair, autoClosed: true };
-    }
-
-    stopMarketDataService(exchange, resolvedPair);
-    invalidateStandaloneLedger(exchange, resolvedPair);
-    saveRegimeRunningFlag(exchange, resolvedPair, true);
-
-    fundLogger.info(`ℹ️ 🚀 [${label}] Regime engine started`);
-    return { success: true, exchange, pair: resolvedPair, status: engine.getStatus() };
   };
+  const supervisor = createFundStartSupervisor({
+    startAttempt, fundKey, resolvePair, regimeEngines,
+    saveRegimeRunningFlag, logger,
+    isPaused: deps.isPaused,
+    setTimer: deps.setTimer, clearTimer: deps.clearTimer,
+  });
+  const { startFund, autoResumeFund } = supervisor;
   registry.onRequest('regime:start', startFund);
 
-  registry.onRequest('regime:stop', async (payload, exchange, pair) => {
+  const stopFund = async (payload, exchange, pair) => {
     const resolvedPair = resolvePair(exchange, pair);
     const key = fundKey(exchange, resolvedPair);
     const label = fundLabel(exchange, resolvedPair);
@@ -165,7 +188,12 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
       fundLogger.warn(`⚠️ [${label}] Standalone market-data-service did not start (${mdsResult?.error || 'unknown'}); proceeding with engine stop, will retry handover after stop in case its persist repaired a corrupt ledger`, { error: mdsResult?.error || 'unknown' });
     }
 
-    const stopResult = await engine.stop().catch((err) => {
+    const stopResult = await engine.stop().then(async (result) => {
+      if (result?.error) return result;
+      const drain = await drainFundWrites(exchange, resolvedPair);
+      if (!drain.drained) throw new Error('Fund writers are still draining');
+      return result;
+    }).catch((err) => {
       fundLogger.error(`❌ [${label}] Error stopping engine: ${err.message}`, { error: err.message });
       return { error: err.message };
     });
@@ -207,8 +235,10 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
 
     fundLogger.info(`ℹ️ ✅ [${label}] Regime engine stopped successfully`);
     return { success: true, exchange, pair: resolvedPair, stopped: true };
-  });
-  return { startFund };
+  };
+  registry.onRequest('regime:stop', supervisor.wrapStop(stopFund));
+  return { startFund, autoResumeFund, getStartStatus: supervisor.getStatus, cancelStarts: supervisor.cancelAll };
+
 };
 
 module.exports = { registerEngineLifecycleHandlers };

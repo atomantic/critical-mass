@@ -202,7 +202,7 @@ const createEngineCallbacks = (exchange, pair) => ({
 // Extracted to src/engine-lifecycle-handlers.js (issue #504) so the
 // fill-consumer handover ordering around engine stop/start can be tested
 // directly against these production callbacks.
-const { startFund } = registerEngineLifecycleHandlers(ipcServer, {
+const { startFund, autoResumeFund, getStartStatus, cancelStarts } = registerEngineLifecycleHandlers(ipcServer, {
   regimeEngines,
   resolvePair,
   fundKey,
@@ -219,12 +219,15 @@ const { startFund } = registerEngineLifecycleHandlers(ipcServer, {
   wireMarketDataCallbacks,
   invalidateStandaloneLedger,
   saveRegimeRunningFlag,
+  drainFundWrites: (exchange, pair) => drainPendingWrites(30_000,
+    entry => entry.label.startsWith('engine-') && entry.label.endsWith(`:${fundLabel(exchange, pair)}`)),
 });
 
 ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
   const key = fundKey(exchange, resolvedPair);
   const engine = regimeEngines.get(key);
+  const startup = getStartStatus(exchange, resolvedPair);
 
   if (!engine) {
     const { buildStoppedRegimeStatus } = require('../src/regime-status');
@@ -236,7 +239,7 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
         `❌ [${fundLabel(exchange, resolvedPair)}] regime:status unavailable — ${stateError}`,
         { action: 'regime:status', error: stateError }
       );
-      return { success: false, exchange, pair: resolvedPair, running: false, status: null, error: stateError };
+      return { success: false, exchange, pair: resolvedPair, running: false, status: null, error: stateError, startup };
     }
     const position = savedState?.position || null;
     const marketService = getMarketDataService(exchange, resolvedPair);
@@ -270,10 +273,10 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
       mode: 'STOPPED',
     });
 
-    return { success: true, exchange, pair: resolvedPair, running: false, status };
+    return { success: true, exchange, pair: resolvedPair, running: false, status, startup };
   }
 
-  return { success: true, exchange, pair: resolvedPair, running: true, status: engine.getStatus() };
+  return { success: true, exchange, pair: resolvedPair, running: !startup || startup.state === 'running', status: engine.getStatus(), startup };
 });
 
 ipcServer.onRequest('regime:pause', async (payload, exchange, pair) => {
@@ -543,11 +546,14 @@ registerEngineBackupHandlers(ipcServer, {
   logger: engineLogger(EXCHANGE_NAME),
 });
 
-ipcServer.onRequest('regime:stop-all', async () => stopAllRegimeEngines(regimeEngines, {
-  logger: engineLogger,
-  label: fundLabel,
-  setRunningFlag: saveRegimeRunningFlag,
-}));
+ipcServer.onRequest('regime:stop-all', async () => {
+  await cancelStarts({ clearDesired: true });
+  return stopAllRegimeEngines(regimeEngines, {
+    logger: engineLogger,
+    label: fundLabel,
+    setRunningFlag: saveRegimeRunningFlag,
+  });
+});
 
 // Exchange/fund info queries
 ipcServer.onRequest('exchanges:list', async () => {
@@ -776,65 +782,11 @@ const startup = async () => {
     const key = fundKey(exchange, fundPair);
 
     if (shouldAutoResumeRegime(exchange, fundPair)) {
-      // Skip auto-resume for closed funds — the operator must explicitly reopen.
-      const { state: savedState, error: stateError } = loadRegimeStateSafe(exchange, fundPair);
-      if (stateError) {
-        // Stay up in a "needs operator" state rather than exit(1) into a PM2
-        // restart loop against the same corrupt file (issue #532). The running
-        // flag is deliberately left set so a repaired file auto-resumes on the
-        // next restart; regime:status reports the repair instruction meanwhile.
-        fundLogger.error(`❌ [${label}] Skipping auto-resume — ${stateError}`, { action: 'auto-resume', error: stateError });
-        continue;
-      }
-      if (savedState?.position?.lifecycle === LIFECYCLE.CLOSED) {
-        fundLogger.info(`ℹ️ 🛑 [${label}] Skipping auto-resume: fund is closed (call regime:reopen to reactivate)`);
-        saveRegimeRunningFlag(exchange, fundPair, false);
-        continue;
-      }
-      fundLogger.info(`ℹ️ 🔄 [${label}] Auto-resuming regime engine from previous session...`);
-
-      const { getAdapter } = require('../src/adapters');
-      const fundConfig = getFundConfig(exchange, fundPair);
-      const adapter = getAdapter(exchange);
-
-      if (adapter.hasValidKeys && adapter.hasValidKeys()) {
-        // createRegimeEngine eagerly creates its fill ledger
-        // (regime-engine.js:226), which refuses to boot on cold-start
-        // corruption. Without this catch, a single corrupt fund ledger
-        // would abort the entire engine process on startup; instead we
-        // log per-fund (with full detail) and continue with the rest.
-        // Server-side log is the right destination for the absolute
-        // ledger path + parser detail — there's no IPC client here, so
-        // a sanitized message would just lose information.
-        let engine;
-        try {
-          engine = createRegimeEngine(exchange, fundPair, fundConfig, createEngineCallbacks(exchange, fundPair));
-        } catch (err) {
-          fundLogger.error(`❌ [${label}] Failed to auto-resume: Fill ledger init failed: ${err.message}`, { error: err.message });
-          saveRegimeRunningFlag(exchange, fundPair, false);
-          continue;
-        }
-        regimeEngines.set(key, engine);
-
-        const startResult = await engine.start();
-        if (startResult.autoClosed) {
-          regimeEngines.delete(key);
-          fundLogger.info(`ℹ️ 🛑 [${label}] Fund auto-closed on resume (empty draining position)`);
-        } else if (startResult.success) {
-          fundLogger.info(`ℹ️ ✅ [${label}] Regime engine auto-resumed successfully`);
-        } else {
-          fundLogger.error(`❌ [${label}] Failed to auto-resume: ${startResult.error}`, { error: startResult.error });
-          regimeEngines.delete(key);
-          saveRegimeRunningFlag(exchange, fundPair, false);
-        }
-      } else {
-        fundLogger.warn(`⚠️ [${label}] Cannot auto-resume: API keys not configured`);
-        saveRegimeRunningFlag(exchange, fundPair, false);
-      }
+      await autoResumeFund(exchange, fundPair);
     }
 
     // Start passive market data service for funds whose engine isn't running
-    if (!regimeEngines.has(key)) {
+    if (!regimeEngines.has(key) && !getStartStatus(exchange, fundPair)) {
       const regimeConfig = getRegimeConfig(exchange, fundPair);
       if (regimeConfig && Object.keys(regimeConfig).length > 0) {
         fundLogger.info(`ℹ️ 📊 [${label}] Starting market data service...`);
@@ -861,6 +813,7 @@ const gracefulShutdown = async (signal) => {
   const shutdownLogger = engineLogger(EXCHANGE_NAME);
   shutdownLogger.info(`ℹ️ Received ${signal}, shutting down...`, { signal });
 
+  await cancelStarts({ shutdown: true });
   stopAllMarketDataServices();
 
   const stopPromises = [];
