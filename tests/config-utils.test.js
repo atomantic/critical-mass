@@ -476,14 +476,15 @@ describe('loadRawConfig', () => {
     const { context, message } = contextFor(warnings, '⚠️ [config] reload failed');
     assert.equal(
       message,
-      `⚠️ [config] reload failed (${context.error}) — STILL USING LAST-GOOD CONFIG; repair ${USER_CONFIG_FILE}`
+      `⚠️ [config] reload failed (${context.error}) — STILL USING LAST-GOOD CONFIG; repair base config`
     );
     assert.equal(typeof context.error, 'string');
     assert.ok(context.error.length > 0, 'includes the parse failure');
     assert.deepStrictEqual(context, {
       module: 'config-utils',
       error: context.error,
-      configFile: USER_CONFIG_FILE,
+      code: 'ERR_INVALID_JSON',
+      configFile: 'base config',
       usingLastGoodConfig: true,
     });
   });
@@ -509,6 +510,43 @@ describe('loadRawConfig', () => {
       console.warn = origWarn;
     }
     assert.equal(warnings.length, 1, 'persistent corruption must warn once, not every call');
+  });
+
+  for (const [file, identifier] of [[BASE_CONFIG_FILE, 'base config'], [USER_CONFIG_FILE, 'user config']]) {
+    for (const malformed of ['SECRET820', '{"token":"SECRET820","bad":SECRET820}']) {
+      it(`keeps ${identifier} credential excerpts out of cold-start and reload diagnostics (${malformed.length})`, () => {
+        setupFsMocks({ base: { exchanges: {} }, user: {} });
+        const goodRead = fs.readFileSync;
+        let corrupt = true;
+        mock.method(fs, 'readFileSync', (target, encoding) => corrupt && target === file ? malformed : goodRead(target, encoding));
+        assert.throws(() => loadRawConfig(), error => {
+          assert.equal(error.code, 'ERR_INVALID_JSON');
+          assert.ok(error.message.includes(identifier));
+          assert.ok(!JSON.stringify({ message: error.message, stack: error.stack, ...error }).includes('SECRET820'));
+          assert.equal(error.cause, undefined);
+          return true;
+        });
+        corrupt = false;
+        const good = loadRawConfig();
+        corrupt = true;
+        const output = [];
+        for (const channel of ['log', 'warn', 'error']) mock.method(console, channel, (...args) => output.push(args.join(' ')));
+        assert.equal(loadRawConfig(), good);
+        assert.equal(loadRawConfig(), good);
+        assert.equal(output.length, 1);
+        assert.ok(!output.join('\n').includes('SECRET820'));
+        assert.ok(output[0].includes('ERR_INVALID_JSON'));
+        assert.ok(output[0].includes(identifier));
+        corrupt = false;
+        assert.deepEqual(loadRawConfig(), good);
+      });
+    }
+  }
+
+  it('distinguishes read failures without forwarding the original message or cause', () => {
+    setupFsMocks({ base: {}, user: null });
+    mock.method(fs, 'readFileSync', () => { throw Object.assign(new Error('SECRET820'), { code: 'EACCES' }); });
+    assert.throws(() => loadRawConfig(), error => error.code === 'EACCES' && !error.stack.includes('SECRET820') && !error.cause);
   });
 });
 
@@ -621,12 +659,13 @@ describe('saveConfig', () => {
   it('surfaces a clear error instead of a raw SyntaxError when the base config is corrupt', () => {
     setupFsMocks({ base: { exchanges: {} }, user: null });
     mock.method(fs, 'readFileSync', (filePath) => {
-      if (filePath === BASE_CONFIG_FILE) return '{not valid json';
+      if (filePath === BASE_CONFIG_FILE) return '{"token":"SECRET820","bad":SECRET820}';
       throw new Error(`ENOENT: no such file: ${filePath}`);
     });
     assert.throws(
       () => saveConfig({ exchanges: { coinbase: { enabled: true } } }),
-      (err) => err instanceof Error && !(err instanceof SyntaxError) && /base config/i.test(err.message),
+      (err) => err instanceof Error && !(err instanceof SyntaxError) && /base config/i.test(err.message)
+        && err.code === 'ERR_INVALID_JSON' && !err.stack.includes('SECRET820') && !err.cause,
     );
   });
 });

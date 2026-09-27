@@ -30,7 +30,7 @@ describe('core utility structured logging', () => {
     }
   });
 
-  it('preserves JSON parse failure text and appends file and error context', () => {
+  it('reports content-free JSON diagnostics with logical file and error context', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'critical-mass-json-log-'));
     const filePath = path.join(tempDir, 'broken.json');
     fs.writeFileSync(filePath, 'not json{');
@@ -52,14 +52,16 @@ describe('core utility structured logging', () => {
     }
 
     assert.deepStrictEqual(result, { fallback: true });
-    const { context, message } = contextFor(lines, `Error parsing JSON from ${filePath}:`);
-    assert.equal(message, `Error parsing JSON from ${filePath}: ${context.error}`);
+    const file = path.basename(filePath);
+    const { context, message } = contextFor(lines, `Error parsing JSON from ${file}:`);
+    assert.equal(message, `Error parsing JSON from ${file}: ${context.error}`);
     assert.equal(typeof context.error, 'string');
     assert.ok(context.error.length > 0, 'includes the parse failure');
     assert.deepStrictEqual(context, {
       module: 'shared-utils',
-      filePath,
+      file,
       error: context.error,
+      code: 'ERR_INVALID_JSON',
     });
   });
 });

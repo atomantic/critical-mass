@@ -9,6 +9,7 @@
 const { DEFAULT_AGGRESSIVENESS_PRESETS, MERGE_PROXIMITY_BOUNDS } = require('./regime-preset-contract');
 const fs = require('fs');
 const path = require('path');
+const { jsonReadError } = require('./json-diagnostics');
 const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils');
 const pathsModule = require('./paths');
 // logger imports migration; migration's back-edge to config-utils must stay lazy.
@@ -385,10 +386,13 @@ const loadRawConfig = () => {
   // (issue #185).
   let base;
   let user;
+  let configFile = 'base config';
   try {
     base = baseMtime > 0 ? JSON.parse(fs.readFileSync(baseFile, 'utf8')) : {};
+    configFile = 'user config';
     user = userMtime > 0 ? JSON.parse(fs.readFileSync(userConfigFile, 'utf8')) : {};
   } catch (err) {
+    const diagnostic = jsonReadError(err, configFile);
     if (_configCache) {
       // Leave _configCacheKey stale so the next call retries the read and picks
       // up the repaired file immediately once it parses cleanly again. Warn once
@@ -396,16 +400,17 @@ const loadRawConfig = () => {
       // otherwise flood every process's log. Operators must still notice their
       // change didn't take effect; the engine keeps running on last-good config.
       if (!_configReloadFailedLogged) {
-        configLogger.warn(`⚠️ [config] reload failed (${err.message}) — STILL USING LAST-GOOD CONFIG; repair ${userConfigFile}`, {
-          error: err.message,
-          configFile: userConfigFile,
+        configLogger.warn(`⚠️ [config] reload failed (${diagnostic.message}) — STILL USING LAST-GOOD CONFIG; repair ${configFile}`, {
+          error: diagnostic.message,
+          code: diagnostic.code,
+          configFile,
           usingLastGoodConfig: true,
         });
         _configReloadFailedLogged = true;
       }
       return _configCache;
     }
-    throw err;
+    throw diagnostic;
   }
   _configReloadFailedLogged = false; // clean load — re-arm the failure warning
   _configCache = Object.keys(user).length ? deepMerge(base, user) : base;
@@ -472,7 +477,7 @@ const saveConfig = (config) => {
       ? JSON.parse(fs.readFileSync(baseFile, 'utf8'))
       : {};
   } catch (err) {
-    throw new Error(`saveConfig: base config file is unreadable/corrupt (${baseFile}): ${err.message}`);
+    throw jsonReadError(err, 'saveConfig base config');
   }
   writeUserConfigFile(computeDiff(base, config));
   // Bust the cache so the next read picks up our write immediately, even

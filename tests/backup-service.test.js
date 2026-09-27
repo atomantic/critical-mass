@@ -27,6 +27,7 @@ const {
   deleteBackup,
   pruneBackups,
   restoreBackup,
+  inspectBackup,
 } = require('../src/backup-service');
 const { GLOBAL_DEFAULTS } = require('../src/config-utils');
 Object.assign(pathsModule, originalPaths);
@@ -53,6 +54,37 @@ const removeAll = (paths) => {
     fs.rmSync(p, { recursive: true, force: true });
   }
 };
+
+describe('backup configuration JSON diagnostics', () => {
+  const root = path.join(DATA_DIR, 'diagnostic-fixture');
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const corruptFile of ['base', 'user']) {
+    for (const malformed of ['SECRET820', '{"token":"SECRET820","bad":SECRET820}']) {
+      it(`rejects malformed ${corruptFile} config without credential excerpts (${malformed.length})`, () => {
+        const dataDir = path.join(root, 'data');
+        const baseConfigFile = path.join(root, 'base.json');
+        fs.mkdirSync(dataDir, { recursive: true });
+        fs.writeFileSync(baseConfigFile, '{}');
+        const paths = { dataDir, baseConfigFile };
+        const archive = createBackup({ paths });
+        assert.equal(archive.success, true);
+        fs.writeFileSync(corruptFile === 'base' ? baseConfigFile : path.join(dataDir, 'config.json'), malformed);
+        for (const result of [createBackup({ paths }), inspectBackup(archive.filename, { paths })]) {
+          assert.equal(result.success, false);
+          assert.ok(result.error.includes('ERR_INVALID_JSON'));
+          assert.ok(!JSON.stringify(result).includes('SECRET820'));
+        }
+      });
+    }
+  }
+  it('distinguishes I/O errors from invalid JSON without forwarding native messages', () => {
+    fs.mkdirSync(path.join(root, 'base.json'), { recursive: true });
+    const result = createBackup({ paths: { dataDir: path.join(root, 'data'), baseConfigFile: path.join(root, 'base.json') } });
+    assert.equal(result.success, false);
+    assert.ok(result.error.includes('unable to read JSON'));
+    assert.ok(!result.error.includes('ERR_INVALID_JSON'));
+  });
+});
 
 describe('backup-service — createBackup/restoreBackup', () => {
   const createdBackups = [];

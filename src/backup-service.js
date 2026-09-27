@@ -17,6 +17,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { jsonReadError } = require('./json-diagnostics');
 const { spawnSync } = require('child_process');
 const { DATA_DIR, BACKUP_DIR } = require('./paths');
 const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME } = require('./restore-apply');
@@ -130,7 +131,8 @@ const readJsonFile = (file) => {
   try {
     return { ok: true, value: JSON.parse(fs.readFileSync(file, 'utf8')) };
   } catch (err) {
-    return { ok: false, error: `${path.basename(file)} is unreadable or not valid JSON: ${err.message}` };
+    const diagnostic = jsonReadError(err, path.basename(file));
+    return { ok: false, error: diagnostic.message };
   }
 };
 
@@ -791,7 +793,7 @@ const readArchiveManifest = (zipPath) => {
   try {
     return { present: true, manifest: JSON.parse(raw) };
   } catch (err) {
-    return { present: true, error: `${MANIFEST_FILENAME} is not valid JSON: ${err.message}` };
+    return { present: true, error: jsonReadError(err, MANIFEST_FILENAME).message };
   }
 };
 
