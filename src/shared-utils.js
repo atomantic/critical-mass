@@ -11,6 +11,7 @@ const path = require('path');
 const stateTracker = require('./state-tracker');
 const { createContextLogger } = require('./logger');
 const { DATA_DIR } = require('./paths');
+const { jsonReadError } = require('./json-diagnostics');
 const {
   normalizeConfig,
   getNextExecutionTime,
@@ -44,9 +45,12 @@ const readJSON = (filepath, defaultValue = {}) => {
   try {
     return JSON.parse(content);
   } catch (err) {
-    sharedUtilsLogger.error(`Error parsing JSON from ${filepath}: ${err.message}`, {
-      filePath: filepath,
-      error: err.message,
+    const file = path.basename(filepath);
+    const diagnostic = jsonReadError(err, file);
+    sharedUtilsLogger.error(`Error parsing JSON from ${file}: ${diagnostic.message}`, {
+      file,
+      error: diagnostic.message,
+      code: diagnostic.code,
     });
     return defaultValue;
   }

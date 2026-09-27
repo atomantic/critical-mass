@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-820] Sensitive JSON parse failures no longer expose credential excerpts** — Provider/auth reads, configuration reloads and saves, and backup configuration diagnostics now report a logical file and error code without retaining parser messages, stacks or causes; default and last-good recovery behavior is preserved.
 - **[issue-804] Container PM2 dependencies are reproducible** — Install PM2 7.0.4 and its transitive dependencies from a dedicated committed lockfile, with both PM2 executables on the runtime PATH.
 - **[issue-806] Gateway config saves share one validation and apply boundary** — Full-fund and regime saves now reuse field partitioning, regime validation, product identity checks, persistence and IPC status handling while preserving their response contracts and writer semantics.
 - **[issue-811] Backup archives are published only after validation** — Backups now use unique same-directory temporary files, pass zip-integrity and single-manifest checks before atomic publication, and invalid matching archives are ignored by listing and retention.
