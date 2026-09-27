@@ -17,8 +17,12 @@ ABSENT_VOLUME="${VOLUME_PREFIX}-absent"
 UNWRITABLE_VOLUME="${VOLUME_PREFIX}-unwritable"
 INCOMPATIBLE_VOLUME="${VOLUME_PREFIX}-incompatible"
 VOLUMES=("$STORAGE_VOLUME" "$ABSENT_VOLUME" "$UNWRITABLE_VOLUME" "$INCOMPATIBLE_VOLUME")
+COMPOSE_PROJECT_NAME="${VOLUME_PREFIX}-compose"
+COMPOSE_FILE="$TMP_ROOT/missing-bind-compose.yml"
+COMPOSE_MISSING_DIR="$TMP_ROOT/compose-missing-data"
 
 cleanup() {
+  docker compose --project-name "$COMPOSE_PROJECT_NAME" --file "$COMPOSE_FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true
   docker volume rm "${VOLUMES[@]}" >/dev/null 2>&1 || true
   rm -rf "$TMP_ROOT"
 }
@@ -32,6 +36,7 @@ fail() {
 command -v docker >/dev/null 2>&1 || fail "Docker CLI is required"
 docker image inspect "$ALPINE_IMAGE" >/dev/null 2>&1 || fail "Docker image '$ALPINE_IMAGE' is not available locally"
 docker image inspect "$NODE_IMAGE" >/dev/null 2>&1 || fail "Docker image '$NODE_IMAGE' is not available locally"
+docker compose version >/dev/null 2>&1 || fail "Docker Compose is required"
 
 run_alpine() {
   local user="$1"
@@ -70,6 +75,26 @@ run_entrypoint() {
 run_entrypoint "$TMP_ROOT/prepared.log" "$STORAGE_VOLUME"
 run_alpine 0:0 "$STORAGE_VOLUME" 'test -f /workspace/data/operator-bootstrap-secret; test "$(stat -c "%a" /workspace/data/operator-bootstrap-secret)" = 600'
 [[ ! -s "$TMP_ROOT/prepared.log" ]]
+
+# The Compose long syntax must reject a missing host bind source instead of
+# asking a rootful daemon to create it with root ownership.
+printf '%s\n' \
+  'services:' \
+  '  missing-source:' \
+  "    image: $ALPINE_IMAGE" \
+  '    command: ["sh", "-c", "exit 0"]' \
+  '    network_mode: none' \
+  '    volumes:' \
+  '      - type: bind' \
+  '        source: ./compose-missing-data' \
+  '        target: /data' \
+  '        bind:' \
+  '          create_host_path: false' > "$COMPOSE_FILE"
+if docker compose --project-name "$COMPOSE_PROJECT_NAME" --file "$COMPOSE_FILE" up --no-build --abort-on-container-exit >"$TMP_ROOT/compose-absent.log" 2>&1; then
+  fail "Compose unexpectedly accepted a missing bind source"
+fi
+[[ ! -e "$COMPOSE_MISSING_DIR" ]] || fail "Compose created the missing bind source"
+grep -Eiq 'no such file|does not exist|not found|bind source path' "$TMP_ROOT/compose-absent.log" || fail "Compose did not explain the missing bind source"
 
 # Compose refuses this case before startup; the direct entrypoint guard still
 # explains the missing path if the image is launched without that bind mount.
