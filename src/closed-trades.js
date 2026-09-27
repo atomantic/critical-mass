@@ -171,6 +171,28 @@ const createClosedTrades = (exchange, pair) => {
     return true;
   };
 
+  /** Correct consumed buy cost without changing booking quantities. */
+  const applyBuyCorrection = (correction) => {
+    const before = structuredClone(trades);
+    let changed = false;
+    for (const sell of correction.sells) {
+      const trade = trades.find(row => row.sellOrderId === sell.sellOrderId);
+      if (!trade || trade.appliedBuyCorrections?.includes(correction.id)) continue;
+      const cost = trade.costBasis + sell.costDelta + (trade.buyCorrectionCostRemainder || 0);
+      const pnl = trade.pnl - sell.costDelta + (trade.buyCorrectionPnlRemainder || 0);
+      trade.costBasis = roundUSDC(cost);
+      trade.pnl = roundUSDC(pnl);
+      trade.buyCorrectionCostRemainder = cost - trade.costBasis;
+      trade.buyCorrectionPnlRemainder = pnl - trade.pnl;
+      if (trade.qtySold > 0) trade.buyAvgPrice = trade.costBasis / trade.qtySold;
+      trade.appliedBuyCorrections = [...(trade.appliedBuyCorrections || []), correction.id];
+      changed = true;
+    }
+    if (changed) {
+      try { persist(); } catch (err) { trades.splice(0, trades.length, ...before); throw err; }
+    }
+  };
+
   const getAll = () => [...trades].sort((a, b) => a.timestamp - b.timestamp);
   const getTotalPnL = () => roundUSDC(trades.reduce((s, t) => s + (t.pnl || 0), 0));
   // Net of reserves a stale TP sold beyond its body (#770): that asset left
@@ -355,6 +377,7 @@ const createClosedTrades = (exchange, pair) => {
     getCount,
     getByCycleId,
     migrateFromFills,
+    applyBuyCorrection,
   };
 };
 

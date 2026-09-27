@@ -205,7 +205,7 @@ describe('Manual Trade Import', () => {
     fillLedger.persist();
     const adapter = createFakeAdapter({ fillsByOrder: { terminal: [
       { tradeId: 'real-first', side: 'buy', size: 0.01, price: 2000, netFee: 0 },
-      { tradeId: 'real-correction', side: 'buy', size: 0.01, price: 2100, netFee: 0 },
+      { tradeId: 'invalid-real', side: 'buy', size: 0, price: 2100, netFee: 0 },
     ] } });
     const importer = createImporter({ adapter,
       injectBody: async () => { assert.fail('failed import must not create a body'); },

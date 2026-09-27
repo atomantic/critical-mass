@@ -52,7 +52,13 @@ const CONFIG_SNAPSHOT_VERSION = 1;
 const SNAPSHOT_FUND_KEYS = Object.freeze(Object.keys(DEFAULTS));
 
 /** Regime (strategy) fields carried by a snapshot. */
-const SNAPSHOT_REGIME_KEYS = Object.freeze(Object.keys(REGIME_DEFAULTS));
+const SNAPSHOT_REGIME_KEYS = Object.freeze([
+  ...Object.keys(REGIME_DEFAULTS),
+  // Recovery metadata is written atomically with corrected capital (#836).
+  // Omitting it from a restored pending correction would apply its delta again.
+  'appliedBuyCorrections',
+  'buyCorrectionCapitalRemainder',
+]);
 
 /**
  * Global fields carried by a snapshot.
@@ -81,7 +87,7 @@ const SNAPSHOT_GLOBAL_KEYS = Object.freeze([
  * SNAPSHOT_GLOBAL_KEYS.length` fails CI the moment a field is added to
  * DEFAULTS / REGIME_DEFAULTS / GLOBAL_DEFAULTS without bumping it.
  */
-const CONFIG_SNAPSHOT_FIELD_REVISION = 115;
+const CONFIG_SNAPSHOT_FIELD_REVISION = 117;
 
 /**
  * Copy only the allowlisted, defined keys of `source`, in allowlist order (so
