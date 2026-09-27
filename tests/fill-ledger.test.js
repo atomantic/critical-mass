@@ -3016,13 +3016,13 @@ describe('Fill Ledger', () => {
       restored.ingestFill(real('later-sell', 0.005, 'sell'));
       assert.deepEqual(restored.getUnbookedSellFills('covered').map(f => f.tradeId), ['later-sell']);
     });
-    it('refuses economic corrections before changing ledger or indexes', () => {
+    it('keeps sell economic corrections gated before changing ledger or indexes', () => {
       const ledger = createTestLedger();
       ledger.startNewCycle();
-      ledger.ingestFill(synthetic());
+      ledger.ingestFill(synthetic('sell'));
       const before = JSON.stringify(ledger.getAllFills());
-      for (const fill of [{ ...real('changed-price'), price: 2100 },
-        { ...real('changed-fee'), fee: 0.03, netFee: 0.03 }]) {
+      for (const fill of [{ ...real('changed-price', 0.01, 'sell'), price: 2100 },
+        { ...real('changed-fee', 0.01, 'sell'), fee: 0.03, netFee: 0.03 }]) {
         assert.throws(() => ledger.ingestFill(fill), { syntheticReconciliationRequired: true });
         assert.equal(JSON.stringify(ledger.getAllFills()), before);
         assert.equal(ledger.getRecordedSizeForOrder('covered'), 0.02);

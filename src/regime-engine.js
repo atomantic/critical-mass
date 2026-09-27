@@ -19,6 +19,7 @@ const { getAdapter } = require('./adapters');
 const { getUnaccountedFills } = require('./sync-fills');
 const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency, getConfiguredFunds, loadConfig, normalizeExchangeBlock } = require('./config-utils');
 const { createFillLedger, LEGACY_CONSUMPTION_KEY } = require('./fill-ledger');
+const { projectBuyCorrection, applyBuyCorrectionCapital } = require('./buy-fill-correction');
 const { createClosedTrades } = require('./closed-trades');
 const {
   createHealthMonitor,
@@ -2033,6 +2034,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       let hasSavedState;
       try {
         hasSavedState = loadLiveState();
+        fillLedger.resumeBuyCorrections();
       } catch (err) {
         logger.error(
           `❌ [${fundLabel}] Cannot start — operator must repair state before trading resumes: ${err.message}`,
@@ -6207,6 +6209,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // TPs fire-and-forget, and clearing the flag on the recovery promise alone
       // would let a merge (or the next reconcile tick) race an in-flight TP
       // re-placement (#189 review).
+      fillLedger.resumeBuyCorrections();
       await reconcilePendingPlacements();
       await completeOwedCycleReset().catch((err) => {
         logger.error(`❌ [${exchange}] Owed cycle reset failed (will retry next reconcile): ${err.message}`, { error: err.message });
@@ -6481,9 +6484,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                   const { sellQty } = positionSizer.calculateTakeProfitSize(
                     body.assetQty, body.avgPrice, body.tpPrice, tierCfg.holdbackScale
                   );
-                  if (Math.abs(sellQty - body.assetOnOrder) > 0.00000001) {
+                  if (body.needsTpReprice || Math.abs(sellQty - body.assetOnOrder) > 0.00000001) {
                     logger.warn(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP stale (onOrder=${body.assetOnOrder}, expected=${sellQty}) — cancelling for re-place`);
                     if (await cancelBodyTpForReplace(body, 'Reconcile stale-size') === 'cancelled') {
+                      body.needsTpReprice = false;
                       saveLiveState();
                       await placeBodyTp(body);
                     }
@@ -9398,6 +9402,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     logger.info(`📦 [${exchange}] Extended body ${body.id} (${body.tier}) with ${shortfall.assetQty} additional ${baseCurrency} from buy ${buyOrderId} (now ${body.assetQty} ${baseCurrency} total, TP re-placed: ${!!tpResult})`);
     return { success: true, bodyId: body.id, tier: body.tier, tpPlaced: !!tpResult };
   };
+
+  fillLedger.setBuyCorrectionHandler(correction => {
+    const next = projectBuyCorrection(positionState, correction);
+    const derived = fillLedger.getDerivedRealizedPnL();
+    next.realizedPnL = derived.realizedPnL;
+    next.realizedAssetPnL = derived.realizedAssetPnL;
+    next.heldAssetCostBasis = derived.heldOpenBuyCostBasis;
+    saveRegimeState(next, regimeDetector.getState(), exchange,
+      tpOptimizer.exportState(), sizeOptimizer.exportState(), pair);
+    // Keep existing body references alive for any suspended fill/cancel path.
+    for (const body of positionState.celestialBodies || []) {
+      const projected = next.celestialBodies?.find(row => row.id === body.id);
+      if (projected) Object.assign(body, projected);
+    }
+    const bodies = positionState.celestialBodies;
+    Object.assign(positionState, next, { celestialBodies: bodies });
+    config.maxUsdcDeployed = applyBuyCorrectionCapital(exchange, pair, correction);
+    closedTrades.load();
+    closedTrades.applyBuyCorrection(correction);
+  });
 
   return {
     start,

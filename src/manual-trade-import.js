@@ -437,6 +437,14 @@ const createManualTradeImporter = ({
 
       if (fullQty <= priorRecordedQty + 0.00000001) {
         if (currentBodyId && currentBodyId !== trade.bodyId) store.markTpPlaced(trade.id, currentBodyId);
+        // Identity/economic replacement can change cost without new inventory.
+        // The ledger's durable journal already reconciled the body; refresh the
+        // import record from its full totals, including unresolved coverage.
+        const fullQuote = orderRows.reduce((sum, row) => sum + row.quoteAmount, 0);
+        store.refreshBuyTotals(trade.id, {
+          buyPrice: averagePrice(fullQuote, fullQty), buySize: fullQty,
+          buyQuoteAmount: fullQuote, buyFillTradeIds: orderRows.map(row => row.tradeId),
+        });
         log.info(`ℹ️ 📦 [${exchange}] Manual buy import: buy ${buyOrderId} already has body ${currentBodyId} — skipping duplicate body creation`, {
           bodyId: currentBodyId,
           buyOrderId,

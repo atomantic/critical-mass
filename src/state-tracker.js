@@ -982,7 +982,7 @@ const loadRegimeState = (exchange = 'coinbase', pair) => {
  * Protected fields that should be preserved from external edits
  * when an optimistic version conflict is detected.
  */
-const PROTECTED_FIELDS = ['celestialBodies', 'celestialState', 'realizedPnL', 'realizedAssetPnL'];
+const PROTECTED_FIELDS = ['celestialBodies', 'celestialState', 'realizedPnL', 'realizedAssetPnL', 'appliedBuyCorrections'];
 
 /**
  * Non-throwing wrapper around `loadRegimeState` for callers that must survive a
