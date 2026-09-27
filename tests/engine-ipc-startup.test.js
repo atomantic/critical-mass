@@ -34,6 +34,7 @@ const createHarness = (exchange = 'coinbase') => {
   const ipcModule = { exports: {} };
   const ipcDependencies = {
     ws: { Server: MockServer, OPEN: 1 },
+    '../pending-writes': { trackPendingWrite: (_, run) => Promise.resolve().then(run) },
     './ipc-protocol': protocol,
     '../logger': { createContextLogger: () => logger },
     '../engine-maintenance': { setEngineMaintenance: () => { calls.push('maintenance'); }, refuseDuringMaintenance: () => null },
@@ -79,7 +80,9 @@ const createHarness = (exchange = 'coinbase') => {
       shouldAutoResumeRegime: () => { calls.push('running-flag'); return true; },
     },
     '../src/engine-stop-all': {},
-    '../src/engine-lifecycle-handlers': { registerEngineLifecycleHandlers: () => {} },
+    '../src/engine-backup-window': { registerEngineBackupHandlers: () => {} },
+    '../src/pending-writes': {},
+    '../src/engine-lifecycle-handlers': { registerEngineLifecycleHandlers: () => ({ startFund: () => {} }) },
     '../src/engine-recalculate-handler': { registerEngineRecalculateHandler: () => {} },
     '../src/migration': { migrateExchangeToPairs: () => { calls.push('migration'); return {}; } },
     '../src/restore-apply': { guardIncompleteRestore: () => { calls.push('restore'); } },

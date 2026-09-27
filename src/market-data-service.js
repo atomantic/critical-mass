@@ -1,4 +1,5 @@
 // @ts-check
+const { trackPendingWrite } = require('./pending-writes');
 /**
  * Market Data Service
  *
@@ -529,7 +530,7 @@ const createWorkQueue = () => {
   const enqueue = (key, work) => {
     const previous = chains.get(key) || Promise.resolve();
     // catch() prevents one failure from poisoning the chain for that key.
-    const next = previous.catch(() => {}).then(() => work());
+    const next = trackPendingWrite(`market-order:${key}`, () => previous.catch(() => {}).then(() => work()));
     chains.set(key, next);
     // Use .then(onFulfilled, onRejected) instead of .finally so rejection
     // from `next` is swallowed here (the caller of enqueue() owns the
@@ -788,7 +789,7 @@ const createMarketDataService = (exchange, pair) => {
     // rejection (e.g. a throw inside calculateAllMetrics) can't crash the process.
     metricsUpdateInterval = setInterval(
       () =>
-        updateMetrics(adapter, productId).catch((err) =>
+        trackPendingWrite(`market-metrics:${serviceKey(exchange, resolvedPair)}`, () => updateMetrics(adapter, productId)).catch((err) =>
           logger.error(`❌ [${exchange}] Metrics update failed: ${err.message}`, {
             error: err.message,
           })
@@ -1995,6 +1996,9 @@ const stopAllMarketDataServices = () => {
 
 module.exports = {
   createMarketDataService,
+  getActiveMarketDataFunds: () => [...new Set([...marketDataServices.keys(), ...startingMarketDataServices.keys()])]
+    .map((key) => { const [exchange, pair] = key.split('::'); return { exchange, pair }; }),
+  drainMarketDataStarts: () => Promise.allSettled([...startingMarketDataServices.values()].map((entry) => entry.promise)),
   startMarketDataService,
   stopMarketDataService,
   getMarketDataService,

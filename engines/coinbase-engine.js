@@ -30,16 +30,20 @@ const {
 const { createRegimeEngine } = require('../src/regime-engine');
 const {
   startMarketDataService,
+  getActiveMarketDataFunds,
+  drainMarketDataStarts,
   stopAllMarketDataServices,
   getMarketDataService,
   stopMarketDataService,
 } = require('../src/market-data-service');
-const { getChartDataBuffer, getChartData, removeChartDataBuffer, shutdownAllBuffers } = require('../src/chart-data-buffer');
+const { getChartDataBuffer, getChartData, removeChartDataBuffer, shutdownAllBuffers, resumeAllBuffers } = require('../src/chart-data-buffer');
 const { createFillLedger } = require('../src/fill-ledger');
 const { createManualTradeImporter } = require('../src/manual-trade-import');
 const { createIPCServer } = require('../src/ipc/ipc-server');
 const { createSocketIOProxy, forwardTradeEvents } = require('../src/ipc/socket-io-proxy');
 const { saveRegimeRunningFlag, shouldAutoResumeRegime, fundKey, fundLabel, readBooleanFlag } = require('../src/shared-utils');
+const { registerEngineBackupHandlers } = require('../src/engine-backup-window');
+const { drainPendingWrites } = require('../src/pending-writes');
 const { stopAllRegimeEngines } = require('../src/engine-stop-all');
 const { registerEngineLifecycleHandlers } = require('../src/engine-lifecycle-handlers');
 const { registerEngineRecalculateHandler } = require('../src/engine-recalculate-handler');
@@ -198,7 +202,7 @@ const createEngineCallbacks = (exchange, pair) => ({
 // Extracted to src/engine-lifecycle-handlers.js (issue #504) so the
 // fill-consumer handover ordering around engine stop/start can be tested
 // directly against these production callbacks.
-registerEngineLifecycleHandlers(ipcServer, {
+const { startFund } = registerEngineLifecycleHandlers(ipcServer, {
   regimeEngines,
   resolvePair,
   fundKey,
@@ -531,6 +535,14 @@ ipcServer.onRequest('regime:dry-run-state', async (payload, exchange, pair) => {
 // Stop all running regime engines (used by backup restore). The reply is the
 // restore path's proof of writer quiescence, so a fund that failed to stop is
 // reported as failed and stays owned by this process (issue #429).
+registerEngineBackupHandlers(ipcServer, {
+  regimeEngines, getMarketFunds: getActiveMarketDataFunds,
+  stopMarketServices: stopAllMarketDataServices, drainMarketStarts: drainMarketDataStarts,
+  drainPendingWrites, startMarketService: startMarketDataService, startFund,
+  pauseBuffers: shutdownAllBuffers, resumeBuffers: resumeAllBuffers,
+  logger: engineLogger(EXCHANGE_NAME),
+});
+
 ipcServer.onRequest('regime:stop-all', async () => stopAllRegimeEngines(regimeEngines, {
   logger: engineLogger,
   label: fundLabel,

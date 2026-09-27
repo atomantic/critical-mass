@@ -1,3 +1,4 @@
+const { trackPendingWrite } = require('../pending-writes');
 // @ts-check
 /**
  * Signal Prediction Scorecard
@@ -513,8 +514,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     lastSuccessAt: null,
   }
 
-  const persistRecord = (record) => Promise.resolve()
-    .then(() => journalWriter(record))
+  const persistRecord = (record) => trackPendingWrite('updown-scorecard-journal', () => journalWriter(record))
     .then(() => {
       journal.healthy = true
       journal.lastError = null

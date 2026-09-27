@@ -1,4 +1,5 @@
 // @ts-check
+const { trackPendingWrite } = require('./pending-writes');
 /**
  * Regime Engine
  *
@@ -897,7 +898,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     cycleId: summary.cycleId ?? fillLedger.getCurrentCycleId(),
   });
   const healthMonitor = createHealthMonitor(exchange, config, {
-    onSafeMode: async (reason) => {
+    onSafeMode: (reason) => trackPendingWrite(`engine-safe-mode:${fundLabel}`, async () => {
       logger.warn(`⚠️ [${exchange}] SAFE mode: ${reason}`, { reason });
       // A disk fault is not an exchange fault (issue #532): the intervention is
       // to stop opening NEW entries (canPlaceEntry blocks them in SAFE), not to
@@ -910,7 +911,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (callbacks.onHealthChange) {
         callbacks.onHealthChange('SAFE', reason);
       }
-    },
+    }),
     onActiveMode: () => {
       if (callbacks.onHealthChange) {
         callbacks.onHealthChange('ACTIVE', null);
@@ -1275,7 +1276,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @param {Object} cycleData - Data about the completed cycle
    * @returns {Promise<void>}
    */
-  const recordCycleForSizeOptimizer = async (cycleData) => {
+  const recordCycleForSizeOptimizer = (cycleData) => trackPendingWrite(`engine-size-optimizer:${fundLabel}`, async () => {
     if (!config.sizeAutoManaged) return;
 
     // getAccountBalance is ACCOUNT-wide, not fund-scoped (same caveat as
@@ -1354,7 +1355,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     } catch (err) {
       logger.warn(`⚠️ [${exchange}] Size optimizer recording failed (non-fatal): ${err.message}`, { error: err.message });
     }
-  };
+  });
 
   /**
    * Re-save after recordCycleForSizeOptimizer's detached (fire-and-forget)
@@ -2916,11 +2917,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         logger.info(`🛑 [${exchange}] Draining fund has empty position — auto-closing`);
         if (!isDryRun) saveLiveState();
         if (callbacks.onLifecycleClosed) {
-          setImmediate(() => {
-            try { callbacks.onLifecycleClosed(); } catch (err) {
-              logger.warn(`⚠️ [${exchange}] onLifecycleClosed callback error: ${err.message}`, { error: err.message });
-            }
-          });
+          trackPendingWrite(`engine-lifecycle:${fundLabel}`, () => new Promise((resolve) => setImmediate(resolve)))
+            .then(() => trackPendingWrite(`engine-lifecycle-close:${fundLabel}`, () => callbacks.onLifecycleClosed()))
+            .catch((err) => logger.warn(`⚠️ [${exchange}] onLifecycleClosed callback error: ${err.message}`, { error: err.message }));
         }
         return { success: true, autoClosed: true };
       }
@@ -3038,7 +3037,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   /**
    * Stop the regime engine
    */
-  const stop = async () => {
+  const stop = async ({ keepHeartbeat = false } = {}) => {
     if (!isRunning) return;
 
     logger.info(`🛑 [${exchange}] Stopping regime engine`);
@@ -3085,7 +3084,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // clears the timer when no other fund still needs it). Mirrors the
       // !isDryRun condition in start() so a dry-run engine can never
       // deregister a live fund's heartbeat.
-      if (!isDryRun && adapter.stopHeartbeat) {
+      if (!isDryRun && !keepHeartbeat && adapter.stopHeartbeat) {
         adapter.stopHeartbeat(fundLabel);
       }
 
@@ -3120,11 +3119,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Clear all TTL timers to prevent post-shutdown state mutations
       for (const t of ttlTimers) clearTimeout(t);
       ttlTimers.clear();
-      recentlyProcessedFills.clear();
-      recentlyProcessedSellFills.clear();
-      recentlyProcessedBuyFills.clear();
-      pendingMergeTpOrders.clear();
-      completedMergeTpOrders.clear();
+      if (!keepHeartbeat) {
+        recentlyProcessedFills.clear();
+        recentlyProcessedSellFills.clear();
+        recentlyProcessedBuyFills.clear();
+        pendingMergeTpOrders.clear();
+        completedMergeTpOrders.clear();
+      }
 
       // Clear order executor stale timers
       if (orderExecutor.clearTimers) orderExecutor.clearTimers();
@@ -3153,7 +3154,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       onTrade: (data) => { if (isRunning) handleTrade(data); },
       onOrderUpdate: (data) => {
         if (isRunning) {
-          handleOrderUpdate(data).catch(err => logger.error(
+          trackPendingWrite(`engine-order:${fundLabel}`, () => handleOrderUpdate(data)).catch(err => logger.error(
             `❌ [${exchange}] handleOrderUpdate error: ${err.message}`,
             { orderId: data.orderId, error: err.message }
           ));
@@ -3198,7 +3199,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     tailEvents.processTicker(data, marketState.atr1m);
 
     // Evaluate entry trigger (fire-and-forget, catch to prevent unhandled rejection)
-    evaluateEntryTrigger().catch(err => logger.warn(
+    trackPendingWrite(`engine-entry:${fundLabel}`, () => evaluateEntryTrigger()).catch(err => logger.warn(
       `⚠️ [${exchange}] Entry evaluation failed: ${err.message}`,
       { error: err.message }
     ));
@@ -5401,7 +5402,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * to ALL callers (WS, reconcile, polling) — the polling callback also clears
    * its own outer recentlyProcessedFills key (issue #99 follow-up).
    */
-  const handleOrderFill = async (fillData) => {
+  const handleOrderFill = (fillData) => trackPendingWrite(`engine-booking:${fundLabel}`, async () => {
     const dedupRef = { set: null, key: null };
     try {
       // withFillGate increments the in-flight fill count (so dust consolidation
@@ -5415,7 +5416,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (dedupRef.set) dedupRef.set.delete(dedupRef.key);
       throw err;
     }
-  };
+  });
 
   /**
    * Cancel a body's TP so the caller can re-place it (operator TP edit,
@@ -5587,7 +5588,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // an unhandled rejection in a bare interval callback would crash the
     // process, so guard every invocation.
     const runMetrics = () =>
-      updateMetrics().catch((err) =>
+      trackPendingWrite(`engine-metrics:${fundLabel}`, () => updateMetrics()).catch((err) =>
         logger.error(`❌ [${exchange}] Metrics update crashed: ${err.message}`, { error: err.message })
       );
     metricsInterval = setInterval(runMetrics, METRICS_INTERVAL_MS);
@@ -6514,7 +6515,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Start periodic reconciliation
    */
   const startReconciliation = () => {
-    reconcileInterval = setInterval(reconcileTick, config.reconcileIntervalMs);
+    reconcileInterval = setInterval(() => trackPendingWrite(`engine-reconcile:${fundLabel}`, reconcileTick).catch((err) => logger.error(`Reconcile failed: ${err.message}`)), config.reconcileIntervalMs);
   };
 
   /**
@@ -7724,7 +7725,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   // Set up live mode fill detection callback (backup for when WebSocket misses fills)
   if (!isDryRun) {
-    liveCallbacks.onFillDetected = async (orderId, status) => {
+    liveCallbacks.onFillDetected = (orderId, status) => trackPendingWrite(`engine-fill:${fundLabel}`, async () => {
       // Partial-fill detection from polling reuses this callback. Dedup
       // on the (orderId, filledSize) tuple so a partial fill that grows
       // (e.g. 0.02 → 0.05 → 0.08) is processed once per advance instead
@@ -7819,7 +7820,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           { orderId, side: status.side, error: err.message }
         );
       }
-    };
+    });
   }
 
   /**
@@ -8391,7 +8392,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }).catch((err) => {
       logger.error(`❌ [${exchange}] Recovered-row body growth failed: ${err.message}`, { error: err.message });
     });
-    return recoveredGrowthChain;
+    return trackPendingWrite(`engine-growth:${fundLabel}`, () => recoveredGrowthChain);
   };
 
   /**
@@ -9344,6 +9345,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   return {
     start,
     stop,
+    flushForBackup: () => {
+      if (isDryRun) dryRunState.forceSave(exchange, {
+        isDryRun: true, executor: orderExecutor.exportState(), position: { ...positionState },
+        tpOptimizer: tpOptimizer.exportState(), sizeOptimizer: sizeOptimizer.exportState(),
+      }, pair);
+      else { saveLiveState(); fillLedger.persist({ force: true }); }
+    },
     getState,
     getStatus,
     forceRegime,
