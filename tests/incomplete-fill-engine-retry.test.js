@@ -31,7 +31,7 @@ const configUtils = require('../src/config-utils');
 const originalUpdateRegimeConfig = configUtils.updateRegimeConfig;
 configUtils.updateRegimeConfig = () => {};
 
-const { createRegimeEngine } = require('../src/regime-engine');
+const { createRegimeEngine, buildPartialFillData } = require('../src/regime-engine');
 
 const TEST_PAIR = '__testincompletefillretry__';
 
@@ -153,6 +153,7 @@ describe('terminal fallback reconciles cumulative quote (#808)', () => {
     { name: 'rising', quote: 60, average: 3000, gapPrice: 4000 },
     { name: 'falling', quote: 30, average: 1500, gapPrice: 1000 },
     { name: 'average-only', quote: undefined, average: 3000, gapPrice: 4000 },
+    { name: 'shaped-average-only', quote: undefined, average: 3000, gapPrice: 4000, shaped: true },
     { name: 'authoritative-quote', quote: 60, average: 2500, gapPrice: 4000 },
     { name: 'quote-without-average', quote: 60, average: undefined, gapPrice: 4000 },
   ]) {
@@ -161,8 +162,11 @@ describe('terminal fallback reconciles cumulative quote (#808)', () => {
       const eng = makeEngine(unavailable);
       await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'PARTIALLY_FILLED',
         filledSize: 0.01, isPartialFill: true, confirmedFills: [realPartial(orderId)] });
-      const status = { orderId, side: 'buy', status: 'FILLED', filledSize: 0.02,
+      const rawStatus = { orderId, side: 'buy', status: 'FILLED', filledSize: 0.02,
         filledValue: fixture.quote, averageFilledPrice: fixture.average, totalFees: 0.06 };
+      const status = fixture.shaped
+        ? buildPartialFillData(orderId, 'buy', rawStatus, { isPartialFill: false, totalFees: 0.06 })
+        : rawStatus;
       await eng._test.handleOrderFill(status);
       const ledger = eng.getFillLedger();
       const rows = ledger.getFillsForOrder(orderId);
@@ -189,6 +193,21 @@ describe('terminal fallback reconciles cumulative quote (#808)', () => {
       near(ownedTotals().cost, expectedQuote + 0.06);
     });
   }
+
+  it('preserves missing quote and explicit invalid quote across status shaping', () => {
+    const status = { status: 'FILLED', filledSize: 0.02, averageFilledPrice: 3000 };
+    for (const absent of [undefined, null]) {
+      assert.equal(buildPartialFillData('quote-boundary', 'buy', {
+        ...status, filledValue: absent,
+      }).filledValue, undefined);
+    }
+    assert.equal(buildPartialFillData('quote-boundary', 'buy', {
+      ...status, filledValue: 0,
+    }).filledValue, 0);
+    assert.ok(Number.isNaN(buildPartialFillData('quote-boundary', 'buy', {
+      ...status, filledValue: 'bad',
+    }).filledValue));
+  });
 
   it('uses the full cumulative value when there are no earlier fills', async () => {
     const eng = makeEngine(unavailable);
