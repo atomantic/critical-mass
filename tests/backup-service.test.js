@@ -81,6 +81,21 @@ describe('backup-service — createBackup/restoreBackup', () => {
     assert.ok(listed.some(b => b.filename === result.filename));
   });
 
+  it('publishes same-second backups under distinct names with one valid manifest each', () => {
+    const first = createBackup();
+    const second = createBackup();
+    assert.equal(first.success, true);
+    assert.equal(second.success, true);
+    assert.notEqual(first.filename, second.filename);
+    createdBackups.push(first.filename, second.filename);
+    for (const backup of [first, second]) {
+      const archive = path.join(BACKUP_DIR, backup.filename);
+      assert.equal(spawnSync('unzip', ['-tq', archive]).status, 0);
+      assert.equal(listZipEntries(archive).filter(entry => entry === 'backup-manifest.json').length, 1);
+    }
+    assert.deepEqual(fs.readdirSync(BACKUP_DIR).filter(name => name.startsWith('.backup-')), []);
+  });
+
   it('returns the real spawnSync error (not "Unknown zip error") when the zip binary is missing', () => {
     process.env.PATH = '';
     const result = createBackup();
@@ -403,7 +418,12 @@ describe('backup-service — pruneBackups retention', () => {
 
   const makeBackup = (name, mtimeMs) => {
     const filePath = path.join(BACKUP_DIR, name);
-    fs.writeFileSync(filePath, 'placeholder');
+    const sourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-backup-retention-'));
+    const manifest = path.join(sourceDir, 'backup-manifest.json');
+    fs.writeFileSync(manifest, JSON.stringify({ manifestVersion: 1, createdAt: new Date(mtimeMs).toISOString(), config: {} }));
+    const result = spawnSync('zip', ['-q', filePath, 'backup-manifest.json'], { cwd: sourceDir });
+    fs.rmSync(sourceDir, { recursive: true, force: true });
+    assert.equal(result.status, 0);
     const mtime = new Date(mtimeMs);
     fs.utimesSync(filePath, mtime, mtime);
     created.push(filePath);
@@ -454,6 +474,16 @@ describe('backup-service — pruneBackups retention', () => {
     assert.equal(result.pruned, 0);
     assert.equal(result.remaining, totalBackups);
     assert.equal(listBackups().length, 5);
+  });
+
+  it('ignores corrupt matching archives when listing and pruning', () => {
+    const corrupt = path.join(BACKUP_DIR, `backup-${prefix}-corrupt.zip`);
+    fs.writeFileSync(corrupt, 'partial archive');
+    created.push(corrupt);
+    assert.equal(listBackups().some(backup => backup.filename.endsWith('-corrupt.zip')), false);
+    const result = pruneBackups(5);
+    assert.equal(result.pruned, 0);
+    assert.equal(fs.existsSync(corrupt), true);
   });
 
   // #547: a route bug or hand-edited config.json can persist an invalid

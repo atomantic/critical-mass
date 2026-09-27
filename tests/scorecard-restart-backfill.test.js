@@ -137,3 +137,18 @@ describe('buildOutcomeRecord backfill parity', () => {
     assert.equal(outcome.exitPrice, 105);
   });
 });
+
+// Restart never guesses that a lock from an interrupted maintainer is safe to
+// steal. Operators must stop all writers before clearing that stale lock.
+it('preserves a maintenance lock left by an interrupted process', (t) => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { acquireScorecardLock, lockPath } = require('../src/updown/scorecard-maintenance');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scorecard-restart-lock-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  fs.mkdirSync(lockPath(directory));
+  fs.writeFileSync(path.join(lockPath(directory), 'owner.json'), JSON.stringify({ pid: -1 }));
+  assert.equal(acquireScorecardLock(directory), null);
+  assert.equal(fs.existsSync(lockPath(directory)), true);
+});

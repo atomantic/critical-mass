@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-804] Container PM2 dependencies are reproducible** — Install PM2 7.0.4 and its transitive dependencies from a dedicated committed lockfile, with both PM2 executables on the runtime PATH.
+- **[issue-806] Gateway config saves share one validation and apply boundary** — Full-fund and regime saves now reuse field partitioning, regime validation, product identity checks, persistence and IPC status handling while preserving their response contracts and writer semantics.
+- **[issue-811] Backup archives are published only after validation** — Backups now use unique same-directory temporary files, pass zip-integrity and single-manifest checks before atomic publication, and invalid matching archives are ignored by listing and retention.
+- **[issue-813] Scorecard replay preserves live history** — Historical backfill now defaults to dry-run, coordinates explicit `--apply` with live journal appends through a shared maintenance lock, validates and atomically publishes each day, and keeps original backups plus a resumable manifest.
 - **[issue-816] Exchange startup now requires ownership of its local IPC port before touching fund data** — Bind failures reject startup before restore recovery, migration or trading; IPC requests receive an initializing response until recovery and automatic fund startup finish.
 - **[issue-800] CI builds now use read-only repository credentials** — The test and admin-build workflow no longer requests repository write access or persists its checkout token for later steps.
 - **[issue-799] Docker Compose storage now fails clearly instead of generating root-owned bind mounts** — Added a Linux preparation script for new `1000:1000`/private data and log directories, refused missing Compose bind sources, and preflighted container writability before bootstrap credential generation without changing existing data ownership.
