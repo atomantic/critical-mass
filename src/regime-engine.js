@@ -3995,9 +3995,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const existingFillsForOrder = fillLedger.getFillsForOrder(fillData.orderId);
     const ledgerTotalForOrder = existingFillsForOrder.reduce((sum, f) => sum + Number(f.size || 0), 0);
     const fillGap = fillData.filledSize > 0 ? fillData.filledSize - ledgerTotalForOrder : 0;
-    if (isTerminalFill && fillGap > 1e-9 && fillData.averageFilledPrice > 0) {
+    if (isTerminalFill && fillGap > 1e-9) {
+      // Status quote is cumulative, just like quantity and fees. Price only
+      // the unrecorded tranche from the quote left after earlier executions.
+      // An explicitly supplied invalid value must not fall back to an average.
+      const cumulativeQuantity = Number(fillData.filledSize);
+      const cumulativeQuote = fillData.filledValue != null
+        ? Number(fillData.filledValue)
+        : cumulativeQuantity * Number(fillData.averageFilledPrice);
+      const recordedQuote = existingFillsForOrder.reduce((sum, row) => sum + Number(row.quoteAmount), 0);
+      const remainingQuote = cumulativeQuote - recordedQuote;
+      const gapPrice = remainingQuote / fillGap;
+      if (!Number.isFinite(cumulativeQuantity) || !Number.isFinite(fillGap)
+        || !Number.isFinite(cumulativeQuote) || cumulativeQuote <= 0
+        || !Number.isFinite(recordedQuote) || recordedQuote < 0
+        || !Number.isFinite(remainingQuote) || remainingQuote <= 0
+        || !Number.isFinite(gapPrice) || gapPrice <= 0) {
+        throw Object.assign(
+          new Error(`[${exchange}] Inconsistent cumulative execution value for terminal order ${fillData.orderId} — leaving fill gap retryable`),
+          { incompleteFills: true }
+        );
+      }
       logger.warn(
-        `⚠️ [${exchange}] Using order status data as fallback for ${fillData.orderId}: gap ${fillGap} of ${fillData.filledSize} @ ${fmtPrice(fillData.averageFilledPrice)}`,
+        `⚠️ [${exchange}] Using order status data as fallback for ${fillData.orderId}: gap ${fillGap} of ${fillData.filledSize} @ ${fmtPrice(gapPrice)}`,
         {
           orderId: fillData.orderId,
           side: fillData.side,
@@ -4005,6 +4025,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           ledgerTotalForOrder,
           fillGap,
           averageFilledPrice: fillData.averageFilledPrice,
+          cumulativeQuote,
+          recordedQuote,
+          remainingQuote,
+          gapPrice,
         }
       );
       // fillData.totalFees is CUMULATIVE for the whole order (Coinbase's
@@ -4028,15 +4052,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         syntheticCoverage: {
           orderId: fillData.orderId,
           cumulativeQuantity: fillData.filledSize,
-          cumulativeQuote: existingFillsForOrder.reduce((sum, row) => sum + row.quoteAmount, 0)
-            + fillGap * fillData.averageFilledPrice,
+          cumulativeQuote,
           cumulativeFees: alreadyBookedFees + feeDelta,
         },
         orderId: fillData.orderId,
         side: fillData.side.toLowerCase(),
-        price: fillData.averageFilledPrice,
+        price: gapPrice,
         size: fillGap,
-        quoteAmount: fillGap * fillData.averageFilledPrice,
+        quoteAmount: remainingQuote,
         // Carry the known fee in BOTH fee and netFee so ingestFill persists it
         // instead of defaulting to 0 (issue #210-C).
         totalFees: feeDelta,

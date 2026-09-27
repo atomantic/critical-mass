@@ -135,6 +135,132 @@ describe('terminal fallback identity reconciliation (#807)', () => {
   });
 });
 
+describe('terminal fallback reconciles cumulative quote (#808)', () => {
+  // The ledger stores unrounded quote products; compare USD totals within
+  // 1e-8, while body cost uses the engine's normal cent precision.
+  const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-8,
+    `expected ${expected}, got ${actual}`);
+  const unavailable = {
+    getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
+    getOrderFills: async () => { throw new Error('trade history unavailable'); },
+  };
+  const realPartial = (orderId, side = 'buy') => ({
+    tradeId: `${orderId}-partial`, orderId, side, size: 0.01,
+    price: 2000, netFee: 0.02, tradeTime: new Date().toISOString(),
+  });
+
+  for (const fixture of [
+    { name: 'rising', quote: 60, average: 3000, gapPrice: 4000 },
+    { name: 'falling', quote: 30, average: 1500, gapPrice: 1000 },
+    { name: 'average-only', quote: undefined, average: 3000, gapPrice: 4000 },
+    { name: 'authoritative-quote', quote: 60, average: 2500, gapPrice: 4000 },
+    { name: 'quote-without-average', quote: 60, average: undefined, gapPrice: 4000 },
+  ]) {
+    it(`prices the ${fixture.name} gap from remaining quote, including replay after ledger reload`, async () => {
+      const orderId = `quote-${fixture.name}`;
+      const eng = makeEngine(unavailable);
+      await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'PARTIALLY_FILLED',
+        filledSize: 0.01, isPartialFill: true, confirmedFills: [realPartial(orderId)] });
+      const status = { orderId, side: 'buy', status: 'FILLED', filledSize: 0.02,
+        filledValue: fixture.quote, averageFilledPrice: fixture.average, totalFees: 0.06 };
+      await eng._test.handleOrderFill(status);
+      const ledger = eng.getFillLedger();
+      const rows = ledger.getFillsForOrder(orderId);
+      const synthetic = rows.find(row => row.syntheticCoverage);
+      const expectedQuote = fixture.quote ?? 0.02 * fixture.average;
+      near(synthetic.price, fixture.gapPrice);
+      near(synthetic.quoteAmount, expectedQuote - 20);
+      near(synthetic.syntheticCoverage.cumulativeQuote, expectedQuote);
+      near(rows.reduce((sum, row) => sum + row.quoteAmount, 0), expectedQuote);
+      near(rows.reduce((sum, row) => sum + row.netFee, 0), 0.06);
+      // Changing prices may create separate bodies under the existing merge
+      // proximity policy; their combined ownership must match the order.
+      const ownedTotals = () => eng._getPositionState().celestialBodies
+        .filter(b => b.sourceOrderIds.includes(orderId))
+        .reduce((sum, body) => ({ qty: sum.qty + body.assetQty, cost: sum.cost + body.costBasis }),
+          { qty: 0, cost: 0 });
+      near(ownedTotals().qty, 0.02);
+      near(ownedTotals().cost, expectedQuote + 0.06);
+      ledger.persist();
+      ledger.load();
+      await eng._test.handleOrderFill(status);
+      assert.equal(ledger.getFillsForOrder(orderId).length, 2);
+      near(ownedTotals().qty, 0.02);
+      near(ownedTotals().cost, expectedQuote + 0.06);
+    });
+  }
+
+  it('uses the full cumulative value when there are no earlier fills', async () => {
+    const eng = makeEngine(unavailable);
+    const orderId = 'quote-no-prior';
+    await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'FILLED',
+      filledSize: 0.02, filledValue: 60, averageFilledPrice: 3000, totalFees: 0 });
+    const row = eng.getFillLedger().getFillsForOrder(orderId)[0];
+    near(row.price, 3000);
+    near(row.quoteAmount, 60);
+    const body = eng._getPositionState().celestialBodies.find(b => b.sourceOrderIds.includes(orderId));
+    near(body.costBasis, 60);
+  });
+
+  for (const [name, value] of [['zero', 0], ['negative', -1], ['non-finite', Infinity],
+    ['malformed', 'bad'], ['below-booked', 10], ['equal-booked', 20]]) {
+    it(`leaves a ${name} cumulative quote retryable without body mutation`, async () => {
+      const orderId = `quote-invalid-${name}`;
+      const eng = makeEngine(unavailable);
+      await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'PARTIALLY_FILLED',
+        filledSize: 0.01, isPartialFill: true, confirmedFills: [realPartial(orderId)] });
+      const before = JSON.stringify(eng._getPositionState().celestialBodies);
+      await assert.rejects(eng._test.handleOrderFill({ orderId, side: 'buy', status: 'FILLED',
+        filledSize: 0.02, filledValue: value, averageFilledPrice: 3000 }),
+      error => error.incompleteFills === true);
+      assert.equal(eng.getFillLedger().getFillsForOrder(orderId).length, 1);
+      assert.equal(JSON.stringify(eng._getPositionState().celestialBodies), before);
+      // A corrected status can recover the same pending execution.
+      await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'FILLED',
+        filledSize: 0.02, filledValue: 60, averageFilledPrice: 3000 });
+      near(eng.getFillLedger().getFillsForOrder(orderId).reduce((sum, row) => sum + row.quoteAmount, 0), 60);
+    });
+  }
+
+  it('books changing-price sell proceeds and fees once across partial and terminal fills', async () => {
+    const orderId = 'quote-sell';
+    let detailAvailable = true;
+    const eng = makeEngine({
+      cancelOrder: async () => ({ success: true }),
+      getOpenOrders: async () => [],
+      getOrder: async () => ({ status: 'CANCELLED', filledSize: 0.01,
+        filledValue: 20, averageFilledPrice: 2000, totalFees: 0.02 }),
+      getOrderFills: async () => {
+        if (detailAvailable) return [realPartial(orderId, 'sell')];
+        throw new Error('trade history unavailable');
+      },
+    });
+    const pos = eng._getPositionState();
+    eng._test.setOrderExecutor(makeExecutor({
+      placeBodyTpOrder: async () => ({ success: true, orderId }),
+    }));
+    pos.celestialBodies = [{ id: 'quote-sell-body', tier: 'satellite', assetQty: 0.02,
+      costBasis: 20, avgPrice: 1000, assetOnOrder: 0.02, tpOrderId: orderId,
+      sourceOrderIds: [], buyOrders: [] }];
+    await eng._test.handleOrderFill({ orderId, side: 'sell', status: 'PARTIALLY_FILLED',
+      filledSize: 0.01, isPartialFill: true });
+    detailAvailable = false;
+    const terminal = { orderId, side: 'sell', status: 'FILLED', filledSize: 0.02,
+      filledValue: 60, averageFilledPrice: 3000, totalFees: 0.06 };
+    await eng._test.handleOrderFill(terminal);
+    const ledger = eng.getFillLedger();
+    const rows = ledger.getFillsForOrder(orderId);
+    near(rows.reduce((sum, row) => sum + row.quoteAmount - row.netFee, 0), 59.94);
+    near(rows[0].bodyPnl, 39.94);
+    const bookedPnl = pos.realizedPnL;
+    ledger.persist();
+    ledger.load();
+    await eng._test.handleOrderFill(terminal);
+    assert.equal(ledger.getFillsForOrder(orderId).length, 2);
+    near(pos.realizedPnL, bookedPnl);
+  });
+});
+
 describe('synthetic fallback accounts for the GAP, not the stale ledger total (codex convergence review)', () => {
   it('books the remainder when a terminal rescan fails after an earlier partial was already ingested', async () => {
     // 1. A real partial fill ingests 0.01 and creates/owns a body — no
