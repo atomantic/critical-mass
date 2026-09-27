@@ -214,6 +214,23 @@ describe('terminal buy economic reconciliation (#836)', () => {
     near(config.maxUsdcDeployed, 996);
   });
 
+  it('preserves capital idempotency metadata through configuration snapshot restoration', () => {
+    const { buildConfigSnapshot, validateConfigSnapshot, reconstructConfigOverride } = require('../src/config-snapshot');
+    const source = { exchanges: { coinbase: { pairs: { [PAIR]: { productId: PAIR,
+      regime: { maxUsdcDeployed: 998, appliedBuyCorrections: ['actual'], buyCorrectionCapitalRemainder: 0.003 } } } } } };
+    const snapshot = buildConfigSnapshot(source);
+    assert.equal(validateConfigSnapshot(snapshot).valid, true);
+    const restored = reconstructConfigOverride({ snapshot, baseConfig: { exchanges: { coinbase: { pairs: { [PAIR]: { productId: PAIR } } } } } });
+    assert.equal(restored.ok, true);
+    const regime = restored.override.exchanges.coinbase.pairs[PAIR].regime;
+    assert.deepEqual(regime.appliedBuyCorrections, ['actual']);
+    near(regime.buyCorrectionCapitalRemainder, 0.003);
+    config = { ...config, ...regime };
+    const { applyBuyCorrectionCapital } = require('../src/buy-fill-correction');
+    applyBuyCorrectionCapital(EXCHANGE, PAIR, { id: 'actual', sells: [{ costDelta: 4, capitalCreditFraction: 0.5 }] });
+    near(config.maxUsdcDeployed, 998);
+  });
+
   it('retries an audit failure after position and capital publication exactly once', () => {
     let { ledger } = seed({ consumed: 0.4 });
     fs.renameSync = (from, to) => {
