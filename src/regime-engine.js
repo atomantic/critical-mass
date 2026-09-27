@@ -3961,11 +3961,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const ingestedFills = [];
     for (const fill of rawFills) {
       const result = fillLedger.ingestFill(fill, orderPlacedAt);
-      // A newly learned trade ID can replace execution already booked from
-      // terminal status. Only genuinely new quantity enters delta booking.
-      if (result.fill && !result.identityReplacement) {
-        ingestedFills.push(result.fill);
-      }
+      // A real ID can replace terminal coverage and cross beyond it. The
+      // ledger returns only still-unbooked covered rows plus the excess
+      // tranche, so previously represented quantity never grows a body or
+      // gets booked a second time.
+      if (Array.isArray(result.bookableFills)) ingestedFills.push(...result.bookableFills);
+      else if (result.fill && !result.identityReplacement) ingestedFills.push(result.fill);
     }
 
     // Use ingested fills (which have quoteAmount) for aggregation
@@ -4097,8 +4098,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // fill is exactly the new thing.
       const result = fillLedger.ingestFill(syntheticFill, orderPlacedAt);
       if (result.fill) {
-        fillsToAggregate = [result.fill];
-        ingestedFills.push(result.fill);
+        const bookable = Array.isArray(result.bookableFills) ? result.bookableFills : [result.fill];
+        fillsToAggregate = bookable;
+        ingestedFills.push(...bookable);
       } else {
         logger.info(
           `ℹ️ [${exchange}] Gap fill for ${fillData.orderId} already ingested — nothing new to aggregate this pass`,
@@ -4152,11 +4154,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // first poll after a restart lands here: the executor's partial-size
       // tracker starts at 0, so the order's unchanged filledSize reads as an
       // advance (issue #671).
-      // Rows no body booked yet (if any) are still booked on their own.
-      if (ingestedFills.length === 0
-        && !isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId)) {
-        const unsettled = fillsToAggregate.filter(isUnsettledBuyRow);
-        if (unsettled.length === 0) {
+      // Rows no body booked yet (if any) are still booked on their own. This
+      // also recovers an excess row persisted before a prior body-booking
+      // attempt failed, even when another tranche of the order already owns
+      // a live body.
+      const unsettledBuyFills = fillsToAggregate.filter(isUnsettledBuyRow);
+      if (ingestedFills.length === 0) {
+        if (unsettledBuyFills.length === 0
+          && !isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId)) {
           logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} holds only tranches a retired body already settled and no new fills — nothing to book`);
           if (!keepEntryTracked) {
             retireTrackedEntry(fillData.orderId);
@@ -4164,8 +4169,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           }
           return;
         }
-        fillsToAggregate = unsettled;
+        if (unsettledBuyFills.length > 0) fillsToAggregate = unsettledBuyFills;
       }
+      const hasBookableBuyFills = ingestedFills.length > 0 || unsettledBuyFills.length > 0;
 
       // Buy-fill dedup across WS vs polling. Without it, a buy detected by both
       // the polling path (which starts the multi-hundred-ms handleOrderFill
@@ -4174,7 +4180,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // getFillsForOrder set on the second pass and creating a duplicate body
       // at full size (cycleBuys double-incremented). Mirrors the sell dedup.
       // For partials, key on filled size so an advancing partial still processes.
-      const buyDedupKey = makeFillDedupKey(fillData.orderId, keepEntryTracked, fillData.filledSize);
+      // A new real execution can arrive after terminal status already booked
+      // synthetic coverage. Give that reconciliation a distinct key only
+      // when the order's terminal key is already set. This avoids colliding
+      // with a prior partial at the same cumulative size, while retaining the
+      // order-level key that rejects an ordinary terminal replay. Unsettled
+      // ledger rows keep the reconciliation key available on a retry after
+      // ingestion succeeded but body booking failed.
+      const terminalBuyKey = makeFillDedupKey(fillData.orderId, false, fillData.filledSize);
+      const buyDedupKey = !keepEntryTracked && hasBookableBuyFills
+        && recentlyProcessedBuyFills.has(terminalBuyKey)
+        ? `${fillData.orderId}:terminal-reconcile:${(fillData.filledSize || 0).toFixed(8)}`
+        : makeFillDedupKey(fillData.orderId, keepEntryTracked, fillData.filledSize);
       if (recentlyProcessedBuyFills.has(buyDedupKey)) {
         logger.info(`⏭️ [${exchange}] Buy fill already processed, skipping: ${buyDedupKey}`);
         return;
@@ -4202,7 +4219,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // dropped from the body / TP sizing and computeRealizedFromCyclePairs
       // (which aggregates buys by orderId) under-reports its cost. Without this
       // gate the orderId-only guard would swallow every advancing partial.
-      if (shouldSkipBuyRecommit(ingestedFills.length, positionState.celestialBodies, fillData.orderId)) {
+      if (shouldSkipBuyRecommit(hasBookableBuyFills ? 1 : 0, positionState.celestialBodies, fillData.orderId)) {
         logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} already owned by a body and no new fills ingested — skipping re-commit (retry after partial failure); reconcile will repair any missing TP`);
         // The re-commit is what's redundant, not the bookkeeping. A TERMINAL
         // status can land here when the partial poll already ingested every fill
@@ -4588,9 +4605,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       fillLedger.persist();
 
     } else if (fillData.side.toLowerCase() === 'sell') {
+      const unbookedSellFills = fillLedger.getUnbookedSellFills(fillData.orderId) || [];
       // Sell-fill dedup: skip if already processed (prevents double-processing across WS/reconcile/polling)
-      // For partial fills, use a composite key with filled size to allow incremental processing
-      const dedupKey = makeFillDedupKey(fillData.orderId, fillData.isPartialFill, fillData.filledSize);
+      // A terminal rescan can expose new excess beyond already-booked
+      // synthetic coverage. Use a separate key for that new unbooked tranche,
+      // while retaining the terminal key so a later replay remains a no-op.
+      const terminalSellKey = makeFillDedupKey(fillData.orderId, false, fillData.filledSize);
+      const dedupKey = !fillData.isPartialFill && unbookedSellFills.length > 0
+        && recentlyProcessedSellFills.has(terminalSellKey)
+        ? `${fillData.orderId}:terminal-reconcile:${(fillData.filledSize || 0).toFixed(8)}`
+        : makeFillDedupKey(fillData.orderId, fillData.isPartialFill, fillData.filledSize);
       if (recentlyProcessedSellFills.has(dedupKey)) {
         logger.info(`⏭️ [${exchange}] Sell fill already processed, skipping: ${dedupKey}`);
         return;
@@ -4607,7 +4631,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // the committed booking, instead of re-booking every row of the order
       // as a replay. With nothing unbooked this IS a replay: all rows, as before.
       let sellRowsAreNew = ingestedFills.length > 0;
-      const unbookedSellFills = fillLedger.getUnbookedSellFills(fillData.orderId);
       if (unbookedSellFills && unbookedSellFills.length > 0) {
         fillsToAggregate = unbookedSellFills;
         sellRowsAreNew = true;

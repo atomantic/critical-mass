@@ -1328,6 +1328,33 @@ describe('Fill Ledger', () => {
     }
   });
 
+  it('createFillLedger rejects invalid persisted synthetic coverage allocations', () => {
+    const baseFill = {
+      tradeId: 'synthetic-order-0.02', orderId: 'order', side: 'buy',
+      size: 0.02, price: 2000, quoteAmount: 40, fee: 0.04, netFee: 0.04,
+      timestamp: Date.now(),
+    };
+    const allocation = (tradeId, size) => ({
+      tradeId, size, quoteAmount: size * 2000, fee: size * 2,
+      netFee: size * 2, rebate: 0,
+    });
+    const cases = [
+      { tag: 'malformed', reconciledTrades: [{ ...allocation('real-1', 0.01), quoteAmount: '20' }] },
+      { tag: 'overallocated', reconciledTrades: [allocation('real-1', 0.01), allocation('real-2', 0.02)] },
+      { tag: 'duplicate-id', reconciledTrades: [allocation('real-1', 0.01), allocation('real-1', 0.01)] },
+    ];
+    for (const { tag, reconciledTrades } of cases) {
+      const exchange = `test-cold-start-coverage-${tag}`;
+      const dir = path.join(tmpDir, exchange, 'default');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'fill-ledger.json'), JSON.stringify([{
+        ...baseFill,
+        syntheticCoverage: { orderId: 'order', reconciledTrades },
+      }]));
+      assert.throws(() => createTestLedger(exchange), /invalid entry .* on cold start/);
+    }
+  });
+
   it('createFillLedger accepts legacy fee-only entries (pre-rebate-split) and backfills netFee on load', () => {
     // Pre-rebate-split fills had `fee` only, no `netFee`. The validator
     // accepts either; load() backfills netFee=fee for the in-memory copy
@@ -2989,18 +3016,133 @@ describe('Fill Ledger', () => {
       restored.ingestFill(real('later-sell', 0.005, 'sell'));
       assert.deepEqual(restored.getUnbookedSellFills('covered').map(f => f.tradeId), ['later-sell']);
     });
-    it('refuses economic corrections and mixed coverage before changing ledger or indexes', () => {
+    it('refuses economic corrections before changing ledger or indexes', () => {
       const ledger = createTestLedger();
       ledger.startNewCycle();
       ledger.ingestFill(synthetic());
       const before = JSON.stringify(ledger.getAllFills());
       for (const fill of [{ ...real('changed-price'), price: 2100 },
-        { ...real('changed-fee'), fee: 0.03, netFee: 0.03 }, real('crossing', 0.03)]) {
+        { ...real('changed-fee'), fee: 0.03, netFee: 0.03 }]) {
         assert.throws(() => ledger.ingestFill(fill), { syntheticReconciliationRequired: true });
         assert.equal(JSON.stringify(ledger.getAllFills()), before);
         assert.equal(ledger.getRecordedSizeForOrder('covered'), 0.02);
       }
       assert.equal(JSON.stringify(createTestLedger().getAllFills()), before);
+    });
+    it('books only the excess quantity when one real row crosses total coverage (#835)', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill({ ...synthetic(), syntheticCoverage: {
+        orderId: 'covered', cumulativeQuantity: 0.02, cumulativeQuote: 40, cumulativeFees: 0.04,
+      } });
+      const result = ledger.ingestFill(real('crossing', 0.03));
+      assert.equal(result.ingested, true);
+      assert.equal(result.identityReplacement, false);
+      assert.equal(result.newQuantity, 0.01);
+      assert.equal(result.fill.size, 0.01);
+      assert.ok(Math.abs(result.fill.quoteAmount - 20) < 1e-8);
+      assert.ok(Math.abs(result.fill.netFee - 0.02) < 1e-8);
+      assert.equal(result.fill.syntheticCoverageReconciliation.coveredSize, 0.02);
+      assert.equal(result.fill.syntheticCoverageReconciliation.newSize, 0.01);
+      assert.equal(ledger.getRecordedSizeForOrder('covered'), 0.03);
+      assert.equal(ledger.getFillsForOrder('covered').reduce((sum, row) => sum + row.size, 0), 0.03);
+      assert.equal(ledger.ingestFill(real('crossing', 0.03)).ingested, false);
+
+      const restored = createTestLedger();
+      assert.equal(restored.getRecordedSizeForOrder('covered'), 0.03);
+      assert.equal(restored.ingestFill(real('crossing', 0.03)).ingested, false);
+      assert.equal(restored.getFillsForOrder('covered').reduce((sum, row) => sum + row.size, 0), 0.03);
+    });
+
+    it('preserves mixed sell booking states and exposes unbooked coverage plus excess once', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      const bookedCoverage = ledger.ingestFill({ ...synthetic('sell'), tradeId: 'synthetic-covered-0.01',
+        size: 0.01, fee: 0.02, netFee: 0.02 }).fill;
+      const unbookedCoverage = ledger.ingestFill({ ...synthetic('sell'), tradeId: 'synthetic-covered-0.02',
+        size: 0.01, fee: 0.02, netFee: 0.02 }).fill;
+      ledger.commitSellBooking('covered', {
+        bodyPnl: 1, bodyCostBasis: 19, bodyBtcQty: 0.01, bodyHoldbackAsset: 0,
+        bodyId: 'sold-body',
+      }, { soldSize: 0.01, bookedTradeIds: [bookedCoverage.tradeId] });
+
+      const result = ledger.ingestFill(real('crossing-sell', 0.03, 'sell'));
+      assert.equal(result.newQuantity, 0.01);
+      assert.equal(result.fill.size, 0.01);
+      const rows = ledger.getFillsForOrder('covered');
+      assert.equal(rows.find(row => row.tradeId === bookedCoverage.tradeId).bodyBooked, true);
+      assert.notEqual(rows.find(row => row.tradeId === unbookedCoverage.tradeId).bodyBooked, true);
+      assert.equal(ledger.getSellBooking('covered').bookedSize, 0.01);
+
+      const unbooked = ledger.getUnbookedSellFills('covered');
+      assert.equal(unbooked.reduce((sum, row) => sum + row.size, 0), 0.02);
+      assert.deepEqual(unbooked.map(row => row.tradeId).sort(), [
+        'crossing-sell', unbookedCoverage.tradeId,
+      ].sort());
+      assert.equal(ledger.claimCapitalCredit('covered', 0.01), true);
+      assert.equal(ledger.claimCapitalCredit('covered', 0.02), true);
+      assert.equal(ledger.claimCapitalCredit('covered', 0.02), false);
+      ledger.commitSellBooking('covered', {
+        bodyPnl: 2, bodyCostBasis: 38, bodyBtcQty: 0.02, bodyHoldbackAsset: 0,
+      }, { additive: true, soldSize: 0.02, bookedTradeIds: [unbookedCoverage.tradeId, 'crossing-sell'] });
+      assert.equal(ledger.getSellBooking('covered').bookedSize, 0.03);
+      assert.deepEqual(ledger.getUnbookedSellFills('covered'), []);
+    });
+
+    it('preserves distinct buy ownership and unions cumulative consumedBy snapshots', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      const left = ledger.ingestFill({ ...synthetic(), tradeId: 'synthetic-covered-0.01',
+        size: 0.01, fee: 0.02, netFee: 0.02 }).fill;
+      const right = ledger.ingestFill({ ...synthetic(), tradeId: 'synthetic-covered-0.02',
+        size: 0.01, fee: 0.02, netFee: 0.02 }).fill;
+      left.bodyId = 'body-left';
+      left.isBodyOwned = true;
+      left.consumedBy = { 'sale-left': 0.004, ignored: 'not-a-number', infinite: Infinity };
+      right.bodyId = 'body-right';
+      right.isBodyOwned = true;
+      right.consumedBy = { 'sale-right': 0.003, 'sale-left': 'not-a-number' };
+      ledger.markDirty();
+      ledger.persist();
+
+      const result = ledger.ingestFill(real('crossing-buy', 0.03));
+      assert.equal(result.newQuantity, 0.01);
+      assert.equal(result.bookableFills.length, 1);
+      assert.equal(result.bookableFills[0].size, 0.01);
+      const consumption = ledger.getBuyOrderConsumption('covered');
+      assert.equal(consumption.size, 0.03);
+      assert.ok(Math.abs(consumption.cost - 60.06) < 1e-8);
+      assert.deepEqual(consumption.consumedBy, { 'sale-left': 0.004, 'sale-right': 0.003 });
+      assert.equal(ledger.getFillsForOrder('covered').find(row => row.tradeId === left.tradeId).bodyId, 'body-left');
+      assert.equal(ledger.getFillsForOrder('covered').find(row => row.tradeId === right.tradeId).bodyId, 'body-right');
+    });
+    it('persists fully covered real identities without zero-size ledger rows', () => {
+      let ledger = createTestLedger();
+      ledger.startNewCycle();
+      const left = ledger.ingestFill({ ...synthetic(), tradeId: 'synthetic-covered-0.01',
+        size: 0.01, fee: 0.02, netFee: 0.02 }).fill;
+      const right = ledger.ingestFill({ ...synthetic(), tradeId: 'synthetic-covered-0.02',
+        size: 0.01, fee: 0.02, netFee: 0.02 }).fill;
+      left.bodyId = 'body-left';
+      left.isBodyOwned = true;
+      right.bodyId = 'body-right';
+      right.isBodyOwned = true;
+      ledger.markDirty();
+      ledger.persist();
+
+      const result = ledger.ingestFill(real('exact-reconciliation', 0.02));
+      assert.equal(result.identityReplacement, true);
+      assert.equal(result.newQuantity, 0);
+      assert.equal(result.fill.size, 0);
+      assert.equal(result.bookableFills.length, 0);
+      assert.equal(ledger.getFillsForOrder('covered').length, 2);
+      assert.equal(ledger.hasProcessedTrade('exact-reconciliation'), true);
+
+      ledger = createTestLedger();
+      assert.equal(ledger.getRecordedSizeForOrder('covered'), 0.02);
+      assert.equal(ledger.hasProcessedTrade('exact-reconciliation'), true);
+      assert.equal(ledger.ingestFill(real('exact-reconciliation', 0.02)).ingested, false);
+      assert.equal(ledger.getFillsForOrder('covered').length, 2);
     });
     it('rolls replacement and indexes back when atomic publication fails', () => {
       const ledger = createTestLedger();

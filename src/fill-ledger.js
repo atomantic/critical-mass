@@ -38,6 +38,26 @@ const sumConsumedBy = (consumedBy) => Object.values(consumedBy)
   .reduce((sum, qty) => sum + (Number.isFinite(qty) && qty > 0 ? qty : 0), 0);
 
 /**
+ * Rows carry cumulative per-order consumption snapshots. When snapshots
+ * differ, preserve the greatest quantity recorded for each sell instead of
+ * allowing whichever row happens to be visited last to erase it.
+ * @param {Object<string, number>|null} current
+ * @param {Object<string, number>} incoming
+ * @returns {Object<string, number>}
+ */
+const mergeConsumedBy = (current, incoming) => {
+  const merged = { ...(current || {}) };
+  for (const [sellOrderId, quantity] of Object.entries(merged)) {
+    if (!Number.isFinite(quantity) || quantity < 0) delete merged[sellOrderId];
+  }
+  for (const [sellOrderId, quantity] of Object.entries(incoming || {})) {
+    if (!Number.isFinite(quantity) || quantity < 0) continue;
+    merged[sellOrderId] = Math.max(merged[sellOrderId] || 0, quantity);
+  }
+  return merged;
+};
+
+/**
  * Get fill ledger file path for a fund (exchange + pair).
  * Read-only path resolution — does NOT create the directory. The persist()
  * function below mkdirs before writing.
@@ -96,6 +116,27 @@ const findInvalidLedgerReason = (data) => {
     // truthiness-guards every read), but MUST be a string when present.
     if (fill.orderId != null && typeof fill.orderId !== 'string') return 'orderId must be a string when present';
     if (fill.cycleId != null && typeof fill.cycleId !== 'string') return 'cycleId must be a string when present';
+    const reconciledTrades = fill.syntheticCoverage?.reconciledTrades;
+    if (reconciledTrades != null && !Array.isArray(reconciledTrades)) {
+      return 'syntheticCoverage.reconciledTrades must be an array when present';
+    }
+    const reconciledTradeIds = new Set();
+    let reconciledSize = 0;
+    for (const allocation of reconciledTrades || []) {
+      if (!allocation || typeof allocation !== 'object'
+        || typeof allocation.tradeId !== 'string' || !allocation.tradeId
+        || !isFiniteNumber(allocation.size) || allocation.size <= 0
+        || !isFiniteNumber(allocation.quoteAmount) || !isFiniteNumber(allocation.fee)
+        || !isFiniteNumber(allocation.netFee) || !isFiniteNumber(allocation.rebate)
+        || reconciledTradeIds.has(allocation.tradeId)) {
+        return 'syntheticCoverage.reconciledTrades contains an invalid allocation';
+      }
+      reconciledTradeIds.add(allocation.tradeId);
+      reconciledSize += allocation.size;
+    }
+    if (reconciledSize > fill.size + 1e-9) {
+      return 'syntheticCoverage.reconciledTrades exceeds covered fill size';
+    }
     seenTradeIds.add(fill.tradeId);
   }
   return null;
@@ -543,6 +584,9 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   const orderSizeIndex = new Map();
   // Avoid scanning the whole ledger on ordinary fill ingestion.
   const syntheticOrders = new Set();
+  // Identity-only real fills are stored on their synthetic coverage rows.
+  // This index keeps their replay check O(1) after a reload.
+  const reconciledTradeIds = new Set();
   let currentCycleId = null;
   // When the live cycle began (ms), if known: set by startNewCycle() or
   // restored from the persisted positionState.activeCycleStartedAt. Null when
@@ -603,6 +647,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     cycleIndex.clear();
     orderSizeIndex.clear();
     syntheticOrders.clear();
+    reconciledTradeIds.clear();
     currentCycleId = null;
     currentCycleStartedAt = null;
     nextCycleNumber = 1;
@@ -768,8 +813,11 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         }
       }
       fills.set(fill.tradeId, fill);
+      for (const allocation of fill.syntheticCoverage?.reconciledTrades || []) {
+        reconciledTradeIds.add(allocation.tradeId);
+      }
       // Populate cycle index
-      if (fill.cycleId) {
+      if (fill.cycleId && fill.size > 1e-9) {
         if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
         cycleIndex.get(fill.cycleId).add(fill.tradeId);
       }
@@ -788,7 +836,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // ingested when they're not. Rebuilding from `fills` is idempotent.
     orderSizeIndex.clear();
     for (const f of fills.values()) {
-      if (isSyntheticCoverage(f)) syntheticOrders.add(f.orderId);
+      if (isUnresolvedSyntheticCoverage(f)) syntheticOrders.add(f.orderId);
       if (f.orderId) {
         const next = (orderSizeIndex.get(f.orderId) || 0) + (f.size || 0);
         orderSizeIndex.set(f.orderId, roundAsset(next));
@@ -920,29 +968,143 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     || (typeof fill.tradeId === 'string' && fill.tradeId.startsWith(`synthetic-${fill.orderId}-`)
       && Number.isFinite(Number(fill.tradeId.slice(`synthetic-${fill.orderId}-`.length))));
 
+  const reconciledCoverageSize = (fill) => (fill.syntheticCoverage?.reconciledTrades || [])
+    .reduce((sum, allocation) => sum + (Number(allocation.size) || 0), 0);
+
+  const unresolvedSyntheticSize = (fill) =>
+    Math.max(0, (Number(fill.size) || 0) - reconciledCoverageSize(fill));
+
+  const isUnresolvedSyntheticCoverage = (fill) =>
+    isSyntheticCoverage(fill) && unresolvedSyntheticSize(fill) > 1e-9;
+
   /**
-   * Plan identity replacement before mutating anything. This first slice only
-   * replaces economically equivalent coverage. A quote/fee correction needs a
-   * coordinated body/P&L/capital update, so refuse it rather than doubling
-   * inventory or silently discarding the correction (remaining work in #807).
+   * Plan identity replacement before mutating anything. Equivalent coverage
+   * wholly contained in rows with the same annotations can still be replaced
+   * directly. When an execution crosses the remaining coverage or the covered
+   * rows carry different state, keep those rows as the quantity/ownership
+   * record and persist the real identity against them. Only the excess becomes
+   * a new ledger tranche. Quote/fee corrections still fail closed until their
+   * coordinated accounting work is shipped.
    */
   const reconcileSyntheticCoverage = (fill) => {
-    if (isSyntheticCoverage(fill) || !syntheticOrders.has(fill.orderId)) return [];
-    const covered = Array.from(fills.values()).filter(row =>
-      row.orderId === fill.orderId && row.side === fill.side && isSyntheticCoverage(row));
-    if (!covered.length) return [];
+    if (isSyntheticCoverage(fill) || !syntheticOrders.has(fill.orderId)) return null;
+    const covered = Array.from(fills.values())
+      .filter(row => row.orderId === fill.orderId && row.side === fill.side && isUnresolvedSyntheticCoverage(row))
+      .sort((a, b) => a.timestamp - b.timestamp);
+    if (!covered.length) return null;
     const reject = (reason) => {
       throw Object.assign(new Error(`Synthetic execution reconciliation required for order ${fill.orderId}: ${reason}`), {
         syntheticReconciliationRequired: true,
       });
     };
-    const total = covered.reduce((sum, row) => sum + row.size, 0);
-    if (!Number.isFinite(fill.size) || fill.size <= 0 || fill.size > total + 1e-9) {
-      reject('real execution crosses unresolved coverage; import complete covered executions first');
-    }
+    const total = covered.reduce((sum, row) => sum + unresolvedSyntheticSize(row), 0);
+    if (!Number.isFinite(fill.size) || fill.size <= 0) reject('real execution has an invalid quantity');
+    const coveredSize = Math.min(fill.size, total);
     const annotations = [...(ORDER_LEVEL_FIELDS[fill.side] || []),
       'cycleId', 'bodyBooked', 'capitalCredited', 'capitalCreditedSize'];
     const anchor = covered[0];
+    const sameAnnotations = covered.every(row => annotations.every(key =>
+      JSON.stringify(row[key]) === JSON.stringify(anchor[key])));
+    const hasPriorAllocations = covered.some(row =>
+      (row.syntheticCoverage?.reconciledTrades || []).length > 0);
+    const preserveCoverage = fill.size > total + 1e-9 || !sameAnnotations || hasPriorAllocations;
+    if (preserveCoverage) {
+      let remaining = coveredSize;
+      let syntheticQuote = 0;
+      let syntheticFee = 0;
+      let syntheticNetFee = 0;
+      let syntheticRebate = 0;
+      let rawCoveredQuote = 0;
+      let rawCoveredFee = 0;
+      let rawCoveredNetFee = 0;
+      let rawCoveredRebate = 0;
+      const allocations = [];
+      const reported = {
+        size: fill.size,
+        price: fill.price,
+        quoteAmount: fill.quoteAmount,
+        fee: fill.fee,
+        netFee: fill.netFee,
+        rebate: fill.rebate,
+      };
+      for (const row of covered) {
+        if (remaining <= 1e-9) break;
+        const quantity = Math.min(remaining, unresolvedSyntheticSize(row));
+        if (quantity <= 1e-9) continue;
+        const syntheticRatio = quantity / row.size;
+        const executionRatio = quantity / reported.size;
+        const quoteAmount = row.quoteAmount * syntheticRatio;
+        const fee = row.fee * syntheticRatio;
+        const netFee = row.netFee * syntheticRatio;
+        const rebate = (row.rebate || 0) * syntheticRatio;
+        const executionQuote = reported.quoteAmount * executionRatio;
+        const executionFee = reported.fee * executionRatio;
+        const executionNetFee = reported.netFee * executionRatio;
+        const executionRebate = reported.rebate * executionRatio;
+        syntheticQuote += quoteAmount;
+        syntheticFee += fee;
+        syntheticNetFee += netFee;
+        syntheticRebate += rebate;
+        rawCoveredQuote += executionQuote;
+        rawCoveredFee += executionFee;
+        rawCoveredNetFee += executionNetFee;
+        rawCoveredRebate += executionRebate;
+        allocations.push({
+          row,
+          tradeId: row.tradeId,
+          size: quantity,
+          quoteAmount: executionQuote,
+          fee: executionFee,
+          netFee: executionNetFee,
+          rebate: executionRebate,
+        });
+        remaining = roundAsset(Math.max(0, remaining - quantity));
+      }
+      const equivalent = (a, b) => Number.isFinite(a) && Number.isFinite(b)
+        && Math.abs(a - b) <= 1e-8;
+      if (!equivalent(rawCoveredQuote, syntheticQuote) || !equivalent(rawCoveredFee, syntheticFee)
+        || !equivalent(rawCoveredNetFee, syntheticNetFee) || !equivalent(rawCoveredRebate, syntheticRebate)) {
+        reject('quote or fee correction needs coordinated accounting reconciliation');
+      }
+
+      const newSize = roundAsset(Math.max(0, reported.size - coveredSize));
+      const newQuote = Math.max(0, reported.quoteAmount - rawCoveredQuote);
+      const newFee = Math.max(0, reported.fee - rawCoveredFee);
+      const newNetFee = reported.netFee - rawCoveredNetFee;
+      const newRebate = reported.rebate - rawCoveredRebate;
+      fill.reportedExecution = reported;
+      fill.syntheticCoverageReconciliation = {
+        coveredSize,
+        newSize,
+        coveredQuoteAmount: rawCoveredQuote,
+        newQuoteAmount: newQuote,
+        coveredFee: rawCoveredFee,
+        newFee,
+        coveredNetFee: rawCoveredNetFee,
+        newNetFee,
+        coveredRebate: rawCoveredRebate,
+        newRebate,
+        allocations: allocations.map(({ tradeId, size, quoteAmount, fee, netFee, rebate }) => ({
+          tradeId, size, quoteAmount, fee, netFee, rebate,
+        })),
+      };
+      fill.replacesSyntheticTradeIds = [...new Set(allocations.map(allocation => allocation.tradeId))];
+      fill.size = newSize;
+      fill.quoteAmount = newQuote;
+      fill.fee = newFee;
+      fill.netFee = newNetFee;
+      fill.rebate = newRebate;
+      if (newSize > 1e-9) fill.price = newQuote / newSize;
+      else {
+        fill.size = 0;
+        fill.quoteAmount = 0;
+        fill.fee = 0;
+        fill.netFee = 0;
+        fill.rebate = 0;
+      }
+      return { mode: 'preserve', allocations, coveredSize, newSize };
+    }
+
     let remaining = fill.size;
     let quote = 0;
     let fee = 0;
@@ -951,11 +1113,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     const replacements = [];
     for (const row of covered) {
       if (remaining <= 1e-9) break;
-      // Combining distinct owners/booking states would lose row-level meaning.
-      if (annotations.some(key => JSON.stringify(row[key]) !== JSON.stringify(anchor[key]))) {
-        reject('coverage spans different ownership or booking annotations');
-      }
-      const quantity = Math.min(remaining, row.size);
+      const quantity = Math.min(remaining, unresolvedSyntheticSize(row));
       const ratio = quantity / row.size;
       quote += row.quoteAmount * ratio;
       fee += row.fee * ratio;
@@ -986,7 +1144,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // deliberately distinct from syntheticCoverage: real rows never cover
     // another real trade ID, and replay remains the normal ID dedup.
     fill.replacesSyntheticTradeIds = replacements.map(item => item.old.tradeId);
-    return replacements;
+    return { mode: 'replace', replacements, coveredSize: fill.size, newSize: 0 };
   };
 
   /**
@@ -995,7 +1153,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * @param {number} [orderPlacedAt] - Optional timestamp when the order was placed (for fill time tracking)
    * @param {Object} [options]
    * @param {boolean} [options.skipPersist] - Batch ordinary fills until the caller flushes.
-   *   Synthetic identity replacements always persist atomically before returning.
+   *   Synthetic coverage reconciliations always persist atomically before returning.
    * @param {string|null} [options.cycleId] - Explicit cycle assignment. Defaults to the live
    *   currentCycleId. Pass `null` for fills that may be historical (sync/manual reconciliation):
    *   stamping a days-old fill with the live cycleId inflates current-cycle totals and can trip
@@ -1003,15 +1161,16 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    *   fill is picked up by recalculateCycles' orphan logic and placed in its correct cycle by
    *   buy/sell pattern (issue #108). Note: pass the property explicitly — an absent `cycleId` key
    *   keeps the live-cycle default; only an explicit `null`/value overrides it.
-   * @returns {{ingested: boolean, fill: Fill|null, identityReplacement?: boolean}} Result.
-   *   identityReplacement means the row supplies an execution identity only;
-   *   its quantity/cost were already represented in the ledger.
+   * @returns {{ingested: boolean, fill: Fill|null, identityReplacement?: boolean, newQuantity?: number, bookableFills?: Fill[]}} Result.
+   *   For a synthetic-coverage reconciliation, `fill` records only excess
+   *   quantity (zero for an identity-only execution); `bookableFills` also
+   *   includes covered rows that still need booking based on their saved state.
    */
   const ingestFill = (fillData, orderPlacedAt = null, options = {}) => {
     const tradeId = fillData.tradeId || fillData.trade_id;
 
     // Idempotency check
-    if (fills.has(tradeId)) {
+    if (fills.has(tradeId) || reconciledTradeIds.has(tradeId)) {
       return { ingested: false, fill: null };
     }
 
@@ -1056,13 +1215,46 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       fillTimeMs: fillTimeMs,
     };
 
-    const replacements = reconcileSyntheticCoverage(fill);
-    const priorFills = replacements.length ? new Map(fills) : null;
-    const priorCycleIndex = replacements.length
+    const reconciliation = reconcileSyntheticCoverage(fill);
+    const replacements = reconciliation?.mode === 'replace' ? reconciliation.replacements : [];
+    const priorFills = reconciliation ? new Map(fills) : null;
+    const priorCycleIndex = reconciliation
       ? new Map(Array.from(cycleIndex, ([id, ids]) => [id, new Set(ids)])) : null;
     const priorOrderSize = orderSizeIndex.get(fill.orderId);
     const priorDirty = dirtySinceLastPersist;
     const hadSyntheticCoverage = syntheticOrders.has(fill.orderId);
+    const hadReconciledTrade = reconciledTradeIds.has(tradeId);
+    const priorCoverageMetadata = reconciliation?.mode === 'preserve'
+      ? reconciliation.allocations.map(({ row }) => ({
+        row,
+        syntheticCoverage: row.syntheticCoverage ? {
+          ...row.syntheticCoverage,
+          ...(Array.isArray(row.syntheticCoverage.reconciledTrades)
+            ? { reconciledTrades: row.syntheticCoverage.reconciledTrades.map(item => ({ ...item })) }
+            : {}),
+        } : undefined,
+      }))
+      : [];
+    if (reconciliation?.mode === 'preserve') {
+      for (const allocation of reconciliation.allocations) {
+        const prior = allocation.row.syntheticCoverage || {};
+        const reconciledTrades = Array.isArray(prior.reconciledTrades)
+          ? prior.reconciledTrades : [];
+        allocation.row.syntheticCoverage = {
+          ...prior,
+          reconciledTrades: [...reconciledTrades, {
+            tradeId,
+            size: allocation.size,
+            quoteAmount: allocation.quoteAmount,
+            fee: allocation.fee,
+            netFee: allocation.netFee,
+            rebate: allocation.rebate,
+          }],
+        };
+        fills.set(allocation.row.tradeId, allocation.row);
+      }
+      reconciledTradeIds.add(tradeId);
+    }
     for (const { old, residual } of replacements) {
       if (residual) fills.set(old.tradeId, residual);
       else {
@@ -1070,12 +1262,15 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         if (old.cycleId) cycleIndex.get(old.cycleId)?.delete(old.tradeId);
       }
     }
-    fills.set(tradeId, fill);
-    if (isSyntheticCoverage(fill)) syntheticOrders.add(fill.orderId);
-    else if (replacements.length && !Array.from(fills.values()).some(row =>
-      row.orderId === fill.orderId && isSyntheticCoverage(row))) syntheticOrders.delete(fill.orderId);
+    // Identity-only executions are represented by their real ID in the
+    // synthetic rows' reconciliation metadata. Avoid persisting a zero-size
+    // row that could enter cycle reconstruction or ordinary fill aggregates.
+    if (fill.size > 1e-9) fills.set(tradeId, fill);
+    if (isUnresolvedSyntheticCoverage(fill)) syntheticOrders.add(fill.orderId);
+    else if (reconciliation && !Array.from(fills.values()).some(row =>
+      row.orderId === fill.orderId && isUnresolvedSyntheticCoverage(row))) syntheticOrders.delete(fill.orderId);
     // Maintain cycle index
-    if (fill.cycleId) {
+    if (fill.cycleId && fill.size > 1e-9) {
       if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
       cycleIndex.get(fill.cycleId).add(tradeId);
     }
@@ -1093,7 +1288,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // later row in a batch can reject before the caller's final persist, so
     // this transition must publish now even when ordinary rows are batched.
     // The rollback snapshot keeps memory/indexes retryable if publication fails.
-    if (!options.skipPersist || replacements.length > 0) {
+    if (!options.skipPersist || reconciliation) {
       try {
         persist();
       } catch (err) {
@@ -1101,6 +1296,10 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         // memory/index state too, so retry cannot mistake a failed replacement
         // for a durable duplicate.
         if (priorFills && priorCycleIndex) {
+          for (const snapshot of priorCoverageMetadata) {
+            if (snapshot.syntheticCoverage === undefined) delete snapshot.row.syntheticCoverage;
+            else snapshot.row.syntheticCoverage = snapshot.syntheticCoverage;
+          }
           fills.clear();
           for (const [id, row] of priorFills) fills.set(id, row);
           cycleIndex.clear();
@@ -1109,6 +1308,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
           else orderSizeIndex.set(fill.orderId, priorOrderSize);
           if (hadSyntheticCoverage) syntheticOrders.add(fill.orderId);
           else syntheticOrders.delete(fill.orderId);
+          if (hadReconciledTrade) reconciledTradeIds.add(tradeId);
+          else reconciledTradeIds.delete(tradeId);
           dirtySinceLastPersist = priorDirty;
           bumpLedgerVersion();
         }
@@ -1127,7 +1328,41 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       fillTimeMs,
     });
 
-    return { ingested: true, fill, identityReplacement: replacements.length > 0 };
+    let bookableFills = [fill];
+    if (reconciliation?.mode === 'replace') {
+      bookableFills = [];
+    } else if (reconciliation?.mode === 'preserve') {
+      bookableFills = [];
+      for (const allocation of reconciliation.allocations) {
+        const coveredFill = allocation.row;
+        const alreadyAccounted = fill.side === 'buy'
+          ? Boolean(coveredFill.isBodyOwned || coveredFill.isSatellite || coveredFill.bodyId)
+          : Boolean(coveredFill.bodyBooked || (coveredFill.bodyBooked == null && coveredFill.bodyPnl != null));
+        if (!alreadyAccounted) {
+          bookableFills.push({
+            ...coveredFill,
+            size: allocation.size,
+            quoteAmount: allocation.quoteAmount,
+            fee: allocation.fee,
+            netFee: allocation.netFee,
+            rebate: allocation.rebate,
+            price: allocation.size > 0 ? allocation.quoteAmount / allocation.size : coveredFill.price,
+            syntheticCoverageAllocation: true,
+          });
+        }
+      }
+      if (fill.size > 1e-9) bookableFills.push(fill);
+    }
+    const newQuantity = reconciliation
+      ? (reconciliation.mode === 'preserve' ? reconciliation.newSize : 0)
+      : fill.size;
+    return {
+      ingested: true,
+      fill,
+      identityReplacement: newQuantity <= 1e-9 && Boolean(reconciliation),
+      newQuantity,
+      bookableFills,
+    };
   };
 
   /**
@@ -1366,7 +1601,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * @param {string} tradeId - Trade ID to check
    * @returns {boolean}
    */
-  const hasProcessedTrade = (tradeId) => fills.has(tradeId);
+  const hasProcessedTrade = (tradeId) => fills.has(tradeId) || reconciledTradeIds.has(tradeId);
 
   /**
    * Get fill count
@@ -2160,7 +2395,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   const getUnbookedSellFills = (orderId) => {
     const booking = getSellBooking(orderId);
     if (!booking || !booking.hasMarker) return null;
-    return getFillsForOrder(orderId).filter(f => f.side === 'sell' && !f.bodyBooked);
+    return getFillsForOrder(orderId).filter(f => f.side === 'sell' && f.size > 1e-9 && !f.bodyBooked);
   };
 
   /**
@@ -2184,7 +2419,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       found = true;
       size += f.size || 0;
       cost += (f.quoteAmount || 0) + (f.netFee || 0);
-      if (f.consumedBy && typeof f.consumedBy === 'object') consumedBy = { ...(consumedBy || {}), ...f.consumedBy };
+      if (f.consumedBy && typeof f.consumedBy === 'object') consumedBy = mergeConsumedBy(consumedBy, f.consumedBy);
       if (f.consumedCostFraction != null) consumedCostFraction = f.consumedCostFraction;
     }
     if (!found) return null;
@@ -2402,7 +2637,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
           if (f.consumedCostFraction != null) ex.consumedCostFraction = f.consumedCostFraction;
           // consumedBy is written to every row that existed when a sell was
           // booked; later-ingested rows of the same order carry none. Union.
-          if (f.consumedBy && typeof f.consumedBy === 'object') ex.consumedBy = { ...(ex.consumedBy || {}), ...f.consumedBy };
+          if (f.consumedBy && typeof f.consumedBy === 'object') ex.consumedBy = mergeConsumedBy(ex.consumedBy, f.consumedBy);
         } else {
           buyAggByOrderId.set(aggKey, {
             size: f.size || 0,
@@ -2749,4 +2984,3 @@ Object.defineProperty(module.exports, 'CYCLE_COMPLETE_SELL_RATIO', {
   configurable: true,
   enumerable: true,
 });
-

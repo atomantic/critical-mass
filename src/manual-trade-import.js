@@ -377,6 +377,12 @@ const createManualTradeImporter = ({
 
     const avgBuyPrice = averagePrice(totalQuote, totalSize);
     // Idempotent by buyOrderId — a retry returns the existing record.
+    // Keep the store's pre-import snapshot separate from the newly-created
+    // record. A terminal engine fill can already own this order in a body
+    // before its first manual-import record exists; using the just-created
+    // full exchange totals as the body's prior quantity would hide the excess
+    // tranche from the idempotent body extension below.
+    const existingTrade = store.getAll().find((row) => row.buyOrderId === buyOrderId) || null;
     const trade = store.addManualBuy({
       buyOrderId,
       buyPrice: avgBuyPrice,
@@ -427,7 +433,7 @@ const createManualTradeImporter = ({
       // having actually absorbed it, and the old unlinked-row check would
       // have taken the fast path below and hidden the gap for good.
       const fullQty = orderRows.reduce((sum, r) => sum + r.size, 0);
-      const priorRecordedQty = trade.buySize || 0;
+      const priorRecordedQty = existingTrade ? (existingTrade.buySize || 0) : 0;
 
       if (fullQty <= priorRecordedQty + 0.00000001) {
         if (currentBodyId && currentBodyId !== trade.bodyId) store.markTpPlaced(trade.id, currentBodyId);
