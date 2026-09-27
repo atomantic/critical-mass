@@ -15,8 +15,10 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-# Install PM2 globally for multi-process orchestration
-RUN npm install -g pm2
+# Install the container process manager from its dedicated dependency lock
+COPY docker/pm2/package.json docker/pm2/package-lock.json /opt/pm2/
+RUN npm ci --omit=dev --prefix /opt/pm2
+ENV PATH="/opt/pm2/node_modules/.bin:${PATH}"
 
 # zip/unzip are used by src/backup-service.js for archive create/restore
 RUN apk add --no-cache zip unzip
