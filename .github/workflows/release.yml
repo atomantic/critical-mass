@@ -5,12 +5,17 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
     runs-on: ubuntu-latest
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    permissions:
+      contents: write
+    outputs:
+      release_tag: ${{ steps.package-version.outputs.release_tag }}
+      release_created: ${{ steps.tag-check.outputs.exists == 'false' }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,7 +36,10 @@ jobs:
 
       - name: Get version from package.json
         id: package-version
-        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Check if tag exists
         id: tag-check
@@ -82,3 +90,14 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-image:
+    name: Publish release image
+    needs: release
+    if: ${{ needs.release.result == 'success' && needs.release.outputs.release_created == 'true' }}
+    uses: ./.github/workflows/docker-build.yml
+    with:
+      release_tag: ${{ needs.release.outputs.release_tag }}
+    permissions:
+      contents: read
+      packages: write
