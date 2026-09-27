@@ -144,12 +144,58 @@ describe('Manual Trade Import', () => {
       tradeTime: new Date().toISOString() }] } });
     const importer = createImporter({ adapter,
       injectBody: async () => { assert.fail('must not create duplicate inventory'); },
-      extendBody: async () => { assert.fail('same quantity must not grow body'); } });
+      extendBody: async (_bodyId, totals) => {
+        assert.equal(totals.assetQty, 0.02);
+        return { success: true, bodyId: 'existing-body', alreadyApplied: true };
+      } });
     const result = await importer.importBuy({ buyOrderId: 'terminal' });
     assert.equal(result.success, true);
     assert.equal(fillLedger.getRecordedSizeForOrder('terminal'), 0.02);
     assert.equal(fillLedger.getFillsForOrder('terminal').length, 1);
     assert.equal(fillLedger.getFillsForOrder('terminal')[0].bodyId, 'existing-body');
+  });
+
+  it('extends an existing body by only the quantity beyond terminal coverage (#835)', async () => {
+    fillLedger.ingestFill({ tradeId: 'synthetic-terminal-0.02', orderId: 'terminal',
+      side: 'buy', size: 0.02, price: 2000, fee: 0.04, netFee: 0.04,
+      syntheticCoverage: { orderId: 'terminal', cumulativeQuantity: 0.02,
+        cumulativeQuote: 40, cumulativeFees: 0.04 } });
+    fillLedger.annotateFillsByOrderId('terminal', { bodyId: 'existing-body', isBodyOwned: true });
+    fillLedger.persist();
+
+    const body = { assetQty: 0.02, costBasis: 40.04 };
+    const extendCalls = [];
+    const adapter = createFakeAdapter({ fillsByOrder: { terminal: [{
+      tradeId: 'real-terminal-0.03', orderId: 'terminal', side: 'buy',
+      size: 0.03, price: 2000, commission: 0.06, totalCommission: 0.06,
+      netFee: 0.06, tradeTime: new Date().toISOString(),
+    }] } });
+    const importer = createImporter({ adapter,
+      injectBody: async () => { assert.fail('must extend the existing body, not inject another'); },
+      extendBody: async (bodyId, totals, buyOrderId) => {
+        extendCalls.push({ bodyId, totals, buyOrderId });
+        body.assetQty = totals.assetQty;
+        body.costBasis = totals.costBasis;
+        return { success: true, bodyId, tier: 'test' };
+      } });
+
+    const first = await importer.importBuy({ buyOrderId: 'terminal' });
+    assert.equal(first.success, true);
+    assert.equal(first.extended, true);
+    assert.equal(body.assetQty, 0.03);
+    assert.ok(Math.abs(body.costBasis - 60.06) < 1e-8);
+    assert.equal(extendCalls.length, 1);
+    assert.equal(extendCalls[0].totals.assetQty, 0.03);
+    assert.ok(Math.abs(extendCalls[0].totals.costBasis - 60.06) < 1e-8);
+    assert.equal(fillLedger.getRecordedSizeForOrder('terminal'), 0.03);
+    const rows = fillLedger.getFillsForOrder('terminal');
+    assert.equal(rows.find(row => row.tradeId.startsWith('synthetic-')).size, 0.02);
+    assert.equal(rows.find(row => row.tradeId === 'real-terminal-0.03').size, 0.01);
+
+    const retry = await importer.importBuy({ buyOrderId: 'terminal' });
+    assert.equal(retry.success, true);
+    assert.equal(body.assetQty, 0.03);
+    assert.equal(extendCalls.length, 1, 'a retry must not extend or book the tranche twice');
   });
 
   it('keeps a replacement durable when a later manual import row rejects (#834)', async () => {
@@ -183,7 +229,10 @@ describe('Manual Trade Import', () => {
     ];
     const retried = await createImporter({ adapter, fillLedger: restored,
       injectBody: async () => { assert.fail('retry must preserve existing body'); },
-      extendBody: async () => { assert.fail('retry must not duplicate inventory'); } })
+      extendBody: async (_bodyId, totals) => {
+        assert.equal(totals.assetQty, 0.02);
+        return { success: true, bodyId: 'existing-body', alreadyApplied: true };
+      } })
       .importBuy({ buyOrderId: 'terminal' });
     assert.equal(retried.success, true);
     assert.equal(restored.getRecordedSizeForOrder('terminal'), 0.02);

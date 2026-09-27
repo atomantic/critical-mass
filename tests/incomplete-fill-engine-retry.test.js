@@ -87,12 +87,12 @@ const filledBuyStatus = (orderId) => ({
   totalFees: 0,
 });
 
-describe('terminal fallback identity reconciliation (#807)', () => {
-  it('manual import replaces real IDs without growing the live body or its TP', async () => {
+describe('terminal fallback identity reconciliation (#807, #835)', () => {
+  it('books only excess real quantity and manual import does not grow the body twice', async () => {
     const orderId = 'terminal-identity-buy';
     let available = false;
     const realFill = { tradeId: 'terminal-real-trade', orderId, side: 'buy',
-      size: 0.02, price: 2000, netFee: 0, tradeTime: new Date().toISOString() };
+      size: 0.03, price: 2000, netFee: 0, tradeTime: new Date().toISOString() };
     const adapter = {
       getOrderFills: async () => {
         if (!available) throw new Error('trade history unavailable');
@@ -102,17 +102,41 @@ describe('terminal fallback identity reconciliation (#807)', () => {
     };
     const eng = makeEngine(adapter);
     let tpCount = 0;
-    eng._test.setOrderExecutor(makeExecutor({ placeBodyTpOrder: async () => {
-      tpCount++;
-      return { success: true, orderId: 'terminal-identity-tp' };
-    } }));
+    let failCancelOnce = true;
+    eng._test.setOrderExecutor(makeExecutor({
+      cancelBodyTpOrder: async () => {
+        if (failCancelOnce) {
+          failCancelOnce = false;
+          throw new Error('cancel transiently failed');
+        }
+        return { cancelled: true };
+      },
+      placeBodyTpOrder: async () => {
+        tpCount++;
+        return { success: true, orderId: 'terminal-identity-tp' };
+      },
+    }));
     await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'FILLED',
       filledSize: 0.02, filledValue: 40, averageFilledPrice: 2000, totalFees: 0 });
-    const body = eng._getPositionState().celestialBodies.find(b => b.sourceOrderIds.includes(orderId));
-    assert.ok(body);
-    assert.equal(body.assetQty, 0.02);
+    const getBody = () => eng._getPositionState().celestialBodies.find(b => b.sourceOrderIds.includes(orderId));
+    assert.ok(getBody());
+    assert.equal(getBody().assetQty, 0.02);
     const originalTpCount = tpCount;
     available = true;
+    const realStatus = { orderId, side: 'buy', status: 'FILLED',
+      filledSize: 0.03, filledValue: 60, averageFilledPrice: 2000, totalFees: 0 };
+    await assert.rejects(eng._test.handleOrderFill(realStatus), /cancel transiently failed/);
+    assert.equal(getBody().assetQty, 0.02, 'failed TP cancellation leaves the existing body unchanged');
+    await eng._test.handleOrderFill(realStatus);
+    assert.equal(getBody().assetQty, 0.03);
+    assert.equal(getBody().costBasis, 60);
+    assert.equal(tpCount, originalTpCount + 1, 'the new tranche re-sizes the existing body TP once');
+    const tpCountAfterGrowth = tpCount;
+    await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'FILLED',
+      filledSize: 0.03, filledValue: 60, averageFilledPrice: 2000, totalFees: 0 });
+    assert.equal(getBody().assetQty, 0.03);
+    assert.equal(tpCount, tpCountAfterGrowth, 'replaying the same real identity is a no-op');
+
     const { createManualTradeStore } = require('../src/manual-trades');
     const { createManualTradeImporter } = require('../src/manual-trade-import');
     const store = createManualTradeStore('coinbase', TEST_PAIR);
@@ -122,16 +146,20 @@ describe('terminal fallback identity reconciliation (#807)', () => {
     for (let retry = 0; retry < 2; retry++) {
       const imported = await importer.importBuy({ buyOrderId: orderId });
       assert.equal(imported.success, true);
-      assert.equal(body.assetQty, 0.02);
-      assert.equal(body.costBasis, 40);
-      assert.equal(tpCount, originalTpCount);
-      assert.equal(eng.getFillLedger().getRecordedSizeForOrder(orderId), 0.02);
+      assert.equal(getBody().assetQty, 0.03);
+      assert.equal(getBody().costBasis, 60);
+      assert.equal(tpCount, tpCountAfterGrowth);
+      assert.equal(eng.getFillLedger().getRecordedSizeForOrder(orderId), 0.03);
     }
     const rows = eng.getFillLedger().getFillsForOrder(orderId);
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].tradeId, realFill.tradeId);
-    assert.equal(rows[0].bodyId, body.id);
-    assert.deepEqual(rows[0].replacesSyntheticTradeIds, [`synthetic-${orderId}-0.02`]);
+    assert.equal(rows.length, 2);
+    const synthetic = rows.find(row => row.tradeId.startsWith('synthetic-'));
+    const real = rows.find(row => row.tradeId === realFill.tradeId);
+    assert.equal(synthetic.size, 0.02);
+    assert.deepEqual(synthetic.syntheticCoverage.reconciledTrades.map(row => row.tradeId), [realFill.tradeId]);
+    assert.equal(real.size, 0.01);
+    assert.equal(real.bodyId, getBody().id);
+    assert.deepEqual(real.replacesSyntheticTradeIds, [`synthetic-${orderId}-0.02`]);
   });
 });
 
