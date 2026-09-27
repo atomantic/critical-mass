@@ -244,6 +244,7 @@ const createChartDataBuffer = (exchange, pair) => {
     clear,
     getStats,
     shutdown,
+    resume: () => { if (saveTimer) clearInterval(saveTimer); saveTimer = setInterval(saveToDisk, SAVE_INTERVAL_MS); },
   };
 };
 
@@ -333,4 +334,5 @@ module.exports = {
   removeChartDataBuffer,
   getChartData,
   shutdownAllBuffers,
+  resumeAllBuffers: () => { for (const buffer of chartBuffers.values()) buffer.resume(); },
 };

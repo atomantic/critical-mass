@@ -10,6 +10,7 @@
 const WebSocket = require('ws');
 const { MSG_TYPE, createMessage, serialize, deserialize } = require('./ipc-protocol');
 const { createContextLogger } = require('../logger');
+const { trackPendingWrite } = require('../pending-writes');
 const { setEngineMaintenance, refuseDuringMaintenance } = require('../engine-maintenance');
 
 /**
@@ -192,7 +193,8 @@ const createIPCServer = (port, name) => {
       }
 
       try {
-        const result = await handler(msg.payload, msg.exchange, msg.pair);
+        const run = () => handler(msg.payload, msg.exchange, msg.pair);
+        const result = await (['engine:maintenance', 'engine:backup-pause', 'engine:backup-resume'].includes(msg.channel) ? run() : trackPendingWrite(`ipc:${msg.channel}`, run));
         const response = createMessage(MSG_TYPE.RESPONSE, msg.channel, result, { id: msg.id });
         ws.send(serialize(response));
       } catch (err) {
@@ -208,7 +210,7 @@ const createIPCServer = (port, name) => {
     if (msg.type === MSG_TYPE.CONFIG_UPDATE) {
       const handler = requestHandlers.get('config_update');
       if (handler) {
-        handler(msg.payload, msg.exchange, msg.pair).catch((err) => {
+        trackPendingWrite('ipc:config_update', () => handler(msg.payload, msg.exchange, msg.pair)).catch((err) => {
           logger.error(`❌ 🔗 [${name}] config_update handler error: ${err.message}`, {
             channel: 'config_update',
             exchange: msg.exchange,

@@ -51,10 +51,11 @@ const getPendingWrites = () => [...pending].map((e) => ({ label: e.label, runnin
  * Wait for every in-flight write to finish.
  *
  * @param {number} [timeoutMs] - How long to wait before giving up
+ * @param {(entry: PendingWrite) => boolean} [matches] - Select a writer cohort, e.g. accepted IPC requests
  * @returns {Promise<{drained: boolean, pending: Array<{label: string, runningMs: number}>}>} Drain result
  */
-const drainPendingWrites = async (timeoutMs = 30_000) => {
-  const entries = [...pending];
+const drainPendingWrites = async (timeoutMs = 30_000, matches = () => true) => {
+  const entries = [...pending].filter(matches);
   if (entries.length === 0) return { drained: true, pending: [] };
 
   /** @type {NodeJS.Timeout} */
@@ -65,14 +66,21 @@ const drainPendingWrites = async (timeoutMs = 30_000) => {
     // even when the outstanding writer has no active event-loop handles.
   });
   // allSettled: a cycle that rejected has stopped writing, which is what we need.
-  const settled = Promise.allSettled(entries.map((e) => e.promise)).then(() => true);
+  const settled = (async () => {
+    let batch = entries;
+    while (batch.length) {
+      await Promise.allSettled(batch.map((e) => e.promise));
+      batch = [...pending].filter(matches);
+    }
+    return true;
+  })();
 
   const drained = await Promise.race([settled, expired]);
   clearTimeout(timer);
 
   return drained
     ? { drained: true, pending: [] }
-    : { drained: false, pending: entries.filter((e) => pending.has(e)).map((e) => ({ label: e.label, runningMs: Date.now() - e.startedAt })) };
+    : { drained: false, pending: [...pending].filter(matches).map((e) => ({ label: e.label, runningMs: Date.now() - e.startedAt })) };
 };
 
 module.exports = { trackPendingWrite, getPendingWrites, drainPendingWrites };

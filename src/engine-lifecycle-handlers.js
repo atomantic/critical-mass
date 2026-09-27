@@ -61,7 +61,7 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     saveRegimeRunningFlag,
   } = deps;
 
-  registry.onRequest('regime:start', async (payload, exchange, pair) => {
+  const startFund = async (payload, exchange, pair) => {
     const resolvedPair = resolvePair(exchange, pair);
     const key = fundKey(exchange, resolvedPair);
     const label = fundLabel(exchange, resolvedPair);
@@ -135,7 +135,8 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
 
     fundLogger.info(`ℹ️ 🚀 [${label}] Regime engine started`);
     return { success: true, exchange, pair: resolvedPair, status: engine.getStatus() };
-  });
+  };
+  registry.onRequest('regime:start', startFund);
 
   registry.onRequest('regime:stop', async (payload, exchange, pair) => {
     const resolvedPair = resolvePair(exchange, pair);
@@ -207,6 +208,7 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     fundLogger.info(`ℹ️ ✅ [${label}] Regime engine stopped successfully`);
     return { success: true, exchange, pair: resolvedPair, stopped: true };
   });
+  return { startFund };
 };
 
 module.exports = { registerEngineLifecycleHandlers };

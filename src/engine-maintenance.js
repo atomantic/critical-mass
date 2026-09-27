@@ -37,6 +37,8 @@ const MAX_MAINTENANCE_TTL_MS = 60 * 60_000;
  */
 const MAINTENANCE_SAFE_CHANNELS = new Set([
   'engine:maintenance',
+  'engine:backup-pause',
+  'engine:backup-resume',
   'regime:stop',
   'regime:stop-all',
   'regime:status',
@@ -54,6 +56,9 @@ const MAINTENANCE_SAFE_CHANNELS = new Set([
 
 /** @type {{reason: string, startedAt: number, expiresAt: number} | null} */
 let window_ = null;
+// A confirmed backup pause survives the IPC window TTL: stopped producers
+// cannot safely accept new mutations until resume finishes or the process restarts.
+let backupPaused = false;
 
 /**
  * @returns {{reason: string, startedAt: number, expiresAt: number} | null} The active window, or null
@@ -94,6 +99,13 @@ const setEngineMaintenance = (payload = {}) => {
  * @returns {{success: false, code: string, error: string, heldBy: string, expiresAt: number} | null} Refusal, or null to allow
  */
 const refuseDuringMaintenance = (channel) => {
+  if (backupPaused && !['engine:maintenance', 'engine:backup-pause', 'engine:backup-resume'].includes(channel)) {
+    return { success: false, code: 'maintenance-in-progress', error: 'Engine backup writers are paused', heldBy: 'backup writer pause', expiresAt: 0 };
+  }
+  const backupWindow = getEngineMaintenance();
+  if (backupWindow?.reason.startsWith('backup ') && !['engine:maintenance', 'engine:backup-pause', 'engine:backup-resume'].includes(channel)) {
+    return { success: false, code: 'maintenance-in-progress', error: 'Engine is paused for a backup', heldBy: backupWindow.reason, expiresAt: backupWindow.expiresAt };
+  }
   if (MAINTENANCE_SAFE_CHANNELS.has(channel)) return null;
   // The in-memory window expires; an unfinished restore must not. Only startup
   // recovery may consume/remove this journal before trading mutations resume.
@@ -122,6 +134,7 @@ const refuseDuringMaintenance = (channel) => {
 
 module.exports = {
   setEngineMaintenance,
+  setEngineBackupPaused: (active) => { backupPaused = Boolean(active); },
   getEngineMaintenance,
   refuseDuringMaintenance,
   MAINTENANCE_SAFE_CHANNELS,

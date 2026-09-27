@@ -42,6 +42,8 @@ const {
 } = require('./src/shared-utils');
 const { createIPCClient } = require('./src/ipc/ipc-client');
 const { forwardIPCEvent } = require('./src/ipc/socket-io-proxy');
+const { performBackup } = require('./src/backup-coordinator');
+const { drainPendingWrites, trackPendingWrite } = require('./src/pending-writes');
 const { maintenanceGuard, isMaintenanceActive } = require('./src/restore-maintenance');
 const { createUpDownService } = require('./src/updown/updown-service');
 const { createCandleCache } = require('./src/candle-cache');
@@ -116,7 +118,15 @@ const gatewayShutdown = createGatewayShutdown({
   closeListeners: () => closeGatewayListeners(io, [server, ...extraServers], socketEngines),
   log,
 });
-const routes = gatewayShutdown.routes(app);
+const shutdownRoutes = gatewayShutdown.routes(app);
+// Accepted async mutations outlive HTTP sockets; drain their handler promises.
+const routes = Object.fromEntries(Object.entries(shutdownRoutes).map(([method, register]) => [method,
+  (...args) => register(...args.flat(Infinity).map((arg) => typeof arg !== 'function' ? arg : (req, res, next) => {
+    const result = arg(req, res, next);
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) || /\/backups\/.+\/restore\/?$/.test(req.path)) return result;
+    return result && typeof result.then === 'function' ? trackPendingWrite(`api:${req.method}:${req.path}`, () => result) : result;
+  })),
+]));
 
 // ============ Middleware ============
 
@@ -168,6 +178,21 @@ app.param('exchange', (req, res, next, exchange) => {
 let backupTimer = null;
 let fundStateBackupTimer = null;
 
+const runScheduledBackup = (kind, create) => performBackup({
+  kind, create, exchangeIPCMap,
+  configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
+  drainPendingWrites,
+  gatewayWriters: [updownService, sentinelService].map((service, index) => {
+    const wasRunning = service.getStatus().running;
+    return {
+      name: index === 0 ? 'UpDown' : 'Sentinel',
+      stop: () => service.stop(),
+      resume: () => wasRunning ? service.start() : undefined,
+    };
+  }),
+  logger: createContextLogger({ module: 'backup-scheduler' }),
+});
+
 const rescheduleBackupTimer = () => {
   if (gatewayShutdown.isStopping()) return;
   if (backupTimer) {
@@ -186,38 +211,44 @@ const rescheduleBackupTimer = () => {
   }
 
   backupTimer = setInterval(() => {
-    const config = getBackupConfig();
-    if (!config.enabled) return;
+    if (gatewayShutdown.isStopping()) return;
+    gatewayShutdown.track((async () => {
+      const config = getBackupConfig();
+      if (!config.enabled) return;
 
-    log('INFO', '💾 Running scheduled backup...');
-    const result = createBackup({ includePriceCache: config.includePriceCache });
-    if (result.success) {
-      const sizeMB = (result.sizeBytes / 1024 / 1024).toFixed(1);
-      log('INFO', `💾 Scheduled backup created: ${result.filename} (${sizeMB} MB)`);
-      const pruneResult = pruneBackups(config.maxBackups);
-      if (pruneResult.pruned > 0) {
-        log('INFO', `💾 Pruned ${pruneResult.pruned} old backups, ${pruneResult.remaining} remaining`);
+      log('INFO', '💾 Running scheduled backup...');
+      const result = await runScheduledBackup('full archive', () => createBackup({ includePriceCache: config.includePriceCache }));
+      if (result.success) {
+        const sizeMB = (result.sizeBytes / 1024 / 1024).toFixed(1);
+        log('INFO', `💾 Scheduled backup created: ${result.filename} (${sizeMB} MB)`);
+        const pruneResult = pruneBackups(config.maxBackups);
+        if (pruneResult.pruned > 0) {
+          log('INFO', `💾 Pruned ${pruneResult.pruned} old backups, ${pruneResult.remaining} remaining`);
+        }
+      } else {
+        log('ERROR', `💾 Scheduled backup failed: ${result.error}`);
       }
-    } else {
-      log('ERROR', `💾 Scheduled backup failed: ${result.error}`);
-    }
+    })()).catch((err) => log('ERROR', `💾 Scheduled backup failed: ${err.message}`));
   }, backupConfig.intervalMs);
 
   fundStateBackupTimer = setInterval(() => {
-    const config = getBackupConfig();
-    if (!config.enabled) return;
+    if (gatewayShutdown.isStopping()) return;
+    gatewayShutdown.track((async () => {
+      const config = getBackupConfig();
+      if (!config.enabled) return;
 
-    const result = createFundStateBackup({ maxBackups: config.fundStateMaxBackups });
-    if (result.success) {
-      if (result.snapshotId) {
-        log('INFO', `💾 Fund-state snapshot created: ${result.snapshotId} (${result.files} files, ${result.funds.length} funds)`);
-        if (result.pruned > 0) {
-          log('INFO', `💾 Pruned ${result.pruned} old fund-state snapshots, ${result.remaining} remaining`);
+      const result = await runScheduledBackup('fund state', () => createFundStateBackup({ maxBackups: config.fundStateMaxBackups }));
+      if (result.success) {
+        if (result.snapshotId) {
+          log('INFO', `💾 Fund-state snapshot created: ${result.snapshotId} (${result.files} files, ${result.funds.length} funds)`);
+          if (result.pruned > 0) {
+            log('INFO', `💾 Pruned ${result.pruned} old fund-state snapshots, ${result.remaining} remaining`);
+          }
         }
+      } else {
+        log('ERROR', `💾 Fund-state snapshot failed: ${result.error}`);
       }
-    } else {
-      log('ERROR', `💾 Fund-state snapshot failed: ${result.error}`);
-    }
+    })()).catch((err) => log('ERROR', `💾 Fund-state snapshot failed: ${err.message}`));
   }, backupConfig.fundStateIntervalMs);
 
   const hours = (backupConfig.intervalMs / 3600000).toFixed(1);
