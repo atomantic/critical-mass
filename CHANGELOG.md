@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **[issue-800] CI builds now use read-only repository credentials** — The test and admin-build workflow no longer requests repository write access or persists its checkout token for later steps.
+- **[issue-799] Docker Compose storage now fails clearly instead of generating root-owned bind mounts** — Added a Linux preparation script for new `1000:1000`/private data and log directories, refused missing Compose bind sources, and preflighted container writability before bootstrap credential generation without changing existing data ownership.
 - **[issue-786] Closed-trade audit totals now include every booking of a two-part sell** — A second booking with the same sell order ID updates the existing closed-trade aggregate, preserving the status API and audit P&L/holdback totals alongside the fill-ledger totals while retries remain idempotent.
 - **[issue-782] Keep ladder reset accounting on the completed cycle** — Stale queued resets no longer double-count `cyclesCompleted` or optimizer samples, and reconciliation carries buys owned by a body that opened before its owed reset completed.
 - **[issue-788] Manual buy import retries recover a persisted body before reconciling later fills** — If the process crashed after saving a body but before recording its ID on the trade, a subsequent fill could be left outside that body. Retry now finds the body through the ledger or persisted order bookkeeping and extends it to the order's full fill total.

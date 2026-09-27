@@ -7,8 +7,16 @@ services:
     ports:
       - "127.0.0.1:5570:5570"
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - type: bind
+        source: ./data
+        target: /app/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./logs
+        target: /app/logs
+        bind:
+          create_host_path: false
     environment:
       - NODE_ENV=production
       - HOST=0.0.0.0
