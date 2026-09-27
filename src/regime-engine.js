@@ -3949,7 +3949,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const ingestedFills = [];
     for (const fill of rawFills) {
       const result = fillLedger.ingestFill(fill, orderPlacedAt);
-      if (result.fill) {
+      // A newly learned trade ID can replace execution already booked from
+      // terminal status. Only genuinely new quantity enters delta booking.
+      if (result.fill && !result.identityReplacement) {
         ingestedFills.push(result.fill);
       }
     }
@@ -3984,14 +3986,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Gate gap synthesis to TERMINAL fills only (Claude convergence review,
     // round 4): a still-live partial (keepEntryTracked) must stay
     // retryable, never synthesized. Without this gate, an advancing
-    // partial whose getOrderFills failed would synthesize the gap as a
-    // phantom row under a fixed tradeId; once a LATER poll succeeds and
-    // ingests the real trade (a genuinely different tradeId), the phantom
-    // row is never retired, and the body/ledger over-state by the
-    // phantom's size. A terminal fill has no "later real poll" to
-    // reconcile against — this is the final word on that order — so
-    // synthesizing its gap is safe (and is exactly the case this fallback
-    // exists for: no more retries will ever arrive to supersede it).
+    // partial whose getOrderFills failed would synthesize uncertain execution.
+    // Terminal coverage is provisional too: the ledger replaces equivalent
+    // coverage when real trade IDs arrive, and refuses economic corrections
+    // until they can be reconciled across the accounting stores (#807).
     const isTerminalFill = isTerminalStatus(fillData);
     const existingFillsForOrder = fillLedger.getFillsForOrder(fillData.orderId);
     const ledgerTotalForOrder = existingFillsForOrder.reduce((sum, f) => sum + Number(f.size || 0), 0);
@@ -4026,6 +4024,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // same order must ingest as a genuinely new row, not silently
         // no-op as a duplicate of an earlier, smaller gap.
         tradeId: `synthetic-${fillData.orderId}-${fillData.filledSize}`,
+        syntheticCoverage: {
+          orderId: fillData.orderId,
+          cumulativeQuantity: fillData.filledSize,
+          cumulativeQuote: existingFillsForOrder.reduce((sum, row) => sum + row.quoteAmount, 0)
+            + fillGap * fillData.averageFilledPrice,
+          cumulativeFees: alreadyBookedFees + feeDelta,
+        },
         orderId: fillData.orderId,
         side: fillData.side.toLowerCase(),
         price: fillData.averageFilledPrice,
