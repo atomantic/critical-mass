@@ -16,6 +16,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const { DATA_DIR, BACKUP_DIR } = require('./paths');
 const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME } = require('./restore-apply');
@@ -354,6 +355,33 @@ const appendManifest = (zipPath, manifest) => {
   return { success: true };
 };
 
+/** Validate a completed archive before it becomes a published recovery point. */
+const validateBackupArchive = (zipPath) => {
+  const integrity = spawnSync('unzip', ['-tq', zipPath], { timeout: SPAWN_TIMEOUT_MS });
+  if (integrity.error || integrity.status !== 0) {
+    const detail = integrity.error ? integrity.error.message : (integrity.stderr?.toString().trim() || 'Archive integrity check failed');
+    return { ok: false, error: detail };
+  }
+  const entries = spawnSync('unzip', ['-Z1', zipPath], { timeout: SPAWN_TIMEOUT_MS });
+  if (entries.error || entries.status !== 0) {
+    const detail = entries.error ? entries.error.message : (entries.stderr?.toString().trim() || 'Unable to read archive entries');
+    return { ok: false, error: detail };
+  }
+  const manifests = entries.stdout.toString().split('\n').filter((entry) => entry === MANIFEST_FILENAME);
+  if (manifests.length !== 1) return { ok: false, error: `Archive must contain exactly one ${MANIFEST_FILENAME}` };
+  const read = readArchiveManifest(zipPath);
+  if (read.error || !read.present) return { ok: false, error: read.error || `Missing ${MANIFEST_FILENAME}` };
+  const validated = readManifestSnapshot(read.manifest);
+  if (!validated.ok) return { ok: false, error: validated.error };
+  if (!validated.snapshot || typeof validated.snapshot !== 'object' || Array.isArray(validated.snapshot)) {
+    return { ok: false, error: `${MANIFEST_FILENAME} has no valid configuration snapshot` };
+  }
+  if (typeof read.manifest.createdAt !== 'string' || Number.isNaN(Date.parse(read.manifest.createdAt))) {
+    return { ok: false, error: `${MANIFEST_FILENAME} has no valid creation time` };
+  }
+  return { ok: true };
+};
+
 /**
  * Create a backup of all data files
  * @param {Object} options
@@ -376,8 +404,9 @@ const createBackup = ({ includePriceCache = false, paths: pathOverrides } = {}) 
   };
 
   const timestamp = new Date().toISOString().replace(/:/g, '-').replace(/\.\d+Z$/, '');
-  const filename = `backup-${timestamp}.zip`;
-  const zipPath = path.join(paths.backupsDir, filename);
+  const id = crypto.randomUUID();
+  const filename = `backup-${timestamp}-${id}.zip`;
+  const zipPath = path.join(paths.backupsDir, `.backup-${id}.tmp.zip`);
 
   // Build exclusion patterns
   const excludes = [
@@ -423,6 +452,7 @@ const createBackup = ({ includePriceCache = false, paths: pathOverrides } = {}) 
     const error = result.error
       ? result.error.message
       : (result.stderr ? result.stderr.toString().trim() : 'Unknown zip error');
+    fs.rmSync(zipPath, { force: true });
     return { success: false, error };
   }
 
@@ -433,7 +463,20 @@ const createBackup = ({ includePriceCache = false, paths: pathOverrides } = {}) 
     return { success: false, error: appended.error };
   }
 
-  const stats = fs.statSync(zipPath);
+  const validation = validateBackupArchive(zipPath);
+  if (!validation.ok) {
+    fs.rmSync(zipPath, { force: true });
+    return { success: false, error: `Backup validation failed: ${validation.error}` };
+  }
+
+  try {
+    fs.renameSync(zipPath, path.join(paths.backupsDir, filename));
+  } catch (error) {
+    fs.rmSync(zipPath, { force: true });
+    return { success: false, error: `Failed to publish backup archive: ${error.message}` };
+  }
+
+  const stats = fs.statSync(path.join(paths.backupsDir, filename));
   return { success: true, filename, sizeBytes: stats.size };
 };
 
@@ -445,7 +488,16 @@ const listBackups = () => {
   ensureBackupsDir();
 
   const files = fs.readdirSync(BACKUPS_DIR)
-    .filter(f => f.startsWith('backup-') && f.endsWith('.zip'));
+    .filter(f => f.startsWith('backup-') && f.endsWith('.zip'))
+    .filter((filename) => {
+      const filePath = path.join(BACKUPS_DIR, filename);
+      try {
+        if (!fs.lstatSync(filePath).isFile()) return false;
+        return validateBackupArchive(filePath).ok;
+      } catch (_error) {
+        return false;
+      }
+    });
 
   return files
     .map(filename => {
