@@ -1,0 +1,12 @@
+{
+  "name": "critical-mass-container-pm2",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Locked process manager for the container runtime",
+  "dependencies": {
+    "pm2": "7.0.4"
+  },
+  "overrides": {
+    "js-yaml": "4.3.2"
+  }
+}
