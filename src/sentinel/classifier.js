@@ -97,6 +97,20 @@ let aiCallsThisHour = 0;
 let aiHourStart = Date.now();
 
 /**
+ * Check the process-local attempt budget in the current hourly window.
+ * @param {number} maxPerHour
+ * @returns {boolean}
+ */
+const hasAIQuota = (maxPerHour) => {
+  const now = Date.now();
+  if (now - aiHourStart >= 3600000) {
+    aiCallsThisHour = 0;
+    aiHourStart = now;
+  }
+  return aiCallsThisHour < maxPerHour;
+};
+
+/**
  * Classify an item using AI (optional, rate-limited)
  * @param {Object} item - Normalized feed item
  * @param {{ enabled: boolean, maxPerHour: number }} aiConfig - AI classification config
@@ -105,13 +119,8 @@ let aiHourStart = Date.now();
 const classifyByAI = async (item, aiConfig) => {
   if (!aiConfig?.enabled) return null;
 
-  // Rate limiting
-  const now = Date.now();
-  if (now - aiHourStart > 3600000) {
-    aiCallsThisHour = 0;
-    aiHourStart = now;
-  }
-  if (aiCallsThisHour >= (aiConfig.maxPerHour || 10)) return null;
+  const maxPerHour = aiConfig.maxPerHour || 10;
+  if (!hasAIQuota(maxPerHour)) return null;
 
   try {
     // Load active provider
@@ -163,7 +172,7 @@ Return:
     // strips the Authorization header on cross-origin redirect — a bare fetch()
     // here would leak activeProvider.apiKey to a redirect target and only
     // validated the pre-redirect URL (issue #215-A class of bug).
-    const response = await safeFetch(`${activeProvider.endpoint}/chat/completions`, {
+    const requestOptions = {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -172,11 +181,17 @@ Return:
         stream: false,
       }),
       signal: AbortSignal.timeout(30000),
-    });
+    };
+
+    // Validation awaited above: recheck and reserve synchronously so concurrent
+    // calls cannot oversubscribe. Every dispatched attempt consumes quota,
+    // including timeouts, HTTP errors and invalid responses; never refund it.
+    if (!hasAIQuota(maxPerHour)) return null;
+    aiCallsThisHour++;
+    const response = await safeFetch(`${activeProvider.endpoint}/chat/completions`, requestOptions);
 
     if (!response.ok) return null;
 
-    aiCallsThisHour++;
     const result = await response.json();
     const content = result.choices?.[0]?.message?.content || '';
     const jsonMatch = content.replace(/<think>[\s\S]*?<\/think>/g, '').match(/\{[\s\S]*\}/);
