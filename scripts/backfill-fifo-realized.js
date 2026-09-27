@@ -1,21 +1,24 @@
 #!/usr/bin/env node
 /**
  * Backfill positionState.realizedPnL and positionState.realizedAssetPnL for each
- * fund's regime-state.json using the same FIFO replay the engine now performs at
- * runtime via fillLedger.getDerivedRealizedPnL().
+ * fund's regime-state.json using the legacy FIFO diagnostic and closed trades.
+ * This repair does not change the engine's cycle-pair accounting model.
  *
- * Engines must be stopped before running (live state files mustn't be racing).
+ * APPLY requires a PM2-confirmed stopped gateway. Engines are stopped and held
+ * in maintenance over IPC, or must be PM2-confirmed stopped. A pending journal
+ * blocks process startup until explicit resume/rollback completes.
  *
  * Usage:
  *   node scripts/backfill-fifo-realized.js          # dry-run, prints proposed changes
- *   node scripts/backfill-fifo-realized.js --apply  # writes (creates timestamped backup)
+ *   node scripts/backfill-fifo-realized.js --apply  # stages and commits a durable cohort
+ *   node scripts/backfill-fifo-realized.js --resume # finish a pending cohort
+ *   node scripts/backfill-fifo-realized.js --rollback # restore original bytes
  */
 
 const fs = require('fs');
 const path = require('path');
 
-const apply = process.argv.includes('--apply');
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const { DATA_DIR } = require('../src/paths');
 
 const round8 = (n) => Math.round(n * 1e8) / 1e8;
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -50,10 +53,10 @@ const computeFifoRealized = (fills) => {
   return { realizedPnL: round2(realizedPnL), remainingAssetQty: round8(remainingAssetQty) };
 };
 
-const findFunds = () => {
+const findFunds = (dataDir = DATA_DIR) => {
   const funds = [];
-  for (const exchange of fs.readdirSync(DATA_DIR)) {
-    const exDir = path.join(DATA_DIR, exchange);
+  for (const exchange of fs.readdirSync(dataDir)) {
+    const exDir = path.join(dataDir, exchange);
     if (!fs.statSync(exDir).isDirectory()) continue;
     for (const pair of fs.readdirSync(exDir)) {
       const pairDir = path.join(exDir, pair);
@@ -78,13 +81,17 @@ const sumClosedTradesPnl = (pairDir) => {
   return { count: trades.length, total: round2(total) };
 };
 
-const processFund = ({ exchange, pair, regimeFile, ledgerFile }) => {
+const stageFund = ({ exchange, pair, regimeFile, ledgerFile }, log = console.log) => {
   const ledgerRaw = JSON.parse(fs.readFileSync(ledgerFile, 'utf8'));
   const fills = Array.isArray(ledgerRaw) ? ledgerRaw : Object.values(ledgerRaw);
 
   const { realizedPnL: fifoUsd, remainingAssetQty } = computeFifoRealized(fills);
 
-  const state = JSON.parse(fs.readFileSync(regimeFile, 'utf8'));
+  const beforeBytes = fs.readFileSync(regimeFile, 'utf8');
+  const state = JSON.parse(beforeBytes);
+  if (!state || typeof state !== 'object' || Array.isArray(state) || !state.position || typeof state.position !== 'object' || Array.isArray(state.position)) {
+    throw new Error(`Invalid position state for ${exchange}/${pair}`);
+  }
   const pos = state.position || {};
   const bodies = pos.celestialBodies || [];
   const bodyAssetSum = bodies.reduce((s, b) => s + (Number(b.assetQty) || 0), 0);
@@ -106,32 +113,42 @@ const processFund = ({ exchange, pair, regimeFile, ledgerFile }) => {
     realizedAssetPnL: reserves,
   };
 
-  console.log(`\n[${exchange}/${pair}]`);
-  console.log(`  fills: ${fills.length}, bodies: ${bodies.length}, activeAsset: ${activeAsset}`);
-  console.log(`  closed-trades: ${ctCount} (sum pnl: ${ctTotal})  |  FIFO USD (info): ${fifoUsd}`);
-  console.log(`  FIFO remaining qty (active+reserves): ${remainingAssetQty}`);
-  console.log(`  realizedPnL:      ${before.realizedPnL} -> ${after.realizedPnL}`);
-  console.log(`  realizedAssetPnL: ${before.realizedAssetPnL} -> ${after.realizedAssetPnL}`);
+  log(`\n[${exchange}/${pair}]`);
+  log(`  fills: ${fills.length}, bodies: ${bodies.length}, activeAsset: ${activeAsset}`);
+  log(`  closed-trades: ${ctCount} (sum pnl: ${ctTotal})  |  FIFO USD (info): ${fifoUsd}`);
+  log(`  FIFO remaining qty (active+reserves): ${remainingAssetQty}`);
+  log(`  realizedPnL:      ${before.realizedPnL} -> ${after.realizedPnL}`);
+  log(`  realizedAssetPnL: ${before.realizedAssetPnL} -> ${after.realizedAssetPnL}`);
 
-  if (apply) {
-    const backup = `${regimeFile}.backup-fifo-${Date.now()}`;
-    fs.copyFileSync(regimeFile, backup);
-    state.position.realizedPnL = realizedPnL;
-    state.position.realizedAssetPnL = reserves;
-    fs.writeFileSync(regimeFile, JSON.stringify(state, null, 2));
-    console.log(`  ✓ written (backup: ${path.basename(backup)})`);
+  state.position.realizedPnL = realizedPnL;
+  state.position.realizedAssetPnL = reserves;
+  if (!Number.isFinite(realizedPnL) || !Number.isFinite(reserves)) {
+    throw new Error(`Non-finite backfill result for ${exchange}/${pair}`);
   }
+  return { file: regimeFile, before: beforeBytes, after: JSON.stringify(state, null, 2) };
 };
 
-const main = () => {
-  const funds = findFunds();
-  if (funds.length === 0) {
-    console.log('No funds with both regime-state.json and fill-ledger.json found.');
+const main = async (args = process.argv.slice(2)) => {
+  const modes = ['--apply', '--resume', '--rollback'].filter((arg) => args.includes(arg));
+  if (modes.length > 1 || args.some((arg) => !modes.includes(arg))) {
+    throw new Error('Usage: backfill-fifo-realized.js [--apply | --resume | --rollback]');
+  }
+  if (modes.length === 0) {
+    const funds = findFunds();
+    for (const fund of funds) stageFund(fund);
+    console.log(`Dry run: ${funds.length} fund(s). Re-run with --apply to write changes.`);
     return;
   }
-  console.log(`Found ${funds.length} fund(s). Mode: ${apply ? 'APPLY' : 'DRY-RUN'}`);
-  for (const fund of funds) processFund(fund);
-  if (!apply) console.log('\n(Dry run — re-run with --apply to write changes.)');
+  const { runBackfill, withStoppedWriters } = require('../src/fifo-backfill-transaction');
+  await withStoppedWriters(async (assertStopped) => {
+    const result = runBackfill({ dataDir: DATA_DIR, mode: modes[0].slice(2), assertStopped, stage: () => findFunds().map((fund) => stageFund(fund)) });
+    console.log(`${result.status}: verified ${result.count} fund(s). Engines remain stopped; restart manually.`);
+  });
 };
 
-main();
+if (require.main === module) main().catch((error) => {
+  console.error(`Backfill failed: ${error.message}`);
+  process.exitCode = 1;
+});
+
+module.exports = { computeFifoRealized, findFunds, stageFund, main };

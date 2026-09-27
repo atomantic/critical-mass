@@ -22,6 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('./paths');
 const { JOURNAL_FILENAME } = require('./restore-apply');
+const { hasPendingBackfill } = require('./fifo-backfill-transaction');
 
 const DEFAULT_MAINTENANCE_TTL_MS = 15 * 60_000;
 const MAX_MAINTENANCE_TTL_MS = 60 * 60_000;
@@ -96,6 +97,9 @@ const refuseDuringMaintenance = (channel) => {
   if (MAINTENANCE_SAFE_CHANNELS.has(channel)) return null;
   // The in-memory window expires; an unfinished restore must not. Only startup
   // recovery may consume/remove this journal before trading mutations resume.
+  if (hasPendingBackfill()) {
+    return { success: false, code: 'backfill-incomplete-recovery', error: 'FIFO backfill recovery is pending; run the offline repair with --resume or --rollback.', heldBy: 'FIFO backfill recovery', expiresAt: 0 };
+  }
   if (fs.existsSync(path.join(DATA_DIR, JOURNAL_FILENAME))) {
     return {
       success: false,
