@@ -3098,10 +3098,10 @@ describe('Fill Ledger', () => {
         size: 0.01, fee: 0.02, netFee: 0.02 }).fill;
       left.bodyId = 'body-left';
       left.isBodyOwned = true;
-      left.consumedBy = { 'sale-left': 0.004 };
+      left.consumedBy = { 'sale-left': 0.004, ignored: 'not-a-number', infinite: Infinity };
       right.bodyId = 'body-right';
       right.isBodyOwned = true;
-      right.consumedBy = { 'sale-right': 0.003 };
+      right.consumedBy = { 'sale-right': 0.003, 'sale-left': 'not-a-number' };
       ledger.markDirty();
       ledger.persist();
 

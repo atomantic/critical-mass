@@ -47,8 +47,12 @@ const sumConsumedBy = (consumedBy) => Object.values(consumedBy)
  */
 const mergeConsumedBy = (current, incoming) => {
   const merged = { ...(current || {}) };
+  for (const [sellOrderId, quantity] of Object.entries(merged)) {
+    if (!Number.isFinite(quantity) || quantity <= 0) delete merged[sellOrderId];
+  }
   for (const [sellOrderId, quantity] of Object.entries(incoming || {})) {
-    merged[sellOrderId] = Math.max(Number(merged[sellOrderId]) || 0, Number(quantity) || 0);
+    if (!Number.isFinite(quantity) || quantity <= 0) continue;
+    merged[sellOrderId] = Math.max(merged[sellOrderId] || 0, quantity);
   }
   return merged;
 };
@@ -1054,7 +1058,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
           netFee: executionNetFee,
           rebate: executionRebate,
         });
-        remaining = roundAsset(remaining - quantity);
+        remaining = roundAsset(Math.max(0, remaining - quantity));
       }
       const equivalent = (a, b) => Number.isFinite(a) && Number.isFinite(b)
         && Math.abs(a - b) <= 1e-8;
