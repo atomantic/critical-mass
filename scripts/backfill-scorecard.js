@@ -401,7 +401,13 @@ const main = () => {
 const publishBackfill = (dayBuffers, { directory = SCORECARD_DIR, apply = false } = {}) => {
   const days = Object.keys(dayBuffers).sort()
   if (days.some(day => !/^\d{4}-\d{2}-\d{2}$/.test(day))) throw new Error('Invalid scorecard day')
-  const fingerprint = createHash('sha256').update(JSON.stringify(days.map(day => [day, dayBuffers[day]]))).digest('hex')
+  // Hash incrementally: a year of replay must not become one giant JSON string.
+  const hash = createHash('sha256')
+  for (const day of days) {
+    hash.update(day).update('\0')
+    for (const line of dayBuffers[day]) hash.update(line).update('\0')
+  }
+  const fingerprint = hash.digest('hex')
   const manifestPath = path.join(directory, `.backfill-${fingerprint}.manifest.json`)
   const release = apply ? acquireScorecardLock(directory) : null
   if (apply && !release) throw new Error(`Scorecard maintenance lock is busy: ${lockPath(directory)}`)
