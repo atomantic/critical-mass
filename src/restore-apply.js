@@ -39,6 +39,7 @@
 const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('./paths');
+const { hasPendingBackfill } = require('./fifo-backfill-transaction');
 
 /** Durable marker + rollback plan. Lives in the data dir so any process finds it. */
 const JOURNAL_FILENAME = '.restore-journal.json';
@@ -536,6 +537,12 @@ const recoverIncompleteRestore = ({ dataDir = DATA_DIR, logger = NOOP_LOGGER } =
  * @returns {{pending: boolean, recovered: boolean, blocked: boolean, error?: string, recovery?: Object}} Recovery outcome
  */
 const guardIncompleteRestore = ({ processLabel, logger, dataDir = DATA_DIR, exit = process.exit }) => {
+  if (hasPendingBackfill(dataDir)) {
+    const error = 'FIFO backfill recovery is pending; stop all PM2 processes and run scripts/backfill-fifo-realized.js --resume or --rollback.';
+    logger.error(`Refusing to start ${processLabel}: ${error}`, { action: 'backfill-recovery', processLabel });
+    exit(1);
+    return { pending: true, recovered: false, blocked: true, error };
+  }
   const result = recoverIncompleteRestore({ dataDir, logger });
   if (result.blocked) {
     logger.error(`❌ 💾 Refusing to start ${processLabel}: a backup restore was interrupted and could not be rolled back — ${result.error}`, {
