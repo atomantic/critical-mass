@@ -48,10 +48,10 @@ const sumConsumedBy = (consumedBy) => Object.values(consumedBy)
 const mergeConsumedBy = (current, incoming) => {
   const merged = { ...(current || {}) };
   for (const [sellOrderId, quantity] of Object.entries(merged)) {
-    if (!Number.isFinite(quantity) || quantity <= 0) delete merged[sellOrderId];
+    if (!Number.isFinite(quantity) || quantity < 0) delete merged[sellOrderId];
   }
   for (const [sellOrderId, quantity] of Object.entries(incoming || {})) {
-    if (!Number.isFinite(quantity) || quantity <= 0) continue;
+    if (!Number.isFinite(quantity) || quantity < 0) continue;
     merged[sellOrderId] = Math.max(merged[sellOrderId] || 0, quantity);
   }
   return merged;
