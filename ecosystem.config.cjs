@@ -43,6 +43,7 @@ module.exports = {
       max_restarts: 10,
       min_uptime: "10s",
       restart_delay: 5000,
+      kill_timeout: 35000, // Gateway drain deadline is 30s; leave time for its exit.
       max_memory_restart: "512M",
       out_file: "./logs/critical-mass-out.log",
       error_file: "./logs/critical-mass-error.log",

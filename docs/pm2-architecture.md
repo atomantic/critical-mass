@@ -53,3 +53,26 @@ Critical-mass runs as 5 PM2 processes: a thin API gateway and 3 isolated engine 
 ## PM2 Config
 
 Defined in `ecosystem.config.cjs` with 5 processes: `critical-mass` (gateway), `critical-mass-coinbase`, `critical-mass-gemini`, `critical-mass-cryptocom`, `critical-mass-ui`.
+
+## Gateway shutdown grace period
+
+The gateway handles SIGTERM and SIGINT through one drain coordinator. It stops
+admitting HTTP requests and Socket.IO commands, cancels the DCA and backup timers,
+and waits for accepted request handlers and scheduled DCA cycles before stopping
+local producers. An aborted HTTP client does not cancel the handler's ownership.
+IPC remains connected through that drain; queued and already-sending Telegram
+notifications then settle before IPC, Socket.IO and every HTTP listener close.
+
+The internal deadline is **30 seconds** (`SHUTDOWN_TIMEOUT_MS` in
+`src/gateway-shutdown.js`). Deadline expiry or a teardown failure exits with code
+1; it does not clear placement intents or other durable trading recovery state.
+Repeated signals share the same drain and deadline. Normal completion exits 0.
+
+The gateway's PM2 `kill_timeout` is **35000 ms** in `ecosystem.config.cjs`. Keep any
+supervisor/container stop grace longer than that. The supplied Docker Compose
+configuration uses `stop_grace_period: 40s`; standalone Docker runs need
+`docker stop --time 40`. For an ordered whole-stack
+restart, drain the gateway before stopping exchange engine processes so admitted
+IPC operations can finish; stopping all engines simultaneously cannot provide
+that dependency guarantee. The gateway deadline bounds its own lifetime even
+when an exchange or transport hangs.
