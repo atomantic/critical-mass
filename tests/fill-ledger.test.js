@@ -3016,18 +3016,21 @@ describe('Fill Ledger', () => {
       restored.ingestFill(real('later-sell', 0.005, 'sell'));
       assert.deepEqual(restored.getUnbookedSellFills('covered').map(f => f.tradeId), ['later-sell']);
     });
-    it('keeps sell economic corrections gated before changing ledger or indexes', () => {
+    it('reconciles sell economic corrections while preserving the covered order quantity', () => {
       const ledger = createTestLedger();
+      ledger.setSellCorrectionHandler(() => {});
       ledger.startNewCycle();
       ledger.ingestFill(synthetic('sell'));
-      const before = JSON.stringify(ledger.getAllFills());
       for (const fill of [{ ...real('changed-price', 0.01, 'sell'), price: 2100 },
         { ...real('changed-fee', 0.01, 'sell'), fee: 0.03, netFee: 0.03 }]) {
-        assert.throws(() => ledger.ingestFill(fill), { syntheticReconciliationRequired: true });
-        assert.equal(JSON.stringify(ledger.getAllFills()), before);
+        assert.equal(ledger.ingestFill(fill).ingested, true);
         assert.equal(ledger.getRecordedSizeForOrder('covered'), 0.02);
       }
-      assert.equal(JSON.stringify(createTestLedger().getAllFills()), before);
+      const fills = ledger.getFillsForOrder('covered');
+      assert.equal(fills.reduce((sum, fill) => sum + fill.size, 0), 0.02);
+      assert.ok(Math.abs(fills.reduce((sum, fill) => sum + fill.quoteAmount, 0) - 41) < 1e-8);
+      assert.ok(Math.abs(fills.reduce((sum, fill) => sum + fill.netFee, 0) - 0.05) < 1e-8);
+      assert.deepEqual(createTestLedger().getFillsForOrder('covered'), fills);
     });
     it('books only the excess quantity when one real row crosses total coverage (#835)', () => {
       const ledger = createTestLedger();
@@ -3165,6 +3168,7 @@ describe('Fill Ledger', () => {
     for (const side of ['buy', 'sell']) {
       it(`persists batched ${side} replacement before a later correction rejects (#834)`, () => {
         const ledger = createTestLedger();
+        ledger.setSellCorrectionHandler(() => {});
         ledger.startNewCycle();
         ledger.ingestFill(synthetic(side));
         if (side === 'buy') {
@@ -3177,7 +3181,9 @@ describe('Fill Ledger', () => {
         }
         ledger.persist();
         ledger.ingestFill(real('batched-real', 0.01, side), null, { skipPersist: true, cycleId: null });
-        assert.throws(() => ledger.ingestFill({ ...real('rejected-real', 0.01, side), price: 2100 },
+        const rejected = { ...real('rejected-real', 0.01, side), price: 2100,
+          ...(side === 'sell' && { size: NaN }) };
+        assert.throws(() => ledger.ingestFill(rejected,
           null, { skipPersist: true }), { syntheticReconciliationRequired: true });
 
         // No caller flush: a failed batch never reached it. Reload must still

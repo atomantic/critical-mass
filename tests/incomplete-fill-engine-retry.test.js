@@ -62,8 +62,8 @@ const makeExecutor = (over = {}) => ({
   ...over,
 });
 
-const makeEngine = (adapter) => {
-  const eng = createRegimeEngine('coinbase', TEST_PAIR, { dryRun: false, productId: TEST_PAIR }, {});
+const makeEngine = (adapter, pair = TEST_PAIR) => {
+  const eng = createRegimeEngine('coinbase', pair, { dryRun: false, productId: pair }, {});
   eng._test.setRunning(true);
   eng._test.setProductDetails(PRODUCT_DETAILS);
   eng._test.setAdapter(adapter);
@@ -305,6 +305,57 @@ describe('terminal fallback reconciles cumulative quote (#808)', () => {
     await eng._test.handleOrderFill(terminal);
     assert.equal(ledger.getFillsForOrder(orderId).length, 2);
     near(pos.realizedPnL, bookedPnl);
+  });
+
+  it('reconciles terminal synthetic sell economics through the live engine once', async () => {
+    const orderId = 'terminal-sell-correction';
+    let detailAvailable = false;
+    const actualFill = { tradeId: 'terminal-sell-real', orderId, side: 'sell', size: 0.02,
+      price: 2100, fee: 0.06, netFee: 0.06, tradeTime: new Date().toISOString() };
+    const livePair = '__testsellcorrection__';
+    const eng = makeEngine({
+      getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
+      getOrderFills: async () => {
+        if (detailAvailable) return [actualFill];
+        throw new Error('trade history unavailable');
+      },
+    }, livePair);
+    const pos = eng._getPositionState();
+    pos.celestialBodies = [{ id: 'terminal-sell-body', tier: 'satellite', assetQty: 0.02,
+      costBasis: 34.96, avgPrice: 1748, assetOnOrder: 0.02, tpOrderId: orderId,
+      sourceOrderIds: [], buyOrders: [] }];
+    const terminal = { orderId, side: 'sell', status: 'FILLED', filledSize: 0.02,
+      filledValue: 40, averageFilledPrice: 2000, totalFees: 0.04 };
+    await eng._test.handleOrderFill(terminal);
+    near(pos.realizedPnL, 5);
+    const capitalAfterBooking = eng._getConfig().maxUsdcDeployed;
+
+    detailAvailable = true;
+    const previousGetConfig = configUtils.getRegimeConfig;
+    const previousUpdateConfig = configUtils.updateRegimeConfig;
+    configUtils.getRegimeConfig = () => ({ ...eng._getConfig() });
+    configUtils.updateRegimeConfig = (_exchange, _pair, updates) => Object.assign(eng._getConfig(), updates);
+    try {
+      await eng._test.handleOrderFill({ ...terminal, filledValue: 42, averageFilledPrice: 2100, totalFees: 0.06 });
+    } finally {
+      configUtils.getRegimeConfig = previousGetConfig;
+      configUtils.updateRegimeConfig = previousUpdateConfig;
+    }
+
+    const ledger = eng.getFillLedger();
+    near(ledger.getSellBooking(orderId).bodyPnl, 6.98);
+    near(pos.realizedPnL, 6.98);
+    near(eng._getConfig().maxUsdcDeployed, capitalAfterBooking + 1.98);
+    const { createClosedTrades } = require('../src/closed-trades');
+    const closed = createClosedTrades('coinbase', livePair);
+    closed.load();
+    near(closed.getTotalPnL(), 6.98);
+    assert.equal(ledger.getRecordedSizeForOrder(orderId), 0.02);
+    assert.equal(ledger.getFillsForOrder(orderId).length, 1);
+    assert.ok(pos.appliedSellCorrections.includes(actualFill.tradeId));
+    await eng._test.handleOrderFill({ ...terminal, filledValue: 42, averageFilledPrice: 2100, totalFees: 0.06 });
+    near(pos.realizedPnL, 6.98);
+    near(eng._getConfig().maxUsdcDeployed, capitalAfterBooking + 1.98);
   });
 });
 

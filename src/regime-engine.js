@@ -20,6 +20,7 @@ const { getUnaccountedFills } = require('./sync-fills');
 const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency, getConfiguredFunds, loadConfig, normalizeExchangeBlock } = require('./config-utils');
 const { createFillLedger, LEGACY_CONSUMPTION_KEY } = require('./fill-ledger');
 const { projectBuyCorrection, applyBuyCorrectionCapital } = require('./buy-fill-correction');
+const { applySellCorrectionCapital } = require('./sell-fill-correction');
 const { createClosedTrades } = require('./closed-trades');
 const {
   createHealthMonitor,
@@ -2035,6 +2036,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       try {
         hasSavedState = loadLiveState();
         fillLedger.resumeBuyCorrections();
+        fillLedger.resumeSellCorrections();
       } catch (err) {
         logger.error(
           `❌ [${fundLabel}] Cannot start — operator must repair state before trading resumes: ${err.message}`,
@@ -6210,6 +6212,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // would let a merge (or the next reconcile tick) race an in-flight TP
       // re-placement (#189 review).
       fillLedger.resumeBuyCorrections();
+      fillLedger.resumeSellCorrections();
       await reconcilePendingPlacements();
       await completeOwedCycleReset().catch((err) => {
         logger.error(`❌ [${exchange}] Owed cycle reset failed (will retry next reconcile): ${err.message}`, { error: err.message });
@@ -9421,6 +9424,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     config.maxUsdcDeployed = applyBuyCorrectionCapital(exchange, pair, correction);
     closedTrades.load();
     closedTrades.applyBuyCorrection(correction);
+  });
+
+  fillLedger.setSellCorrectionHandler(correction => {
+    const next = structuredClone(positionState);
+    next.appliedSellCorrections = [...new Set([...(next.appliedSellCorrections || []), correction.id])];
+    const derived = fillLedger.getDerivedRealizedPnL();
+    next.realizedPnL = derived.realizedPnL;
+    next.realizedAssetPnL = derived.realizedAssetPnL;
+    next.heldAssetCostBasis = derived.heldOpenBuyCostBasis;
+    if (next.celestialState) {
+      next.celestialState.bodiesRealizedPnL = derived.realizedPnL;
+      next.celestialState.bodiesRealizedAssetPnL = derived.realizedAssetPnL;
+    }
+    saveRegimeState(next, regimeDetector.getState(), exchange,
+      tpOptimizer.exportState(), sizeOptimizer.exportState(), pair);
+    const bodies = positionState.celestialBodies;
+    Object.assign(positionState, next, { celestialBodies: bodies });
+    config.maxUsdcDeployed = applySellCorrectionCapital(exchange, pair, correction);
+    closedTrades.load();
+    closedTrades.applySellCorrection(correction);
   });
 
   return {

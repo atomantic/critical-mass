@@ -13,6 +13,7 @@ const { resolveFundDataDir } = require('./migration');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { atomicWriteSync } = require('./state-tracker');
 const { planBuyCorrection, applyPersistedBuyCorrection } = require('./buy-fill-correction');
+const { planSellCorrection, applyPersistedSellCorrection } = require('./sell-fill-correction');
 const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
@@ -154,6 +155,17 @@ const findInvalidLedgerReason = (data) => {
           || !isFiniteNumber(sell.costDelta) || !isFiniteNumber(sell.capitalCreditFraction)
           || sell.capitalCreditFraction < 0 || sell.capitalCreditFraction > 1)) {
         return 'invalid buy correction journal';
+      }
+    }
+    const sellCorrections = fill.sellEconomicCorrections;
+    if (sellCorrections != null && !Array.isArray(sellCorrections)) return 'invalid sell correction journal';
+    for (const correction of sellCorrections || []) {
+      if (!correction || typeof correction.id !== 'string' || !correction.id
+        || correction.orderId !== fill.orderId
+        || ['quoteDelta', 'netFeeDelta', 'bodyPnlDelta', 'satellitePnlDelta', 'capitalDelta',
+          'auditProceedsDelta', 'auditFeesDelta', 'auditPnlDelta'].some(key => !isFiniteNumber(correction[key]))
+        || !['pending', 'applied'].includes(correction.status)) {
+        return 'invalid sell correction journal';
       }
     }
     seenTradeIds.add(fill.tradeId);
@@ -433,7 +445,7 @@ const ORDER_LEVEL_FIELDS = {
   sell: [
     'isBodyOwned', 'bodyId', 'bodyTier', 'isSatellite',
     'bodyCostBasis', 'bodyAvgPrice', 'bodyBtcQty', 'bodyHoldbackAsset', 'bodyReservesSoldAsset', 'bodyPnl', 'bodyBookedSize',
-    'satellitePnl', 'satelliteHoldbackAsset', 'partialFill', 'mergeSnapshot', 'untrackedSell',
+    'satellitePnl', 'satelliteHoldbackAsset', 'sellCorrectionPnlRemainder', 'partialFill', 'mergeSnapshot', 'untrackedSell',
   ],
 };
 
@@ -607,6 +619,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   // This index keeps their replay check O(1) after a reload.
   const reconciledTradeIds = new Set();
   let buyCorrectionHandler = correction => applyPersistedBuyCorrection(exchange, pair, correction, getDerivedRealizedPnL());
+  let sellCorrectionHandler = correction => applyPersistedSellCorrection(exchange, pair, correction, getDerivedRealizedPnL());
   let currentCycleId = null;
   // When the live cycle began (ms), if known: set by startNewCycle() or
   // restored from the persisted positionState.activeCycleStartedAt. Null when
@@ -1003,8 +1016,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * directly. When an execution crosses the remaining coverage or the covered
    * rows carry different state, keep those rows as the quantity/ownership
    * record and persist the real identity against them. Only the excess becomes
-   * a new ledger tranche. Buy quote/fee corrections publish a durable journal;
-   * sell economic corrections remain gated until their reconciliation ships.
+   * a new ledger tranche. Buy and sell quote/fee corrections publish durable
+   * journals before their accounting targets are updated.
    */
   const reconcileSyntheticCoverage = (fill) => {
     if (isSyntheticCoverage(fill) || !syntheticOrders.has(fill.orderId)) return null;
@@ -1086,9 +1099,12 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         && Math.abs(a - b) <= 1e-8;
       if (!equivalent(rawCoveredQuote, syntheticQuote) || !equivalent(rawCoveredFee, syntheticFee)
         || !equivalent(rawCoveredNetFee, syntheticNetFee) || !equivalent(rawCoveredRebate, syntheticRebate)) {
-        if (fill.side !== 'buy') reject('quote or fee correction needs coordinated accounting reconciliation');
-        fill.buyEconomicCorrection = planBuyCorrection(Array.from(fills.values()), fill.orderId,
-          rawCoveredQuote + rawCoveredNetFee - syntheticQuote - syntheticNetFee, fill.tradeId);
+        if (fill.side === 'buy') {
+          fill.buyEconomicCorrection = planBuyCorrection(Array.from(fills.values()), fill.orderId,
+            rawCoveredQuote + rawCoveredNetFee - syntheticQuote - syntheticNetFee, fill.tradeId);
+        } else {
+          fill.sellEconomicCorrection = planSellCorrection(allocations, fill.tradeId);
+        }
       }
 
       const newSize = roundAsset(Math.max(0, reported.size - coveredSize));
@@ -1135,14 +1151,31 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     let netFee = 0;
     let rebate = 0;
     const replacements = [];
+    const correctionAllocations = [];
     for (const row of covered) {
       if (remaining <= 1e-9) break;
       const quantity = Math.min(remaining, unresolvedSyntheticSize(row));
       const ratio = quantity / row.size;
+      const executionRatio = quantity / fill.size;
       quote += row.quoteAmount * ratio;
       fee += row.fee * ratio;
       netFee += row.netFee * ratio;
       rebate += (row.rebate || 0) * ratio;
+      correctionAllocations.push({
+        row,
+        tradeId: row.tradeId,
+        size: quantity,
+        quoteAmount: fill.quoteAmount * executionRatio,
+        fee: fill.fee * executionRatio,
+        netFee: fill.netFee * executionRatio,
+        rebate: fill.rebate * executionRatio,
+        priorEconomics: {
+          quoteAmount: row.quoteAmount * ratio,
+          fee: row.fee * ratio,
+          netFee: row.netFee * ratio,
+          rebate: (row.rebate || 0) * ratio,
+        },
+      });
       const residualSize = roundAsset(row.size - quantity);
       replacements.push({ old: row, residual: residualSize > 1e-9 ? {
         ...row,
@@ -1158,9 +1191,12 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       && Math.abs(a - b) <= 1e-8;
     if (!equivalent(fill.quoteAmount, quote) || !equivalent(fill.fee, fee)
       || !equivalent(fill.netFee, netFee) || !equivalent(fill.rebate, rebate)) {
-      if (fill.side !== 'buy') reject('quote or fee correction needs coordinated accounting reconciliation');
-      fill.buyEconomicCorrection = planBuyCorrection(Array.from(fills.values()), fill.orderId,
-        fill.quoteAmount + fill.netFee - quote - netFee, fill.tradeId);
+      if (fill.side === 'buy') {
+        fill.buyEconomicCorrection = planBuyCorrection(Array.from(fills.values()), fill.orderId,
+          fill.quoteAmount + fill.netFee - quote - netFee, fill.tradeId);
+      } else {
+        fill.sellEconomicCorrection = planSellCorrection(correctionAllocations, fill.tradeId);
+      }
     }
     for (const key of annotations) {
       if (anchor[key] !== undefined) fill[key] = key === 'consumedBy'
@@ -1194,6 +1230,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    */
   const ingestFill = (fillData, orderPlacedAt = null, options = {}) => {
     resumeBuyCorrections();
+    resumeSellCorrections();
     const tradeId = fillData.tradeId || fillData.trade_id;
 
     // Idempotency check
@@ -1254,7 +1291,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     if (reconciliation?.mode === 'preserve') {
       for (const allocation of reconciliation.allocations) {
         const prior = allocation.row.syntheticCoverage || {};
-        if (fill.buyEconomicCorrection) {
+        if (fill.buyEconomicCorrection || fill.sellEconomicCorrection) {
           const originalEconomics = prior.originalEconomics || {
             quoteAmount: allocation.row.quoteAmount, fee: allocation.row.fee,
             netFee: allocation.row.netFee, rebate: allocation.row.rebate || 0,
@@ -1325,6 +1362,28 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       }
       delete fill.buyEconomicCorrection;
     }
+    if (fill.sellEconomicCorrection) {
+      const correction = fill.sellEconomicCorrection;
+      // Identity-only preserve mode has no real quantity row; its journal
+      // belongs to the synthetic row that durably records the real identity.
+      const journalRow = fill.size > 1e-9 ? fill : reconciliation.allocations[0].row;
+      journalRow.sellEconomicCorrections = [...(journalRow.sellEconomicCorrections || []), correction];
+      const applyPnlDelta = (field, delta) => {
+        if (Math.abs(delta) <= 1e-12) return;
+        for (const row of fills.values()) {
+          if (row.side !== 'sell' || row.orderId !== correction.orderId || row[field] == null) continue;
+          const exact = Number(row[field]) + delta + Number(row.sellCorrectionPnlRemainder || 0);
+          row[field] = roundUSDC(exact);
+          row.sellCorrectionPnlRemainder = exact - row[field];
+        }
+      };
+      // These are order-level annotations: update each copy by the portion
+      // that was already booked, while leaving quantities, cost, holdback,
+      // consumption, and the capital-credit watermark untouched.
+      applyPnlDelta('bodyPnl', correction.bodyPnlDelta);
+      applyPnlDelta('satellitePnl', correction.satellitePnlDelta);
+      delete fill.sellEconomicCorrection;
+    }
     dirtySinceLastPersist = true;
     bumpLedgerVersion();
     // Replacement changes which trade IDs own already-booked execution. A
@@ -1357,6 +1416,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     }
 
     resumeBuyCorrections();
+    resumeSellCorrections();
 
     const fillTimeStr = fillTimeMs !== null ? ` (fill time: ${(fillTimeMs / 1000).toFixed(1)}s)` : '';
     logger.info(`📝 [${exchange}] Fill ingested: tradeId=${tradeId} orderId=${fill.orderId} ${fill.side} ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)} (fee: $${fill.netFee.toFixed(4)})${fillTimeStr}`, {
@@ -1416,6 +1476,20 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       for (const correction of row.buyEconomicCorrections || []) {
         if (correction.status !== 'pending') continue;
         if (correction.owned || correction.sells.length) buyCorrectionHandler(correction);
+        correction.status = 'applied';
+        dirtySinceLastPersist = true;
+        bumpLedgerVersion();
+        try { persist(); } catch (err) { correction.status = 'pending'; throw err; }
+      }
+    }
+  };
+
+  /** Resume each published sell correction after its ledger journal is durable. */
+  const resumeSellCorrections = () => {
+    for (const row of fills.values()) {
+      for (const correction of row.sellEconomicCorrections || []) {
+        if (correction.status !== 'pending') continue;
+        sellCorrectionHandler(correction);
         correction.status = 'applied';
         dirtySinceLastPersist = true;
         bumpLedgerVersion();
@@ -2904,7 +2978,9 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   return {
     ingestFill,
     resumeBuyCorrections,
+    resumeSellCorrections,
     setBuyCorrectionHandler: handler => { buyCorrectionHandler = handler; },
+    setSellCorrectionHandler: handler => { sellCorrectionHandler = handler; },
     getFillsForOrder,
     /** O(1) watermark lookup. Use this in hot paths instead of getFillsForOrder + reduce. */
     getRecordedSizeForOrder: (orderId) => orderSizeIndex.get(orderId) || 0,

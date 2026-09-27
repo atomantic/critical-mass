@@ -193,6 +193,32 @@ const createClosedTrades = (exchange, pair) => {
     }
   };
 
+  /** Correct already-booked sell proceeds and fees without changing quantity or cost. */
+  const applySellCorrection = (correction) => {
+    const trade = trades.find(row => row.sellOrderId === correction.orderId);
+    if (!trade || trade.appliedSellCorrections?.includes(correction.id)) return false;
+    if (Math.abs(correction.auditProceedsDelta) <= 1e-12
+      && Math.abs(correction.auditFeesDelta) <= 1e-12
+      && Math.abs(correction.auditPnlDelta) <= 1e-12) return false;
+
+    const before = structuredClone(trades);
+    const proceeds = trade.sellProceeds + correction.auditProceedsDelta
+      + (trade.sellCorrectionProceedsRemainder || 0);
+    const fees = trade.sellFees + correction.auditFeesDelta
+      + (trade.sellCorrectionFeesRemainder || 0);
+    const pnl = trade.pnl + correction.auditPnlDelta
+      + (trade.sellCorrectionPnlRemainder || 0);
+    trade.sellProceeds = roundUSDC(proceeds);
+    trade.sellFees = roundUSDC(fees);
+    trade.pnl = roundUSDC(pnl);
+    trade.sellCorrectionProceedsRemainder = proceeds - trade.sellProceeds;
+    trade.sellCorrectionFeesRemainder = fees - trade.sellFees;
+    trade.sellCorrectionPnlRemainder = pnl - trade.pnl;
+    trade.appliedSellCorrections = [...(trade.appliedSellCorrections || []), correction.id];
+    try { persist(); } catch (err) { trades.splice(0, trades.length, ...before); throw err; }
+    return true;
+  };
+
   const getAll = () => [...trades].sort((a, b) => a.timestamp - b.timestamp);
   const getTotalPnL = () => roundUSDC(trades.reduce((s, t) => s + (t.pnl || 0), 0));
   // Net of reserves a stale TP sold beyond its body (#770): that asset left
@@ -378,6 +404,7 @@ const createClosedTrades = (exchange, pair) => {
     getByCycleId,
     migrateFromFills,
     applyBuyCorrection,
+    applySellCorrection,
   };
 };
 
