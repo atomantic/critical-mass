@@ -134,6 +134,24 @@ describe('Manual Trade Import', () => {
   // -----------------------------------------------------------------------
   // importSell — validation happens before any mutation
   // -----------------------------------------------------------------------
+  it('replaces terminal coverage on manual import and preserves body ownership (#807)', async () => {
+    fillLedger.ingestFill({ tradeId: 'synthetic-terminal-0.02', orderId: 'terminal',
+      side: 'buy', size: 0.02, price: 2000, netFee: 0 });
+    fillLedger.annotateFillsByOrderId('terminal', { bodyId: 'existing-body', isBodyOwned: true });
+    fillLedger.persist();
+    const adapter = createFakeAdapter({ fillsByOrder: { terminal: [{ tradeId: 'real-terminal',
+      orderId: 'terminal', side: 'buy', size: 0.02, price: 2000, netFee: 0,
+      tradeTime: new Date().toISOString() }] } });
+    const importer = createImporter({ adapter,
+      injectBody: async () => { assert.fail('must not create duplicate inventory'); },
+      extendBody: async () => { assert.fail('same quantity must not grow body'); } });
+    const result = await importer.importBuy({ buyOrderId: 'terminal' });
+    assert.equal(result.success, true);
+    assert.equal(fillLedger.getRecordedSizeForOrder('terminal'), 0.02);
+    assert.equal(fillLedger.getFillsForOrder('terminal').length, 1);
+    assert.equal(fillLedger.getFillsForOrder('terminal')[0].bodyId, 'existing-body');
+  });
+
   describe('importSell', () => {
     const sellFills = [
       makeFill({ tradeId: 'sell-fill-1', side: 'sell', price: 100000, size: 0.002 }),

@@ -2936,6 +2936,100 @@ describe('Fill Ledger', () => {
   // =======================================================================
   // ingestFill fee mapping — synthetic-fill fee retention (#210-C)
   // =======================================================================
+  describe('terminal synthetic identity replacement (#807)', () => {
+    const synthetic = (side = 'buy') => ({
+      tradeId: 'synthetic-covered-0.02', orderId: 'covered', side,
+      price: 2000, size: 0.02, fee: 0.04, netFee: 0.04,
+    });
+    const real = (tradeId, size = 0.01, side = 'buy') => ({
+      tradeId, orderId: 'covered', side, price: 2000, size,
+      fee: size * 2, netFee: size * 2,
+    });
+    it('retains only unresolved coverage across real IDs, reloads and replay', () => {
+      let ledger = createTestLedger();
+      const cycle = ledger.startNewCycle();
+      ledger.ingestFill(synthetic());
+      ledger.annotateFillsByOrderId('covered', { bodyId: 'body-1', isBodyOwned: true,
+        consumedBy: { sold: 0.005 }, sellOrderId: 'sold' });
+      ledger.persist();
+      const first = ledger.ingestFill(real('actual-1'), null, { cycleId: null });
+      assert.equal(first.identityReplacement, true);
+      assert.equal(first.fill.bodyId, 'body-1');
+      assert.deepEqual(first.fill.consumedBy, { sold: 0.005 });
+      assert.equal(first.fill.cycleId, cycle);
+      assert.equal(ledger.getFillsForOrder('covered').reduce((n, f) => n + f.size, 0), 0.02);
+      assert.equal(ledger.getFillsForOrder('covered').find(f => f.tradeId.startsWith('synthetic')).size, 0.01);
+      ledger = createTestLedger();
+      assert.equal(ledger.ingestFill(real('actual-1')).ingested, false);
+      ledger.ingestFill(real('actual-2'), null, { skipPersist: true, cycleId: null });
+      ledger.persist();
+      ledger = createTestLedger();
+      assert.deepEqual(ledger.getFillsForOrder('covered').map(f => f.tradeId).sort(), ['actual-1', 'actual-2']);
+      assert.equal(ledger.getRecordedSizeForOrder('covered'), 0.02);
+      assert.equal(ledger.getCurrentCycleFills().length, 2);
+      assert.deepEqual(ledger.getBuyOrderConsumption('covered').consumedBy, { sold: 0.005 });
+      const extra = ledger.ingestFill(real('actual-3', 0.005));
+      assert.equal(extra.identityReplacement, false, 'later execution stays bookable');
+      assert.equal(ledger.getRecordedSizeForOrder('covered'), 0.025);
+    });
+    it('keeps sell booking and capital credit markers on replacement rows', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(synthetic('sell'));
+      ledger.commitSellBooking('covered', { bodyPnl: 5, bodyCostBasis: 34.96,
+        bodyBtcQty: 0.02, bodyHoldbackAsset: 0.001, bodyId: 'sold-body' }, { soldSize: 0.02 });
+      ledger.claimCapitalCredit('covered', 0.02);
+      ledger.ingestFill(real('actual-sell-1', 0.01, 'sell'));
+      ledger.ingestFill(real('actual-sell-2', 0.01, 'sell'));
+      const restored = createTestLedger();
+      assert.equal(restored.getSellBooking('covered').bookedSize, 0.02);
+      assert.equal(restored.getSellBooking('covered').bodyPnl, 5);
+      assert.deepEqual(restored.getUnbookedSellFills('covered'), []);
+      assert.equal(restored.claimCapitalCredit('covered', 0.02), false);
+      restored.ingestFill(real('later-sell', 0.005, 'sell'));
+      assert.deepEqual(restored.getUnbookedSellFills('covered').map(f => f.tradeId), ['later-sell']);
+    });
+    it('refuses economic corrections and mixed coverage before changing ledger or indexes', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(synthetic());
+      const before = JSON.stringify(ledger.getAllFills());
+      for (const fill of [{ ...real('changed-price'), price: 2100 },
+        { ...real('changed-fee'), fee: 0.03, netFee: 0.03 }, real('crossing', 0.03)]) {
+        assert.throws(() => ledger.ingestFill(fill), { syntheticReconciliationRequired: true });
+        assert.equal(JSON.stringify(ledger.getAllFills()), before);
+        assert.equal(ledger.getRecordedSizeForOrder('covered'), 0.02);
+      }
+      assert.equal(JSON.stringify(createTestLedger().getAllFills()), before);
+    });
+    it('rolls replacement and indexes back when atomic publication fails', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(synthetic());
+      const before = JSON.stringify(ledger.getAllFills());
+      const rename = fs.renameSync;
+      fs.renameSync = () => { throw new Error('simulated write failure'); };
+      try {
+        assert.throws(() => ledger.ingestFill(real('retry-after-failure', 0.02)), /simulated write failure/);
+      } finally {
+        fs.renameSync = rename;
+      }
+      assert.equal(JSON.stringify(ledger.getAllFills()), before);
+      assert.equal(ledger.getRecordedSizeForOrder('covered'), 0.02);
+      assert.equal(ledger.getCurrentCycleFills().length, 1);
+      assert.equal(JSON.stringify(createTestLedger().getAllFills()), before);
+      assert.equal(ledger.ingestFill(real('retry-after-failure', 0.02)).identityReplacement, true);
+    });
+    it('does not replace DCA conversion or unrelated synthetic-looking rows', () => {
+      const ledger = createTestLedger();
+      ledger.ingestFill({ ...synthetic(), tradeId: 'dca-convert-covered' });
+      ledger.ingestFill({ ...synthetic(), tradeId: 'synthetic-covered-unrelated' });
+      const result = ledger.ingestFill(real('actual', 0.02));
+      assert.equal(result.identityReplacement, false);
+      assert.equal(ledger.getRecordedSizeForOrder('covered'), 0.06);
+    });
+  });
+
   describe('ingestFill honors explicit/synthetic fees (issue #210-C)', () => {
     it('persists netFee from a synthetic fill built off order status', () => {
       const ledger = createTestLedger();

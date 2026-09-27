@@ -87,6 +87,54 @@ const filledBuyStatus = (orderId) => ({
   totalFees: 0,
 });
 
+describe('terminal fallback identity reconciliation (#807)', () => {
+  it('manual import replaces real IDs without growing the live body or its TP', async () => {
+    const orderId = 'terminal-identity-buy';
+    let available = false;
+    const realFill = { tradeId: 'terminal-real-trade', orderId, side: 'buy',
+      size: 0.02, price: 2000, netFee: 0, tradeTime: new Date().toISOString() };
+    const adapter = {
+      getOrderFills: async () => {
+        if (!available) throw new Error('trade history unavailable');
+        return [realFill];
+      },
+      getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
+    };
+    const eng = makeEngine(adapter);
+    let tpCount = 0;
+    eng._test.setOrderExecutor(makeExecutor({ placeBodyTpOrder: async () => {
+      tpCount++;
+      return { success: true, orderId: 'terminal-identity-tp' };
+    } }));
+    await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'FILLED',
+      filledSize: 0.02, filledValue: 40, averageFilledPrice: 2000, totalFees: 0 });
+    const body = eng._getPositionState().celestialBodies.find(b => b.sourceOrderIds.includes(orderId));
+    assert.ok(body);
+    assert.equal(body.assetQty, 0.02);
+    const originalTpCount = tpCount;
+    available = true;
+    const { createManualTradeStore } = require('../src/manual-trades');
+    const { createManualTradeImporter } = require('../src/manual-trade-import');
+    const store = createManualTradeStore('coinbase', TEST_PAIR);
+    const importer = createManualTradeImporter({ exchange: 'coinbase', pair: TEST_PAIR,
+      adapter, fillLedger: eng.getFillLedger(), store,
+      extendBody: eng.extendBody, injectBody: eng.injectBody });
+    for (let retry = 0; retry < 2; retry++) {
+      const imported = await importer.importBuy({ buyOrderId: orderId });
+      assert.equal(imported.success, true);
+      assert.equal(body.assetQty, 0.02);
+      assert.equal(body.costBasis, 40);
+      assert.equal(tpCount, originalTpCount);
+      assert.equal(eng.getFillLedger().getRecordedSizeForOrder(orderId), 0.02);
+    }
+    const rows = eng.getFillLedger().getFillsForOrder(orderId);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].tradeId, realFill.tradeId);
+    assert.equal(rows[0].bodyId, body.id);
+    assert.deepEqual(rows[0].replacesSyntheticTradeIds, [`synthetic-${orderId}-0.02`]);
+  });
+});
+
 describe('synthetic fallback accounts for the GAP, not the stale ledger total (codex convergence review)', () => {
   it('books the remainder when a terminal rescan fails after an earlier partial was already ingested', async () => {
     // 1. A real partial fill ingests 0.01 and creates/owns a body — no
