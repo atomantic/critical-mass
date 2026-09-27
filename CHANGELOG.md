@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-808] Terminal synthetic fill gaps use the remaining order quote value** — After partial executions at different prices, fallback buys and sells subtract the already recorded quote from the cumulative status total, preserving cost basis and proceeds; invalid totals remain retryable without fabricated fills.
 - **[issue-834] Batched synthetic replacements persist before ingestion continues** — Manual and sync imports now publish replacement identities and residual coverage immediately; failed publication restores ledger rows and indexes so a later rejected row or restart cannot leave replacement state only in memory.
 - **[issue-810] Scheduled backups capture one quiesced writer generation** — Full archives and fund-state snapshots share an exclusive maintenance window, pause and drain engine/gateway writers, and fail without publishing when quiescence is unconfirmed; previously running funds resume after copying while Gemini heartbeat ownership stays active.
 - **[issue-820] Sensitive JSON parse failures no longer expose credential excerpts** — Provider/auth reads, configuration reloads and saves, and backup configuration diagnostics now report a logical file and error code without retaining parser messages, stacks or causes; default and last-good recovery behavior is preserved.
