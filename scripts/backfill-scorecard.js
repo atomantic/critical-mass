@@ -6,15 +6,18 @@
  * Replays 1 year of BTC candle data through the signal engine,
  * generating prediction + outcome JSONL files for the analysis dashboard.
  *
- * Usage: node scripts/backfill-scorecard.js [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--step 5]
+ * Usage: node scripts/backfill-scorecard.js [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--step 5] [--apply]
  *
  * --from   Start date (default: 30 days after first candle for warmup)
  * --to     End date (default: last candle)
+ * --apply  Explicitly publish results (default: dry run; no writes)
  * --step   Minutes between predictions (default: 5)
  */
 
 const fs = require('fs')
 const path = require('path')
+const { createHash } = require('crypto')
+const { acquireScorecardLock, atomicPublish, validateJsonl, lockPath } = require('../src/updown/scorecard-maintenance')
 const { createCandleAggregator } = require('../src/candle-aggregator')
 const { createSignalEngine, ALL_SIGNAL_TFS } = require('../src/updown/signal-engine')
 const { TF_MS, seedCompletedCandles } = require('../src/updown/replay-candles')
@@ -380,38 +383,12 @@ const main = () => {
   }
   console.log('')
 
-  // Write output files
-  if (!fs.existsSync(SCORECARD_DIR)) {
-    fs.mkdirSync(SCORECARD_DIR, { recursive: true })
-  }
-
-  let totalLines = 0
-  const days = Object.keys(dayBuffers).sort()
-  for (const day of days) {
-    const filePath = path.join(SCORECARD_DIR, `${day}.jsonl`)
-    // Prepend to existing file (backfill data comes before live data)
-    const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : ''
-    const existingKeys = new Set()
-    for (const line of existing.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        const key = scorecardRecordKey(JSON.parse(line))
-        if (key) existingKeys.add(key)
-      } catch {}
-    }
-    const freshLines = []
-    for (const line of dayBuffers[day]) {
-      const record = JSON.parse(line)
-      const key = scorecardRecordKey(record)
-      if (key && existingKeys.has(key)) continue
-      if (key) existingKeys.add(key)
-      freshLines.push(line)
-    }
-    if (freshLines.length > 0) {
-      fs.writeFileSync(filePath, freshLines.join('\n') + '\n' + existing)
-    }
-    totalLines += freshLines.length
-  }
+  const { totalLines, days, manifestPath } = publishBackfill(dayBuffers, {
+    apply: args.includes('--apply'),
+  })
+  console.log(`   Mode: ${args.includes('--apply') ? 'apply' : 'dry run (no writes)'}`)
+  console.log(`   Lock: ${lockPath(SCORECARD_DIR)}`)
+  console.log(`   Resume manifest: ${manifestPath}`)
 
   console.log(`\n✅ Backfill complete:`)
   console.log(`   ${processed} predictions (${directional} directional, ${processed - directional} neutral)`)
@@ -420,6 +397,62 @@ const main = () => {
   console.log(`   Output: ${SCORECARD_DIR}/`)
 }
 
+/** Publish only under the same exclusive lock used by live appends. */
+const publishBackfill = (dayBuffers, { directory = SCORECARD_DIR, apply = false } = {}) => {
+  const days = Object.keys(dayBuffers).sort()
+  if (days.some(day => !/^\d{4}-\d{2}-\d{2}$/.test(day))) throw new Error('Invalid scorecard day')
+  // Hash incrementally: a year of replay must not become one giant JSON string.
+  const hash = createHash('sha256')
+  for (const day of days) {
+    hash.update(day).update('\0')
+    for (const line of dayBuffers[day]) hash.update(line).update('\0')
+  }
+  const fingerprint = hash.digest('hex')
+  const manifestPath = path.join(directory, `.backfill-${fingerprint}.manifest.json`)
+  const release = apply ? acquireScorecardLock(directory) : null
+  if (apply && !release) throw new Error(`Scorecard maintenance lock is busy: ${lockPath(directory)}`)
+  try {
+    const manifest = fs.existsSync(manifestPath)
+      ? JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+      : { version: 1, fingerprint, completedDays: [] }
+    if (manifest.version !== 1 || manifest.fingerprint !== fingerprint || !Array.isArray(manifest.completedDays)
+      || manifest.completedDays.some(day => !days.includes(day))) throw new Error('Invalid backfill manifest')
+    let totalLines = 0
+    for (const day of days) {
+      const file = path.join(directory, `${day}.jsonl`)
+      const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
+      validateJsonl(existing)
+      const existingKeys = new Set(existing.split('\n').filter(line => line.trim()).map(line => scorecardRecordKey(JSON.parse(line))).filter(Boolean))
+      const fresh = []
+      for (const line of dayBuffers[day]) {
+        validateJsonl(line)
+        const key = scorecardRecordKey(JSON.parse(line))
+        if (!key) throw new Error('Backfill record has no deduplication key')
+        if (existingKeys.has(key)) continue
+        existingKeys.add(key)
+        fresh.push(line)
+      }
+      if (manifest.completedDays.includes(day)) {
+        if (fresh.length) throw new Error(`Completed backfill day is missing records: ${day}`)
+        continue
+      }
+      totalLines += fresh.length
+      if (!apply) continue
+      if (fresh.length) {
+        const backup = path.join(directory, `.backfill-${fingerprint}-${day}.backup`)
+        if (!fs.existsSync(backup)) atomicPublish(backup, existing, validateJsonl)
+        const content = fresh.join('\n') + '\n' + existing
+        atomicPublish(file, content.endsWith('\n') ? content : content + '\n', validateJsonl)
+      }
+      manifest.completedDays.push(day)
+      atomicPublish(manifestPath, JSON.stringify(manifest, null, 2) + '\n', JSON.parse)
+    }
+    return { totalLines, days, manifestPath }
+  } finally {
+    release?.()
+  }
+}
+
 if (require.main === module) main()
 
-module.exports = { findCandleIndex, scorecardRecordKey, withHistoricalClock }
+module.exports = { findCandleIndex, scorecardRecordKey, withHistoricalClock, publishBackfill }

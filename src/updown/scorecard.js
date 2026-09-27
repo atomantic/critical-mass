@@ -7,11 +7,12 @@
  * accuracy metrics for real-time monitoring.
  */
 
-const { appendFile, mkdir, readFile, readdir, unlink } = require('fs/promises')
+const { readFile, readdir, unlink } = require('fs/promises')
 const { existsSync } = require('fs')
 const path = require('path')
 const { createContextLogger } = require('../logger')
 const { UPDOWN_DATA_DIR } = require('../paths')
+const { appendScorecardRecord, withScorecardLock } = require('./scorecard-maintenance')
 const { INDICATORS, INDICATOR_WEIGHTS } = require('./indicator-config')
 const { ALL_SIGNAL_TFS: ALL_TFS } = require('./signal-engine')
 const {
@@ -141,11 +142,7 @@ const getJournalPath = () => {
  * @param {Object} record
  */
 const appendRecord = async (record) => {
-  if (!existsSync(SCORECARD_DIR)) {
-    await mkdir(SCORECARD_DIR, { recursive: true })
-  }
-  const line = JSON.stringify(record) + '\n'
-  await appendFile(getJournalPath(), line)
+  await appendScorecardRecord(SCORECARD_DIR, getJournalPath(), record)
 }
 
 /**
@@ -1085,30 +1082,32 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
    */
   const pruneHistory = async (retentionDays = 30) => {
     if (!existsSync(scorecardDir)) return
-    const files = await readdir(scorecardDir)
-    const jsonlFiles = files.filter(f => f.endsWith('.jsonl')).sort()
-    if (jsonlFiles.length <= retentionDays) return
+    return withScorecardLock(scorecardDir, async () => {
+      const files = await readdir(scorecardDir)
+      const jsonlFiles = files.filter(f => f.endsWith('.jsonl')).sort()
+      if (jsonlFiles.length <= retentionDays) return
 
-    const toDelete = jsonlFiles.slice(0, jsonlFiles.length - retentionDays)
-    let deleted = 0
-    const failures = []
-    for (const file of toDelete) {
-      try {
-        await unlinkFile(path.join(scorecardDir, file))
-        deleted++
-      } catch (err) {
-        failures.push(`${file}: ${err.message}`)
+      const toDelete = jsonlFiles.slice(0, jsonlFiles.length - retentionDays)
+      let deleted = 0
+      const failures = []
+      for (const file of toDelete) {
+        try {
+          await unlinkFile(path.join(scorecardDir, file))
+          deleted++
+        } catch (err) {
+          failures.push(`${file}: ${err.message}`)
+        }
       }
-    }
-    retentionLogger.info(`ℹ️ 📊 Scorecard prune completed deleted=${deleted} failed=${failures.length} retentionDays=${retentionDays}`, {
-      action: 'prune',
-      deleted,
-      failed: failures.length,
-      retentionDays,
+      retentionLogger.info(`ℹ️ 📊 Scorecard prune completed deleted=${deleted} failed=${failures.length} retentionDays=${retentionDays}`, {
+        action: 'prune',
+        deleted,
+        failed: failures.length,
+        retentionDays,
+      })
+      if (failures.length > 0) {
+        throw new Error(`failed to delete ${failures.length} scorecard file(s): ${failures.join('; ')}`)
+      }
     })
-    if (failures.length > 0) {
-      throw new Error(`failed to delete ${failures.length} scorecard file(s): ${failures.join('; ')}`)
-    }
   }
 
   const start = async (computeSignals) => {
