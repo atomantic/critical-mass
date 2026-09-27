@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-806] Gateway config saves share one validation and apply boundary** — Full-fund and regime saves now reuse field partitioning, regime validation, product identity checks, persistence and IPC status handling while preserving their response contracts and writer semantics.
 - **[issue-800] CI builds now use read-only repository credentials** — The test and admin-build workflow no longer requests repository write access or persists its checkout token for later steps.
 - **[issue-799] Docker Compose storage now fails clearly instead of generating root-owned bind mounts** — Added a Linux preparation script for new `1000:1000`/private data and log directories, refused missing Compose bind sources, and preflighted container writability before bootstrap credential generation without changing existing data ownership.
 - **[issue-786] Closed-trade audit totals now include every booking of a two-part sell** — A second booking with the same sell order ID updates the existing closed-trade aggregate, preserving the status API and audit P&L/holdback totals alongside the fill-ledger totals while retries remain idempotent.
