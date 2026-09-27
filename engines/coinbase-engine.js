@@ -732,6 +732,11 @@ const startup = async () => {
 
   const exchange = EXCHANGE_NAME;
 
+  // Own the configured local IPC port before any recovery, migration or fund
+  // writer can run. A duplicate process must fail without touching fund data.
+  ipcServer.setInitializing(true);
+  await ipcServer.start();
+
   // ===== Interrupted-restore recovery =====
   // Runs before the migration and before any fund loads its ledger or regime
   // state: a crash mid-restore leaves data/ a mixed generation, and resuming a
@@ -750,8 +755,6 @@ const startup = async () => {
     startupLogger.error(`❌ [${exchange}] Refusing to start engine. See UPGRADE.md for instructions.`, { reason: migrationResult.reason });
     process.exit(1);
   }
-
-  ipcServer.start();
 
   // Auto-resume each fund (exchange + pair) that was running before restart
   const fundsForExchange = getFundsForExchange(exchange);
@@ -831,6 +834,8 @@ const startup = async () => {
       }
     }
   }
+
+  ipcServer.setInitializing(false);
 };
 
 startup().catch((err) => {

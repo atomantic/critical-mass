@@ -31,6 +31,11 @@ const createIPCServer = (port, name) => {
   const logger = ipcServerLogger(name);
   /** @type {import('ws').WebSocketServer | null} */
   let wss = null;
+  /** @type {Promise<void> | null} */
+  let startPromise = null;
+  /** @type {((error: Error) => void) | null} */
+  let rejectStart = null;
+  let initializing = false;
   /** @type {Set<WebSocket>} */
   const clients = new Set();
   /** @type {Set<Promise<void>>} Outbound frames awaiting their send callback. */
@@ -54,9 +59,34 @@ const createIPCServer = (port, name) => {
   });
 
   const start = () => {
-    wss = new WebSocket.Server({ port, host: '127.0.0.1' });
+    if (startPromise) return startPromise;
+    let server;
+    try {
+      server = new WebSocket.Server({ port, host: '127.0.0.1' });
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    wss = server;
+    startPromise = new Promise((resolve, reject) => {
+      const onListening = () => {
+        rejectStart = null;
+        logger.info(`ℹ️ 🔗 [${name}] IPC server listening on 127.0.0.1:${port}`, { event: 'listening', port });
+        resolve();
+      };
+      rejectStart = (err) => {
+        server.removeListener('listening', onListening);
+        rejectStart = null;
+        startPromise = null;
+        wss = null;
+        for (const client of clients) client.terminate();
+        clients.clear();
+        server.close(() => {});
+        reject(err);
+      };
+      server.once('listening', onListening);
+    });
 
-    wss.on('connection', (ws) => {
+    server.on('connection', (ws) => {
       clients.add(ws);
       logger.info(`ℹ️ 🔗 [${name}] IPC client connected (${clients.size} total)`, {
         event: 'connection',
@@ -100,15 +130,20 @@ const createIPCServer = (port, name) => {
       });
     });
 
-    wss.on('error', (err) => {
+    server.on('error', (err) => {
       logger.error(`❌ 🔗 [${name}] IPC server error: ${err.message}`, {
         event: 'server-error',
         port,
         error: err.message,
       });
+      if (wss === server && rejectStart) rejectStart(err);
     });
 
-    logger.info(`ℹ️ 🔗 [${name}] IPC server listening on 127.0.0.1:${port}`, { event: 'listening', port });
+    server.once('close', () => {
+      if (wss === server && rejectStart) rejectStart(new Error('IPC server closed before listening'));
+    });
+
+    return startPromise;
   };
 
   /**
@@ -119,6 +154,18 @@ const createIPCServer = (port, name) => {
   const handleIncoming = async (ws, msg) => {
     if (msg.type === MSG_TYPE.PING) {
       ws.send(serialize(createMessage(MSG_TYPE.PONG, 'ping', null)));
+      return;
+    }
+
+    // Even reads may lazily load a ledger. Admit only liveness probes until
+    // restore recovery, migration and automatic fund startup have completed.
+    if (initializing && (msg.type === MSG_TYPE.REQUEST || msg.type === MSG_TYPE.CONFIG_UPDATE)) {
+      const refusal = {
+        success: false,
+        code: 'engine-initializing',
+        error: 'Engine is initializing; retry after startup recovery completes.',
+      };
+      ws.send(serialize(createMessage(MSG_TYPE.RESPONSE, msg.channel, refusal, { id: msg.id })));
       return;
     }
 
@@ -224,6 +271,8 @@ const createIPCServer = (port, name) => {
   };
 
   const stop = () => {
+    if (rejectStart) rejectStart(new Error('IPC server stopped before listening'));
+    startPromise = null;
     for (const client of clients) {
       client.close();
     }
@@ -241,6 +290,7 @@ const createIPCServer = (port, name) => {
     broadcast,
     flush,
     onRequest,
+    setInitializing: (value) => { initializing = Boolean(value); },
     getClientCount: () => clients.size,
   };
 };

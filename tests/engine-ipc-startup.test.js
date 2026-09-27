@@ -1,0 +1,208 @@
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const { EventEmitter } = require('node:events');
+const protocol = require('../src/ipc/ipc-protocol');
+
+// Evaluate the production modules with explicit dependency mocks. No real
+// listener, exchange adapter, config, ledger or state file is reachable here.
+const createHarness = (exchange = 'coinbase') => {
+  const servers = [];
+  const logs = [];
+  const calls = [];
+  const owners = new Map();
+  class MockServer extends EventEmitter {
+    constructor(options) { super(); this.options = options; this.closed = false; servers.push(this); }
+    bind() {
+      if (owners.has(this.options.port)) {
+        this.emit('error', Object.assign(new Error('occupied'), { code: 'EADDRINUSE' }));
+        return;
+      }
+      owners.set(this.options.port, this);
+      this.emit('listening');
+    }
+    close(callback) {
+      this.closed = true;
+      if (owners.get(this.options.port) === this) owners.delete(this.options.port);
+      this.emit('close');
+      callback?.();
+    }
+  }
+  const logger = { info: (message) => logs.push(message), warn: () => {}, error: () => {} };
+  const ipcModule = { exports: {} };
+  const ipcDependencies = {
+    ws: { Server: MockServer, OPEN: 1 },
+    './ipc-protocol': protocol,
+    '../logger': { createContextLogger: () => logger },
+    '../engine-maintenance': { setEngineMaintenance: () => { calls.push('maintenance'); }, refuseDuringMaintenance: () => null },
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/ipc/ipc-server.js'), 'utf8'), {
+    module: ipcModule,
+    require: (name) => { assert.ok(name in ipcDependencies, `unexpected IPC dependency ${name}`); return ipcDependencies[name]; },
+  });
+  const ipc = ipcModule.exports.createIPCServer(12345, 'test');
+  const send = (type, channel) => {
+    const socket = new EventEmitter();
+    socket.send = (frame) => socket.frames.push(JSON.parse(frame));
+    socket.frames = [];
+    socket.close = () => {};
+    socket.terminate = () => {};
+    servers.at(-1).emit('connection', socket);
+    socket.emit('message', protocol.serialize(protocol.createMessage(type, channel, {})));
+    return socket.frames;
+  };
+  let finishFund;
+  const fundStarted = new Promise((resolve) => { finishFund = resolve; });
+  const dependencies = {
+    path,
+    '../src/logger': { createContextLogger: () => logger },
+    '../src/config-utils': {
+      getFundConfig: () => { calls.push('fund-config'); return {}; },
+      getFundsForExchange: () => { calls.push('funds'); return ['BTC-USD']; },
+      resolveConfiguredPair: () => ({ pair: 'BTC-USD' }),
+    },
+    '../src/regime-engine': { createRegimeEngine: () => {
+      calls.push('construct');
+      return { start: () => { calls.push('trade'); return fundStarted; } };
+    } },
+    '../src/market-data-service': {},
+    '../src/chart-data-buffer': {},
+    '../src/fill-ledger': {},
+    '../src/manual-trade-import': {},
+    '../src/ipc/ipc-server': { createIPCServer: () => ipc },
+    '../src/ipc/socket-io-proxy': { createSocketIOProxy: () => ({}), forwardTradeEvents: () => {} },
+    '../src/shared-utils': {
+      fundKey: (name, pair) => `${name}::${pair}`,
+      fundLabel: (name, pair) => `${name}/${pair}`,
+      shouldAutoResumeRegime: () => { calls.push('running-flag'); return true; },
+    },
+    '../src/engine-stop-all': {},
+    '../src/engine-lifecycle-handlers': { registerEngineLifecycleHandlers: () => {} },
+    '../src/engine-recalculate-handler': { registerEngineRecalculateHandler: () => {} },
+    '../src/migration': { migrateExchangeToPairs: () => { calls.push('migration'); return {}; } },
+    '../src/restore-apply': { guardIncompleteRestore: () => { calls.push('restore'); } },
+    '../src/state-tracker': { LIFECYCLE: { CLOSED: 'closed' }, loadRegimeStateSafe: () => { calls.push('state'); return {}; } },
+    '../src/adapters': { getAdapter: () => { calls.push('adapter'); return { hasValidKeys: () => true }; } },
+    '../src/process-guard': { registerProcessGuards: () => {} },
+    '../src/ipc-port-defaults': { resolveIpcPort: () => 12345 },
+    '../package.json': { version: 'test' },
+  };
+  const exits = [];
+  const processMock = { env: {}, on: () => {}, exit: (code) => exits.push(code) };
+  const runShared = () => vm.runInNewContext(
+    fs.readFileSync(path.join(__dirname, '../engines/coinbase-engine.js'), 'utf8')
+      .replace('startup().catch', 'const startupDone = startup().catch') + '\nstartupDone;',
+    { process: processMock, require: (name) => {
+      assert.ok(name in dependencies, `unexpected engine dependency ${name}`);
+      return dependencies[name];
+    } },
+  );
+  let done;
+  const run = () => {
+    if (exchange === 'coinbase') done = runShared();
+    else vm.runInNewContext(fs.readFileSync(path.join(__dirname, `../engines/${exchange}-engine.js`), 'utf8'), {
+      process: processMock,
+      require: (name) => {
+        if (name === '../src/ipc-port-defaults') return dependencies[name];
+        assert.equal(name, './coinbase-engine');
+        done = runShared();
+        return {};
+      },
+    });
+    return done;
+  };
+  return { ipc, createIPCServer: ipcModule.exports.createIPCServer, servers, logs, calls, send, finishFund, exits, run };
+};
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+describe('IPC bind ownership and exchange startup', () => {
+  it('resolves only on listening, keeps start idempotent and logs then', async () => {
+    const h = createHarness();
+    const started = h.ipc.start();
+    assert.equal(h.ipc.start(), started);
+    assert.equal(h.servers.length, 1);
+    assert.equal(h.servers[0].options.host, '127.0.0.1');
+    let resolved = false;
+    started.then(() => { resolved = true; });
+    await settle();
+    assert.equal(resolved, false);
+    assert.equal(h.logs.length, 0);
+    h.servers[0].emit('listening');
+    await started;
+    assert.equal(h.logs.filter((line) => line.includes('listening')).length, 1);
+    h.ipc.stop();
+  });
+
+  it('rejects and cleans a failed listener, without touching its existing owner', async () => {
+    const h = createHarness();
+    const owner = h.ipc.start();
+    h.servers[0].bind();
+    await owner;
+    const duplicate = h.createIPCServer(12345, 'duplicate');
+    const failure = assert.rejects(duplicate.start(), { code: 'EADDRINUSE' });
+    h.servers[1].bind();
+    await failure;
+    assert.equal(h.servers[1].closed, true);
+    assert.equal(h.servers[0].closed, false);
+    h.servers[1].emit('listening');
+    assert.equal(h.logs.filter((line) => line.includes('listening')).length, 1);
+    h.ipc.stop();
+    const retry = duplicate.start();
+    assert.equal(h.servers.length, 3);
+    h.servers[2].bind();
+    await retry;
+    duplicate.stop();
+  });
+
+  it('rejects a pending bind when stopped instead of leaving startup waiting', async () => {
+    const h = createHarness();
+    const started = h.ipc.start();
+    const rejection = assert.rejects(started, /stopped before listening/);
+    h.ipc.stop();
+    await rejection;
+    assert.equal(h.servers[0].closed, true);
+  });
+
+  for (const exchange of ['coinbase', 'gemini', 'cryptocom']) {
+    it(`${exchange} exits on occupied port before recovery, data or exchange activity`, async () => {
+      const h = createHarness(exchange);
+      const done = h.run();
+      assert.deepEqual(h.calls, []);
+      h.servers[0].emit('error', Object.assign(new Error('occupied'), { code: 'EADDRINUSE' }));
+      await done;
+      assert.deepEqual(h.exits, [1]);
+      assert.deepEqual(h.calls, []);
+      assert.equal(h.servers[0].closed, true);
+    });
+
+    it(`${exchange} starts once after binding and blocks requests until funds recover`, async () => {
+      const h = createHarness(exchange);
+      const done = h.run();
+      assert.deepEqual(h.calls, []);
+      h.servers[0].emit('listening');
+      await settle();
+      assert.deepEqual(h.calls, ['restore', 'migration', 'funds', 'running-flag', 'state', 'fund-config', 'adapter', 'construct', 'trade']);
+      let mutations = 0;
+      h.ipc.onRequest('mutate', async () => { mutations++; return { success: true }; });
+      h.ipc.onRequest('config_update', async () => { mutations++; });
+      for (const [type, channel] of [['request', 'mutate'], ['request', 'regime:fills'], ['request', 'engine:maintenance'], ['config_update', 'config_update']]) {
+        const [response] = h.send(type, channel);
+        assert.equal(response.payload.code, 'engine-initializing');
+      }
+      assert.equal(h.send('ping', 'ping')[0].type, 'pong');
+      assert.equal(mutations, 0);
+      h.finishFund({ success: true });
+      await done;
+      assert.deepEqual(h.exits, []);
+      const frames = h.send('request', 'mutate');
+      await settle();
+      assert.equal(frames[0].payload.success, true);
+      assert.equal(mutations, 1);
+      assert.equal(h.calls.filter((call) => call === 'trade').length, 1);
+      h.ipc.stop();
+    });
+  }
+});
