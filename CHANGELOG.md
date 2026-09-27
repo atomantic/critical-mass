@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-822] Sentinel counts every dispatched AI request against its hourly budget** — Timeouts, HTTP errors, and malformed responses now consume quota, and a synchronous reservation after endpoint validation prevents concurrent requests from exceeding the limit while preserving keyword alerts.
 - **[issue-800] CI builds now use read-only repository credentials** — The test and admin-build workflow no longer requests repository write access or persists its checkout token for later steps.
 - **[issue-799] Docker Compose storage now fails clearly instead of generating root-owned bind mounts** — Added a Linux preparation script for new `1000:1000`/private data and log directories, refused missing Compose bind sources, and preflighted container writability before bootstrap credential generation without changing existing data ownership.
 - **[issue-786] Closed-trade audit totals now include every booking of a two-part sell** — A second booking with the same sell order ID updates the existing closed-trade aggregate, preserving the status API and audit P&L/holdback totals alongside the fill-ledger totals while retries remain idempotent.
