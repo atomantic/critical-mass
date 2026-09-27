@@ -3020,6 +3020,69 @@ describe('Fill Ledger', () => {
       assert.equal(JSON.stringify(createTestLedger().getAllFills()), before);
       assert.equal(ledger.ingestFill(real('retry-after-failure', 0.02)).identityReplacement, true);
     });
+    for (const side of ['buy', 'sell']) {
+      it(`persists batched ${side} replacement before a later correction rejects (#834)`, () => {
+        const ledger = createTestLedger();
+        ledger.startNewCycle();
+        ledger.ingestFill(synthetic(side));
+        if (side === 'buy') {
+          ledger.annotateFillsByOrderId('covered', { bodyId: 'owned-body',
+            isBodyOwned: true, consumedBy: { sale: 0.005 } });
+        } else {
+          ledger.commitSellBooking('covered', { bodyPnl: 5, bodyCostBasis: 34.96,
+            bodyBtcQty: 0.02, bodyHoldbackAsset: 0.001, bodyId: 'owned-body' }, { soldSize: 0.02 });
+          ledger.claimCapitalCredit('covered', 0.02);
+        }
+        ledger.persist();
+        ledger.ingestFill(real('batched-real', 0.01, side), null, { skipPersist: true, cycleId: null });
+        assert.throws(() => ledger.ingestFill({ ...real('rejected-real', 0.01, side), price: 2100 },
+          null, { skipPersist: true }), { syntheticReconciliationRequired: true });
+
+        // No caller flush: a failed batch never reached it. Reload must still
+        // agree with the replacement and its unresolved synthetic residual.
+        const restored = createTestLedger();
+        assert.deepEqual(restored.getAllFills(), ledger.getAllFills());
+        assert.equal(restored.getRecordedSizeForOrder('covered'), 0.02);
+        // Engine recovery restores the persisted active cycle explicitly;
+        // sell-only history otherwise looks complete to load's inference.
+        restored.setCurrentCycleId(ledger.getCurrentCycleId());
+        assert.deepEqual(restored.getCurrentCycleFills(), ledger.getCurrentCycleFills());
+        assert.equal(restored.ingestFill(real('batched-real', 0.01, side)).ingested, false);
+        if (side === 'buy') {
+          assert.deepEqual(restored.getBuyOrderConsumption('covered').consumedBy, { sale: 0.005 });
+        } else {
+          assert.equal(restored.getSellBooking('covered').bookedSize, 0.02);
+          assert.deepEqual(restored.getUnbookedSellFills('covered'), []);
+          assert.equal(restored.claimCapitalCredit('covered', 0.02), false);
+        }
+      });
+    }
+
+    it('rolls back a failed batched replacement and retries exactly once (#834)', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(synthetic());
+      const before = ledger.getAllFills();
+      const rename = fs.renameSync;
+      fs.renameSync = () => { throw new Error('batched publication failed'); };
+      try {
+        assert.throws(() => ledger.ingestFill(real('batched-retry', 0.02), null,
+          { skipPersist: true, cycleId: null }), /batched publication failed/);
+      } finally {
+        fs.renameSync = rename;
+      }
+      assert.deepEqual(ledger.getAllFills(), before);
+      assert.deepEqual(createTestLedger().getAllFills(), before);
+      assert.equal(ledger.getRecordedSizeForOrder('covered'), 0.02);
+      assert.equal(ledger.getCurrentCycleFills().length, 1);
+      assert.equal(ledger.ingestFill(real('batched-retry', 0.02), null,
+        { skipPersist: true, cycleId: null }).identityReplacement, true);
+      const restored = createTestLedger();
+      assert.equal(restored.ingestFill(real('batched-retry', 0.02)).ingested, false);
+      assert.equal(restored.getRecordedSizeForOrder('covered'), 0.02);
+      assert.equal(restored.getCurrentCycleFills().length, 1);
+    });
+
     it('does not replace DCA conversion or unrelated synthetic-looking rows', () => {
       const ledger = createTestLedger();
       ledger.ingestFill({ ...synthetic(), tradeId: 'dca-convert-covered' });

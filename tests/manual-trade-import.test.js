@@ -152,6 +152,44 @@ describe('Manual Trade Import', () => {
     assert.equal(fillLedger.getFillsForOrder('terminal')[0].bodyId, 'existing-body');
   });
 
+  it('keeps a replacement durable when a later manual import row rejects (#834)', async () => {
+    fillLedger.ingestFill({ tradeId: 'synthetic-terminal-0.02', orderId: 'terminal',
+      side: 'buy', size: 0.02, price: 2000, netFee: 0 });
+    fillLedger.annotateFillsByOrderId('terminal', { bodyId: 'existing-body', isBodyOwned: true });
+    fillLedger.persist();
+    const adapter = createFakeAdapter({ fillsByOrder: { terminal: [
+      { tradeId: 'real-first', side: 'buy', size: 0.01, price: 2000, netFee: 0 },
+      { tradeId: 'real-correction', side: 'buy', size: 0.01, price: 2100, netFee: 0 },
+    ] } });
+    const importer = createImporter({ adapter,
+      injectBody: async () => { assert.fail('failed import must not create a body'); },
+      extendBody: async () => { assert.fail('failed import must not grow a body'); } });
+    await assert.rejects(importer.importBuy({ buyOrderId: 'terminal' }),
+      { syntheticReconciliationRequired: true });
+    const { createFillLedger } = require('../src/fill-ledger');
+    const restored = createFillLedger(EXCHANGE, 'BTC-USDC', PAIR);
+    assert.deepEqual(restored.getAllFills(), fillLedger.getAllFills());
+    assert.equal(restored.getRecordedSizeForOrder('terminal'), 0.02);
+    assert.deepEqual(restored.getFillsForOrder('terminal').map(row => row.tradeId).sort(),
+      ['real-first', 'synthetic-terminal-0.02']);
+    assert.equal(restored.getFillsForOrder('terminal').every(row => row.bodyId === 'existing-body'), true);
+    assert.equal(readManualTradesFile(), null);
+
+    // Finish history after restart. The first real ID dedups and the remaining
+    // equivalent row completes replacement without a second inventory claim.
+    adapter.getOrderFills = async () => [
+      { tradeId: 'real-first', side: 'buy', size: 0.01, price: 2000, netFee: 0 },
+      { tradeId: 'real-second', side: 'buy', size: 0.01, price: 2000, netFee: 0 },
+    ];
+    const retried = await createImporter({ adapter, fillLedger: restored,
+      injectBody: async () => { assert.fail('retry must preserve existing body'); },
+      extendBody: async () => { assert.fail('retry must not duplicate inventory'); } })
+      .importBuy({ buyOrderId: 'terminal' });
+    assert.equal(retried.success, true);
+    assert.equal(restored.getRecordedSizeForOrder('terminal'), 0.02);
+    assert.equal(restored.getFillsForOrder('terminal').length, 2);
+  });
+
   describe('importSell', () => {
     const sellFills = [
       makeFill({ tradeId: 'sell-fill-1', side: 'sell', price: 100000, size: 0.002 }),
