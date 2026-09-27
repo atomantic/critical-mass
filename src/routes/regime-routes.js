@@ -6,11 +6,10 @@
  * process via IPC WebSocket. Config reads/writes stay local (file-based).
  */
 
-const { getRegimeConfig, updateRegimeConfig, updateFundConfig, getFundConfig, productIdMatchesPair } = require('../config-utils');
+const { prepareConfigUpdate, persistConfigUpdate, buildClientConfig } = require('./config-update');
 const { resolvePlacementIntent } = require('../state-tracker');
 const { buildStoppedRegimeStatus } = require('../regime-status');
 const { createContextLogger } = require('../logger');
-const { validateAndSanitizeRegimeConfig } = require('../config-validator');
 const { readBooleanFlag } = require('../shared-utils');
 const { getSafeIPC, withConfiguredPair, asyncRoute } = require('./route-utils');
 
@@ -28,24 +27,6 @@ const regimeLogger = (exchange, pair, route) => createContextLogger({
   pair,
   route,
 });
-
-// Fields that live on the fund/exchange block (siblings of `regime`), NOT inside
-// the regime sub-block. GET sources these from getFundConfig, so a PUT must
-// persist them via updateFundConfig — routing them through updateRegimeConfig
-// would nest them under `regime.*` where GET never reads them (the "dry-run
-// toggle resets on refresh" bug).
-const FUND_LEVEL_FIELDS = ['dryRun', 'productId'];
-
-// The config view the client sees: regime fields plus the fund-level fields
-// pulled from the fund block. GET and PUT both return this, so keep it in one
-// place — adding a FUND_LEVEL_FIELD updates every consumer at once.
-const buildClientConfig = (exchange, pair) => {
-  const regimeConfig = getRegimeConfig(exchange, pair);
-  const fundConfig = getFundConfig(exchange, pair);
-  const config = { ...regimeConfig };
-  for (const field of FUND_LEVEL_FIELDS) config[field] = fundConfig[field];
-  return config;
-};
 
 /** Convert IPC connection errors to standard response */
 const engineError = (err) => ({ success: false, error: `Engine unavailable: ${err.message}` });
@@ -115,92 +96,38 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, errors: ['config update must be an object'] });
     }
 
-    // Fund-level fields are governed by their own schema below. Everything else
-    // must pass through the same regime allowlist used by the full config route,
-    // so stale UI fields cannot be persisted or sent to the live engine.
-    const fundUpdates = {};
-    const rawRegimeUpdates = {};
-    for (const [key, value] of Object.entries(rawUpdates)) {
-      (FUND_LEVEL_FIELDS.includes(key) ? fundUpdates : rawRegimeUpdates)[key] = value;
-    }
-    const currentConfig = getRegimeConfig(exchange, pair);
-    const { value: regimeUpdates, droppedKeys, valid, errors } = validateAndSanitizeRegimeConfig(rawRegimeUpdates, currentConfig);
-    if (droppedKeys.length > 0) {
-      logger.warn(`⚠️ 🧹 [${exchange}/${pair}] Ignored unknown regime config keys: ${droppedKeys.join(', ')}`, {
-        action: 'update-config',
-        droppedKeys,
-      });
-    }
-    if (valid === false) {
-      return res.status(400).json({ success: false, errors });
-    }
-    const updates = { ...regimeUpdates, ...fundUpdates };
-
-    // Split fund-level fields (dryRun, productId) from regime updates — they
-    // persist on different parts of the config block and are read back from
-    // different places (see FUND_LEVEL_FIELDS).
-    // Type-guard fund-level fields before persisting. validateRegimeConfig above
-    // only checks regime fields, so a malformed fund value would otherwise slip
-    // through. dryRun is the dangerous one: the engine reads it with `=== true`,
-    // so persisting the string "false" would silently flip the fund to LIVE
-    // trading on restart. productId names the traded pair — reject non-strings.
-    if ('dryRun' in fundUpdates && typeof fundUpdates.dryRun !== 'boolean') {
-      return res.status(400).json({ success: false, errors: ['dryRun must be a boolean'] });
-    }
-    if ('productId' in fundUpdates && (typeof fundUpdates.productId !== 'string' || !fundUpdates.productId.trim())) {
-      return res.status(400).json({ success: false, errors: ['productId must be a non-empty string'] });
-    }
-
-    // Guard against cross-market contamination — ensure productId's base asset
-    // matches the fund's pair. Same check as exchange-routes.js (issue #453).
-    if ('productId' in fundUpdates) {
-      const { ok, pairBase, incomingBase } = productIdMatchesPair(pair, fundUpdates.productId);
-      if (!ok) {
-        logger.warn(`⚠️ 🛑 [${exchange}/${pair}] Rejected config save: productId "${fundUpdates.productId}" trades ${incomingBase}, not ${pairBase}`, {
-          action: 'update-config',
-          productId: fundUpdates.productId,
-          incomingBase,
-          pairBase,
+    const prepared = prepareConfigUpdate({
+      exchange, pair, updates: rawUpdates,
+      onDroppedKeys: (droppedKeys) => {
+        logger.warn(`⚠️ 🧹 [${exchange}/${pair}] Ignored unknown regime config keys: ${droppedKeys.join(', ')}`, {
+          action: 'update-config', droppedKeys,
         });
-        return res.status(400).json({ success: false, errors: [`productId "${fundUpdates.productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}); a config save cannot change a fund's traded asset`] });
-      }
-    }
-
-    if (Object.keys(fundUpdates).length > 0) {
-      updateFundConfig(exchange, pair, fundUpdates);
-    }
-    if (Object.keys(regimeUpdates).length > 0) {
-      updateRegimeConfig(exchange, pair, regimeUpdates);
-    }
-    logger.info(`ℹ️ 🔧 [${exchange}/${pair}] Config updated (fund: ${Object.keys(fundUpdates).join(',') || 'none'}, regime: ${Object.keys(regimeUpdates).join(',') || 'none'})`, {
-      action: 'update-config',
-      fundKeys: Object.keys(fundUpdates),
-      regimeKeys: Object.keys(regimeUpdates),
+      },
+      onProductMismatch: ({ productId, incomingBase, pairBase }) => {
+        logger.warn(`⚠️ 🛑 [${exchange}/${pair}] Rejected config save: productId "${productId}" trades ${incomingBase}, not ${pairBase}`, {
+          action: 'update-config', productId, incomingBase, pairBase,
+        });
+      },
     });
+    if (!prepared.valid) return res.status(400).json({ success: false, errors: prepared.errors });
 
-    // Return the merged view GET would produce, so the client reflects both
-    // fund-level and regime changes immediately.
-    const config = buildClientConfig(exchange, pair);
-
-    try {
-      const applied = await getIPC(exchange).request('regime:update-config', updates, exchange, pair);
-      if (applied?.success === false) throw new Error(applied.error || applied.message || 'Engine rejected config update');
-    } catch (err) {
-      logger.error(`❌ 🚨 [${exchange}/${pair}] Regime config persisted but live engine update failed: ${err.message}`, {
+    const result = await persistConfigUpdate(exchange, pair, prepared, getIPC(exchange), () => {
+      const { fundUpdates, regimeUpdates } = prepared;
+      logger.info(`ℹ️ 🔧 [${exchange}/${pair}] Config updated (fund: ${Object.keys(fundUpdates).join(',') || 'none'}, regime: ${Object.keys(regimeUpdates).join(',') || 'none'})`, {
         action: 'update-config',
-        channel: 'regime:update-config',
-        persisted: true,
-        applied: false,
-        error: err.message,
+        fundKeys: Object.keys(fundUpdates), regimeKeys: Object.keys(regimeUpdates),
+      });
+    });
+    const { config } = result;
+    if (!result.applied) {
+      logger.error(`❌ 🚨 [${exchange}/${pair}] Regime config persisted but live engine update failed: ${result.error}`, {
+        action: 'update-config', channel: 'regime:update-config',
+        persisted: true, applied: false, error: result.error,
       });
       return res.status(503).json({
-        success: false,
-        persisted: true,
-        applied: false,
-        error: `Config was saved but the live engine did not apply it: ${err.message}`,
-        exchange,
-        pair,
-        config,
+        success: false, persisted: true, applied: false,
+        error: `Config was saved but the live engine did not apply it: ${result.error}`,
+        exchange, pair, config,
       });
     }
 

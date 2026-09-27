@@ -496,3 +496,102 @@ describe('PATCH /api/:exchange/config validates enabled/dryRun (issue #569)', ()
     assert.equal(after.body.dryRun, false, 'disk state must match the persisted:true response');
   });
 });
+
+// Exercise both transport wrappers against the real shared writer, rather than
+// only asserting the helpers' output. Endpoint envelopes intentionally differ.
+describe('PUT config-save boundary parity (#806)', () => {
+  afterEach(() => mock.restoreAll());
+
+  const registerRegimeRoutes = require('../src/routes/regime-routes');
+  const runSave = async (regimeOnly, flatUpdates, ipcResult = { success: true }) => {
+    const fsMocks = setupFsMocks(BASE_CONFIG);
+    const calls = [];
+    const request = async (operation, payload, exchange, pair) => {
+      calls.push({ operation, payload, exchange, pair, disk: fsMocks.user() });
+      return ipcResult;
+    };
+    const app = createFakeApp();
+    const deps = {
+      exchangeIPCMap: { coinbase: { request } },
+      parseTSV: () => [], calculateCostBasis: () => ({}), getNextTradeInfo: () => ({}),
+    };
+    (regimeOnly ? registerRegimeRoutes : registerExchangeRoutes)(app, deps);
+    const { dryRun, productId, ...regime } = flatUpdates;
+    const body = regimeOnly ? flatUpdates : {
+      ...(Object.hasOwn(flatUpdates, 'dryRun') ? { dryRun } : {}),
+      ...(Object.hasOwn(flatUpdates, 'productId') ? { productId } : {}),
+      regime,
+    };
+    const res = await invoke(app, regimeOnly ? 'PUT /api/:exchange/regime/config' : 'PUT /api/:exchange/config', {
+      params: { exchange: 'coinbase' }, query: { pair: 'BTC-USDC' }, body,
+    });
+    const saved = configUtils.getFundConfig('coinbase', 'BTC-USDC');
+    const written = fsMocks.user();
+    mock.restoreAll();
+    return { res, saved, written, calls };
+  };
+
+  for (const updates of [
+    { dryRun: false },
+    { productId: 'BTC-USD' },
+    { enabled: true, baseSizeUsdc: 25 },
+    { dryRun: false, productId: 'BTC-USD', enabled: true, baseSizeUsdc: 25, obsoleteThreshold: 999 },
+  ]) {
+    it(`normalizes equivalent updates and writes before IPC: ${JSON.stringify(updates)}`, async () => {
+      const full = await runSave(false, updates);
+      const regime = await runSave(true, updates);
+      assert.equal(full.res.statusCode, 200);
+      assert.equal(regime.res.statusCode, 200);
+      assert.deepEqual(full.saved, regime.saved);
+      assert.deepEqual(full.written, regime.written);
+      assert.deepEqual(full.calls, regime.calls);
+      assert.equal(full.calls.length, 1);
+      assert.deepEqual(full.calls[0].disk, full.written, 'all disk writes precede IPC');
+      assert.equal(full.calls[0].payload.obsoleteThreshold, undefined);
+    });
+  }
+
+  for (const updates of [
+    { dryRun: 'false' },
+    { productId: 'ETH-USD' },
+    { dryRun: false, maxDrawdownPercent: 999, obsoleteThreshold: 999 },
+  ]) {
+    it(`rejects equivalent unsafe updates without writes or IPC: ${JSON.stringify(updates)}`, async () => {
+      const full = await runSave(false, updates);
+      const regime = await runSave(true, updates);
+      for (const result of [full, regime]) {
+        assert.equal(result.res.statusCode, 400);
+        assert.equal(result.written, null);
+        assert.deepEqual(result.calls, []);
+        assert.equal(result.saved.dryRun, true);
+      }
+      assert.deepEqual(full.saved, regime.saved);
+    });
+  }
+
+  it('returns the saved config with persisted/applied status when IPC rejects', async () => {
+    const updates = { dryRun: false, productId: 'BTC-USD', baseSizeUsdc: 25 };
+    const full = await runSave(false, updates, { success: false, message: 'Engine unavailable' });
+    const regime = await runSave(true, updates, { success: false, message: 'Engine unavailable' });
+    assert.deepEqual(full.calls, regime.calls);
+    for (const result of [full, regime]) {
+      assert.equal(result.res.statusCode, 503);
+      assert.equal(result.res.body.persisted, true);
+      assert.equal(result.res.body.applied, false);
+      assert.match(result.res.body.error, /Engine unavailable/);
+      assert.equal(result.saved.dryRun, false);
+      assert.equal(result.res.body.config.productId, 'BTC-USD');
+    }
+    assert.equal(full.res.body.config.regime.baseSizeUsdc, 25);
+    assert.equal(regime.res.body.config.baseSizeUsdc, 25);
+  });
+
+  it('preserves the endpoint-specific empty-update IPC behavior', async () => {
+    const full = await runSave(false, {});
+    const regime = await runSave(true, {});
+    assert.equal(full.calls.length, 0);
+    assert.deepEqual(regime.calls.map(({ payload }) => payload), [{}]);
+    assert.equal(full.res.statusCode, 200);
+    assert.equal(regime.res.statusCode, 200);
+  });
+});

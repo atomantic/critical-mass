@@ -31,6 +31,7 @@ const { createContextLogger, loadTransactionHistory, getLogFile } = require('../
 const { syncOrderStatuses, runIntervalCycle, executeConsolidation, reconcilePlacementIntent } = require('../dca-engine');
 const { shouldAutoResumeRegime, readBooleanFlag } = require('../shared-utils');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
+const { prepareConfigUpdate, persistConfigUpdate } = require('./config-update');
 const { resolvePairParam, getSafeIPC, asyncRoute } = require('./route-utils');
 
 /**
@@ -297,82 +298,32 @@ module.exports = (app, deps) => {
     const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
     if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
 
-    // Guard against cross-market contamination. The config editor GETs a fund's
-    // config and PUTs it back verbatim; if a stale config from another fund leaked
-    // into the editor state (e.g. switching exchange/pair before the new config
-    // loaded), its productId would clobber this fund — e.g. saving Coinbase's
-    // "BTC-USDC" over Gemini's "ETHUSD", which then prices the ETH fund off the BTC
-    // feed. The pair is the fund's identity, so a saved productId must trade the
-    // same base asset. Quote-only edits (USD→USDC) still pass.
-    if (pair && typeof updates.productId === 'string' && updates.productId) {
-      const { ok, pairBase, incomingBase } = productIdMatchesPair(pair, updates.productId);
-      if (!ok) {
-        logger.warn(`⚠️ 🛑 [${exchange}/${pair}] Rejected config save: productId "${updates.productId}" trades ${incomingBase}, not ${pairBase}`, {
-          action: 'update-config',
-          productId: updates.productId,
-          incomingBase,
-          pairBase,
+    const prepared = prepareConfigUpdate({
+      exchange, pair, updates, fullConfig: true, rawRegime: req.body?.regime,
+      onProductMismatch: ({ productId, incomingBase, pairBase }) => {
+        logger.warn(`⚠️ 🛑 [${exchange}/${pair}] Rejected config save: productId "${productId}" trades ${incomingBase}, not ${pairBase}`, {
+          action: 'update-config', productId, incomingBase, pairBase,
         });
-        return res.status(400).json({ error: `productId "${updates.productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}); a config save cannot change a fund's traded asset` });
-      }
-    }
-
-    // regime is a nested object — sanitize keys against the allowlist, then value-
-    // validate the survivors, before merging. Unknown keys are DROPPED (not
-    // rejected): the config editor GETs the full stored config and PUTs it back
-    // verbatim, so a hard 400 on a stale key — e.g. a field removed from the engine
-    // in a later version but still present in a fund's persisted config — would make
-    // that fund permanently unsaveable. Dropping keeps the security intent (unknown
-    // keys never enter the saved overrides or reach the engine) while letting the
-    // save succeed. Note this doesn't rewrite the base config.json: a stale key
-    // living there stays inert (saveConfig persists only a diff and computeDiff
-    // doesn't tombstone removals), but it's harmless — never forwarded and dropped
-    // again on every save.
-    // Known values ARE rejected when out of range: this is the same
-    // validateRegimeConfig the dedicated PUT /api/:exchange/regime/config route
-    // enforces, reused here so a value it would reject (e.g. maxDrawdownPercent:
-    // 999) can't reach the live engine through this save surface instead (#452).
-    if (req.body?.regime !== undefined) {
-      const { value: sanitizedRegime, droppedKeys, valid, errors: regimeErrors } = validateAndSanitizeRegimeConfig(req.body.regime, getRegimeConfig(exchange, pair));
-      if (valid === false) {
-        return res.status(400).json({ error: regimeErrors.join('; ') });
-      }
-      if (droppedKeys.length > 0) {
+      },
+      onDroppedKeys: (droppedKeys) => {
         logger.warn(`⚠️ 🧹 [${exchange}/${pair}] Dropped ${droppedKeys.length} unknown regime key(s) on save: ${droppedKeys.join(', ')}`, {
-          action: 'update-config',
-          droppedKeys,
+          action: 'update-config', droppedKeys,
         });
-      }
-      if (Object.keys(sanitizedRegime).length > 0) {
-        updates.regime = sanitizedRegime;
-      }
-    }
+      },
+    });
+    if (!prepared.valid) return res.status(400).json({ error: prepared.errors.join('; ') });
 
-    updateFundConfig(exchange, pair, updates);
-
-    const engineUpdates = { ...(updates.regime || {}) };
-    if ('dryRun' in updates) engineUpdates.dryRun = updates.dryRun;
-    if ('productId' in updates) engineUpdates.productId = updates.productId;
-    if (Object.keys(engineUpdates).length > 0) {
-      try {
-        const applied = await getIPC(exchange).request('regime:update-config', engineUpdates, exchange, pair);
-        if (applied?.success === false) throw new Error(applied.error || applied.message || 'Engine rejected config update');
-      } catch (err) {
-        logger.error(`❌ 🚨 [${exchange}/${pair}] Config persisted but live engine update failed: ${err.message}`, {
-          action: 'update-config',
-          channel: 'regime:update-config',
-          persisted: true,
-          applied: false,
-          error: err.message,
-        });
-        return res.status(503).json({
-          success: false,
-          persisted: true,
-          applied: false,
-          error: `Config was saved but the live engine did not apply it: ${err.message}`,
-          config: getFundConfig(exchange, pair),
-        });
-      }
+    const result = await persistConfigUpdate(exchange, pair, prepared, getIPC(exchange));
+    if (!result.applied) {
+      logger.error(`❌ 🚨 [${exchange}/${pair}] Config persisted but live engine update failed: ${result.error}`, {
+        action: 'update-config', channel: 'regime:update-config',
+        persisted: true, applied: false, error: result.error,
+      });
+      return res.status(503).json({
+        success: false, persisted: true, applied: false,
+        error: `Config was saved but the live engine did not apply it: ${result.error}`,
+        config: getFundConfig(exchange, pair),
+      });
     }
 
     res.json({ success: true, persisted: true, applied: true, config: getFundConfig(exchange, pair) });
