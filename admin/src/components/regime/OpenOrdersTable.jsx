@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import { buildOpenOrderRelationIndex, deriveOpenOrderRows } from '../../utils/openOrderRelations.mjs'
 import { DEFAULT_FEE_RATE_PER_SIDE } from '../../utils/openOrderEstimates.mjs'
+import { TIERS as CELESTIAL_TIERS, formatTierTooltip } from '../../../../shared/celestial-tiers.mjs'
 import { getPriceDecimals, formatCurrency } from '../charts/chartUtils'
 import { formatDuration, formatTimestamp } from './regimeFormat'
 
@@ -151,20 +152,21 @@ function OpenOrdersTable({
                       const bodyInfo = (order.type === 'body_tp' || order.type === 'satellite_tp' || order.type === 'take_profit') ? bodyLookup.get(order.orderId) : null;
                       const tier = bodyInfo?.tier || order.bodyTier || (order.type === 'satellite_tp' ? 'satellite' : null);
                       const tierStyles = {
-                        satellite:  { bg: 'bg-gray-700/60',    text: 'text-gray-300',    tooltip: 'Satellite — individual order, 1–3× base' },
-                        asteroid:   { bg: 'bg-amber-900/40',   text: 'text-amber-600',   tooltip: 'Asteroid — small cluster, 2–3× base' },
-                        moon:       { bg: 'bg-slate-600/50',   text: 'text-slate-300',   tooltip: 'Moon — cluster, 3–10× base' },
-                        planet:     { bg: 'bg-blue-900/50',    text: 'text-blue-400',    tooltip: 'Planet — substantial mass, 10–100× base' },
-                        sun:        { bg: 'bg-amber-900/50',   text: 'text-amber-400',   tooltip: 'Sun — large mass, 100–500× base' },
-                        hypergiant: { bg: 'bg-purple-900/50',  text: 'text-purple-400',  tooltip: 'Hypergiant — massive mass, 500–1000× base' },
-                        nebula:     { bg: 'bg-cyan-900/50',    text: 'text-cyan-400',    tooltip: 'Nebula — vast mass, 1000–5000× base' },
-                        galaxy:     { bg: 'bg-pink-900/50',    text: 'text-pink-400',    tooltip: 'Galaxy — galactic mass, 5000–10000× base' },
-                        black_hole: { bg: 'bg-red-900/50',     text: 'text-red-400',     tooltip: 'Black Hole — critical mass, 10000×+ base' },
+                        satellite:  { bg: 'bg-gray-700/60',    text: 'text-gray-300' },
+                        asteroid:   { bg: 'bg-amber-900/40',   text: 'text-amber-600' },
+                        moon:       { bg: 'bg-slate-600/50',   text: 'text-slate-300' },
+                        planet:     { bg: 'bg-blue-900/50',    text: 'text-blue-400' },
+                        sun:        { bg: 'bg-amber-900/50',   text: 'text-amber-400' },
+                        hypergiant: { bg: 'bg-purple-900/50',  text: 'text-purple-400' },
+                        nebula:     { bg: 'bg-cyan-900/50',    text: 'text-cyan-400' },
+                        galaxy:     { bg: 'bg-pink-900/50',    text: 'text-pink-400' },
+                        black_hole: { bg: 'bg-red-900/50',     text: 'text-red-400' },
                       };
                       if (tier && tierStyles[tier]) {
                         const s = tierStyles[tier];
+                        const tierDef = CELESTIAL_TIERS.find(t => t.name === tier);
                         const emoji = order.tierEmoji || bodyInfo?.emoji || '🛰️';
-                        return <span className={`px-1.5 py-0.5 rounded text-xs ${s.bg} ${s.text}`} title={s.tooltip}>{emoji}</span>;
+                        return <span className={`px-1.5 py-0.5 rounded text-xs ${s.bg} ${s.text}`} title={formatTierTooltip(tierDef)}>{emoji}</span>;
                       }
                       return <span className="px-1.5 py-0.5 rounded text-xs bg-cyan-900/50 text-cyan-400" title="Take-profit sell order">TP</span>;
                     })()}

@@ -1,4 +1,5 @@
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
+import { TIERS as CELESTIAL_TIERS, formatTierCapitalRange } from '../../../shared/celestial-tiers.mjs'
 import { useState, useEffect, useId, useRef } from 'react'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 
@@ -918,26 +919,15 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                   </div>
                   <div className="mt-2 text-xs text-gray-400">
                     Each buy creates a celestial body. Bodies merge when TP prices are close, and promote to higher tiers as mass grows.
-                    Tiers: 🛰️ satellite → 🪨 asteroid → 🌙 moon → 🪐 planet → ☀️ sun → 💫 hypergiant → ✨ nebula → 🌌 galaxy → 🕳️ black hole.
+                    Tiers: {CELESTIAL_TIERS.map(t => `${t.emoji} ${t.label.toLowerCase()}`).join(' → ')}.
                     Higher tiers have wider TP targets and hold more {baseCurrency}.
                   </div>
-                  <div className="mt-2 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-1 text-xs text-center">
-                    {(() => {
-                      const cap = regimeConfig.maxUsdcDeployed || 10000;
-                      return [
-                        { emoji: '🛰️', name: 'Satellite', range: `$0-$${Math.round(cap * 0.02)}` },
-                        { emoji: '🌙', name: 'Moon', range: `$${Math.round(cap * 0.02)}-$${Math.round(cap * 0.05)}` },
-                        { emoji: '🪐', name: 'Planet', range: `$${Math.round(cap * 0.05)}-$${Math.round(cap * 0.15)}` },
-                        { emoji: '☀️', name: 'Sun', range: `$${Math.round(cap * 0.15)}-$${Math.round(cap * 0.30)}` },
-                        { emoji: '💫', name: 'Hypergiant', range: `$${Math.round(cap * 0.30)}-$${Math.round(cap * 0.50)}` },
-                        { emoji: '🌌', name: 'Galaxy', range: `$${Math.round(cap * 0.50)}-$${Math.round(cap * 0.75)}` },
-                        { emoji: '🕳️', name: 'Black Hole', range: `$${Math.round(cap * 0.75)}+` },
-                      ];
-                    })().map(tier => (
+                  <div className="mt-2 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-9 gap-1 text-xs text-center">
+                    {CELESTIAL_TIERS.map(tier => (
                       <div key={tier.name} className="bg-gray-800/50 rounded p-1">
                         <div>{tier.emoji}</div>
-                        <div className="text-gray-400">{tier.name}</div>
-                        <div className="text-gray-400">{tier.range}</div>
+                        <div className="text-gray-400">{tier.label}</div>
+                        <div className="text-gray-400">{formatTierCapitalRange(tier, regimeConfig.maxUsdcDeployed || 10000)}</div>
                       </div>
                     ))}
                   </div>

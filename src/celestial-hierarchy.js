@@ -52,18 +52,8 @@ const celestialHierarchyLogger = createContextLogger({ module: 'celestial-hierar
  * @property {number} stateVersion - Schema version
  */
 
-/** @type {CelestialTier[]} */
-const TIERS = [
-  { name: 'satellite',  emoji: '🛰️', minPct: 0,   maxPct: 1,        tpMult: 1.0, tpMaxScale: 1.0,  proximity: 0.5, holdbackScale: 1.00 },
-  { name: 'asteroid',   emoji: '🪨',  minPct: 1,   maxPct: 2,        tpMult: 1.1, tpMaxScale: 1.2,  proximity: 0.6, holdbackScale: 1.02 },
-  { name: 'moon',       emoji: '🌙',  minPct: 2,   maxPct: 5,        tpMult: 1.2, tpMaxScale: 1.5,  proximity: 0.8, holdbackScale: 1.05 },
-  { name: 'planet',     emoji: '🪐',  minPct: 5,   maxPct: 15,       tpMult: 1.5, tpMaxScale: 2.0,  proximity: 1.5, holdbackScale: 1.10 },
-  { name: 'sun',        emoji: '☀️',  minPct: 15,  maxPct: 30,       tpMult: 2.0, tpMaxScale: 3.0,  proximity: 2.0, holdbackScale: 1.15 },
-  { name: 'hypergiant', emoji: '💫',  minPct: 30,  maxPct: 40,       tpMult: 3.0, tpMaxScale: 5.0,  proximity: 3.0, holdbackScale: 1.20 },
-  { name: 'nebula',     emoji: '✨',  minPct: 40,  maxPct: 50,       tpMult: 3.5, tpMaxScale: 6.0,  proximity: 3.2, holdbackScale: 1.21 },
-  { name: 'galaxy',     emoji: '🌌',  minPct: 50,  maxPct: 75,       tpMult: 4.0, tpMaxScale: 8.0,  proximity: 3.5, holdbackScale: 1.22 },
-  { name: 'black_hole', emoji: '🕳️', minPct: 75,  maxPct: Infinity,  tpMult: 5.0, tpMaxScale: 10.0, proximity: 4.0, holdbackScale: 1.25 },
-];
+// Tier table lives in shared/celestial-tiers.mjs (shared with the admin client, issue #869).
+const { TIERS, TIER_COLORS } = require('../shared/celestial-tiers.mjs');
 
 /**
  * Get tier config by name
@@ -535,19 +525,6 @@ const getTierSummary = (bodies) => {
     counts[key] = (counts[key] || 0) + 1;
   }
   return Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(' ');
-};
-
-/** Tier colors for dashboard display */
-const TIER_COLORS = {
-  satellite: '#6B7280',   // gray
-  asteroid: '#92400E',    // amber-brown
-  moon: '#9CA3AF',        // light gray
-  planet: '#3B82F6',      // blue
-  sun: '#F59E0B',         // amber
-  hypergiant: '#8B5CF6',  // purple
-  nebula: '#06B6D4',      // cyan
-  galaxy: '#EC4899',      // pink
-  black_hole: '#EF4444',  // red
 };
 
 /**

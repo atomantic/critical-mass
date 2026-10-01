@@ -1115,3 +1115,64 @@ describe('buildCelestialPayload', () => {
     assert.equal(noAvg.bodies[0].tpPercent, null);
   });
 });
+
+// ============================================================================
+// Shared tier table (issue #869)
+// ============================================================================
+describe('shared/celestial-tiers.mjs', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { pathToFileURL } = require('node:url');
+  const ROOT = path.join(__dirname, '..');
+  const load = () => import(pathToFileURL(path.join(ROOT, 'shared', 'celestial-tiers.mjs')).href);
+
+  it('engine TIERS/TIER_COLORS are the shared table', async () => {
+    const shared = await load();
+    assert.equal(TIERS, shared.TIERS);
+    assert.equal(TIER_COLORS, shared.TIER_COLORS);
+    assert.deepEqual(TIERS.map(t => t.name), [
+      'satellite', 'asteroid', 'moon', 'planet', 'sun', 'hypergiant', 'nebula', 'galaxy', 'black_hole',
+    ]);
+  });
+
+  it('classifies at the 1/2/5/15/30/40/50/75% boundaries and keeps Infinity on the last tier', () => {
+    const cases = [[0.99, 'satellite'], [1, 'asteroid'], [2, 'moon'], [30, 'hypergiant'], [39.99, 'hypergiant'],
+      [40, 'nebula'], [50, 'galaxy'], [74.99, 'galaxy'], [75, 'black_hole'], [500, 'black_hole']];
+    for (const [pct, name] of cases) {
+      assert.equal(classifyTier(pct * 10, 1000).name, name, `${pct}%`);
+    }
+    assert.equal(TIERS[TIERS.length - 1].maxPct, Infinity);
+  });
+
+  it('tier ranges are contiguous and derived descriptions match engine classification', async () => {
+    const { formatTierPctRange, formatTierCapitalRange, formatTierTooltip, TIER_ORDER, TIER_EMOJIS } = await load();
+    for (let i = 1; i < TIERS.length; i++) assert.equal(TIERS[i].minPct, TIERS[i - 1].maxPct);
+    const ranges = Object.fromEntries(TIERS.map(t => [t.name, formatTierPctRange(t)]));
+    assert.equal(ranges.satellite, '0-1%');
+    assert.equal(ranges.asteroid, '1-2%');
+    assert.equal(ranges.hypergiant, '30-40%');
+    assert.equal(ranges.nebula, '40-50%');
+    assert.equal(ranges.black_hole, '75%+');
+    assert.deepEqual(TIER_ORDER, TIERS.map(t => t.name).reverse());
+    for (const t of TIERS) assert.equal(TIER_EMOJIS[t.name], t.emoji);
+    // 450 on a 1000 cap is Nebula regardless of base size; the tooltip says so by percentage
+    const cap = 1000;
+    const tier = classifyTier(450, cap);
+    assert.equal(tier.name, 'nebula');
+    assert.equal(formatTierCapitalRange(tier, cap), '$400-$500');
+    assert.equal(formatTierCapitalRange(TIERS[0], 10000), '$0-$100');
+    assert.equal(formatTierCapitalRange(TIERS[8], 10000), '$7500+');
+    assert.match(formatTierTooltip(tier), /Nebula.*40-50%/);
+  });
+
+  it('admin UI components derive their tier descriptions from the shared table', () => {
+    const read = (p) => fs.readFileSync(path.join(ROOT, 'admin', 'src', p), 'utf8');
+    for (const f of ['components/ConfigEditor.jsx', 'components/Systems.jsx', 'components/regime/OpenOrdersTable.jsx']) {
+      assert.match(read(f), /shared\/celestial-tiers\.mjs/, f);
+    }
+    const cfg = read('components/ConfigEditor.jsx');
+    assert.doesNotMatch(cfg, /cap \* 0\.\d+/);
+    assert.doesNotMatch(read('components/regime/OpenOrdersTable.jsx'), /× base/);
+    assert.doesNotMatch(read('components/Systems.jsx'), /'0-1%'/);
+  });
+});
