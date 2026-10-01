@@ -91,6 +91,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false) => {
     '../src/adapters': { getAdapter: () => { calls.push('adapter'); return { hasValidKeys: () => true }; } },
     '../src/process-guard': { registerProcessGuards: () => {} },
     '../src/ipc-port-defaults': { resolveIpcPort: () => 12345 },
+    '../src/stopped-fund-tp-lookup': {},
     '../package.json': { version: 'test' },
   };
   const exits = [];
