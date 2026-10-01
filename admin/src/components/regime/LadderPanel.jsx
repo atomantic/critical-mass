@@ -1,4 +1,4 @@
-import React, { useId, useState } from 'react'
+import React, { useId, useRef, useState } from 'react'
 import { formatPriceByMagnitude, formatCurrency } from '../charts/chartUtils'
 
 /**
@@ -27,42 +27,151 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
   // retype doesn't commit/persist 0 (mirrors ConfigEditor's FormInput draft pattern).
   const [ladderNumberDraft, setLadderNumberDraft] = useState({})
   const [placingLadder, setPlacingLadder] = useState(false)
+  // Why Place is (un)available. 'ready' is the ONLY state that enables it, and
+  // is entered solely when a preview for the CURRENT generation has loaded:
+  // loading | saving | editing | ready | rejected | notApplied | previewFailed
+  const [panelState, setPanelState] = useState('loading')
+  const [blockMessage, setBlockMessage] = useState('')
 
-  const fetchLadderPreview = async () => {
+  // Synchronous gate (refs, so rapid clicks before React commits are still
+  // blocked). `gen` bumps on every open/close/edit/preview request: a response
+  // or save completion from an older generation never touches the preview.
+  const gen = useRef(0)
+  const saveChain = useRef(Promise.resolve())
+  const pendingSaves = useRef(0)
+  const dirty = useRef(false) // numeric field edited but not yet saved (blur)
+  const failed = useRef(false) // a save was rejected / not applied live
+  const placing = useRef(false)
+  const previewGen = useRef(-1) // generation the displayed preview belongs to
+  const confirmed = useRef(null) // last settings known to be applied live
+
+  const canPlaceNow = () =>
+    !placing.current && !failed.current && !dirty.current &&
+    pendingSaves.current === 0 && previewGen.current === gen.current
+
+  const fetchLadderPreview = async (myGen) => {
+    setPanelState('loading')
     try {
       const res = await fetch(`/api/${exchange}/regime/preview-ladder${pairQuery}`)
       const data = await res.json().catch(() => ({ success: false, message: 'Bad response' }))
+      if (myGen !== gen.current) return // superseded by a newer edit/open/close
       if (data.success) {
+        previewGen.current = myGen
         setLadderPreview(data.preview)
+        setPanelState('ready')
       } else {
         setLadderPreview(null)
+        setPanelState('previewFailed')
         addToast?.({ type: 'error', title: 'Preview Failed', message: data.message || 'Could not preview ladder' })
       }
     } catch (err) {
+      if (myGen !== gen.current) return
       setLadderPreview(null)
+      setPanelState('previewFailed')
       addToast?.({ type: 'error', title: 'Preview Failed', message: err.message })
     }
   }
 
-  const saveLadderEdits = async (edits) => {
+  // Invalidate the shown preview's authority to place, then reload it.
+  const refreshPreview = () => {
+    const myGen = ++gen.current
+    setLadderPreview(null)
+    return fetchLadderPreview(myGen)
+  }
+
+  // Applies one save. Never throws. Only the latest generation fetches the
+  // corresponding preview; failures block placement until retried/reverted.
+  const persist = async (edits, myGen) => {
     try {
+      if (failed.current) return // draft stays unsaved; Retry sends all of it
       const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(edits),
       })
       if (res.ok) {
+        confirmed.current = { ...confirmed.current, ...edits }
         await fetchConfig?.()
-        await fetchLadderPreview()
+        if (myGen === gen.current && !failed.current) await fetchLadderPreview(myGen)
+        return
+      }
+      const data = await res.json().catch(() => ({}))
+      failed.current = true
+      previewGen.current = -1
+      setLadderPreview(null)
+      if (data?.persisted && data?.applied === false) {
+        setPanelState('notApplied')
+        setBlockMessage('Saved, but the live engine did not apply it - restart the engine or retry before placing.')
+        addToast?.({ type: 'error', title: 'Not Applied', message: data.error || 'Ladder settings were saved but not applied to the live engine' })
       } else {
+        setPanelState('rejected')
+        setBlockMessage(`Settings were not saved (HTTP ${res.status}). Retry or revert before placing.`)
         addToast?.({ type: 'error', title: 'Save Failed', message: `Could not save ladder settings (HTTP ${res.status})` })
       }
     } catch (err) {
+      failed.current = true
+      previewGen.current = -1
+      setLadderPreview(null)
+      setPanelState('rejected')
+      setBlockMessage('Settings were not saved. Retry or revert before placing.')
       addToast?.({ type: 'error', title: 'Save Failed', message: err.message })
+    } finally {
+      pendingSaves.current--
     }
   }
 
+  const saveLadderEdits = (edits) => {
+    if (placing.current) return
+    const myGen = ++gen.current
+    dirty.current = false
+    setLadderPreview(null)
+    if (failed.current) return // blocked until Retry/Revert
+    setPanelState('saving')
+    pendingSaves.current++
+    saveChain.current = saveChain.current.then(() => persist(edits, myGen))
+  }
+
+  // Numeric fields commit on blur; typing already revokes the old preview.
+  const markDraftEdited = () => {
+    gen.current++
+    dirty.current = true
+    setLadderPreview(null)
+    if (!failed.current) setPanelState('editing')
+  }
+
+  const commitNumber = (key) => {
+    setLadderNumberDraft(prev => ({ ...prev, [key]: undefined }))
+    if (!dirty.current) return
+    const value = ladderEdits[key]
+    if (!failed.current && confirmed.current?.[key] === value) {
+      dirty.current = false
+      refreshPreview()
+      return
+    }
+    saveLadderEdits({ [key]: value })
+  }
+
+  const handleRetry = () => {
+    if (placing.current) return
+    failed.current = false
+    setBlockMessage('')
+    setLadderNumberDraft({})
+    saveLadderEdits({ ...ladderEdits })
+  }
+
+  const handleRevert = () => {
+    if (placing.current || !confirmed.current) return
+    failed.current = false
+    dirty.current = false
+    setBlockMessage('')
+    setLadderNumberDraft({})
+    setLadderEdits({ ...confirmed.current })
+    refreshPreview()
+  }
+
   const handlePlaceLadder = async () => {
+    if (!canPlaceNow()) return
+    placing.current = true
     setPlacingLadder(true)
     try {
       const res = await fetch(`/api/${exchange}/regime/rebuild-ladder${pairQuery}`, {
@@ -73,6 +182,8 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
       if (data.success) {
         addToast?.({ type: 'success', title: 'Ladder Placed', message: data.message })
         if (data.status) setSocketStatus?.(data.status)
+        gen.current++
+        previewGen.current = -1
         setShowLadderPanel(false)
         setLadderPreview(null)
       } else {
@@ -81,22 +192,34 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
     } catch (err) {
       addToast?.({ type: 'error', title: 'Ladder Failed', message: err.message })
     } finally {
+      placing.current = false
       setPlacingLadder(false)
     }
   }
 
   const handleToggle = () => {
+    if (placing.current) return
     const opening = !showLadderPanel
     setShowLadderPanel(opening)
+    const myGen = ++gen.current // closing also supersedes in-flight previews
+    previewGen.current = -1
+    setLadderPreview(null)
     if (opening) {
-      setLadderEdits({
+      const initial = {
         ladderMaxAthDropPct: config?.ladderMaxAthDropPct ?? status?.config?.ladderMaxAthDropPct ?? 80,
         ladderSpacingMode: config?.ladderSpacingMode ?? status?.config?.ladderSpacingMode ?? 'sqrt',
         ladderSizeMode: config?.ladderSizeMode ?? status?.config?.ladderSizeMode ?? 'fibonacci',
         ladderMinSpacingPct: config?.ladderMinSpacingPct ?? status?.config?.ladderMinSpacingPct ?? 0.5,
-      })
+      }
+      confirmed.current = initial
+      failed.current = false
+      dirty.current = false
+      setBlockMessage('')
+      setLadderEdits(initial)
       setLadderNumberDraft({})
-      fetchLadderPreview()
+      setPanelState('loading')
+      // A save still in flight from before the panel was closed must settle first.
+      saveChain.current.then(() => myGen === gen.current && fetchLadderPreview(myGen))
     }
   }
 
@@ -132,16 +255,16 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
                 inputMode="decimal"
                 value={ladderNumberDraft.ladderMaxAthDropPct ?? ladderEdits.ladderMaxAthDropPct}
                 onChange={e => {
+                  if (placingLadder) return
                   const raw = e.target.value
+                  markDraftEdited()
                   setLadderNumberDraft(prev => ({ ...prev, ladderMaxAthDropPct: raw }))
                   if (raw.trim() === '') return // don't commit 0 on clear
                   const n = parseFloat(raw)
                   if (Number.isFinite(n)) setLadderEdits(prev => ({ ...prev, ladderMaxAthDropPct: n }))
                 }}
-                onBlur={() => {
-                  setLadderNumberDraft(prev => ({ ...prev, ladderMaxAthDropPct: undefined }))
-                  saveLadderEdits({ ladderMaxAthDropPct: ladderEdits.ladderMaxAthDropPct })
-                }}
+                onBlur={() => commitNumber('ladderMaxAthDropPct')}
+                disabled={placingLadder}
                 className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
               />
             </div>
@@ -150,6 +273,7 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
               <select
                 id={spacingModeId}
                 value={ladderEdits.ladderSpacingMode}
+                disabled={placingLadder}
                 onChange={e => {
                   const val = e.target.value
                   setLadderEdits(prev => ({ ...prev, ladderSpacingMode: val }))
@@ -167,6 +291,7 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
               <select
                 id={sizeModeId}
                 value={ladderEdits.ladderSizeMode}
+                disabled={placingLadder}
                 onChange={e => {
                   const val = e.target.value
                   setLadderEdits(prev => ({ ...prev, ladderSizeMode: val }))
@@ -188,16 +313,16 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
                 inputMode="decimal"
                 value={ladderNumberDraft.ladderMinSpacingPct ?? ladderEdits.ladderMinSpacingPct}
                 onChange={e => {
+                  if (placingLadder) return
                   const raw = e.target.value
+                  markDraftEdited()
                   setLadderNumberDraft(prev => ({ ...prev, ladderMinSpacingPct: raw }))
                   if (raw.trim() === '') return // don't commit 0 on clear
                   const n = parseFloat(raw)
                   if (Number.isFinite(n)) setLadderEdits(prev => ({ ...prev, ladderMinSpacingPct: n }))
                 }}
-                onBlur={() => {
-                  setLadderNumberDraft(prev => ({ ...prev, ladderMinSpacingPct: undefined }))
-                  saveLadderEdits({ ladderMinSpacingPct: ladderEdits.ladderMinSpacingPct })
-                }}
+                onBlur={() => commitNumber('ladderMinSpacingPct')}
+                disabled={placingLadder}
                 className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
               />
             </div>
@@ -237,14 +362,27 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
               </div>
               <button
                 onClick={handlePlaceLadder}
-                disabled={placingLadder}
+                disabled={placingLadder || panelState !== 'ready'}
                 className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded transition-colors"
               >
                 {placingLadder ? 'Placing...' : `Place ${ladderPreview.levelCount} Orders`}
               </button>
             </div>
           ) : (
-            <div className="text-xs text-gray-400">Loading preview...</div>
+            <div className="text-xs text-gray-400" role="status" aria-busy={panelState === 'loading' || panelState === 'saving'}>
+              {panelState === 'saving' && 'Saving settings...'}
+              {panelState === 'editing' && 'Unsaved changes - leave the field to save before placing.'}
+              {panelState === 'loading' && 'Loading preview...'}
+              {panelState === 'previewFailed' && 'Preview unavailable. Placement is blocked.'}
+              {(panelState === 'rejected' || panelState === 'notApplied') && (
+                <span className="text-red-400">
+                  {blockMessage}{' '}
+                  <button onClick={handleRetry} className="underline text-indigo-300">Retry</button>
+                  {panelState === 'rejected' && <>{' '}<button onClick={handleRevert} className="underline text-indigo-300">Revert</button></>}
+                </span>
+              )}
+              {panelState === 'previewFailed' && <>{' '}<button onClick={refreshPreview} className="underline text-indigo-300">Retry preview</button></>}
+            </div>
           )}
         </div>
       )}
