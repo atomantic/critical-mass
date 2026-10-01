@@ -10,37 +10,76 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
   const [loading, setLoading] = useState(true)
   const [currentPrice, setCurrentPrice] = useState(0)
   const [productId, setProductId] = useState(null)
+  const [error, setError] = useState(null)
+  const [stale, setStale] = useState(false)
 
   const pairQuery = buildPairQuery(pair)
 
   const fetchData = useCallback(async () => {
-    const [statusRes, fillsRes, configRes] = await Promise.all([
-      fetch(`/api/${exchange}/regime/status${pairQuery}`),
-      fetch(`/api/${exchange}/regime/fills${pairQuery}`),
-      fetch(`/api/${exchange}/config${pairQuery}`),
-    ])
+    try {
+      const [statusRes, fillsRes, configRes] = await Promise.all([
+        fetch(`/api/${exchange}/regime/status${pairQuery}`),
+        fetch(`/api/${exchange}/regime/fills${pairQuery}`),
+        fetch(`/api/${exchange}/config${pairQuery}`),
+      ])
 
-    if (statusRes.ok) {
-      const data = await statusRes.json()
-      setStatus(data.status)
-      setCurrentPrice(data.status?.market?.lastPrice || 0)
+      // Validate all responses have acceptable status
+      if (!statusRes.ok) {
+        throw new Error(`Status fetch failed: HTTP ${statusRes.status}`)
+      }
+      if (!fillsRes.ok) {
+        throw new Error(`Fills fetch failed: HTTP ${fillsRes.status}`)
+      }
+      if (!configRes.ok) {
+        throw new Error(`Config fetch failed: HTTP ${configRes.status}`)
+      }
+
+      // Parse all responses before committing
+      const statusData = await statusRes.json()
+      const fillsData = await fillsRes.json()
+      const configData = await configRes.json()
+
+      // Commit state only after all parsing succeeds
+      setStatus(statusData.status)
+      setCurrentPrice(statusData.status?.market?.lastPrice || 0)
+      setFills(fillsData.fills || [])
+      setProductId(configData.config?.productId || configData.productId || null)
+
+      // Clear errors on successful load
+      setError(null)
+      setStale(false)
+    } catch (err) {
+      // If we have no previous data, set error and allow loading to complete
+      if (!status && fills.length === 0 && !productId) {
+        setError(err.message || 'Failed to load regime cost basis')
+      } else {
+        // If we have previous data, mark it as stale but keep displaying it
+        setStale(true)
+      }
+    } finally {
+      setLoading(false)
     }
-    if (fillsRes.ok) {
-      const data = await fillsRes.json()
-      setFills(data.fills || [])
-    }
-    if (configRes.ok) {
-      const data = await configRes.json()
-      setProductId(data.config?.productId || data.productId || null)
-    }
-    setLoading(false)
-  }, [exchange, pairQuery])
+  }, [exchange, pairQuery, status, fills, productId])
 
   useEffect(() => {
     fetchData()
     const interval = setInterval(fetchData, 10000)
     return () => clearInterval(interval)
   }, [fetchData])
+
+  if (loading && error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-4">
+        <div className="text-red-400">Error: {error}</div>
+        <button
+          onClick={fetchData}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded"
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
 
   if (loading) {
     return (
@@ -96,6 +135,19 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
 
   return (
     <div className="min-w-0 space-y-6">
+      {/* Stale/Error Notice */}
+      {stale && (
+        <div className="bg-yellow-900/30 border border-yellow-600 rounded-lg p-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <span className="text-yellow-400">Data is stale. Waiting for the next successful refresh...</span>
+          <button
+            onClick={fetchData}
+            className="self-start sm:self-auto px-3 py-1 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded"
+          >
+            Refresh Now
+          </button>
+        </div>
+      )}
+
       {/* Current Price Banner */}
       <div className="bg-gray-800 rounded-lg p-4 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
         <div className="min-w-0 flex-1">
