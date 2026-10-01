@@ -77,6 +77,9 @@ const createManualTradeStore = (exchange, pair) => {
     atomicWriteSync(filePath, JSON.stringify(data, null, 2));
   };
 
+  /** @type {Map<string, Promise<void>>} */
+  const sellLocks = new Map();
+
   const load = () => {
     const filePath = getStorePath(exchange, pair);
     if (!fs.existsSync(filePath)) return;
@@ -460,9 +463,34 @@ const createManualTradeStore = (exchange, pair) => {
     return ids;
   };
 
+  /**
+   * Store-owned async serialization keyed by sellOrderId. Every importer built
+   * over this store shares the queue, so overlapping requests for one sell run
+   * one at a time (check -> placement -> association) while other sells proceed
+   * independently. The lock is released in `finally` once `fn` settles; there is
+   * deliberately no timeout, so it is never dropped while a submission is still
+   * awaiting the exchange.
+   * @template T
+   * @param {string} sellOrderId
+   * @param {() => Promise<T>} fn
+   * @returns {Promise<T>}
+   */
+  const withSellLock = (sellOrderId, fn) => {
+    const key = String(sellOrderId);
+    const prev = sellLocks.get(key) || Promise.resolve();
+    const run = prev.then(fn);
+    const tail = run.then(() => {}, () => {});
+    sellLocks.set(key, tail);
+    tail.then(() => {
+      if (sellLocks.get(key) === tail) sellLocks.delete(key);
+    });
+    return run;
+  };
+
   return {
     load,
     persist,
+    withSellLock,
     addManualSell,
     addManualBuy,
     addPairedTrade,
