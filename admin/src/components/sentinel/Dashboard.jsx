@@ -211,14 +211,14 @@ export default function SentinelDashboard() {
             </div>
           ))}
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <input
             aria-label="Feed name"
             type="text"
             value={newFeedName}
             onChange={e => setNewFeedName(e.target.value)}
             placeholder="Feed name"
-            className="px-3 py-1.5 bg-gray-900 border border-gray-600 rounded text-sm text-white w-40"
+            className="px-3 py-1.5 bg-gray-900 border border-gray-600 rounded text-sm text-white w-full min-w-0 sm:w-40"
           />
           <input
             aria-label="RSS feed URL"
@@ -226,12 +226,12 @@ export default function SentinelDashboard() {
             value={newFeedUrl}
             onChange={e => setNewFeedUrl(e.target.value)}
             placeholder="RSS feed URL"
-            className="px-3 py-1.5 bg-gray-900 border border-gray-600 rounded text-sm text-white flex-1"
+            className="px-3 py-1.5 bg-gray-900 border border-gray-600 rounded text-sm text-white w-full min-w-0 sm:flex-1"
           />
           <button
             onClick={handleAddFeed}
             disabled={!newFeedName.trim() || !newFeedUrl.trim()}
-            className="px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm"
+            className="px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm min-h-[44px]"
           >
             Add Feed
           </button>
