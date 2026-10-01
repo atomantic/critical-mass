@@ -1,6 +1,7 @@
 import { useRef, useEffect, useMemo, useState } from 'react'
 import * as d3 from 'd3'
 import { formatPriceCompact } from './chartUtils'
+import InfoTooltip from '../InfoTooltip'
 
 // Regime colors for background zones
 const REGIME_COLORS = {
@@ -294,16 +295,16 @@ function RegimePriceChart({
     <div ref={containerRef} className={`bg-gray-800 rounded-lg p-4 ${className}`}>
       <h3 className="text-sm font-medium text-gray-400 mb-2 flex items-center gap-1.5">
         Price & ATR Triggers
-        <span className="relative group cursor-help">
-          <svg className="w-3.5 h-3.5 text-gray-500 group-hover:text-gray-300 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <circle cx="12" cy="12" r="10" />
-            <path d="M12 16v-4M12 8h.01" />
-          </svg>
-          <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 border border-gray-700 text-xs text-gray-300 rounded-lg shadow-lg whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50">
+        <InfoTooltip
+          label="About ATR triggers"
+          width="w-80"
+          iconClassName="w-3.5 h-3.5"
+          className=""
+          tip={<>
             <strong className="text-gray-100">ATR</strong> (Average True Range) measures market volatility.
             <br />Trigger lines at ±{kFactor}× ATR from anchor price signal regime shifts.
-          </span>
-        </span>
+          </>}
+        />
       </h3>
       <svg ref={svgRef} className="w-full" style={{ height: height - 40 }} />
     </div>

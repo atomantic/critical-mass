@@ -16,6 +16,7 @@ import PositionCard from './regime/PositionCard'
 import LadderPanel from './regime/LadderPanel'
 import { formatDuration, formatTimestamp } from './regime/regimeFormat'
 import { formatPriceByMagnitude, formatCurrency } from './charts/chartUtils'
+import InfoTooltip from './InfoTooltip'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
 const EMPTY_BODIES = []
@@ -107,27 +108,9 @@ const REGIME_TOOLTIPS = {
   ),
 }
 
-const TOOLTIP_WIDTH_CLASSES = {
-  'w-52': 'sm:w-52',
-  'w-72': 'sm:w-72',
-  'w-80': 'sm:w-80',
-}
-
-// Info icon + hover tooltip for config labels
+// Info icon + help popup for config labels
 function ConfigTooltip({ tip, align = 'center', width = 'w-52' }) {
-  const alignClass = align === 'left' ? 'sm:left-0' : align === 'right' ? 'sm:right-0' : 'sm:left-1/2 sm:-translate-x-1/2'
-  const widthClass = TOOLTIP_WIDTH_CLASSES[width] || TOOLTIP_WIDTH_CLASSES['w-52']
-  return (
-    <span className="relative group cursor-help ml-1 inline-flex align-middle">
-      <svg className="w-3 h-3 text-gray-600 group-hover:text-gray-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <circle cx="12" cy="12" r="10" />
-        <path d="M12 16v-4M12 8h.01" />
-      </svg>
-      <span className={`fixed inset-x-4 bottom-4 w-auto max-h-[calc(100dvh-2rem)] overflow-y-auto sm:absolute sm:inset-x-auto sm:bottom-full sm:mb-2 sm:max-h-none sm:overflow-visible ${alignClass} ${widthClass} px-3 py-2 bg-gray-900 border border-gray-700 text-xs text-gray-300 rounded-lg shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 space-y-0.5 leading-snug text-left normal-case font-normal`}>
-        {tip}
-      </span>
-    </span>
-  )
+  return <InfoTooltip tip={tip} align={align} width={width} label="Show help" />
 }
 
 // Aggressiveness level metadata (colors/labels are static, params come from API)
