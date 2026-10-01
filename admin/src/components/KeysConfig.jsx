@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import ModalDialog from './ModalDialog'
 
 const EXCHANGE_FIELD_CONFIGS = {
   coinbase: {
@@ -352,29 +353,36 @@ function KeysConfig({ exchange, onSave }) {
 
         {/* Delete Confirmation Modal */}
         {confirmDelete && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <div className="bg-gray-800 rounded-lg p-6 max-w-md mx-4">
-              <h3 className="text-lg font-semibold text-white mb-2">Delete API Keys?</h3>
-              <p className="text-gray-400 mb-4">
-                Are you sure you want to delete the {exchange} API keys? This action cannot be undone.
-              </p>
-              <div className="flex flex-col-reverse sm:flex-row gap-3 sm:justify-end">
-                <button
-                  onClick={() => setConfirmDelete(false)}
-                  className="min-h-11 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDelete}
-                  disabled={deleting}
-                  className="min-h-11 px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded-lg font-medium transition-colors"
-                >
-                  {deleting ? 'Deleting...' : 'Delete'}
-                </button>
-              </div>
+          <ModalDialog
+            onClose={() => setConfirmDelete(false)}
+            labelledBy="delete-keys-title"
+            describedBy="delete-keys-desc"
+            dismissible={!deleting}
+          >
+            <h3 id="delete-keys-title" className="text-lg font-semibold text-white mb-2">Delete API Keys?</h3>
+            <p id="delete-keys-desc" className="text-gray-400 mb-4">
+              Are you sure you want to delete the {exchange} API keys? This action cannot be undone.
+            </p>
+            <div className="flex flex-col-reverse sm:flex-row gap-3 sm:justify-end">
+              <button
+                type="button"
+                autoFocus
+                onClick={() => setConfirmDelete(false)}
+                disabled={deleting}
+                className="min-h-11 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded-lg font-medium transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={deleting}
+                className="min-h-11 px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded-lg font-medium transition-colors"
+              >
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
             </div>
-          </div>
+          </ModalDialog>
         )}
       </div>
 
