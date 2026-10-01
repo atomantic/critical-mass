@@ -281,3 +281,22 @@ describe('regime unknown-to-validated boundary (#495)', () => {
     assert.equal(current.macroDeclineThreshold, -30);
   });
 });
+
+describe('shared sizing contract (#867)', () => {
+  const { validateRegimeConfig } = require('../src/config-validator');
+
+  it('accepts base sizes up to 2000 and caps >= 0', () => {
+    for (const update of [{ baseSizeUsdc: 1 }, { baseSizeUsdc: 1250 }, { baseSizeUsdc: 2000 }, { maxUsdcDeployed: 0 }, { maxUsdcDeployed: 900 }]) {
+      assert.deepEqual(validateRegimeConfig(update).errors, [], JSON.stringify(update));
+    }
+  });
+
+  it('rejects out-of-range, negative, nonfinite and wrong-type values', () => {
+    for (const update of [
+      { baseSizeUsdc: 0.5 }, { baseSizeUsdc: 2001 }, { baseSizeUsdc: NaN }, { baseSizeUsdc: '100' },
+      { maxUsdcDeployed: -1 }, { maxUsdcDeployed: NaN }, { maxUsdcDeployed: Infinity }, { maxUsdcDeployed: '900' },
+    ]) {
+      assert.equal(validateRegimeConfig(update).valid, false, JSON.stringify(update));
+    }
+  });
+});

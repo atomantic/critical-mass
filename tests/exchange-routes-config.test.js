@@ -214,6 +214,21 @@ describe('PUT /api/:exchange/config rejects out-of-range nested regime values', 
     const after = await invoke(app, 'GET /api/:exchange/config', reqFor({}));
     assert.equal(after.body.regime.baseSizeUsdc, 75, 'valid regime field must persist');
   });
+
+  for (const [label, regime] of [
+    ['base 1250 / cap 22500', { baseSizeUsdc: 1250, maxUsdcDeployed: 22500 }],
+    ['base 90 / cap 900', { baseSizeUsdc: 90, maxUsdcDeployed: 900 }],
+  ]) {
+    it('saves a full config carrying optimizer output (' + label + ')', async () => {
+      const { app } = setup();
+      const got = await invoke(app, 'GET /api/:exchange/config', reqFor({}));
+      const res = await invoke(app, 'PUT /api/:exchange/config', reqFor({ ...got.body, regime: { ...got.body.regime, ...regime } }));
+      assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+      const after = await invoke(app, 'GET /api/:exchange/config', reqFor({}));
+      assert.equal(after.body.regime.baseSizeUsdc, regime.baseSizeUsdc);
+      assert.equal(after.body.regime.maxUsdcDeployed, regime.maxUsdcDeployed);
+    });
+  }
 });
 
 describe('configured fund selection', () => {
