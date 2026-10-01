@@ -3,18 +3,9 @@
  * Tier colors, orbital radii, sizes, speeds for the 3D scene
  */
 
-// Colors per tier (matches TIER_COLORS from src/celestial-hierarchy.js)
-export const TIER_COLORS = {
-  satellite:  '#6B7280',
-  asteroid:   '#92400E',
-  moon:       '#9CA3AF',
-  planet:     '#3B82F6',
-  sun:        '#F59E0B',
-  hypergiant: '#8B5CF6',
-  nebula:     '#06B6D4',
-  galaxy:     '#EC4899',
-  black_hole: '#EF4444',
-}
+// Colors, emojis and ordering come from the shared tier table (shared/celestial-tiers.mjs)
+import { TIER_COLORS, TIER_EMOJIS, TIER_ORDER } from '../../../../shared/celestial-tiers.mjs'
+export { TIER_COLORS, TIER_EMOJIS, TIER_ORDER }
 
 // Hot core colors for stellar tiers (white-hot center that triggers bloom)
 export const CORE_COLORS = {
@@ -22,19 +13,6 @@ export const CORE_COLORS = {
   hypergiant: '#E9D5FF', // lavender white
   nebula:     '#CFFAFE', // cyan white
   galaxy:     '#FCE7F3', // pink white
-}
-
-// Emoji per tier
-export const TIER_EMOJIS = {
-  satellite:  '🛰️',
-  asteroid:   '🪨',
-  moon:       '🌙',
-  planet:     '🪐',
-  sun:        '☀️',
-  hypergiant: '💫',
-  nebula:     '✨',
-  galaxy:     '🌌',
-  black_hole: '🕳️',
 }
 
 // Orbital radius per tier (higher tiers closer to center)
@@ -133,9 +111,6 @@ export const getBodySize = (costBasis, maxUsdcDeployed) => {
   const raw = BASE_BODY_SCALE + Math.sqrt(pct) * (2.0 - BASE_BODY_SCALE)
   return Math.min(raw, 2.0)
 }
-
-// Tier ordering for legend display (center outward)
-export const TIER_ORDER = ['black_hole', 'galaxy', 'nebula', 'hypergiant', 'sun', 'planet', 'moon', 'asteroid', 'satellite']
 
 // Tier rank lookup (lower = higher rank = closer to center in hierarchy)
 export const TIER_RANK = Object.fromEntries(TIER_ORDER.map((t, i) => [t, i]))

@@ -17,20 +17,9 @@
  *    holdbackScale (capped at 0.95) exactly as position-sizer.js does.
  */
 
-// Holdback scale per tier — mirrors the `holdbackScale` field of TIERS in
-// src/celestial-hierarchy.js. Kept in sync manually, same pattern already used by
-// admin/src/components/celestial/celestialConstants.js for tier colors/emojis/etc.
-export const TIER_HOLDBACK_SCALE = {
-  satellite: 1.00,
-  asteroid: 1.02,
-  moon: 1.05,
-  planet: 1.10,
-  sun: 1.15,
-  hypergiant: 1.20,
-  nebula: 1.21,
-  galaxy: 1.22,
-  black_hole: 1.25,
-}
+// Holdback scale per tier comes from the shared tier table (shared/celestial-tiers.mjs).
+import { TIER_HOLDBACK_SCALE } from '../../../shared/celestial-tiers.mjs'
+export { TIER_HOLDBACK_SCALE }
 
 // Matches the engine's conservative default in regime-engine.js placeBodyTp
 // (`config.feeRate || 0.001`).

@@ -7,6 +7,7 @@ import CelestialBody from './celestial/CelestialBody'
 import BlackHole from './celestial/BlackHole'
 import GalaxyBody from './celestial/GalaxyBody'
 import NebulaBody from './celestial/NebulaBody'
+import { TIERS as CELESTIAL_TIERS, formatTierPctRange } from '../../../shared/celestial-tiers.mjs'
 import { TIER_COLORS, TIER_EMOJIS, TIER_DESCRIPTIONS, TIER_ORDER, STANDALONE_TIERS } from './celestial/celestialConstants'
 
 const SHOWCASE_BODIES = [
@@ -29,10 +30,7 @@ const MOCK_BUY_ORDERS = [
 
 const MAX_USDC = 25000
 
-const TIER_RANGES = {
-  satellite: '0-1%', asteroid: '1-2%', moon: '2-5%', planet: '5-15%',
-  sun: '15-30%', hypergiant: '30-40%', nebula: '40-50%', galaxy: '50-75%', black_hole: '75%+',
-}
+const TIER_RANGES = Object.fromEntries(CELESTIAL_TIERS.map(t => [t.name, formatTierPctRange(t)]))
 
 const CAMERA_VIEWS = {
   perspective: { position: [0, 12, 18], name: 'Perspective' },
