@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-863] Stopped-fund open-order lookup failures are reported as unavailable** — A rejected TP lookup is now logged with context and returned as an unavailable result (HTTP 503) instead of a false-empty list; Transactions shows an unavailable state with Retry, or marks prior orders stale on refresh failure.
 - **[issue-851] Ladder placement is gated on saved settings and a current preview** — Editing a Rebuild Ladder setting immediately revokes the old preview; saves are serialized, previews are fenced by generation, and Place is enabled (and its handler allowed) only after the latest save is applied live and its preview loaded. Rejected or persisted-but-not-applied saves keep placement blocked with Retry/Revert.
 - **[issue-862] Gateway health reflects every configured fund** — `/api/health` now probes each configured fund with an explicit pair and timeout, unwraps the real `regime:status` envelope, and reports SAFE, AUTH_DENIED, failed or malformed replies and timeouts as degraded while keeping intentional pause/stop visible; stale UpDown prices degrade, unconfigured or disabled services do not. Adds a per-fund `funds` map; engine summary keys are retained.
 - **[issue-871] Container images include the seed configuration** — The runtime image now copies config.example.json so fresh Docker Compose and Umbrel installs resolve all three starter funds (disabled, dry-run); `npm run test:docker-seed` verifies the built image offline.
