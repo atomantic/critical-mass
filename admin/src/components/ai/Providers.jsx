@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useId } from 'react'
+import ModalDialog from '../ModalDialog'
 import { createRunLifecycle } from '../../utils/runLifecycle.mjs'
 
 const PROVIDER_TYPES = { cli: 'CLI', api: 'API' }
@@ -522,6 +523,7 @@ function ProviderForm({ provider, onClose, onSave }) {
   }
 
   const nameInputId = useId()
+  const headingId = useId()
   const typeSelectId = useId()
   const commandInputId = useId()
   const argsInputId = useId()
@@ -564,9 +566,9 @@ function ProviderForm({ provider, onClose, onSave }) {
 
   }
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 sm:p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <h2 className="text-xl font-bold text-white mb-4">
+    <ModalDialog onClose={onClose} labelledBy={headingId} maxWidthClassName="max-w-lg">
+      <div>
+        <h2 id={headingId} className="text-xl font-bold text-white mb-4">
           {provider ? 'Edit Provider' : 'Add Provider'}
         </h2>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -574,6 +576,7 @@ function ProviderForm({ provider, onClose, onSave }) {
             <label htmlFor={nameInputId} className="block text-sm text-gray-400 mb-1">Name *</label>
             <input
               id={nameInputId}
+              autoFocus
               type="text"
               value={formData.name}
               onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
@@ -732,6 +735,6 @@ function ProviderForm({ provider, onClose, onSave }) {
           </div>
         </form>
       </div>
-    </div>
+    </ModalDialog>
   )
 }
