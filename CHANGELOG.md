@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-851] Ladder placement is gated on saved settings and a current preview** — Editing a Rebuild Ladder setting immediately revokes the old preview; saves are serialized, previews are fenced by generation, and Place is enabled (and its handler allowed) only after the latest save is applied live and its preview loaded. Rejected or persisted-but-not-applied saves keep placement blocked with Retry/Revert.
 - **[issue-871] Container images include the seed configuration** — The runtime image now copies config.example.json so fresh Docker Compose and Umbrel installs resolve all three starter funds (disabled, dry-run); `npm run test:docker-seed` verifies the built image offline.
 - **[issue-857] Regime dashboard help popups stay within the viewport** — Config hints and the ATR trigger help now share a button-based `InfoTooltip` that is unmounted while closed (no page overflow), opens by hover, tap or keyboard, dismisses with Escape/outside press, and clamps to the viewport with vertical scroll.
 - **[issue-864] Sentinel exposes feed failures in poll health** — Feed outcomes (success, empty, failed with safe category) now drive a healthy/degraded/unavailable/disabled/no-feeds state, last successful fetch timestamps and cumulative failure counts in service status, API, dashboard and gateway health; manual poll reports its acquisition state.

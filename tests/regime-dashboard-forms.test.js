@@ -43,7 +43,7 @@ before(async () => {
   ))
 })
 
-function createDashboard({ apy: apyOverrides = {} } = {}) {
+function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
   const writes = []
   const toasts = []
   // Per-component-type hook state, so extracted children (PositionCard,
@@ -61,7 +61,7 @@ function createDashboard({ apy: apyOverrides = {} } = {}) {
       // TYPES (e.g. CapitalAdjust and LadderPanel) never both mint "form-0"
       // — real DOM ids need to stay unique across component instances, not
       // just within one.
-      inst = { name: type.name || 'component', states: [], stateIndex: 0, idIndex: 0, effects: [], mounted: false }
+      inst = { name: type.name || 'component', states: [], refs: [], refIndex: 0, stateIndex: 0, idIndex: 0, effects: [], mounted: false }
       componentInstances.set(type, inst)
     }
     return inst
@@ -72,6 +72,7 @@ function createDashboard({ apy: apyOverrides = {} } = {}) {
   function invoke(type, props) {
     const inst = getInstance(type)
     inst.stateIndex = 0
+    inst.refIndex = 0
     inst.idIndex = 0
     const prev = currentInstance
     currentInstance = inst
@@ -107,11 +108,18 @@ function createDashboard({ apy: apyOverrides = {} } = {}) {
     useEffect(effect) { const inst = currentInstance; if (!inst.mounted) inst.effects.push(effect) },
     useMemo: fn => fn(),
     useCallback: fn => fn,
-    useRef: initial => ({ current: initial }),
+    useRef(initial) {
+      const inst = currentInstance
+      const index = inst.refIndex++
+      if (!(index in inst.refs)) inst.refs[index] = { current: initial }
+      return inst.refs[index]
+    },
     useId: () => `form-${currentInstance.name}-${currentInstance.idIndex++}`,
     lazy: () => () => null,
   }
   const fetch = async (url, options = {}) => {
+    const intercepted = intercept && await intercept(url, options)
+    if (intercepted) return intercepted
     if (options.method === 'PUT') {
       const body = JSON.parse(options.body)
       writes.push({ url, body })
@@ -292,5 +300,173 @@ describe('RegimeDashboard expanded operational forms', () => {
     assert.equal(dashboard.writes[0].url, '/api/coinbase/regime/config?pair=BTC-USD')
     assert.deepEqual(dashboard.writes[0].body, { ladderSpacingMode: 'linear' })
     assert.equal(labeledControl(dashboard, dashboard.render(), 'Spacing Mode').props.value, 'linear')
+  })
+
+  describe('Rebuild Ladder settings/preview/placement gate (#851)', () => {
+    const tick = () => new Promise(resolve => setImmediate(resolve))
+    const reply = (body, { ok = true, status = 200 } = {}) => ({ ok, status, json: async () => body })
+    const deferred = () => {
+      let resolve
+      const promise = new Promise(r => { resolve = r })
+      return { promise, resolve }
+    }
+    const preview = levelCount => ({ success: true, preview: { levels: [{ price: 90, sizeUsdc: 10, assetQty: 0.1 }], levelCount } })
+
+    // Scripted network: PUT/preview/rebuild each pull from a queue of
+    // deferred responses (or an immediate default), recording every call.
+    async function openPanel() {
+      const net = { puts: [], previews: [], rebuilds: [], putQ: [], previewQ: [], rebuildQ: [] }
+      const intercept = async (url, options = {}) => {
+        const kind = options.method === 'PUT' ? 'puts' : options.method === 'POST' ? 'rebuilds' : url.includes('/preview-ladder') ? 'previews' : null
+        if (!kind) return null
+        net[kind].push(url)
+        const q = net[kind.replace(/s$/, '') + 'Q'].shift()
+        if (q) return q.promise
+        if (kind === 'puts') return reply({ success: true, persisted: true, applied: true })
+        if (kind === 'rebuilds') return reply({ success: true, message: 'placed' })
+        return reply(preview(1))
+      }
+      const dashboard = createDashboard({ intercept })
+      let tree = await dashboard.mount()
+      findElement(dashboard, tree, node => node.type === 'button' && node.props.children === 'Rebuild Ladder').props.onClick()
+      await tick()
+      const ui = {
+        net, dashboard,
+        control: text => labeledControl(dashboard, dashboard.render(), text),
+        place: () => dashboard.elements(dashboard.render()).find(n => n.type === 'button' && typeof n.props.children === 'string' && /^Place \d+ Orders$|^Placing/.test(n.props.children)),
+        button: text => dashboard.elements(dashboard.render()).find(n => n.type === 'button' && n.props.children === text),
+      }
+      return ui
+    }
+
+    it('revokes the preview on edit, blocks Place during save/preview, and restores it once applied', async () => {
+      const ui = await openPanel()
+      assert.equal(ui.place().props.disabled, false)
+      const save = deferred()
+      ui.net.putQ.push(save)
+      ui.control('Size Mode').props.onChange({ target: { value: 'linear' } })
+      assert.equal(ui.place(), undefined, 'old preview must lose authority immediately')
+      assert.equal(ui.control('Size Mode').props.value, 'linear')
+      await tick()
+      assert.equal(ui.net.rebuilds.length, 0)
+      const pv = deferred()
+      ui.net.previewQ.push(pv)
+      save.resolve(reply({ success: true, persisted: true, applied: true }))
+      await tick()
+      assert.equal(ui.place(), undefined, 'still no Place while the matching preview loads')
+      pv.resolve(reply(preview(7)))
+      await tick()
+      assert.equal(ui.place().props.disabled, false)
+      assert.equal(ui.place().props.children, 'Place 7 Orders')
+    })
+
+    it('serializes saves and ignores an out-of-order preview from an earlier edit', async () => {
+      const ui = await openPanel()
+      const save1 = deferred(), save2 = deferred(), pv1 = deferred(), pv2 = deferred()
+      ui.net.putQ.push(save1, save2)
+      ui.net.previewQ.push(pv1, pv2)
+      const before = ui.net.previews.length
+      ui.control('Size Mode').props.onChange({ target: { value: 'linear' } })
+      ui.control('Spacing Mode').props.onChange({ target: { value: 'linear' } })
+      await tick()
+      assert.equal(ui.net.puts.length, 1, 'second save waits for the first')
+      save1.resolve(reply({ success: true, persisted: true, applied: true }))
+      await tick()
+      assert.equal(ui.net.puts.length, 2)
+      assert.equal(ui.net.previews.length, before, 'superseded save does not request a preview')
+      save2.resolve(reply({ success: true, persisted: true, applied: true }))
+      await tick()
+      pv1.resolve(reply(preview(99)))
+      await tick()
+      assert.equal(ui.place().props.children, 'Place 99 Orders')
+    })
+
+    it('discards a stale preview response when a newer edit supersedes it', async () => {
+      const ui = await openPanel()
+      const stale = deferred()
+      ui.net.previewQ.push(stale)
+      ui.control('Size Mode').props.onChange({ target: { value: 'linear' } })
+      await tick() // save resolves, stale preview now pending
+      const save2 = deferred()
+      ui.net.putQ.push(save2)
+      ui.control('Spacing Mode').props.onChange({ target: { value: 'exponential' } })
+      stale.resolve(reply(preview(42)))
+      await tick()
+      assert.equal(ui.place(), undefined, 'stale preview must not re-enable placement')
+      save2.resolve(reply({ success: true, persisted: true, applied: true }))
+      await tick()
+      assert.equal(ui.place().props.children, 'Place 1 Orders')
+    })
+
+    it('never posts a rebuild while a save is pending, even on rapid repeated invocations', async () => {
+      const ui = await openPanel()
+      const stalePlace = ui.place().props.onClick
+      const save = deferred()
+      ui.net.putQ.push(save)
+      ui.control('Size Mode').props.onChange({ target: { value: 'linear' } })
+      await stalePlace()
+      await stalePlace()
+      assert.equal(ui.net.rebuilds.length, 0)
+    })
+
+    it('blocks placement after a rejected save and recovers via Revert or Retry', async () => {
+      const ui = await openPanel()
+      ui.net.putQ.push({ promise: Promise.resolve(reply({ success: false, errors: ['bad'] }, { ok: false, status: 400 })) })
+      ui.control('Size Mode').props.onChange({ target: { value: 'linear' } })
+      await tick()
+      assert.equal(ui.place(), undefined)
+      assert.equal(ui.dashboard.toasts.at(-1).title, 'Save Failed')
+      assert.ok(ui.button('Retry') && ui.button('Revert'))
+      ui.button('Revert').props.onClick()
+      await tick()
+      assert.equal(ui.control('Size Mode').props.value, 'fibonacci')
+      assert.equal(ui.place().props.disabled, false)
+
+      ui.net.putQ.push({ promise: Promise.resolve(reply({ success: false }, { ok: false, status: 400 })) })
+      ui.control('Size Mode').props.onChange({ target: { value: 'flat' } })
+      await tick()
+      assert.equal(ui.place(), undefined)
+      ui.button('Retry').props.onClick()
+      await tick()
+      assert.equal(ui.net.puts.length, 3, 'Retry re-sends the draft')
+      assert.equal(ui.place().props.disabled, false)
+    })
+
+    it('keeps placement blocked when settings persisted but were not applied live', async () => {
+      const ui = await openPanel()
+      ui.net.putQ.push({ promise: Promise.resolve(reply({ success: false, persisted: true, applied: false, error: 'engine down' }, { ok: false, status: 503 })) })
+      ui.control('Size Mode').props.onChange({ target: { value: 'linear' } })
+      await tick()
+      assert.equal(ui.place(), undefined)
+      assert.equal(ui.dashboard.toasts.at(-1).title, 'Not Applied')
+      assert.equal(ui.button('Revert'), undefined, 'persisted values cannot be reverted locally')
+      ui.button('Retry').props.onClick()
+      await tick()
+      assert.equal(ui.place().props.disabled, false)
+    })
+
+    it('revokes the preview while a numeric field is edited but not yet saved', async () => {
+      const ui = await openPanel()
+      ui.control('Min Spacing %').props.onChange({ target: { value: '2' } })
+      assert.equal(ui.place(), undefined)
+      assert.equal(ui.net.rebuilds.length, 0)
+      ui.control('Min Spacing %').props.onBlur()
+      await tick()
+      assert.equal(ui.net.puts.length, 1)
+      assert.equal(ui.place().props.disabled, false)
+    })
+
+    it('posts the rebuild once the latest settings and preview are confirmed', async () => {
+      const ui = await openPanel()
+      const rebuild = deferred()
+      ui.net.rebuildQ.push(rebuild)
+      const click = ui.place().props.onClick
+      const first = click()
+      await click() // second click while placing is a no-op
+      assert.equal(ui.net.rebuilds.length, 1)
+      rebuild.resolve(reply({ success: true, message: 'placed' }))
+      await first
+      assert.equal(ui.dashboard.toasts.at(-1).title, 'Ladder Placed')
+    })
   })
 })
