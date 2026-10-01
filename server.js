@@ -391,11 +391,17 @@ routes.get('/api/health', asyncRoute(async (req, res) => {
   // Sentinel service (in-process)
   const sentinelStatus = sentinelService.getStatus();
   engines.sentinel = {
-    status: sentinelStatus.running ? 'ok' : 'stopped',
+    status: !sentinelStatus.running ? 'stopped'
+      : (sentinelStatus.feedState === 'unavailable' || sentinelStatus.feedState === 'degraded') ? 'degraded' : 'ok',
     running: sentinelStatus.running,
     activeAlerts: sentinelStatus.activeAlerts || 0,
     lastPollAt: sentinelStatus.lastPollAt || null,
+    feedState: sentinelStatus.feedState,
+    enabledFeeds: sentinelStatus.enabledFeeds,
+    failedFeeds: sentinelStatus.failedFeeds,
+    lastSuccessfulFetchAt: sentinelStatus.lastSuccessfulFetchAt,
   };
+  if (engines.sentinel.status === 'degraded' && overallStatus === 'ok') overallStatus = 'degraded';
 
   // If any engine is unreachable and all are down, it's critical
   const allDown = Object.values(engines).every(e => e.status === 'unreachable' || e.status === 'timeout' || e.status === 'stopped');

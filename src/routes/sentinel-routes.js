@@ -42,7 +42,10 @@ module.exports = (app, deps) => {
   app.post('/api/sentinel/poll', asyncRoute(async (req, res) => {
     sentinelRouteLogger('/api/sentinel/poll').info('ℹ️ Sentinel force poll requested via API', { action: 'force-poll' });
     await sentinelService.forcePoll();
-    res.json({ success: true, ...sentinelService.getStatus() });
+    const status = sentinelService.getStatus();
+    // success reports that the poll ran; acquisition reports whether feeds were reachable,
+    // so a zero-news result is distinguishable from unavailable feeds.
+    res.json({ success: true, acquisition: status.feedState, ...status });
   }));
 
   app.post('/api/sentinel/dismiss/:alertId', (req, res) => {

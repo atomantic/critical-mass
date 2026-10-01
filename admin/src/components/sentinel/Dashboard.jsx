@@ -160,7 +160,14 @@ export default function SentinelDashboard() {
             <span>Alerts: {status?.totalAlerts || 0}</span>
             <span>Active: {status?.activeAlerts || 0}</span>
             <span>Last poll: {formatTime(status?.lastPollAt)}</span>
+            <span>Last successful fetch: {formatTime(status?.lastSuccessfulFetchAt)}</span>
           </div>
+
+          {(status?.feedState === 'unavailable' || status?.feedState === 'degraded') && (
+            <span className={`text-sm px-2 py-0.5 rounded ${status.feedState === 'unavailable' ? 'bg-red-900 text-red-200' : 'bg-yellow-900 text-yellow-200'}`}>
+              {status.feedState === 'unavailable' ? 'Feeds unavailable' : 'Feeds degraded'}: {status.failedFeeds}/{status.enabledFeeds} failed
+            </span>
+          )}
 
           <div className="ml-auto flex gap-2">
             {status?.running ? (
