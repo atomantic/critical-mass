@@ -4,6 +4,7 @@ import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import ManualTrades from './ManualTrades'
 import { computeFillsWithPnL } from './transactionsRegimePnl'
+import { sortFills, summarizeFills, paginate } from './transactionsRegimePage'
 import { compareCycleIds } from '../utils/regimeFillGroups.mjs'
 
 function TransactionsRegime({ exchange = 'coinbase', pair }) {
@@ -20,6 +21,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const [sortField, setSortField] = useState('timestamp')
   const [sortDir, setSortDir] = useState('desc')
   const [productId, setProductId] = useState(null)
+  const [page, setPage] = useState(0)
 
   const pairQuery = buildPairQuery(pair)
 
@@ -93,6 +95,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const filteredFills = fills.filter(passesFilter)
 
   const handleSort = (field) => {
+    setPage(0)
     if (sortField === field) {
       setSortDir(d => d === 'asc' ? 'desc' : 'asc')
     } else {
@@ -110,47 +113,15 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   // Memoize the filtered result so it doesn't change on every render
   const fillsWithPnL = useMemo(() => fillsWithPnLMemo.filter(passesFilter), [fillsWithPnLMemo, filter, cycleFilter])
 
-  // Re-sort and compute summary stats in a single memoized pass
-  const { displayFills, totalBuys, totalSells, totalAssetBought, totalBtcSold, totalFees, totalPnL, totalHoldbackBtc, totalHoldbackValue } = useMemo(() => {
-    const sorted = [...fillsWithPnL].sort((a, b) => {
-      const dir = sortDir === 'asc' ? 1 : -1
-      if (sortField === 'timestamp') {
-        return (a.timestamp - b.timestamp) * dir
-      }
-      const aVal = a[sortField]
-      const bVal = b[sortField]
-      if (typeof aVal === 'number') return (aVal - bVal) * dir
-      return String(aVal).localeCompare(String(bVal)) * dir
-    })
+  // Sort and summarize the WHOLE filtered history; only the rendered rows are
+  // paged (issue #852), so totals never depend on the selected page.
+  const sortedFills = useMemo(() => sortFills(fillsWithPnL, sortField, sortDir), [fillsWithPnL, sortField, sortDir])
+  const { totalBuys, totalSells, totalAssetBought, totalBtcSold, totalFees, totalPnL, totalHoldbackBtc, totalHoldbackValue } = useMemo(() => summarizeFills(fillsWithPnL), [fillsWithPnL])
 
-    // Consolidate all summary stats into a single pass
-    let buys = 0, sells = 0, assetBought = 0, btcSold = 0, fees = 0, pnl = 0, holdbackBtc = 0, holdbackValue = 0
-    for (const f of fillsWithPnL) {
-      if (f.side === 'buy') {
-        buys++
-        assetBought += f.size
-      } else {
-        sells++
-        btcSold += f.size
-      }
-      fees += f.netFee || f.fee || 0
-      if (f.pnl !== null) pnl += f.pnl
-      if (f.holdbackAsset !== null) holdbackBtc += f.holdbackAsset
-      if (f.holdbackValue !== null) holdbackValue += f.holdbackValue
-    }
-
-    return {
-      displayFills: sorted,
-      totalBuys: buys,
-      totalSells: sells,
-      totalAssetBought: assetBought,
-      totalBtcSold: btcSold,
-      totalFees: fees,
-      totalPnL: pnl,
-      totalHoldbackBtc: holdbackBtc,
-      totalHoldbackValue: holdbackValue,
-    }
-  }, [fillsWithPnL, sortField, sortDir])
+  // Clamp at render time so a poll that shrinks the history can never strand
+  // the view beyond the last page.
+  const pageInfo = paginate(sortedFills, page)
+  const displayFills = pageInfo.rows
 
   if (loading) {
     return (
@@ -256,7 +227,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
       </div>
 
       {/* Summary */}
-      {displayFills.length > 0 && (
+      {pageInfo.total > 0 && (
         <div className="bg-gray-800 rounded-lg p-4">
           <h3 className="text-sm font-medium text-gray-400 mb-3">Summary</h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
@@ -308,7 +279,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
           {['all', 'buy', 'sell'].map(f => (
             <button
               key={f}
-              onClick={() => setFilter(f)}
+              onClick={() => { setFilter(f); setPage(0) }}
               className={`px-3 py-1 rounded text-sm ${
                 filter === f
                   ? 'bg-blue-600 text-white'
@@ -325,7 +296,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
           <select
             id={cycleFilterId}
             value={cycleFilter}
-            onChange={(e) => setCycleFilter(e.target.value)}
+            onChange={(e) => { setCycleFilter(e.target.value); setPage(0) }}
             className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white"
           >
             <option value="all">All Cycles</option>
@@ -382,7 +353,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                 </tr>
               ) : (
                 displayFills.map((fill, i) => (
-                  <tr key={`${fill.tradeId || fill.orderId}-${i}`} className="border-t border-gray-700 hover:bg-gray-700/50">
+                  <tr key={`${fill.tradeId || fill.orderId}-${pageInfo.start + i}`} className="border-t border-gray-700 hover:bg-gray-700/50">
                     <td className="px-4 py-3 text-gray-400">
                       {new Date(fill.timestamp).toLocaleString()}
                     </td>
@@ -439,6 +410,31 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
             </tbody>
           </table>
         </div>
+        {pageInfo.total > 0 && (
+          <nav aria-label="Transactions pagination" className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-t border-gray-700 text-sm text-gray-400">
+            <span aria-live="polite">
+              Showing {pageInfo.start}–{pageInfo.end} of {pageInfo.total} · Page {pageInfo.page + 1} of {pageInfo.pageCount}
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setPage(pageInfo.page - 1)}
+                disabled={!pageInfo.hasPrev}
+                className="px-3 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                onClick={() => setPage(pageInfo.page + 1)}
+                disabled={!pageInfo.hasNext}
+                className="px-3 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Next
+              </button>
+            </div>
+          </nav>
+        )}
       </div>
 
     </div>
