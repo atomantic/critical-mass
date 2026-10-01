@@ -146,3 +146,109 @@ describe('ConfigEditor shared write gate (issue #455)', () => {
     assert.match(configEditorSource, /text: result\.error \|\| `Failed to save \$\{label\}`/)
   })
 })
+
+describe('ConfigEditor zero-valued fields (issue #868)', () => {
+  it('displays zero cautionScale using nullish coalescing (??), not logical OR', () => {
+    assert.match(
+      configEditorSource,
+      /regimeConfig\.cautionScale \?\? 0\.5/,
+    )
+    // Ensure the old pattern is not present
+    assert.doesNotMatch(
+      configEditorSource,
+      /regimeConfig\.cautionScale \|\| 0\.5/,
+    )
+  })
+
+  it('displays zero trendScale using nullish coalescing (??), not logical OR', () => {
+    assert.match(
+      configEditorSource,
+      /regimeConfig\.trendScale \?\? 0\.0/,
+    )
+    // Ensure the old pattern is not present
+    assert.doesNotMatch(
+      configEditorSource,
+      /regimeConfig\.trendScale \|\| 0\.0/,
+    )
+  })
+
+  it('displays zero drawdownResetHours using nullish coalescing (??), not logical OR', () => {
+    assert.match(
+      configEditorSource,
+      /regimeConfig\.drawdownResetHours \?\? 72/,
+    )
+    // Ensure the old pattern is not present
+    assert.doesNotMatch(
+      configEditorSource,
+      /regimeConfig\.drawdownResetHours \|\| 72/,
+    )
+  })
+
+  it('displays zero cycleResetHours using nullish coalescing (??), not logical OR', () => {
+    assert.match(
+      configEditorSource,
+      /regimeConfig\.cycleResetHours \?\? 72/,
+    )
+    // Ensure the old pattern is not present
+    assert.doesNotMatch(
+      configEditorSource,
+      /regimeConfig\.cycleResetHours \|\| 72/,
+    )
+  })
+
+  it('displays zero entryOffsetBps using nullish coalescing (??), not logical OR', () => {
+    assert.match(
+      configEditorSource,
+      /regimeConfig\.entryOffsetBps \?\? 10/,
+    )
+    // Ensure the old pattern is not present
+    assert.doesNotMatch(
+      configEditorSource,
+      /regimeConfig\.entryOffsetBps \|\| 10/,
+    )
+  })
+
+  it('displays zero entryOffsetUpBps using nullish coalescing (??), not logical OR', () => {
+    assert.match(
+      configEditorSource,
+      /regimeConfig\.entryOffsetUpBps \?\? 5/,
+    )
+    // Ensure the old pattern is not present
+    assert.doesNotMatch(
+      configEditorSource,
+      /regimeConfig\.entryOffsetUpBps \|\| 5/,
+    )
+  })
+
+  it('displays zero entryOffsetDownBps using nullish coalescing (??), not logical OR', () => {
+    assert.match(
+      configEditorSource,
+      /regimeConfig\.entryOffsetDownBps \?\? 15/,
+    )
+    // Ensure the old pattern is not present
+    assert.doesNotMatch(
+      configEditorSource,
+      /regimeConfig\.entryOffsetDownBps \|\| 15/,
+    )
+  })
+
+  it('uses nullish coalescing for scaling summary display', () => {
+    assert.match(
+      configEditorSource,
+      /CAUTION=\{regimeConfig\.cautionScale \?\? 0\.5\}x/,
+    )
+    assert.match(
+      configEditorSource,
+      /TREND=\{regimeConfig\.trendScale \?\? 0\.0\}x/,
+    )
+  })
+
+  it('never conflates zero values with missing/uninitialized fields in saved requests', () => {
+    // The FormInput component handles draft state correctly to preserve zeros
+    // even when the field is cleared and re-entered. Verify that the
+    // handleNumberChange doesn't commit 0 on clear (line 34) but does on
+    // valid parse, preserving the semantics.
+    assert.match(configEditorSource, /if \(raw\.trim\(\) === ''\) return/)
+    assert.match(configEditorSource, /if \(Number\.isFinite\(n\)\) onChange\(n\)/)
+  })
+})
