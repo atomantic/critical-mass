@@ -7,6 +7,11 @@ on:
         description: Existing immutable release tag to publish or recover
         required: true
         type: string
+      publish_latest:
+        description: Also move the latest tag to this release (only newly-created releases should set this)
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       release_tag:
@@ -58,6 +63,23 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: echo "version=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Compute image tags
+        id: tags
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PUBLISH_LATEST: ${{ inputs.publish_latest }}
+        run: |
+          set -euo pipefail
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:${RELEASE_TAG}"
+            if [ "$PUBLISH_LATEST" = "true" ]; then
+              echo "${IMAGE}:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
@@ -74,9 +96,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
-            ghcr.io/${{ github.repository }}:latest
+          tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
