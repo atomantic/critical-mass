@@ -330,6 +330,84 @@ describe('Manual Trade Import', () => {
       assert.equal(result.trade.buyOrderId, 'already-placed-9');
     });
 
+    describe('concurrent imports of the same sell (#874)', () => {
+      const makeGate = () => {
+        let release;
+        const promise = new Promise((r) => { release = r; });
+        return { promise, release };
+      };
+      const tick = () => new Promise((r) => setImmediate(r));
+
+      it('submits one recovery buy for overlapping requests from separate importers', async () => {
+        const gate = makeGate();
+        const adapter = createFakeAdapter({ fillsByOrder: { 'sell-1': sellFills } });
+        const basePlace = adapter.placeLimitBuy;
+        adapter.placeLimitBuy = async (...args) => { const r = await basePlace(...args); await gate.promise; return r; };
+        const payload = { sellOrderId: 'sell-1', recoveryBuyPrice: '95000' };
+
+        const p1 = createImporter({ adapter }).importSell(payload);
+        while (adapter.calls.placeLimitBuy.length < 1) await tick();
+        const p2 = createImporter({ adapter }).importSell(payload);
+        for (let i = 0; i < 5; i++) await tick();
+        assert.equal(adapter.calls.placeLimitBuy.length, 1);
+        gate.release();
+        const [r1, r2] = await Promise.all([p1, p2]);
+
+        assert.equal(r1.success, true);
+        assert.equal(r2.success, true);
+        assert.equal(adapter.calls.placeLimitBuy.length, 1);
+        assert.equal(r2.trade.id, r1.trade.id);
+        assert.equal(r2.trade.buyOrderId, 'recovery-1');
+        const saved = readManualTradesFile();
+        const records = Array.isArray(saved.trades) ? saved.trades : Object.values(saved.trades);
+        assert.equal(records.length, 1);
+        assert.equal(records[0].buyOrderId, 'recovery-1');
+      });
+
+      it('rejects an overlapping existing-buy link that conflicts with the committed buy', async () => {
+        const gate = makeGate();
+        const adapter = createFakeAdapter({ fillsByOrder: { 'sell-1': sellFills } });
+        const basePlace = adapter.placeLimitBuy;
+        adapter.placeLimitBuy = async (...args) => { const r = await basePlace(...args); await gate.promise; return r; };
+
+        const p1 = createImporter({ adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });
+        while (adapter.calls.placeLimitBuy.length < 1) await tick();
+        const p2 = createImporter({ adapter }).importSell({ sellOrderId: 'sell-1', existingBuyOrderId: 'other-buy' });
+        gate.release();
+        const [r1, r2] = await Promise.all([p1, p2]);
+
+        assert.equal(r1.success, true);
+        assert.equal(r2.success, false);
+        assert.match(r2.error, /already associated with buy order recovery-1/);
+        assert.equal(store.getAll()[0].buyOrderId, 'recovery-1');
+      });
+
+      it('does not block different sells and releases the lock after a rejection', async () => {
+        const gate = makeGate();
+        const otherFills = [makeFill({ tradeId: 'o-1', side: 'sell', size: 0.001, price: 100000 })];
+        const adapter = createFakeAdapter({ fillsByOrder: { 'sell-1': sellFills, 'sell-2': otherFills } });
+        const basePlace = adapter.placeLimitBuy;
+        let first = true;
+        adapter.placeLimitBuy = async (...args) => {
+          if (first) { first = false; await gate.promise; return { success: false, errorMessage: 'rejected' }; }
+          return basePlace(...args);
+        };
+
+        const p1 = createImporter({ adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });
+        while (first) await tick();
+        const other = await createImporter({ adapter }).importSell({ sellOrderId: 'sell-2', recoveryBuyPrice: '95000' });
+        assert.equal(other.success, true);
+
+        const p3 = createImporter({ adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });
+        gate.release();
+        const r1 = await p1;
+        const r3 = await p3;
+        assert.equal(r1.success, false);
+        assert.equal(r3.success, true);
+        assert.ok(r3.trade.buyOrderId);
+      });
+    });
+
     it('places exactly one recovery buy across a duplicate retry of the same sell', async () => {
       const adapter = createFakeAdapter({ fillsByOrder: { 'sell-1': sellFills } });
       const importer = createImporter({ adapter });

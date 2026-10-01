@@ -290,3 +290,57 @@ describe('size-optimizer exportState / importState round trip', () => {
     assert.equal(targetStatus.lastKnownBalance, 5200);
   });
 });
+
+const { REGIME_DEFAULTS } = require('../src/config-utils');
+
+/** Production recordCycle output for three completed cycles (issue #867 repros). */
+const optimizerOutput = (overrides, availableBalance) => {
+  const cfg = { ...REGIME_DEFAULTS, sizeAutoManaged: true, sizeEvaluationCycles: 1, sizeMinSampleSize: 3, ...overrides };
+  const opt = createSizeOptimizer('test-exchange', cfg, {}, 'BTC-USDC');
+  let adj = null;
+  for (let i = 0; i < 3; i++) {
+    adj = opt.recordCycle({ stepsUsed: 5, capitalDeployed: 100, completedAt: 1_700_000_000_000 + i * 60_000, availableBalance });
+  }
+  return adj;
+};
+const { validateRegimeConfig } = require('../src/config-validator');
+
+describe('size-optimizer output round-trips through the shared save contract (#867)', () => {
+  const repro1 = { baseSizeUsdc: 1000, sizeAbsoluteMaxBase: 2000, maxUsdcDeployed: 10000, maxCycleBuys: 10 };
+  const repro2 = { baseSizeUsdc: 100, maxUsdcDeployed: 1000, maxCycleBuys: 10 };
+
+  it('repro 1: base 1250 / cap 22500 passes validateRegimeConfig', () => {
+    const adj = optimizerOutput(repro1, 25000);
+    assert.equal(adj.baseSizeUsdc, 1250);
+    assert.equal(adj.maxUsdcDeployed, 22500);
+    const result = validateRegimeConfig({ ...REGIME_DEFAULTS, ...repro1, ...adj, maxCycleBuys: 10 });
+    assert.deepEqual(result.errors, []);
+  });
+
+  it('repro 2: base 90 / cap 900 passes validateRegimeConfig', () => {
+    const adj = optimizerOutput(repro2, 1000);
+    assert.equal(adj.baseSizeUsdc, 90);
+    assert.equal(adj.maxUsdcDeployed, 900);
+    const result = validateRegimeConfig({ ...REGIME_DEFAULTS, ...repro2, ...adj, maxCycleBuys: 10 });
+    assert.deepEqual(result.errors, []);
+  });
+
+  it('keeps the configured clamps, the rate limit and the wallet-utilization cap formula', () => {
+    const opt = makeOptimizer({ sizeMaxChangePercent: 25 });
+    const low = opt._calculateAdjustment(50); // low positive balance
+    assert.equal(low.baseSizeUsdc, 75, 'rate limited to -25% of 100');
+    assert.equal(low.maxUsdcDeployed, roundUSDC(50 * 0.9), 'cap stays wallet derived, not raised to 1000');
+    const high = makeOptimizer({ sizeMaxChangePercent: 100000, sizeAbsoluteMaxBase: 300 })._calculateAdjustment(1e9);
+    assert.equal(high.baseSizeUsdc, 300);
+  });
+
+  it('never proposes a base above the shared 2000 ceiling', () => {
+    const adj = makeOptimizer({ sizeAbsoluteMaxBase: 99999, sizeMaxChangePercent: 100000 })._calculateAdjustment(1e9);
+    assert.equal(adj.baseSizeUsdc, 2000);
+  });
+
+  it('handles a zero current cap without NaN', () => {
+    const adj = makeOptimizer({ maxUsdcDeployed: 0 })._calculateAdjustment(1000);
+    assert.equal(adj.maxUsdcDeployed, 900);
+  });
+});
