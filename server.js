@@ -14,6 +14,7 @@ const {
   getFundConfig,
   getEnabledExchanges,
   getEnabledFunds,
+  getConfiguredFunds,
   getConfiguredExchanges,
   getGlobalConfig,
   getBackupConfig,
@@ -49,6 +50,7 @@ const { createUpDownService } = require('./src/updown/updown-service');
 const { createCandleCache } = require('./src/candle-cache');
 const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
+const { buildRuntimeHealth } = require('./src/runtime-health');
 const { createOperatorAuth } = require('./src/operator-auth');
 const { resolveListenHosts, isGatewayOrigin } = require('./src/gateway-listen');
 const { registerProcessGuards } = require('./src/process-guard');
@@ -355,62 +357,19 @@ require('./src/routes/legacy-routes')(routes, sharedDeps);
 // ============ Health Aggregation ============
 
 routes.get('/api/health', asyncRoute(async (req, res) => {
-  const timeout = 3000;
-  const engines = {};
-  let overallStatus = 'ok';
-
-  // Fan out IPC health checks to all exchange engines
-  const exchangeChecks = Object.entries(exchangeIPCMap).map(async ([name, ipc]) => {
-    if (!ipc.isConnected()) {
-      engines[name] = { status: 'unreachable', connected: false };
-      overallStatus = 'degraded';
-      return;
-    }
-    const status = await ipc.request('regime:status', {}, name, timeout).catch(() => null);
-    engines[name] = {
-      status: status?.health?.mode?.toLowerCase() || (status ? 'ok' : 'timeout'),
-      connected: true,
-      isRunning: status?.isRunning ?? false,
-      mode: status?.health?.mode ?? null,
-      uptime: status?.uptime ?? null,
-    };
-    if (engines[name].status === 'timeout') overallStatus = 'degraded';
+  const { status, engines, funds } = await buildRuntimeHealth({
+    exchangeIPCMap,
+    getConfiguredFunds,
+    getEnabledFunds,
+    getUpDownStatus: () => updownService.getStatus(),
+    getSentinelStatus: () => sentinelService.getStatus(),
   });
 
-  await Promise.allSettled([...exchangeChecks]);
-
-  // UpDown service (in-process, no IPC needed)
-  const updownStatus = updownService.getStatus();
-  engines.updown = {
-    status: updownStatus.running ? 'ok' : 'stopped',
-    running: updownStatus.running,
-    lastPrice: updownStatus.lastPrice || null,
-    latestSignal: updownStatus.latestSignal?.type || null,
-  };
-
-  // Sentinel service (in-process)
-  const sentinelStatus = sentinelService.getStatus();
-  engines.sentinel = {
-    status: !sentinelStatus.running ? 'stopped'
-      : (sentinelStatus.feedState === 'unavailable' || sentinelStatus.feedState === 'degraded') ? 'degraded' : 'ok',
-    running: sentinelStatus.running,
-    activeAlerts: sentinelStatus.activeAlerts || 0,
-    lastPollAt: sentinelStatus.lastPollAt || null,
-    feedState: sentinelStatus.feedState,
-    enabledFeeds: sentinelStatus.enabledFeeds,
-    failedFeeds: sentinelStatus.failedFeeds,
-    lastSuccessfulFetchAt: sentinelStatus.lastSuccessfulFetchAt,
-  };
-  if (engines.sentinel.status === 'degraded' && overallStatus === 'ok') overallStatus = 'degraded';
-
-  // If any engine is unreachable and all are down, it's critical
-  const allDown = Object.values(engines).every(e => e.status === 'unreachable' || e.status === 'timeout' || e.status === 'stopped');
-  if (allDown) overallStatus = 'critical';
-
   res.json({
-    status: overallStatus,
+    status,
     gateway: { uptime: process.uptime(), pid: process.pid },
     engines,
+    funds,
     timestamp: new Date().toISOString(),
   });
 }));

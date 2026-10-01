@@ -2,6 +2,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { execFileSync } = require('node:child_process');
+const os = require('node:os');
 
 const root = path.join(__dirname, '..');
 const dockerWorkflow = fs.readFileSync(
@@ -54,4 +56,33 @@ test('release documentation covers image recovery and source verification', () =
   assert.match(releaseDocs, /docker pull --platform/);
   assert.match(releaseDocs, /Actions → Docker Build → Run workflow/);
   assert.match(releaseDocs, /immutable tag/);
+});
+
+function computeTags(publishLatest) {
+  const m = dockerWorkflow.match(/- name: Compute image tags[\s\S]*?run: \|\n([\s\S]*?)\n\n      - name:/);
+  assert.ok(m, 'Compute image tags step exists');
+  const script = m[1].replace(/^ {10}/gm, '');
+  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tags-')), 'out');
+  fs.writeFileSync(out, '');
+  execFileSync('bash', ['-c', script], {
+    env: {
+      PATH: process.env.PATH,
+      IMAGE: 'ghcr.io/o/r',
+      RELEASE_TAG: 'v1.2.3',
+      PUBLISH_LATEST: publishLatest,
+      GITHUB_OUTPUT: out,
+    },
+  });
+  return fs.readFileSync(out, 'utf8').split('\n').filter((l) => l.startsWith('ghcr.io'));
+}
+
+test('historical recovery publishes only the versioned tag; normal release also publishes latest', () => {
+  assert.deepEqual(computeTags(''), ['ghcr.io/o/r:v1.2.3']);
+  assert.deepEqual(computeTags('false'), ['ghcr.io/o/r:v1.2.3']);
+  assert.deepEqual(computeTags('true'), ['ghcr.io/o/r:v1.2.3', 'ghcr.io/o/r:latest']);
+  assert.match(dockerWorkflow, /publish_latest:\n        description: [^\n]*\n        required: false\n        default: false\n        type: boolean\n  workflow_dispatch:/);
+  assert.doesNotMatch(dockerWorkflow.split('workflow_dispatch:')[1].split('permissions:')[0], /publish_latest/);
+  assert.match(dockerWorkflow, /tags: \$\{\{ steps\.tags\.outputs\.tags \}\}/);
+  assert.match(releaseWorkflow, /release_tag: \$\{\{ needs\.release\.outputs\.release_tag \}\}\n      publish_latest: true/);
+  assert.match(releaseDocs, /leaves `latest` unchanged/);
 });

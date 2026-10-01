@@ -51,6 +51,9 @@ function KeysConfig({ exchange, onSave }) {
   const [showSecrets, setShowSecrets] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
+  // Live region announcements for accessibility
+  const [statusAnnouncement, setStatusAnnouncement] = useState('')
+  const [alertAnnouncement, setAlertAnnouncement] = useState('')
 
   const config = EXCHANGE_FIELD_CONFIGS[exchange] || {
     title: `${exchange} API`,
@@ -89,6 +92,47 @@ function KeysConfig({ exchange, onSave }) {
     fetchKeys()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [exchange])
+
+  // Announce save/delete messages via live regions
+  useEffect(() => {
+    if (message) {
+      if (message.type === 'success') {
+        setStatusAnnouncement(message.text)
+        setAlertAnnouncement('')
+      } else {
+        setAlertAnnouncement(message.text)
+        setStatusAnnouncement('')
+      }
+    } else {
+      setStatusAnnouncement('')
+      setAlertAnnouncement('')
+    }
+  }, [message])
+
+  // Announce connection test results via live regions
+  useEffect(() => {
+    if (testResult === null) {
+      // Clear announcements when testResult is reset (e.g., starting a new test)
+      setStatusAnnouncement('')
+      setAlertAnnouncement('')
+    } else if (testResult) {
+      let announcement = testResult.success ? 'Connection successful!' : 'Connection failed'
+      if (testResult.balance) {
+        announcement += ` Balance: $${testResult.balance.available?.toFixed(2)} available`
+      }
+      if (testResult.error) {
+        announcement += ` ${testResult.error}`
+      }
+
+      if (testResult.success) {
+        setStatusAnnouncement(announcement)
+        setAlertAnnouncement('')
+      } else {
+        setAlertAnnouncement(announcement)
+        setStatusAnnouncement('')
+      }
+    }
+  }, [testResult])
 
   const handleChange = (key, value) => {
     setKeys(prev => ({ ...prev, [key]: value }))
@@ -176,6 +220,24 @@ function KeysConfig({ exchange, onSave }) {
 
   return (
     <div className="max-w-2xl">
+      {/* Live regions for screen reader announcements */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      >
+        {statusAnnouncement}
+      </div>
+      <div
+        role="alert"
+        aria-live="assertive"
+        aria-atomic="true"
+        className="sr-only"
+      >
+        {alertAnnouncement}
+      </div>
+
       <div className="bg-gray-800 rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
