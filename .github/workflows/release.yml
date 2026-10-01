@@ -98,6 +98,7 @@ jobs:
     uses: ./.github/workflows/docker-build.yml
     with:
       release_tag: ${{ needs.release.outputs.release_tag }}
+      publish_latest: true
     permissions:
       contents: read
       packages: write
