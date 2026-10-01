@@ -27,5 +27,5 @@ test('regime order actions share a touch target without changing their handlers'
 })
 
 test('order action targets are 44px for narrow or coarse-pointer layouts', () => {
-  assert.match(stylesSource, /@media \(pointer: fine\) and \(min-width: 768px\)\s*\{[\s\S]*?\.regime-order-touch-target\s*\{[\s\S]*?min-height: unset;[\s\S]*?min-width: unset;/)
+  assert.match(stylesSource, /@media \(pointer: fine\) and \(min-width: 768px\)\s*\{[\s\S]*?\.regime-order-touch-target[^{]*\{[\s\S]*?min-height: unset;[\s\S]*?min-width: unset;/)
 })

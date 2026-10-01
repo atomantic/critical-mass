@@ -141,7 +141,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
           <span className="text-yellow-400">Data is stale. Waiting for the next successful refresh...</span>
           <button
             onClick={fetchData}
-            className="self-start sm:self-auto px-3 py-1 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded"
+            className="self-start sm:self-auto px-3 py-1 bg-yellow-700 hover:bg-yellow-800 text-white text-sm rounded"
           >
             Refresh Now
           </button>
