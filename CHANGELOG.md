@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-871] Container images include the seed configuration** — The runtime image now copies config.example.json so fresh Docker Compose and Umbrel installs resolve all three starter funds (disabled, dry-run); `npm run test:docker-seed` verifies the built image offline.
 - **[issue-837] Sell quote and fee corrections reconcile booked P&L and capital** — Corrected covered sells now update per-order annotations, closed-trade audits and credited capital through an idempotent journal without changing quantity or cycle ownership.
 - **[issue-836] Real buy executions reconcile fallback quote and fee corrections durably** — Cost changes update open body tranches, consumed sell cost/P&L, closed-trade audits and credited capital without changing inventory or cycle ownership; restart-safe journals retain failed corrections and live TP repricing uses the existing cancellation guard.
 - **[issue-808] Terminal synthetic fill gaps use the remaining order quote value** — After partial executions at different prices, fallback buys and sells subtract the already recorded quote from the cumulative status total, preserving cost basis and proceeds; invalid totals remain retryable without fabricated fills.
