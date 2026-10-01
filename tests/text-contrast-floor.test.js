@@ -135,7 +135,7 @@ const TEXT_GRAY_ALLOWLIST = new Set([
   'admin/src/components/NotificationsConfig.jsx::className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"',
   'admin/src/components/LogViewer.jsx::className="px-2 py-1 text-xs bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:text-gray-500 text-yellow-100 rounded transition-colors"',
   'admin/src/components/Backtest.jsx::className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 rounded font-medium"',
-  'admin/src/components/sentinel/Dashboard.jsx::className="px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm"',
+  'admin/src/components/sentinel/Dashboard.jsx::className="px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm min-h-[44px]"',
   // decorative separators / connective punctuation between two real text nodes
   'admin/src/components/ManualTrades.jsx::<span className="text-gray-600">&rarr;</span>',
   'admin/src/components/ManualTrades.jsx::<span className="text-gray-600">=</span>',
@@ -218,7 +218,7 @@ describe('admin/src bg-green/yellow/red-600 button-fill sweep (issue #538)', () 
 
     assert.match(backtest, /bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded font-medium/) // Run Backtest
     assert.match(sentinelDashboard, /bg-green-800 hover:bg-green-900 rounded text-sm/) // Start
-    assert.match(sentinelDashboard, /bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm/) // Add Feed
+    assert.match(sentinelDashboard, /bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm min-h-\[44px\]/) // Add Feed
     assert.match(backupRestore, /bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded-lg font-medium/) // Confirm Restore
     assert.match(backupRestore, /bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded text-xs font-medium/) // Restore
     assert.match(backupRestore, /bg-red-700 hover:bg-red-800 disabled:bg-red-900 disabled:cursor-not-allowed rounded text-xs font-medium/) // Delete
