@@ -778,13 +778,13 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             <SectionCard title="Regime Scaling">
               <div className="grid grid-cols-2 gap-3">
                 <FormInput label="Harvest Scale" hint="Size multiplier in calm, mean-reverting markets" value={regimeConfig.harvestScale || 1.0} onChange={(v) => handleRegimeChange('harvestScale', v)} type="number" />
-                <FormInput label="Caution Scale" hint="Size multiplier during elevated volatility" value={regimeConfig.cautionScale || 0.5} onChange={(v) => handleRegimeChange('cautionScale', v)} type="number" />
-                <FormInput label="Trend Scale" hint="Size multiplier in strong trends (0 = no entries)" value={regimeConfig.trendScale || 0.0} onChange={(v) => handleRegimeChange('trendScale', v)} type="number" />
+                <FormInput label="Caution Scale" hint="Size multiplier during elevated volatility" value={regimeConfig.cautionScale ?? 0.5} onChange={(v) => handleRegimeChange('cautionScale', v)} type="number" />
+                <FormInput label="Trend Scale" hint="Size multiplier in strong trends (0 = no entries)" value={regimeConfig.trendScale ?? 0.0} onChange={(v) => handleRegimeChange('trendScale', v)} type="number" />
                 <FormInput label="Max Cycle Buys" hint="Max buys per cycle before pausing entries" value={regimeConfig.maxCycleBuys || 10} onChange={(v) => handleRegimeChange('maxCycleBuys', v)} type="number" />
                 <FormInput label="Min Order Size ($)" hint="Floor for order size after all multipliers" value={regimeConfig.minOrderSizeUsdc || 5} onChange={(v) => handleRegimeChange('minOrderSizeUsdc', v)} type="number" />
               </div>
               <div className="mt-2 text-xs text-gray-400">
-                Scaling: HARVEST={regimeConfig.harvestScale || 1.0}x, CAUTION={regimeConfig.cautionScale || 0.5}x, TREND={regimeConfig.trendScale || 0.0}x base size
+                Scaling: HARVEST={regimeConfig.harvestScale ?? 1.0}x, CAUTION={regimeConfig.cautionScale ?? 0.5}x, TREND={regimeConfig.trendScale ?? 0.0}x base size
               </div>
             </SectionCard>
 
@@ -1042,8 +1042,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 <FormInput label="Max USDC Cap" hint="Max USDC deployed across active orders" value={regimeConfig.maxUsdcDeployed || 10000} onChange={(v) => handleRegimeChange('maxUsdcDeployed', v)} type="number" />
                 <FormInput label="Max Drawdown %" hint="Pause new buys when fund equity (capital + realized + held coins at market) falls this % below its peak" value={regimeConfig.maxDrawdownPercent || 20} onChange={(v) => handleRegimeChange('maxDrawdownPercent', v)} type="number" />
                 <FormInput label="Liquidity Factor Cap" hint="Max size multiplier from orderbook liquidity" value={regimeConfig.liquidityFactorCap || 2.0} onChange={(v) => handleRegimeChange('liquidityFactorCap', v)} type="number" />
-                <FormInput label="Drawdown Reset (hrs)" hint="Hours at drawdown cap before auto-resuming (0 = off)" value={regimeConfig.drawdownResetHours || 72} onChange={(v) => handleRegimeChange('drawdownResetHours', v)} type="number" />
-                <FormInput label="Cycle Reset (hrs)" hint="Hours at cycle buys limit before auto-resetting (0 = off)" value={regimeConfig.cycleResetHours || 72} onChange={(v) => handleRegimeChange('cycleResetHours', v)} type="number" />
+                <FormInput label="Drawdown Reset (hrs)" hint="Hours at drawdown cap before auto-resuming (0 = off)" value={regimeConfig.drawdownResetHours ?? 72} onChange={(v) => handleRegimeChange('drawdownResetHours', v)} type="number" />
+                <FormInput label="Cycle Reset (hrs)" hint="Hours at cycle buys limit before auto-resetting (0 = off)" value={regimeConfig.cycleResetHours ?? 72} onChange={(v) => handleRegimeChange('cycleResetHours', v)} type="number" />
               </div>
               <div className="mt-2 text-xs text-gray-400">
                 Auto-reset hours: 0 = disabled. After this time at a limit, the engine resumes with reset counters.
@@ -1053,9 +1053,9 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             {/* Order Execution */}
             <SectionCard title="Order Execution">
               <div className="grid grid-cols-2 gap-3">
-                <FormInput label="Entry Offset (bps)" hint="Place limit buy this many bps below market" value={regimeConfig.entryOffsetBps || 10} onChange={(v) => handleRegimeChange('entryOffsetBps', v)} type="number" />
-                <FormInput label="Entry Offset Up (bps)" hint="Offset when momentum is UP (tighter to fill before rise)" value={regimeConfig.entryOffsetUpBps || 5} onChange={(v) => handleRegimeChange('entryOffsetUpBps', v)} type="number" />
-                <FormInput label="Entry Offset Down (bps)" hint="Offset when momentum is DOWN (deeper to catch the dip)" value={regimeConfig.entryOffsetDownBps || 15} onChange={(v) => handleRegimeChange('entryOffsetDownBps', v)} type="number" />
+                <FormInput label="Entry Offset (bps)" hint="Place limit buy this many bps below market" value={regimeConfig.entryOffsetBps ?? 10} onChange={(v) => handleRegimeChange('entryOffsetBps', v)} type="number" />
+                <FormInput label="Entry Offset Up (bps)" hint="Offset when momentum is UP (tighter to fill before rise)" value={regimeConfig.entryOffsetUpBps ?? 5} onChange={(v) => handleRegimeChange('entryOffsetUpBps', v)} type="number" />
+                <FormInput label="Entry Offset Down (bps)" hint="Offset when momentum is DOWN (deeper to catch the dip)" value={regimeConfig.entryOffsetDownBps ?? 15} onChange={(v) => handleRegimeChange('entryOffsetDownBps', v)} type="number" />
                 <FormInput label="Entry Max Retries" hint="Retry cancelled entries up to this many times" value={regimeConfig.entryMaxRetries || 3} onChange={(v) => handleRegimeChange('entryMaxRetries', v)} type="number" />
                 <FormInput label="Order Stale Floor (ms)" hint="Min entry timeout; actual scales with offset²/ATR², capped at Max Interval" value={regimeConfig.orderStaleMs || 30000} onChange={(v) => handleRegimeChange('orderStaleMs', v)} type="number" />
                 <FormInput label="Cancel Rate Limit (ms)" hint="Min wait between cancel API calls" value={regimeConfig.cancelRateLimitMs || 1000} onChange={(v) => handleRegimeChange('cancelRateLimitMs', v)} type="number" />
