@@ -90,13 +90,15 @@ function ToggleSwitch({ label, checked, onClick, disabled = false, activeClassNa
         aria-labelledby={labelId}
         onClick={onClick}
         disabled={disabled}
-        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 ${
-          checked ? activeClassName : 'bg-gray-600'
-        }`}
+        className="min-h-11 min-w-11 inline-flex items-center justify-center rounded-full transition-colors disabled:opacity-50"
       >
-        <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-          checked ? 'translate-x-5' : 'translate-x-1'
-        }`} />
+        <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+          checked ? activeClassName : 'bg-gray-600'
+        }`}>
+          <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+            checked ? 'translate-x-5' : 'translate-x-1'
+          }`} />
+        </span>
       </button>
     </div>
   )
