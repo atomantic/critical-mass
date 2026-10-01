@@ -163,6 +163,14 @@ const createManualTradeImporter = ({
       return fail('Invalid recoveryBuyPrice');
     }
 
+    // Serialize per sell on the store (shared by every importer instance) so
+    // overlapping requests cannot both pass the buyOrderId check and place a
+    // duplicate recovery buy while the first placement is still awaiting.
+    return store.withSellLock(sellOrderId, () =>
+      importSellLocked({ sellOrderId, existingBuyOrderId, note, placingRecoveryBuy, buyPrice }));
+  };
+
+  const importSellLocked = async ({ sellOrderId, existingBuyOrderId, note, placingRecoveryBuy, buyPrice }) => {
     const { fills: sellFills, error } = await fetchOrderFills(sellOrderId, 'sell');
     if (error) return fail(error);
 
@@ -181,6 +189,9 @@ const createManualTradeImporter = ({
     });
 
     if (existingBuyOrderId) {
+      if (trade.buyOrderId && trade.buyOrderId !== existingBuyOrderId) {
+        return fail(`Sell ${sellOrderId} is already associated with buy order ${trade.buyOrderId}; refusing to overwrite with ${existingBuyOrderId}`);
+      }
       store.linkExistingBuy(trade.id, existingBuyOrderId);
       log.info(`ℹ️ 📝 [${exchange}] Manual trade: linked existing buy order ${existingBuyOrderId}`, { orderId: existingBuyOrderId });
     } else if (placingRecoveryBuy && trade.buyOrderId) {
