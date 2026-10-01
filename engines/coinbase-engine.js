@@ -49,6 +49,7 @@ const { registerEngineLifecycleHandlers } = require('../src/engine-lifecycle-han
 const { registerEngineRecalculateHandler } = require('../src/engine-recalculate-handler');
 const { migrateExchangeToPairs } = require('../src/migration');
 const { guardIncompleteRestore } = require('../src/restore-apply');
+const { recoverDcaImport } = require('../src/dca-conversion-transaction');
 const { LIFECYCLE, loadRegimeState, loadRegimeStateSafe, saveRegimeState } = require('../src/state-tracker');
 const { getAdapter } = require('../src/adapters');
 const { registerProcessGuards } = require('../src/process-guard');
@@ -220,6 +221,7 @@ const { startFund, autoResumeFund, getStartStatus, cancelStarts } = registerEngi
   wireMarketDataCallbacks,
   invalidateStandaloneLedger,
   saveRegimeRunningFlag,
+  recoverPendingImport: recoverDcaImport,
   drainFundWrites: (exchange, pair) => drainPendingWrites(30_000,
     entry => entry.label.startsWith('engine-') && entry.label.endsWith(`:${fundLabel(exchange, pair)}`)),
 });
@@ -720,16 +722,20 @@ ipcServer.onRequest('regime:convert-dca', async (payload, exchange, pair) => {
     return { success: true, preview: true, exchange, pair: resolvedPair, ...previewConversion(exchange, resolvedPair) };
   }
 
-  // executeConversion re-enables the DCA engine on its own throw path
-  // (handled inside dca-converter.js). mergeToRegime doesn't disable the
-  // engine so it has nothing to roll back — both paths surface a
-  // cold-start ledger corruption throw that we convert into the
+  // Both entrypoints run as one recoverable transaction (issue #860): an
+  // abort before publication leaves every file untouched (executeConversion
+  // restores the DCA engine's original setting itself); an interruption
+  // during publication retains the journal, which keeps this fund from
+  // trading until recovery completes it. Either way the error becomes the
   // structured {success:false} response the rest of the IPC API uses.
   let result;
   try {
     result = merge ? mergeToRegime(exchange, resolvedPair) : executeConversion(exchange, resolvedPair);
   } catch (err) {
-    return { success: false, exchange, pair: resolvedPair, error: err.message };
+    // Some files may have been replaced before the interruption — drop the
+    // stopped-fund ledger cache so nothing persists a stale copy over them.
+    invalidateStandaloneLedger(exchange, resolvedPair);
+    return { success: false, exchange, pair: resolvedPair, error: err.message, recoveryPending: err.recoveryPending === true };
   }
   invalidateStandaloneLedger(exchange, resolvedPair);
   return { success: true, preview: false, exchange, pair: resolvedPair, ...result };
@@ -776,6 +782,20 @@ const startup = async () => {
     const label = fundLabel(exchange, fundPair);
     const fundLogger = engineLogger(exchange, fundPair);
     const key = fundKey(exchange, fundPair);
+
+    // Finish (or discard) an interrupted DCA import before anything reads
+    // this fund's files (issue #860). An unrecoverable journal keeps the fund
+    // offline — no auto-resume and no stopped-fund fill writer — so nothing
+    // trades or ingests on a mixed import generation.
+    try {
+      const recovery = recoverDcaImport(exchange, fundPair);
+      if (recovery.recovered) {
+        fundLogger.warn(`⚠️ [${label}] Interrupted DCA import ${recovery.id} ${recovery.action}`, { importId: recovery.id, action: recovery.action });
+      }
+    } catch (err) {
+      fundLogger.error(`❌ [${label}] DCA import recovery failed — fund stays offline: ${err.message}`, { error: err.message });
+      continue;
+    }
 
     if (shouldAutoResumeRegime(exchange, fundPair)) {
       await autoResumeFund(exchange, fundPair);

@@ -13,6 +13,7 @@ const { tradeEvents } = require('./trade-events');
 const { getFibonacciBuyAmount } = require('./fibonacci-utils');
 const { trackPendingWrite } = require('./pending-writes');
 const { fundKey } = require('./shared-utils');
+const { hasPendingDcaImport } = require('./dca-conversion-transaction');
 
 /**
  * @typedef {import('./types').ExchangeConfig} ExchangeConfig
@@ -330,6 +331,14 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
     cycleLogger.info(`ℹ️ [${exchange}] Critical Mass is disabled in config`);
     tradeEvents.disabled(exchange);
     return { status: 'disabled', exchange };
+  }
+
+  // An interrupted DCA-to-Regime import owns this fund's state.json until
+  // recovery completes it (issue #860) — never buy on a mixed generation.
+  if (hasPendingDcaImport(exchange, pair)) {
+    cycleLogger.warn(`⚠️ [${exchange}] DCA import recovery is pending for this fund — skipping cycle`);
+    tradeEvents.skipped(exchange, 'DCA import recovery pending');
+    return { status: 'import_recovery_pending', exchange };
   }
 
   // Check if already ran this interval

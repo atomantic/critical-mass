@@ -14,6 +14,7 @@ const { createFillLedger, isCompletedCycle } = require('./fill-ledger');
 const { createNewBody, classifyTier, syncPositionState } = require('./celestial-hierarchy');
 const { setFundEnabled: setConfigFundEnabled, setExchangeEnabled, getRegimeConfig, getFundConfig } = require('./config-utils');
 const { resolveFundDataDir } = require('./migration');
+const { runDcaImportTransaction, recoverDcaImport, hasPendingDcaImport } = require('./dca-conversion-transaction');
 const { log } = require('./logger');
 
 const CONVERSION_FILES = ['state.json', 'fill-ledger.json', 'regime-state.json'];
@@ -387,39 +388,173 @@ const ingestDcaOrdersIntoLedger = (fillLedger, filled, pending, { linkPendingSel
 };
 
 /**
+ * Load the fund's DCA source state and its still-importable orders.
+ * @param {string} exchange
+ * @param {string} [pair]
+ */
+const loadEligibleOrders = (exchange, pair) => {
+  // Same refusal as backupConversionFiles: with no conversion state at all
+  // there is nothing to import and nothing to roll back to.
+  const dataDir = resolveFundDataDir(exchange, pair);
+  if (!CONVERSION_FILES.some((file) => fs.existsSync(path.join(dataDir, file)))) {
+    throw new Error(
+      `No DCA conversion state found for ${fundLabel(exchange, pair)} — refusing to convert without a rollback backup`,
+    );
+  }
+  const state = loadState(null, exchange, pair);
+  return { state, ...categorizeOrders(state.orders || []) };
+};
+
+/**
+ * Consume every imported DCA order (and the consolidation sources folded into
+ * them) in the SAME source-state object the import read, tagged with the
+ * import that consumed it. Called inside the staged transaction, so this
+ * consumption publishes together with the bodies and capital it produced.
+ * @param {Object} state - DCA state loaded at the start of the staged import
+ * @param {Array<Object>} imported - the pending + filled orders being imported
+ * @param {string} importId
+ * @returns {number} orders marked
+ */
+const consumeSourceOrders = (state, imported, importId) => {
+  const importedSet = new Set(imported);
+  let migratedCount = 0;
+  for (const order of state.orders || []) {
+    if (importedSet.has(order) || order.consolidatedInto) {
+      order.status = 'migrated_to_regime';
+      order.migratedImportId = importId;
+      migratedCount++;
+    }
+  }
+  return migratedCount;
+};
+
+/**
+ * Cross-file check on a staged import: every importable source order must be
+ * consumed, so a completed import can never be applied again.
+ * @param {Record<string, any>} docs
+ */
+const validateStagedImport = (docs) => {
+  const sourceState = docs['state.json'];
+  if (!sourceState) throw new Error('Staged DCA import has no source state');
+  const { pending, filled } = categorizeOrders(sourceState.orders);
+  if (pending.length + filled.length > 0) {
+    throw new Error(`Staged DCA import left ${pending.length + filled.length} source order(s) importable`);
+  }
+  if (!docs['regime-state.json']) throw new Error('Staged DCA import has no regime state');
+};
+
+/**
+ * Recover an interrupted earlier import before reading anything — a
+ * rolled-forward import consumes source orders this call must not re-import.
+ * @param {string} exchange
+ * @param {string} [pair]
+ */
+const recoverBeforeImport = (exchange, pair) => {
+  try {
+    recoverDcaImport(exchange, pair);
+  } catch (err) {
+    log('ERROR', `❌ [${fundLabel(exchange, pair)}] Interrupted DCA import could not be recovered: ${err.message}`);
+    throw new Error(`An interrupted DCA import for ${fundLabel(exchange, pair)} could not be recovered — see engine logs for details`);
+  }
+};
+
+/**
+ * Result for a request with nothing left to import (e.g. a repeated, already
+ * completed import). It must not append bodies or attribute capital again.
+ * @param {Object} [extra]
+ */
+const noopImportResult = (extra = {}) => ({
+  success: true,
+  noop: true,
+  backupDir: null,
+  backedUpFiles: [],
+  summary: { filledOrders: 0, pendingOrders: 0, celestialBodies: 0, capitalAttributed: 0, ...extra },
+});
+
+/**
+ * Stable source identities recorded in the import journal.
+ * @param {Array<Object>} orders
+ */
+const sourceIdentities = (orders) => orders.map((o) => ({ orderId: o.orderId, buyOrderId: o.buyOrderId }));
+
+/**
  * Execute DCA-to-Regime conversion
+ *
+ * Runs as one recoverable transaction (issue #860, src/dca-conversion-
+ * transaction.js): the ledger, the regime position and the consumed DCA
+ * source state are staged and validated together, then published, so a
+ * failure can never leave a mixed generation behind.
  * @param {string} exchange
  * @param {string} [pair] - Fund pair; defaults to the exchange's default pair
- * @returns {{ success: boolean, backupDir: string, summary: Object }}
+ * @returns {{ success: boolean, backupDir: string|null, summary: Object }}
  */
 const executeConversion = (exchange, pair) => {
+  recoverBeforeImport(exchange, pair);
+
+  // Nothing importable (e.g. the conversion already completed): a no-op. A
+  // replay must not rebuild — and so wipe — the regime state it produced.
+  const eligible = loadEligibleOrders(exchange, pair);
+  if (eligible.pending.length + eligible.filled.length === 0) {
+    log('INFO', `ℹ️ [${fundLabel(exchange, pair)}] DCA conversion: no importable DCA orders — nothing to do`);
+    return noopImportResult();
+  }
+
   // 1. Backup existing state files. Throws (before anything is mutated and
   // before the DCA engine is disabled) when there is nothing to roll back to.
   const { backupSuffix, backedUpFiles } = backupConversionFiles(exchange, pair);
   log('INFO', `💾 [${fundLabel(exchange, pair)}] DCA conversion backup: ${backedUpFiles.join(', ')} → ${backupSuffix}`);
 
-  // 2. Disable DCA engine
+  // 2. Disable DCA engine, remembering its setting so an aborted conversion
+  // restores exactly what the operator had (never enables a disabled fund).
+  const wasEnabled = getFundConfig(exchange, pair)?.enabled === true;
   setFundEnabled(exchange, pair, false);
   log('INFO', `⏹️ [${fundLabel(exchange, pair)}] DCA engine disabled`);
 
+  let staged;
+  try {
+    staged = runDcaImportTransaction({
+      exchange,
+      pair,
+      kind: 'convert',
+      sourceOrders: sourceIdentities([...eligible.filled, ...eligible.pending]),
+      validate: validateStagedImport,
+      stage: ({ importId }) => stageConversion(exchange, pair, importId),
+    });
+  } catch (err) {
+    // Restore the DCA setting only when nothing was published. A retained
+    // journal means the conversion WILL complete on recovery, and the DCA
+    // engine must then stay disabled.
+    if (wasEnabled && !hasPendingDcaImport(exchange, pair)) {
+      setFundEnabled(exchange, pair, true);
+      log('ERROR', `❌ [${fundLabel(exchange, pair)}] DCA conversion aborted: ${err.message} — DCA engine re-enabled`);
+    }
+    throw err;
+  }
+
+  return { success: true, backupDir: backupSuffix, backedUpFiles, summary: staged.summary };
+};
+
+/**
+ * The conversion itself, run against the staged copy of the fund's files.
+ * @param {string} exchange
+ * @param {string|undefined} pair
+ * @param {string} importId
+ */
+const stageConversion = (exchange, pair, importId) => {
   // 3. Load DCA state and categorize orders
   const state = loadState(null, exchange, pair);
-  const orders = state.orders || [];
-  const { pending, filled } = categorizeOrders(orders);
+  const { pending, filled } = categorizeOrders(state.orders || []);
 
-  // 4. Create fill ledger and ingest synthetic fills.
-  // Re-enable the DCA engine on createFillLedger failure (cold-start
-  // throw against a corrupt fill-ledger.json) so a partial migration
-  // doesn't leave the exchange permanently disabled. The operator can
-  // repair the file and re-run the conversion.
+  // 4. Create fill ledger and ingest synthetic fills. A cold-start throw
+  // against a corrupt fill-ledger.json aborts the whole transaction (nothing
+  // is published) and the caller restores the DCA engine's setting.
   let fillLedger;
   try {
     // `pair` doubles as the productId (fund keys are product ids) — it only
     // drives the ledger's log labels, but a wrong one mislabels every line.
     fillLedger = createFillLedger(exchange, pair, pair);
   } catch (err) {
-    setFundEnabled(exchange, pair, true);
-    log('ERROR', `❌ [${fundLabel(exchange, pair)}] Fill ledger init failed during conversion: ${err.message} — DCA engine re-enabled, conversion aborted`);
+    log('ERROR', `❌ [${fundLabel(exchange, pair)}] Fill ledger init failed during conversion: ${err.message} — conversion aborted`);
     // Throw a sanitized message: the IPC handler at coinbase-engine.js:
     // regime:convert-dca surfaces this back to the client. Keeping the
     // absolute ledger path / parser internals out of the API surface
@@ -486,6 +621,7 @@ const executeConversion = (exchange, pair) => {
   // by the regime engine itself (refreshRealizedFromFifo). Don't seed them here —
   // and don't fold DCA assetReserves into realizedAssetPnL: the migrated DCA fills
   // already feed the FIFO computation, which yields true reserves at runtime.
+  const allocation = state.totalAllocated || 0;
   const position = {
     ...currentPosition,
     cyclesCompleted: recalcResult.cyclesCompleted,
@@ -499,7 +635,10 @@ const executeConversion = (exchange, pair) => {
       bodiesRealizedAssetPnL: 0,
     },
     engineStartTime: earliestTime,
-    depositedCapital: state.totalAllocated || 0,
+    depositedCapital: allocation,
+    // Capital-attribution watermark (issue #860): the DCA allocation this
+    // position already counts. A later merge only attributes growth past it.
+    dcaImportedAllocation: allocation,
   };
 
   const regime = {
@@ -510,29 +649,26 @@ const executeConversion = (exchange, pair) => {
     lastVolatilityCheck: null,
   };
 
+  // Read the prior regime state first so saveRegimeState's optimistic
+  // version check sees this as an in-process save, not an external edit:
+  // otherwise a prior file's _saveVersion makes it restore the OLD protected
+  // fields (celestialBodies, celestialState, realized P&L) over the freshly
+  // built position. An unreadable prior file is simply replaced.
+  try {
+    loadRegimeState(exchange, pair);
+  } catch (_) {
+    // saveRegimeState quarantines an unreadable file; the staged-file check
+    // then aborts the import rather than publishing past it.
+  }
   saveRegimeState(position, regime, exchange, null, null, pair);
   log('INFO', `🚀 [${fundLabel(exchange, pair)}] Regime state created: ${celestialBodies.length} celestial bodies, ${recalcResult.cyclesCompleted} completed cycles`);
 
-  // 6. Mark converted orders in DCA state so dashboard no longer shows them
-  const dcaState = loadState(null, exchange, pair);
-  const convertedOrderIds = new Set([
-    ...pending.map(o => o.orderId),
-    ...filled.map(o => o.orderId),
-  ]);
-  let migratedCount = 0;
-  for (const order of dcaState.orders || []) {
-    if (convertedOrderIds.has(order.orderId) || order.consolidatedInto) {
-      order.status = 'migrated_to_regime';
-      migratedCount++;
-    }
-  }
-  saveState(dcaState, exchange, pair);
+  // 6. Consume the converted orders in the same staged generation.
+  const migratedCount = consumeSourceOrders(state, allOrders, importId);
+  saveState(state, exchange, pair);
   log('INFO', `🧹 [${fundLabel(exchange, pair)}] DCA state cleanup: ${migratedCount} orders marked as migrated_to_regime`);
 
   return {
-    success: true,
-    backupDir: backupSuffix,
-    backedUpFiles,
     summary: {
       filledOrders: filledIngested,
       pendingOrders: pendingIngested,
@@ -541,24 +677,87 @@ const executeConversion = (exchange, pair) => {
       realizedPnL: position.realizedPnL,
       realizedAssetPnL: position.realizedAssetPnL,
       depositedCapital: position.depositedCapital,
+      capitalAttributed: allocation,
       engineStartTime: earliestTime,
     },
   };
 };
 
 /**
+ * Buy order IDs that already back a celestial body — a live body, or a
+ * synthetic DCA buy the ledger records as body-owned (the body may since have
+ * been sold). Such orders were imported before and must not get a second body.
+ * @param {Object} position
+ * @param {ReturnType<typeof createFillLedger>} fillLedger
+ * @param {Array<Object>} pending
+ * @returns {Set<string>}
+ */
+const findAlreadyImportedBuys = (position, fillLedger, pending) => {
+  const imported = new Set();
+  for (const body of position?.celestialBodies || []) {
+    for (const id of body?.sourceOrderIds || []) imported.add(id);
+    for (const buy of body?.buyOrders || []) if (buy?.orderId) imported.add(buy.orderId);
+  }
+  for (const order of pending) {
+    if (!order.buyOrderId || imported.has(order.buyOrderId)) continue;
+    const owned = fillLedger.getFillsForOrder(order.buyOrderId)
+      .some((f) => f.tradeId === `dca-convert-buy-${order.buyOrderId}` && f.bodyId);
+    if (owned) imported.add(order.buyOrderId);
+  }
+  return imported;
+};
+
+/**
  * Merge DCA positions into an existing regime state (non-destructive)
  * Unlike executeConversion, this preserves existing celestial bodies, regime state, and optimizers.
+ *
+ * Runs as one recoverable transaction (issue #860): ledger, position and the
+ * consumed source orders publish together, a replay with nothing importable
+ * is a no-op, buys that already back a body never get a second one, and the
+ * DCA allocation is attributed to depositedCapital at most once.
  * @param {string} exchange
  * @param {string} [pair] - Fund pair; defaults to the exchange's default pair
- * @returns {{ success: boolean, backupDir: string, summary: Object }}
+ * @returns {{ success: boolean, backupDir: string|null, summary: Object }}
  */
 const mergeToRegime = (exchange, pair) => {
+  recoverBeforeImport(exchange, pair);
+
+  const eligible = loadEligibleOrders(exchange, pair);
+  if (eligible.pending.length + eligible.filled.length === 0) {
+    const position = loadRegimeState(exchange, pair)?.position || {};
+    log('INFO', `ℹ️ [${fundLabel(exchange, pair)}] DCA merge: no importable DCA orders — nothing to do`);
+    return noopImportResult({
+      totalBodies: (position.celestialBodies || []).length,
+      totalAsset: position.totalAsset,
+      totalCostBasis: position.totalCostBasis,
+      depositedCapital: position.depositedCapital,
+    });
+  }
+
   // 1. Backup existing state files. Throws before anything is mutated when
   // there is nothing to roll back to.
   const { backupSuffix, backedUpFiles } = backupConversionFiles(exchange, pair);
   log('INFO', `💾 [${fundLabel(exchange, pair)}] DCA merge backup: ${backedUpFiles.join(', ')} → ${backupSuffix}`);
 
+  const staged = runDcaImportTransaction({
+    exchange,
+    pair,
+    kind: 'merge',
+    sourceOrders: sourceIdentities([...eligible.filled, ...eligible.pending]),
+    validate: validateStagedImport,
+    stage: ({ importId }) => stageMerge(exchange, pair, importId),
+  });
+
+  return { success: true, backupDir: backupSuffix, backedUpFiles, summary: staged.summary };
+};
+
+/**
+ * The merge itself, run against the staged copy of the fund's files.
+ * @param {string} exchange
+ * @param {string|undefined} pair
+ * @param {string} importId
+ */
+const stageMerge = (exchange, pair, importId) => {
   // 2. Load existing regime state and DCA state
   const existingState = loadRegimeState(exchange, pair);
   const position = existingState.position;
@@ -568,20 +767,22 @@ const mergeToRegime = (exchange, pair) => {
 
   // 3. Load existing fill ledger and ingest fills.
   // Wrap createFillLedger so a cold-start corrupt ledger throw is rewritten
-  // with merge-specific context. mergeToRegime doesn't disable the engine
-  // (unlike executeConversion), so there's no rollback to do — but the
-  // surfaced error needs to reach the IPC handler so it can return a
-  // structured {success:false} response instead of leaking the raw
-  // filesystem-level message.
+  // with merge-specific context; the throw aborts the transaction before
+  // anything is published, and the IPC handler returns a structured
+  // {success:false} response instead of leaking the raw filesystem message.
   let fillLedger;
   try {
-    // `pair` doubles as the productId — see executeConversion above.
+    // `pair` doubles as the productId — see stageConversion above.
     fillLedger = createFillLedger(exchange, pair, pair);
   } catch (err) {
     log('ERROR', `❌ [${fundLabel(exchange, pair)}] Fill ledger init failed during DCA merge: ${err.message}`);
-    // Sanitized message — see executeConversion's catch above for rationale.
+    // Sanitized message — see stageConversion's catch above for rationale.
     throw new Error(`Fill ledger init failed for ${fundLabel(exchange, pair)} during DCA merge — see engine logs for details`);
   }
+
+  // Buys already backing a body (an earlier import) — computed before this
+  // call's ingestion/annotation so they are recognized by prior state only.
+  const alreadyImported = findAlreadyImportedBuys(position, fillLedger, pending);
 
   // Ingest filled (completed) DCA orders as their own closed cycles, then
   // ingest the still-open pending buys into the ledger's live active cycle
@@ -621,26 +822,27 @@ const mergeToRegime = (exchange, pair) => {
     // reports its creation time, a reused/inferred one reports null (unknown
     // — recalculateCycles then bounds it by its own earliest fill).
     position.activeCycleStartedAt = fillLedger.getCurrentCycleStartedAt();
-    // Persist the corrected boundary NOW, before any further mutation.
-    // ingestDcaOrdersIntoLedger already wrote the new cycle's fills to
-    // fill-ledger.json (ingestFill/annotateFillsByOrderId auto-persist) —
-    // without an immediate save here, a crash between that write and the
-    // comprehensive saveRegimeState() call near the end of this function
-    // would leave regime-state.json still naming the OLD boundary, and the
-    // next engine start's restorePersistedCycleId would trust that stale
-    // marker over the ledger's own fills.
+    // Save the corrected boundary alongside the ledger write. This lands in
+    // the staged generation; the import transaction publishes ledger and
+    // regime state together, so no reader ever sees one without the other.
     saveRegimeState(position, existingState.regime, exchange, existingState.tpOptimizer, existingState.sizeOptimizer, pair);
   }
 
   fillLedger.persist();
   log('INFO', `📝 [${fundLabel(exchange, pair)}] Fill ledger merge: ${filledIngested} filled + ${pendingIngested} pending orders ingested`);
 
-  // 4. Create celestial bodies from pending DCA orders
+  // 4. Create celestial bodies from pending DCA orders that do not already
+  // back one (one body per imported buy, even on a replayed import).
   const regimeConfig = getRegimeConfig(exchange, pair);
   const maxUsdcDeployed = regimeConfig.maxUsdcDeployed || 500;
   const newBodies = [];
+  let skippedExisting = 0;
 
   for (const order of pending) {
+    if (order.buyOrderId && alreadyImported.has(order.buyOrderId)) {
+      skippedExisting++;
+      continue;
+    }
     const costBasis = order.buyCostBasis || (order.buyUSDC + (order.buyFees || 0));
     const body = createNewBody({
       totalSize: order.buyQuantity,
@@ -658,25 +860,24 @@ const mergeToRegime = (exchange, pair) => {
     const tier = classifyTier(costBasis, maxUsdcDeployed);
     body.tier = tier.name;
 
-    newBodies.push(body);
+    newBodies.push({ order, body });
+  }
+  if (skippedExisting > 0) {
+    log('WARN', `⚠️ [${fundLabel(exchange, pair)}] DCA merge: ${skippedExisting} pending order(s) already back a celestial body — not creating duplicates`);
   }
 
   // 4b. Annotate buy fills with bodyId now that bodies exist
-  for (let i = 0; i < pending.length; i++) {
-    const order = pending[i];
-    const body = newBodies[i];
-    if (body) {
-      fillLedger.annotateFillsByOrderId(order.buyOrderId, {
-        isBodyOwned: true,
-        bodyId: body.id,
-        bodyTier: body.tier,
-      });
-    }
+  for (const { order, body } of newBodies) {
+    fillLedger.annotateFillsByOrderId(order.buyOrderId, {
+      isBodyOwned: true,
+      bodyId: body.id,
+      bodyTier: body.tier,
+    });
   }
   fillLedger.persist();
 
   // 5. Append new bodies to existing position
-  position.celestialBodies = [...(position.celestialBodies || []), ...newBodies];
+  position.celestialBodies = [...(position.celestialBodies || []), ...newBodies.map((n) => n.body)];
 
   // 6. Update aggregates from all bodies
   syncPositionState(position, position.celestialBodies);
@@ -689,33 +890,27 @@ const mergeToRegime = (exchange, pair) => {
   // realizedAssetPnL is derived from FIFO replay; the migrated DCA fills already
   // feed that computation, so do not fold state.assetReserves in here.
 
-  // 9. Add DCA totalAllocated to position.depositedCapital
-  position.depositedCapital = (position.depositedCapital || 0) + (state.totalAllocated || 0);
+  // 9. Attribute DCA capital exactly once (issue #860). totalAllocated is the
+  // DCA fund's cumulative allocation; the position records how much of it is
+  // already counted (dcaImportedAllocation) and only the growth past that
+  // watermark is added. The watermark publishes in the same transaction as
+  // the source consumption below.
+  const allocation = state.totalAllocated || 0;
+  const alreadyAttributed = Number.isFinite(position.dcaImportedAllocation) ? position.dcaImportedAllocation : 0;
+  const capitalAttributed = Math.max(0, allocation - alreadyAttributed);
+  position.depositedCapital = (position.depositedCapital || 0) + capitalAttributed;
+  position.dcaImportedAllocation = Math.max(alreadyAttributed, allocation);
 
   // 10. Save regime state (preserving existing regime, tpOptimizer, sizeOptimizer)
   saveRegimeState(position, existingState.regime, exchange, existingState.tpOptimizer, existingState.sizeOptimizer, pair);
   log('INFO', `🔗 [${fundLabel(exchange, pair)}] Regime state merged: +${newBodies.length} celestial bodies (total: ${position.celestialBodies.length})`);
 
-  // 11. Mark converted orders in DCA state
-  const dcaState = loadState(null, exchange, pair);
-  const convertedOrderIds = new Set([
-    ...pending.map(o => o.orderId),
-    ...filled.map(o => o.orderId),
-  ]);
-  let migratedCount = 0;
-  for (const order of dcaState.orders || []) {
-    if (convertedOrderIds.has(order.orderId) || order.consolidatedInto) {
-      order.status = 'migrated_to_regime';
-      migratedCount++;
-    }
-  }
-  saveState(dcaState, exchange, pair);
+  // 11. Consume the imported orders in the same staged generation.
+  const migratedCount = consumeSourceOrders(state, [...pending, ...filled], importId);
+  saveState(state, exchange, pair);
   log('INFO', `🧹 [${fundLabel(exchange, pair)}] DCA state cleanup: ${migratedCount} orders marked as migrated_to_regime`);
 
   return {
-    success: true,
-    backupDir: backupSuffix,
-    backedUpFiles,
     summary: {
       filledOrders: filledIngested,
       pendingOrders: pendingIngested,
@@ -725,6 +920,7 @@ const mergeToRegime = (exchange, pair) => {
       totalCostBasis: position.totalCostBasis,
       realizedAssetPnL: position.realizedAssetPnL,
       depositedCapital: position.depositedCapital,
+      capitalAttributed,
     },
   };
 };

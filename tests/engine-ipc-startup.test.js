@@ -87,6 +87,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false) => {
     '../src/engine-recalculate-handler': { registerEngineRecalculateHandler: () => {} },
     '../src/migration': { migrateExchangeToPairs: () => { calls.push('migration'); return {}; } },
     '../src/restore-apply': { guardIncompleteRestore: () => { calls.push('restore'); } },
+    '../src/dca-conversion-transaction': { recoverDcaImport: () => ({ recovered: false }) },
     '../src/state-tracker': { LIFECYCLE: { CLOSED: 'closed' }, loadRegimeState: () => { calls.push('state'); return {}; }, loadRegimeStateSafe: () => { calls.push('state'); return {}; } },
     '../src/adapters': { getAdapter: () => { calls.push('adapter'); return { hasValidKeys: () => true }; } },
     '../src/process-guard': { registerProcessGuards: () => {} },
