@@ -53,6 +53,7 @@ const { LIFECYCLE, loadRegimeState, loadRegimeStateSafe, saveRegimeState } = req
 const { getAdapter } = require('../src/adapters');
 const { registerProcessGuards } = require('../src/process-guard');
 const { resolveIpcPort } = require('../src/ipc-port-defaults');
+const { lookupStoppedFundTpOrder } = require('../src/stopped-fund-tp-lookup');
 
 /**
  * Build a context logger for one engine operation.
@@ -483,17 +484,12 @@ ipcServer.onRequest('regime:open-orders', async (payload, exchange, pair) => {
   if (orders.length === 0 && savedState.position?.activeTpOrderId) {
     const { getAdapter } = require('../src/adapters');
     const adapter = getAdapter(exchange);
-    const orderStatus = await adapter.getOrder(savedState.position.activeTpOrderId).catch(() => null);
-    if (orderStatus && orderStatus.status === 'OPEN') {
-      orders.push({
-        orderId: savedState.position.activeTpOrderId,
-        type: 'take_profit', side: 'sell',
-        price: savedState.position.lastTpPrice || 0,
-        size: savedState.position.assetOnOrder || savedState.position.totalAsset || 0,
-        status: 'open',
-        placedAt: savedState.position.lastEntryTime || null,
-      });
-    }
+    const lookup = await lookupStoppedFundTpOrder({
+      adapter, position: savedState.position, exchange, pair: resolvedPair,
+      logger: engineLogger(exchange, resolvedPair),
+    });
+    if (!lookup.ok) return { running: false, success: false, error: lookup.error };
+    if (lookup.order) orders.push(lookup.order);
   }
 
   return { running: false, orders, exchange, pair: resolvedPair };

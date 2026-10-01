@@ -10,6 +10,9 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const cycleFilterId = useId()
   const [fills, setFills] = useState([])
   const [openOrders, setOpenOrders] = useState([])
+  // Open-orders read failure, tracked independently of fills/status so an
+  // unavailable lookup is never shown as "No open orders" (issue #863).
+  const [ordersError, setOrdersError] = useState(null)
   const [status, setStatus] = useState(null)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
@@ -40,12 +43,17 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
       if (ordersRes.ok) {
         const data = await ordersRes.json()
         setOpenOrders(data.orders || [])
+        setOrdersError(null)
+      } else {
+        const data = await ordersRes.json().catch(() => null)
+        setOrdersError(data?.error || `Open orders unavailable (HTTP ${ordersRes.status})`)
       }
       if (configRes.ok) {
         const data = await configRes.json()
         setProductId(data.config?.productId || data.productId || null)
       }
     } catch {
+      setOrdersError('Open orders unavailable: request failed')
       // Leave whatever data is already populated — the 10s poll below will
       // retry, and loading still clears so the page never gets stuck on
       // "Loading…" if the very first poll hits a network hiccup.
@@ -55,6 +63,10 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   }, [exchange, pairQuery])
 
   useEffect(() => {
+    // Drop the previous fund's snapshot so it is never shown for this one.
+    setOpenOrders([])
+    setOrdersError(null)
+    setLoading(true)
     fetchData()
     const interval = setInterval(fetchData, 10000)
     return () => clearInterval(interval)
@@ -163,8 +175,20 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
           {openOrders.length > 0 && <span className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse"></span>}
           Open Orders
         </h3>
+        {ordersError && (
+          <div className="flex items-center gap-3 text-sm text-yellow-400 mb-2" role="alert">
+            <span>
+              {openOrders.length > 0
+                ? `Open orders may be stale: ${ordersError}`
+                : `Open orders unavailable: ${ordersError}`}
+            </span>
+            <button type="button" onClick={fetchData} className="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs">
+              Retry
+            </button>
+          </div>
+        )}
         {openOrders.length > 0 && (
-          <div className="overflow-x-auto">
+          <div className={`overflow-x-auto ${ordersError ? 'opacity-60' : ''}`}>
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-gray-400 text-left border-b border-gray-700">
@@ -226,7 +250,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
             </table>
           </div>
         )}
-        {openOrders.length === 0 && (
+        {openOrders.length === 0 && !ordersError && (
           <div className="text-sm text-gray-400">No open orders</div>
         )}
       </div>
