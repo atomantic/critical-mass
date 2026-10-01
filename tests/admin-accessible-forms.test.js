@@ -65,6 +65,7 @@ function createView(component, extraStubs = {}) {
     react: hooks,
     'lucide-react': new Proxy({}, { get: () => () => null }),
     '../Toast': { useToast: () => ({ addToast() {} }) },
+    '../ModalDialog': { default: ({ children }) => children },
     '../../utils/runLifecycle.mjs': { createRunLifecycle: () => ({ execute: value => executed.push(value), dispose() {} }) },
     '../../utils/dashboardAction.mjs': { runDashboardAction: async action => { await action.request(); await action.onSuccess() } },
     ...extraStubs,
