@@ -19,7 +19,7 @@ const { getAdapter, isSupported } = require('./adapters');
 const { createHealthMonitor, instrumentAdapterForHealth } = require('./health-monitor');
 const { getRegimeConfig, getFundConfig, getDefaultPair, getBaseCurrency } = require('./config-utils');
 const { loadRegimeState } = require('./state-tracker');
-const { createFillLedger } = require('./fill-ledger');
+const { createFillLedger, FillValidationError } = require('./fill-ledger');
 const { fundKey } = require('./shared-utils');
 const { buildStoppedRegimeStatus } = require('./regime-status');
 const { createContextLogger } = require('./logger');
@@ -201,8 +201,19 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
   // back-to-back WS updates.
   let ingestedCount = 0;
   for (const fill of fills) {
-    const result = fillLedger.ingestFill(fill, orderPlacedAt, { skipPersist: true });
-    if (result?.ingested) ingestedCount++;
+    // A malformed upstream fill is rejected before any ledger mutation. Skip it
+    // (the valid siblings still land) — the watermark below derives from the
+    // ledger, so the order stays "short" and retries rather than acknowledging
+    // the invalid record.
+    try {
+      const result = fillLedger.ingestFill(fill, orderPlacedAt, { skipPersist: true });
+      if (result?.ingested) ingestedCount++;
+    } catch (err) {
+      if (!(err instanceof FillValidationError)) throw err;
+      logger.error(`❌ [${exchange}] Rejected invalid fill for ${orderId}: ${err.message} — not recorded`, {
+        orderId, tradeId: err.tradeId, reason: err.reason,
+      });
+    }
   }
 
   // Always attempt persist at end-of-call. If a previous call's persist

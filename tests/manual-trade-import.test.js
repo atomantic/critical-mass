@@ -134,6 +134,17 @@ describe('Manual Trade Import', () => {
   // -----------------------------------------------------------------------
   // importSell — validation happens before any mutation
   // -----------------------------------------------------------------------
+  it('refuses a malformed adapter fill without acknowledging the import or touching the ledger (#875)', async () => {
+    const adapter = createFakeAdapter({ fillsByOrder: { bad: [
+      makeFill({ tradeId: 'good-1' }), makeFill({ tradeId: 'bad-1', price: 'invalid' }),
+    ] } });
+    const importer = createImporter({ adapter });
+    const result = await importer.importBuy({ buyOrderId: 'bad', createBody: false });
+    assert.equal(result.success, false);
+    assert.match(result.error, /price/);
+    assert.equal(fillLedger.getAllFills().length, 0, 'valid sibling not half-ingested');
+  });
+
   it('replaces terminal coverage on manual import and preserves body ownership (#807)', async () => {
     fillLedger.ingestFill({ tradeId: 'synthetic-terminal-0.02', orderId: 'terminal',
       side: 'buy', size: 0.02, price: 2000, netFee: 0 });
@@ -198,7 +209,7 @@ describe('Manual Trade Import', () => {
     assert.equal(extendCalls.length, 1, 'a retry must not extend or book the tranche twice');
   });
 
-  it('keeps a replacement durable when a later manual import row rejects (#834)', async () => {
+  it('rejects an invalid later row up front, leaving synthetic coverage intact for a clean retry (#834/#875)', async () => {
     fillLedger.ingestFill({ tradeId: 'synthetic-terminal-0.02', orderId: 'terminal',
       side: 'buy', size: 0.02, price: 2000, netFee: 0 });
     fillLedger.annotateFillsByOrderId('terminal', { bodyId: 'existing-body', isBodyOwned: true });
@@ -210,15 +221,16 @@ describe('Manual Trade Import', () => {
     const importer = createImporter({ adapter,
       injectBody: async () => { assert.fail('failed import must not create a body'); },
       extendBody: async () => { assert.fail('failed import must not grow a body'); } });
-    await assert.rejects(importer.importBuy({ buyOrderId: 'terminal' }),
-      { syntheticReconciliationRequired: true });
+    const refused = await importer.importBuy({ buyOrderId: 'terminal' });
+    assert.equal(refused.success, false);
+    assert.match(refused.error, /size/);
+    // Validation runs before ANY row is ingested, so the first valid row is not
+    // half-applied: coverage is untouched, in memory and on disk.
     const { createFillLedger } = require('../src/fill-ledger');
     const restored = createFillLedger(EXCHANGE, 'BTC-USDC', PAIR);
     assert.deepEqual(restored.getAllFills(), fillLedger.getAllFills());
-    assert.equal(restored.getRecordedSizeForOrder('terminal'), 0.02);
-    assert.deepEqual(restored.getFillsForOrder('terminal').map(row => row.tradeId).sort(),
-      ['real-first', 'synthetic-terminal-0.02']);
-    assert.equal(restored.getFillsForOrder('terminal').every(row => row.bodyId === 'existing-body'), true);
+    assert.deepEqual(restored.getFillsForOrder('terminal').map(row => row.tradeId),
+      ['synthetic-terminal-0.02']);
     assert.equal(readManualTradesFile(), null);
 
     // Finish history after restart. The first real ID dedups and the remaining

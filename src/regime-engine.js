@@ -18,7 +18,7 @@ const { trackPendingWrite } = require('./pending-writes');
 const { getAdapter } = require('./adapters');
 const { getUnaccountedFills } = require('./sync-fills');
 const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency, getConfiguredFunds, loadConfig, normalizeExchangeBlock } = require('./config-utils');
-const { createFillLedger, LEGACY_CONSUMPTION_KEY } = require('./fill-ledger');
+const { createFillLedger, FillValidationError, LEGACY_CONSUMPTION_KEY } = require('./fill-ledger');
 const { projectBuyCorrection, applyBuyCorrectionCapital } = require('./buy-fill-correction');
 const { applySellCorrectionCapital } = require('./sell-fill-correction');
 const { createClosedTrades } = require('./closed-trades');
@@ -3973,7 +3973,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Ingest each fill and collect the normalized fills
     const ingestedFills = [];
     for (const fill of rawFills) {
-      const result = fillLedger.ingestFill(fill, orderPlacedAt);
+      let result;
+      try {
+        result = fillLedger.ingestFill(fill, orderPlacedAt);
+      } catch (err) {
+        if (!(err instanceof FillValidationError)) throw err;
+        // Rejected before any ledger mutation. Skip it: the gap-fill fallback
+        // below reconciles against the cumulative ledger total, so the missing
+        // quantity is still handled without booking the malformed record.
+        logger.error(`❌ [${exchange}] Rejected invalid fill for ${fillData.orderId}: ${err.message}`, {
+          orderId: fillData.orderId, tradeId: err.tradeId, reason: err.reason,
+        });
+        continue;
+      }
       // A real ID can replace terminal coverage and cross beyond it. The
       // ledger returns only still-unbooked covered rows plus the excess
       // tranche, so previously represented quantity never grows a body or
