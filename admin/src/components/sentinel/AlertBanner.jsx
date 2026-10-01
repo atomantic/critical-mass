@@ -1,13 +1,12 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 
 /**
  * Compact alert banner shown globally when critical/warning sentinel alerts are active.
- * Clicking navigates to /sentinel.
+ * Keyboard-accessible link that navigates to /sentinel.
  */
 export default function AlertBanner() {
   const [activeAlerts, setActiveAlerts] = useState([])
-  const navigate = useNavigate()
 
   useEffect(() => {
     const fetchAlerts = async () => {
@@ -43,12 +42,12 @@ export default function AlertBanner() {
   const hasCritical = activeAlerts.some(a => a.severity === 'critical')
 
   return (
-    <div
-      onClick={() => navigate('/sentinel')}
-      className={`cursor-pointer px-4 py-2 text-sm flex items-center gap-2 ${
+    <Link
+      to="/sentinel"
+      className={`inline-flex items-center gap-2 px-4 py-2 text-sm w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 ${
         hasCritical
-          ? 'bg-red-900/70 border-b border-red-700 text-red-100'
-          : 'bg-yellow-900/70 border-b border-yellow-700 text-yellow-100'
+          ? 'bg-red-900/70 border-b border-red-700 text-red-100 focus-visible:ring-white'
+          : 'bg-yellow-900/70 border-b border-yellow-700 text-yellow-100 focus-visible:ring-white'
       }`}
     >
       <span className="font-bold shrink-0">
@@ -58,7 +57,7 @@ export default function AlertBanner() {
         {activeAlerts[0].title}
         {activeAlerts.length > 1 && ` (+${activeAlerts.length - 1} more)`}
       </span>
-      <span className="ml-auto text-xs opacity-75 shrink-0">Click for details</span>
-    </div>
+      <span className="ml-auto text-xs opacity-75 shrink-0">View details</span>
+    </Link>
   )
 }
