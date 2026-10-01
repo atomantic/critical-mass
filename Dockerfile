@@ -29,6 +29,8 @@ RUN npm ci --omit=dev
 
 # Copy application code
 COPY server.js ecosystem.config.cjs ./
+# Seed config (safe dry-run defaults); operator config.json stays excluded
+COPY config.example.json ./
 COPY src/ ./src/
 COPY shared/ ./shared/
 COPY engines/ ./engines/
