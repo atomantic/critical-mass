@@ -50,6 +50,20 @@ Critical-mass runs as 5 PM2 processes: a thin API gateway and 3 isolated engine 
 - Settings backup/restore → sends `stop-all` to every **configured** engine in parallel and requires a positive `{ success: true, stopped: [...] }` acknowledgement from each before any file is overwritten. A rejection, IPC timeout, disconnected client, negative or malformed reply blocks the restore (HTTP 409, `code: writers-not-quiesced`) with zero destination writes; `POST` body `{ "force": true }` is the explicit operator override for an engine that is already dead. While a restore runs, `src/restore-maintenance.js` holds an exclusive lock that 503s every mutating `/api` request and skips the DCA scheduler, and the gateway's own UpDown writer is stopped before the copy and restarted after so it reloads the restored state.
 - Socket.IO events → forwarded via IPC clients
 
+## Gateway health (`GET /api/health`)
+
+Aggregation lives in `src/runtime-health.js`. The gateway enumerates `getConfiguredFunds()` and sends an explicit pair-scoped `regime:status` request (3 s timeout) per fund, unwraps the `{ success, running, status }` envelope and reads `status.health.mode`. The response keeps `engines.<name>` summaries and adds `funds.<exchange>.<pair>` (`status`, `mode`, `reason`, `isRunning`, `enabled`).
+
+| Fund status | Source | Roll-up |
+|---|---|---|
+| `ok` | mode `ACTIVE` | healthy |
+| `paused` / `stopped` | mode `PAUSED` / `STOPPED` | visible, **not** an outage |
+| `safe` / `auth_denied` | mode `SAFE` / `AUTH_DENIED` | `degraded` |
+| `error` | `success:false`, missing `status`, malformed reply, unknown mode, IPC rejection | `degraded` |
+| `timeout` / `unreachable` | probe timeout / IPC not connected | `degraded` |
+
+An exchange summary shows its worst enabled fund (failure > paused > ok > stopped). Failures of disabled funds, exchanges with no configured funds (`unconfigured`) and exchanges with no enabled fund do not degrade the roll-up. UpDown is `ok` when running with a fresh price, `degraded` when running with `priceFresh:false` (`priceAgeMs` is exposed), `stopped` otherwise (optional). Sentinel is `degraded` on `unavailable`/`degraded` feeds. Overall `status` is `degraded` if any required service fails and `critical` when every required service is down or stopped and at least one failed.
+
 ## PM2 Config
 
 Defined in `ecosystem.config.cjs` with 5 processes: `critical-mass` (gateway), `critical-mass-coinbase`, `critical-mass-gemini`, `critical-mass-cryptocom`, `critical-mass-ui`.

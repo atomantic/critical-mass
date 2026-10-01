@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-862] Gateway health reflects every configured fund** — `/api/health` now probes each configured fund with an explicit pair and timeout, unwraps the real `regime:status` envelope, and reports SAFE, AUTH_DENIED, failed or malformed replies and timeouts as degraded while keeping intentional pause/stop visible; stale UpDown prices degrade, unconfigured or disabled services do not. Adds a per-fund `funds` map; engine summary keys are retained.
 - **[issue-871] Container images include the seed configuration** — The runtime image now copies config.example.json so fresh Docker Compose and Umbrel installs resolve all three starter funds (disabled, dry-run); `npm run test:docker-seed` verifies the built image offline.
 - **[issue-857] Regime dashboard help popups stay within the viewport** — Config hints and the ATR trigger help now share a button-based `InfoTooltip` that is unmounted while closed (no page overflow), opens by hover, tap or keyboard, dismisses with Escape/outside press, and clamps to the viewport with vertical scroll.
 - **[issue-864] Sentinel exposes feed failures in poll health** — Feed outcomes (success, empty, failed with safe category) now drive a healthy/degraded/unavailable/disabled/no-feeds state, last successful fetch timestamps and cumulative failure counts in service status, API, dashboard and gateway health; manual poll reports its acquisition state.
