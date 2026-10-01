@@ -376,10 +376,10 @@ export default function TradeHistory() {
                   </td>
                   <td className="py-1 pl-1">
                     <div className="flex gap-2">
-                      <button disabled={busy} onClick={() => handleEdit(t)} aria-label={`Edit trade from ${fmtDate(t.date)}`} className="trade-history-touch-target min-h-11 min-w-11 inline-flex items-center justify-center text-gray-500 hover:text-blue-400 transition-colors">
+                      <button disabled={busy} onClick={() => handleEdit(t)} aria-label={`Edit trade from ${fmtDate(t.date)}`} className="trade-history-touch-target min-h-11 min-w-11 inline-flex items-center justify-center text-gray-400 hover:text-blue-400 transition-colors">
                         <Edit3 size={11} />
                       </button>
-                      <button disabled={busy} onClick={() => handleDelete(t.id)} aria-label={`Delete trade from ${fmtDate(t.date)}`} className="trade-history-touch-target min-h-11 min-w-11 inline-flex items-center justify-center text-gray-500 hover:text-red-400 transition-colors">
+                      <button disabled={busy} onClick={() => handleDelete(t.id)} aria-label={`Delete trade from ${fmtDate(t.date)}`} className="trade-history-touch-target min-h-11 min-w-11 inline-flex items-center justify-center text-gray-400 hover:text-red-400 transition-colors">
                         <Trash2 size={11} />
                       </button>
                     </div>
