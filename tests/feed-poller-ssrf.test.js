@@ -54,3 +54,18 @@ describe('fetchFeed SSRF guard (issue #215-A)', () => {
     await assert.doesNotReject(() => captureLogs(() => fetchFeed({ name: 'evil', url: 'http://[::1]/' })));
   });
 });
+
+describe('fetchAllFeeds outcomes', () => {
+  it('reports blocked feeds as failures, not successful-empty feeds', async () => {
+    const { fetchAllFeeds } = require('../src/sentinel/feed-poller');
+    const out = await captureLogs(() => fetchAllFeeds([
+      { name: 'evil', url: 'http://127.0.0.1:5571/' },
+      { name: 'off', url: 'http://127.0.0.1:1/', enabled: false },
+    ]));
+    const r = out.result ?? out;
+    assert.equal(r.enabled, 1);
+    assert.equal(r.succeeded, 0);
+    assert.equal(r.failed, 1);
+    assert.deepEqual(r.failures, [{ feed: 'evil', category: 'blocked' }]);
+  });
+});

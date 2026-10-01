@@ -88,13 +88,24 @@ const normalizeAtomEntry = (entry, sourceName) => {
   };
 };
 
+/** Safe, credential-free failure category for public diagnostics. */
+const classifyFailure = (err) => {
+  if (err?.name === 'AbortError') return 'timeout';
+  if (err?.feedFailureCategory) return err.feedFailureCategory;
+  if (/^Blocked/.test(err?.message || '')) return 'blocked';
+  return 'network';
+};
+
 /**
- * Fetch and parse a single RSS/Atom feed
+ * Fetch and parse a single feed, reporting whether acquisition succeeded.
+ * A valid feed with zero items is a success; transport/HTTP/parse failures are not.
  * @param {{ name: string, url: string }} feed - Feed config
  * @param {number} [timeoutMs=15000] - Request timeout
- * @returns {Promise<Object[]>} Normalized items
+ * @returns {Promise<{ ok: boolean, items: Object[], feed: string, failure: string|null }>}
  */
-const fetchFeed = async (feed, timeoutMs = 15000) => {
+const fetchFeedOutcome = async (feed, timeoutMs = 15000) => {
+  const ok = (items) => ({ ok: true, items, feed: feed.name, failure: null });
+  const failed = (failure) => ({ ok: false, items: [], feed: feed.name, failure });
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -108,7 +119,9 @@ const fetchFeed = async (feed, timeoutMs = 15000) => {
         headers: { 'User-Agent': 'CriticalMass-Sentinel/1.0' },
         signal: controller.signal,
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) {
+        throw Object.assign(new Error(`HTTP ${response.status}`), { feedFailureCategory: 'http' });
+      }
       text = await response.text();
     } finally {
       clearTimeout(timeout);
@@ -120,21 +133,24 @@ const fetchFeed = async (feed, timeoutMs = 15000) => {
     if (parsed.rss?.channel) {
       const channel = parsed.rss.channel;
       const items = Array.isArray(channel.item) ? channel.item : (channel.item ? [channel.item] : []);
-      return normalizeItems(items, normalizeRSSItem, feed);
+      return ok(normalizeItems(items, normalizeRSSItem, feed));
     }
 
     // Atom
     if (parsed.feed?.entry) {
       const entries = Array.isArray(parsed.feed.entry) ? parsed.feed.entry : [parsed.feed.entry];
-      return normalizeItems(entries, normalizeAtomEntry, feed);
+      return ok(normalizeItems(entries, normalizeAtomEntry, feed));
     }
+
+    // Valid but empty containers are successful-empty feeds.
+    if (parsed.rss?.channel !== undefined || parsed.feed !== undefined) return ok([]);
 
     feedPollerLogger.warn(`⚠️ Sentinel: unrecognized feed format from ${feed.name}`, {
       action: 'parse-feed',
       feed: feed.name,
       url: feed.url,
     });
-    return [];
+    return failed('parse');
   } catch (err) {
     feedPollerLogger.warn(`⚠️ Sentinel: failed to fetch ${feed.name}: ${err.message}`, {
       action: 'fetch-feed',
@@ -142,26 +158,39 @@ const fetchFeed = async (feed, timeoutMs = 15000) => {
       url: feed.url,
       error: err.message,
     });
-    return [];
+    return failed(classifyFailure(err));
   }
 };
 
 /**
+ * Fetch and parse a single RSS/Atom feed
+ * @param {{ name: string, url: string }} feed - Feed config
+ * @param {number} [timeoutMs=15000] - Request timeout
+ * @returns {Promise<Object[]>} Normalized items ([] on failure; use fetchFeedOutcome to distinguish)
+ */
+const fetchFeed = async (feed, timeoutMs = 15000) => (await fetchFeedOutcome(feed, timeoutMs)).items;
+
+/**
  * Fetch all enabled feeds
  * @param {Object[]} feeds - Array of feed configs
- * @returns {Promise<Object[]>} All normalized items from all feeds
+ * @returns {Promise<{ items: Object[], enabled: number, succeeded: number, failed: number, failures: Array<{ feed: string, category: string }> }>}
  */
 const fetchAllFeeds = async (feeds) => {
   const enabledFeeds = feeds.filter(f => f.enabled !== false);
-  const results = await Promise.allSettled(enabledFeeds.map(f => fetchFeed(f)));
+  const results = await Promise.allSettled(enabledFeeds.map(f => fetchFeedOutcome(f)));
 
-  const allItems = [];
-  for (const result of results) {
-    if (result.status === 'fulfilled') {
-      allItems.push(...result.value);
+  const items = [];
+  const failures = [];
+  let succeeded = 0;
+  results.forEach((result, i) => {
+    if (result.status === 'fulfilled' && result.value.ok) {
+      succeeded++;
+      items.push(...result.value.items);
+    } else {
+      failures.push({ feed: enabledFeeds[i].name, category: result.status === 'fulfilled' ? result.value.failure : 'network' });
     }
-  }
-  return allItems;
+  });
+  return { items, enabled: enabledFeeds.length, succeeded, failed: failures.length, failures };
 };
 
-module.exports = { fetchFeed, fetchAllFeeds, sanitizeLink };
+module.exports = { fetchFeed, fetchFeedOutcome, fetchAllFeeds, sanitizeLink };

@@ -58,6 +58,13 @@ const createSentinelService = (io, deps) => {
   let lastPollAt = null;
   let pollCount = 0;
   let errorCount = 0;
+  // Feed acquisition health (cumulative counters persist; current* reflect the latest poll).
+  let lastSuccessfulFetchAt = null;
+  let lastFullySuccessfulPollAt = null;
+  let failedPollCount = 0; // poll cycles where every enabled feed failed
+  let feedFailureCount = 0; // cumulative individual feed failures
+  /** @type {{ enabled: number, succeeded: number, failed: number, failures: Array<{feed: string, category: string}> } | null} */
+  let currentFeedOutcome = null;
 
   /**
    * Load persisted state from disk, fully REPLACING what is held in memory.
@@ -75,6 +82,11 @@ const createSentinelService = (io, deps) => {
     seenGuids = saved?.seenGuids ? new Map(Object.entries(saved.seenGuids)) : new Map();
     lastPollAt = saved?.lastPollAt || null;
     pollCount = saved?.pollCount || 0;
+    lastSuccessfulFetchAt = saved?.lastSuccessfulFetchAt || null;
+    lastFullySuccessfulPollAt = saved?.lastFullySuccessfulPollAt || null;
+    failedPollCount = saved?.failedPollCount || 0;
+    feedFailureCount = saved?.feedFailureCount || 0;
+    currentFeedOutcome = null;
     sentinelLogger.info(`ℹ️ Sentinel state loaded: ${alerts.length} alerts, ${seenGuids.size} seen items`, {
       action: 'load-state',
       alerts: alerts.length,
@@ -105,7 +117,28 @@ const createSentinelService = (io, deps) => {
       seenGuids: Object.fromEntries(seenGuids),
       lastPollAt,
       pollCount,
+      lastSuccessfulFetchAt,
+      lastFullySuccessfulPollAt,
+      failedPollCount,
+      feedFailureCount,
     });
+  };
+
+  /**
+   * Normalize a fetcher result. Plain item arrays (legacy injected fetchers)
+   * count as a fully successful single-feed fetch.
+   */
+  const normalizeFetchResult = (result) => {
+    if (Array.isArray(result)) {
+      return { items: result, enabled: 1, succeeded: 1, failed: 0, failures: [] };
+    }
+    return {
+      items: Array.isArray(result?.items) ? result.items : [],
+      enabled: result?.enabled || 0,
+      succeeded: result?.succeeded || 0,
+      failed: result?.failed || 0,
+      failures: Array.isArray(result?.failures) ? result.failures : [],
+    };
   };
 
   /**
@@ -150,8 +183,9 @@ const createSentinelService = (io, deps) => {
     if (!config.enabled || !isCurrent()) return;
 
     try {
-      const items = await fetchFeeds(config.feeds || []);
+      const fetched = normalizeFetchResult(await fetchFeeds(config.feeds || []));
       if (!isCurrent()) return;
+      const items = fetched.items;
       let newAlerts = 0;
 
       for (const item of items) {
@@ -206,8 +240,27 @@ const createSentinelService = (io, deps) => {
         }
       }
 
-      lastPollAt = new Date().toISOString();
+      const now = new Date().toISOString();
+      lastPollAt = now;
       pollCount++;
+      currentFeedOutcome = {
+        enabled: fetched.enabled,
+        succeeded: fetched.succeeded,
+        failed: fetched.failed,
+        failures: fetched.failures.map(f => ({ feed: String(f.feed), category: String(f.category) })),
+      };
+      feedFailureCount += fetched.failed;
+      if (fetched.succeeded > 0) lastSuccessfulFetchAt = now;
+      if (fetched.enabled > 0 && fetched.failed === 0) lastFullySuccessfulPollAt = now;
+      const allFailed = fetched.enabled > 0 && fetched.succeeded === 0;
+      if (allFailed) failedPollCount++;
+      if (fetched.failed > 0) {
+        sentinelLogger.warn(`⚠️ Sentinel poll: ${fetched.failed}/${fetched.enabled} feeds failed`, {
+          action: 'poll',
+          failedFeeds: fetched.failed,
+          enabledFeeds: fetched.enabled,
+        });
+      }
 
       if (newAlerts > 0) {
         sentinelLogger.info(`ℹ️ Sentinel poll: ${newAlerts} new alerts from ${items.length} items`, {
@@ -215,8 +268,8 @@ const createSentinelService = (io, deps) => {
           newAlerts,
           items: items.length,
         });
-        persistState();
       }
+      if (newAlerts > 0 || fetched.failed > 0) persistState();
 
       // Emit status update
       io.to('sentinel').emit('sentinel:status', getStatus());
@@ -310,11 +363,40 @@ const createSentinelService = (io, deps) => {
   /**
    * Get current status
    */
+  /**
+   * Feed health: disabled | no-feeds | unknown (no poll yet) | healthy |
+   * degraded (some feeds failed) | unavailable (all enabled feeds failed).
+   * Only diagnostics-safe fields (feed names + failure categories) are exposed.
+   */
+  const getFeedHealth = () => {
+    const config = getSentinelConfig();
+    const o = currentFeedOutcome;
+    let state;
+    if (!config.enabled) state = 'disabled';
+    else if (!(config.feeds || []).some(f => f.enabled !== false)) state = 'no-feeds';
+    else if (!o) state = 'unknown';
+    else if (o.enabled > 0 && o.succeeded === 0) state = 'unavailable';
+    else if (o.failed > 0) state = 'degraded';
+    else state = 'healthy';
+    return {
+      feedState: state,
+      enabledFeeds: o?.enabled ?? 0,
+      succeededFeeds: o?.succeeded ?? 0,
+      failedFeeds: o?.failed ?? 0,
+      failedFeedDetails: o?.failures ?? [],
+      lastSuccessfulFetchAt,
+      lastFullySuccessfulPollAt,
+      failedPollCount,
+      feedFailureCount,
+    };
+  };
+
   const getStatus = () => ({
     running,
     lastPollAt,
     pollCount,
     errorCount,
+    ...getFeedHealth(),
     totalAlerts: alerts.length,
     activeAlerts: alerts.filter(a => !a.dismissed).length,
     criticalAlerts: alerts.filter(a => !a.dismissed && a.severity === 'critical').length,
