@@ -166,7 +166,7 @@ export default function TradeHistory() {
         <button
           disabled={busy}
           onClick={() => { resetForm(); setShowForm(!showForm) }}
-          className="flex items-center gap-1 px-2 py-1 text-xs bg-emerald-600 hover:bg-emerald-700 rounded transition-colors"
+          className="flex items-center justify-center gap-1 min-h-11 px-2 text-xs bg-emerald-600 hover:bg-emerald-700 rounded transition-colors"
         >
           <Plus size={12} /> Add Trade
         </button>
@@ -336,7 +336,7 @@ export default function TradeHistory() {
             <button
               disabled={busy}
               type="submit"
-              className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
+              className="flex-1 min-h-11 bg-emerald-600 hover:bg-emerald-700 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
             >
               <Check size={12} /> {editId != null ? 'Update' : 'Save'}
             </button>
@@ -344,7 +344,7 @@ export default function TradeHistory() {
               disabled={busy}
               type="button"
               onClick={resetForm}
-              className="flex-1 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
+              className="flex-1 min-h-11 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
             >
               <X size={12} /> Cancel
             </button>
@@ -354,7 +354,7 @@ export default function TradeHistory() {
 
       {/* Trade Table */}
       {trades.length > 0 ? (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto max-h-96">
           <table className="w-full text-xs">
             <thead>
               <tr className="text-gray-400 border-b border-gray-700">
@@ -375,11 +375,11 @@ export default function TradeHistory() {
                     {t.pnl >= 0 ? '+' : ''}{fmt(t.pnl)}
                   </td>
                   <td className="py-1 pl-1">
-                    <div className="flex gap-0.5">
-                      <button disabled={busy} onClick={() => handleEdit(t)} className="text-gray-500 hover:text-blue-400 transition-colors" title="Edit">
+                    <div className="flex gap-2">
+                      <button disabled={busy} onClick={() => handleEdit(t)} aria-label={`Edit trade from ${fmtDate(t.date)}`} className="trade-history-touch-target min-h-11 min-w-11 inline-flex items-center justify-center text-gray-500 hover:text-blue-400 transition-colors">
                         <Edit3 size={11} />
                       </button>
-                      <button disabled={busy} onClick={() => handleDelete(t.id)} className="text-gray-500 hover:text-red-400 transition-colors" title="Delete">
+                      <button disabled={busy} onClick={() => handleDelete(t.id)} aria-label={`Delete trade from ${fmtDate(t.date)}`} className="trade-history-touch-target min-h-11 min-w-11 inline-flex items-center justify-center text-gray-500 hover:text-red-400 transition-colors">
                         <Trash2 size={11} />
                       </button>
                     </div>

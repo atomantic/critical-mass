@@ -8,7 +8,8 @@ body {
 
 /* Keep compact table controls on wide desktop while making order actions easy to tap. */
 @media (pointer: fine) and (min-width: 768px) {
-  .regime-order-touch-target {
+  .regime-order-touch-target,
+  .trade-history-touch-target {
     min-height: unset;
     min-width: unset;
   }
