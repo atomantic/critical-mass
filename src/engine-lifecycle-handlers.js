@@ -33,6 +33,7 @@ const { createFundStartSupervisor, isTransientStartError } = require('./fund-sta
  * @property {(exchange: string, pair: string) => void} wireMarketDataCallbacks - Wires a running standalone market-data service's callbacks
  * @property {(exchange: string, pair: string) => void} invalidateStandaloneLedger - Drops the cached standalone fill ledger for a fund
  * @property {(exchange: string, pair: string, isRunning: boolean) => void} saveRegimeRunningFlag - Persists the fund's running flag to disk
+ * @property {(exchange: string, pair: string) => {recovered: boolean}} [recoverPendingImport] - Completes/discards an interrupted DCA import; throws when the fund must stay offline (issue #860)
  * @property {(exchange: string, pair: string) => Promise<{drained: boolean}>} [drainFundWrites] - Waits for accepted fund callbacks before releasing ownership
  * @property {Function} [isPaused] - Retry maintenance gate
  * @property {Function} [setTimer] - Injectable retry timer
@@ -66,6 +67,7 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     invalidateStandaloneLedger,
     saveRegimeRunningFlag,
     drainFundWrites = async () => ({ drained: true }),
+    recoverPendingImport = () => ({ recovered: false }),
   } = deps;
 
   const startAttempt = async (payload, exchange, pair, isCurrent) => {
@@ -76,6 +78,15 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
 
     if (regimeEngines.has(key)) {
       return { success: false, error: 'Regime engine already running for this fund' };
+    }
+
+    // Never trade on a mixed DCA-import generation (issue #860): complete or
+    // discard an interrupted import first, and stay down if that is unsafe.
+    try {
+      recoverPendingImport(exchange, resolvedPair);
+    } catch (err) {
+      fundLogger.error(`❌ [${label}] DCA import recovery failed on regime:start: ${err.message}`, { error: err.message });
+      return { success: false, error: `An interrupted DCA import for ${exchange}/${resolvedPair} could not be recovered — see engine logs for details`, needsOperator: true };
     }
 
     // Refuse to start a closed fund — operator must reopen it first.

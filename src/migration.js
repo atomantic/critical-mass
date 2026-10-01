@@ -317,6 +317,10 @@ const getExchangeDataDir = (exchange) => {
   return dir;
 };
 
+/** @type {Map<string, string>} fund key -> redirected data dir (see withFundDataDirOverride) */
+const fundDataDirOverrides = new Map();
+const fundOverrideKey = (exchange, pair) => `${exchange}\u0000${pair}`;
+
 /**
  * Resolve the per-fund data directory PATH for (exchange, pair) WITHOUT
  * creating it. Use this on read paths (loadState, loadRegimeState, etc.)
@@ -344,7 +348,46 @@ const resolveFundDataDir = (exchange, pair) => {
   // Crucially, we do NOT mkdir the per-fund subdirectory here — that would
   // turn read-side path resolution into directory creation, which is what
   // caused empty BTC-USDC dirs to appear and mask legacy state.
+  const override = fundDataDirOverrides.get(fundOverrideKey(exchange, resolvedPair));
+  if (override) return override;
   return resolveFundPath(module.exports.getExchangeDataDir(exchange), resolvedPair);
+};
+
+/**
+ * Scoped, synchronous redirection of ONE fund's data directory (issue #860).
+ *
+ * The DCA import transaction (src/dca-conversion-transaction.js) runs the
+ * converter's ordinary load/save code against a private staging copy of the
+ * fund's files, so the complete target generation (ledger, regime position,
+ * consumed DCA source state) exists and is validated before any live file is
+ * replaced. Every per-fund path in state-tracker / fill-ledger resolves through
+ * resolveFundDataDir / getFundDataDir, so redirecting here covers them all.
+ *
+ * The callback must be synchronous: an async callback would let unrelated
+ * work for this fund run while the redirection is active.
+ *
+ * @template T
+ * @param {string} exchange
+ * @param {string} pair - Resolved fund pair
+ * @param {string} dir - Directory to use for the fund's files
+ * @param {() => T} fn
+ * @returns {T}
+ */
+const withFundDataDirOverride = (exchange, pair, dir, fn) => {
+  const key = fundOverrideKey(exchange, pair);
+  if (fundDataDirOverrides.has(key)) {
+    throw new Error(`Fund data directory for ${exchange}/${pair} is already redirected`);
+  }
+  fundDataDirOverrides.set(key, dir);
+  try {
+    const result = fn();
+    if (result && typeof (/** @type {any} */ (result)).then === 'function') {
+      throw new Error('withFundDataDirOverride callback must be synchronous');
+    }
+    return result;
+  } finally {
+    fundDataDirOverrides.delete(key);
+  }
 };
 
 /**
@@ -393,7 +436,8 @@ const getFundDataDir = (exchange, pair) => {
     const configUtils = require('./config-utils');
     resolvedPair = configUtils.getDefaultPair(exchange) || 'default';
   }
-  const dir = resolveFundPath(exchangeDir, resolvedPair);
+  const dir = fundDataDirOverrides.get(fundOverrideKey(exchange, resolvedPair))
+    || resolveFundPath(exchangeDir, resolvedPair);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 };
@@ -990,6 +1034,7 @@ module.exports = {
   needsPairMigration,
   resolveFundDataDir,
   resolveFundPath,
+  withFundDataDirOverride,
   migrateExchangeToPairs,
   normalizeExchangeTreeToPairs,
   repairStrandedLongTermCandles,

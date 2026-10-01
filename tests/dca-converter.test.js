@@ -585,14 +585,12 @@ describe('dca-converter fund routing (issue #414)', () => {
       );
     });
 
-    // Fifth codex review finding: if the process crashes between the
-    // fill-ledger writes above and the comprehensive saveRegimeState() call
-    // near the end of mergeToRegime, regime-state.json must not be left
-    // naming the OLD cycle boundary while the ledger already reflects the
-    // new one -- restorePersistedCycleId would trust the stale marker on
-    // the next engine start. Verify the corrected boundary is persisted
-    // immediately (a distinct, early saveRegimeState call), not only as
-    // part of the final save.
+    // Fifth codex review finding: regime-state.json must never name the OLD
+    // cycle boundary while the ledger already reflects the new one --
+    // restorePersistedCycleId would trust the stale marker on the next
+    // engine start. Since issue #860 the import transaction publishes ledger
+    // and regime state together; this still checks the corrected boundary is
+    // saved alongside the ledger write, not only as part of the final save.
     it('persists a corrected active-cycle boundary immediately, not only at the end of the merge', () => {
       seedFund(DEFAULT_PAIR, { orders: [] });
       reseedOrders(DEFAULT_PAIR, mergeOrders()); // one filled + one pending, no persisted boundary yet
@@ -630,6 +628,281 @@ describe('dca-converter fund routing (issue #414)', () => {
       // own cycle-1 closed it) -- not only the last one -- so a crash right
       // after it still leaves regime-state.json consistent with the ledger.
       assert.equal(calls[0], 'cycle-2', 'the first saveRegimeState call must already carry the corrected boundary');
+    });
+  });
+
+  // issue #860 — the import rewrote ledger, regime position and DCA source
+  // state one file at a time, so a failure at the last write left the import
+  // committed on one side and retryable on the other; each retry appended a
+  // duplicate body and attributed the DCA allocation again. The import is now
+  // one recoverable transaction (src/dca-conversion-transaction.js).
+  describe('DCA imports are recoverable and idempotent (issue #860)', () => {
+    const txn = require('../src/dca-conversion-transaction');
+    const FILES = ['fill-ledger.json', 'regime-state.json', 'state.json'];
+
+    const pendingOrder = {
+      status: 'pending',
+      orderId: 'sell-open',
+      buyOrderId: 'buy-open',
+      buyQuantity: 0.02,
+      buyPrice: 48000,
+      buyUSDC: 960,
+      buyFees: 0,
+      buyCostBasis: 960,
+      sellPrice: 51000,
+      createdAt: '2025-02-01T00:00:00.000Z',
+    };
+
+    /** The issue's reproduction: one pending buy, DCA allocation 1000, an
+     * existing stopped regime fund with 2000 deposited. */
+    const seedIssueFund = () => {
+      const dir = seedFund(DEFAULT_PAIR, { orders: [{ ...pendingOrder }] });
+      fs.writeFileSync(path.join(dir, 'regime-state.json'), JSON.stringify({
+        position: { celestialBodies: [], totalAsset: 0, totalCostBasis: 0, depositedCapital: 2000, _saveVersion: 1 },
+        regime: { currentRegime: 'calm' },
+      }));
+      return dir;
+    };
+
+    const read = (file) => fs.readFileSync(path.join(fundDir(DEFAULT_PAIR), file), 'utf8');
+    const snapshot = () => Object.fromEntries(FILES.map((f) => [f, read(f)]));
+    const journalPath = () => path.join(fundDir(DEFAULT_PAIR), txn.JOURNAL_FILENAME);
+    const stagingDirs = () => fs.readdirSync(fundDir(DEFAULT_PAIR)).filter((n) => n.startsWith(txn.STAGING_PREFIX));
+
+    /** Make every rename onto ONE live target fail until restored — a real
+     * write failure at that publication boundary (staging writes elsewhere
+     * are unaffected). */
+    const failPublishOf = (file) => {
+      const target = path.join(fundDir(DEFAULT_PAIR), file);
+      const original = fs.renameSync;
+      fs.renameSync = (from, to) => {
+        if (to === target) {
+          const err = /** @type {any} */ (new Error(`EIO: injected write failure on ${file}`));
+          err.code = 'EIO';
+          throw err;
+        }
+        return original(from, to);
+      };
+      return () => { fs.renameSync = original; };
+    };
+
+    /** The whole position + source + ledger, checked together. */
+    const assertSingleImport = () => {
+      const regime = JSON.parse(read('regime-state.json')).position;
+      const state = JSON.parse(read('state.json'));
+      const ledger = JSON.parse(read('fill-ledger.json'));
+      assert.equal(regime.celestialBodies.length, 1, 'one body per imported buy');
+      assert.equal(regime.totalAsset, 0.02);
+      assert.equal(regime.totalCostBasis, 960);
+      assert.equal(regime.depositedCapital, 3000, 'the DCA allocation is attributed exactly once');
+      assert.equal(regime.dcaImportedAllocation, 1000);
+      assert.deepEqual(state.orders.map((o) => o.status), ['migrated_to_regime']);
+      assert.equal(ledger.length, 1);
+      assert.equal(ledger[0].bodyId, regime.celestialBodies[0].id, 'ledger annotation names the one body');
+      assert.equal(fs.existsSync(journalPath()), false);
+      assert.deepEqual(stagingDirs(), []);
+    };
+
+    /** Re-require after changing a config stub (collaborators are
+     * destructured at require time). */
+    const reloadConverter = () => {
+      for (const mod of [STATE_TRACKER, FILL_LEDGER, DCA_CONVERTER]) delete require.cache[mod];
+      converter = require('../src/dca-converter');
+    };
+
+    it('reproduction: a failed source-state write is recovered, and retries add no body or capital', () => {
+      seedIssueFund();
+      const restore = failPublishOf('state.json');
+      let err;
+      try {
+        assert.throws(() => converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR), (e) => { err = e; return true; });
+      } finally {
+        restore();
+      }
+      assert.equal(err.recoveryPending, true);
+      assert.match(err.message, /interrupted while publishing/);
+
+      // The fund is gated: journal retained, source still on disk as pending.
+      assert.equal(txn.hasPendingDcaImport(EXCHANGE, DEFAULT_PAIR), true);
+      assert.equal(JSON.parse(read('state.json')).orders[0].status, 'pending');
+
+      // Operator retries the import: recovery completes the interrupted one,
+      // and nothing is left to import.
+      const retry = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(retry.noop, true);
+      assert.equal(retry.summary.capitalAttributed, 0);
+      assertSingleImport();
+
+      // A further retry of the completed request changes nothing at all.
+      const before = snapshot();
+      assert.equal(converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR).noop, true);
+      assert.deepEqual(snapshot(), before);
+    });
+
+    for (const file of FILES) {
+      it(`an interruption publishing ${file} leaves a recoverable journal; recovery + retry yield one import`, () => {
+        seedIssueFund();
+        const original = snapshot();
+        const restore = failPublishOf(file);
+        try {
+          assert.throws(() => converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR), /interrupted while publishing/);
+        } finally {
+          restore();
+        }
+        assert.equal(txn.hasPendingDcaImport(EXCHANGE, DEFAULT_PAIR), true, 'fund must stay gated');
+        // Files before the failed boundary are published, the rest untouched.
+        const idx = FILES.indexOf(file);
+        for (const f of FILES.slice(idx)) assert.equal(read(f), original[f], `${f} must not be published yet`);
+        for (const f of FILES.slice(0, idx)) assert.notEqual(read(f), original[f], `${f} was published`);
+
+        // Startup-style recovery (no import request) completes it, idempotently.
+        assert.equal(txn.recoverDcaImport(EXCHANGE, DEFAULT_PAIR).action, 'rolled-forward');
+        assert.deepEqual(txn.recoverDcaImport(EXCHANGE, DEFAULT_PAIR), { recovered: false });
+        assertSingleImport();
+
+        const before = snapshot();
+        assert.equal(converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR).noop, true);
+        assert.deepEqual(snapshot(), before);
+      });
+    }
+
+    it('a failure while staging publishes nothing and leaves no journal', () => {
+      seedIssueFund();
+      const original = snapshot();
+      configUtils.getRegimeConfig = () => { throw new Error('config unreadable'); };
+      reloadConverter();
+      assert.throws(() => converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR), /config unreadable/);
+      assert.deepEqual(snapshot(), original);
+      assert.equal(fs.existsSync(journalPath()), false);
+      assert.deepEqual(stagingDirs(), []);
+    });
+
+    it('a process interruption mid-staging is discarded by recovery without touching live files', () => {
+      seedIssueFund();
+      const original = snapshot();
+      const id = '00000000-0000-4000-8000-000000000000';
+      fs.writeFileSync(journalPath(), JSON.stringify({ version: 1, id, kind: 'merge', status: 'staging', entries: [] }));
+      fs.mkdirSync(path.join(fundDir(DEFAULT_PAIR), `${txn.STAGING_PREFIX}${id}`));
+      assert.equal(txn.hasPendingDcaImport(EXCHANGE, DEFAULT_PAIR), true);
+
+      assert.equal(txn.recoverDcaImport(EXCHANGE, DEFAULT_PAIR).action, 'discarded');
+      assert.deepEqual(snapshot(), original);
+      assert.deepEqual(stagingDirs(), []);
+      // ...and the import can then run normally.
+      converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assertSingleImport();
+    });
+
+    it('recovery refuses to overwrite a target changed outside the import and keeps the gate', () => {
+      seedIssueFund();
+      const restore = failPublishOf('state.json');
+      try {
+        assert.throws(() => converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR));
+      } finally {
+        restore();
+      }
+      fs.writeFileSync(path.join(fundDir(DEFAULT_PAIR), 'state.json'), JSON.stringify({ orders: [], totalAllocated: 7 }));
+      assert.throws(() => txn.recoverDcaImport(EXCHANGE, DEFAULT_PAIR), /changed outside the DCA import/);
+      assert.equal(txn.hasPendingDcaImport(EXCHANGE, DEFAULT_PAIR), true);
+      assert.throws(() => converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR), /could not be recovered/);
+    });
+
+    it('a replay over still-pending source orders (lost cleanup) adds no body and no capital', () => {
+      seedIssueFund();
+      converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assertSingleImport();
+      const ledgerBefore = read('fill-ledger.json');
+
+      // Simulate a source state that still shows the order as importable.
+      const state = JSON.parse(read('state.json'));
+      state.orders[0].status = 'pending';
+      fs.writeFileSync(path.join(fundDir(DEFAULT_PAIR), 'state.json'), JSON.stringify(state));
+
+      const replay = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(replay.summary.celestialBodies, 0);
+      assert.equal(replay.summary.capitalAttributed, 0);
+      assertSingleImport();
+      assert.equal(read('fill-ledger.json'), ledgerBefore, 'accounting annotations unchanged');
+    });
+
+    it('a later merge attributes only allocation growth past the recorded watermark', () => {
+      seedIssueFund();
+      converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      const state = JSON.parse(read('state.json'));
+      state.totalAllocated = 1500;
+      state.orders.push({ ...pendingOrder, orderId: 'sell-open-2', buyOrderId: 'buy-open-2', buyUSDC: 500, buyCostBasis: 500, buyQuantity: 0.01 });
+      fs.writeFileSync(path.join(fundDir(DEFAULT_PAIR), 'state.json'), JSON.stringify(state));
+
+      const second = converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(second.summary.capitalAttributed, 500);
+      const regime = JSON.parse(read('regime-state.json')).position;
+      assert.equal(regime.depositedCapital, 3500);
+      assert.equal(regime.celestialBodies.length, 2);
+    });
+
+    it('a repeated completed executeConversion is a no-op that keeps the regime state', () => {
+      seedFund(DEFAULT_PAIR, { orders: sampleOrders('x') });
+      const first = converter.executeConversion(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(first.summary.celestialBodies, 1);
+      const before = snapshot();
+      enabledCalls.length = 0;
+
+      const replay = converter.executeConversion(EXCHANGE, DEFAULT_PAIR);
+      assert.equal(replay.noop, true);
+      assert.deepEqual(snapshot(), before);
+      assert.deepEqual(enabledCalls, [], 'a no-op must not touch the DCA enabled setting');
+    });
+
+    it('an aborted executeConversion restores the original enabled setting (enabled fund)', () => {
+      seedFund(DEFAULT_PAIR, { orders: sampleOrders('y') });
+      configUtils.getFundConfig = (_exchange, pair) => ({ productId: pair || DEFAULT_PAIR, enabled: true });
+      configUtils.getRegimeConfig = () => { throw new Error('config unreadable'); };
+      reloadConverter();
+      const original = snapshot();
+      assert.throws(() => converter.executeConversion(EXCHANGE, DEFAULT_PAIR), /config unreadable/);
+      assert.deepEqual(enabledCalls.map((c) => c.enabled), [false, true]);
+      assert.deepEqual(snapshot(), original);
+    });
+
+    it('an aborted executeConversion never enables a fund that was disabled', () => {
+      seedFund(DEFAULT_PAIR, { orders: sampleOrders('z') });
+      configUtils.getFundConfig = (_exchange, pair) => ({ productId: pair || DEFAULT_PAIR, enabled: false });
+      configUtils.getRegimeConfig = () => { throw new Error('config unreadable'); };
+      reloadConverter();
+      assert.throws(() => converter.executeConversion(EXCHANGE, DEFAULT_PAIR), /config unreadable/);
+      assert.deepEqual(enabledCalls.map((c) => c.enabled), [false]);
+    });
+
+    it('an executeConversion interrupted while publishing keeps the DCA engine disabled', () => {
+      seedFund(DEFAULT_PAIR, { orders: sampleOrders('w') });
+      configUtils.getFundConfig = (_exchange, pair) => ({ productId: pair || DEFAULT_PAIR, enabled: true });
+      reloadConverter();
+      const restore = failPublishOf('state.json');
+      try {
+        assert.throws(() => converter.executeConversion(EXCHANGE, DEFAULT_PAIR), /interrupted while publishing/);
+      } finally {
+        restore();
+      }
+      assert.deepEqual(enabledCalls.map((c) => c.enabled), [false], 'recovery will complete the conversion');
+      txn.recoverDcaImport(EXCHANGE, DEFAULT_PAIR);
+      const state = JSON.parse(read('state.json'));
+      assert.ok(state.orders.every((o) => o.status === 'migrated_to_regime'));
+      assert.equal(JSON.parse(read('regime-state.json')).position.celestialBodies.length, 1);
+    });
+
+    it('leaves other funds byte-identical through failure and recovery', () => {
+      seedIssueFund();
+      seedFund(OTHER_PAIR, { orders: sampleOrders('other') });
+      const other = FILES.map((f) => fs.readFileSync(path.join(fundDir(OTHER_PAIR), f), 'utf8'));
+      const restore = failPublishOf('regime-state.json');
+      try {
+        assert.throws(() => converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR));
+      } finally {
+        restore();
+      }
+      assert.equal(txn.hasPendingDcaImport(EXCHANGE, OTHER_PAIR), false);
+      txn.recoverDcaImport(EXCHANGE, DEFAULT_PAIR);
+      assert.deepEqual(FILES.map((f) => fs.readFileSync(path.join(fundDir(OTHER_PAIR), f), 'utf8')), other);
     });
   });
 });

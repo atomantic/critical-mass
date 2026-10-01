@@ -184,6 +184,26 @@ describe('engine-lifecycle-handlers', () => {
       assert.equal(firstIndex(h.calls, 'createRegimeEngine'), -1);
     });
 
+    // issue #860 — a fund with an interrupted DCA import must never trade on
+    // the mixed generation: recovery runs first and an unsafe one blocks.
+    it('runs DCA import recovery before starting and refuses when it cannot complete', async () => {
+      const recoveries = [];
+      const h = createHarness({
+        recoverPendingImport: (exchange, pair) => {
+          recoveries.push(pair);
+          throw new Error('fill-ledger.json changed outside the DCA import');
+        },
+      });
+
+      const result = await h.start({}, EXCHANGE, PAIR_A);
+
+      assert.deepEqual(recoveries, [PAIR_A]);
+      assert.equal(result.success, false);
+      assert.equal(result.needsOperator, true);
+      assert.match(result.error, /interrupted DCA import/);
+      assert.equal(firstIndex(h.calls, 'createRegimeEngine'), -1);
+    });
+
     it('refuses to start without valid API keys', async () => {
       const h = createHarness();
       h.invalidKeysExchanges.add(EXCHANGE);
