@@ -16,6 +16,7 @@
  * - State persistence for continuity across restarts
  */
 
+const { BASE_SIZE_USDC_BOUNDS } = require('./regime-sizing-contract');
 const { roundUSDC } = require('./volatility-utils');
 const { createContextLogger } = require('./logger');
 
@@ -230,8 +231,10 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
    */
   const calculateAdjustment = (availableBalance) => {
     // Safety bounds from config or defaults
-    const absoluteMinBase = config.sizeAbsoluteMinBase || 10;
-    const absoluteMaxBase = config.sizeAbsoluteMaxBase || 500;
+    // Configured clamp, additionally bounded by the shared save contract so the
+    // output always round-trips through manual config saves.
+    const absoluteMinBase = Math.max(BASE_SIZE_USDC_BOUNDS.min, config.sizeAbsoluteMinBase || 10);
+    const absoluteMaxBase = Math.min(BASE_SIZE_USDC_BOUNDS.max, config.sizeAbsoluteMaxBase || 500);
     const targetUtilization = config.sizeTargetUtilization || 0.90; // 90% by default
     const maxChangePercent = config.sizeMaxChangePercent || 25;
 
@@ -288,7 +291,9 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
 
     // Check if values actually changed (beyond 1% threshold)
     const baseChanged = Math.abs(newBaseSizeUsdc - currentBaseSizeUsdc) / currentBaseSizeUsdc > 0.01;
-    const deployChanged = Math.abs(newMaxUsdcDeployed - config.maxUsdcDeployed) / config.maxUsdcDeployed > 0.01;
+    const deployChanged = config.maxUsdcDeployed > 0
+      ? Math.abs(newMaxUsdcDeployed - config.maxUsdcDeployed) / config.maxUsdcDeployed > 0.01
+      : newMaxUsdcDeployed !== config.maxUsdcDeployed;
     const stepsChanged = newMaxCycleBuys !== undefined && newMaxCycleBuys !== currentMaxCycleBuys;
 
     if (!baseChanged && !deployChanged && !stepsChanged) {

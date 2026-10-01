@@ -131,6 +131,20 @@ describe('PUT/GET /api/:exchange/regime/config dryRun round-trip', () => {
     assert.equal(getRes.body.config.baseSizeUsdc, 25, 'regime field must still persist');
   });
 
+  for (const [label, update] of [
+    ['base 1250 / cap 22500', { baseSizeUsdc: 1250, maxUsdcDeployed: 22500 }],
+    ['base 90 / cap 900', { baseSizeUsdc: 90, maxUsdcDeployed: 900 }],
+  ]) {
+    it('saves optimizer output via the regime route (' + label + ')', async () => {
+      const app = setup();
+      const putRes = await invoke(app, 'PUT /api/:exchange/regime/config', reqFor(update));
+      assert.equal(putRes.statusCode, 200, JSON.stringify(putRes.body));
+      const getRes = await invoke(app, 'GET /api/:exchange/regime/config', reqFor({}));
+      assert.equal(getRes.body.config.baseSizeUsdc, update.baseSizeUsdc);
+      assert.equal(getRes.body.config.maxUsdcDeployed, update.maxUsdcDeployed);
+    });
+  }
+
   it('drops unknown regime keys from persistence and live IPC propagation', async () => {
     setupFsMocks(BASE_CONFIG);
     let ipcPayload;

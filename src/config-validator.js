@@ -6,6 +6,7 @@
 
 const { validateConfigUpdate } = require('./config-validation');
 const { DEFAULT_AGGRESSIVENESS_PRESETS, PRESET_FIELD_RULES, LEGACY_PRESET_FIELD_RULES } = require('./regime-preset-contract');
+const { validateBaseSizeUsdc, validateMaxUsdcDeployed } = require('./regime-sizing-contract');
 const { REGIME_DEFAULTS, BACKUP_INTERVAL_BOUNDS, SENTINEL_POLL_INTERVAL_BOUNDS, SENTINEL_MAX_ALERTS_BOUNDS } = require('./config-utils');
 
 const REGIME_ALLOWED_KEYS = new Set(Object.keys(REGIME_DEFAULTS));
@@ -159,8 +160,9 @@ const validateRegimeConfig = (config) => {
   if (config.minOrderSizeUsdc !== undefined && (config.minOrderSizeUsdc < 1 || config.minOrderSizeUsdc > 100)) {
     errors.push('minOrderSizeUsdc must be between 1 and 100');
   }
-  if (config.baseSizeUsdc !== undefined && (config.baseSizeUsdc < 1 || config.baseSizeUsdc > 1000)) {
-    errors.push('baseSizeUsdc must be between 1 and 1000');
+  if (config.baseSizeUsdc !== undefined) {
+    const err = validateBaseSizeUsdc(config.baseSizeUsdc);
+    if (err) errors.push(err);
   }
   if (config.divergenceScalePct !== undefined && (config.divergenceScalePct < 0.5 || config.divergenceScalePct > 20)) {
     errors.push('divergenceScalePct must be between 0.5 and 20');
@@ -292,8 +294,9 @@ const validateRegimeConfig = (config) => {
   if (config.depositedCapital !== undefined && config.depositedCapital !== 0 && config.depositedCapital < 100) {
     errors.push('depositedCapital must be 0 (auto-derive) or at least 100');
   }
-  if (config.maxUsdcDeployed !== undefined && config.maxUsdcDeployed < 1000) {
-    errors.push('maxUsdcDeployed must be at least 1000');
+  if (config.maxUsdcDeployed !== undefined) {
+    const err = validateMaxUsdcDeployed(config.maxUsdcDeployed);
+    if (err) errors.push(err);
   }
   if (config.maxDrawdownPercent !== undefined && (!(config.maxDrawdownPercent > 0) || config.maxDrawdownPercent > 100)) {
     errors.push('maxDrawdownPercent must be greater than 0 and at most 100');

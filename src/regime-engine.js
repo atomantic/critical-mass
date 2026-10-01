@@ -40,6 +40,7 @@ const { validateExecutor } = require('./executor-contract');
 const { createRecoveryModule } = require('./recovery');
 const { createTpOptimizer } = require('./tp-optimizer');
 const { createSizeOptimizer } = require('./size-optimizer');
+const { validateSizingFields } = require('./regime-sizing-contract');
 const { createLadderCalculator } = require('./ladder-calculator');
 const { applyMarketMetrics, clamp, computeAdaptiveStaleMs, roundAsset, roundUSDC, roundPrice } = require('./volatility-utils');
 const { createMacroRegime } = require('./macro-regime');
@@ -1221,6 +1222,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @param {Object} adjustment - Adjustment from optimizer
    */
   const handleSizeAdjustment = (adjustment) => {
+    // Reject adjustments that manual saves would refuse, before touching
+    // memory or persistence (issue #867).
+    const sizingErrors = validateSizingFields(adjustment);
+    if (sizingErrors.length > 0) {
+      logger.warn(`⚠️ [${exchange}] Size adjustment rejected, config unchanged: ${sizingErrors.join("; ")}`);
+      return;
+    }
+
     const updates = {
       baseSizeUsdc: adjustment.baseSizeUsdc,
       maxUsdcDeployed: adjustment.maxUsdcDeployed,

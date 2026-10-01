@@ -368,7 +368,7 @@ const createRiskManager = (exchange, config, productId) => {
   const getUtilization = (position) => {
     return {
       btcUtilization: config.maxAssetExposure ? (position.totalAsset / config.maxAssetExposure) * 100 : 0,
-      usdcUtilization: (position.totalCostBasis / config.maxUsdcDeployed) * 100,
+      usdcUtilization: config.maxUsdcDeployed > 0 ? (position.totalCostBasis / config.maxUsdcDeployed) * 100 : (position.totalCostBasis > 0 ? 100 : 0),
       cycleBuysUtilization: (position.cycleBuys / config.maxCycleBuys) * 100,
     };
   };
