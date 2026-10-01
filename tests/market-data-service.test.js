@@ -105,6 +105,25 @@ describe('ingestNewFillsForOrder', () => {
     assert.equal(trackedOrder.lastIngestedFilledSize, 1.0);
   });
 
+  it('skips a malformed fill, keeps valid siblings, and does not advance the watermark past the gap (#875)', async () => {
+    const { FillValidationError } = require('../src/fill-ledger');
+    const realIngest = ledger.ingestFill;
+    ledger.ingestFill = (fill, ...rest) => {
+      if (fill.tradeId === 'bad') throw new FillValidationError('price must be a finite positive number', fill);
+      return realIngest(fill, ...rest);
+    };
+    const adapter = makeAdapter([[makeFill('bad', 0.3), makeFill('t1', 0.2)]]);
+
+    const result = await ingestNewFillsForOrder(
+      { adapter, fillLedger: ledger, exchange: 'coinbase' },
+      'order-1', trackedOrder, 0.5, 'partial fill'
+    );
+
+    assert.equal(result.outcome, 'short');
+    assert.equal(result.ingestedCount, 1);
+    assert.equal(trackedOrder.lastIngestedFilledSize, 0.2);
+  });
+
   it('on a partial fill, ingests the new fill and advances the watermark', async () => {
     const adapter = makeAdapter([[makeFill('t1', 0.4)]]);
 

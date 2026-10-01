@@ -1294,6 +1294,56 @@ describe('Fill Ledger', () => {
     assert.throws(() => createTestLedger(exchange), /not an array on cold start/);
   });
 
+  describe('ordinary ingestion boundary validation (#875)', () => {
+    const good = (o = {}) => ({ tradeId: 'ok-1', orderId: 'o1', side: 'buy', price: '100', size: '0.5', totalCommission: '0.1', ...o });
+    const ledgerFile = (exchange) => path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
+
+    it('rejects invalid fills with FillValidationError before any mutation', () => {
+      const { createFillLedger, FillValidationError } = freshFillLedgerModule();
+      const ledger = createFillLedger('val-reject');
+      const cases = [
+        { tradeId: undefined }, { tradeId: '' }, { tradeId: 42 },
+        { side: 'hold' }, { side: undefined },
+        { price: 'invalid' }, { price: '12abc' }, { price: 0 }, { price: -1 },
+        { size: 0 }, { size: NaN }, { size: '' },
+        { totalCommission: 'x' }, { rebate: 'x' }, { netFee: 'x' },
+        { tradeTime: 'not-a-date' }, { orderId: {} },
+      ];
+      for (const override of cases) {
+        assert.throws(() => ledger.ingestFill(good(override)), FillValidationError, JSON.stringify(override));
+      }
+      assert.equal(ledger.getAllFills().length, 0);
+      assert.equal(fs.existsSync(ledgerFile('val-reject')), false, 'nothing persisted');
+    });
+
+    it('does not consume the trade id: a corrected retry ingests, and a fresh ledger reloads it', () => {
+      const { createFillLedger } = freshFillLedgerModule();
+      const ledger = createFillLedger('val-retry');
+      assert.throws(() => ledger.ingestFill(good({ price: 'invalid' })), /price/);
+      assert.equal(ledger.ingestFill(good()).ingested, true);
+      const reloaded = createFillLedger('val-retry');
+      assert.equal(reloaded.getAllFills().length, 1);
+      assert.equal(reloaded.getAllFills()[0].quoteAmount, 50);
+    });
+
+    it('reports distinct fills missing ids as invalid instead of silently deduping them', () => {
+      const { createFillLedger } = freshFillLedgerModule();
+      const ledger = createFillLedger('val-noid');
+      assert.throws(() => ledger.ingestFill(good({ tradeId: undefined, orderId: 'a' })), /tradeId/);
+      assert.throws(() => ledger.ingestFill(good({ tradeId: undefined, orderId: 'b' })), /tradeId/);
+    });
+
+    it('keeps legacy defaults and signed net fees/rebates valid', () => {
+      const { createFillLedger } = freshFillLedgerModule();
+      const ledger = createFillLedger('val-legacy');
+      const { fill } = ledger.ingestFill(good({ totalCommission: undefined, rebate: '0.3' }));
+      assert.equal(fill.fee, 0);
+      assert.ok(Math.abs(fill.netFee + 0.3) < 1e-12, 'rebate yields a negative net fee');
+      assert.ok(Number.isFinite(fill.timestamp));
+      assert.equal(createFillLedger('val-legacy').getAllFills().length, 1);
+    });
+  });
+
   it('createFillLedger throws on cold start when file contains an invalid fill entry', () => {
     const exchange = 'test-cold-start-bad-entry';
     const dir = path.join(tmpDir, exchange, 'default');
@@ -3183,8 +3233,10 @@ describe('Fill Ledger', () => {
         ledger.ingestFill(real('batched-real', 0.01, side), null, { skipPersist: true, cycleId: null });
         const rejected = { ...real('rejected-real', 0.01, side), price: 2100,
           ...(side === 'sell' && { size: NaN }) };
-        assert.throws(() => ledger.ingestFill(rejected,
-          null, { skipPersist: true }), { syntheticReconciliationRequired: true });
+        // A NaN quantity is now rejected at the ingestion boundary (#875); the
+        // buy-side price correction still rejects inside reconciliation.
+        assert.throws(() => ledger.ingestFill(rejected, null, { skipPersist: true }),
+          side === 'sell' ? { name: 'FillValidationError' } : { syntheticReconciliationRequired: true });
 
         // No caller flush: a failed batch never reached it. Reload must still
         // agree with the replacement and its unresolved synthetic residual.

@@ -26,11 +26,54 @@
 const { createNewBody, syncPositionState, mergeIntoBody, computeBuyOrderShortfall } = require('./celestial-hierarchy');
 const { loadRegimeState, saveRegimeState } = require('./state-tracker');
 const { STATUS } = require('./manual-trades');
+const { FillValidationError, validateFillInput } = require('./fill-ledger');
 const { readBooleanFlag } = require('./shared-utils');
 const { getRegimeConfig } = require('./config-utils');
 
 /** Logger used when a caller supplies none (tests, CLI paths). */
 const NOOP_LOGGER = { info: () => {}, warn: () => {}, error: () => {} };
+
+const toLedgerFill = (raw, orderId, defaultSide) => ({
+  tradeId: raw.tradeId,
+  orderId,
+  side: raw.side?.toLowerCase() || defaultSide,
+  price: raw.price,
+  size: raw.size,
+  totalCommission: raw.totalCommission || raw.commission || 0,
+  commission: raw.commission || 0,
+  rebate: raw.rebate || 0,
+  // Pass raw.netFee through AS-IS (no `|| raw.commission` fallback) —
+  // codex delta review, round 4: falling back to the GROSS commission
+  // here short-circuited fillLedger.ingestFill's own rebate-aware
+  // default (`commission - rebate`), which only applies when `netFee`
+  // is `undefined`/`null` on the input. That silently made every
+  // manually-imported buy's ledger-row `netFee` equal gross commission
+  // regardless of any rebate — invisible until a rebated fill's cost
+  // basis was compared against a later reconciliation computed the
+  // same (now-correct) way.
+  netFee: raw.netFee,
+  liquidityIndicator: raw.liquidityIndicator || 'TAKER',
+  tradeTime: raw.tradeTime,
+  fee_asset: 'USDC',
+});
+
+/**
+ * Validate every fill of one order against the ledger's ingestion rules
+ * WITHOUT mutating anything. Returns an error string for the first invalid
+ * fill, or null. Call before ingestAdapterFills so a malformed fill can never
+ * be acknowledged as a successful import or leave a half-ingested order.
+ */
+const validateAdapterFills = (fills, orderId, defaultSide) => {
+  for (const raw of fills) {
+    try {
+      validateFillInput(toLedgerFill(raw, orderId, defaultSide));
+    } catch (err) {
+      if (!(err instanceof FillValidationError)) throw err;
+      return `${err.message} (order ${orderId}, trade ${raw.tradeId ?? 'unknown'})`;
+    }
+  }
+  return null;
+};
 
 /**
  * Ingest adapter fills into the fill ledger, accumulating totals.
@@ -54,29 +97,7 @@ const ingestAdapterFills = (fillLedger, fills, orderId, defaultSide) => {
     tradeIds.push(raw.tradeId);
     totalSize += raw.size;
     totalQuote += raw.price * raw.size;
-    fillLedger.ingestFill({
-      tradeId: raw.tradeId,
-      orderId,
-      side: raw.side?.toLowerCase() || defaultSide,
-      price: raw.price,
-      size: raw.size,
-      totalCommission: raw.totalCommission || raw.commission || 0,
-      commission: raw.commission || 0,
-      rebate: raw.rebate || 0,
-      // Pass raw.netFee through AS-IS (no `|| raw.commission` fallback) —
-      // codex delta review, round 4: falling back to the GROSS commission
-      // here short-circuited fillLedger.ingestFill's own rebate-aware
-      // default (`commission - rebate`), which only applies when `netFee`
-      // is `undefined`/`null` on the input. That silently made every
-      // manually-imported buy's ledger-row `netFee` equal gross commission
-      // regardless of any rebate — invisible until a rebated fill's cost
-      // basis was compared against a later reconciliation computed the
-      // same (now-correct) way.
-      netFee: raw.netFee,
-      liquidityIndicator: raw.liquidityIndicator || 'TAKER',
-      tradeTime: raw.tradeTime,
-      fee_asset: 'USDC',
-    }, null, { skipPersist: true, cycleId: null });
+    fillLedger.ingestFill(toLedgerFill(raw, orderId, defaultSide), null, { skipPersist: true, cycleId: null });
   }
   return { tradeIds, totalSize, totalQuote };
 };
@@ -174,6 +195,8 @@ const createManualTradeImporter = ({
     const { fills: sellFills, error } = await fetchOrderFills(sellOrderId, 'sell');
     if (error) return fail(error);
 
+    const invalidSell = validateAdapterFills(sellFills, sellOrderId, 'sell');
+    if (invalidSell) return fail(invalidSell);
     const { tradeIds, totalSize, totalQuote } = ingestAdapterFills(fillLedger, sellFills, sellOrderId, 'sell');
     fillLedger.persist();
 
@@ -250,6 +273,8 @@ const createManualTradeImporter = ({
         return fail(`Buy order filled but no fills found for order ${trade.buyOrderId}`);
       }
 
+      const invalidBuy = validateAdapterFills(buyFills, trade.buyOrderId, 'buy');
+      if (invalidBuy) return fail(invalidBuy);
       const { tradeIds, totalSize, totalQuote } = ingestAdapterFills(fillLedger, buyFills, trade.buyOrderId, 'buy');
       // Pair the buy to its sell so it is not counted as an open position.
       fillLedger.annotateFillsByOrderId(trade.buyOrderId, { sellOrderId: trade.sellOrderId });
@@ -383,6 +408,8 @@ const createManualTradeImporter = ({
     const { fills: buyFills, error } = await fetchOrderFills(buyOrderId, 'buy');
     if (error) return fail(error);
 
+    const invalidBuy = validateAdapterFills(buyFills, buyOrderId, 'buy');
+    if (invalidBuy) return fail(invalidBuy);
     const { tradeIds, totalSize, totalQuote } = ingestAdapterFills(fillLedger, buyFills, buyOrderId, 'buy');
     fillLedger.persist();
 
@@ -701,6 +728,8 @@ const createManualTradeImporter = ({
     const sell = await fetchOrderFills(sellOrderId, 'sell');
     if (sell.error) return fail(sell.error);
 
+    const invalidLeg = validateAdapterFills(buy.fills, buyOrderId, 'buy') || validateAdapterFills(sell.fills, sellOrderId, 'sell');
+    if (invalidLeg) return fail(invalidLeg);
     const buyTotals = ingestAdapterFills(fillLedger, buy.fills, buyOrderId, 'buy');
     const sellTotals = ingestAdapterFills(fillLedger, sell.fills, sellOrderId, 'sell');
 

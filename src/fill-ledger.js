@@ -71,6 +71,65 @@ const getFillLedgerPath = (exchange, pair) => {
   return path.join(resolveFundDataDir(exchange, pair), 'fill-ledger.json');
 };
 
+/** Typed error: an incoming fill failed boundary validation and was NOT ingested. */
+class FillValidationError extends Error {
+  constructor(reason, fillData) {
+    super(`Invalid fill rejected: ${reason}`);
+    this.name = 'FillValidationError';
+    this.reason = reason;
+    this.tradeId = fillData?.tradeId ?? fillData?.trade_id;
+    this.orderId = fillData?.orderId ?? fillData?.order_id;
+  }
+}
+
+// Strict numeric parse: rejects numeric-prefix strings ('12abc'), blanks, NaN,
+// and non-number/string types. Returns NaN when invalid.
+const strictNumber = (v) => {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string' && v.trim() !== '') return Number(v);
+  return NaN;
+};
+
+/**
+ * Validate and normalize a raw incoming fill into the fields ingestFill
+ * persists. Mirrors findInvalidLedgerReason so a successful ingest can never
+ * publish a row the next cold start rejects. Preserves legacy defaults
+ * (missing tradeTime → now, missing fees → 0) and signed net fees/rebates.
+ */
+const normalizeFillInput = (fillData) => {
+  const fail = (reason) => { throw new FillValidationError(reason, fillData); };
+  if (!fillData || typeof fillData !== 'object') fail('fill is not an object');
+  const tradeId = fillData.tradeId || fillData.trade_id;
+  if (typeof tradeId !== 'string' || !tradeId) fail('missing or non-string tradeId');
+  const side = typeof fillData.side === 'string' ? fillData.side.toLowerCase() : '';
+  if (side !== 'buy' && side !== 'sell') fail("side must be 'buy' or 'sell'");
+  const price = strictNumber(fillData.price);
+  if (!Number.isFinite(price) || price <= 0) fail('price must be a finite positive number');
+  const size = strictNumber(fillData.size);
+  if (!Number.isFinite(size) || size <= 0) fail('size must be a finite positive number');
+  if (!Number.isFinite(price * size)) fail('quoteAmount must be finite');
+  const optionalNumber = (value, label) => {
+    const n = value ? strictNumber(value) : 0;
+    if (!Number.isFinite(n)) fail(`${label} must be a finite number`);
+    return n;
+  };
+  const fee = optionalNumber(fillData.totalCommission || fillData.commission || fillData.fee || fillData.totalFees, 'fee');
+  const rebate = optionalNumber(fillData.rebate, 'rebate');
+  let netFee = fee - rebate;
+  if (fillData.netFee !== undefined && fillData.netFee !== null) {
+    netFee = strictNumber(fillData.netFee);
+    if (!Number.isFinite(netFee)) fail('netFee must be a finite number');
+  }
+  const orderId = fillData.orderId || fillData.order_id;
+  if (orderId != null && typeof orderId !== 'string') fail('orderId must be a string when present');
+  let fillTimestamp = Date.now();
+  if (fillData.tradeTime) {
+    fillTimestamp = new Date(fillData.tradeTime).getTime();
+    if (!Number.isFinite(fillTimestamp)) fail('tradeTime is not a valid timestamp');
+  }
+  return { tradeId, fillTimestamp, orderId, price, size, fee, rebate, netFee };
+};
+
 /**
  * Validate a parsed-from-JSON ledger payload against the same shape rules
  * load() applies before resetCaches. Returns null when the payload is
@@ -1231,14 +1290,15 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   const ingestFill = (fillData, orderPlacedAt = null, options = {}) => {
     resumeBuyCorrections();
     resumeSellCorrections();
-    const tradeId = fillData.tradeId || fillData.trade_id;
+    // Normalize + validate BEFORE dedup or any mutation so a malformed upstream
+    // record can never reserve an ID, advance an index, or reach disk (a record
+    // the cold-start validator would reject). Throws FillValidationError.
+    const { tradeId, fillTimestamp, orderId, price, size, fee, rebate, netFee } = normalizeFillInput(fillData);
 
     // Idempotency check
     if (fills.has(tradeId) || reconciledTradeIds.has(tradeId)) {
       return { ingested: false, fill: null };
     }
-
-    const fillTimestamp = fillData.tradeTime ? new Date(fillData.tradeTime).getTime() : Date.now();
 
     // Calculate fill time if we have order placement time
     const fillTimeMs = orderPlacedAt && orderPlacedAt > 0 ? fillTimestamp - orderPlacedAt : null;
@@ -1252,23 +1312,21 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
     const fill = {
       tradeId,
-      orderId: fillData.orderId || fillData.order_id,
-      side: (fillData.side || '').toLowerCase(),
-      price: parseFloat(fillData.price),
-      size: parseFloat(fillData.size),
-      quoteAmount: parseFloat(fillData.price) * parseFloat(fillData.size),
+      orderId,
+      side: fillData.side.toLowerCase(),
+      price,
+      size,
+      quoteAmount: price * size,
       // Accept an explicit fee/totalFees too — synthetic fills built from order
       // status (Coinbase eventual-consistency fallback) carry the known fee as
       // totalFees/fee but no totalCommission, and were previously persisted with
       // fee:0, permanently overstating that order's P&L (issue #210-C).
-      fee: parseFloat(fillData.totalCommission || fillData.commission || fillData.fee || fillData.totalFees || 0),
+      fee,
       feeAsset: fillData.commissionAsset || fillData.fee_asset || 'USDC',
-      rebate: parseFloat(fillData.rebate || 0),
+      rebate,
       // Honor an explicitly-provided netFee (e.g. synthetic fills); otherwise
-      // derive it from the gross fee minus rebate.
-      netFee: (fillData.netFee !== undefined && fillData.netFee !== null)
-        ? parseFloat(fillData.netFee)
-        : parseFloat(fillData.totalCommission || fillData.commission || fillData.fee || fillData.totalFees || 0) - parseFloat(fillData.rebate || 0),
+      // derived from the gross fee minus rebate (see normalizeFillInput).
+      netFee,
       liquidityIndicator: fillData.liquidityIndicator || fillData.liquidity_indicator || 'TAKER',
       timestamp: fillTimestamp,
       ingestedAt: Date.now(),
@@ -3102,6 +3160,8 @@ const getCachedFillLedger = (exchange, productId, pair) => {
 
 module.exports = {
   createFillLedger,
+  FillValidationError,
+  validateFillInput: normalizeFillInput,
   getCachedFillLedger,
   getFillLedgerPath,
   CYCLE_COMPLETE_SELL_RATIO,
