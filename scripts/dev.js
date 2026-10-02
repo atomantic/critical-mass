@@ -1,3 +1,5 @@
+require('../src/runtime-env').loadRuntimeEnv();
+
 // The combined development command owns only these two processes, not a shell.
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');

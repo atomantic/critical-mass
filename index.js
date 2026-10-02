@@ -1,3 +1,5 @@
+require('./src/runtime-env').loadRuntimeEnv();
+
 const { runIntervalCycle, checkStatus } = require('./src/dca-engine');
 const { log } = require('./src/logger');
 const { getAdapter } = require('./src/adapters');

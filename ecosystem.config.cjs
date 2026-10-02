@@ -1,3 +1,5 @@
+require('./src/runtime-env').loadRuntimeEnv();
+
 // =============================================================================
 // Port Configuration - All ports defined here as single source of truth
 // =============================================================================
