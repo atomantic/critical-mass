@@ -175,3 +175,31 @@ describe('Closed Trades dedup and aggregation', () => {
     assert.equal(ct2.getCount(), 1);
   });
 });
+
+describe('Closed Trades unreadable file', () => {
+  it('quarantines a truncated closed-trades.json with its original bytes before any persist', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'closed-trades-corrupt-'));
+    migration.getExchangeDataDir = (exchange) => {
+      const d = path.join(dir, exchange);
+      fs.mkdirSync(d, { recursive: true });
+      return d;
+    };
+    try {
+      const { createClosedTrades } = freshModule();
+      const ct = createClosedTrades('coinbase', 'BTC-USDC');
+      const filePath = path.join(migration.getExchangeDataDir('coinbase'), 'BTC-USDC', 'closed-trades.json');
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, '[{"sellOrderId":"a",');
+
+      assert.equal(ct.load(), false);
+      assert.equal(fs.existsSync(filePath), false);
+      const q = fs.readdirSync(path.dirname(filePath)).filter(f => f.startsWith('closed-trades.json.corrupt-'));
+      assert.equal(q.length, 1);
+      assert.equal(fs.readFileSync(path.join(path.dirname(filePath), q[0]), 'utf8'), '[{"sellOrderId":"a",');
+    } finally {
+      migration.getExchangeDataDir = originalGetExchangeDataDir;
+      delete require.cache[closedTradesPath];
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

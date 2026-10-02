@@ -22,7 +22,7 @@
 const fs = require('fs');
 const path = require('path');
 const { resolveFundDataDir, getFundDataDir } = require('./migration');
-const { atomicWriteSync } = require('./state-tracker');
+const { atomicWriteSync, quarantineFile } = require('./state-tracker');
 const { fundKey: composeFundKey } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 
@@ -134,9 +134,8 @@ const readFundStateFile = (stateFile, key, logger) => {
   try {
     payload = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   } catch (err) {
-    const quarantinePath = `${stateFile}.corrupt-${Date.now()}`;
-    fs.renameSync(stateFile, quarantinePath);
-    logger.warn(`⚠️ [${key}] Dry-run state unreadable (${err.message}) — quarantined to ${path.basename(quarantinePath)}, starting fresh`, {
+    const quarantinePath = quarantineFile(stateFile, logger);
+    logger.warn(`⚠️ [${key}] Dry-run state unreadable (${err.message}) — quarantined to ${quarantinePath ? path.basename(quarantinePath) : '(rename failed)'}, starting fresh`, {
       fundKey: key,
       stateFile,
       quarantinePath,
@@ -147,9 +146,13 @@ const readFundStateFile = (stateFile, key, logger) => {
 
   // Version check for future migrations
   if (payload?.version !== STATE_VERSION) {
+    // Parseable but unrecognized (newer build, hand edit): keep it, since the
+    // next flush rewrites the file as the current version.
+    const quarantinePath = quarantineFile(stateFile, logger);
     logger.warn(`⚠️ [${key}] Dry-run state version mismatch (${payload?.version} vs ${STATE_VERSION}), starting fresh`, {
       fundKey: key,
       stateFile,
+      quarantinePath,
       actualVersion: payload?.version ?? null,
       expectedVersion: STATE_VERSION,
     });
