@@ -83,7 +83,12 @@ const ensureLogFile = (exchange = 'coinbase', pair) => {
       // For existing data rows, add empty Timestamp (we don't have that info)
       return '\t' + line;
     });
-    fs.writeFileSync(logFile, newLines.join('\n'));
+    // One-time backup of the original before the swap (never overwritten once present)
+    const backupFile = `${logFile}.pre-timestamp-migration`;
+    if (!fs.existsSync(backupFile)) fs.copyFileSync(logFile, backupFile);
+    // Lazy require: state-tracker requires this module at load time (circular)
+    const { atomicWriteSync } = require('./state-tracker');
+    atomicWriteSync(logFile, newLines.join('\n'));
   }
 };
 
@@ -379,6 +384,7 @@ module.exports = {
   log,
   createContextLogger,
   getLogFile,
+  ensureLogFile,
   // Fibonacci logging
   logFibBuy,
   logFibSellOrder,
