@@ -177,18 +177,18 @@ describe('regime engine survives persistence failures', () => {
   let engine;
   /** @type {string[]} */
   let executorCalls;
-  const realWriteFileSync = fs.writeFileSync;
+  const realOpenSync = fs.openSync;
 
   /** Make every write under the test fund's dir fail like a full disk. */
   const breakDisk = () => {
-    mock.method(fs, 'writeFileSync', (file, ...rest) => {
-      if (String(file).includes(TEST_PAIR)) {
-        const err = new Error(`ENOSPC: no space left on device, write '${file}'`);
+    mock.method(fs, 'openSync', (file, ...rest) => {
+      if (String(file).includes(TEST_PAIR) && String(file).endsWith('.tmp')) {
+        const err = new Error(`ENOSPC: no space left on device, open '${file}'`);
         // @ts-ignore — mirror the shape fs throws with
         err.code = 'ENOSPC';
         throw err;
       }
-      return realWriteFileSync(file, ...rest);
+      return realOpenSync(file, ...rest);
     });
   };
 

@@ -29,6 +29,7 @@ const { migrateFromLegacy, createInitialCelestialState } = require('./celestial-
 const { loadRawConfig } = require('./config-utils');
 const { createContextLogger } = require('./logger');
 const { DATA_DIR } = require('./paths');
+const { fsyncDir } = require('./fsync-dir');
 
 const stateTrackerLogger = createContextLogger();
 
@@ -45,17 +46,26 @@ const LIFECYCLE = Object.freeze({
 });
 
 /**
- * Atomic write: write to .tmp then rename (POSIX-atomic).
- * Prevents truncated JSON on crash.
+ * Atomic durable write: fsync the temporary file before rename, then fsync
+ * the parent directory so a power loss cannot discard the new directory entry.
  * @param {string} filePath - Target file path
  * @param {string} data - Data to write
  */
 const atomicWriteSync = (filePath, data) => {
   const tmpPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  let fd;
   try {
-    fs.writeFileSync(tmpPath, data, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    fd = fs.openSync(tmpPath, 'wx', 0o600);
+    fs.writeFileSync(fd, data, { encoding: 'utf8' });
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
     fs.renameSync(tmpPath, filePath);
+    fsyncDir(path.dirname(filePath));
   } catch (err) {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch {}
+    }
     fs.rmSync(tmpPath, { force: true });
     throw err;
   }
