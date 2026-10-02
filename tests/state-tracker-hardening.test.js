@@ -39,6 +39,70 @@ describe('state-tracker hardening (issue #108)', () => {
     delete require.cache[stateTrackerPath];
   });
 
+  it('atomicWriteSync fsyncs the temp file before rename and the parent directory after', () => {
+    const { atomicWriteSync } = freshModule();
+    const file = path.join(tmpDir, 'durable.json');
+    const originalFsyncSync = fs.fsyncSync;
+    const originalRenameSync = fs.renameSync;
+    const operations = [];
+
+    fs.fsyncSync = (fd) => {
+      operations.push(fs.fstatSync(fd).isDirectory() ? 'directory-fsync' : 'file-fsync');
+      return originalFsyncSync(fd);
+    };
+    fs.renameSync = (...args) => {
+      operations.push('rename');
+      return originalRenameSync(...args);
+    };
+
+    try {
+      atomicWriteSync(file, '{"durable":true}');
+    } finally {
+      fs.fsyncSync = originalFsyncSync;
+      fs.renameSync = originalRenameSync;
+    }
+
+    assert.deepEqual(operations, ['file-fsync', 'rename', 'directory-fsync']);
+    assert.equal(fs.readFileSync(file, 'utf8'), '{"durable":true}');
+  });
+
+  it('atomicWriteSync removes the temp file and rethrows when file fsync fails', () => {
+    const { atomicWriteSync } = freshModule();
+    const file = path.join(tmpDir, 'failed-fsync.json');
+    const originalFsyncSync = fs.fsyncSync;
+    fs.fsyncSync = (fd) => {
+      if (!fs.fstatSync(fd).isDirectory()) throw Object.assign(new Error('fsync failed'), { code: 'EIO' });
+      return originalFsyncSync(fd);
+    };
+
+    try {
+      assert.throws(() => atomicWriteSync(file, 'new data'), /fsync failed/);
+    } finally {
+      fs.fsyncSync = originalFsyncSync;
+    }
+
+    assert.equal(fs.existsSync(file), false);
+    assert.deepEqual(fs.readdirSync(tmpDir), []);
+  });
+
+  it('atomicWriteSync tolerates unsupported parent-directory fsync', () => {
+    const { atomicWriteSync } = freshModule();
+    const file = path.join(tmpDir, 'unsupported-dir-fsync.json');
+    const originalFsyncSync = fs.fsyncSync;
+    fs.fsyncSync = (fd) => {
+      if (fs.fstatSync(fd).isDirectory()) throw Object.assign(new Error('unsupported'), { code: 'EINVAL' });
+      return originalFsyncSync(fd);
+    };
+
+    try {
+      assert.doesNotThrow(() => atomicWriteSync(file, 'saved'));
+    } finally {
+      fs.fsyncSync = originalFsyncSync;
+    }
+
+    assert.equal(fs.readFileSync(file, 'utf8'), 'saved');
+  });
+
   it('loadState throws a descriptive error on corrupt JSON instead of a raw SyntaxError', () => {
     const st = freshModule();
     const file = st.getStateFile('cb', 'BTC-USD');

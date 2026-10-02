@@ -40,6 +40,7 @@ const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('./paths');
 const { hasPendingBackfill } = require('./fifo-backfill-transaction');
+const { fsyncDir } = require('./fsync-dir');
 
 /** Durable marker + rollback plan. Lives in the data dir so any process finds it. */
 const JOURNAL_FILENAME = '.restore-journal.json';
@@ -79,20 +80,6 @@ const attempt = (fn) => {
 };
 
 /**
- * Flush a directory entry (a rename, a create) to stable storage. Without this
- * the journal can be absent after a power loss even though its data blocks
- * landed — exactly the case the journal exists to cover.
- * @param {string} dir - Directory to fsync
- * @returns {void}
- */
-const fsyncDir = (dir) => {
-  const opened = attempt(() => fs.openSync(dir, 'r'));
-  if (!opened.ok) return; // Some filesystems refuse O_RDONLY on directories; the rename still stands.
-  attempt(() => fs.fsyncSync(opened.value));
-  attempt(() => fs.closeSync(opened.value));
-};
-
-/**
  * Write a file so that a crash leaves either the previous content or the new
  * content: temp file, fsync, atomic rename, fsync of the parent directory.
  *
@@ -113,7 +100,7 @@ const writeFileDurable = (file, data, mode) => {
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fs.renameSync(tmp, file);
-    fsyncDir(path.dirname(file));
+    fsyncDir(path.dirname(file), { ignoreAllErrors: true });
   });
   if (!written.ok) {
     fs.rmSync(tmp, { force: true });
@@ -263,7 +250,7 @@ const cleanupArtifacts = (dataDir, journal) => {
     attempt(() => fs.rmSync(path.join(dataDir, rel), { recursive: true, force: true }));
   }
   attempt(() => fs.rmSync(path.join(dataDir, JOURNAL_FILENAME), { force: true }));
-  fsyncDir(dataDir);
+  fsyncDir(dataDir, { ignoreAllErrors: true });
 };
 
 /**
