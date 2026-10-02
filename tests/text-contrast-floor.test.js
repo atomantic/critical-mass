@@ -178,7 +178,7 @@ const BG_600_ALLOWLIST = new Set([
   "admin/src/components/sentinel/Dashboard.jsx::warning: 'bg-yellow-600 text-black',",
   // icon-only / no-text controls (toggle knob, restart icon button — no visible label)
   "admin/src/components/sentinel/Dashboard.jsx::className={`w-8 h-5 rounded-full relative transition-colors ${feed.enabled ? 'bg-green-600' : 'bg-gray-600'}`}",
-  "admin/src/components/updown/Dashboard.jsx::className={`p-1.5 rounded transition-colors ${restarting ? 'bg-yellow-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}",
+  "admin/src/components/updown/Dashboard.jsx::className={`${ENGINE_CONTROL_CLASS} rounded transition-colors ${restarting ? 'bg-yellow-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}",
 ])
 
 describe('admin/src text-gray-500/600 sweep (issue #538)', () => {
