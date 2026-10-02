@@ -269,9 +269,14 @@ describe('dry-run-state structured logging', () => {
 
     const lines = captureLogs(() => assert.equal(loadState('coinbase', 'BTC-USD'), null));
 
+    const quarantined = fs.readdirSync(path.dirname(stateFile)).filter(f => f.includes('.corrupt-'));
+    assert.equal(quarantined.length, 1, 'unrecognized-version file is preserved, not left to be overwritten');
+    assert.equal(fs.existsSync(stateFile), false);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(path.dirname(stateFile), quarantined[0]), 'utf8')).version, 0);
     assert.deepEqual(
       contextFor(lines, '⚠️ [coinbase::BTC-USD] Dry-run state version mismatch (0 vs 1), starting fresh'),
       {
+        quarantinePath: path.join(path.dirname(stateFile), quarantined[0]),
         exchange: 'coinbase',
         pair: 'BTC-USD',
         fundKey: 'coinbase::BTC-USD',

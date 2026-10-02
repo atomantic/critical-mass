@@ -11,7 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const { resolveFundDataDir } = require('./migration');
-const { atomicWriteSync } = require('./state-tracker');
+const { atomicWriteSync, quarantineFile } = require('./state-tracker');
 const { createContextLogger } = require('./logger');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 
@@ -93,8 +93,12 @@ const createClosedTrades = (exchange, pair) => {
       });
       return true;
     } catch (err) {
+      // Preserve the original bytes: migrateFromFills will persist() a rebuilt
+      // file over this path, and per-sell records aren't reproducible from fills.
+      const quarantinePath = quarantineFile(filePath, logger);
       logger.warn(`⚠️ [${exchange}] Failed to load closed trades: ${err.message}`, {
         filePath,
+        quarantinePath,
         error: err.message,
       });
       return false;

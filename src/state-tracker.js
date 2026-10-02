@@ -61,6 +61,29 @@ const atomicWriteSync = (filePath, data) => {
   }
 };
 
+/**
+ * Move an unreadable/unrecognized state file aside as `<file>.corrupt-<ts>` so
+ * the next persist cannot silently overwrite it. Never throws — this runs on
+ * load and timer paths where a failed rename must not crash the process.
+ * @param {string} filePath - File to quarantine
+ * @param {{warn: Function}} logger - Context logger
+ * @returns {string|null} Quarantine path, or null when the rename failed
+ */
+const quarantineFile = (filePath, logger) => {
+  const quarantinePath = `${filePath}.corrupt-${Date.now()}`;
+  try {
+    fs.renameSync(filePath, quarantinePath);
+    return quarantinePath;
+  } catch (err) {
+    logger.warn(`⚠️ Could not quarantine ${path.basename(filePath)}: ${err.message}`, {
+      filePath,
+      quarantinePath,
+      error: err.message,
+    });
+    return null;
+  }
+};
+
 /** @type {Map<string, number>} In-memory save version per file */
 const saveVersions = new Map();
 
@@ -1400,4 +1423,5 @@ module.exports = {
   getBlockingPlacementIntents,
   describePlacementIntents,
   atomicWriteSync,
+  quarantineFile,
 };
