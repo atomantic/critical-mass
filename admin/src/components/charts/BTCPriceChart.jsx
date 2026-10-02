@@ -6,6 +6,7 @@ import {
 import { BarChart3 } from 'lucide-react'
 import useCandleData, { DEFAULT_VIEWS } from '../../hooks/useCandleData'
 import { BTC_TOOLTIP_STYLE, formatBTCPrice } from './chartUtils'
+import InactiveSafeTooltipContent from './InactiveSafeTooltipContent'
 import HeikinAshiRenderer from './HeikinAshiRenderer'
 import SignalAnnotationRenderer from './SignalAnnotationRenderer'
 
@@ -357,6 +358,7 @@ export default function BTCPriceChart({
               <XAxis dataKey="label" tick={{ fontSize: 10, fill: '#9ca3af' }} interval="preserveStartEnd" />
               <YAxis domain={priceDomain} allowDataOverflow tick={{ fontSize: 10, fill: '#9ca3af' }} tickFormatter={formatBTCPrice} width={70} />
               <Tooltip
+                content={InactiveSafeTooltipContent}
                 contentStyle={BTC_TOOLTIP_STYLE}
                 labelStyle={{ color: '#9ca3af' }}
                 formatter={(value, name) => {
