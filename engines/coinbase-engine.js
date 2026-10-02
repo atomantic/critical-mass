@@ -870,8 +870,10 @@ const gracefulShutdown = async (signal) => {
 };
 
 // Install signal handlers with error handling and watchdog
-// Must stay below `kill_timeout` for the engines in ecosystem.config.cjs.
-const SHUTDOWN_WATCHDOG_MS = 5000;
+// Must exceed FILL_DRAIN_MS (the bounded in-flight-fill drain in regime-engine
+// stop()) plus the state save, and stay below `kill_timeout` for the engines in
+// ecosystem.config.cjs. Kept a literal: tests/pm2-kill-timeout.test.js parses it.
+const SHUTDOWN_WATCHDOG_MS = 15000;
 
 const setupShutdownHandlers = () => {
   const shutdownLogger = engineLogger(EXCHANGE_NAME);

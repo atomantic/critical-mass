@@ -61,7 +61,7 @@ const { resolveFundDataDir } = require('./migration');
 const celestialHierarchy = require('./celestial-hierarchy');
 const { fmtCurrency: fmtPrice, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
-const { createEngineLocks } = require('./engine-locks');
+const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
 
 /** Interval between periodic metrics/regime-classification updates (ms) */
 const METRICS_INTERVAL_MS = 60000;
@@ -1136,6 +1136,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // merged (e.g. target TP partially filled) doesn't re-attempt+re-log every
   // cycle (#189). 0 = no cooldown.
   let dustMergeRetryAfter = 0;
+  // Bound on stop()'s wait for in-flight fill handlers (test-overridable).
+  let fillDrainMs = FILL_DRAIN_MS;
   let stateSaveInterval = null;
   let fillDriftInterval = null;
   let fillDriftInFlight = false;
@@ -3044,6 +3046,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: false, error: 'Engine already running' };
     }
     isStarting = true;
+    // A prior stop() closed the fill gate; startup recovery books fills.
+    engineLocks.openFillGate();
     try {
       startPromise = startImpl();
       return await startPromise;
@@ -3076,6 +3080,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // A partial recovery is not a valid snapshot: never overwrite durable
       // state merely to dispose an attempt that failed before running.
       if (!wasRunning) return;
+      // Let fill handlers already past their gate finish (TP placement,
+      // cancel/replace) so the snapshot below includes their writes and the
+      // process is not killed between ledger ingest and TP booking. New
+      // top-level fills are refused first; the drain is bounded so a hung
+      // exchange call cannot block shutdown.
+      engineLocks.closeFillGate();
+      const drain = await engineLocks.waitForFillsIdle(fillDrainMs);
+      if (!drain.idle) {
+        logger.warn(
+          `⚠️ [${exchange}] Shutdown: ${drain.pending} fill handler(s) still in flight after ${fillDrainMs / 1000}s (orders: ${drain.orderIds.join(', ')}) — saving state anyway; startup recovery will repair`,
+          { pending: drain.pending, orderIds: drain.orderIds }
+        );
+      }
       // Save state before stopping
       if (isDryRun) {
         dryRunState.forceSave(exchange, {
@@ -9530,6 +9547,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       setReconcileInProgress: engineLocks._test.setReconcileInProgress,
       setFillInProgress: engineLocks._test.setFillInProgress,
       setDustMergeRetryAfter: (v) => { dustMergeRetryAfter = v; },
+      setFillDrainMs: (v) => { fillDrainMs = v; },
       // Speeds up the incompleteFills engine-level retry (issue #679
       // follow-up) for tests — production keeps the 10s/5-attempt default.
       setIncompleteFillRetryTiming: (delayMs, maxRetries) => {

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { apps } = require('../ecosystem.config.cjs');
 const { SHUTDOWN_TIMEOUT_MS } = require('../src/gateway-shutdown');
+const { FILL_DRAIN_MS } = require('../src/engine-locks');
 
 const read = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
 const watchdogMs = Number(/const SHUTDOWN_WATCHDOG_MS = (\d+);/.exec(read('engines/coinbase-engine.js'))[1]);
@@ -14,6 +15,10 @@ const graceMs = (() => {
 const deadlineFor = (app) => (app.name === 'critical-mass' ? SHUTDOWN_TIMEOUT_MS : watchdogMs);
 
 describe('PM2 kill_timeout ordering', () => {
+  it('engine watchdog outlasts the in-flight fill drain', () => {
+    assert.ok(watchdogMs > FILL_DRAIN_MS);
+  });
+
   const longRunning = apps.filter((a) => a.name !== 'critical-mass-ui');
 
   it('covers the gateway and every engine', () => {

@@ -12,7 +12,7 @@ const PORTS = {
 // PM2 SIGTERM->SIGKILL grace for exchange engines. Must stay above the engines'
 // in-process force-exit watchdog (SHUTDOWN_WATCHDOG_MS in engines/coinbase-engine.js)
 // and below the Docker stop_grace_period. PM2's 1600ms default would SIGKILL mid-save.
-const ENGINE_KILL_TIMEOUT_MS = 15000;
+const ENGINE_KILL_TIMEOUT_MS = 25000;
 
 module.exports = {
   PORTS, // Export for other configs to reference

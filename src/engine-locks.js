@@ -31,6 +31,13 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 
 /** How long a fill will poll for an in-flight merge before proceeding anyway. */
 const FILL_WAIT_MS = 15000;
+/**
+ * How long engine shutdown waits for in-flight fill handlers to settle before
+ * snapshotting state anyway. Must stay below the process-manager kill deadline
+ * and the shutdown watchdog in engines/coinbase-engine.js (which is derived
+ * from this value).
+ */
+const FILL_DRAIN_MS = 10000;
 /** Poll interval while a fill waits for mergeInProgress to clear. */
 const FILL_POLL_MS = 25;
 /**
@@ -45,6 +52,7 @@ const LADDER_POLL_MS = 25;
 
 const BUSY_STRUCTURE = 'A merge or reconcile is already in progress';
 const BUSY_POSITION = 'A merge, reconcile, or fill is in progress — try again';
+const FILL_GATE_CLOSED_CODE = 'FILL_GATE_CLOSED';
 const BUSY_LADDER = 'A ladder rebuild, cancel, or cycle reset is in progress — try again';
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -72,6 +80,13 @@ const createEngineLocks = (opts = {}) => {
   const mergeOwner = new AsyncLocalStorage();
   let reconcileInProgress = false;
   let fillInProgress = 0;
+  // orderIds of fills currently inside withFillGate, for the shutdown timeout
+  // warning. A Map keyed by a per-call token so duplicate orderIds stay counted.
+  const inFlightFills = new Map();
+  // Closed at shutdown: no NEW top-level fill may start, but a fill nested in
+  // an in-flight handler (its AsyncLocalStorage context) still runs through.
+  let fillGateClosed = false;
+  const fillOwner = new AsyncLocalStorage();
   let entryInProgress = false;
   // Ladder lock: `ladderTail` settles when the last queued holder releases;
   // `ladderPending` counts holders + waiters (0 ⇔ free). The ALS store is a
@@ -144,7 +159,15 @@ const createEngineLocks = (opts = {}) => {
    * @param {{exchange?: string, orderId?: string}} [meta]
    */
   const withFillGate = async (fn, meta = {}) => {
+    if (fillGateClosed && !fillOwner.getStore()) {
+      throw Object.assign(
+        new Error(`Fill ${meta.orderId || '?'} refused — engine is shutting down; it will be recovered on next start`),
+        { code: FILL_GATE_CLOSED_CODE }
+      );
+    }
+    const token = {};
     fillInProgress++;
+    inFlightFills.set(token, meta.orderId || '?');
     try {
       const waitDeadline = now() + fillWaitMs;
       while (mergeInProgress && now() < waitDeadline) {
@@ -157,10 +180,34 @@ const createEngineLocks = (opts = {}) => {
           `⚠️ [${exchange}] Fill ${orderId} proceeding after ${fillWaitMs / 1000}s wait — merge lock still held (possible stuck merge)`
         );
       }
-      return await fn();
+      return await fillOwner.run(true, fn);
     } finally {
       fillInProgress--;
+      inFlightFills.delete(token);
     }
+  };
+
+  /** Stop admitting new top-level fills (shutdown). Nested fills still run. */
+  const closeFillGate = () => { fillGateClosed = true; };
+  /** Re-admit fills (engine start after a stop). */
+  const openFillGate = () => { fillGateClosed = false; };
+
+  /**
+   * Resolve once no fill is in flight, or at the deadline — never rejects, so
+   * a hung fill handler cannot block shutdown past `timeoutMs`.
+   * @param {number} [timeoutMs]
+   * @returns {Promise<{idle: boolean, pending: number, orderIds: string[]}>}
+   */
+  const waitForFillsIdle = async (timeoutMs = FILL_DRAIN_MS) => {
+    const deadline = now() + timeoutMs;
+    while (fillInProgress > 0 && now() < deadline) {
+      await sleep(fillPollMs);
+    }
+    return {
+      idle: fillInProgress === 0,
+      pending: fillInProgress,
+      orderIds: [...inFlightFills.values()],
+    };
   };
 
   /**
@@ -296,6 +343,9 @@ const createEngineLocks = (opts = {}) => {
   return {
     withMergeLock,
     withFillGate,
+    closeFillGate,
+    openFillGate,
+    waitForFillsIdle,
     withReconcileLock,
     withEntryLock,
     withLadderLock,
@@ -319,6 +369,8 @@ module.exports = {
   createEngineLocks,
   FILL_WAIT_MS,
   FILL_POLL_MS,
+  FILL_DRAIN_MS,
+  FILL_GATE_CLOSED_CODE,
   LADDER_WAIT_MS,
   LADDER_POLL_MS,
   BUSY_LADDER,
