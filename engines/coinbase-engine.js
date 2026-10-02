@@ -28,7 +28,6 @@ const {
   resolveConfiguredPair,
 } = require('../src/config-utils');
 const { createRegimeEngine } = require('../src/regime-engine');
-const { FILL_DRAIN_MS } = require('../src/engine-locks');
 const {
   startMarketDataService,
   getActiveMarketDataFunds,
@@ -871,7 +870,10 @@ const gracefulShutdown = async (signal) => {
 };
 
 // Install signal handlers with error handling and watchdog
-const SHUTDOWN_WATCHDOG_MS = FILL_DRAIN_MS + 5000;
+// Must exceed FILL_DRAIN_MS (the bounded in-flight-fill drain in regime-engine
+// stop()) plus the state save, and stay below `kill_timeout` for the engines in
+// ecosystem.config.cjs. Kept a literal: tests/pm2-kill-timeout.test.js parses it.
+const SHUTDOWN_WATCHDOG_MS = 15000;
 
 const setupShutdownHandlers = () => {
   const shutdownLogger = engineLogger(EXCHANGE_NAME);
@@ -882,8 +884,7 @@ const setupShutdownHandlers = () => {
       process.exit(1);
     });
 
-    // Force-exit watchdog: if shutdown hangs, kill it. Must outlast the bounded
-    // in-flight-fill drain in regime-engine stop() plus its state save.
+    // Force-exit watchdog: if shutdown hangs, kill after SHUTDOWN_WATCHDOG_MS
     setTimeout(() => {
       shutdownLogger.error(`❌ Forcing exit after shutdown timeout (${SHUTDOWN_WATCHDOG_MS / 1000}s)`, { timeout: SHUTDOWN_WATCHDOG_MS });
       process.exit(1);

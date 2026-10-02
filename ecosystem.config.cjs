@@ -9,6 +9,11 @@ const PORTS = {
   CRYPTOCOM_IPC: 5574, // Crypto.com engine IPC WebSocket
 };
 
+// PM2 SIGTERM->SIGKILL grace for exchange engines. Must stay above the engines'
+// in-process force-exit watchdog (SHUTDOWN_WATCHDOG_MS in engines/coinbase-engine.js)
+// and below the Docker stop_grace_period. PM2's 1600ms default would SIGKILL mid-save.
+const ENGINE_KILL_TIMEOUT_MS = 25000;
+
 module.exports = {
   PORTS, // Export for other configs to reference
 
@@ -72,6 +77,7 @@ module.exports = {
       max_restarts: 10,
       min_uptime: "10s",
       restart_delay: 5000,
+      kill_timeout: ENGINE_KILL_TIMEOUT_MS,
       max_memory_restart: "512M",
       out_file: "./logs/critical-mass-coinbase-out.log",
       error_file: "./logs/critical-mass-coinbase-error.log",
@@ -98,6 +104,7 @@ module.exports = {
       max_restarts: 10,
       min_uptime: "10s",
       restart_delay: 5000,
+      kill_timeout: ENGINE_KILL_TIMEOUT_MS,
       max_memory_restart: "512M",
       out_file: "./logs/critical-mass-gemini-out.log",
       error_file: "./logs/critical-mass-gemini-error.log",
@@ -124,6 +131,7 @@ module.exports = {
       max_restarts: 10,
       min_uptime: "10s",
       restart_delay: 5000,
+      kill_timeout: ENGINE_KILL_TIMEOUT_MS,
       max_memory_restart: "512M",
       out_file: "./logs/critical-mass-cryptocom-out.log",
       error_file: "./logs/critical-mass-cryptocom-error.log",

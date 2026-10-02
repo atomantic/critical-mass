@@ -88,5 +88,14 @@ configuration uses `stop_grace_period: 40s`; standalone Docker runs need
 `docker stop --time 40`. For an ordered whole-stack
 restart, drain the gateway before stopping exchange engine processes so admitted
 IPC operations can finish; stopping all engines simultaneously cannot provide
-that dependency guarantee. The gateway deadline bounds its own lifetime even
+that dependency guarantee. The exchange engines (`critical-mass-coinbase`, `-gemini`, `-cryptocom`) set
+`kill_timeout: 25000` (`ENGINE_KILL_TIMEOUT_MS`), above their 15 s in-process
+force-exit watchdog (`SHUTDOWN_WATCHDOG_MS` in `engines/coinbase-engine.js`), which in
+turn outlasts the 10 s bounded wait for in-flight fill handlers that
+`regime-engine` `stop()` performs before saving state (`FILL_DRAIN_MS` in `src/engine-locks.js`).
+PM2's 1600 ms default would SIGKILL an engine mid state-save. Required ordering:
+in-process deadline < PM2 `kill_timeout` < Docker `stop_grace_period` (40 s, the
+largest PM2 value plus margin). `tests/pm2-kill-timeout.test.js` enforces it.
+
+The gateway deadline bounds its own lifetime even
 when an exchange or transport hangs.

@@ -173,6 +173,49 @@ describe('getLogFile / loadTransactionHistory route per fund (issue #543)', () =
     configUtils = null;
   });
 
+  describe('legacy header migration (issue #907)', () => {
+    const legacyHeader = 'Date\tType\tPrice';
+    const legacy = `${legacyHeader}\n2024-01-01\tBUY\t100\n`;
+    const file = () => path.join(tmpDir, 'coinbase', 'BTC-USDC', 'transactions.tsv');
+    const seed = (content) => {
+      fs.mkdirSync(path.dirname(file()), { recursive: true });
+      fs.writeFileSync(file(), content);
+    };
+
+    it('migrates via temp+rename and keeps a one-time backup', () => {
+      seed(legacy);
+      loggerModule.ensureLogFile('coinbase', 'BTC-USDC');
+      assert.equal(fs.readFileSync(file(), 'utf8'), `Timestamp\t${legacyHeader}\n\t2024-01-01\tBUY\t100\n`);
+      const backup = `${file()}.pre-timestamp-migration`;
+      assert.equal(fs.readFileSync(backup, 'utf8'), legacy);
+      assert.deepEqual(fs.readdirSync(path.dirname(file())).filter(f => f.endsWith('.tmp')), []);
+    });
+
+    it('leaves the original byte-identical when the write fails', () => {
+      seed(legacy);
+      const origRename = fs.renameSync;
+      fs.renameSync = () => { throw new Error('ENOSPC'); };
+      try {
+        assert.throws(() => loggerModule.ensureLogFile('coinbase', 'BTC-USDC'), /ENOSPC/);
+      } finally {
+        fs.renameSync = origRename;
+      }
+      assert.equal(fs.readFileSync(file(), 'utf8'), legacy);
+      assert.deepEqual(fs.readdirSync(path.dirname(file())).filter(f => f.endsWith('.tmp')), []);
+    });
+
+    it('does not touch migrated or header-only files', () => {
+      const migrated = `Timestamp\t${legacyHeader}\nT\t2024-01-01\tBUY\t100\n`;
+      seed(migrated);
+      loggerModule.ensureLogFile('coinbase', 'BTC-USDC');
+      assert.equal(fs.readFileSync(file(), 'utf8'), migrated);
+      seed('Timestamp\tDate\n');
+      loggerModule.ensureLogFile('coinbase', 'BTC-USDC');
+      assert.equal(fs.readFileSync(file(), 'utf8'), 'Timestamp\tDate\n');
+      assert.equal(fs.existsSync(`${file()}.pre-timestamp-migration`), false);
+    });
+  });
+
   it('resolves a named pair under the pair directory', () => {
     const logFile = loggerModule.getLogFile('coinbase', 'ETH-USDC');
     assert.equal(logFile, path.join(tmpDir, 'coinbase', 'ETH-USDC', 'transactions.tsv'));

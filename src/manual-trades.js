@@ -13,7 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { resolveFundDataDir } = require('./migration');
-const { atomicWriteSync } = require('./state-tracker');
+const { atomicWriteSync, quarantineFile } = require('./state-tracker');
 const { createContextLogger } = require('./logger');
 
 /**
@@ -104,8 +104,11 @@ const createManualTradeStore = (exchange, pair) => {
         dismissedFillCount: dismissedFillOrderIds.size,
       });
     } catch (err) {
+      // The next persist() would overwrite the file with an empty store.
+      const quarantinePath = quarantineFile(filePath, logger);
       logger.warn(`⚠️ [${exchange}] Failed to load manual trades: ${err.message}`, {
         filePath,
+        quarantinePath,
         error: err.message,
       });
     }
