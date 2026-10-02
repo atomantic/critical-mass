@@ -80,6 +80,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false) => {
       saveRegimeRunningFlag: () => {},
       shouldAutoResumeRegime: () => { calls.push('running-flag'); return true; },
     },
+    '../src/engine-locks': { FILL_DRAIN_MS: 10000 },
     '../src/engine-stop-all': {},
     '../src/engine-backup-window': { registerEngineBackupHandlers: () => {} },
     '../src/pending-writes': { drainPendingWrites: async () => ({ drained: true }) },
