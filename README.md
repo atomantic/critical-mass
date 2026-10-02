@@ -209,6 +209,24 @@ Each exchange can run either the fixed DCA strategy or the adaptive regime strat
 
 ## Usage
 
+### Native environment settings
+
+For native installs, copy `.env.example` to `.env` in the repository root and
+edit the settings before starting. PM2, `node server.js`, `node index.js`, and
+`npm run dev` load that file before reading configuration, regardless of the
+launch directory. Existing shell environment values take precedence. A missing
+file is allowed; an unreadable file stops startup without printing its values.
+Only `.env` is loaded, not variants such as `.env.local`.
+
+Restart after changing settings. For PM2, use `npm start` to recreate the
+processes with fresh values (a plain restart can retain the previous environment).
+PM2 and the combined development launcher still use their configured service ports.
+
+Local environment files are ignored by Git and Docker. Compose/Umbrel deployments
+continue to inject environment settings through their container configuration;
+they do not need a repository `.env` inside the image. Compose's host-side
+`.env` interpolation is separate from the native application loader.
+
 ### Admin Dashboard (Recommended)
 
 ```bash

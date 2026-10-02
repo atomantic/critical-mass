@@ -1,3 +1,5 @@
+require('./src/runtime-env').loadRuntimeEnv();
+
 const express = require('express');
 const { spawn } = require('child_process');
 

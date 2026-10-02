@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-916] Native startup loads repository environment settings** — PM2, gateway, CLI and development startup load the root `.env` before configuration, preserve inherited values, and report unreadable files without exposing secrets; local environment files are excluded from Git and Docker.
 - **[issue-918] Hidden BTC chart tooltips no longer widen narrow pages** — The main BTC price chart renders Recharts tooltip content only when a point is active, while preserving its default active content and formatting.
 - **[issue-913] Persist atomic state writes across power loss** — `atomicWriteSync` now opens its private temporary file exclusively, fsyncs the bytes before rename, and flushes the parent directory afterward. Unsupported directory fsync errors remain best-effort, while data-write failures still remove the temporary file and propagate; state-tracker tests cover ordering and cleanup.
 - **[issue-917] UpDown engine controls meet touch target minimums** — Audio, restart, Start and Stop controls now use consistent 44px minimum hit areas while keeping their existing handlers, accessible names and pending-state behavior.

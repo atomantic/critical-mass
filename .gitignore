@@ -16,3 +16,8 @@ tmp-*
 .claude/
 .antigravitycli/
 scripts/*.txt
+
+# Local environment settings may contain credentials.
+.env
+.env.*
+!.env.example
