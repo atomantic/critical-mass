@@ -241,6 +241,26 @@ describe('#196 consolidateDustBodies — target selection and cooldown', () => {
     assert.deepEqual(queried, ['tp-near'], 'must merge into the nearest body, not the far one');
   });
 
+  it('consolidates economic dust (above exchange min, cannot clear the $0.01 profit floor)', async () => {
+    // 21 sats worth $0.02: sellable by size (min 1e-8) but never profitable, so
+    // no TP is ever placed. The consolidator must still pick it up.
+    const queried = [];
+    const eng = makeEngine({
+      bodies: [
+        { ...makeBody('econ-dust', 84489.45, 2.1e-7), costBasis: 0.02 },
+        makeBody('near', 84600, 0.01, 'tp-near'),
+      ],
+      adapter: {
+        getOrder: async (orderId) => { queried.push(orderId); return { filledSize: 5 }; }, // partial → abort
+      },
+    });
+    eng._test.setProductDetails({ baseMinSize: '0.00000001', baseIncrement: '0.00000001' });
+
+    await eng._test.consolidateDustBodies();
+
+    assert.deepEqual(queried, ['tp-near'], 'economic dust must be merged into the nearest body');
+  });
+
   it('sets the 5-minute failure cooldown when a merge attempt fails', async () => {
     const before = Date.now();
     const eng = makeEngine({
