@@ -335,10 +335,21 @@ const pruneStaleTpCancelMarkers = (bodies) => {
  * @param {Object} body - Celestial body
  * @param {number} baseMinSize - Exchange minimum order size (base asset)
  * @param {number} baseIncrement - Exchange base-size increment for rounding
+ * @param {{effectiveMaxTpPct: number, feeRate: number}|null} [economics] - When given, also flags bodies that can never clear the $0.01 profit floor
  * @returns {boolean}
  */
-const isStrandedDustBody = (body, baseMinSize, baseIncrement) => {
+const isStrandedDustBody = (body, baseMinSize, baseIncrement, economics = null) => {
   if (!body || body.tpOrderId || !(body.assetQty > 0)) return false;
+  // Economic dust: sellable by size, but even selling everything at the maximum
+  // TP cannot net the $0.01 floor placeBodyTp enforces, so no TP is ever placed.
+  // Best case ignores holdback (strictly more proceeds), so this only fires when
+  // no TP could ever be placed; a body that could still clear the floor is left
+  // alone. Needs a real cost basis — a missing/zero one can't be judged.
+  if (economics && body.costBasis > 0) {
+    const { effectiveMaxTpPct, feeRate } = economics;
+    const bestCasePnl = body.costBasis * ((1 + effectiveMaxTpPct / 100) * (1 - feeRate) - 1);
+    if (bestCasePnl < 0.01) return true;
+  }
   const inc = baseIncrement || 0.00000001;
   // floorToIncrement (epsilon-safe), NOT a naive Math.floor(qty/inc)*inc: for a
   // decimal increment like 0.01, float error under-floors exact multiples (0.29
@@ -5915,7 +5926,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const baseMinSize = parseFloat(productDetails.baseMinSize);
     const baseIncrement = parseFloat(productDetails.baseIncrement) || 0.00000001;
 
-    const dust = bodies.find(b => isStrandedDustBody(b, baseMinSize, baseIncrement));
+    const feeRate = config.feeRate || 0.001;
+    const dust = bodies.find(b => isStrandedDustBody(b, baseMinSize, baseIncrement, {
+      effectiveMaxTpPct: config.tpMaxPercent * (celestialHierarchy.getTierConfig(b.tier)?.tpMaxScale || 1),
+      feeRate,
+    }));
     if (!dust) return;
 
     // Pick the nearest OTHER body by avg price as the merge target.

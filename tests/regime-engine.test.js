@@ -175,6 +175,33 @@ describe('isStrandedDustBody (issue #189)', () => {
     assert.equal(isStrandedDustBody({ tpOrderId: null }, MIN, INC), false); // assetQty undefined
   });
 
+  describe('economic dust (above exchange min, cannot clear the $0.01 profit floor)', () => {
+    // Coinbase BTC-USDC: min ~1e-8, so a 21-sat body passes the size check but
+    // can never earn $0.01 even at the maximum TP.
+    const BTC_MIN = 0.00000001;
+    const ECON = { effectiveMaxTpPct: 2.7, feeRate: 0.001 };
+
+    it('flags a sellable-size body whose best-case profit at max TP is under $0.01', () => {
+      const body = { assetQty: 2.1e-7, costBasis: 0.02, tpOrderId: null };
+      assert.equal(isStrandedDustBody(body, BTC_MIN, INC), false, 'size-only check cannot see it');
+      assert.equal(isStrandedDustBody(body, BTC_MIN, INC, ECON), true);
+    });
+
+    it('does NOT flag a body that can clear $0.01 at the max TP', () => {
+      const body = { assetQty: 0.0005, costBasis: 42, tpOrderId: null };
+      assert.equal(isStrandedDustBody(body, BTC_MIN, INC, ECON), false);
+    });
+
+    it('does NOT flag when a TP is resting, or without economics supplied', () => {
+      assert.equal(isStrandedDustBody({ assetQty: 2.1e-7, costBasis: 0.02, tpOrderId: 'o1' }, BTC_MIN, INC, ECON), false);
+      assert.equal(isStrandedDustBody({ assetQty: 0.0005, costBasis: 42, tpOrderId: null }, BTC_MIN, INC), false);
+    });
+
+    it('does NOT flag a body with no usable cost basis (cannot judge economics)', () => {
+      assert.equal(isStrandedDustBody({ assetQty: 2.1e-7, tpOrderId: null }, BTC_MIN, INC, ECON), false);
+    });
+  });
+
   it('flags a qty that is >= min raw but falls below min AFTER increment rounding', () => {
     // 0.0013 >= min 0.001, but floor to a 0.0007 increment → 0.0007 < min.
     assert.equal(isStrandedDustBody({ assetQty: 0.0013, tpOrderId: null }, MIN, 0.0007), true);
