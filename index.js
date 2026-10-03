@@ -3,7 +3,7 @@ require('./src/runtime-env').loadRuntimeEnv();
 const { runIntervalCycle, checkStatus } = require('./src/dca-engine');
 const { log } = require('./src/logger');
 const { getAdapter } = require('./src/adapters');
-const { getExchangeConfig, getConfiguredExchanges } = require('./src/config-utils');
+const { getExchangeConfig, getConfiguredExchanges, getBaseCurrency, getQuoteCurrency } = require('./src/config-utils');
 const { runMigrationIfNeeded } = require('./src/migration');
 
 // Run migration on startup
@@ -58,22 +58,24 @@ const main = async () => {
   if (command === 'status') {
     // Check status only
     const status = await checkStatus(exchange);
+    const baseCurrency = getBaseCurrency(status.config.productId);
+    const quoteCurrency = getQuoteCurrency(status.config.productId);
     console.log(`\n=== Critical Mass Status (${exchange}) ===`);
     console.log(`Product: ${status.config.productId}`);
-    console.log(`Current Price: $${status.currentPrice.toFixed(2)}`);
+    console.log(`Current Price: ${status.currentPrice.toFixed(2)} ${quoteCurrency}`);
     console.log(`Enabled: ${status.config.enabled}`);
     console.log(`Dry-Run: ${status.config.dryRun}`);
     console.log('');
     console.log('--- Allocation ---');
-    console.log(`Total: $${status.config.totalAllocation.toFixed(2)}`);
-    console.log(`Used: $${status.state.totalAllocated.toFixed(2)}`);
-    console.log(`Remaining: $${status.state.remaining.toFixed(2)}`);
-    console.log(`Interval Amount: $${status.state.intervalAmount.toFixed(2)}`);
+    console.log(`Total: ${status.config.totalAllocation.toFixed(2)} ${quoteCurrency}`);
+    console.log(`Used: ${status.state.totalAllocated.toFixed(2)} ${quoteCurrency}`);
+    console.log(`Remaining: ${status.state.remaining.toFixed(2)} ${quoteCurrency}`);
+    console.log(`Interval Amount: ${status.state.intervalAmount.toFixed(2)} ${quoteCurrency}`);
     console.log('');
     console.log('--- Holdings ---');
-    console.log(`Fund Size: $${status.state.usdcFundSize.toFixed(2)}`);
-    console.log(`BTC Reserves: ${status.state.btcReserves.toFixed(8)} BTC`);
-    console.log(`Outstanding Sells: ${status.state.outstandingOrdersBTC.toFixed(8)} BTC ($${status.state.outstandingOrdersUSDC.toFixed(2)})`);
+    console.log(`Fund Size: ${status.state.usdcFundSize.toFixed(2)} ${quoteCurrency}`);
+    console.log(`${baseCurrency} Reserves: ${status.state.assetReserves.toFixed(8)} ${baseCurrency}`);
+    console.log(`Outstanding Sells: ${status.state.outstandingOrdersAsset.toFixed(8)} ${baseCurrency} (${status.state.outstandingOrdersUSDC.toFixed(2)} ${quoteCurrency})`);
     console.log(`Pending Orders: ${status.state.pendingOrders}`);
     console.log('');
     console.log('--- History ---');
@@ -85,13 +87,16 @@ const main = async () => {
     console.log(`Interval Type: ${status.config.intervalType}`);
     console.log(`Sell Markup: +${status.config.sellMarkupPercent}%`);
     console.log(`Holdback: ${status.config.holdbackPercent}%`);
-    console.log(`Max Buy Price: $${status.config.maxBuyPrice.toFixed(2)}`);
+    console.log(`Max Buy Price: ${status.config.maxBuyPrice.toFixed(2)} ${quoteCurrency}`);
 
     return;
   }
 
   if (command === 'run') {
     // Run the interval cycle
+    const config = getExchangeConfig(exchange);
+    const baseCurrency = getBaseCurrency(config.productId);
+    const quoteCurrency = getQuoteCurrency(config.productId);
     const result = await runIntervalCycle(exchange);
 
     console.log('');
@@ -99,17 +104,17 @@ const main = async () => {
     console.log(`Status: ${result.status}`);
 
     if (result.status === 'success' || result.status === 'dry_run_success') {
-      console.log(`Bought: ${result.buyResult.btcAmount.toFixed(8)} BTC at $${result.buyResult.price.toFixed(2)}`);
-      console.log(`Sell Order: ${result.sellOrder.baseSize.toFixed(8)} BTC at $${result.sellOrder.limitPrice.toFixed(2)}`);
-      console.log(`Holdback: ${result.holdbackBTC.toFixed(8)} BTC`);
-      console.log(`Total Reserves: ${result.state.btcReserves.toFixed(8)} BTC`);
+      console.log(`Bought: ${result.buyResult.assetAmount.toFixed(8)} ${baseCurrency} at ${result.buyResult.price.toFixed(2)} ${quoteCurrency}`);
+      console.log(`Sell Order: ${result.sellOrder.baseSize.toFixed(8)} ${baseCurrency} at ${result.sellOrder.limitPrice.toFixed(2)} ${quoteCurrency}`);
+      console.log(`Holdback: ${result.holdbackAsset.toFixed(8)} ${baseCurrency}`);
+      console.log(`Total Reserves: ${result.state.assetReserves.toFixed(8)} ${baseCurrency}`);
       console.log(`Intervals Run: ${result.state.intervalsRun}`);
     } else if (result.status === 'already_ran') {
       console.log(`Last run: ${result.lastRunId}`);
     } else if (result.status === 'price_too_high') {
-      console.log(`Current: $${result.currentPrice.toFixed(2)}, Max: $${result.maxBuyPrice.toFixed(2)}`);
+      console.log(`Current: ${result.currentPrice.toFixed(2)} ${quoteCurrency}, Max: ${result.maxBuyPrice.toFixed(2)} ${quoteCurrency}`);
     } else if (result.status === 'insufficient_balance') {
-      console.log(`Available: $${result.available.toFixed(2)}, Required: $${result.required.toFixed(2)}`);
+      console.log(`Available: ${result.available.toFixed(2)} ${quoteCurrency}, Required: ${result.required.toFixed(2)} ${quoteCurrency}`);
     } else if (result.status === 'disabled') {
       console.log(`Bot is disabled for ${exchange}. Enable in config to run.`);
     }
@@ -167,7 +172,7 @@ const main = async () => {
   console.log('');
   console.log('Commands:');
   console.log('  run        - Execute interval DCA cycle (default)');
-  console.log('  status     - Check current status without trading');
+  console.log('  status     - Check status and reconcile existing fills without new trades');
   console.log('  debug      - Show raw account information');
   console.log('  exchanges  - List all configured exchanges');
   console.log('');
