@@ -63,7 +63,13 @@ const createIPCServer = (port, name) => {
     if (startPromise) return startPromise;
     let server;
     try {
-      server = new WebSocket.Server({ port, host: '127.0.0.1' });
+      server = new WebSocket.Server({
+        port,
+        host: '127.0.0.1',
+        // Process IPC only: browsers always supply Origin, including opaque
+        // ('null') origins. Check presence so an empty header is rejected too.
+        verifyClient: ({ req }) => !Object.prototype.hasOwnProperty.call(req.headers, 'origin'),
+      });
     } catch (err) {
       return Promise.reject(err);
     }
