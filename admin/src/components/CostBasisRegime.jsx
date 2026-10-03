@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
@@ -15,59 +15,76 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
 
   const pairQuery = buildPairQuery(pair)
 
+  const readState = useRef(null)
+
   const fetchData = useCallback(async () => {
+    const session = readState.current
+    if (!session?.active || session.inFlight) return
+    session.inFlight = true
+    const controller = new AbortController()
+    session.controller = controller
+
+    const read = async (endpoint, name) => {
+      const response = await fetch(`/api/${exchange}/${endpoint}${pairQuery}`, { signal: controller.signal })
+      if (!response.ok) throw new Error(`${name} fetch failed: HTTP ${response.status}`)
+      return response.json()
+    }
+
     try {
-      const [statusRes, fillsRes, configRes] = await Promise.all([
-        fetch(`/api/${exchange}/regime/status${pairQuery}`),
-        fetch(`/api/${exchange}/regime/fills${pairQuery}`),
-        fetch(`/api/${exchange}/config${pairQuery}`),
+      // Settle the whole batch even when one endpoint fails, so interval ticks
+      // cannot overlap a still-pending request from the failed batch.
+      const results = await Promise.allSettled([
+        read('regime/status', 'Status'),
+        read('regime/fills', 'Fills'),
+        session.config ? Promise.resolve(session.config) : read('config', 'Config'),
       ])
+      if (!session.active) return
+      const failure = results.find(result => result.status === 'rejected')
+      if (failure) throw failure.reason
+      const [statusData, fillsData, configData] = results.map(result => result.value)
 
-      // Validate all responses have acceptable status
-      if (!statusRes.ok) {
-        throw new Error(`Status fetch failed: HTTP ${statusRes.status}`)
-      }
-      if (!fillsRes.ok) {
-        throw new Error(`Fills fetch failed: HTTP ${fillsRes.status}`)
-      }
-      if (!configRes.ok) {
-        throw new Error(`Config fetch failed: HTTP ${configRes.status}`)
-      }
-
-      // Parse all responses before committing
-      const statusData = await statusRes.json()
-      const fillsData = await fillsRes.json()
-      const configData = await configRes.json()
-
-      // Commit state only after all parsing succeeds
+      // Commit a complete snapshot only while this fund still owns the read.
+      session.config = configData
+      session.hasSnapshot = true
       setStatus(statusData.status)
       setCurrentPrice(statusData.status?.market?.lastPrice || 0)
       setFills(fillsData.fills || [])
       setProductId(configData.config?.productId || configData.productId || null)
-
-      // Clear errors on successful load
       setError(null)
       setStale(false)
     } catch (err) {
-      // If we have no previous data, set error and allow loading to complete
-      if (!status && fills.length === 0 && !productId) {
+      if (!session.active) return
+      if (!session.hasSnapshot) {
         setError(err.message || 'Failed to load regime cost basis')
       } else {
-        // If we have previous data, mark it as stale but keep displaying it
         setStale(true)
       }
     } finally {
-      setLoading(false)
+      session.inFlight = false
+      if (session.active) setLoading(false)
     }
-  }, [exchange, pairQuery, status, fills, productId])
+  }, [exchange, pairQuery])
 
   useEffect(() => {
+    const session = { active: true, inFlight: false, hasSnapshot: false, config: null, controller: null }
+    readState.current = session
+    setStatus(null)
+    setFills([])
+    setCurrentPrice(0)
+    setProductId(null)
+    setError(null)
+    setStale(false)
+    setLoading(true)
     fetchData()
     const interval = setInterval(fetchData, 10000)
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      session.active = false
+      session.controller?.abort()
+    }
   }, [fetchData])
 
-  if (loading && error) {
+  if (error) {
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-4">
         <div className="text-red-400">Error: {error}</div>
