@@ -246,11 +246,11 @@ npm run pm2:start
 ### CLI Commands
 
 ```bash
-# Execute interval cycle for an exchange
+# Complete one interval cycle for an exchange (places trades unless dry-run)
 node index.js run --exchange coinbase
 node index.js run -e gemini
 
-# Check status without trading
+# Check status without placing new trades (may reconcile and save existing fills)
 node index.js status --exchange coinbase
 
 # List all configured exchanges

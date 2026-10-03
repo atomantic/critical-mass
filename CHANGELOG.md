@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-944] Restore CLI run and status output** — Consume current asset-named DCA results and display configured base/quote currencies; clarify interval execution and status fill reconciliation.
 - **[issue-934] Regime Transactions transfer bounded pages** — Validated 100-row API/IPC pages reuse revision-cached whole-ledger accounting, preserve global filters, sorting and totals, and reload stale revisions; Transactions retains only page rows and loads stable config separately.
 - **[issue-948] Global settings saves preserve drafts** — Notifications and Backups lock editable settings for the full save transaction, ignore obsolete reads, and keep unsaved settings intact during archive list refreshes and failed writes; successful notification saves clear token drafts without exposing stored tokens.
 - **[issue-949] Provider administration waits for server acknowledgement** — Default selection, provider forms, and management actions now check HTTP responses, surface safe errors, retain drafts and confirmed defaults after failures, and prevent duplicate submissions while writes are pending. Added synthetic rejection, retry, and duplicate-submit coverage.
