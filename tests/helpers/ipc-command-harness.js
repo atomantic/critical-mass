@@ -15,6 +15,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { mock } = require('node:test');
+const { performance } = require('node:perf_hooks');
+const { setTimeout: waitForIo } = require('node:timers/promises');
 
 const SRC_IPC = path.join(__dirname, '..', '..', 'src', 'ipc');
 
@@ -28,13 +30,16 @@ const getFreePort = () => new Promise((resolve, reject) => {
   });
 });
 
-/** Poll until `predicate()` is truthy (real I/O turns only; no sleeps beyond a macrotask). */
-const until = async (predicate, label = 'condition', limit = 2000) => {
-  for (let i = 0; i < limit; i++) {
+/** Poll real I/O against a monotonic elapsed-time deadline, allowing timers to fire. */
+const until = async (predicate, label = 'condition', timeoutMs = 2000) => {
+  const deadline = performance.now() + timeoutMs;
+  while (true) {
     if (predicate()) return;
-    await new Promise((resolve) => setImmediate(resolve));
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new Error(`timed out waiting for ${label}`);
+    // Real timers are intentional: controlled-socket tests advance their own mocks.
+    await waitForIo(Math.min(5, remaining));
   }
-  throw new Error(`timed out waiting for ${label}`);
 };
 
 /** Resolve-on-demand promise used to hold a handler open and release it in a chosen order. */
