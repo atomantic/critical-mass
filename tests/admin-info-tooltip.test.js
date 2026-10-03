@@ -30,13 +30,14 @@ describe('InfoTooltip', () => {
   it('exposes the help as a stable accessible description while closed without mounting the visual popup', () => {
     const html = renderToStaticMarkup(React.createElement(mod.default, { tip: React.createElement('div', null, 'ATR help text'), label: 'About ATR' }))
     const button = html.match(/<button[^>]*>/)?.[0]
-    const description = html.match(/<span id="([^"]+-description)" class="sr-only">([\s\S]*?)<\/span>/)
+    const description = html.match(/<span id="([^"]+-description)" class="sr-only" hidden="">([\s\S]*?)<\/span>/)
     assert.match(button, /aria-label="About ATR"/)
     assert.match(button, /aria-expanded="false"/)
     assert.match(button, /type="button"/)
     assert.ok(description, 'screen-reader description is present before activation')
     assert.match(button, new RegExp(`aria-describedby=\"${description[1]}\"`))
     assert.match(description[2], /ATR help text/)
+    assert.match(description[0], /hidden=""/)
     assert.doesNotMatch(html, /role="tooltip"/)
   })
 

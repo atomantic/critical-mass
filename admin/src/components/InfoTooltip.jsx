@@ -96,7 +96,7 @@ export default function InfoTooltip({ tip, label = 'More information', align = '
           <path d="M12 16v-4M12 8h.01" />
         </svg>
       </button>
-      <span id={descriptionId} className="sr-only">{tip}</span>
+      <span id={descriptionId} className="sr-only" hidden>{tip}</span>
       {open && createPortal(
         <div
           ref={popupRef}
