@@ -1,19 +1,19 @@
-import { useState, useEffect, useCallback, useMemo, useId } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo, useId } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import ManualTrades from './ManualTrades'
-import { computeFillsWithPnL } from './transactionsRegimePnl'
-import { sortFills, summarizeFills, paginate } from './transactionsRegimePage'
-import { compareCycleIds } from '../utils/regimeFillGroups.mjs'
+import { createTransactionsReader } from '../utils/transactionsRead.mjs'
+
+const EMPTY_SUMMARY = { totalBuys: 0, totalSells: 0, totalAssetBought: 0, totalBtcSold: 0, totalFees: 0, totalPnL: 0, totalHoldbackBtc: 0, totalHoldbackValue: 0 }
+const EMPTY_PAGE = { page: 0, pageCount: 1, total: 0, start: 0, end: 0, hasPrev: false, hasNext: false }
 
 function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const cycleFilterId = useId()
-  const [fills, setFills] = useState([])
+  const [snapshot, setSnapshot] = useState({ fills: [], summary: EMPTY_SUMMARY, pageInfo: EMPTY_PAGE, cycleIds: [] })
   const [openOrders, setOpenOrders] = useState([])
-  // Open-orders read failure, tracked independently of fills/status so an
-  // unavailable lookup is never shown as "No open orders" (issue #863).
   const [ordersError, setOrdersError] = useState(null)
+  const [fillsError, setFillsError] = useState(null)
   const [status, setStatus] = useState(null)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
@@ -22,106 +22,84 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const [sortDir, setSortDir] = useState('desc')
   const [productId, setProductId] = useState(null)
   const [page, setPage] = useState(0)
-
+  const reader = useMemo(() => createTransactionsReader(), [])
+  const revision = useRef(null)
+  const fund = `${exchange}:${pair || ''}`
+  const activeFund = useRef(fund)
+  activeFund.current = fund
   const pairQuery = buildPairQuery(pair)
 
-  const fetchData = useCallback(async () => {
-    try {
-      const [fillsRes, statusRes, ordersRes, configRes] = await Promise.all([
-        fetch(`/api/${exchange}/regime/fills${pairQuery}`),
-        fetch(`/api/${exchange}/regime/status${pairQuery}`),
-        fetch(`/api/${exchange}/regime/open-orders${pairQuery}`),
-        fetch(`/api/${exchange}/config${pairQuery}`),
-      ])
-
-      if (fillsRes.ok) {
-        const data = await fillsRes.json()
-        setFills(data.fills || [])
-      }
-      if (statusRes.ok) {
-        const data = await statusRes.json()
-        setStatus(data.status)
-      }
-      if (ordersRes.ok) {
-        const data = await ordersRes.json()
-        setOpenOrders(data.orders || [])
-        setOrdersError(null)
-      } else {
-        const data = await ordersRes.json().catch(() => null)
-        setOrdersError(data?.error || `Open orders unavailable (HTTP ${ordersRes.status})`)
-      }
-      if (configRes.ok) {
-        const data = await configRes.json()
-        setProductId(data.config?.productId || data.productId || null)
-      }
-    } catch {
-      setOrdersError('Open orders unavailable: request failed')
-      // Leave whatever data is already populated — the 10s poll below will
-      // retry, and loading still clears so the page never gets stuck on
-      // "Loading…" if the very first poll hits a network hiccup.
-    } finally {
-      setLoading(false)
-    }
-  }, [exchange, pairQuery])
-
+  // Config is stable between edits. Leaving/re-entering Config remounts this
+  // route, and a fund change explicitly invalidates it; polling never fetches it.
   useEffect(() => {
-    // Drop the previous fund's snapshot so it is never shown for this one.
+    const controller = new AbortController()
+    setProductId(null)
+    setStatus(null)
+    setSnapshot({ fills: [], summary: EMPTY_SUMMARY, pageInfo: EMPTY_PAGE, cycleIds: [] })
     setOpenOrders([])
     setOrdersError(null)
+    setFillsError(null)
+    setPage(0)
+    revision.current = null
+    fetch(`/api/${exchange}/config${pairQuery}`, { signal: controller.signal })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (!controller.signal.aborted && activeFund.current === fund && data) {
+          setProductId(data.config?.productId || data.productId || null)
+        }
+      }).catch(() => {})
+    return () => controller.abort()
+  }, [exchange, pairQuery, fund])
+
+  const fetchData = useCallback(async () => {
+    const query = new URLSearchParams({ paged: 'true', page: String(page), pageSize: '100', side: filter, cycle: cycleFilter, sortField, sortDir })
+    if (pair) query.set('pair', pair)
+    if (revision.current) query.set('revision', revision.current)
+    const { owned, data } = await reader.read({ exchange, pairQuery, query })
+    if (!owned || activeFund.current !== fund) return
+    if (data) {
+      const { fillsOk, fillsStatus, fillsData, statusData, ordersOk, ordersStatus, ordersData } = data
+      if (fillsOk && fillsData?.pageInfo && fillsData?.summary && Array.isArray(fillsData.fills)) {
+        revision.current = fillsData.revision
+        setSnapshot(fillsData)
+        setPage(fillsData.pageInfo.page)
+        setFillsError(null)
+      } else setFillsError(fillsData?.error || `Transactions unavailable (HTTP ${fillsStatus})`)
+      if (statusData) setStatus(statusData.status)
+      if (ordersOk) {
+        setOpenOrders(ordersData?.orders || [])
+        setOrdersError(null)
+      } else setOrdersError(ordersData?.error || `Open orders unavailable (HTTP ${ordersStatus})`)
+    } else {
+      setFillsError('Transactions unavailable: request failed')
+      setOrdersError('Open orders unavailable: request failed')
+    }
+    setLoading(false)
+  }, [exchange, pair, pairQuery, fund, page, filter, cycleFilter, sortField, sortDir, reader])
+
+  useEffect(() => {
+    let pending = false
+    const refresh = async () => {
+      if (pending) return
+      pending = true
+      await fetchData()
+      pending = false
+    }
     setLoading(true)
-    fetchData()
-    const interval = setInterval(fetchData, 10000)
-    return () => clearInterval(interval)
-  }, [fetchData])
+    refresh()
+    const interval = setInterval(refresh, 10000)
+    return () => { reader.invalidate(); clearInterval(interval) }
+  }, [fetchData, reader])
 
   const isDryRun = status?.isDryRun
   const baseCurrency = getBaseCurrency(productId)
-
-  // Get unique cycle IDs for filtering
-  const cycleIds = [...new Set(fills.map(f => f.cycleId || 'current'))].sort(compareCycleIds)
-
-  // Filter predicate shared by the raw fill list and the P&L-enriched list
-  // below, so both stay in sync without relying on object-identity checks.
-  const passesFilter = (fill) => {
-    if (filter !== 'all' && fill.side !== filter) return false
-    if (cycleFilter !== 'all') {
-      const fillCycle = fill.cycleId || 'current'
-      if (fillCycle !== cycleFilter) return false
-    }
-    return true
-  }
-
-  // Filter fills
-  const filteredFills = fills.filter(passesFilter)
-
+  const { fills: displayFills, cycleIds, pageInfo, summary } = snapshot
+  const { totalBuys, totalSells, totalAssetBought, totalBtcSold, totalFees, totalPnL, totalHoldbackBtc, totalHoldbackValue } = summary
   const handleSort = (field) => {
     setPage(0)
-    if (sortField === field) {
-      setSortDir(d => d === 'asc' ? 'desc' : 'asc')
-    } else {
-      setSortField(field)
-      setSortDir('desc')
-    }
+    if (sortField === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortField(field); setSortDir('desc') }
   }
-
-  // Calculate P&L for sell fills using buy-sell linkage (sellOrderId), running
-  // avg fallback, and orderId-deduped/prorated server annotations. Uses ALL
-  // fills (not just filteredFills) so the running avg and orderId aggregation
-  // are correct. Memoize to avoid recomputing on every render.
-  const fillsWithPnLMemo = useMemo(() => computeFillsWithPnL(fills), [fills])
-
-  // Memoize the filtered result so it doesn't change on every render
-  const fillsWithPnL = useMemo(() => fillsWithPnLMemo.filter(passesFilter), [fillsWithPnLMemo, filter, cycleFilter])
-
-  // Sort and summarize the WHOLE filtered history; only the rendered rows are
-  // paged (issue #852), so totals never depend on the selected page.
-  const sortedFills = useMemo(() => sortFills(fillsWithPnL, sortField, sortDir), [fillsWithPnL, sortField, sortDir])
-  const { totalBuys, totalSells, totalAssetBought, totalBtcSold, totalFees, totalPnL, totalHoldbackBtc, totalHoldbackValue } = useMemo(() => summarizeFills(fillsWithPnL), [fillsWithPnL])
-
-  // Clamp at render time so a poll that shrinks the history can never strand
-  // the view beyond the last page.
-  const pageInfo = paginate(sortedFills, page)
-  const displayFills = pageInfo.rows
 
   if (loading) {
     return (
@@ -133,6 +111,9 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
 
   return (
     <div className="space-y-4">
+      {fillsError && <div role="alert" className="text-sm text-yellow-400">
+        {fillsError} <button type="button" onClick={() => fetchData()} className="px-2 py-1 rounded bg-gray-700">Retry</button>
+      </div>}
       {/* Header with status */}
       {isDryRun && (
         <div className="bg-purple-900/30 border border-purple-700/50 rounded-lg p-3 text-sm text-purple-400">
@@ -153,7 +134,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                 ? `Open orders may be stale: ${ordersError}`
                 : `Open orders unavailable: ${ordersError}`}
             </span>
-            <button type="button" onClick={fetchData} className="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs">
+            <button type="button" onClick={() => fetchData()} className="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs">
               Retry
             </button>
           </div>
@@ -308,7 +289,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
         </div>
 
         <span className="ml-auto text-gray-400 text-sm">
-          {filteredFills.length} transactions
+          {pageInfo.total} transactions
         </span>
       </div>
 

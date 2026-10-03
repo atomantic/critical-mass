@@ -3337,6 +3337,44 @@ describe('Fill Ledger', () => {
   // count only actual (non-cached) recomputations, letting these tests prove
   // "served from cache" deterministically instead of via wall-clock timing.
   // =======================================================================
+  describe('Transactions read view invalidation (issue #934)', () => {
+    it('invalidates every metadata/accounting mutation and preserves legacy reads', () => {
+      const ledger = createTestLedger();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'page-buy', orderId: 'page-buy' }), null, { cycleId: null });
+      ledger.ingestFill(makeSellFill({ tradeId: 'page-sell', orderId: 'page-sell' }), null, { cycleId: null });
+      const check = mutate => {
+        const before = ledger.getFillPage({ paged: true });
+        const count = ledger._test.getTransactionsRecomputeCount();
+        assert.deepEqual(ledger.getFillPage({ paged: true }), before);
+        assert.equal(ledger._test.getTransactionsRecomputeCount(), count);
+        mutate();
+        const stale = ledger.getFillPage({ paged: true, revision: before.revision });
+        assert.equal(stale.statusCode, 409);
+        const after = ledger.getFillPage({ paged: true });
+        assert.notEqual(after.revision, before.revision);
+        assert.equal(ledger._test.getTransactionsRecomputeCount(), count + 1);
+        assert.equal(after.pageInfo.total, ledger.getAllFills().length);
+      };
+      check(() => ledger.ingestFill(makeBuyFill({ tradeId: 'page-buy-2', orderId: 'page-buy-2' })));
+      check(() => ledger.annotateFillsByOrderId('page-sell', { bodyPnl: 10, bodyHoldbackAsset: 0.01 }));
+      check(() => ledger.annotateFillsByOrderIds(['page-buy', 'page-buy-2'], { bodyId: 'page-body' }));
+      check(() => { ledger.getAllFills()[0].sellOrderId = 'page-sell'; ledger.markDirty(); });
+      check(() => ledger.commitSellBooking('page-sell', { bodyPnl: 20 }, { soldSize: 0.001 }));
+      check(() => ledger.recordBuyConsumption('page-buy', 'page-sell', 0.001));
+      check(() => ledger.claimCapitalCredit('page-sell', 0.001));
+      check(() => ledger.recalculateCycles());
+      check(() => ledger.updateFillCycleId('page-buy', 'cycle-99'));
+      ledger.persist();
+      check(() => ledger.load());
+      const legacy = ledger.getAllFills();
+      assert.equal(legacy.length, 3);
+      assert.equal(legacy[0].pnl, undefined, 'paged enrichment must never mutate ledger fills');
+      const another = createTestLedger();
+      assert.notEqual(another.getFillPage({ paged: true }).revision, ledger.getFillPage({ paged: true }).revision,
+        'a new engine/ledger generation must not reuse a revision token');
+    });
+  });
+
   describe('derived realized P&L caching (issue #365)', () => {
     it('serves consecutive calls from cache with an identical result', () => {
       const ledger = createTestLedger();

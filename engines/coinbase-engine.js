@@ -38,6 +38,7 @@ const {
 } = require('../src/market-data-service');
 const { getChartDataBuffer, getChartData, removeChartDataBuffer, shutdownAllBuffers, resumeAllBuffers } = require('../src/chart-data-buffer');
 const { createFillLedger } = require('../src/fill-ledger');
+const { parseFillsQuery } = require('../src/transactions-regime-query');
 const { createManualTradeImporter } = require('../src/manual-trade-import');
 const { createIPCServer } = require('../src/ipc/ipc-server');
 const { createSocketIOProxy, forwardTradeEvents } = require('../src/ipc/socket-io-proxy');
@@ -446,6 +447,8 @@ ipcServer.onRequest('regime:chart-data', async (payload, exchange, pair) => {
 });
 
 ipcServer.onRequest('regime:fills', async (payload, exchange, pair) => {
+  const query = parseFillsQuery(payload);
+  if (query.success === false) return query;
   const resolvedPair = resolvePair(exchange, pair);
   const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) {
@@ -458,8 +461,10 @@ ipcServer.onRequest('regime:fills', async (payload, exchange, pair) => {
     } catch (err) {
       return { running: false, success: false, error: err.message };
     }
+    if (query.paged) return { running: false, ...ledger.getFillPage(query) };
     return { running: false, fills: ledger.getAllFills(), stats: ledger.getStats() };
   }
+  if (query.paged) return { running: true, ...engine.getFillPage(query) };
   return { running: true, fills: engine.getFills(), stats: engine.getFillStats() };
 });
 
