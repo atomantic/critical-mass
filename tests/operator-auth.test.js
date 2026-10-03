@@ -714,3 +714,191 @@ describe('operator authentication resource bounds', () => {
     assert.equal(allowed, 1025);
   });
 });
+
+// Use real Engine.IO/WebSocket transports without adding a client dependency.
+const connectOperatorSocket = (baseUrl, { cookie, token } = {}) => new Promise((resolve, reject) => {
+  const WebSocket = require('ws');
+  const socket = new WebSocket(`${baseUrl.replace('http:', 'ws:')}/socket.io/?EIO=4&transport=websocket`, {
+    headers: cookie ? { Cookie: cookie } : {},
+  });
+  socket.packets = [];
+  socket.on('error', reject);
+  socket.on('message', (data) => {
+    const packet = data.toString();
+    socket.packets.push(packet);
+    if (packet.startsWith('0')) socket.send(`40${JSON.stringify(token ? { token } : {})}`);
+    if (packet === '2') socket.send('3');
+    if (packet.startsWith('40')) resolve(socket);
+    if (packet.startsWith('44')) {
+      socket.close();
+      reject(new Error('UNAUTHORIZED'));
+    }
+  });
+});
+
+const socketEvent = (socket, name) => new Promise((resolve) => {
+  const onMessage = (data) => {
+    const packet = data.toString();
+    if (!packet.startsWith('42')) return;
+    const [event, payload] = JSON.parse(packet.slice(2));
+    if (event !== name) return;
+    socket.off('message', onMessage);
+    resolve(payload);
+  };
+  socket.on('message', onMessage);
+});
+
+const withSocketGateway = async (run, { failPersistence = false } = {}) => {
+  const { Server } = require('socket.io');
+  const { EventEmitter } = require('node:events');
+  const { createLogStreamRegistry, registerLogStreamHandlers, disconnectLogStream } = require('../src/log-stream-manager');
+  const authFile = tmpAuthFile();
+  seedPassword(authFile);
+  const app = express();
+  const servers = [http.createServer(app), http.createServer(app)];
+  const io = new Server(servers[0]);
+  const engines = [io.engine];
+  io.attach(servers[1]);
+  engines.push(io.engine);
+  const registry = createLogStreamRegistry();
+  const children = [];
+  let changes = 0;
+  let now = Date.now();
+  const auth = createOperatorAuth({
+    now: () => now,
+    authFile, readJSON,
+    writeJSON: (...args) => {
+      if (failPersistence) throw new Error('test persistence failure');
+      writeJSON(...args);
+    },
+    onPasswordChanged: () => {
+      changes += 1;
+      const saved = readJSON(authFile);
+      assert.equal(saved.hash, crypto.scryptSync(NEW_PASSWORD, Buffer.from(saved.salt, 'hex'), 32).toString('hex'));
+      io.disconnectSockets(true);
+    },
+  });
+  app.use(express.json());
+  auth.registerSessionRoutes(app);
+  app.get('/api/protected', auth.requireAuth, (req, res) => res.json({ ok: true }));
+  app.use((err, req, res, next) => res.status(500).json({ error: err.message }));
+  io.use(auth.socketMiddleware);
+  io.on('connection', (socket) => {
+    socket.on('disconnect', () => disconnectLogStream({ socket, registry, log: () => {} }));
+    registerLogStreamHandlers({
+      socket, registry, log: () => {}, allowedProcesses: new Set(['critical-mass']),
+      spawnFn: (command, args) => {
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.killed = false;
+        child.kill = () => { child.killed = true; };
+        child.args = args;
+        children.push(child);
+        return child;
+      },
+    });
+  });
+  const clients = [];
+  try {
+    for (const server of servers) await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const urls = servers.map((server) => `http://127.0.0.1:${server.address().port}`);
+    const connect = async (index, credentials) => {
+      const client = await connectOperatorSocket(urls[index], credentials);
+      clients.push(client);
+      return client;
+    };
+    await run({ urls, connect, io, registry, children, authFile, changes: () => changes, expireAttempts: () => { now += 60_001; } });
+  } finally {
+    for (const client of clients) client.terminate();
+    io.disconnectSockets(true);
+    for (const engine of engines) engine.close();
+    await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+  }
+};
+
+describe('established operator socket revocation', () => {
+  it('revokes every listener, cleans log streams and permits only replacement credentials', { timeout: 10000 }, async () => {
+    await withSocketGateway(async ({ urls, connect, io, registry, children, authFile, changes, expireAttempts }) => {
+      const login = await fetch(`${urls[0]}/api/auth/session`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      const cookie = login.headers.get('set-cookie').split(';')[0];
+      const clients = [await connect(0, { cookie }), await connect(1, { token: PASSWORD })];
+      for (const client of clients) {
+        const subscribed = socketEvent(client, 'logs:subscribed');
+        client.send(`42${JSON.stringify(['logs:subscribe', { processName: 'critical-mass' }])}`);
+        await subscribed;
+      }
+      const originalRecord = readJSON(authFile);
+      for (const [body, status, origin] of [
+        [{ password: NEW_PASSWORD, currentPassword: 'incorrect' }, 401],
+        [{ password: 'short', currentPassword: PASSWORD }, 400],
+        [{ password: NEW_PASSWORD, currentPassword: PASSWORD }, 403, 'https://other.invalid'],
+      ]) {
+        const response = await fetch(`${urls[0]}/api/auth/password`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie, ...(origin ? { Origin: origin } : {}) },
+          body: JSON.stringify(body),
+        });
+        assert.equal(response.status, status);
+        assert.equal(changes(), 0);
+        assert.deepEqual(readJSON(authFile), originalRecord);
+        assert.equal(io.of('/').sockets.size, 2);
+        assert.ok(children.every((child) => !child.killed));
+        const delivered = socketEvent(clients[0], 'trade:event');
+        io.emit('trade:event', { valid: true });
+        assert.deepEqual(await delivered, { valid: true });
+      }
+      const closed = clients.map((client) => new Promise((resolve) => client.once('close', resolve)));
+      const response = await fetch(`${urls[0]}/api/auth/password`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie },
+        body: JSON.stringify({ password: NEW_PASSWORD, currentPassword: PASSWORD }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(changes(), 1);
+      assert.notDeepEqual(readJSON(authFile), originalRecord);
+      // Cleanup is synchronous and complete before the HTTP success response.
+      assert.equal(io.of('/').sockets.size, 0);
+      assert.deepEqual([...registry.entries()], []);
+      assert.ok(children.every((child) => child.killed));
+      await Promise.all(closed);
+      const packetCounts = clients.map((client) => client.packets.length);
+      io.emit('trade:event', { revoked: true });
+      for (const child of children) child.stdout.emit('data', Buffer.from('private log\n'));
+      for (const client of clients) {
+        // A closed transport cannot dispatch another PM2 subscribe or flush.
+        client.send(`42${JSON.stringify(['logs:flush', { processName: 'critical-mass' }])}`, () => {});
+        client.send(`42${JSON.stringify(['logs:subscribe', { processName: 'critical-mass' }])}`, () => {});
+      }
+      assert.equal(children.length, 2);
+      assert.deepEqual(clients.map((client) => client.packets.length), packetCounts);
+      assert.equal((await fetch(`${urls[0]}/api/protected`, { headers: { Cookie: cookie } })).status, 401);
+      expireAttempts(); // Separate credential rejection from the shared guess budget.
+      await assert.rejects(connect(0, { cookie }), /UNAUTHORIZED/);
+      await assert.rejects(connect(1, { token: PASSWORD }), /UNAUTHORIZED/);
+      const newCookie = response.headers.get('set-cookie').split(';')[0];
+      await connect(0, { cookie: newCookie });
+      await connect(1, { token: NEW_PASSWORD });
+      assert.equal(io.of('/').sockets.size, 2);
+    });
+  });
+
+  it('preserves credentials and connections if persistence fails', { timeout: 10000 }, async () => {
+    await withSocketGateway(async ({ urls, connect, io, authFile, changes }) => {
+      const client = await connect(0, { token: PASSWORD });
+      const originalRecord = readJSON(authFile);
+      const response = await fetch(`${urls[0]}/api/auth/password`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${PASSWORD}` },
+        body: JSON.stringify({ password: NEW_PASSWORD }),
+      });
+      assert.equal(response.status, 500);
+      assert.equal(changes(), 0);
+      assert.deepEqual(readJSON(authFile), originalRecord);
+      assert.equal((await fetch(`${urls[0]}/api/protected`, { headers: { Authorization: `Bearer ${PASSWORD}` } })).status, 200);
+      const delivered = socketEvent(client, 'trade:event');
+      io.emit('trade:event', { valid: true });
+      assert.deepEqual(await delivered, { valid: true });
+    }, { failPersistence: true });
+  });
+});

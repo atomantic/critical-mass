@@ -116,6 +116,7 @@ const makeRecord = async (password) => {
  * @param {Function} [opts.writeJSON]
  * @param {string} [opts.bootstrapSecret]
  * @param {string} [opts.bootstrapSecretFile]
+ * @param {Function} [opts.onPasswordChanged] Called after successful credential persistence
  * @param {Function} [opts.onPasswordRemoved]
  * @param {() => number} [opts.now] Clock for the peer attempt window
  * @param {(req: import('express').Request) => boolean} [opts.isTrustedBootstrapRequest]
@@ -126,6 +127,7 @@ const createOperatorAuth = ({
   writeJSON = null,
   bootstrapSecret = '',
   bootstrapSecretFile = '',
+  onPasswordChanged = null,
   onPasswordRemoved = null,
   isTrustedBootstrapRequest = isLoopbackRequest,
   now = Date.now,
@@ -225,13 +227,17 @@ const createOperatorAuth = ({
   );
 
   const persist = (next) => {
-    record = next;
-    if (!authFile || !writeJSON) return;
+    if (!authFile || !writeJSON) {
+      record = next;
+      return;
+    }
     if (!next) {
       try { fs.unlinkSync(authFile); } catch { /* missing is the cleared state */ }
+      record = next;
       return;
     }
     writeJSON(authFile, next);
+    record = next;
   };
 
   const authenticate = async (headers = {}, peer, attemptReserved = false) => {
@@ -340,6 +346,7 @@ const createOperatorAuth = ({
         ...nextRecord,
         bootstrapConsumedHash: bootstrapSecretHash || record?.bootstrapConsumedHash || null,
       });
+      onPasswordChanged?.();
       if (bootstrapSecretFile) {
         try { fs.unlinkSync(bootstrapSecretFile); } catch { /* already consumed in the auth record */ }
       }
