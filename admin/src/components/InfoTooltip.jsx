@@ -31,6 +31,7 @@ export default function InfoTooltip({ tip, label = 'More information', align = '
   const triggerRef = useRef(null)
   const popupRef = useRef(null)
   const id = useId()
+  const descriptionId = `${id}-description`
   const maxWidth = WIDTHS[width] || WIDTHS['w-52']
 
   const reposition = useCallback(() => {
@@ -83,6 +84,7 @@ export default function InfoTooltip({ tip, label = 'More information', align = '
         type="button"
         aria-label={label}
         aria-expanded={open}
+        aria-describedby={descriptionId}
         aria-controls={open ? id : undefined}
         onClick={() => setOpen(o => !o)}
         onPointerEnter={hoverOpen}
@@ -94,6 +96,7 @@ export default function InfoTooltip({ tip, label = 'More information', align = '
           <path d="M12 16v-4M12 8h.01" />
         </svg>
       </button>
+      <span id={descriptionId} className="sr-only" hidden>{tip}</span>
       {open && createPortal(
         <div
           ref={popupRef}

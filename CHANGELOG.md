@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-941] Dashboard help buttons announce their descriptions** — InfoTooltip now associates each trigger with a persistent screen-reader description while keeping the visual popup mounted only when opened.
 - **[issue-926] Engine IPC rejects browser connections** — Loopback WebSocket upgrades containing any Origin header are refused before requests, config updates or event subscriptions are admitted; process-client replies and reconnects remain supported.
 - **[issue-927] Password rotation revokes active gateway sockets** — Successful credential persistence disconnects clients on every attached listener and cleans up their log streams; rejected changes preserve existing credentials and connections.
 - **[issue-916] Native startup loads repository environment settings** — PM2, gateway, CLI and development startup load the root `.env` before configuration, preserve inherited values, and report unreadable files without exposing secrets; local environment files are excluded from Git and Docker.
