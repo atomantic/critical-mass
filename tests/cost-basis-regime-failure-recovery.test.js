@@ -74,8 +74,11 @@ function createView(props = {}) {
   const doc = createDocument()
   const previousWindow = global.window
   const previousDocument = global.document
+  const previousNavigator = Object.getOwnPropertyDescriptor(global, 'navigator')
   global.window = doc.defaultView
   global.document = doc
+  // Node 20 has no global navigator; newer Node versions expose a getter.
+  Object.defineProperty(global, 'navigator', { configurable: true, value: { userAgent: 'node-test' } })
   const { createRoot } = adminRequire('react-dom/client')
   const { flushSync } = adminRequire('react-dom')
   const container = doc.createElement('div')
@@ -145,7 +148,13 @@ function createView(props = {}) {
     now = end
   }
   function unmount() { flushSync(() => root.unmount()) }
-  function cleanup() { unmount(); global.window = previousWindow; global.document = previousDocument }
+  function cleanup() {
+    unmount()
+    global.window = previousWindow
+    global.document = previousDocument
+    if (previousNavigator) Object.defineProperty(global, 'navigator', previousNavigator)
+    else delete global.navigator
+  }
   render()
   return { requests, timers, render, drain, respond, click, unmount, cleanup, text: () => container.textContent, advance, tick: () => advance(10000) }
 }
