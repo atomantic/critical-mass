@@ -4,6 +4,19 @@ import { createRunLifecycle } from '../../utils/runLifecycle.mjs'
 
 const PROVIDER_TYPES = { cli: 'CLI', api: 'API' }
 
+async function requireAcceptedResponse(response) {
+  if (response.ok) return
+  let message = `Request failed (${response.status})`
+  try {
+    const body = await response.json()
+    if (typeof body?.error === 'string' && body.error.trim()) message = body.error
+    else if (Array.isArray(body?.errors) && body.errors.length) message = body.errors.join(', ')
+  } catch {
+    // A non-JSON error still has a useful status for the operator.
+  }
+  throw new Error(message)
+}
+
 export default function AIProviders() {
   const providerSelectId = useId()
   const promptTextareaId = useId()
@@ -21,8 +34,10 @@ export default function AIProviders() {
   const [sampleProviders, setSampleProviders] = useState([])
   const [showSamples, setShowSamples] = useState(false)
   const [loadingSamples, setLoadingSamples] = useState(false)
-  const [addingSample, setAddingSample] = useState({})
   const [runPending, setRunPending] = useState(false)
+  const [mutationPending, setMutationPending] = useState({})
+  const [mutationError, setMutationError] = useState('')
+  const mutationLocks = useRef(new Set())
   const loadDataRef = useRef(null)
   const lifecycleRef = useRef(null)
   if (!lifecycleRef.current) {
@@ -58,12 +73,25 @@ export default function AIProviders() {
   useEffect(() => { loadDataRef.current = loadData })
 
   const handleSetActive = async (id) => {
-    await fetch('/api/providers/active', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id })
-    })
-    setActiveProviderId(id)
+    await runMutation('active', () => fetch('/api/providers/active', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id })
+    }), () => setActiveProviderId(id))
+  }
+
+  const runMutation = async (key, request, onSuccess) => {
+    if (mutationLocks.current.has(key)) return
+    mutationLocks.current.add(key)
+    setMutationPending(prev => ({ ...prev, [key]: true }))
+    setMutationError('')
+    try {
+      await requireAcceptedResponse(await request())
+      onSuccess?.()
+    } catch (error) {
+      setMutationError(error.message || 'The provider change could not be saved. Please try again.')
+    } finally {
+      mutationLocks.current.delete(key)
+      setMutationPending(prev => ({ ...prev, [key]: false }))
+    }
   }
 
   const handleTest = async (id) => {
@@ -75,22 +103,19 @@ export default function AIProviders() {
   }
 
   const handleDelete = async (id) => {
-    await fetch(`/api/providers/${id}`, { method: 'DELETE' })
-    loadData()
+    await runMutation(`delete:${id}`, () => fetch(`/api/providers/${id}`, { method: 'DELETE' }), loadData)
   }
 
   const handleToggleEnabled = async (provider) => {
-    await fetch(`/api/providers/${provider.id}`, {
+    await runMutation(`enabled:${provider.id}`, () => fetch(`/api/providers/${provider.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...provider, enabled: !provider.enabled })
-    })
-    loadData()
+    }), loadData)
   }
 
   const handleRefreshModels = async (id) => {
-    await fetch(`/api/providers/${id}/refresh-models`, { method: 'POST' })
-    loadData()
+    await runMutation(`refresh:${id}`, () => fetch(`/api/providers/${id}/refresh-models`, { method: 'POST' }), loadData)
   }
 
   const handleExecuteRun = () => {
@@ -109,27 +134,25 @@ export default function AIProviders() {
   }
 
   const handleAddSample = async (provider) => {
-    setAddingSample(prev => ({ ...prev, [provider.id]: true }))
-    await fetch('/api/providers', {
+    await runMutation(`sample:${provider.id}`, () => fetch('/api/providers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(provider)
-    })
-    setSampleProviders(prev => prev.filter(p => p.id !== provider.id))
-    setAddingSample(prev => ({ ...prev, [provider.id]: false }))
-    loadData()
+    }), () => { setSampleProviders(prev => prev.filter(p => p.id !== provider.id)); loadData() })
   }
 
   const handleAddAllSamples = async () => {
-    for (const provider of sampleProviders) {
-      await fetch('/api/providers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(provider)
-      })
-    }
-    setSampleProviders([])
-    loadData()
+    await runMutation('sample-all', async () => {
+      for (const provider of sampleProviders) {
+        const response = await fetch('/api/providers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(provider)
+        })
+        await requireAcceptedResponse(response)
+      }
+      return { ok: true }
+    }, () => { setSampleProviders([]); loadData() })
   }
 
   if (loading) {
@@ -166,6 +189,8 @@ export default function AIProviders() {
         </div>
       </div>
 
+      {mutationError && <p role="alert" className="text-sm text-red-400">{mutationError}</p>}
+
       {/* Prompt Runner */}
       {showRunner && (
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-4">
@@ -174,6 +199,7 @@ export default function AIProviders() {
               id={providerSelectId}
               aria-label="Select Provider"
               value={activeProviderId || ''}
+              disabled={Boolean(mutationPending.active)}
               onChange={(e) => handleSetActive(e.target.value)}
               className="px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white w-full sm:w-auto"
             >
@@ -228,9 +254,10 @@ export default function AIProviders() {
             <div className="flex gap-2">
               <button
                 onClick={handleAddAllSamples}
+                disabled={Boolean(mutationPending['sample-all'])}
                 className="px-4 py-1.5 bg-green-800 hover:bg-green-900 text-white rounded-lg transition-colors text-sm"
               >
-                Add All ({sampleProviders.length})
+                {mutationPending['sample-all'] ? 'Adding...' : `Add All (${sampleProviders.length})`}
               </button>
               <button
                 onClick={() => setShowSamples(false)}
@@ -269,10 +296,10 @@ export default function AIProviders() {
                 </div>
                 <button
                   onClick={() => handleAddSample(sp)}
-                  disabled={addingSample[sp.id]}
+                  disabled={Boolean(mutationPending[`sample:${sp.id}`])}
                   className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors text-sm disabled:opacity-50 flex-shrink-0"
                 >
-                  {addingSample[sp.id] ? 'Adding...' : 'Add'}
+                  {mutationPending[`sample:${sp.id}`] ? 'Adding...' : 'Add'}
                 </button>
               </div>
             ))}
@@ -358,6 +385,7 @@ export default function AIProviders() {
                 {provider.type === 'api' && (
                   <button
                     onClick={() => handleRefreshModels(provider.id)}
+                    disabled={Boolean(mutationPending[`refresh:${provider.id}`])}
                     className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors"
                   >
                     Refresh
@@ -366,6 +394,7 @@ export default function AIProviders() {
 
                 <button
                   onClick={() => handleToggleEnabled(provider)}
+                  disabled={Boolean(mutationPending[`enabled:${provider.id}`])}
                   className={`px-3 py-1.5 text-sm rounded transition-colors ${
                     provider.enabled
                       ? 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30'
@@ -378,6 +407,7 @@ export default function AIProviders() {
                 {provider.id !== activeProviderId && provider.enabled && (
                   <button
                     onClick={() => handleSetActive(provider.id)}
+                    disabled={Boolean(mutationPending.active)}
                     className="px-3 py-1.5 text-sm bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 rounded transition-colors"
                   >
                     Set Default
@@ -393,6 +423,7 @@ export default function AIProviders() {
 
                 <button
                   onClick={() => handleDelete(provider.id)}
+                  disabled={Boolean(mutationPending[`delete:${provider.id}`])}
                   className="px-3 py-1.5 text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded transition-colors"
                 >
                   Delete
@@ -460,6 +491,9 @@ export default function AIProviders() {
   }
 
 function ProviderForm({ provider, onClose, onSave }) {
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  const pendingLock = useRef(false)
   const [formData, setFormData] = useState({
     name: provider?.name || '',
     type: provider?.type || 'cli',
@@ -497,6 +531,10 @@ function ProviderForm({ provider, onClose, onSave }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (pendingLock.current) return
+    pendingLock.current = true
+    setPending(true)
+    setError('')
     // Parse modelsText in case the user hasn't blurred from the textarea yet
     const models = parseModelsText(modelsText)
     const data = {
@@ -506,20 +544,18 @@ function ProviderForm({ provider, onClose, onSave }) {
       timeout: parseInt(formData.timeout)
     }
 
-    if (provider) {
-      await fetch(`/api/providers/${provider.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
-      })
-    } else {
-      await fetch('/api/providers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
-      })
+    try {
+      const response = provider
+        ? await fetch(`/api/providers/${provider.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+        : await fetch('/api/providers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+      await requireAcceptedResponse(response)
+      onSave()
+    } catch (submitError) {
+      setError(submitError.message || 'The provider could not be saved. Please try again.')
+    } finally {
+      pendingLock.current = false
+      setPending(false)
     }
-    onSave()
   }
 
   const nameInputId = useId()
@@ -572,6 +608,7 @@ function ProviderForm({ provider, onClose, onSave }) {
           {provider ? 'Edit Provider' : 'Add Provider'}
         </h2>
         <form onSubmit={handleSubmit} className="space-y-4">
+          {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
           <div>
             <label htmlFor={nameInputId} className="block text-sm text-gray-400 mb-1">Name *</label>
             <input
@@ -729,8 +766,8 @@ function ProviderForm({ provider, onClose, onSave }) {
             <button type="button" onClick={onClose} className="px-4 py-2 text-gray-400 hover:text-white">
               Cancel
             </button>
-            <button type="submit" className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
-              {provider ? 'Save' : 'Create'}
+            <button type="submit" disabled={pending} className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors disabled:opacity-50">
+              {pending ? 'Saving...' : provider ? 'Save' : 'Create'}
             </button>
           </div>
         </form>

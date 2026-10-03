@@ -28,7 +28,7 @@ before(async () => {
 
 // Execute real component render/handlers with isolated hook state and mocked IO.
 // Nested modal components have their own hook owner, just as they do in React.
-function createView(component, extraStubs = {}) {
+function createView(component, extraStubs = {}, fetchResponse = null) {
   const instances = new Map()
   const prefix = `view-${harnessId++}`
   const writes = []
@@ -57,7 +57,7 @@ function createView(component, extraStubs = {}) {
   }
   const fetch = async (url, options = {}) => {
     if (options.method) writes.push({ url, method: options.method, body: options.body && JSON.parse(options.body) })
-    return { ok: true, json: async () => url === '/api/providers'
+    return (fetchResponse && fetchResponse(url, options)) || { ok: true, status: 200, json: async () => url === '/api/providers'
       ? { providers: [{ id: 'one', name: 'Test Provider', enabled: true, type: 'cli' }], activeProvider: 'one' }
       : { success: true, runs: [], trades: [], summary: null } }
   }
@@ -144,6 +144,74 @@ describe('admin accessible operational forms', () => {
     tree = view.renderChild(modal)
     await find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} })
     assert.deepEqual(view.writes[0].body.models, ['fast', 'capable'])
+  })
+
+  it('keeps a rejected provider draft open, reports the server error, and allows a successful retry', async () => {
+    let rejectWrite = true
+    const view = createView('ai/Providers.jsx', {}, async (url, options) => {
+      if (options.method === 'POST') return rejectWrite
+        ? { ok: false, status: 400, json: async () => ({ error: 'Provider configuration is invalid' }) }
+        : { ok: true, status: 201, json: async () => ({}) }
+      return { ok: true, status: 200, json: async () => url === '/api/providers'
+        ? { providers: [], activeProvider: null }
+        : { runs: [] } }
+    })
+    await view.mount()
+    find(view.render(), node => node.type === 'button' && text(node) === 'Add Provider').props.onClick()
+    let modal = find(view.render(), node => typeof node.type === 'function')
+    let tree = view.renderChild(modal)
+    labeled(tree, 'Name *').props.onChange({ target: { value: 'Synthetic provider' } })
+    tree = view.renderChild(modal)
+    await find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} })
+    tree = view.renderChild(modal)
+    assert.equal(labeled(tree, 'Name *').props.value, 'Synthetic provider')
+    assert.match(text(find(tree, node => node.props?.role === 'alert')), /Provider configuration is invalid/)
+    assert.equal(find(tree, node => node.type === 'button' && text(node).trim() === 'Create').props.disabled, false)
+
+    rejectWrite = false
+    await find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} })
+    assert.equal(elements(view.render()).some(node => node.type === 'form'), false)
+  })
+
+  it('keeps the confirmed default when a provider selection is rejected', async () => {
+    const view = createView('ai/Providers.jsx', {}, async (url, options) => {
+      if (url === '/api/providers' && !options.method) return { ok: true, status: 200, json: async () => ({
+        providers: [
+          { id: 'one', name: 'First', enabled: true, type: 'cli' },
+          { id: 'two', name: 'Second', enabled: true, type: 'cli' },
+        ], activeProvider: 'one'
+      }) }
+      if (url === '/api/providers/active') return { ok: false, status: 503, json: async () => ({ error: 'Provider settings are temporarily unavailable' }) }
+      return { ok: true, status: 200, json: async () => ({ runs: [] }) }
+    })
+    let tree = await view.mount()
+    const setDefault = find(tree, node => node.type === 'button' && text(node) === 'Set Default')
+    await setDefault.props.onClick()
+    tree = view.render()
+    assert.equal(elements(tree).filter(node => node.type === 'span' && text(node) === 'DEFAULT').length, 1)
+    assert.match(text(find(tree, node => node.props?.role === 'alert')), /temporarily unavailable/)
+  })
+
+  it('retains the provider form after a network failure and ignores duplicate submits while pending', async () => {
+    let finishWrite
+    const view = createView('ai/Providers.jsx', {}, async (url, options) => {
+      if (options.method === 'POST') return new Promise((resolve, reject) => { finishWrite = { resolve, reject } })
+      return { ok: true, status: 200, json: async () => url === '/api/providers' ? { providers: [], activeProvider: null } : { runs: [] } }
+    })
+    await view.mount()
+    find(view.render(), node => node.type === 'button' && text(node) === 'Add Provider').props.onClick()
+    const modal = find(view.render(), node => typeof node.type === 'function')
+    let tree = view.renderChild(modal)
+    const form = find(tree, node => node.type === 'form')
+    const submit = { preventDefault() {} }
+    const saving = form.props.onSubmit(submit)
+    await form.props.onSubmit(submit)
+    assert.equal(view.writes.filter(write => write.method === 'POST').length, 1)
+    finishWrite.reject(new Error('Network unavailable'))
+    await saving
+    tree = view.renderChild(modal)
+    assert.ok(elements(tree).some(node => node.type === 'form'))
+    assert.match(text(find(tree, node => node.props?.role === 'alert')), /Network unavailable/)
   })
 
   it('connects trade labels to unique controls and submits entered amount expressions', async () => {
