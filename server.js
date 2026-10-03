@@ -81,6 +81,8 @@ const operatorAuth = createOperatorAuth({
   writeJSON,
   bootstrapSecret: process.env.OPERATOR_BOOTSTRAP_SECRET,
   bootstrapSecretFile: process.env.OPERATOR_BOOTSTRAP_SECRET_FILE,
+  // All attached listeners share this namespace and its disconnect cleanup.
+  onPasswordChanged: () => io.disconnectSockets(true),
   onPasswordRemoved: () => {
     setTimeout(() => gracefulShutdown('operator password removal'), 100).unref();
   },
