@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 const EXCHANGE_ICONS = {
   coinbase: '₿',
@@ -50,6 +50,15 @@ const getEngineStatus = (exchange) => {
 
 function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, onRefresh, onAddFund }) {
   const [isOpen, setIsOpen] = useState(false)
+  const triggerRef = useRef(null)
+
+  const handleKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      setIsOpen(false)
+      triggerRef.current?.focus()
+    }
+  }
 
   const handleSelect = (exchangeName, pair) => {
     onChange(exchangeName, pair)
@@ -68,9 +77,6 @@ function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, o
       if (!e.target.closest('.exchange-selector')) {
         setIsOpen(false)
       }
-    }
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') setIsOpen(false)
     }
     document.addEventListener('click', handleClickOutside)
     document.addEventListener('keydown', handleKeyDown)
@@ -92,6 +98,9 @@ function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, o
   return (
     <div className="exchange-selector relative">
       <button
+        ref={triggerRef}
+        aria-expanded={isOpen}
+        aria-controls="exchange-selector-options"
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center gap-1 md:gap-2 px-1.5 md:px-3 py-1.5 md:py-2 min-h-[40px] bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
       >
@@ -110,7 +119,7 @@ function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, o
       </button>
 
       {isOpen && (
-        <div className="fixed left-4 right-4 md:absolute md:left-auto md:right-0 mt-2 md:w-80 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50">
+        <div id="exchange-selector-options" className="fixed left-4 right-4 md:absolute md:left-auto md:right-0 mt-2 md:w-80 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50">
           <div className="p-2">
             <div className="text-xs text-gray-400 uppercase tracking-wider px-2 py-1">Select Exchange & Pair</div>
 
