@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useId, useMemo, useState } from 'react'
 import { buildOpenOrderRelationIndex, deriveOpenOrderRows } from '../../utils/openOrderRelations.mjs'
 import { DEFAULT_FEE_RATE_PER_SIDE } from '../../utils/openOrderEstimates.mjs'
 import { TIERS as CELESTIAL_TIERS, formatTierTooltip } from '../../../../shared/celestial-tiers.mjs'
@@ -30,6 +30,7 @@ function OpenOrdersTable({
   setTpEditModal,
   setRollUpConfirm,
 }) {
+  const disclosureId = useId()
   const [expandedOrders, setExpandedOrders] = useState(new Set())
   // Historical fill scans depend only on the fill snapshot, never on the ~1s status tick.
   const relationIndex = useMemo(
@@ -126,21 +127,24 @@ function OpenOrdersTable({
             <th className="py-2 w-6"></th>
           </tr>
         </thead>
-        <tbody>
           {sellOrders.map((order) => {
             const isExpanded = expandedOrders.has(order.orderId)
+            const detailsId = `${disclosureId}-open-${encodeURIComponent(order.orderId)}`
             const isTp = order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp'
             const hasBuys = order.relatedBuys.length > 0
 
             return (
               <React.Fragment key={order.orderId}>
-                <tr
-                  className={`border-b border-gray-700/50 ${isTp && hasBuys ? 'cursor-pointer' : ''} hover:bg-gray-700/30`}
-                  onClick={isTp && hasBuys ? () => toggleOrder(order.orderId) : undefined}
-                >
+                <tbody>
+                <tr className="border-b border-gray-700/50 hover:bg-gray-700/30">
                   <td className="py-2 pr-1 text-gray-400 text-xs">
                     {isTp && hasBuys ? (
-                      <span className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
+                      <button type="button" aria-label={`Buy details for open order ${order.orderId}`}
+                        aria-expanded={isExpanded} aria-controls={detailsId}
+                        className="min-h-11 min-w-11 inline-flex items-center justify-center rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+                        onClick={() => toggleOrder(order.orderId)}>
+                        <span aria-hidden="true" className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
+                      </button>
                     ) : null}
                   </td>
                   <td className="py-2 pr-2 font-mono text-gray-400 text-xs">
@@ -237,6 +241,8 @@ function OpenOrdersTable({
                     })()}
                   </td>
                 </tr>
+                </tbody>
+                <tbody id={detailsId} hidden={!isExpanded}>
                 {/* Buy sub-rows */}
                 {isExpanded && order.relatedBuys.map((buy, idx) => (
                   <tr key={`${order.orderId}-buy-${buy.orderId}-${idx}`} className="border-b border-gray-700/30 bg-gray-750/20">
@@ -263,10 +269,10 @@ function OpenOrdersTable({
                     <td className="py-1"></td>
                   </tr>
                 ))}
+                </tbody>
               </React.Fragment>
             )
           })}
-        </tbody>
         <tfoot>
           <tr className="border-t border-gray-600 text-xs font-semibold">
             <td className="py-2 pr-1"></td>
