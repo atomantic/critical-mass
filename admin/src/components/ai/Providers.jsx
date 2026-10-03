@@ -135,6 +135,7 @@ export default function AIProviders() {
   }
 
   const handleAddSample = async (provider) => {
+    if (mutationLocks.current.has('sample-all')) return
     await runMutation(`sample:${provider.id}`, () => fetch('/api/providers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -143,6 +144,7 @@ export default function AIProviders() {
   }
 
   const handleAddAllSamples = async () => {
+    if ([...mutationLocks.current].some(key => key.startsWith('sample:'))) return
     let addedAny = false
     await runMutation('sample-all', async () => {
       for (const provider of sampleProviders) {
@@ -258,7 +260,7 @@ export default function AIProviders() {
             <div className="flex gap-2">
               <button
                 onClick={handleAddAllSamples}
-                disabled={Boolean(mutationPending['sample-all'])}
+                disabled={Boolean(mutationPending['sample-all'] || Object.keys(mutationPending).some(key => key.startsWith('sample:') && mutationPending[key]))}
                 className="px-4 py-1.5 bg-green-800 hover:bg-green-900 text-white rounded-lg transition-colors text-sm"
               >
                 {mutationPending['sample-all'] ? 'Adding...' : `Add All (${sampleProviders.length})`}

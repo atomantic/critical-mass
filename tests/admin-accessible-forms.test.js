@@ -236,6 +236,25 @@ describe('admin accessible operational forms', () => {
     assert.match(text(find(tree, node => node.props?.role === 'alert')), /already exists/)
   })
 
+  it('prevents Add All from racing an individual sample addition', async () => {
+    let finishAdd
+    const view = createView('ai/Providers.jsx', {}, async (url, options) => {
+      if (url === '/api/providers/samples') return { ok: true, status: 200, json: async () => ({ providers: [
+        { id: 'sample-one', name: 'Sample One', enabled: true, type: 'cli' },
+      ] }) }
+      if (options.method === 'POST') return new Promise(resolve => { finishAdd = resolve })
+      return { ok: true, status: 200, json: async () => url === '/api/providers' ? { providers: [], activeProvider: null } : { runs: [] } }
+    })
+    let tree = await view.mount()
+    find(tree, node => node.type === 'button' && text(node).includes('Load Samples')).props.onClick()
+    await new Promise(resolve => setImmediate(resolve))
+    tree = view.render()
+    find(tree, node => node.type === 'button' && text(node) === 'Add').props.onClick()
+    await find(tree, node => node.type === 'button' && text(node).startsWith('Add All')).props.onClick()
+    assert.equal(view.writes.filter(write => write.method === 'POST').length, 1)
+    finishAdd({ ok: true, status: 201, json: async () => ({}) })
+  })
+
   it('connects trade labels to unique controls and submits entered amount expressions', async () => {
     const { parseTradeAmountExpression } = await import(pathToFileURL(path.join(__dirname, '..', 'admin/src/components/updown/tradeAmountExpression.js')).href)
     const stubs = { './tradeAmountExpression': { parseTradeAmountExpression } }
