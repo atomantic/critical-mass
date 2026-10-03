@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   deriveRegimeFillGroups, searchRegimeFillGroups, visibleOrphanBuys,
   deriveDryRunFillGroups, searchDryRunFillGroups,
@@ -15,6 +15,7 @@ const EMPTY = []
  * deriveDryRunFillGroups). Parent passes only fetched data.
  */
 function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledProp, pendingOrdersList, market, asset }) {
+  const disclosureId = useId()
   const dryRunFilled = dryRunFilledProp || EMPTY
   const [showAllCycles, setShowAllCycles] = useState(true)
   const [expandedFills, setExpandedFills] = useState(new Set())
@@ -77,8 +78,9 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
         <div className="flex items-center gap-3">
           {!isDryRun && liveFills?.length > 0 && (
             <button
-              onClick={() => { setShowAllCycles(!showAllCycles); setExpandedCycles(new Set()); cycleInitRef.current = false }}
-              className={`text-xs px-2 py-1 rounded transition-colors ${
+              type="button"
+              onClick={e => { e.currentTarget.focus(); setShowAllCycles(!showAllCycles); setExpandedCycles(new Set()); cycleInitRef.current = false }}
+              className={`text-xs px-2 py-1 rounded transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400 ${
                 showAllCycles
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
@@ -149,6 +151,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
             // Shared sell + buy row renderer
             const renderSellRow = (group) => {
               const isExpanded = expandedFills.has(group.key)
+              const detailsId = `${disclosureId}-fill-${encodeURIComponent(group.key)}`
               const sell = group.sell
               const buys = group.buys
               const sellPrice = sell.fillPrice || sell.price
@@ -159,12 +162,17 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
 
               return (
                 <React.Fragment key={group.key}>
-                  <tr
-                    className="border-b border-gray-700 cursor-pointer hover:bg-gray-700/40 transition-colors"
-                    onClick={() => toggleFill(group.key)}
-                  >
+                  <tbody>
+                  <tr className="border-b border-gray-700 hover:bg-gray-700/40 transition-colors">
                     <td className="py-1.5 pr-1 text-gray-400 text-xs">
-                      <span className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
+                      {(buys.length > 0 || sell.duplicateTpNote || sell.untrackedSell) && (
+                        <button type="button" aria-label={`Buy details for filled sell ${sell.orderId} (${group.key})`}
+                          aria-expanded={isExpanded} aria-controls={detailsId}
+                          className="min-h-11 min-w-11 inline-flex items-center justify-center rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+                          onClick={() => toggleFill(group.key)}>
+                          <span aria-hidden="true" className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
+                        </button>
+                      )}
                     </td>
                     <td className="py-1.5 pr-2 font-mono text-xs text-gray-400">
                       {sell.orderId}
@@ -192,6 +200,8 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                       {formatTimestamp(sellTime)}
                     </td>
                   </tr>
+                  </tbody>
+                  <tbody id={detailsId} hidden={!isExpanded}>
                   {isExpanded && buys.length === 0 && (sell.duplicateTpNote || sell.untrackedSell) && (
                     <tr className="border-b border-gray-700/30 bg-gray-750/20">
                       <td className="py-1 pr-1"></td>
@@ -235,6 +245,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                       </tr>
                     )
                   })}
+                  </tbody>
                 </React.Fragment>
               )
             }
@@ -272,8 +283,8 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                           <td className="text-right py-1.5"></td>
                         </tr>
                       )}
-                      {sellGroups.map(renderSellRow)}
                     </tbody>
+                    {sellGroups.map(renderSellRow)}
                   </table>
                 </div>
               )
@@ -319,8 +330,9 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                 {/* Orphaned buys (not linked to any sell) */}
                 {!isDryRun && orphanedBuys && orphanedBuys.length > 0 && (
                   <div className="border border-yellow-700/40 rounded-lg overflow-hidden">
-                    <div
-                      className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-gray-700/40 transition-colors"
+                    <button type="button"
+                      aria-label="Orphaned buy details" aria-expanded={expandedCycles.has('orphans')} aria-controls={`${disclosureId}-orphans`}
+                      className="w-full min-h-11 flex items-center justify-between text-left px-3 py-2 hover:bg-gray-700/40 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
                       onClick={() => {
                         setExpandedCycles(prev => {
                           const next = new Set(prev)
@@ -330,13 +342,14 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                         })
                       }}
                     >
-                      <div className="flex items-center gap-2">
-                        <span className={`inline-block transition-transform text-xs text-gray-500 ${expandedCycles.has('orphans') ? 'rotate-90' : ''}`}>&#9654;</span>
+                      <span className="flex items-center gap-2">
+                        <span aria-hidden="true" className={`inline-block transition-transform text-xs text-gray-500 ${expandedCycles.has('orphans') ? 'rotate-90' : ''}`}>&#9654;</span>
                         <span className="px-2 py-0.5 rounded text-xs bg-yellow-900/50 text-yellow-400">Orphaned</span>
                         <span className="text-xs text-gray-400">{orphanedBuys.length} buys not linked to any sell</span>
-                      </div>
+                      </span>
                       <span className="font-mono text-xs text-yellow-400">{orphanedBuys.reduce((s, b) => s + (b.size || 0), 0).toFixed(8)} {asset}</span>
-                    </div>
+                    </button>
+                    <div id={`${disclosureId}-orphans`} hidden={!expandedCycles.has('orphans')}>
                     {expandedCycles.has('orphans') && (
                       <div className="border-t border-gray-700">
                         <table className="w-full text-sm">
@@ -383,6 +396,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                         </table>
                       </div>
                     )}
+                    </div>
                   </div>
                 )}
                 {cycleGroups.map(cycle => {
@@ -392,8 +406,9 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
 
                   return (
                     <div key={cycle.cycleId} className="border border-gray-700 rounded-lg overflow-hidden">
-                      <div
-                        className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-gray-700/40 transition-colors"
+                      <button type="button"
+                        aria-label={`Details for cycle ${cycleLabel}`} aria-expanded={isCycleExpanded} aria-controls={`${disclosureId}-cycle-${encodeURIComponent(cycle.cycleId)}`}
+                        className="w-full min-h-11 flex items-center justify-between text-left px-3 py-2 hover:bg-gray-700/40 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
                         onClick={() => {
                           setExpandedCycles(prev => {
                             const next = new Set(prev)
@@ -403,8 +418,8 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                           })
                         }}
                       >
-                        <div className="flex items-center gap-2">
-                          <span className={`inline-block transition-transform text-xs text-gray-500 ${isCycleExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
+                        <span className="flex items-center gap-2">
+                          <span aria-hidden="true" className={`inline-block transition-transform text-xs text-gray-500 ${isCycleExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
                           <span className={`px-2 py-0.5 rounded text-xs ${
                             cycle.cycleId === 'unknown'
                               ? 'bg-gray-700 text-gray-400'
@@ -423,20 +438,21 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                               {cycle.maxTs > cycle.minTs && ` – ${new Date(cycle.maxTs).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`}
                             </span>
                           )}
-                        </div>
+                        </span>
                         <span className={`font-mono text-xs ${cycle.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}${formatCurrency(cycle.totalPnl)}` : '—'}
                           {cycle.totalHoldback !== 0 && <span className={`ml-1 ${cycle.totalHoldback < 0 ? 'text-amber-400' : 'text-cyan-400'}`}>{cycle.totalHoldback < 0 ? '−' : '+'}{Math.abs(cycle.totalHoldback).toFixed(8)}</span>}
                         </span>
-                      </div>
+                      </button>
+                      <div id={`${disclosureId}-cycle-${encodeURIComponent(cycle.cycleId)}`} hidden={!isCycleExpanded}>
                       {isCycleExpanded && (
                         <div className="border-t border-gray-700">
                           <table className="w-full text-sm">
                             <thead>
                               {tableHeader}
                             </thead>
+                            {cycle.sells.map(renderSellRow)}
                             <tbody>
-                              {cycle.sells.map(renderSellRow)}
                               {cycle.sells.length > 1 && (
                                 <tr className="border-t border-gray-600 bg-gray-700/20">
                                   <td className="py-1.5 pr-1"></td>
@@ -455,6 +471,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                           </table>
                         </div>
                       )}
+                      </div>
                     </div>
                   )
                 })}
