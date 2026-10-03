@@ -8,6 +8,8 @@
  */
 
 const fs = require('fs');
+const { randomUUID } = require('crypto');
+const { createTransactionsReadView } = require('./transactions-regime-query');
 const path = require('path');
 const { resolveFundDataDir } = require('./migration');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
@@ -718,7 +720,12 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   // recordBuyConsumption, claimCapitalCredit, and the
   // external markDirty() escape hatch for direct fill-object edits) calls
   // bumpLedgerVersion() alongside its existing dirtySinceLastPersist flag.
+  const ledgerInstance = randomUUID();
   let ledgerVersion = 0;
+  const transactionsReadView = createTransactionsReadView(
+    () => Array.from(fills.values()),
+    () => `${ledgerInstance}:${ledgerVersion}`,
+  );
   const bumpLedgerVersion = () => {
     ledgerVersion += 1;
   };
@@ -3053,6 +3060,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     hasProcessedTrade,
     getFillCount,
     getAllFills,
+    getFillPage: input => transactionsReadView.query(input),
     getStats,
     getFillTimeStats,
     getFillsSince,
@@ -3093,6 +3101,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     _test: {
       getWriteCount: () => writeCount,
       getLedgerVersion: () => ledgerVersion,
+      getTransactionsRecomputeCount: transactionsReadView.getRecomputeCount,
       getRealizedRecomputeCount: () => realizedRecomputeCount,
       getFillTimeStatsRecomputeCount: () => fillTimeStatsRecomputeCount,
     },

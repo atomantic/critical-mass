@@ -9520,6 +9520,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     updateConfig,
     updatePosition,
     getFills,
+    getFillPage: input => fillLedger.getFillPage(input),
     getFillLedger: () => fillLedger,
     recalculateAndRefresh,
     getFillStats,
