@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import ModalDialog from './ModalDialog'
 
 const INTERVAL_OPTIONS = [
@@ -60,21 +60,41 @@ function BackupRestore() {
   const [fundStateBlockedBy, setFundStateBlockedBy] = useState(null)
   const [fundStateForceAcknowledged, setFundStateForceAcknowledged] = useState(false)
 
+  const pendingSave = useRef(false)
+  const dataRequest = useRef(0)
+  const draftVersion = useRef(0)
+  const dirty = useRef(false)
+
+  const updateConfig = update => {
+    if (pendingSave.current) return
+    dirty.current = true
+    draftVersion.current += 1
+    setConfig(update)
+  }
+
   // `silent` refreshes run after a completed action: they must never swap the page
   // for the loading/error gate, or the action's own result message is erased.
-  const fetchData = async ({ silent = false } = {}) => {
+  const fetchData = async ({ silent = false, adoptConfig = !silent } = {}) => {
+    const request = ++dataRequest.current
+    const version = draftVersion.current
+    const current = () => request === dataRequest.current
     if (!silent) {
       setLoading(true)
       setError(null)
     }
-    const fail = (text) => (silent ? setRefreshError(text) : setError(text))
+    const fail = text => {
+      if (current()) (silent ? setRefreshError : setError)(text)
+    }
     try {
       const res = await fetch('/api/backups')
       if (res.ok) {
         const data = await res.json()
+        if (!current()) return
         setBackups(data.backups || [])
         setFundStateBackups(data.fundStateBackups || [])
-        setConfig(data.config || {})
+        if (adoptConfig && !pendingSave.current && !dirty.current && version === draftVersion.current) {
+          setConfig(data.config || {})
+        }
         setRefreshError(null)
       } else {
         fail(`Failed to load backups (HTTP ${res.status})`)
@@ -82,7 +102,7 @@ function BackupRestore() {
     } catch (err) {
       fail(err.message || 'Failed to load backups')
     } finally {
-      if (!silent) setLoading(false)
+      if (!silent && current()) setLoading(false)
     }
   }
 
@@ -117,6 +137,9 @@ function BackupRestore() {
   }, [restoreTarget])
 
   const handleSaveConfig = async () => {
+    if (pendingSave.current) return
+    pendingSave.current = true
+    draftVersion.current += 1 // Older reads may update lists, but cannot adopt config.
     setSaving(true)
     setMessage(null)
     try {
@@ -126,14 +149,18 @@ function BackupRestore() {
         body: JSON.stringify(config),
       })
       if (res.ok) {
+        const data = await res.json()
+        if (!data.config) throw new Error('Saved settings could not be confirmed')
+        setConfig(data.config)
+        dirty.current = false
         setMessage({ type: 'success', text: 'Backup settings saved!' })
-        fetchData({ silent: true })
       } else {
         setMessage({ type: 'error', text: 'Failed to save settings' })
       }
     } catch (err) {
       setMessage({ type: 'error', text: err.message || 'Failed to save settings' })
     } finally {
+      pendingSave.current = false
       setSaving(false)
     }
   }
@@ -463,100 +490,102 @@ function BackupRestore() {
           </div>
         )}
 
-        {/* Enable toggle */}
-        <div className="flex items-center gap-3 mb-4">
-          <label htmlFor="backup-enabled" className="relative inline-flex items-center gap-3 cursor-pointer">
-            <input
-              id="backup-enabled"
-              type="checkbox"
-              checked={config.enabled}
-              onChange={e => setConfig(prev => ({ ...prev, enabled: e.target.checked }))}
-              className="sr-only peer"
-            />
-            <div className="relative shrink-0 w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
-            <span className="text-sm font-medium">Enable Scheduled Backups</span>
-          </label>
-        </div>
-
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="backup-interval" className="block text-sm font-medium text-gray-300 mb-1">Backup Interval</label>
-              <select
-                id="backup-interval"
-                value={config.intervalMs}
-                onChange={e => setConfig(prev => ({ ...prev, intervalMs: parseInt(e.target.value) }))}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-              >
-                {INTERVAL_OPTIONS.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label htmlFor="fund-state-interval" className="block text-sm font-medium text-gray-300 mb-1">Fund-State Snapshot Interval</label>
-              <select
-                id="fund-state-interval"
-                value={config.fundStateIntervalMs}
-                onChange={e => setConfig(prev => ({ ...prev, fundStateIntervalMs: parseInt(e.target.value) }))}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-              >
-                {FUND_STATE_INTERVAL_OPTIONS.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-              <p className="mt-1 text-xs text-gray-400">Small recovery copies for ledger, position, and closed-trade state</p>
-            </div>
-            <div>
-              <label htmlFor="backup-max-count" className="block text-sm font-medium text-gray-300 mb-1">Max Backups</label>
+        <fieldset disabled={saving} className="min-w-0">
+          {/* Enable toggle */}
+          <div className="flex items-center gap-3 mb-4">
+            <label htmlFor="backup-enabled" className="relative inline-flex items-center gap-3 cursor-pointer">
               <input
-                id="backup-max-count"
-                type="number"
-                value={config.maxBackups}
-                onChange={e => setConfig(prev => ({ ...prev, maxBackups: Math.max(1, Math.min(30, parseInt(e.target.value) || 7)) }))}
-                min={1}
-                max={30}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                id="backup-enabled"
+                type="checkbox"
+                checked={config.enabled}
+                onChange={e => updateConfig(prev => ({ ...prev, enabled: e.target.checked }))}
+                className="sr-only peer"
               />
-              <p className="mt-1 text-xs text-gray-400">Oldest backups are pruned automatically</p>
-            </div>
-            <div>
-              <label htmlFor="fund-state-max-count" className="block text-sm font-medium text-gray-300 mb-1">Fund-State Snapshots</label>
-              <input
-                id="fund-state-max-count"
-                type="number"
-                value={config.fundStateMaxBackups}
-                onChange={e => setConfig(prev => ({ ...prev, fundStateMaxBackups: Math.max(1, Math.min(168, parseInt(e.target.value) || 24)) }))}
-                min={1}
-                max={168}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-              />
-              <p className="mt-1 text-xs text-gray-400">Hourly recovery points retained</p>
-            </div>
+              <div className="relative shrink-0 w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
+              <span className="text-sm font-medium">Enable Scheduled Backups</span>
+            </label>
           </div>
 
-          {/* Include price cache */}
-          <label className="flex items-center gap-2 text-sm cursor-pointer hover:text-white text-gray-300">
-            <input
-              type="checkbox"
-              checked={config.includePriceCache}
-              onChange={e => setConfig(prev => ({ ...prev, includePriceCache: e.target.checked }))}
-              className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
-            />
-            Include price cache files
-            <span className="text-xs text-gray-400">(~45MB per exchange, can be regenerated)</span>
-          </label>
-        </div>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="backup-interval" className="block text-sm font-medium text-gray-300 mb-1">Backup Interval</label>
+                <select
+                  id="backup-interval"
+                  value={config.intervalMs}
+                  onChange={e => updateConfig(prev => ({ ...prev, intervalMs: parseInt(e.target.value) }))}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                >
+                  {INTERVAL_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="fund-state-interval" className="block text-sm font-medium text-gray-300 mb-1">Fund-State Snapshot Interval</label>
+                <select
+                  id="fund-state-interval"
+                  value={config.fundStateIntervalMs}
+                  onChange={e => updateConfig(prev => ({ ...prev, fundStateIntervalMs: parseInt(e.target.value) }))}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                >
+                  {FUND_STATE_INTERVAL_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-gray-400">Small recovery copies for ledger, position, and closed-trade state</p>
+              </div>
+              <div>
+                <label htmlFor="backup-max-count" className="block text-sm font-medium text-gray-300 mb-1">Max Backups</label>
+                <input
+                  id="backup-max-count"
+                  type="number"
+                  value={config.maxBackups}
+                  onChange={e => updateConfig(prev => ({ ...prev, maxBackups: Math.max(1, Math.min(30, parseInt(e.target.value) || 7)) }))}
+                  min={1}
+                  max={30}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                />
+                <p className="mt-1 text-xs text-gray-400">Oldest backups are pruned automatically</p>
+              </div>
+              <div>
+                <label htmlFor="fund-state-max-count" className="block text-sm font-medium text-gray-300 mb-1">Fund-State Snapshots</label>
+                <input
+                  id="fund-state-max-count"
+                  type="number"
+                  value={config.fundStateMaxBackups}
+                  onChange={e => updateConfig(prev => ({ ...prev, fundStateMaxBackups: Math.max(1, Math.min(168, parseInt(e.target.value) || 24)) }))}
+                  min={1}
+                  max={168}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                />
+                <p className="mt-1 text-xs text-gray-400">Hourly recovery points retained</p>
+              </div>
+            </div>
 
-        <div className="flex gap-3 mt-6">
-          <button
-            onClick={handleSaveConfig}
-            disabled={saving}
-            className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
-          >
-            {saving ? 'Saving...' : 'Save Settings'}
-          </button>
-        </div>
+            {/* Include price cache */}
+            <label className="flex items-center gap-2 text-sm cursor-pointer hover:text-white text-gray-300">
+              <input
+                type="checkbox"
+                checked={config.includePriceCache}
+                onChange={e => updateConfig(prev => ({ ...prev, includePriceCache: e.target.checked }))}
+                className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
+              />
+              Include price cache files
+              <span className="text-xs text-gray-400">(~45MB per exchange, can be regenerated)</span>
+            </label>
+          </div>
+
+          <div className="flex gap-3 mt-6">
+            <button
+              onClick={handleSaveConfig}
+              disabled={saving}
+              className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+            >
+              {saving ? 'Saving...' : 'Save Settings'}
+            </button>
+          </div>
+        </fieldset>
       </div>
 
       {/* Manual Backup */}

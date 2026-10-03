@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-948] Global settings saves preserve drafts** — Notifications and Backups lock editable settings for the full save transaction, ignore obsolete reads, and keep unsaved settings intact during archive list refreshes and failed writes; successful notification saves clear token drafts without exposing stored tokens.
 - **[issue-949] Provider administration waits for server acknowledgement** — Default selection, provider forms, and management actions now check HTTP responses, surface safe errors, retain drafts and confirmed defaults after failures, and prevent duplicate submissions while writes are pending. Added synthetic rejection, retry, and duplicate-submit coverage.
 - **[issue-933] Cost Basis polling follows its ten-second cadence** — Successful snapshots no longer trigger continuous reads; config is cached per fund, overlapping polls are skipped, and stale data, retry and navigation cleanup are covered by rendered lifecycle tests.
 - **[issue-939] Regime order details support keyboard inspection** — Open TP buys, filled sells, cycles and orphan groups expose named native disclosure buttons with expanded state, persistent controlled regions and visible focus, independently of trading actions.

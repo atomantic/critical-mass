@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 const EVENT_GROUPS = {
   'Critical': [
@@ -36,20 +36,44 @@ function NotificationsConfig() {
   const [stats, setStats] = useState(null)
   const [refreshError, setRefreshError] = useState(null)
 
-  // `silent` refreshes run after a completed save: they must never swap the page
+  const pendingSave = useRef(false)
+  const configRequest = useRef(0)
+  const draftVersion = useRef(0)
+  const dirty = useRef(false)
+
+  const updateConfig = update => {
+    if (pendingSave.current) return
+    dirty.current = true
+    draftVersion.current += 1
+    setConfig(update)
+  }
+  const updateToken = token => {
+    if (pendingSave.current) return
+    dirty.current = true
+    draftVersion.current += 1
+    setRawToken(token)
+  }
+
+  // `silent` refreshes follow a successful write: they must never swap the page
   // for the loading/error gate, or the save's own result message is erased.
-  const fetchConfig = async ({ silent = false } = {}) => {
+  const fetchConfig = async ({ silent = false, saved = false } = {}) => {
+    if (pendingSave.current && !saved) return
+    const request = ++configRequest.current
+    const version = draftVersion.current
+    const current = () => request === configRequest.current
     if (!silent) {
       setLoading(true)
       setError(null)
     }
-    const fail = (text) => (silent ? setRefreshError(text) : setError(text))
+    const fail = text => {
+      if (current()) (silent ? setRefreshError : setError)(text)
+    }
     try {
       const res = await fetch('/api/notifications/config')
       if (res.ok) {
         const data = await res.json()
-        setConfig(data)
-        setRawToken('')
+        if (!current()) return
+        if (!dirty.current && version === draftVersion.current) setConfig(data)
         setRefreshError(null)
       } else {
         fail(`Failed to load notifications config (HTTP ${res.status})`)
@@ -57,7 +81,7 @@ function NotificationsConfig() {
     } catch (err) {
       fail(err.message || 'Failed to load notifications config')
     } finally {
-      if (!silent) setLoading(false)
+      if (!silent && current()) setLoading(false)
     }
   }
 
@@ -80,6 +104,9 @@ function NotificationsConfig() {
   }, [])
 
   const handleSave = async () => {
+    if (pendingSave.current) return
+    pendingSave.current = true
+    configRequest.current += 1 // Invalidate reads started before this write.
     setSaving(true)
     setMessage(null)
 
@@ -101,7 +128,13 @@ function NotificationsConfig() {
 
       if (res.ok) {
         setMessage({ type: 'success', text: 'Notification settings saved!' })
-        fetchConfig({ silent: true })
+        dirty.current = false
+        if (rawToken) {
+          // The write succeeded even if the masked readback later fails.
+          setConfig(prev => ({ ...prev, telegram: { ...prev.telegram, botToken: '••••••••' } }))
+          setRawToken('')
+        }
+        await fetchConfig({ silent: true, saved: true })
         fetchStats()
       } else {
         setMessage({ type: 'error', text: 'Failed to save settings' })
@@ -109,6 +142,7 @@ function NotificationsConfig() {
     } catch (err) {
       setMessage({ type: 'error', text: err.message || 'Failed to save settings' })
     } finally {
+      pendingSave.current = false
       setSaving(false)
     }
   }
@@ -133,7 +167,7 @@ function NotificationsConfig() {
   }
 
   const updateEvent = (key, value) => {
-    setConfig(prev => ({
+    updateConfig(prev => ({
       ...prev,
       events: { ...prev.events, [key]: value },
     }))
@@ -215,6 +249,7 @@ function NotificationsConfig() {
           <span>Settings may be out of date: {refreshError}</span>
           <button
             onClick={() => fetchConfig({ silent: true })}
+            disabled={saving}
             className="px-3 py-1 bg-yellow-800 hover:bg-yellow-900 rounded font-medium transition-colors"
           >
             Refresh
@@ -247,7 +282,7 @@ function NotificationsConfig() {
       )}
 
       {/* Two-column layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <fieldset disabled={saving} className="min-w-0 grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Left column: Connection setup + Timing */}
         <div className="space-y-6">
           {/* Telegram Setup */}
@@ -259,7 +294,7 @@ function NotificationsConfig() {
                   id="enable-notifications"
                   type="checkbox"
                   checked={config.enabled}
-                  onChange={e => setConfig(prev => ({ ...prev, enabled: e.target.checked }))}
+                  onChange={e => updateConfig(prev => ({ ...prev, enabled: e.target.checked }))}
                   className="sr-only peer"
                 />
                 <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
@@ -280,7 +315,7 @@ function NotificationsConfig() {
                   id="bot-token"
                   type="password"
                   value={rawToken || ''}
-                  onChange={e => setRawToken(e.target.value)}
+                  onChange={e => updateToken(e.target.value)}
                   placeholder={config.telegram.botToken || 'Enter bot token from @BotFather'}
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
                 />
@@ -294,7 +329,7 @@ function NotificationsConfig() {
                   id="chat-id"
                   type="text"
                   value={config.telegram.chatId || ''}
-                  onChange={e => setConfig(prev => ({
+                  onChange={e => updateConfig(prev => ({
                     ...prev,
                     telegram: { ...prev.telegram, chatId: e.target.value },
                   }))}
@@ -316,7 +351,7 @@ function NotificationsConfig() {
                     id="rate-limit-ms"
                     type="number"
                     value={config.rateLimitMs}
-                    onChange={e => setConfig(prev => ({ ...prev, rateLimitMs: parseInt(e.target.value) || 5000 }))}
+                    onChange={e => updateConfig(prev => ({ ...prev, rateLimitMs: parseInt(e.target.value) || 5000 }))}
                     min={1000}
                     max={60000}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
@@ -331,7 +366,7 @@ function NotificationsConfig() {
                     value={config.dailySummaryHour}
                     onChange={e => {
                       const hour = parseInt(e.target.value, 10)
-                      setConfig(prev => ({ ...prev, dailySummaryHour: Number.isNaN(hour) ? 20 : hour }))
+                      updateConfig(prev => ({ ...prev, dailySummaryHour: Number.isNaN(hour) ? 20 : hour }))
                     }}
                     min={0}
                     max={23}
@@ -349,7 +384,7 @@ function NotificationsConfig() {
                       id="quiet-hours-enabled"
                       type="checkbox"
                       checked={config.quietHours.enabled}
-                      onChange={e => setConfig(prev => ({
+                      onChange={e => updateConfig(prev => ({
                         ...prev,
                         quietHours: { ...prev.quietHours, enabled: e.target.checked },
                       }))}
@@ -370,7 +405,7 @@ function NotificationsConfig() {
                         value={config.quietHours.start}
                         onChange={e => {
                           const hour = parseInt(e.target.value, 10)
-                          setConfig(prev => ({
+                          updateConfig(prev => ({
                             ...prev,
                             quietHours: { ...prev.quietHours, start: Number.isNaN(hour) ? 23 : hour },
                           }))
@@ -388,7 +423,7 @@ function NotificationsConfig() {
                         value={config.quietHours.end}
                         onChange={e => {
                           const hour = parseInt(e.target.value, 10)
-                          setConfig(prev => ({
+                          updateConfig(prev => ({
                             ...prev,
                             quietHours: { ...prev.quietHours, end: Number.isNaN(hour) ? 7 : hour },
                           }))
@@ -429,7 +464,7 @@ function NotificationsConfig() {
             ))}
           </div>
         </div>
-      </div>
+      </fieldset>
     </div>
   )
 }
