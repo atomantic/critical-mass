@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-933] Cost Basis polling follows its ten-second cadence** — Successful snapshots no longer trigger continuous reads; config is cached per fund, overlapping polls are skipped, and stale data, retry and navigation cleanup are covered by rendered lifecycle tests.
 - **[issue-939] Regime order details support keyboard inspection** — Open TP buys, filled sells, cycles and orphan groups expose named native disclosure buttons with expanded state, persistent controlled regions and visible focus, independently of trading actions.
 - **[issue-942] Exchange picker dismissal restores keyboard focus** — Escape returns focus to the picker trigger, whose expanded state and options relationship are exposed to assistive technology; pointer dismissal keeps focus on the clicked destination.
 - **[issue-941] Dashboard help buttons announce their descriptions** — InfoTooltip now associates each trigger with a persistent screen-reader description while keeping the visual popup mounted only when opened.
