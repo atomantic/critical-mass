@@ -12,6 +12,7 @@
 const { describe, it, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const WebSocket = require('ws');
 const path = require('node:path');
 
 const { createIPCClient } = require('../src/ipc/ipc-client');
@@ -46,6 +47,52 @@ const connectReal = async (register, options = {}) => {
   await until(() => client.isConnected(), 'client connection');
   return { server, client, url };
 };
+
+describe('IPC process-only upgrade boundary', () => {
+  for (const origin of ['https://untrusted.example', 'same-origin', 'null', '']) {
+    it(`rejects ${JSON.stringify(origin)} Origin before admitting requests or events`, async () => {
+      let requests = 0;
+      let updates = 0;
+      const { server, url } = await startEngineIpc((ipc) => {
+        ipc.onRequest('test:echo', async () => { requests++; return { success: true }; });
+        ipc.onRequest('config_update', async () => { updates++; });
+      });
+      onCleanup(() => server.stop());
+      const browser = new WebSocket(url, { headers: { Origin: origin === 'same-origin' ? url.replace('ws:', 'http:') : origin } });
+      onCleanup(() => browser.terminate());
+      let opened = false;
+      const messages = [];
+      browser.on('message', (message) => messages.push(message));
+      browser.on('open', () => {
+        opened = true;
+        browser.send(JSON.stringify(createMessage(MSG_TYPE.REQUEST, 'test:echo', {})));
+        browser.send(JSON.stringify(createMessage(MSG_TYPE.CONFIG_UPDATE, 'config_update', {})));
+      });
+      const rejected = new Promise((resolve, reject) => {
+        browser.once('unexpected-response', (_request, response) => {
+          response.resume();
+          browser.terminate();
+          resolve(response.statusCode);
+        });
+        browser.once('open', () => reject(new Error('Origin client admitted')));
+        browser.on('error', () => {}); // terminate after a rejected HTTP upgrade
+      });
+      assert.equal(await rejected, 401);
+      server.broadcast('test:event', { private: true });
+      assert.equal(opened, false);
+      assert.equal(requests, 0);
+      assert.equal(updates, 0);
+      assert.deepEqual(messages, []);
+      // A rejected handshake must not prevent the production process client.
+      const client = createIPCClient(url, 'origin-boundary');
+      onCleanup(() => client.disconnect());
+      client.connect();
+      await until(() => client.isConnected(), 'process connection after rejection');
+      assert.deepEqual(await client.request('test:echo', {}), { success: true });
+      assert.equal(requests, 1);
+    });
+  }
+});
 
 describe('IPC command transport over a real socket', () => {
   it('delivers exchange, pair and payload exactly and resolves concurrent callers independently', async () => {

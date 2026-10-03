@@ -36,6 +36,12 @@ Critical-mass runs as 5 PM2 processes: a thin API gateway and 3 isolated engine 
 | `ipc-client.js` | WS client for gateway (auto-reconnect, backoff) |
 | `socket-io-proxy.js` | Drop-in `io` replacement forwarding over IPC |
 
+IPC listens only on loopback and accepts process clients only. Every WebSocket
+upgrade containing an `Origin` header is rejected before connection admission,
+including same-origin, `null`, and empty values. The gateway IPC client sends no
+Origin header. All three engine wrappers use this shared server gate; loopback
+binding alone does not prevent browser access.
+
 ## Engine Processes (`engines/`)
 
 | Engine | File | Env | IPC Port | Notes |
