@@ -343,7 +343,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                       }}
                     >
                       <span className="flex items-center gap-2">
-                        <span aria-hidden="true" className={`inline-block transition-transform text-xs text-gray-500 ${expandedCycles.has('orphans') ? 'rotate-90' : ''}`}>&#9654;</span>
+                        <span aria-hidden="true" className={`inline-block transition-transform text-xs text-gray-400 ${expandedCycles.has('orphans') ? 'rotate-90' : ''}`}>&#9654;</span>
                         <span className="px-2 py-0.5 rounded text-xs bg-yellow-900/50 text-yellow-400">Orphaned</span>
                         <span className="text-xs text-gray-400">{orphanedBuys.length} buys not linked to any sell</span>
                       </span>
@@ -419,7 +419,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                         }}
                       >
                         <span className="flex items-center gap-2">
-                          <span aria-hidden="true" className={`inline-block transition-transform text-xs text-gray-500 ${isCycleExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
+                          <span aria-hidden="true" className={`inline-block transition-transform text-xs text-gray-400 ${isCycleExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
                           <span className={`px-2 py-0.5 rounded text-xs ${
                             cycle.cycleId === 'unknown'
                               ? 'bg-gray-700 text-gray-400'
