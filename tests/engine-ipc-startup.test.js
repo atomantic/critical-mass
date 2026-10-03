@@ -71,6 +71,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false) => {
     '../src/market-data-service': { stopMarketDataService: () => {} },
     '../src/chart-data-buffer': {},
     '../src/fill-ledger': {},
+    '../src/transactions-regime-query': require('../src/transactions-regime-query'),
     '../src/manual-trade-import': {},
     '../src/ipc/ipc-server': { createIPCServer: () => ipc },
     '../src/ipc/socket-io-proxy': { createSocketIOProxy: () => ({}), forwardTradeEvents: () => {} },
