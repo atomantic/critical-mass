@@ -214,6 +214,28 @@ describe('admin accessible operational forms', () => {
     assert.match(text(find(tree, node => node.props?.role === 'alert')), /Network unavailable/)
   })
 
+  it('removes accepted sample providers from retry after a later Add All failure', async () => {
+    const view = createView('ai/Providers.jsx', {}, async (url, options) => {
+      if (url === '/api/providers/samples') return { ok: true, status: 200, json: async () => ({ providers: [
+        { id: 'sample-one', name: 'Sample One', enabled: true, type: 'cli' },
+        { id: 'sample-two', name: 'Sample Two', enabled: true, type: 'cli' },
+      ] }) }
+      if (options.method === 'POST' && options.body.includes('sample-two')) return { ok: false, status: 409, json: async () => ({ error: 'Sample Two already exists' }) }
+      return { ok: true, status: 200, json: async () => url === '/api/providers' ? { providers: [], activeProvider: null } : { runs: [] } }
+    })
+    let tree = await view.mount()
+    find(tree, node => node.type === 'button' && text(node).includes('Load Samples')).props.onClick()
+    await new Promise(resolve => setImmediate(resolve))
+    tree = view.render()
+    await find(tree, node => node.type === 'button' && text(node).startsWith('Add All')).props.onClick()
+    await new Promise(resolve => setImmediate(resolve))
+    tree = view.render()
+    assert.ok(text(tree).includes('Sample Two'))
+    assert.ok(!text(tree).includes('Sample One'))
+    assert.equal(view.writes.filter(write => write.method === 'POST').length, 2)
+    assert.match(text(find(tree, node => node.props?.role === 'alert')), /already exists/)
+  })
+
   it('connects trade labels to unique controls and submits entered amount expressions', async () => {
     const { parseTradeAmountExpression } = await import(pathToFileURL(path.join(__dirname, '..', 'admin/src/components/updown/tradeAmountExpression.js')).href)
     const stubs = { './tradeAmountExpression': { parseTradeAmountExpression } }

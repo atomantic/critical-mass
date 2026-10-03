@@ -78,7 +78,7 @@ export default function AIProviders() {
     }), () => setActiveProviderId(id))
   }
 
-  const runMutation = async (key, request, onSuccess) => {
+  const runMutation = async (key, request, onSuccess, onFailure) => {
     if (mutationLocks.current.has(key)) return
     mutationLocks.current.add(key)
     setMutationPending(prev => ({ ...prev, [key]: true }))
@@ -88,6 +88,7 @@ export default function AIProviders() {
       onSuccess?.()
     } catch (error) {
       setMutationError(error.message || 'The provider change could not be saved. Please try again.')
+      onFailure?.(error)
     } finally {
       mutationLocks.current.delete(key)
       setMutationPending(prev => ({ ...prev, [key]: false }))
@@ -142,6 +143,7 @@ export default function AIProviders() {
   }
 
   const handleAddAllSamples = async () => {
+    let addedAny = false
     await runMutation('sample-all', async () => {
       for (const provider of sampleProviders) {
         const response = await fetch('/api/providers', {
@@ -150,9 +152,11 @@ export default function AIProviders() {
           body: JSON.stringify(provider)
         })
         await requireAcceptedResponse(response)
+        addedAny = true
+        setSampleProviders(prev => prev.filter(sample => sample.id !== provider.id))
       }
       return { ok: true }
-    }, () => { setSampleProviders([]); loadData() })
+    }, () => { setSampleProviders([]); loadData() }, () => { if (addedAny) loadData() })
   }
 
   if (loading) {
@@ -296,7 +300,7 @@ export default function AIProviders() {
                 </div>
                 <button
                   onClick={() => handleAddSample(sp)}
-                  disabled={Boolean(mutationPending[`sample:${sp.id}`])}
+                  disabled={Boolean(mutationPending[`sample:${sp.id}`] || mutationPending['sample-all'])}
                   className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors text-sm disabled:opacity-50 flex-shrink-0"
                 >
                   {mutationPending[`sample:${sp.id}`] ? 'Adding...' : 'Add'}
