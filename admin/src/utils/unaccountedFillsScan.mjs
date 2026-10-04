@@ -70,7 +70,14 @@ export const runUnaccountedFillsScan = async ({
     await sleep(pollMs)
     if (isCancelled()) return { status: 'cancelled' }
     try {
-      const next = await readJson(fetchImpl, `/api/${exchange}/regime/unaccounted-fills/jobs/${encodeURIComponent(jobId)}${pairQuery}`)
+      const res = await fetchImpl(`/api/${exchange}/regime/unaccounted-fills/jobs/${encodeURIComponent(jobId)}${pairQuery}`)
+      const next = await res.json()
+      // A 5xx without a job status (e.g. 503 "Engine unavailable" on an IPC
+      // timeout) says nothing about the job itself — treat it as transient.
+      // A failed job answers with its jobId and is surfaced as terminal.
+      if (Number(res.status) >= 500 && !next?.jobId) {
+        throw new Error(next?.error || `Scan status unavailable (HTTP ${res.status})`)
+      }
       pollErrors = 0
       data = next
     } catch (err) {

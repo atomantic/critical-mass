@@ -22,7 +22,8 @@ const fakeGateway = (startBody, statusBodies) => {
     if (url.includes('/unaccounted-fills/jobs/')) {
       const next = statusBodies.shift();
       if (next instanceof Error) throw next;
-      return { json: async () => next };
+      if (next && next.httpStatus) return { status: next.httpStatus, json: async () => next.body };
+      return { status: 200, json: async () => next };
     }
     return { json: async () => startBody };
   };
@@ -70,6 +71,17 @@ describe('runUnaccountedFillsScan (issue #966)', () => {
     const out = await mod.runUnaccountedFillsScan({ exchange: 'cryptocom', pairQuery: '', startDate: '2026-01-01', fetchImpl: gw.fetchImpl, sleep });
     assert.equal(out.status, 'failed');
     assert.match(out.error, /401/);
+  });
+
+  it('keeps polling through a transient 503 engine-unavailable status read', async () => {
+    const unavailable = { httpStatus: 503, body: { success: false, error: 'Engine unavailable: IPC request timeout: regime:unaccounted-fills-status' } };
+    const gw = fakeGateway(
+      { success: true, pending: true, jobId: 'job-5' },
+      [unavailable, unavailable, { success: true, pending: false, jobId: 'job-5', status: 'complete', unaccountedOrders: [] }],
+    );
+    const out = await mod.runUnaccountedFillsScan({ exchange: 'cryptocom', pairQuery: '', startDate: '2026-01-01', fetchImpl: gw.fetchImpl, sleep });
+    assert.equal(out.status, 'complete');
+    assert.equal(gw.calls.filter(u => !u.includes('/jobs/')).length, 1, 'no new scan is started');
   });
 
   it('gives up after repeated status transport failures', async () => {
