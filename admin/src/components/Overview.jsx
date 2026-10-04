@@ -5,6 +5,7 @@ import { useMultiRegimeStatuses } from '../hooks/useTradeEvents'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import AddFundModal from './AddFundModal'
+import ClosedFundCard from './ClosedFundCard'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
 
@@ -529,31 +530,12 @@ function Overview() {
           <h2 className="text-sm font-medium text-gray-400 mb-2">Closed Funds</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
             {cards.filter(c => c.lifecycle === 'closed').map(card => (
-              <Link
+              <ClosedFundCard
                 key={`${card.exchange}-${card.pair}`}
-                to={`/${card.exchange}/${card.pair}`}
-                className="bg-gray-800/60 rounded-lg border border-gray-700/50 p-3 flex items-center justify-between hover:bg-gray-800 transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <span className={`w-6 h-6 flex items-center justify-center rounded shrink-0 text-sm ${EXCHANGE_COLORS[card.exchange] || 'bg-gray-600'}`}>
-                    {EXCHANGE_ICONS[card.exchange] || '?'}
-                  </span>
-                  <div>
-                    <span className="font-medium capitalize text-gray-400 text-sm">{card.exchange}</span>
-                    <span className="text-gray-600 mx-1">/</span>
-                    <span className="text-sm text-gray-400">{card.pair}</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 text-xs">
-                  <span className="text-gray-400">{card.cyclesCompleted} cycles</span>
-                  {card.realizedPnL !== 0 && (
-                    <span className={`font-mono ${card.realizedPnL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                      {card.realizedPnL >= 0 ? '+' : ''}{formatCurrency(card.realizedPnL)}
-                    </span>
-                  )}
-                  <span className="px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">Closed</span>
-                </div>
-              </Link>
+                card={card}
+                icon={EXCHANGE_ICONS[card.exchange] || '?'}
+                iconClass={EXCHANGE_COLORS[card.exchange] || 'bg-gray-600'}
+              />
             ))}
           </div>
         </div>
