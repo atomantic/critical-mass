@@ -1020,12 +1020,16 @@ const createCryptocomAdapter = (keysPath = null) => {
       });
     };
 
+    const pagesPerStep = Math.max(1, Math.trunc(stepPages) || TRADE_SCAN_MAX_PAGES);
     let failures = 0;
+    let pagesAtLastFailure = -1;
     while (!scan.done) {
       try {
-        await advanceTradeScan(scan, { remaining: stepPages }, { signal, onPage: report });
-        failures = 0;
+        await advanceTradeScan(scan, { remaining: pagesPerStep }, { signal, onPage: report });
       } catch (err) {
+        // Only failures with no accepted page in between count as consecutive.
+        if (scan.pages > pagesAtLastFailure) failures = 0;
+        pagesAtLastFailure = scan.pages;
         if (!isRetryableScanError(err) || signal?.aborted || ++failures > maxConsecutiveFailures) throw err;
         logger.warn(`Crypto.com reconciliation scan page failed; retrying from the same cursor (${failures}/${maxConsecutiveFailures}): ${err.message}`, {
           instrument, pages: scan.pages, error: err.message,
