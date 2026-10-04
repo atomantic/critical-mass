@@ -75,3 +75,23 @@ describe('audit model stays aligned with the UI', () => {
     assert.match(src, /\/api\/\$\{exchange\}\/config/)
   })
 })
+
+describe('route audit failure handling', () => {
+  it('reports UNVERIFIED instead of hanging when the gateway is unreachable', async () => {
+    const log = console.log
+    console.log = () => {}
+    const saved = process.env.CM_PERF_TOKEN
+    process.env.CM_PERF_TOKEN = 'synthetic-token'
+    try {
+      const code = await Promise.race([
+        main(['--base-url', 'http://127.0.0.1:1', '--idle-seconds', '0.1', '--poll-seconds', '0.1']),
+        new Promise(resolve => setTimeout(() => resolve('hung'), 20000)),
+      ])
+      assert.equal(code, 2)
+    } finally {
+      console.log = log
+      if (saved === undefined) delete process.env.CM_PERF_TOKEN
+      else process.env.CM_PERF_TOKEN = saved
+    }
+  })
+})

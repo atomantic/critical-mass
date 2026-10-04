@@ -47,7 +47,21 @@ function connectSocket(baseUrl, token, collector, client) {
   return socket;
 }
 
-const connected = socket => new Promise(resolve => (socket.connected ? resolve() : socket.once('connect', resolve)));
+// Bounded wait: a rejected token or unreachable gateway must surface as an error (UNVERIFIED), never hang.
+const connected = (socket, timeoutMs = 5000) => new Promise((resolve, reject) => {
+  if (socket.connected) return resolve();
+  const timer = setTimeout(() => done(new Error('websocket did not connect in time')), timeoutMs);
+  const done = (err) => {
+    clearTimeout(timer);
+    socket.off('connect', onConnect);
+    socket.off('connect_error', onError);
+    err ? reject(err) : resolve();
+  };
+  const onConnect = () => done();
+  const onError = (err) => { if (err?.message && /auth|unauthor|forbidden/i.test(err.message)) done(err); };
+  socket.once('connect', onConnect);
+  socket.on('connect_error', onError);
+});
 
 async function runAudit({ baseUrl, token, pollMs = 10000, idleMs = 60000, exchange = 'coinbase', roomsOf }) {
   const collector = createCollector();
@@ -64,6 +78,9 @@ async function runAudit({ baseUrl, token, pollMs = 10000, idleMs = 60000, exchan
     subscribed = new Set(wanted);
   };
   socket.on('connect', () => { for (const ex of subscribed) socket.emit(`${ex}:subscribe`); });
+  let poll = null;
+  let first; let timeToUsefulMs; let tx; let cfg;
+  try {
   await connected(socket);
 
   // Phase 1: cold Transactions route + at least one polling tick.
@@ -71,14 +88,14 @@ async function runAudit({ baseUrl, token, pollMs = 10000, idleMs = 60000, exchan
   sync([exchange]);
   const t0 = collector.now();
   const pagedQuery = '/regime/fills?paged=true&page=0&pageSize=100&side=all&cycle=all&sortField=timestamp&sortDir=desc';
-  const [, first] = await Promise.all([
+  [, first] = await Promise.all([
     client.get(`/api/${exchange}/config`),
     client.get(`/api/${exchange}${pagedQuery}`),
     client.get(`/api/${exchange}/regime/status`),
     client.get(`/api/${exchange}/regime/open-orders`),
   ]);
-  const timeToUsefulMs = Math.round(collector.now() - t0);
-  const poll = setInterval(() => {
+  timeToUsefulMs = Math.round(collector.now() - t0);
+  poll = setInterval(() => {
     client.get(`/api/${exchange}${pagedQuery}`).catch(() => {});
     client.get(`/api/${exchange}/regime/status`).catch(() => {});
     client.get(`/api/${exchange}/regime/open-orders`).catch(() => {});
@@ -87,14 +104,14 @@ async function runAudit({ baseUrl, token, pollMs = 10000, idleMs = 60000, exchan
   clearInterval(poll); // unmount: Transactions leaves the route
   sync([]);
   await sleep(100);
-  const tx = aggregate(collector, 'transactions', collector.now() - t0);
+  tx = aggregate(collector, 'transactions', collector.now() - t0);
 
   // Phase 2: Config route (no historical fills) then an idle window.
   client.setPhase('config');
   const c0 = collector.now();
   await client.get(`/api/${exchange}/config`);
   await sleep(idleMs);
-  const cfg = aggregate(collector, 'config', collector.now() - c0);
+  cfg = aggregate(collector, 'config', collector.now() - c0);
 
   // Phase 3: reconnect restores exactly the visible consumers' subscriptions.
   client.setPhase('reconnect');
@@ -113,7 +130,10 @@ async function runAudit({ baseUrl, token, pollMs = 10000, idleMs = 60000, exchan
     await reconnectRooms('Overview all-fund', [...EXCHANGES]);
   }
   sync([]);
-  socket.close();
+  } finally {
+    clearInterval(poll);
+    socket.close();
+  }
 
   const rows = first.body?.fills?.length ?? -1;
   check('cold Transactions returns a bounded page', first.status === 200 && rows >= 0 && rows <= PAGE_CAP, `rows=${rows}`);
