@@ -4,10 +4,14 @@ const { runIntervalCycle, checkStatus } = require('./src/dca-engine');
 const { log } = require('./src/logger');
 const { getAdapter } = require('./src/adapters');
 const { getExchangeConfig, getConfiguredExchanges, getBaseCurrency, getQuoteCurrency } = require('./src/config-utils');
-const { runMigrationIfNeeded } = require('./src/migration');
+const { guardLegacyMigration } = require('./src/migration');
 
-// Run migration on startup
-runMigrationIfNeeded();
+// Finish the legacy namespace migration before any command reads persisted
+// state; a conflicting or still-in-progress migration refuses to run (issue #971).
+guardLegacyMigration({
+  processLabel: 'CLI',
+  logger: { error: (message, data) => log('ERROR', message, data) },
+});
 
 /**
  * Parse command line arguments

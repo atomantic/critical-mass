@@ -16,7 +16,7 @@ const invokeCli = async (command, productId, cycleStatus = 'dry_run_success') =>
     intervalType: 'daily', sellMarkupPercent: 2, holdbackPercent: 10, maxBuyPrice: 3000 };
   const modules = {
     './src/runtime-env': { loadRuntimeEnv: () => {} },
-    './src/migration': { runMigrationIfNeeded: () => {} },
+    './src/migration': { guardLegacyMigration: () => ({ blocked: false }) },
     './src/logger': { log: (level, message) => { if (level === 'ERROR') errors.push(message); } },
     './src/adapters': { getAdapter: () => { throw new Error('Unexpected adapter access'); } },
     './src/config-utils': { getConfiguredExchanges: () => ['coinbase'],

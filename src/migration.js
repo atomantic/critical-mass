@@ -2,17 +2,21 @@
  * Data Migration Script
  *
  * Migrates existing data from flat structure to exchange-namespaced directories.
- * This runs automatically on startup if old structure is detected.
+ * This runs automatically on startup (guardLegacyMigration) whenever any legacy
+ * artifact is still at the data root — resumable and non-clobbering; see
+ * src/legacy-namespace-migration.js (issue #971).
  *
  * Before:
  *   data/state.json
  *   data/transactions.tsv
+ *   data/optimizer-cache.json
  *   data/btc-price-cache-*.json
  *   keys.json
  *
  * After:
  *   data/coinbase/state.json
  *   data/coinbase/transactions.tsv
+ *   data/coinbase/optimizer-cache.json
  *   data/coinbase/btc-price-cache-*.json
  *   data/*.backup (originals)
  *   data/coinbase-keys.json (root keys.json renamed to keys.json.migrated)
@@ -22,20 +26,24 @@ const fs = require('fs');
 const path = require('path');
 const { DATA_DIR, APP_ROOT } = require('./paths');
 const { upsertCandles } = require('./candle-utils');
+const {
+  migrateLegacyNamespace,
+  discoverLegacyArtifacts,
+  describeBlockedMigration,
+  LEGACY_EXCHANGE,
+} = require('./legacy-namespace-migration');
 
 const KEYS_DIR = DATA_DIR; // Keys stored alongside data
 
 /**
- * Check if migration is needed
- * @returns {boolean} True if old structure exists and needs migration
+ * Check if the legacy root → exchange namespace migration has work left.
+ *
+ * Each legacy artifact is discovered individually (issue #971): the old gate
+ * ("root state.json exists, coinbase/state.json does not") went false as soon
+ * as state.json moved, stranding every artifact a failed run had not reached.
+ * @returns {boolean} True if any legacy artifact is still at the data root
  */
-const needsMigration = () => {
-  const oldStateFile = path.join(DATA_DIR, 'state.json');
-  const newStateFile = path.join(DATA_DIR, 'coinbase', 'state.json');
-
-  // Migration needed if old state exists but new doesn't
-  return fs.existsSync(oldStateFile) && !fs.existsSync(newStateFile);
-};
+const needsMigration = () => discoverLegacyArtifacts(DATA_DIR).length > 0;
 
 /**
  * Check if keys migration is needed
@@ -57,86 +65,25 @@ const needsKeysMigration = () => {
 };
 
 /**
- * Migrate a single file to exchange namespace
- * @param {string} filename - File name (e.g., 'state.json')
- * @param {string} exchange - Exchange name (e.g., 'coinbase')
- * @param {boolean} move - If true, move file; if false, copy
+ * Run the legacy root → `data/coinbase/` namespace migration against DATA_DIR
+ * (issue #971 — see src/legacy-namespace-migration.js for the protocol).
+ *
+ * The default fund directory is passed through so a root artifact whose name a
+ * later pair migration already placed under `coinbase/<pair>/` is compared
+ * against that copy instead of being slipped in beside it. When the pair cannot
+ * be resolved (no config yet) only the exchange-level target is considered.
+ * @returns {import('./legacy-namespace-migration').NamespaceMigrationResult}
  */
-const migrateFile = (filename, exchange, move = true) => {
-  const oldPath = path.join(DATA_DIR, filename);
-  const newDir = path.join(DATA_DIR, exchange);
-  const newPath = path.join(newDir, filename);
-  const backupPath = path.join(DATA_DIR, `${filename}.backup`);
-
-  if (!fs.existsSync(oldPath)) {
-    console.log(`  Skip: ${filename} (not found)`);
-    return false;
+const migrateData = () => {
+  let pairDir = null;
+  try {
+    const configUtils = require('./config-utils');
+    const pair = configUtils.getDefaultPair(LEGACY_EXCHANGE);
+    if (pair) pairDir = resolveFundPath(path.join(DATA_DIR, LEGACY_EXCHANGE), pair);
+  } catch {
+    // No usable config: the exchange-level target is the only comparison.
   }
-
-  // Ensure target directory exists
-  if (!fs.existsSync(newDir)) {
-    fs.mkdirSync(newDir, { recursive: true });
-  }
-
-  // Create backup first
-  if (!fs.existsSync(backupPath)) {
-    fs.copyFileSync(oldPath, backupPath);
-    console.log(`  Backup: ${filename} -> ${filename}.backup`);
-  }
-
-  // Move or copy the file
-  if (move) {
-    fs.renameSync(oldPath, newPath);
-    console.log(`  Migrate: ${filename} -> ${exchange}/${filename}`);
-  } else {
-    fs.copyFileSync(oldPath, newPath);
-    console.log(`  Copy: ${filename} -> ${exchange}/${filename}`);
-  }
-
-  return true;
-};
-
-/**
- * Run data migration to exchange-namespaced directories
- * @param {string} exchange - Exchange to migrate to (default: coinbase)
- * @returns {{migrated: number, skipped: number}}
- */
-const migrateData = (exchange = 'coinbase') => {
-  console.log(`\n=== Data Migration to ${exchange} namespace ===\n`);
-
-  const result = { migrated: 0, skipped: 0 };
-
-  // Files to migrate
-  const files = [
-    'state.json',
-    'transactions.tsv',
-    'optimizer-cache.json',
-  ];
-
-  // Migrate standard files
-  for (const file of files) {
-    if (migrateFile(file, exchange)) {
-      result.migrated++;
-    } else {
-      result.skipped++;
-    }
-  }
-
-  // Migrate price cache files (can be large, use move)
-  const cacheFiles = fs.readdirSync(DATA_DIR)
-    .filter(f => f.startsWith('btc-price-cache') && f.endsWith('.json'));
-
-  for (const file of cacheFiles) {
-    if (migrateFile(file, exchange, true)) {
-      result.migrated++;
-    } else {
-      result.skipped++;
-    }
-  }
-
-  console.log(`\nMigration complete: ${result.migrated} files migrated, ${result.skipped} skipped`);
-
-  return result;
+  return migrateLegacyNamespace({ dataDir: DATA_DIR, pairDir });
 };
 
 /**
@@ -268,20 +215,25 @@ const createExchangeDirectories = (exchanges = ['gemini']) => {
 
 /**
  * Run full migration if needed
- * Called automatically on startup
- * @returns {{dataMigrated: boolean, keysMigrated: boolean}}
+ * Called automatically on startup (through guardLegacyMigration).
+ *
+ * `blocked` is true when the namespace migration could not finish — a
+ * conflicting target, another process still migrating, or a filesystem error.
+ * Callers must not start reading persisted state in that case (issue #971);
+ * whatever was already moved is complete and the rest resumes next start.
+ * @returns {{dataMigrated: boolean, keysMigrated: boolean, blocked: boolean, namespace: import('./legacy-namespace-migration').NamespaceMigrationResult}}
  */
 const runMigrationIfNeeded = () => {
+  const namespace = module.exports.migrateData();
   const result = {
-    dataMigrated: false,
+    dataMigrated: namespace.status === 'migrated',
     keysMigrated: false,
+    blocked: namespace.status === 'conflict' || namespace.status === 'busy' || namespace.status === 'error',
+    namespace,
   };
 
-  if (needsMigration()) {
-    console.log('\n[Migration] Detected old data structure, migrating to exchange namespaces...');
-    migrateData('coinbase');
+  if (result.dataMigrated) {
     createExchangeDirectories(['gemini']);
-    result.dataMigrated = true;
   }
 
   if (needsKeysMigration()) {
@@ -301,6 +253,33 @@ const runMigrationIfNeeded = () => {
   retireLegacyKeysFileIfAlreadyMigrated();
   backfillKeysFilePermissions();
 
+  return result;
+};
+
+/**
+ * The shared startup boundary for the legacy migrations (issue #971). The
+ * gateway, the CLI and every exchange engine call this before the pair
+ * migration or anything that reads persisted state, and refuse to start when
+ * the namespace migration is blocked rather than serve a half-migrated or
+ * conflicting data directory.
+ * @param {Object} params
+ * @param {string} params.processLabel
+ * @param {{error: (message: string, data?: Object) => void}} params.logger
+ * @param {(code: number) => void} [params.exit]
+ * @returns {ReturnType<typeof runMigrationIfNeeded>}
+ */
+const guardLegacyMigration = ({ processLabel, logger, exit = process.exit }) => {
+  const result = module.exports.runMigrationIfNeeded();
+  if (result.blocked) {
+    const { namespace } = result;
+    logger.error(`❌ Refusing to start ${processLabel}: legacy data migration is ${namespace.status}`, {
+      action: 'legacy-namespace-migration', processLabel, status: namespace.status, conflicts: namespace.conflicts, error: namespace.error,
+    });
+    for (const line of describeBlockedMigration(namespace)) {
+      logger.error(`❌ ${line}`, { action: 'legacy-namespace-migration', processLabel });
+    }
+    exit(1);
+  }
   return result;
 };
 
@@ -1029,6 +1008,7 @@ module.exports = {
   backfillKeysFilePermissions,
   createExchangeDirectories,
   runMigrationIfNeeded,
+  guardLegacyMigration,
   getExchangeDataDir,
   getFundDataDir,
   needsPairMigration,
