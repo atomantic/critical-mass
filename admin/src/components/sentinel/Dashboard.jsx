@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useId } from 'react'
 import useSentinelSocket from '../../hooks/useSentinelSocket'
 
+const TOUCH_BTN = 'min-h-11 min-w-11 shrink-0 inline-flex items-center justify-center'
+
 const SEVERITY_COLORS = {
   critical: 'bg-red-900/50 border-red-700 text-red-200',
   warning: 'bg-yellow-900/50 border-yellow-700 text-yellow-200',
@@ -169,27 +171,27 @@ export default function SentinelDashboard() {
             </span>
           )}
 
-          <div className="ml-auto flex gap-2">
+          <div className="ml-auto flex flex-wrap gap-2">
             {status?.running ? (
-              <button onClick={handleStop} className="px-3 py-1.5 bg-red-700 hover:bg-red-800 rounded text-sm">
+              <button onClick={handleStop} className={`${TOUCH_BTN} px-3 py-1.5 bg-red-700 hover:bg-red-800 rounded text-sm`}>
                 Stop
               </button>
             ) : (
-              <button onClick={handleStart} className="px-3 py-1.5 bg-green-800 hover:bg-green-900 rounded text-sm">
+              <button onClick={handleStart} className={`${TOUCH_BTN} px-3 py-1.5 bg-green-800 hover:bg-green-900 rounded text-sm`}>
                 Start
               </button>
             )}
             <button
               onClick={handleForcePoll}
               disabled={polling}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded text-sm"
+              className={`${TOUCH_BTN} px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded text-sm`}
             >
               {polling ? 'Polling...' : 'Force Poll'}
             </button>
             <button
               onClick={handleToggleEnabled}
               disabled={!status?.config}
-              className={`px-3 py-1.5 rounded text-sm ${status?.config?.enabled ? 'bg-yellow-800 hover:bg-yellow-900' : 'bg-gray-600 hover:bg-gray-700'} ${!status?.config ? 'opacity-50 cursor-not-allowed' : ''}`}
+              className={`${TOUCH_BTN} px-3 py-1.5 rounded text-sm ${status?.config?.enabled ? 'bg-yellow-800 hover:bg-yellow-900' : 'bg-gray-600 hover:bg-gray-700'} ${!status?.config ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               {status?.config?.enabled ? 'Disable' : 'Enable'}
             </button>
@@ -202,19 +204,21 @@ export default function SentinelDashboard() {
         <h2 className="text-lg font-semibold text-white mb-3">RSS Feeds</h2>
         <div className="space-y-2 mb-4">
           {(status?.config?.feeds || []).map((feed, i) => (
-            <div key={i} className="flex items-center gap-3 bg-gray-900/50 rounded p-2">
+            <div key={i} className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-gray-900/50 rounded p-2">
               <button
                 role="switch"
                 aria-checked={feed.enabled}
                 aria-label={`Enable ${feed.name} feed`}
                 onClick={() => handleToggleFeed(i)}
-                className={`w-8 h-5 rounded-full relative transition-colors ${feed.enabled ? 'bg-green-600' : 'bg-gray-600'}`}
+                className={`${TOUCH_BTN}`}
               >
-                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${feed.enabled ? 'left-3.5' : 'left-0.5'}`} />
+                <span className={`block w-8 h-5 rounded-full relative transition-colors ${feed.enabled ? 'bg-green-600' : 'bg-gray-600'}`}>
+                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${feed.enabled ? 'left-3.5' : 'left-0.5'}`} />
+                </span>
               </button>
-              <span className="text-sm text-white font-medium min-w-[120px]">{feed.name}</span>
-              <span className="text-xs text-gray-400 truncate flex-1">{feed.url}</span>
-              <button aria-label={`Remove ${feed.name} feed`} onClick={() => handleRemoveFeed(i)} className="text-red-400 hover:text-red-300 text-sm px-2">Remove</button>
+              <span className="text-sm text-white font-medium min-w-0 flex-1 sm:flex-none sm:min-w-[120px] break-words">{feed.name}</span>
+              <span className="order-last basis-full sm:order-none sm:basis-0 text-xs text-gray-400 truncate min-w-0 sm:flex-1">{feed.url}</span>
+              <button aria-label={`Remove ${feed.name} feed`} onClick={() => handleRemoveFeed(i)} className={`${TOUCH_BTN} text-red-400 hover:text-red-300 text-sm px-2`}>Remove</button>
             </div>
           ))}
         </div>
@@ -262,7 +266,7 @@ export default function SentinelDashboard() {
               <option value="info">Info</option>
             </select>
             {alerts.length > 0 && (
-              <button onClick={handleClearAll} className="text-red-400 hover:text-red-300 text-sm">
+              <button onClick={handleClearAll} className={`${TOUCH_BTN} text-red-400 hover:text-red-300 text-sm px-2`}>
                 Clear All
               </button>
             )}
@@ -316,7 +320,7 @@ export default function SentinelDashboard() {
                   {!alert.dismissed && (
                     <button
                       onClick={() => handleDismiss(alert.id)}
-                      className="text-gray-400 hover:text-white text-sm shrink-0"
+                      className={`${TOUCH_BTN} text-gray-400 hover:text-white text-sm px-2`}
                       title="Dismiss"
                     >
                       Dismiss
