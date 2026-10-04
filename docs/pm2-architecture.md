@@ -74,6 +74,10 @@ An exchange summary shows its worst enabled fund (failure > paused > ok > stoppe
 
 Defined in `ecosystem.config.cjs` with 5 processes: `critical-mass` (gateway), `critical-mass-coinbase`, `critical-mass-gemini`, `critical-mass-cryptocom`, `critical-mass-ui`.
 
+## Development topology
+
+`npm run dev` (`scripts/dev.js`) supervises only two children: the gateway (`server.js`) and the Vite UI. The engines are separate PM2 processes that the gateway connects to as IPC clients; with none running, regime commands return HTTP 503 (`Engine unavailable: IPC not connected`). Start them first with `pm2 start ecosystem.config.cjs --only critical-mass-coinbase,critical-mass-gemini,critical-mass-cryptocom` and remove them with `pm2 delete` on the same names. Do not run the production `critical-mass`/`critical-mass-ui` processes at the same time (port conflict). Engines auto-resume configured funds, so use a separate development configuration with disabled or dry-run funds.
+
 ## Gateway shutdown grace period
 
 The gateway handles SIGTERM and SIGINT through one drain coordinator. It stops
