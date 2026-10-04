@@ -13,7 +13,7 @@ let computeCapitalAdjustment
 // `elements()` below) — the three forms #760 pulled out of
 // RegimeDashboard.jsx. Every other inline helper component keeps the
 // pre-#760 "never invoked, just walk its children prop" behavior.
-const EXTRACTED_COMPONENT_NAMES = new Set(['PositionCard', 'LadderPanel', 'CapitalAdjust'])
+const EXTRACTED_COMPONENT_NAMES = new Set(['PositionCard', 'LadderPanel', 'CapitalAdjust', 'AggressivenessControl'])
 
 before(async () => {
   // Use the admin build's JSX compiler, with dependencies left external so no
@@ -467,6 +467,68 @@ describe('RegimeDashboard expanded operational forms', () => {
       rebuild.resolve(reply({ success: true, message: 'placed' }))
       await first
       assert.equal(ui.dashboard.toasts.at(-1).title, 'Ladder Placed')
+    })
+  })
+  describe('Aggressiveness preview/apply (#951)', () => {
+    const tick = () => new Promise(resolve => setImmediate(resolve))
+    const presets = {
+      conservative: { kFactor: 0.9, minIntervalMs: 2000, maxIntervalMs: 90000, entryOffsetBps: 20, cautionScale: 0.4, trendScale: 0, maxCycleBuys: 6 },
+      moderate: { kFactor: 0.6, minIntervalMs: 1000, maxIntervalMs: 60000, entryOffsetBps: 10, cautionScale: 0.5, trendScale: 0, maxCycleBuys: 10 },
+    }
+    async function open(extra = {}) {
+      const puts = []
+      const intercept = async (url, options = {}) => {
+        if (url === '/api/presets/aggressiveness') return { ok: true, status: 200, json: async () => ({ presets }) }
+        if (options.method === 'PUT') {
+          puts.push(JSON.parse(options.body))
+          if (extra.putResult) return extra.putResult()
+        }
+        return null
+      }
+      const dashboard = createDashboard({ intercept })
+      await dashboard.mount()
+      await tick()
+      const tree = () => dashboard.render()
+      const level = label => findElement(dashboard, tree(), n => n.type === 'button' && n.props.children === label)
+      const apply = label => dashboard.elements(tree()).find(n => n.type === 'button' && n.props.children === `Apply ${label}`)
+      return { dashboard, puts, level, apply, tree }
+    }
+
+    it('selecting a preset previews its parameters without any write', async () => {
+      const ui = await open()
+      assert.equal(ui.apply('Conservative'), undefined)
+      ui.level('Conservative').props.onClick()
+      assert.equal(ui.puts.length, 0)
+      assert.ok(ui.apply('Conservative'))
+      assert.ok(ui.dashboard.elements(ui.tree()).some(n => n.props.children === 'kFactor'))
+      assert.equal(ui.level('Conservative').props['aria-pressed'], true)
+      assert.equal(ui.level('Conservative').props.onMouseEnter, undefined)
+      assert.match(ui.level('Conservative').props.className, /min-h-11/)
+    })
+
+    it('Apply sends the selected preset payload once and blocks duplicates while pending', async () => {
+      let release
+      const ui = await open({ putResult: () => new Promise(r => { release = () => r({ ok: true, status: 200, json: async () => ({ success: true }) }) }) })
+      ui.level('Conservative').props.onClick()
+      const click = ui.apply('Conservative').props.onClick
+      const first = click()
+      const pending = ui.dashboard.elements(ui.tree()).find(n => n.type === 'button' && n.props.children === 'Applying...')
+      assert.equal(pending.props.disabled, true, 'Apply is disabled while pending')
+      assert.equal(ui.level('Conservative').props.disabled, true)
+      assert.equal(ui.puts.length, 1)
+      assert.deepEqual(ui.puts[0], { aggressiveness: 'conservative', ...presets.conservative })
+      release()
+      await first
+    })
+
+    it('keeps the preview and applied indicator after a failed Apply', async () => {
+      const ui = await open({ putResult: () => ({ ok: false, status: 409, json: async () => ({ error: 'conflict' }) }) })
+      ui.level('Conservative').props.onClick()
+      await ui.apply('Conservative').props.onClick()
+      assert.equal(ui.puts.length, 1)
+      assert.equal(ui.dashboard.toasts.at(-1).type, 'error')
+      assert.ok(ui.apply('Conservative'), 'preview retained so the operator can retry')
+      assert.equal(ui.level('Conservative').props['aria-pressed'], true)
     })
   })
 })
