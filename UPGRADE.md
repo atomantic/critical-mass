@@ -36,19 +36,25 @@ If the legacy file is unreadable or carries an unexpected version, it is left un
 
 ## Multi-Pair Funds (Unreleased)
 
-**Affects everyone.** This release reorganizes on-disk state into per-fund subdirectories so a single exchange can host multiple trading funds (e.g. BTC-USDC and ETH-USDC on Coinbase). The migration runs automatically the first time an engine starts after the upgrade — but it **refuses to run while engines are live**, so you must stop them first.
+**Affects everyone.** This release reorganizes on-disk state into per-fund subdirectories so a single exchange can host multiple trading funds (e.g. BTC-USDC and ETH-USDC on Coinbase). The migration runs automatically the first time an engine starts after the upgrade. Stop the Critical Mass processes in the order below before pulling the new version.
 
 ### TL;DR
 
 ```bash
-pm2 stop ecosystem.config.cjs    # 1. stop everything
-git pull                          # 2. pull this version
-npm run build                     # 3. rebuild the admin UI
-pm2 start ecosystem.config.cjs    # 4. start engines — migration runs automatically
-pm2 logs critical-mass-coinbase   # 5. confirm "Pair migration complete"
+pm2 stop critical-mass                                   # 1. drain the gateway first
+pm2 describe critical-mass                               #    wait until status is "stopped"
+pm2 stop critical-mass-coinbase critical-mass-gemini critical-mass-cryptocom critical-mass-ui   # 2. then stop engines (and dev UI, if running)
+git pull                                                 # 3. pull this version
+npm install && npm run build                             # 4. update dependencies, rebuild the admin UI
+pm2 start ecosystem.config.cjs --only critical-mass-coinbase,critical-mass-gemini,critical-mass-cryptocom   # 5. engines first
+pm2 logs critical-mass-coinbase                          # 6. confirm "Pair migration complete" (check each engine you run)
+pm2 start ecosystem.config.cjs --only critical-mass      # 7. then the gateway
+pm2 start ecosystem.config.cjs --only critical-mass-ui   # 8. development UI only, if you use it
 ```
 
-You don't strictly *have* to stop PM2 first — the migration runs at engine startup before any state is loaded, so it's safe to do `pm2 restart all` instead. Stopping first just gives you a clean checkpoint to compare against.
+Order matters. The gateway drains its admitted commands before it disconnects from the engines (up to 30 seconds; its PM2 `kill_timeout` is 35 seconds), so it must be fully stopped **before** any engine stops. Stopping the whole ecosystem at once, or `pm2 restart all`, cannot provide that ordering: PM2 applies multi-process actions concurrently, so an engine can go away while the gateway still has a command waiting on it, and that command returns HTTP 503 (`IPC connection closed`). `pm2 restart all` also touches unrelated applications sharing your PM2 daemon. Always name the Critical Mass processes as above. Engines start before the gateway so they have finished initialization and migration when the gateway begins sending them requests. Keep any supervisor stop grace longer than the gateway's 35 seconds; see [docs/pm2-architecture.md](docs/pm2-architecture.md) for the drain and deadline details.
+
+If you only run some exchanges, list only those engine names. The process names and `--only` selectors come from `ecosystem.config.cjs`.
 
 ### Why
 
@@ -79,7 +85,7 @@ Separately, an earlier release of this same multi-pair migration moved `transact
 
 ### Safety guarantees
 
-- The migration runs **before** anything else on engine startup, so the new engine in the same process hasn't started yet and the previous engine in the previous process is by definition dead (PM2 wouldn't be spawning a new process otherwise). It's always safe to run.
+- Each engine claims its configured local IPC port before it runs recovery or the migration, so a second engine process for the same exchange on that port fails without touching fund data. This is exclusion by configured port only. The migration does not check for other writers (for example an engine configured on a different port, or a manual script), so follow the stop order above to make sure nothing else is writing the data directory.
 - If the migration fails for any reason, the engine process logs an error and `process.exit(1)` — it will NOT silently continue with mixed-layout state.
 - The migration uses `fs.renameSync` (atomic move) and refuses to overwrite existing files at the target path. If it sees a conflict (e.g. you started the new code, generated a partial new layout, then tried to restart with old files still around), it logs the conflict and skips that specific file rather than clobbering anything.
 - It also cleans up empty pair subdirectories that the API server might have accidentally created before the engine ran (e.g. from gateway requests using `?pair=` before migration completed).
