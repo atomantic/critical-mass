@@ -15,7 +15,7 @@ function ClosedFundCard({ card, icon, iconClass }) {
         </span>
         <div className="min-w-0 break-words [overflow-wrap:anywhere]">
           <span className="font-medium capitalize text-gray-400 text-sm">{card.exchange}</span>
-          <span className="text-gray-600 mx-1">/</span>
+          <span className="text-gray-400 mx-1">/</span>
           <span className="text-sm text-gray-400">{card.pair}</span>
         </div>
       </div>
