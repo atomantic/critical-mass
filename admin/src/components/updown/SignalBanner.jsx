@@ -83,13 +83,13 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
     <div className={`rounded-lg border p-3 transition-colors duration-500 ${bannerColor}`}>
       <div className="flex items-center gap-4 flex-wrap">
         {/* Left: Signal + action label + confidence */}
-        <div className="flex items-center gap-3 min-w-0" title={`Composite score: ${score.toFixed(1)} — Action: ${actionLabel} — Engine: ${(type || 'LOADING').replace(/_/g, ' ')}`}>
+        <div className="flex items-center gap-x-3 gap-y-1 flex-wrap min-w-0 max-w-full" title={`Composite score: ${score.toFixed(1)} — Action: ${actionLabel} — Engine: ${(type || 'LOADING').replace(/_/g, ' ')}`}>
           <Icon size={22} className={labelColor} />
           <span className={`text-lg font-bold whitespace-nowrap ${labelColor}`}>
             {actionLabel}
           </span>
-          <div className="flex items-center gap-2 min-w-[160px]" title={`Heuristic signal strength: ${confPct.toFixed(0)}% — indicator agreement, not a calibrated probability`}>
-            <div className="w-20 bg-gray-700 rounded-full h-2.5">
+          <div className="flex items-center gap-2 min-w-0 max-w-full" title={`Heuristic signal strength: ${confPct.toFixed(0)}% — indicator agreement, not a calibrated probability`}>
+            <div className="w-20 shrink-0 bg-gray-700 rounded-full h-2.5">
               <div
                 className={`${barColor} h-2.5 rounded-full transition-all duration-500`}
                 style={{ width: `${confPct}%` }}
