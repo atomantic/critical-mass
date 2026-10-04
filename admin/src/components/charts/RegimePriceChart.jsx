@@ -1,7 +1,21 @@
-import { useRef, useEffect, useMemo, useState } from 'react'
+import { useRef, useEffect, useId, useMemo, useState } from 'react'
 import * as d3 from 'd3'
 import { formatPriceCompact } from './chartUtils'
 import InfoTooltip from '../InfoTooltip'
+import ChartDataAlternative from './ChartDataAlternative'
+import {
+  REGIME_INTERVAL_COLUMNS,
+  buildRegimeIntervals,
+  describeRegimeIntervals,
+  describeSeries,
+  describeWindow,
+  formatClock,
+  formatStamp,
+  formatUsd,
+  isNum,
+  regimeIntervalRows,
+  summarizeSeries,
+} from './chartDataText'
 
 // Regime colors for background zones
 const REGIME_COLORS = {
@@ -27,6 +41,8 @@ function RegimePriceChart({
   const containerRef = useRef(null)
   const svgRef = useRef(null)
   const [containerWidth, setContainerWidth] = useState(0)
+  const headingId = useId()
+  const summaryId = useId()
 
   // Filter to last 1 hour and sort by timestamp — defense in depth against any
   // unsorted/overlapping upstream series (d3.line/d3.area draw in array order,
@@ -35,6 +51,45 @@ function RegimePriceChart({
     const cutoff = Date.now() - 60 * 60 * 1000
     return priceData.filter(d => d.timestamp > cutoff).sort((a, b) => a.timestamp - b.timestamp)
   }, [priceData])
+
+  const sortedRegimes = useMemo(() => [...regimeData].sort((a, b) => a.timestamp - b.timestamp), [regimeData])
+
+  // Text equivalent derived from the exact samples, regime boundaries and trigger bands plotted.
+  const textAlternative = useMemo(() => {
+    if (chartData.length < 2) return null
+    const start = chartData[0].timestamp
+    const end = chartData[chartData.length - 1].timestamp
+    const intervals = buildRegimeIntervals(sortedRegimes, start, end)
+    const priceSummary = summarizeSeries(chartData, 'price')
+    const summary = [
+      describeWindow(chartData, 'price samples'),
+      describeSeries('Price', priceSummary, formatUsd),
+    ]
+    if (anchorPrice && atr && atr > 0) {
+      const distance = kFactor * atr
+      summary.push(`ATR trigger bands (${kFactor}x ATR of ${formatUsd(atr)}): anchor ${formatUsd(anchorPrice)}, upper trigger ${formatUsd(anchorPrice + distance)}, lower trigger ${formatUsd(anchorPrice - distance)}.`)
+    }
+    summary.push(describeRegimeIntervals(intervals, 'the latest sample'))
+    const priceRows = chartData.map(d => ({
+      time: formatStamp(d.timestamp),
+      price: isNum(d.price) ? formatUsd(d.price) : 'missing',
+    }))
+    return {
+      summary,
+      tables: [
+        {
+          caption: `Price samples from ${formatClock(start)} to ${formatClock(end)}`,
+          columns: [{ key: 'time', label: 'Time' }, { key: 'price', label: 'Price (USD)' }],
+          rows: priceRows,
+        },
+        {
+          caption: 'Regime intervals in the plotted window',
+          columns: REGIME_INTERVAL_COLUMNS,
+          rows: regimeIntervalRows(intervals, 'Latest sample'),
+        },
+      ],
+    }
+  }, [chartData, sortedRegimes, anchorPrice, atr, kFactor])
 
   useEffect(() => {
     if (!svgRef.current || !containerRef.current || chartData.length < 2 || containerWidth === 0) return
@@ -68,9 +123,7 @@ function RegimePriceChart({
       .range([innerHeight, 0])
 
     // Regime background zones
-    if (regimeData.length > 0) {
-      const sortedRegimes = [...regimeData].sort((a, b) => a.timestamp - b.timestamp)
-
+    if (sortedRegimes.length > 0) {
       sortedRegimes.forEach((regime, i) => {
         const startX = xScale(Math.max(regime.timestamp, xExtent[0]))
         const endX = i < sortedRegimes.length - 1
@@ -261,7 +314,7 @@ function RegimePriceChart({
     g.selectAll('g:last-child line, g:last-child path')
       .attr('stroke', '#60a5fa')
 
-  }, [chartData, regimeData, height, anchorPrice, atr, kFactor, currentPrice, containerWidth])
+  }, [chartData, sortedRegimes, height, anchorPrice, atr, kFactor, currentPrice, containerWidth])
 
   // Handle resize
   useEffect(() => {
@@ -293,7 +346,7 @@ function RegimePriceChart({
 
   return (
     <div ref={containerRef} className={`bg-gray-800 rounded-lg p-4 ${className}`}>
-      <h3 className="text-sm font-medium text-gray-400 mb-2 flex items-center gap-1.5">
+      <h3 id={headingId} className="text-sm font-medium text-gray-400 mb-2 flex items-center gap-1.5">
         Price & ATR Triggers
         <InfoTooltip
           label="About ATR triggers"
@@ -306,7 +359,15 @@ function RegimePriceChart({
           </>}
         />
       </h3>
-      <svg ref={svgRef} className="w-full" style={{ height: height - 40 }} />
+      <svg
+        ref={svgRef}
+        role="img"
+        aria-labelledby={headingId}
+        aria-describedby={summaryId}
+        className="w-full"
+        style={{ height: height - 40 }}
+      />
+      <ChartDataAlternative summaryId={summaryId} summary={textAlternative.summary} tables={textAlternative.tables} />
     </div>
   )
 }
