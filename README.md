@@ -229,11 +229,35 @@ they do not need a repository `.env` inside the image. Compose's host-side
 
 ### Admin Dashboard (Recommended)
 
-```bash
-# Development (with hot-reload)
-npm run dev
+**Development (with hot-reload)**
 
-# Production
+`npm run dev` (`scripts/dev.js`) starts exactly two children: the gateway
+(`server.js`) and the Vite UI. It does not start any exchange engine. The gateway
+reaches the engines over IPC, so without running engines the dashboard loads but
+regime commands fail with HTTP 503 `Engine unavailable: IPC not connected`.
+Start the three engines first, with PM2 selecting only them:
+
+```bash
+npm install -g pm2   # One-time prerequisite
+pm2 start ecosystem.config.cjs --only critical-mass-coinbase,critical-mass-gemini,critical-mass-cryptocom
+pm2 describe critical-mass-coinbase critical-mass-gemini critical-mass-cryptocom   # verify: status "online"
+npm run dev
+```
+
+When finished, stop and remove only those processes:
+
+```bash
+pm2 delete critical-mass-coinbase critical-mass-gemini critical-mass-cryptocom
+```
+
+Warnings:
+- Stop any production gateway/UI (`critical-mass`, `critical-mass-ui`) before running `npm run dev`; both use the same ports.
+- Engines auto-resume configured funds on start. Use a separate development checkout/configuration with funds disabled or `dryRun: true` so no real orders are placed.
+- See [docs/pm2-architecture.md](docs/pm2-architecture.md#development-topology) for the topology.
+
+**Production**
+
+```bash
 npm install -g pm2   # One-time prerequisite for a native install; Docker includes PM2
 npm run build
 npm run pm2:start
