@@ -50,3 +50,27 @@ describe('UpDown Dashboard.jsx 3-column layout', () => {
     assert.ok(source.includes('/updown/analysis'));
   });
 });
+
+describe('UpDown SignalBanner narrow-column containment', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'admin', 'src', 'components', 'updown', 'SignalBanner.jsx'),
+    'utf8',
+  );
+
+  it('lets the action/strength row wrap instead of forcing a fixed 160px group', () => {
+    const row = source.match(/<div className="([^"]*)" title=\{`Composite score/);
+    assert.ok(row, 'action row not found');
+    assert.match(row[1], /\bflex-wrap\b/);
+    assert.match(row[1], /\bmin-w-0\b/);
+    assert.ok(!source.includes('min-w-[160px]'));
+  });
+
+  it('keeps the strength group shrink-safe with a non-collapsing bar and label', () => {
+    const group = source.match(/<div className="([^"]*)" title=\{`Heuristic signal strength/);
+    assert.ok(group, 'strength group not found');
+    assert.match(group[1], /\bmin-w-0\b/);
+    assert.match(group[1], /\bmax-w-full\b/);
+    assert.ok(source.includes('w-20 shrink-0'));
+    assert.ok(source.includes('Strength {confPct.toFixed(0)}%'));
+  });
+});
