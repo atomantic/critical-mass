@@ -8,7 +8,7 @@ const fs = require('fs');
 const http = require('http');
 const { Server } = require('socket.io');
 const { log, createContextLogger } = require('./src/logger');
-const { runMigrationIfNeeded } = require('./src/migration');
+const { guardLegacyMigration } = require('./src/migration');
 const { guardIncompleteRestore } = require('./src/restore-apply');
 const { asyncRoute } = require('./src/routes/route-utils');
 const { errorMiddleware } = require('./src/error-middleware');
@@ -67,8 +67,9 @@ const { createGatewayShutdown, closeGatewayListeners } = require('./src/gateway-
 // (issue #431).
 guardIncompleteRestore({ processLabel: 'gateway', logger: createContextLogger({ module: 'server' }) });
 
-// Run migration on startup
-runMigrationIfNeeded();
+// Finish the legacy namespace migration before anything reads persisted
+// state; a conflicting or still-in-progress migration refuses to start (issue #971).
+guardLegacyMigration({ processLabel: 'gateway', logger: createContextLogger({ module: 'server' }) });
 
 // ============ Server Setup ============
 
