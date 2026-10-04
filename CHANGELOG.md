@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-969] Closed Funds summaries stay inside their cards** — Closed fund cards wrap identity and cycles/P&L/Closed summary by available width and break long pair labels, with no overflow at phone or narrow grid widths; navigation and values unchanged.
 - **[issue-952] Sentinel controls meet touch target minimums** — Service controls, feed switches, Remove, Clear All and Dismiss now have 44px hit areas (switch keeps its compact visual track); feed rows reflow on narrow screens with the URL on its own line. Handlers and accessible names unchanged.
 - **[issue-953] UpDown signal strength stays inside narrow columns** — The SignalBanner action and Strength group now wrap within the signal card instead of overflowing the page at the lg four-column breakpoint; containment is covered by layout tests.
 - **[issue-945] Upgrade instructions stop and start in dependency order** — UPGRADE.md now drains the gateway before stopping engines, starts engines before the gateway using only Critical Mass process names, drops `pm2 restart all`, and describes migration's configured-port exclusion accurately; README links to the procedure.
