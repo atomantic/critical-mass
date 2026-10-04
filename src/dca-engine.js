@@ -8,7 +8,7 @@ const logger = require('./logger');
 const { createContextLogger } = logger;
 const { consolidatePendingOrders } = require('./order-manager');
 const { getFundConfig, getDefaultPair, getBaseCurrency, getQuoteCurrency } = require('./config-utils');
-const { normalizeConfig, formatInterval, shouldRunConsolidation, getConsolidationRunId } = require('./interval-utils');
+const { normalizeConfig, formatInterval, shouldRunConsolidation, getConsolidationRunId, getRunIdentifier } = require('./interval-utils');
 const { tradeEvents } = require('./trade-events');
 const { getFibonacciBuyAmount } = require('./fibonacci-utils');
 const { trackPendingWrite } = require('./pending-writes');
@@ -305,6 +305,60 @@ const reconcileAwaitingSells = async (state, config, adapter, exchange, pair) =>
 };
 
 /**
+ * Operator-facing view of a pending DCA buy.
+ * @param {Object} pending - `state.pendingDcaBuy`
+ * @returns {Object} Public summary
+ */
+const describePendingBuy = (pending) => ({
+  orderId: pending.orderId,
+  clientOrderId: pending.clientOrderId ?? null,
+  requestedUsdc: pending.requestedUsdc ?? null,
+  runId: pending.runId ?? null,
+  acceptedAt: pending.acceptedAt ?? null,
+  lastCheckedAt: pending.lastCheckedAt ?? null,
+  statusChecks: pending.statusChecks ?? 0,
+  lastError: pending.lastError ?? null,
+});
+
+/**
+ * Cycle result for an accepted buy whose fill is not yet confirmed (issue #963).
+ * Distinct from a rejected purchase: the exchange took the order, the fund
+ * still owns it, and no second buy is placed until it resolves.
+ * @param {Object} pending - `state.pendingDcaBuy`
+ * @param {ExchangeConfig} config - Fund configuration
+ * @param {string} exchange - Exchange name
+ * @param {string} reason - Why the fill could not be confirmed
+ * @returns {CycleResult} Pending-recovery result
+ */
+const pendingBuyResult = (pending, config, exchange, reason) => ({
+  status: 'buy_fill_pending',
+  exchange,
+  intervalType: config.intervalType,
+  pendingBuy: describePendingBuy(pending),
+  error: reason,
+  message: `Buy order ${pending.orderId} (interval ${pending.runId}) was accepted by the exchange, but its fill could not be confirmed yet: ${reason}. `
+    + 'It is awaiting fill recovery and a second buy has been withheld. Retrying the trade resumes this same order — it will not place a new buy.',
+});
+
+/**
+ * Persist state without letting a write failure replace the caller's result.
+ * Used only where the on-disk copy already holds everything that matters (a
+ * pending record's check counters) and the in-memory update is informational.
+ * @param {BotState} state - State to save
+ * @param {string} exchange - Exchange name
+ * @param {string|undefined} pair - Fund pair
+ * @param {{warn: Function}} cycleLogger - Logger
+ * @returns {void}
+ */
+const saveStateBestEffort = (state, exchange, pair, cycleLogger) => {
+  try {
+    stateTracker.saveState(state, exchange, pair);
+  } catch (err) {
+    cycleLogger.warn(`⚠️ [${exchange}] Could not persist pending-buy check details: ${err.message}`, { error: err.message });
+  }
+};
+
+/**
  * Run the interval DCA cycle for one fund
  * @param {string} [exchange] - Exchange name (default: coinbase)
  * @param {string} [pair] - Fund pair (default: the exchange's default fund)
@@ -404,6 +458,313 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
       intentId: oldest.id,
       message: `Unresolved placement intent ${oldest.id} — reconcile it before this fund places another order`,
     };
+  }
+
+  const currentRunId = getRunIdentifier(config.intervalType);
+
+  /**
+   * Book a filled real buy (exactly once, retiring its pending record in the
+   * same save) and cover it with a sell. The buy is persisted BEFORE sell
+   * placement so a sell-placement throw cannot lose it (issue #106).
+   * @param {import('./types').BuyResult} buyResult - Confirmed fill
+   * @param {string} runId - Interval the buy belongs to
+   * @returns {Promise<{alreadyBooked: true} | {failure: CycleResult} | {sellOrder: Object, holdbackAsset: number}>} Outcome
+   */
+  const bookAndCoverBuy = async (buyResult, runId) => {
+    /**
+     * Contain a sell-placement failure: the buy is already persisted (with
+     * lastRunId set), so the cycle's accounting survives and the next
+     * interval cannot double-buy. There is no retry mechanism for failed
+     * sell placement — fixed strategy marks the order entry 'sell_failed'
+     * for operator follow-up; Fibonacci self-heals next cycle via its
+     * consolidated sell (which re-covers the full cumulative position).
+     * @param {Error} err - The sell-placement error
+     * @returns {{failure: CycleResult}} Partial-cycle result
+     */
+    const sellPlacementFailed = (err) => {
+      cycleLogger.error(`❌ [${exchange}] Sell placement failed after buy ${buyResult.orderId} — buy persisted (lastRunId=${state.lastRunId}), sell skipped: ${err.message}`, {
+        orderId: buyResult.orderId,
+        lastRunId: state.lastRunId,
+        error: err.message,
+      });
+      tradeEvents.error(exchange, `Sell placement failed: ${err.message}`, { buyOrderId: buyResult.orderId });
+      return {
+        failure: {
+          status: 'sell_placement_failed',
+          intervalType: config.intervalType,
+          buyResult,
+          error: err.message,
+          exchange,
+          state: {
+            totalAllocated: state.totalAllocated,
+            assetReserves: state.assetReserves,
+            outstandingOrdersUSDC: state.outstandingOrdersUSDC,
+            intervalsRun: state.totalIntervalsRun,
+          },
+        },
+      };
+    };
+
+    const booked = stateTracker.bookDcaBuy(state, buyResult, config, { strategy: isFibonacci ? 'fibonacci' : 'fixed', runId });
+    // Booking and retiring the pending record land in this one save.
+    stateTracker.saveState(state, exchange, pair);
+    if (!booked) {
+      cycleLogger.warn(`⚠️ [${exchange}] Buy ${buyResult.orderId} was already booked — not crediting it again`, { orderId: buyResult.orderId });
+      return { alreadyBooked: true };
+    }
+
+    let sellOrder;
+    let holdbackAsset;
+
+    if (isFibonacci) {
+      const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
+      logger.logFibBuy(buyResult, state, cycleInfo, exchange, pair);
+
+      try {
+        const fibSellResult = await orderManager.placeFibonacciSellOrder(
+          config,
+          cycleInfo.cumulativeAsset,
+          cycleInfo.avgCostBasis,
+          state.fibActiveSellOrderId,
+          adapter,
+          { exchange, pair }
+        );
+
+        if (fibSellResult.alreadyFilled) {
+          // Rare case: previous order filled between check and now
+          const fibFill = await orderManager.checkFibonacciSellFill(state.fibActiveSellOrderId, adapter);
+          if (!fibFill) {
+            // Fill details unavailable despite FILLED status — leave
+            // fibActiveSellOrderId intact so next cycle's fill check resolves it
+            throw new Error(`fill details unavailable for filled fib sell ${state.fibActiveSellOrderId}`);
+          }
+          // The sell filled after this interval’s buy was already booked; carry that buy forward.
+          stateTracker.settleFibSellAndCarryUncoveredBuys(state, fibFill);
+          stateTracker.saveState(state, exchange, pair);
+          logger.logFibSellFilled(fibFill, state, cycleInfo.position, exchange, pair);
+          // Now place new sell order for this buy
+          const newFibSellResult = await orderManager.placeFibonacciSellOrder(
+            config,
+            buyResult.assetAmount,
+            buyResult.price + (buyResult.netFees || 0) / buyResult.assetAmount,
+            null,
+            adapter,
+            { exchange, pair }
+          );
+          sellOrder = newFibSellResult.sellOrder;
+          holdbackAsset = newFibSellResult.holdbackAsset;
+          stateTracker.updateAfterFibSellOrder(state, sellOrder, newFibSellResult.sellQuantity, holdbackAsset);
+        } else {
+          // A partially-filled previous sell was cancelled and rolled into this
+          // consolidated order — book the already-executed proceeds before
+          // tracking the new sell (issue #200, Bug B). The cycle is NOT reset;
+          // holdback is realized only when the consolidated sell fully fills.
+          if (fibSellResult.prevFill) {
+            stateTracker.creditFibPartialSell(state, fibSellResult.prevFill);
+            cycleLogger.info(`ℹ️ [${exchange}] Credited partially-filled prev fib sell ${fibSellResult.prevFill.orderId}: ${fibSellResult.prevFill.filledSize.toFixed(8)} ${getBaseCurrency(config.productId)} → net proceeds $${(fibSellResult.prevFill.netProceeds || 0).toFixed(2)}`);
+          }
+          sellOrder = fibSellResult.sellOrder;
+          holdbackAsset = fibSellResult.holdbackAsset;
+          stateTracker.updateAfterFibSellOrder(state, sellOrder, fibSellResult.sellQuantity, holdbackAsset);
+        }
+      } catch (err) {
+        return sellPlacementFailed(err);
+      }
+
+      logger.logFibSellOrder(sellOrder, state, cycleInfo, exchange, pair);
+      tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
+    } else {
+      holdbackAsset = buyResult.assetAmount * (config.holdbackPercent / 100);
+      logger.logBuy(buyResult, state, exchange, pair);
+
+      try {
+        sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter, 3, { exchange, pair });
+      } catch (err) {
+        stateTracker.markSellPlacementFailed(state, buyResult.orderId, err.message);
+        stateTracker.saveState(state, exchange, pair);
+        return sellPlacementFailed(err);
+      }
+
+      stateTracker.attachSellOrder(state, buyResult.orderId, sellOrder);
+      logger.logSellOrder(sellOrder, state, exchange, pair);
+      tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
+    }
+
+    // Persist the live sell now: a recovered earlier-interval buy is followed
+    // by this interval's own checks, which may return before the cycle's
+    // final save, and a placed sell must never be left tracked only in memory.
+    stateTracker.saveState(state, exchange, pair);
+    return { sellOrder, holdbackAsset };
+  };
+
+  // An accepted buy whose fill was never confirmed (status outage, exhausted
+  // poll, crash) is still this fund's order. Resume it by order id BEFORE any
+  // new buy is considered (issue #963): it stays pending — across restarts —
+  // until the exchange reports a real fill (booked once, under its original
+  // interval) or a confirmed zero-fill terminal status (released).
+  /** @type {{buyResult: import('./types').BuyResult, runId: string, sellOrder?: Object, holdbackAsset?: number}|null} */
+  let recoveredBuy = null;
+  if (state.pendingDcaBuy?.orderId) {
+    const pending = state.pendingDcaBuy;
+    const resumed = await orderManager.awaitBuyOutcome(pending.orderId, adapter, orderManager.PENDING_BUY_RESUME_POLL);
+
+    if (resumed.outcome === 'unresolved') {
+      stateTracker.notePendingDcaBuyCheck(state, pending.orderId, resumed.reason);
+      saveStateBestEffort(state, exchange, pair, cycleLogger);
+      cycleLogger.warn(`⏸️ [${exchange}] Buy ${pending.orderId} (interval ${pending.runId}) still awaiting fill recovery: ${resumed.reason} — no new buy placed`, {
+        orderId: pending.orderId,
+        runId: pending.runId,
+        reason: resumed.reason,
+      });
+      tradeEvents.skipped(exchange, `Buy ${pending.orderId} awaiting fill recovery`);
+      return pendingBuyResult(pending, config, exchange, resumed.reason);
+    }
+
+    if (resumed.outcome === 'unfilled') {
+      // Confirmed by the exchange: terminal, nothing executed, no money moved.
+      stateTracker.retirePendingDcaBuy(state, pending.orderId);
+      stateTracker.saveState(state, exchange, pair);
+      cycleLogger.warn(`⚠️ [${exchange}] Pending buy ${pending.orderId} ended ${resumed.status} with no fill — released`, {
+        orderId: pending.orderId,
+        runId: pending.runId,
+        status: resumed.status,
+      });
+    } else {
+      const runId = pending.runId ?? currentRunId;
+      cycleLogger.info(`ℹ️ 🔧 [${exchange}] Recovered fill for pending buy ${pending.orderId} (interval ${runId}): ${resumed.fill.assetAmount} @ ${resumed.fill.price}`, {
+        orderId: pending.orderId,
+        runId,
+        assetAmount: resumed.fill.assetAmount,
+        price: resumed.fill.price,
+      });
+      tradeEvents.buyFilled(exchange, resumed.fill.assetAmount, resumed.fill.price, resumed.fill.fees || resumed.fill.netFees || 0);
+      const covered = await bookAndCoverBuy(resumed.fill, runId);
+      if ('failure' in covered) return { ...covered.failure, recoveredPendingBuy: true };
+      if (!('alreadyBooked' in covered)) {
+        recoveredBuy = { buyResult: resumed.fill, runId, sellOrder: covered.sellOrder, holdbackAsset: covered.holdbackAsset };
+      }
+    }
+  }
+
+  /**
+   * Finish a cycle whose buy is booked and covered: persist, log, emit, run
+   * auto-consolidation and build the success result.
+   * @param {{buyResult: Object, sellOrder: Object, holdbackAsset: number, isDryRun: boolean, extra?: Object}} done - Completed buy
+   * @returns {Promise<CycleResult>} Cycle result
+   */
+  const completeCycle = async ({ buyResult, sellOrder, holdbackAsset, isDryRun, extra = {} }) => {
+    const modeLabel = isDryRun ? '[DRY-RUN] ' : '';
+
+    // Save state
+    stateTracker.saveState(state, exchange, pair);
+
+    const baseCurrency = getBaseCurrency(config.productId);
+
+    cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}=== ${intervalLabel} Cycle Complete ===`);
+    cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}Bought: ${buyResult.assetAmount.toFixed(8)} ${baseCurrency} at ${buyResult.price.toFixed(2)}`);
+    cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}Sell order: ${sellOrder.baseSize.toFixed(8)} ${baseCurrency} at ${sellOrder.limitPrice.toFixed(2)}`);
+    cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}Holdback (reserves): ${holdbackAsset.toFixed(8)} ${baseCurrency}`);
+    cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}Total ${baseCurrency} reserves: ${state.assetReserves.toFixed(8)} ${baseCurrency}`);
+    cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}Outstanding sell orders: ${state.outstandingOrdersUSDC.toFixed(2)}`);
+
+    // Emit cycle complete event
+    tradeEvents.cycleComplete(exchange, isDryRun ? 'dry_run_success' : 'success', {
+      assetAmount: buyResult.assetAmount,
+      buyPrice: buyResult.price,
+      sellPrice: sellOrder.limitPrice,
+      holdbackAsset,
+      assetReserves: state.assetReserves,
+      outstandingOrdersUSDC: state.outstandingOrdersUSDC,
+    });
+
+    // Check if auto-consolidation is needed (only for non-dry-run, fixed strategy only)
+    // Fibonacci strategy handles its own consolidated sell orders
+    if (!isDryRun && !isFibonacci) {
+      const pendingCount = stateTracker.getPendingOrders(state).length;
+
+      // Threshold-based consolidation
+      if (config.consolidateAfterOrders > 0 && pendingCount > config.consolidateAfterOrders) {
+        cycleLogger.info(`ℹ️ [${exchange}] Auto-consolidation triggered: ${pendingCount} orders > ${config.consolidateAfterOrders} threshold`);
+        const consolResult = await executeConsolidation(exchange, pair).catch(err => {
+          cycleLogger.error(`❌ [${exchange}] Auto-consolidation failed: ${err.message}`, {
+            trigger: 'auto',
+            pendingCount,
+            threshold: config.consolidateAfterOrders,
+            error: err.message,
+          });
+          tradeEvents.error(exchange, `Auto-consolidation failed: ${err.message}`);
+          return { success: false, error: err.message };
+        });
+        if (!consolResult?.success) {
+          cycleLogger.warn(`⚠️ [${exchange}] Auto-consolidation unsuccessful, will retry next cycle`, {
+            trigger: 'auto',
+            pendingCount,
+            threshold: config.consolidateAfterOrders,
+          });
+        }
+      }
+      // Interval-based consolidation (only if threshold didn't trigger and we have 2+ orders)
+      else if (pendingCount >= 2 && shouldRunConsolidation(state.lastConsolidationId, config.consolidateInterval)) {
+        cycleLogger.info(`ℹ️ [${exchange}] Scheduled consolidation triggered: ${config.consolidateInterval} interval`);
+        await executeConsolidation(exchange, pair).catch(err => {
+          cycleLogger.error(`❌ [${exchange}] Scheduled consolidation failed: ${err.message}`, {
+            trigger: 'scheduled',
+            consolidateInterval: config.consolidateInterval,
+            error: err.message,
+          });
+          tradeEvents.error(exchange, `Scheduled consolidation failed: ${err.message}`);
+        });
+      }
+    }
+
+    const result = {
+      status: isDryRun ? 'dry_run_success' : 'success',
+      dryRun: isDryRun,
+      intervalType: config.intervalType,
+      buyResult,
+      sellOrder,
+      holdbackAsset,
+      exchange,
+      ...extra,
+      state: {
+        totalAllocated: state.totalAllocated,
+        assetReserves: state.assetReserves,
+        outstandingOrdersUSDC: state.outstandingOrdersUSDC,
+        intervalsRun: state.totalIntervalsRun,
+      },
+    };
+
+    // Add Fibonacci-specific info if using that strategy
+    if (isFibonacci) {
+      const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
+      result.fibonacci = {
+        position: cycleInfo.position,
+        cumulativeCost: cycleInfo.cumulativeCost,
+        cumulativeAsset: cycleInfo.cumulativeAsset,
+        avgCostBasis: cycleInfo.avgCostBasis,
+        activeSellOrderId: cycleInfo.activeSellOrderId,
+      };
+    }
+
+    return result;
+  };
+
+  /** Summary of a recovered buy, attached to this cycle's result. */
+  const recoveredSummary = recoveredBuy
+    ? { recoveredPendingBuy: { orderId: recoveredBuy.buyResult.orderId, runId: recoveredBuy.runId, assetAmount: recoveredBuy.buyResult.assetAmount, price: recoveredBuy.buyResult.price } }
+    : {};
+
+  // The recovered buy WAS this interval's buy: the interval is satisfied, so
+  // report it and place nothing more. A buy recovered from an earlier interval
+  // is booked under that interval, and this interval proceeds normally.
+  if (recoveredBuy && recoveredBuy.runId === currentRunId) {
+    return completeCycle({
+      buyResult: recoveredBuy.buyResult,
+      sellOrder: recoveredBuy.sellOrder,
+      holdbackAsset: recoveredBuy.holdbackAsset,
+      isDryRun: false,
+      extra: recoveredSummary,
+    });
   }
 
   // Check current price against max threshold
@@ -585,216 +946,72 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
     cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}Simulated sell order: ${sellOrder.baseSize.toFixed(8)} ${assetCcy} at ${sellOrder.limitPrice.toFixed(2)}`);
     tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
   } else {
-    // Execute real trades
-    buyResult = await orderManager.executeDailyBuy(config, actualBuyAmount, adapter, { exchange, pair });
+    // Execute real trades. The accepted order is recorded as this fund's
+    // pending buy (durably) before its dispatch intent is released and before
+    // its fill is polled, so a status outage cannot orphan it (issue #963).
+    try {
+      buyResult = await orderManager.executeDailyBuy(config, actualBuyAmount, adapter, { exchange, pair }, {
+        onAccepted: (accepted) => {
+          stateTracker.recordPendingDcaBuy(state, {
+            orderId: accepted.orderId,
+            clientOrderId: accepted.clientOrderId ?? null,
+            requestedUsdc: actualBuyAmount,
+            runId: currentRunId,
+            intervalType: config.intervalType,
+            strategy: isFibonacci ? 'fibonacci' : 'fixed',
+            productId: config.productId,
+          });
+          try {
+            stateTracker.saveState(state, exchange, pair);
+          } catch (err) {
+            stateTracker.retirePendingDcaBuy(state, accepted.orderId);
+            throw err;
+          }
+        },
+      });
+    } catch (err) {
+      const pending = state.pendingDcaBuy;
+      if (err.buyFillPending && pending && pending.orderId === err.orderId) {
+        stateTracker.notePendingDcaBuyCheck(state, pending.orderId, err.reason ?? err.message);
+        saveStateBestEffort(state, exchange, pair, cycleLogger);
+        cycleLogger.error(`⏸️ [${exchange}] Buy ${pending.orderId} accepted but its fill is unconfirmed (${err.reason ?? err.message}) — retained for recovery; no further buy will be placed until it resolves`, {
+          orderId: pending.orderId,
+          runId: pending.runId,
+          reason: err.reason ?? err.message,
+        });
+        tradeEvents.error(exchange, `Buy ${pending.orderId} awaiting fill recovery`, { buyOrderId: pending.orderId });
+        return pendingBuyResult(pending, config, exchange, err.reason ?? err.message);
+      }
+      if (err.buyUnfilled && pending && pending.orderId === err.orderId) {
+        // Confirmed terminal zero fill: a definitive non-purchase. Release it.
+        stateTracker.retirePendingDcaBuy(state, pending.orderId);
+        stateTracker.saveState(state, exchange, pair);
+      }
+      if (err.handoffFailed) {
+        tradeEvents.error(exchange, err.message, { buyOrderId: err.orderId ?? null });
+        return {
+          status: 'placement_unresolved',
+          exchange,
+          intentId: err.intentId ?? null,
+          orderId: err.orderId ?? null,
+          error: err.message,
+          message: `Buy order ${err.orderId} was accepted by the exchange, but recording it for fill recovery failed. `
+            + 'Its placement intent stays blocking, so no further buy will be placed; reconcile the intent (adopt, then import the fill) once state can be written.',
+        };
+      }
+      throw err;
+    }
     tradeEvents.buyFilled(exchange, buyResult.assetAmount, buyResult.price, buyResult.fees || buyResult.netFees || 0);
 
-    /**
-     * Contain a sell-placement failure: the buy is already persisted (with
-     * lastRunId set), so the cycle's accounting survives and the next
-     * interval cannot double-buy. There is no retry mechanism for failed
-     * sell placement — fixed strategy marks the order entry 'sell_failed'
-     * for operator follow-up; Fibonacci self-heals next cycle via its
-     * consolidated sell (which re-covers the full cumulative position).
-     * @param {Error} err - The sell-placement error
-     * @returns {CycleResult} Partial-cycle result
-     */
-    const sellPlacementFailed = (err) => {
-      cycleLogger.error(`❌ [${exchange}] Sell placement failed after buy ${buyResult.orderId} — buy persisted (lastRunId=${state.lastRunId}), sell skipped: ${err.message}`, {
-        orderId: buyResult.orderId,
-        lastRunId: state.lastRunId,
-        error: err.message,
-      });
-      tradeEvents.error(exchange, `Sell placement failed: ${err.message}`, { buyOrderId: buyResult.orderId });
-      return {
-        status: 'sell_placement_failed',
-        intervalType: config.intervalType,
-        buyResult,
-        error: err.message,
-        exchange,
-        state: {
-          totalAllocated: state.totalAllocated,
-          assetReserves: state.assetReserves,
-          outstandingOrdersUSDC: state.outstandingOrdersUSDC,
-          intervalsRun: state.totalIntervalsRun,
-        },
-      };
-    };
-
-    if (isFibonacci) {
-      // Fibonacci strategy: persist the buy BEFORE attempting the
-      // consolidated sell so a sell-placement throw cannot lose it (issue #106)
-      stateTracker.updateAfterFibBuy(state, buyResult, config);
-      stateTracker.saveState(state, exchange, pair);
-      const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
-      logger.logFibBuy(buyResult, state, cycleInfo, exchange, pair);
-
-      try {
-        const fibSellResult = await orderManager.placeFibonacciSellOrder(
-          config,
-          cycleInfo.cumulativeAsset,
-          cycleInfo.avgCostBasis,
-          state.fibActiveSellOrderId,
-          adapter,
-          { exchange, pair }
-        );
-
-        if (fibSellResult.alreadyFilled) {
-          // Rare case: previous order filled between check and now
-          const fibFill = await orderManager.checkFibonacciSellFill(state.fibActiveSellOrderId, adapter);
-          if (!fibFill) {
-            // Fill details unavailable despite FILLED status — leave
-            // fibActiveSellOrderId intact so next cycle's fill check resolves it
-            throw new Error(`fill details unavailable for filled fib sell ${state.fibActiveSellOrderId}`);
-          }
-          // The sell filled after this interval’s buy was already booked; carry that buy forward.
-          stateTracker.settleFibSellAndCarryUncoveredBuys(state, fibFill);
-          stateTracker.saveState(state, exchange, pair);
-          logger.logFibSellFilled(fibFill, state, cycleInfo.position, exchange, pair);
-          // Now place new sell order for this buy
-          const newFibSellResult = await orderManager.placeFibonacciSellOrder(
-            config,
-            buyResult.assetAmount,
-            buyResult.price + (buyResult.netFees || 0) / buyResult.assetAmount,
-            null,
-            adapter,
-            { exchange, pair }
-          );
-          sellOrder = newFibSellResult.sellOrder;
-          holdbackAsset = newFibSellResult.holdbackAsset;
-          stateTracker.updateAfterFibSellOrder(state, sellOrder, newFibSellResult.sellQuantity, holdbackAsset);
-        } else {
-          // A partially-filled previous sell was cancelled and rolled into this
-          // consolidated order — book the already-executed proceeds before
-          // tracking the new sell (issue #200, Bug B). The cycle is NOT reset;
-          // holdback is realized only when the consolidated sell fully fills.
-          if (fibSellResult.prevFill) {
-            stateTracker.creditFibPartialSell(state, fibSellResult.prevFill);
-            cycleLogger.info(`ℹ️ [${exchange}] Credited partially-filled prev fib sell ${fibSellResult.prevFill.orderId}: ${fibSellResult.prevFill.filledSize.toFixed(8)} ${getBaseCurrency(config.productId)} → net proceeds $${(fibSellResult.prevFill.netProceeds || 0).toFixed(2)}`);
-          }
-          sellOrder = fibSellResult.sellOrder;
-          holdbackAsset = fibSellResult.holdbackAsset;
-          stateTracker.updateAfterFibSellOrder(state, sellOrder, fibSellResult.sellQuantity, holdbackAsset);
-        }
-      } catch (err) {
-        return sellPlacementFailed(err);
-      }
-
-      logger.logFibSellOrder(sellOrder, state, cycleInfo, exchange, pair);
-      tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
-    } else {
-      // Fixed strategy: persist the buy BEFORE attempting sell placement so
-      // a sell-placement throw cannot lose it (issue #106)
-      holdbackAsset = buyResult.assetAmount * (config.holdbackPercent / 100);
-      stateTracker.recordBuyFill(state, buyResult, config);
-      stateTracker.saveState(state, exchange, pair);
-      logger.logBuy(buyResult, state, exchange, pair);
-
-      try {
-        sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter, 3, { exchange, pair });
-      } catch (err) {
-        stateTracker.markSellPlacementFailed(state, buyResult.orderId, err.message);
-        stateTracker.saveState(state, exchange, pair);
-        return sellPlacementFailed(err);
-      }
-
-      stateTracker.attachSellOrder(state, buyResult.orderId, sellOrder);
-      logger.logSellOrder(sellOrder, state, exchange, pair);
-      tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
+    const covered = await bookAndCoverBuy(buyResult, currentRunId);
+    if ('failure' in covered) return { ...covered.failure, ...recoveredSummary };
+    if ('alreadyBooked' in covered) {
+      throw new Error(`Buy ${buyResult.orderId} was already booked; refusing to report it as a new purchase`);
     }
+    ({ sellOrder, holdbackAsset } = covered);
   }
 
-  // Save state
-  stateTracker.saveState(state, exchange, pair);
-
-  const baseCurrency = getBaseCurrency(config.productId);
-
-  cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}=== ${intervalLabel} Cycle Complete ===`);
-  cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}Bought: ${buyResult.assetAmount.toFixed(8)} ${baseCurrency} at ${buyResult.price.toFixed(2)}`);
-  cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}Sell order: ${sellOrder.baseSize.toFixed(8)} ${baseCurrency} at ${sellOrder.limitPrice.toFixed(2)}`);
-  cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}Holdback (reserves): ${holdbackAsset.toFixed(8)} ${baseCurrency}`);
-  cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}Total ${baseCurrency} reserves: ${state.assetReserves.toFixed(8)} ${baseCurrency}`);
-  cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}Outstanding sell orders: ${state.outstandingOrdersUSDC.toFixed(2)}`);
-
-  // Emit cycle complete event
-  tradeEvents.cycleComplete(exchange, isDryRun ? 'dry_run_success' : 'success', {
-    assetAmount: buyResult.assetAmount,
-    buyPrice: buyResult.price,
-    sellPrice: sellOrder.limitPrice,
-    holdbackAsset,
-    assetReserves: state.assetReserves,
-    outstandingOrdersUSDC: state.outstandingOrdersUSDC,
-  });
-
-  // Check if auto-consolidation is needed (only for non-dry-run, fixed strategy only)
-  // Fibonacci strategy handles its own consolidated sell orders
-  if (!isDryRun && !isFibonacci) {
-    const pendingCount = stateTracker.getPendingOrders(state).length;
-
-    // Threshold-based consolidation
-    if (config.consolidateAfterOrders > 0 && pendingCount > config.consolidateAfterOrders) {
-      cycleLogger.info(`ℹ️ [${exchange}] Auto-consolidation triggered: ${pendingCount} orders > ${config.consolidateAfterOrders} threshold`);
-      const consolResult = await executeConsolidation(exchange, pair).catch(err => {
-        cycleLogger.error(`❌ [${exchange}] Auto-consolidation failed: ${err.message}`, {
-          trigger: 'auto',
-          pendingCount,
-          threshold: config.consolidateAfterOrders,
-          error: err.message,
-        });
-        tradeEvents.error(exchange, `Auto-consolidation failed: ${err.message}`);
-        return { success: false, error: err.message };
-      });
-      if (!consolResult?.success) {
-        cycleLogger.warn(`⚠️ [${exchange}] Auto-consolidation unsuccessful, will retry next cycle`, {
-          trigger: 'auto',
-          pendingCount,
-          threshold: config.consolidateAfterOrders,
-        });
-      }
-    }
-    // Interval-based consolidation (only if threshold didn't trigger and we have 2+ orders)
-    else if (pendingCount >= 2 && shouldRunConsolidation(state.lastConsolidationId, config.consolidateInterval)) {
-      cycleLogger.info(`ℹ️ [${exchange}] Scheduled consolidation triggered: ${config.consolidateInterval} interval`);
-      await executeConsolidation(exchange, pair).catch(err => {
-        cycleLogger.error(`❌ [${exchange}] Scheduled consolidation failed: ${err.message}`, {
-          trigger: 'scheduled',
-          consolidateInterval: config.consolidateInterval,
-          error: err.message,
-        });
-        tradeEvents.error(exchange, `Scheduled consolidation failed: ${err.message}`);
-      });
-    }
-  }
-
-  const result = {
-    status: isDryRun ? 'dry_run_success' : 'success',
-    dryRun: isDryRun,
-    intervalType: config.intervalType,
-    buyResult,
-    sellOrder,
-    holdbackAsset,
-    exchange,
-    state: {
-      totalAllocated: state.totalAllocated,
-      assetReserves: state.assetReserves,
-      outstandingOrdersUSDC: state.outstandingOrdersUSDC,
-      intervalsRun: state.totalIntervalsRun,
-    },
-  };
-
-  // Add Fibonacci-specific info if using that strategy
-  if (isFibonacci) {
-    const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
-    result.fibonacci = {
-      position: cycleInfo.position,
-      cumulativeCost: cycleInfo.cumulativeCost,
-      cumulativeAsset: cycleInfo.cumulativeAsset,
-      avgCostBasis: cycleInfo.avgCostBasis,
-      activeSellOrderId: cycleInfo.activeSellOrderId,
-    };
-  }
-
-  return result;
+  return completeCycle({ buyResult, sellOrder, holdbackAsset, isDryRun, extra: recoveredSummary });
 };
 
 /**
@@ -849,6 +1066,7 @@ const checkStatus = async (exchange = 'coinbase', pair) => {
       pendingOrders: stateTracker.getPendingOrders(state).length,
       lastRunId: state.lastRunId,
       lastRunTimestamp: state.lastRunTimestamp,
+      pendingBuy: state.pendingDcaBuy ? describePendingBuy(state.pendingDcaBuy) : null,
     },
     recentFills: filledOrders.length,
   };

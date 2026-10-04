@@ -503,3 +503,114 @@ describe('DCA operator reconcile', () => {
     assert.match(result.error, /Unknown reconcile action/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// issue #963 — accepted-order handoff. The dispatch intent is released only
+// after the owner has durably taken the accepted order; a handoff failure keeps
+// it blocking and is reported as pending, never as a rejection.
+// ---------------------------------------------------------------------------
+describe('placeWithUnknownReconcile accepted-order handoff (issue #963)', () => {
+  const accepted = async () => ({ success: true, orderId: 'ord-1', clientOrderId: 'coid-1' });
+
+  it('runs the handoff while the intent is still on disk, then clears it', async () => {
+    let intentsDuringHandoff = null;
+    const result = await placeWithUnknownReconcile({ name: EXCHANGE }, PRODUCT, accepted, {
+      ...scope('dca_buy'),
+      onAccepted: (placement) => {
+        assert.equal(placement.orderId, 'ord-1');
+        intentsDuringHandoff = readIntents().length;
+      },
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(intentsDuringHandoff, 1, 'no window where the accepted order has neither record');
+    assert.deepEqual(readIntents(), []);
+  });
+
+  it('keeps the intent blocking and returns pending when the handoff fails', async () => {
+    const result = await placeWithUnknownReconcile({ name: EXCHANGE }, PRODUCT, accepted, {
+      ...scope('dca_buy'),
+      onAccepted: () => { throw new Error('disk full'); },
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.pending, true, 'an accepted order is never reported as a rejection');
+    assert.equal(result.handoffFailed, true);
+    assert.equal(result.orderId, 'ord-1');
+    const [row] = readIntents();
+    assert.equal(row.status, 'unresolved');
+    assert.equal(row.orderId, 'ord-1');
+    assert.equal(row.clientOrderId, 'coid-1');
+    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
+  });
+
+  it('hands off a reconciled adoption the same way', async () => {
+    const handedOff = [];
+    const adapter = {
+      name: EXCHANGE,
+      findOrderByClientOrderId: async () => ({ orderId: 'adopted-1', status: 'OPEN' }),
+    };
+    const result = await placeWithUnknownReconcile(adapter, PRODUCT, async () => { throw unknownError('coid-9'); }, {
+      ...scope('dca_buy'),
+      retryDelaysMs: [],
+      onAccepted: (placement) => { handedOff.push(placement.orderId); },
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.reconciled, true);
+    assert.deepEqual(handedOff, ['adopted-1']);
+    assert.deepEqual(readIntents(), []);
+  });
+
+  it('does not hand off a clean rejection', async () => {
+    let called = false;
+    const result = await placeWithUnknownReconcile({ name: EXCHANGE }, PRODUCT, async () => ({ success: false, errorMessage: 'INSUFFICIENT_FUND' }), {
+      ...scope('dca_buy'),
+      onAccepted: () => { called = true; },
+    });
+    assert.equal(result.success, false);
+    assert.equal(called, false);
+    assert.deepEqual(readIntents(), []);
+  });
+});
+
+describe('awaitBuyOutcome (issue #963)', () => {
+  const { awaitBuyOutcome } = require('../src/order-manager');
+  const fees = async () => ({ totalFees: 0.1, totalRebates: 0, netFees: 0.1, fills: [] });
+
+  it('reports a status outage as unresolved instead of throwing', async () => {
+    const outcome = await awaitBuyOutcome('o1', { getOrder: async () => { throw new Error('ECONNRESET'); } }, { maxAttempts: 3, delayMs: 0 });
+    assert.equal(outcome.outcome, 'unresolved');
+    assert.equal(outcome.statusReadFailures, 3);
+    assert.match(outcome.reason, /ECONNRESET/);
+  });
+
+  it('recovers when a later status read succeeds', async () => {
+    let reads = 0;
+    const adapter = {
+      getOrder: async (orderId) => {
+        reads += 1;
+        if (reads === 1) throw new Error('503');
+        return { orderId, status: 'FILLED', filledSize: 0.01, filledValue: 500, averageFilledPrice: 50000 };
+      },
+      getOrderFillSummary: fees,
+    };
+    const outcome = await awaitBuyOutcome('o2', adapter, { maxAttempts: 3, delayMs: 0 });
+    assert.equal(outcome.outcome, 'filled');
+    assert.equal(outcome.fill.assetAmount, 0.01);
+    assert.equal(outcome.fill.actualCost, 500.1);
+  });
+
+  it('classifies a terminal zero-fill FAILED/REJECTED order as unfilled', async () => {
+    for (const status of ['FAILED', 'REJECTED', 'EXPIRED']) {
+      const outcome = await awaitBuyOutcome('o3', { getOrder: async () => ({ status, filledSize: 0, filledValue: 0 }) }, { maxAttempts: 2, delayMs: 0 });
+      assert.deepEqual(outcome, { outcome: 'unfilled', status });
+    }
+  });
+
+  it('never treats a still-open order as unfilled', async () => {
+    const outcome = await awaitBuyOutcome('o4', { getOrder: async () => ({ status: 'OPEN', filledSize: 0 }) }, { maxAttempts: 2, delayMs: 0 });
+    assert.equal(outcome.outcome, 'unresolved');
+    assert.equal(outcome.lastStatus, 'OPEN');
+  });
+});

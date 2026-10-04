@@ -32,7 +32,7 @@ const { syncOrderStatuses, runIntervalCycle, executeConsolidation, reconcilePlac
 const { shouldAutoResumeRegime, readBooleanFlag } = require('../shared-utils');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { prepareConfigUpdate, persistConfigUpdate } = require('./config-update');
-const { resolvePairParam, getSafeIPC, asyncRoute } = require('./route-utils');
+const { resolvePairParam, getSafeIPC, asyncRoute, tradeResultStatusCode } = require('./route-utils');
 
 /**
  * Tag a rejected promise's error with an HTTP status before rethrowing, so
@@ -550,7 +550,7 @@ module.exports = (app, deps) => {
     exchangeLogger(exchange, pair, '/api/:exchange/trade').info(`ℹ️ [${exchange}/${pair}] Manual trade triggered via API`, { action: 'manual-trade' });
 
     const result = await runIntervalCycle(exchange, pair);
-    res.json({ exchange, pair, ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
+    res.status(tradeResultStatusCode(result)).json({ exchange, pair, ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
   }));
 
   // Consolidate pending orders for an exchange/fund

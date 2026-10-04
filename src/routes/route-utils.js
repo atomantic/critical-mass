@@ -84,4 +84,14 @@ const getSafeIPC = (exchangeIPCMap, exchange) => {
  */
 const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 
-module.exports = { resolvePairParam, getIPC, getSafeIPC, withConfiguredPair, asyncRoute };
+/**
+ * HTTP status for a manual DCA trade result. An accepted buy whose fill is
+ * still being recovered answers 202 Accepted (the exchange took the order; a
+ * retry resumes it and will not buy again), distinct from a definitive
+ * rejection, which propagates as an error (issue #963). Everything else is 200.
+ * @param {{status?: string}} result - runIntervalCycle result
+ * @returns {number} HTTP status code
+ */
+const tradeResultStatusCode = (result) => (result?.status === 'buy_fill_pending' ? 202 : 200);
+
+module.exports = { resolvePairParam, getIPC, getSafeIPC, withConfiguredPair, asyncRoute, tradeResultStatusCode };
