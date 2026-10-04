@@ -47,6 +47,6 @@
     "jsonwebtoken": "9.0.3",
     "portos-ai-toolkit": "0.8.4",
     "socket.io": "4.8.3",
-    "ws": "8.21.3"
+    "ws": "8.22.0"
   }
 }
