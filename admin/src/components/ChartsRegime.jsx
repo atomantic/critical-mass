@@ -4,6 +4,7 @@ import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
+import CumulativePnlChart from './charts/CumulativePnlChart'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { pairQuery as buildPairQuery } from '../utils/api'
 
@@ -270,26 +271,7 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
             {pnlData.length > 0 && (
               <div className="bg-gray-800 rounded-lg p-4 mt-4">
                 <h3 className="text-sm font-medium text-gray-400 mb-3">Cumulative P&L</h3>
-                <div className="h-32 flex items-end gap-1">
-                  {pnlData.map((point, i) => {
-                    const maxPnL = Math.max(...pnlData.map(p => Math.abs(p.cumulative))) || 1
-                    const height = Math.abs(point.cumulative) / maxPnL * 100
-                    const isPositive = point.cumulative >= 0
-
-                    return (
-                      <div
-                        key={i}
-                        className="flex-1 flex flex-col justify-end items-center"
-                        title={`${new Date(point.date).toLocaleString()}: ${formatCurrency(point.cumulative)}`}
-                      >
-                        <div
-                          className={`w-full rounded-t ${isPositive ? 'bg-green-500' : 'bg-red-500'}`}
-                          style={{ height: `${height}%` }}
-                        />
-                      </div>
-                    )
-                  })}
-                </div>
+                <CumulativePnlChart points={pnlData} />
                 <div className="flex justify-between text-xs text-gray-400 mt-2">
                   <span>First Fill</span>
                   <span className={pnlData[pnlData.length - 1]?.cumulative >= 0 ? 'text-green-400' : 'text-red-400'}>
