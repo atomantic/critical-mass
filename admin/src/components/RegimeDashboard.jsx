@@ -433,7 +433,9 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
 // Aggressiveness control component
 function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, presets, addToast }) {
   const [updating, setUpdating] = useState(false)
-  const [showPreview, setShowPreview] = useState(false)
+  // The level whose parameters are displayed. Selecting is read-only; only the
+  // explicit Apply button writes. The applied indicator stays derived from the
+  // fetched config (currentLevel), so a failed Apply never falsely moves it.
   const [previewLevel, setPreviewLevel] = useState(null)
 
   const levels = useMemo(() => buildAggressivenessLevels(presets || {}), [presets])
@@ -441,6 +443,7 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
 
   const handleLevelChange = async (level) => {
     if (level === currentLevel || updating) return
+    if (!presets?.[level]) return
 
     setUpdating(true)
     try {
@@ -466,14 +469,11 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
     }
   }
 
-  const handlePreview = (level) => {
-    setPreviewLevel(level)
-    setShowPreview(true)
-  }
-
   const previewParams = previewLevel
-    ? computeAggressivenessParams(previewLevel, presets)
+    ? computeAggressivenessParams(previewLevel, presets || {})
     : null
+  const previewMeta = levels.find(l => l.id === previewLevel)
+  const canApply = !!previewParams && previewLevel !== currentLevel
 
   const colorClasses = {
     green: {
@@ -513,13 +513,13 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
           return (
             <button
               key={level.id}
-              onClick={() => handleLevelChange(level.id)}
-              onMouseEnter={() => handlePreview(level.id)}
-              onMouseLeave={() => setShowPreview(false)}
+              type="button"
+              onClick={() => setPreviewLevel(level.id)}
+              aria-pressed={previewLevel === level.id}
               disabled={updating}
-              className={`min-w-0 min-h-11 xl:min-h-0 w-full px-2 py-1.5 text-xs font-medium rounded border transition-all ${
+              className={`min-w-11 min-h-11 w-full px-2 py-1.5 text-xs font-medium rounded border transition-all ${
                 isActive ? classes.active : classes.inactive
-              } ${updating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+              } ${previewLevel === level.id && !isActive ? 'underline underline-offset-4 text-white border-gray-300' : ''} ${updating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
             >
               {level.label}
             </button>
@@ -528,7 +528,7 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
       </div>
 
       {/* Preview panel */}
-      {showPreview && previewParams && (
+      {previewParams && (
         <div className="bg-gray-900 rounded p-2 text-xs">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-1">
             <div className="flex justify-between">
@@ -574,6 +574,16 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
               </span>
             </div>
           </div>
+          {canApply && (
+            <button
+              type="button"
+              onClick={() => handleLevelChange(previewLevel)}
+              disabled={updating}
+              className={`mt-2 min-w-11 min-h-11 w-full px-3 py-1.5 text-xs font-medium rounded border border-blue-400 bg-blue-600 text-white ${updating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-blue-500'}`}
+            >
+              {updating ? 'Applying...' : `Apply ${previewMeta?.label || previewLevel}`}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -1912,6 +1922,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
                 {/* Aggressiveness Control */}
                 <AggressivenessControl
+                  key={`${exchange}${pairQuery}`}
                   config={config}
                   exchange={exchange}
                   pairQuery={pairQuery}

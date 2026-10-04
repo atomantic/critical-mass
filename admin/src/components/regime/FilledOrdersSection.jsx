@@ -71,6 +71,20 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
     [isDryRun, dryRunFilled, fillSearchId],
   )
 
+  // Handle keyboard scrolling in expanded table containers
+  const handleTableScrollKeydown = (e) => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault()
+      const scrollDistance = 40
+      const target = e.currentTarget
+      if (e.key === 'ArrowLeft') {
+        target.scrollLeft -= scrollDistance
+      } else {
+        target.scrollLeft += scrollDistance
+      }
+    }
+  }
+
   return (
     <div className="bg-gray-800 rounded-lg p-4">
       <div className="flex items-center justify-between mb-3">
@@ -329,7 +343,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                 })()}
                 {/* Orphaned buys (not linked to any sell) */}
                 {!isDryRun && orphanedBuys && orphanedBuys.length > 0 && (
-                  <div className="border border-yellow-700/40 rounded-lg overflow-hidden">
+                  <div className="border border-yellow-700/40 rounded-lg">
                     <button type="button"
                       aria-label="Orphaned buy details" aria-expanded={expandedCycles.has('orphans')} aria-controls={`${disclosureId}-orphans`}
                       className="w-full min-h-11 flex items-center justify-between text-left px-3 py-2 hover:bg-gray-700/40 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
@@ -349,7 +363,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                       </span>
                       <span className="font-mono text-xs text-yellow-400">{orphanedBuys.reduce((s, b) => s + (b.size || 0), 0).toFixed(8)} {asset}</span>
                     </button>
-                    <div id={`${disclosureId}-orphans`} hidden={!expandedCycles.has('orphans')}>
+                    <div id={`${disclosureId}-orphans`} hidden={!expandedCycles.has('orphans')} className="overflow-x-auto" tabIndex={0} onKeyDown={handleTableScrollKeydown} role="region" aria-label="Orphaned buys scrollable table">
                     {expandedCycles.has('orphans') && (
                       <div className="border-t border-gray-700">
                         <table className="w-full text-sm">
@@ -405,7 +419,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                   const cycleLabel = cycle.cycleId === 'unknown' ? 'Unassigned' : cycle.cycleId.replace('cycle-', '#')
 
                   return (
-                    <div key={cycle.cycleId} className="border border-gray-700 rounded-lg overflow-hidden">
+                    <div key={cycle.cycleId} className="border border-gray-700 rounded-lg">
                       <button type="button"
                         aria-label={`Details for cycle ${cycleLabel}`} aria-expanded={isCycleExpanded} aria-controls={`${disclosureId}-cycle-${encodeURIComponent(cycle.cycleId)}`}
                         className="w-full min-h-11 flex items-center justify-between text-left px-3 py-2 hover:bg-gray-700/40 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
@@ -444,7 +458,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                           {cycle.totalHoldback !== 0 && <span className={`ml-1 ${cycle.totalHoldback < 0 ? 'text-amber-400' : 'text-cyan-400'}`}>{cycle.totalHoldback < 0 ? '−' : '+'}{Math.abs(cycle.totalHoldback).toFixed(8)}</span>}
                         </span>
                       </button>
-                      <div id={`${disclosureId}-cycle-${encodeURIComponent(cycle.cycleId)}`} hidden={!isCycleExpanded}>
+                      <div id={`${disclosureId}-cycle-${encodeURIComponent(cycle.cycleId)}`} hidden={!isCycleExpanded} className="overflow-x-auto" tabIndex={0} onKeyDown={handleTableScrollKeydown} role="region" aria-label={`Cycle ${cycle.cycleId.replace('cycle-', '#')} scrollable table`}>
                       {isCycleExpanded && (
                         <div className="border-t border-gray-700">
                           <table className="w-full text-sm">

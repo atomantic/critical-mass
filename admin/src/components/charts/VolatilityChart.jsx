@@ -1,6 +1,20 @@
-import { useRef, useEffect, useMemo, useState } from 'react'
+import { useRef, useEffect, useId, useMemo, useState } from 'react'
 import * as d3 from 'd3'
 import { formatPriceCompact } from './chartUtils'
+import ChartDataAlternative from './ChartDataAlternative'
+import {
+  REGIME_INTERVAL_COLUMNS,
+  buildRegimeIntervals,
+  describeRegimeIntervals,
+  describeSeries,
+  describeWindow,
+  formatClock,
+  formatPct,
+  formatStamp,
+  formatUsd,
+  regimeIntervalRows,
+  summarizeSeries,
+} from './chartDataText'
 
 // Regime colors for background zones
 const REGIME_COLORS = {
@@ -22,12 +36,61 @@ function VolatilityChart({
   const containerRef = useRef(null)
   const svgRef = useRef(null)
   const [containerWidth, setContainerWidth] = useState(0)
+  const headingId = useId()
+  const summaryId = useId()
 
-  // Filter to last 15 minutes
+  // Filter to last 15 minutes and sort by timestamp so the plotted lines (drawn in array order)
+  // and the text equivalent below always share one chronological series.
   const chartData = useMemo(() => {
     const cutoff = Date.now() - 15 * 60 * 1000
-    return atrData.filter(d => d.timestamp > cutoff)
+    return atrData.filter(d => d.timestamp > cutoff).sort((a, b) => a.timestamp - b.timestamp)
   }, [atrData])
+
+  const sortedRegimes = useMemo(() => [...regimeData].sort((a, b) => a.timestamp - b.timestamp), [regimeData])
+
+  // Text equivalent derived from the exact samples and regime boundaries plotted.
+  const textAlternative = useMemo(() => {
+    if (chartData.length < 2) return null
+    const start = chartData[0].timestamp
+    const end = chartData[chartData.length - 1].timestamp
+    const intervals = buildRegimeIntervals(sortedRegimes, start, end)
+    const summary = [
+      describeWindow(chartData, 'volatility samples'),
+      describeSeries('ATR 1m', summarizeSeries(chartData, 'atr1m'), formatUsd),
+      describeSeries('ATR 5m', summarizeSeries(chartData, 'atr5m'), formatUsd),
+      describeSeries('Realized volatility', summarizeSeries(chartData, 'realizedVol'), formatPct),
+      describeSeries('Volatility baseline', summarizeSeries(chartData, 'volBaseline'), formatPct),
+      describeRegimeIntervals(intervals, 'the latest sample'),
+    ]
+    const rows = chartData.map(d => ({
+      time: formatStamp(d.timestamp),
+      atr1m: formatUsd(d.atr1m),
+      atr5m: formatUsd(d.atr5m),
+      realizedVol: formatPct(d.realizedVol),
+      volBaseline: formatPct(d.volBaseline),
+    }))
+    return {
+      summary,
+      tables: [
+        {
+          caption: `Volatility samples from ${formatClock(start)} to ${formatClock(end)}`,
+          columns: [
+            { key: 'time', label: 'Time' },
+            { key: 'atr1m', label: 'ATR 1m (USD)' },
+            { key: 'atr5m', label: 'ATR 5m (USD)' },
+            { key: 'realizedVol', label: 'Realized volatility (%)' },
+            { key: 'volBaseline', label: 'Volatility baseline (%)' },
+          ],
+          rows,
+        },
+        {
+          caption: 'Regime intervals in the plotted window',
+          columns: REGIME_INTERVAL_COLUMNS,
+          rows: regimeIntervalRows(intervals, 'Latest sample'),
+        },
+      ],
+    }
+  }, [chartData, sortedRegimes])
 
   useEffect(() => {
     if (!svgRef.current || !containerRef.current || chartData.length < 2 || containerWidth === 0) return
@@ -64,9 +127,7 @@ function VolatilityChart({
       .range([innerHeight, 0])
 
     // Regime background zones
-    if (regimeData.length > 0) {
-      const sortedRegimes = [...regimeData].sort((a, b) => a.timestamp - b.timestamp)
-
+    if (sortedRegimes.length > 0) {
       sortedRegimes.forEach((regime, i) => {
         const startX = xScale(Math.max(regime.timestamp, xExtent[0]))
         const endX = i < sortedRegimes.length - 1
@@ -236,7 +297,7 @@ function VolatilityChart({
         .text(item.label)
     })
 
-  }, [chartData, regimeData, height, containerWidth])
+  }, [chartData, sortedRegimes, height, containerWidth])
 
   // Handle resize
   useEffect(() => {
@@ -268,8 +329,16 @@ function VolatilityChart({
 
   return (
     <div ref={containerRef} className={`bg-gray-800 rounded-lg p-4 ${className}`}>
-      <h3 className="text-sm font-medium text-gray-400 mb-2">Volatility</h3>
-      <svg ref={svgRef} className="w-full" style={{ height }} />
+      <h3 id={headingId} className="text-sm font-medium text-gray-400 mb-2">Volatility</h3>
+      <svg
+        ref={svgRef}
+        role="img"
+        aria-labelledby={headingId}
+        aria-describedby={summaryId}
+        className="w-full"
+        style={{ height }}
+      />
+      <ChartDataAlternative summaryId={summaryId} summary={textAlternative.summary} tables={textAlternative.tables} />
     </div>
   )
 }

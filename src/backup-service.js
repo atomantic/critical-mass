@@ -21,6 +21,7 @@ const { jsonReadError } = require('./json-diagnostics');
 const { spawnSync } = require('child_process');
 const { DATA_DIR, BACKUP_DIR } = require('./paths');
 const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME } = require('./restore-apply');
+const { LOCK_FILENAME: LEGACY_MIGRATION_LOCK } = require('./legacy-namespace-migration');
 const {
   buildConfigSnapshot,
   reconstructConfigOverride,
@@ -425,6 +426,9 @@ const createBackup = ({ includePriceCache = false, paths: pathOverrides } = {}) 
     JOURNAL_FILENAME,
     `${STAGE_PREFIX}*`, `${STAGE_PREFIX}*/*`,
     `${ORIGINALS_PREFIX}*`, `${ORIGINALS_PREFIX}*/*`,
+    // Legacy namespace migration ownership (issue #971): a captured lock is
+    // meaningless on another machine or after a restore.
+    `${LEGACY_MIGRATION_LOCK}*`,
   ];
 
   if (!includePriceCache) {

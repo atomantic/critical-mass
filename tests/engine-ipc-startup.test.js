@@ -97,7 +97,10 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
     '../src/pending-writes': { drainPendingWrites: async () => ({ drained: true }) },
     '../src/engine-lifecycle-handlers': { registerEngineLifecycleHandlers: (registry, deps) => require('../src/engine-lifecycle-handlers').registerEngineLifecycleHandlers(registry, { ...deps, setTimer: () => ({ unref() {} }), clearTimer: () => {} }) },
     '../src/engine-recalculate-handler': { registerEngineRecalculateHandler: () => {} },
-    '../src/migration': { migrateExchangeToPairs: () => { calls.push('migration'); return {}; } },
+    '../src/migration': {
+      guardLegacyMigration: () => { calls.push('namespace-migration'); return { blocked: false }; },
+      migrateExchangeToPairs: () => { calls.push('migration'); return {}; },
+    },
     '../src/restore-apply': { guardIncompleteRestore: () => { calls.push('restore'); } },
     '../src/dca-conversion-transaction': { recoverDcaImport: () => ({ recovered: false }) },
     '../src/state-tracker': { LIFECYCLE: { CLOSED: 'closed' }, loadRegimeState: () => { calls.push('state'); return {}; }, loadRegimeStateSafe: () => { calls.push('state'); return {}; } },
@@ -215,7 +218,7 @@ describe('IPC bind ownership and exchange startup', () => {
       assert.deepEqual(h.calls, []);
       h.servers[0].emit('listening');
       await settle();
-      assert.deepEqual(h.calls, ['restore', 'migration', 'funds', 'running-flag', 'state', 'fund-config', 'adapter', 'construct', 'trade']);
+      assert.deepEqual(h.calls, ['restore', 'namespace-migration', 'migration', 'funds', 'running-flag', 'state', 'fund-config', 'adapter', 'construct', 'trade']);
       let mutations = 0;
       h.ipc.onRequest('mutate', async () => { mutations++; return { success: true }; });
       h.ipc.onRequest('config_update', async () => { mutations++; });

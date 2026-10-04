@@ -49,7 +49,7 @@ const { drainPendingWrites } = require('../src/pending-writes');
 const { stopAllRegimeEngines } = require('../src/engine-stop-all');
 const { registerEngineLifecycleHandlers } = require('../src/engine-lifecycle-handlers');
 const { registerEngineRecalculateHandler } = require('../src/engine-recalculate-handler');
-const { migrateExchangeToPairs } = require('../src/migration');
+const { migrateExchangeToPairs, guardLegacyMigration } = require('../src/migration');
 const { guardIncompleteRestore } = require('../src/restore-apply');
 const { recoverDcaImport } = require('../src/dca-conversion-transaction');
 const { LIFECYCLE, loadRegimeState, loadRegimeStateSafe, saveRegimeState } = require('../src/state-tracker');
@@ -788,6 +788,12 @@ const startup = async () => {
   // fund on one would trade against another era's accounting (issue #431).
   // A rollback that cannot complete exits the process rather than trading blind.
   guardIncompleteRestore({ processLabel: `${exchange} engine`, logger: startupLogger });
+
+  // ===== Legacy root → exchange namespace migration =====
+  // Same gate as the gateway and CLI (issue #971): an interrupted namespace
+  // migration is finished here before the pair migration below resolves the
+  // exchange tree, and a conflicting one keeps the engine from starting.
+  guardLegacyMigration({ processLabel: `${exchange} engine`, logger: startupLogger });
 
   // ===== One-time multi-pair migration =====
   // Move legacy data/<exchange>/ files into data/<exchange>/<defaultPair>/.
