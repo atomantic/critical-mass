@@ -32,7 +32,10 @@ configUtils.updateRegimeConfig = () => {};
 const adapters = require('../src/adapters');
 const originalGetAdapter = adapters.getAdapter;
 let stubbedExchangeFills = [];
-adapters.getAdapter = () => ({ getReconciliationFills: async () => stubbedExchangeFills });
+let reconciliationOverride = null;
+adapters.getAdapter = () => ({
+  getReconciliationFills: async (...args) => (reconciliationOverride ? reconciliationOverride(...args) : stubbedExchangeFills),
+});
 
 
 const { createRegimeEngine } = require('../src/regime-engine');
@@ -271,6 +274,38 @@ describe('ledger drift sweep', () => {
     assert.ok(Math.abs(drift.netAsset - 0.03) < 1e-8, `net asset drift, got ${drift.netAsset}`);
     assert.deepEqual(drift.orderIds, ['order-x']);
     assert.equal(eng.getState().fillDrift.fills, 2, 'drift is surfaced on engine state');
+  });
+
+  it('publishes no verdict from a failed or cancelled history read (issue #966)', async () => {
+    const eng = makeEngine({ getOrderFills: async () => [] });
+    eng._getPositionState().engineStartTime = Date.now() - 300 * 86_400_000;
+
+    stubbedExchangeFills = [];
+    await eng._test.sweepLedgerDrift();
+    const clean = eng._test.getFillDrift();
+    assert.equal(clean.fills, 0);
+
+    try {
+      // A history read that stops part-way rejects — no partial verdict.
+      reconciliationOverride = async () => { throw new Error('Crypto.com API network: socket hang up'); };
+      await eng._test.sweepLedgerDrift();
+      assert.equal(eng._test.getFillDrift(), clean, 'a failed read leaves the previous verdict untouched');
+
+      // The signal reaches the adapter; an aborted sweep publishes nothing even
+      // if the read itself resolves afterwards.
+      const controller = new AbortController();
+      let seenSignal = null;
+      reconciliationOverride = async (_pair, _since, options) => {
+        seenSignal = options?.signal;
+        controller.abort();
+        return [{ tradeId: 'late', orderId: 'o-late', side: 'buy', price: 1, size: 1, quoteAmount: 1, fee: 0, timestamp: Date.now() }];
+      };
+      await eng._test.sweepLedgerDrift(controller.signal);
+      assert.equal(seenSignal, controller.signal);
+      assert.equal(eng._test.getFillDrift(), clean, 'a cancelled sweep leaves the previous verdict untouched');
+    } finally {
+      reconciliationOverride = null;
+    }
   });
 });
 

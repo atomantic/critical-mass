@@ -1152,6 +1152,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let stateSaveInterval = null;
   let fillDriftInterval = null;
   let fillDriftInFlight = false;
+  /** @type {AbortController|null} Cancels an in-flight drift sweep's history read on stop (issue #966). */
+  let fillDriftAbort = null;
   // Most recent drift verdict, surfaced on getState() so the UI/operator sees a
   // leak without reading logs. null until the first sweep completes.
   let fillDrift = null;
@@ -2994,13 +2996,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (driftSweepMs > 0 && adapter.capabilities?.fillReconciliation) {
         fillDriftInterval = setInterval(() => {
           // A slow exchange can outlast the interval; never stack sweeps.
+          // A long Crypto.com history now completes over many paced steps
+          // (issue #966), so this guard also spans that whole traversal.
           if (fillDriftInFlight) return;
           fillDriftInFlight = true;
-          sweepLedgerDrift()
+          const abort = new AbortController();
+          fillDriftAbort = abort;
+          sweepLedgerDrift(abort.signal)
             .catch(err => {
               logger.error(`❌ [${exchange}] Ledger drift sweep failed: ${err.message}`, { error: err.message });
             })
-            .finally(() => { fillDriftInFlight = false; });
+            .finally(() => {
+              fillDriftInFlight = false;
+              if (fillDriftAbort === abort) fillDriftAbort = null;
+            });
         }, driftSweepMs);
       }
     } else {
@@ -3159,6 +3168,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (fillDriftInterval) {
         clearInterval(fillDriftInterval);
         fillDriftInterval = null;
+      }
+      // A sweep still walking exchange history must not outlive the engine.
+      if (fillDriftAbort) {
+        fillDriftAbort.abort();
+        fillDriftAbort = null;
       }
 
       // Stop macro regime
@@ -6108,11 +6122,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * body, no TP, invisible. gemini/ETHUSD was carrying 1.14 ETH in that state.
    * Sells now record per-buy consumption, but pre-#607 history still closes on
    * the boolean, so this asserts `balance == Σ body.assetQty + reserves`.
+   *
+   * The verdict below is published only from a COMPLETE history read:
+   * getUnaccountedFills resolves after the adapter has walked the whole
+   * requested range (resumably, in bounded steps — issue #966) and reports
+   * failure otherwise, so a partial traversal never updates `fillDrift`.
+   * @param {AbortSignal} [signal] - Cancels the history read when the engine stops
    * @returns {Promise<void>}
    */
-  const sweepLedgerDrift = async () => {
+  const sweepLedgerDrift = async (signal) => {
     const startDate = new Date(positionState.engineStartTime).toISOString();
-    const result = await getUnaccountedFills(exchange, fillLedger, null, { startDate, pair: productId });
+    const result = await getUnaccountedFills(exchange, fillLedger, null, { startDate, pair: productId, signal });
+    if (signal?.aborted) return;
     if (!result.success) {
       logger.warn(`⚠️ [${exchange}] Ledger drift sweep failed: ${result.error}`, { error: result.error });
       return;

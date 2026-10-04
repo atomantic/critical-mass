@@ -31,6 +31,9 @@ const ORDER_PLACEMENT_METHOD = 'private/create-order';
 const TRADE_SCAN_INTERVAL_MS = 200;
 const TRADE_SCAN_MAX_PAGES = 64;
 const FILL_SCAN_RETRY_DELAY_MS = 750;
+// Consecutive transient page failures a reconciliation scan retries in place
+// (its cursor never moves on a failed page) before rejecting (issue #966).
+const RECONCILIATION_SCAN_MAX_RETRIES = 3;
 
 /**
  * Custom JSON parser that converts large integers to strings to avoid precision loss.
@@ -730,15 +733,93 @@ const createCryptocomAdapter = (keysPath = null) => {
     return { success: true };
   };
 
+  const NS_PER_MS = 1_000_000n;
+  const DAY_NS = 24n * 60n * 60n * 1000n * NS_PER_MS;
+
   /**
-   * Walk `private/get-trades` backward from `endNs` to `startNs`, in
-   * nanosecond-precision windows, halving any window that saturates the
-   * API's 100-row response cap and throwing rather than silently accepting
-   * an under-sampled bucket. Requests are spaced and capped per call; exhausting
-   * the cap throws `incompleteFills` rather than returning a partial scan.
-   * Shared by `getOrderFills` (bounded to one order's own lifetime) and
-   * `getReconciliationFills` (bounded to a reconciliation start time) so
-   * the two walkers use the same acceptance thresholds (issues #679, #787).
+   * Create a resumable backward walk of `private/get-trades` over the FIXED
+   * nanosecond range [startNs, endNs]. All traversal state — the cursor, the
+   * current (possibly halved) window span for a saturated bucket, and the
+   * trade_id dedup set — lives on this object, so a step that stops on its
+   * page budget or on a request failure can be continued later from exactly
+   * where it stopped instead of restarting at the newest day (issue #966).
+   * @param {{instrument?: string, startNs: bigint, endNs: bigint}} params
+   * @returns {import('../../types').CryptocomTradeScan}
+   */
+  const createTradeScan = ({ instrument, startNs, endNs }) => ({
+    instrument,
+    startNs,
+    endNs,
+    cursor: endNs,
+    span: null,
+    seen: new Set(),
+    rawFills: [],
+    pages: 0,
+    done: endNs <= startNs,
+  });
+
+  /**
+   * Advance a trade scan by at most `budget.remaining` paced requests,
+   * halving any window that saturates the API's 100-row response cap and
+   * throwing rather than accepting a bucket still saturated at 1ns. The
+   * cursor only moves past a window after that window's below-cap response
+   * has been accepted, so a thrown request error leaves the scan resumable
+   * with no gap and no duplicate (rows are also deduped by trade_id).
+   * @param {import('../../types').CryptocomTradeScan} scan
+   * @param {{remaining: number}} budget - page budget for this step; decremented per request
+   * @param {Object} [options]
+   * @param {AbortSignal} [options.signal] - aborts between requests
+   * @param {(scan: import('../../types').CryptocomTradeScan) => void} [options.onPage] - called after each accepted or split page
+   * @returns {Promise<boolean>} true when the whole range has been walked; false when the step budget ran out first
+   */
+  const advanceTradeScan = async (scan, budget, { signal, onPage } = {}) => {
+    const baseParams = scan.instrument ? { instrument_name: scan.instrument } : {};
+    while (scan.cursor > scan.startNs) {
+      if (scan.span === null) {
+        scan.span = scan.cursor - scan.startNs < DAY_NS ? scan.cursor - scan.startNs : DAY_NS;
+      }
+      if (budget.remaining <= 0) return false;
+      signal?.throwIfAborted();
+      budget.remaining--;
+      await waitForTradeRequest();
+      signal?.throwIfAborted();
+      const ws = scan.cursor - scan.span;
+      const result = await makePrivateRequest('private/get-trades', {
+        ...baseParams,
+        start_time: String(ws),
+        end_time: String(scan.cursor),
+        limit: 100,
+      });
+      scan.pages++;
+      const trades = result?.data || [];
+      if (trades.length >= 100) {
+        if (scan.span <= 1n) {
+          throw Object.assign(new Error(`Crypto.com trade scan is still saturated at 1ns for ${scan.instrument || 'all instruments'} in [${ws}, ${scan.cursor}]; refusing to return incomplete fills`), { incompleteFills: true });
+        }
+        scan.span /= 2n;
+        onPage?.(scan);
+        continue;
+      }
+      for (const t of trades) {
+        const tid = String(t.trade_id);
+        if (scan.seen.has(tid)) continue;
+        scan.seen.add(tid);
+        scan.rawFills.push(t);
+      }
+      scan.cursor = ws;
+      scan.span = null;
+      onPage?.(scan);
+    }
+    scan.done = true;
+    return true;
+  };
+
+  /**
+   * One-shot, fail-closed walk used by `getOrderFills` (bounded to one
+   * order's own lifetime). Requests are spaced and capped per call;
+   * exhausting the shared budget throws `incompleteFills` rather than
+   * returning a partial scan (issues #679, #787). Reconciliation uses the
+   * resumable scan directly instead (issue #966).
    * @param {Object} params
    * @param {string} [params.instrument] - instrument_name filter, or every product when omitted
    * @param {bigint} params.startNs - lower bound, nanoseconds
@@ -747,46 +828,25 @@ const createCryptocomAdapter = (keysPath = null) => {
    * @returns {Promise<any[]>} Raw trade rows in the window, deduped by trade_id
    */
   const walkTrades = async ({ instrument, startNs, endNs, budget = { remaining: TRADE_SCAN_MAX_PAGES } }) => {
-    const NS_PER_MS = 1_000_000n;
-    const DAY_NS = 24n * 60n * 60n * 1000n * NS_PER_MS;
-    const baseParams = instrument ? { instrument_name: instrument } : {};
-    const seen = new Set();
-    const rawFills = [];
-    let cursor = endNs;
-
-    while (cursor > startNs) {
-      let span = cursor - startNs < DAY_NS ? cursor - startNs : DAY_NS;
-      let trades = [];
-      while (true) {
-        if (budget.remaining <= 0) {
-          throw Object.assign(new Error(`Crypto.com trade scan exceeded ${TRADE_SCAN_MAX_PAGES} pages; fills may be incomplete`), { incompleteFills: true });
-        }
-        budget.remaining--;
-        await waitForTradeRequest();
-        const ws = cursor - span;
-        const result = await makePrivateRequest('private/get-trades', {
-          ...baseParams,
-          start_time: String(ws),
-          end_time: String(cursor),
-          limit: 100,
-        });
-        trades = result?.data || [];
-        if (trades.length < 100) break;
-        if (span <= 1n) {
-          throw Object.assign(new Error(`Crypto.com trade scan is still saturated at 1ns for ${instrument || 'all instruments'} in [${ws}, ${cursor}]; refusing to return incomplete fills`), { incompleteFills: true });
-        }
-        span /= 2n;
-      }
-      for (const t of trades) {
-        const tid = String(t.trade_id);
-        if (seen.has(tid)) continue;
-        seen.add(tid);
-        rawFills.push(t);
-      }
-      cursor -= span;
+    const scan = createTradeScan({ instrument, startNs, endNs });
+    const complete = await advanceTradeScan(scan, budget);
+    if (!complete) {
+      throw Object.assign(new Error(`Crypto.com trade scan exceeded ${TRADE_SCAN_MAX_PAGES} pages; fills may be incomplete`), { incompleteFills: true });
     }
+    return scan.rawFills;
+  };
 
-    return rawFills;
+  /**
+   * A reconciliation page failure worth retrying in place: transport errors,
+   * rate limiting and server errors. Auth/validation rejections, saturation
+   * (`incompleteFills`) and aborts stay fatal so they remain visible.
+   * @param {any} err
+   * @returns {boolean}
+   */
+  const isRetryableScanError = (err) => {
+    if (!err || err.incompleteFills || err.name === 'AbortError') return false;
+    if (err.status === 'network' || err.status === 429) return true;
+    return typeof err.status === 'number' && err.status >= 500;
   };
 
   /**
@@ -847,7 +907,6 @@ const createCryptocomAdapter = (keysPath = null) => {
     const now = Date.now();
     const windowStartMs = createTime - 60_000;
     const windowEndMs = Math.min(Math.max(updateTime, createTime) + 5 * 60_000, now);
-    const NS_PER_MS = 1_000_000n;
 
     // Step 2: walk the window, then filter to this order.
     // Step 3: verify the matched fills actually account for everything the
@@ -920,20 +979,65 @@ const createCryptocomAdapter = (keysPath = null) => {
   /**
    * Fetch and normalize every fill used by the ledger reconciliation tools.
    * Crypto.com's trade endpoint caps responses at 100 rows, so walk backward
-   * in daily windows (via the shared `walkTrades`) and halve any saturated
-   * window before accepting it.
+   * in daily windows and halve any saturated window before accepting it.
+   *
+   * The walk runs as a sequence of bounded, paced steps over one fixed
+   * [start, now] range (issue #966). A spent step budget means "work
+   * remains", not failure: the next step resumes from the same cursor and
+   * window span, so histories longer than one step's page budget (64 daily
+   * windows) complete instead of failing every time. Transient page failures
+   * are retried in place without losing progress; anything else (or too many
+   * consecutive failures) rejects, and no partial result is ever returned.
    * @param {string|undefined} productId
    * @param {number} startTimestampMs
+   * @param {import('../../types').ReconciliationScanOptions} [options]
    * @returns {Promise<import('../../types').ReconciliationFill[]>}
    */
-  adapter.getReconciliationFills = async (productId, startTimestampMs) => {
+  adapter.getReconciliationFills = async (productId, startTimestampMs, options = {}) => {
+    const {
+      signal,
+      onProgress,
+      stepPages = TRADE_SCAN_MAX_PAGES,
+      maxConsecutiveFailures = RECONCILIATION_SCAN_MAX_RETRIES,
+    } = options;
     const normalizedProductId = productId || 'BTC_USDT';
     const instrument = toCryptocomSymbol(normalizedProductId);
-    const NS_PER_MS = 1_000_000n;
     const startTimestampNs = BigInt(Math.trunc(startTimestampMs)) * NS_PER_MS;
     const endTimestampNs = BigInt(Date.now()) * NS_PER_MS;
+    const scan = createTradeScan({ instrument, startNs: startTimestampNs, endNs: endTimestampNs });
+    const totalNs = scan.endNs > scan.startNs ? scan.endNs - scan.startNs : 0n;
+    const report = () => {
+      if (!onProgress) return;
+      const scannedNs = scan.endNs - scan.cursor;
+      onProgress({
+        pages: scan.pages,
+        fills: scan.rawFills.length,
+        fraction: totalNs > 0n ? Number((scannedNs * 10_000n) / totalNs) / 10_000 : 1,
+        cursorMs: Number(scan.cursor / NS_PER_MS),
+        startMs: Number(scan.startNs / NS_PER_MS),
+        endMs: Number(scan.endNs / NS_PER_MS),
+        done: scan.done,
+      });
+    };
 
-    const rawFills = await walkTrades({ instrument, startNs: startTimestampNs, endNs: endTimestampNs });
+    let failures = 0;
+    while (!scan.done) {
+      try {
+        await advanceTradeScan(scan, { remaining: stepPages }, { signal, onPage: report });
+        failures = 0;
+      } catch (err) {
+        if (!isRetryableScanError(err) || signal?.aborted || ++failures > maxConsecutiveFailures) throw err;
+        logger.warn(`Crypto.com reconciliation scan page failed; retrying from the same cursor (${failures}/${maxConsecutiveFailures}): ${err.message}`, {
+          instrument, pages: scan.pages, error: err.message,
+        });
+        const startedAt = Date.now();
+        await new Promise(resolve => setTimeout(resolve, FILL_SCAN_RETRY_DELAY_MS * failures));
+        const store = restQueueTiming.getStore();
+        if (store) store.queuedMs += Date.now() - startedAt;
+      }
+    }
+    report();
+    const rawFills = scan.rawFills;
 
     const seenTrades = new Set();
     return rawFills.flatMap(raw => {

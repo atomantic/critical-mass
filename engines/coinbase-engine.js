@@ -40,6 +40,7 @@ const { getChartDataBuffer, getChartData, removeChartDataBuffer, shutdownAllBuff
 const { createFillLedger } = require('../src/fill-ledger');
 const { parseFillsQuery } = require('../src/transactions-regime-query');
 const { createManualTradeImporter } = require('../src/manual-trade-import');
+const { createUnaccountedFillsJobs } = require('../src/unaccounted-fills-jobs');
 const { createIPCServer } = require('../src/ipc/ipc-server');
 const { createSocketIOProxy, forwardTradeEvents } = require('../src/ipc/socket-io-proxy');
 const { saveRegimeRunningFlag, shouldAutoResumeRegime, fundKey, fundLabel, readBooleanFlag } = require('../src/shared-utils');
@@ -657,10 +658,20 @@ const wireManualTradeImport = (channel, method) => {
   });
 };
 
+// Manual Trades history reads run as engine-owned jobs (issue #966): a long
+// exchange history (e.g. hundreds of paced Crypto.com pages) outlasts the
+// gateway's IPC deadline, so start/status answer promptly while the scan runs
+// here. A start for a fund+startDate that is already scanning joins that job.
+const unaccountedFillsJobs = createUnaccountedFillsJobs({ logger: engineLogger(EXCHANGE_NAME) });
+
 ipcServer.onRequest('regime:unaccounted-fills', async (payload, exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
   const { startDate } = payload || {};
   const { getUnaccountedFills } = require('../src/sync-fills');
+
+  if (!startDate) return { success: false, error: 'startDate is required' };
+  const startTimestampMs = new Date(startDate).getTime();
+  if (isNaN(startTimestampMs)) return { success: false, error: 'Invalid startDate format' };
 
   // getActiveLedger → getStandaloneLedger throws on cold-start ledger
   // corruption. Surface as a structured failure rather than letting it
@@ -673,8 +684,17 @@ ipcServer.onRequest('regime:unaccounted-fills', async (payload, exchange, pair) 
   }
   const manualTradeStore = getManualTradeStore(exchange, resolvedPair);
 
-  const result = await getUnaccountedFills(exchange, fillLedger, manualTradeStore, { startDate, pair: resolvedPair });
-  return result;
+  const jobKey = `${fundKey(exchange, resolvedPair)}::${startTimestampMs}`;
+  const status = await unaccountedFillsJobs.start(jobKey, ({ signal, onProgress }) =>
+    getUnaccountedFills(exchange, fillLedger, manualTradeStore, { startDate, pair: resolvedPair, signal, onProgress }));
+  return { exchange, pair: resolvedPair, ...status };
+});
+
+ipcServer.onRequest('regime:unaccounted-fills-status', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const { jobId } = payload || {};
+  if (!jobId) return { success: false, error: 'jobId is required' };
+  return { exchange, pair: resolvedPair, ...unaccountedFillsJobs.status(jobId) };
 });
 
 ipcServer.onRequest('regime:manual-trades', async (payload, exchange, pair) => {
@@ -835,6 +855,7 @@ const gracefulShutdown = async (signal) => {
   shutdownLogger.info(`ℹ️ Received ${signal}, shutting down...`, { signal });
 
   await cancelStarts({ shutdown: true });
+  unaccountedFillsJobs.shutdown();
   stopAllMarketDataServices();
 
   const stopPromises = [];

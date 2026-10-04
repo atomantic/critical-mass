@@ -30,10 +30,12 @@ const indexFillsByTradeId = (fills) => new Map(fills.map(fill => [fill.tradeId, 
  * @param {Object} [options]
  * @param {boolean} [options.dryRun] - If true, don't persist changes
  * @param {string} [options.pair] - Fund pair/productId (e.g. 'ETH-USDC', 'ETHUSD'). Defaults to the legacy BTC pair for backward compatibility.
+ * @param {AbortSignal} [options.signal] - Cancels the exchange history read
+ * @param {(progress: import('./types').ReconciliationScanProgress) => void} [options.onProgress] - History-read progress
  * @returns {Promise<Object>} Sync result
  */
 const syncFills = async (exchange, fillLedger, options = {}) => {
-  const { dryRun = false, pair } = options;
+  const { dryRun = false, pair, signal, onProgress } = options;
   const adapter = getAdapter(exchange);
   const state = loadRegimeState(exchange, pair);
   const engineStart = state.position?.engineStartTime;
@@ -46,7 +48,9 @@ const syncFills = async (exchange, fillLedger, options = {}) => {
 
   let normalizedFills;
   try {
-    normalizedFills = await adapter.getReconciliationFills(pair, engineStart);
+    // Resolves only with the complete range (issue #966) — nothing below runs,
+    // and nothing is ingested, on a partial history read.
+    normalizedFills = await adapter.getReconciliationFills(pair, engineStart, { signal, onProgress });
   } catch (err) {
     return { success: false, error: `Failed to fetch trades: ${err.message}` };
   }
@@ -165,10 +169,12 @@ const syncFills = async (exchange, fillLedger, options = {}) => {
  * @param {Object} options
  * @param {string} options.startDate - Required ISO date string
  * @param {string} [options.pair] - Fund pair/productId (e.g. 'ETH-USDC', 'ETHUSD'). Defaults to the legacy BTC pair for backward compatibility.
+ * @param {AbortSignal} [options.signal] - Cancels the exchange history read
+ * @param {(progress: import('./types').ReconciliationScanProgress) => void} [options.onProgress] - History-read progress
  * @returns {Promise<Object>} Unaccounted fills grouped by orderId
  */
 const getUnaccountedFills = async (exchange, fillLedger, manualTradeStore, options = {}) => {
-  const { startDate, pair } = options;
+  const { startDate, pair, signal, onProgress } = options;
   if (!startDate) {
     return { success: false, error: 'startDate is required' };
   }
@@ -182,7 +188,7 @@ const getUnaccountedFills = async (exchange, fillLedger, manualTradeStore, optio
 
   let normalizedFills;
   try {
-    normalizedFills = await adapter.getReconciliationFills(pair, startTimestampMs);
+    normalizedFills = await adapter.getReconciliationFills(pair, startTimestampMs, { signal, onProgress });
   } catch (err) {
     return { success: false, error: `Failed to fetch trades: ${err.message}` };
   }

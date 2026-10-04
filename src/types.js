@@ -805,7 +805,7 @@
  * @property {(orderId: string) => Promise<CancelResult>} cancelOrder - Cancel an order
  * @property {(orderId: string) => Promise<OrderFill[]>} getOrderFills - Get order fills
  * @property {{fillReconciliation: boolean}} capabilities - Optional exchange feature metadata
- * @property {(productId: string|undefined, startTimestampMs: number) => Promise<ReconciliationFill[]>} getReconciliationFills - Get normalized historical fills for ledger reconciliation
+ * @property {(productId: string|undefined, startTimestampMs: number, options?: ReconciliationScanOptions) => Promise<ReconciliationFill[]>} getReconciliationFills - Get normalized historical fills for ledger reconciliation; resolves only with the complete requested range
  * @property {(orderId: string) => Promise<FillSummary>} getOrderFillSummary - Get fill summary
  * @property {(productId: string, start: number, end: number, granularity: string) => Promise<Candle[]>} getCandles - Get candles
  */
@@ -857,6 +857,56 @@
  * @property {string} feeCurrency
  * @property {number} timestamp - Milliseconds since epoch
  * @property {'MAKER'|'TAKER'|string} liquidityIndicator
+ */
+
+/**
+ * Progress of a long reconciliation scan (issue #966). Informational only —
+ * a progress report never carries fills and never implies completeness.
+ * @typedef {Object} ReconciliationScanProgress
+ * @property {number} pages - Exchange requests made so far
+ * @property {number} fills - Distinct trades accumulated so far
+ * @property {number} fraction - Share of the fixed [startMs, endMs] range walked, 0..1
+ * @property {number} cursorMs - Lower edge of the walked range (the walk goes newest → oldest)
+ * @property {number} startMs - Fixed lower bound of the scan
+ * @property {number} endMs - Fixed upper bound of the scan
+ * @property {boolean} done - True once the whole range has been walked
+ */
+
+/**
+ * Optional controls for `getReconciliationFills`. Adapters whose history read
+ * is short may ignore them.
+ * @typedef {Object} ReconciliationScanOptions
+ * @property {AbortSignal} [signal] - Cancels the scan between requests (rejects; never returns a partial result)
+ * @property {(progress: ReconciliationScanProgress) => void} [onProgress] - Progress callback
+ * @property {number} [stepPages] - Page budget per bounded scan step (Crypto.com)
+ * @property {number} [maxConsecutiveFailures] - Transient page failures retried in place before rejecting (Crypto.com)
+ */
+
+/**
+ * Resumable Crypto.com `private/get-trades` traversal state over a fixed
+ * nanosecond range. The cursor only advances past a window once that
+ * window's below-cap response has been accepted.
+ * @typedef {Object} CryptocomTradeScan
+ * @property {string} [instrument] - instrument_name filter
+ * @property {bigint} startNs - Fixed lower bound
+ * @property {bigint} endNs - Fixed upper bound
+ * @property {bigint} cursor - Upper edge of the next window to request
+ * @property {bigint|null} span - Current (possibly halved) window span; null starts a fresh daily window
+ * @property {Set<string>} seen - trade_ids already accumulated
+ * @property {any[]} rawFills - Accumulated raw trade rows
+ * @property {number} pages - Requests completed
+ * @property {boolean} done - Whole range walked
+ */
+
+/**
+ * Status of an engine-owned Manual Trades unaccounted-fills scan job.
+ * @typedef {Object} UnaccountedFillsJobStatus
+ * @property {boolean} success - False for a failed, cancelled or unknown job
+ * @property {string} [jobId]
+ * @property {'running'|'complete'|'failed'|'cancelled'} [status]
+ * @property {boolean} [pending] - True while the scan is still running
+ * @property {ReconciliationScanProgress|null} [progress]
+ * @property {string} [error]
  */
 
 // ============================================================================
