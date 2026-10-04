@@ -24,13 +24,14 @@ function createClient(baseUrl, token, collector) {
   const headers = token ? { authorization: `Bearer ${token}` } : {};
   async function get(pathAndQuery) {
     const start = collector.now();
-    const res = await fetch(baseUrl + pathAndQuery, { headers });
+    const res = await fetch(baseUrl + pathAndQuery, { headers, signal: AbortSignal.timeout(10000) });
     const text = await res.text();
-    const wire = Number(res.headers.get('content-length'));
+    const encoded = res.headers.get('content-encoding');
+    const length = res.headers.get('content-length');
+    const wireBytes = length !== null && Number.isFinite(Number(length)) ? Number(length) : (encoded ? null : Buffer.byteLength(text));
     collector.recordHttp({
       method: 'GET', url: pathAndQuery, start, end: collector.now(), status: res.status,
-      wireBytes: Number.isFinite(wire) && res.headers.get('content-encoding') ? wire : (res.headers.get('content-encoding') ? null : Buffer.byteLength(text)),
-      decodedBytes: Buffer.byteLength(text), phase,
+      wireBytes, decodedBytes: Buffer.byteLength(text), phase,
     });
     let body = null;
     try { body = JSON.parse(text); } catch { /* non-JSON body is only counted */ }
