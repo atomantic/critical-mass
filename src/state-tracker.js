@@ -296,9 +296,10 @@ const checkIfRanThisInterval = (state, intervalType) =>
  * @param {BotState} state - Current state
  * @param {BuyResult} buyDetails - Buy order details
  * @param {ExchangeConfig} config - Configuration
+ * @param {string|null} [runId] - Interval the buy belongs to (defaults to the current one; a recovered buy keeps its original interval)
  * @returns {BotState} Updated state
  */
-const recordBuyFill = (state, buyDetails, config) => {
+const recordBuyFill = (state, buyDetails, config, runId = null) => {
   const normalized = normalizeConfig(config);
   const holdbackAsset = buyDetails.assetAmount * (config.holdbackPercent / 100);
   const sellQuantity = buyDetails.assetAmount - holdbackAsset;
@@ -313,7 +314,7 @@ const recordBuyFill = (state, buyDetails, config) => {
   // Actual cost includes net fees
   state.usdcFundSize -= (buyDetails.usdcAmount + buyNetFees);
   state.assetReserves += holdbackAsset;
-  state.lastRunId = getRunIdentifier(normalized.intervalType);
+  state.lastRunId = runId ?? getRunIdentifier(normalized.intervalType);
   state.lastRunTimestamp = Date.now();
 
   // Update cumulative fee tracking
@@ -335,6 +336,7 @@ const recordBuyFill = (state, buyDetails, config) => {
     sellQuantity: sellQuantity,
     holdbackAsset: holdbackAsset,
     status: 'awaiting_sell',
+    runId: state.lastRunId,
     createdAt: new Date().toISOString(),
   });
 
@@ -602,9 +604,10 @@ const initFibonacciState = (state, config) => {
  * @param {BotState} state - Current state
  * @param {BuyResult} buyDetails - Buy order details
  * @param {ExchangeConfig} config - Configuration
+ * @param {string|null} [runId] - Interval the buy belongs to (defaults to the current one; a recovered buy keeps its original interval)
  * @returns {BotState} Updated state
  */
-const updateAfterFibBuy = (state, buyDetails, config) => {
+const updateAfterFibBuy = (state, buyDetails, config, runId = null) => {
   const normalized = normalizeConfig(config);
 
   // Extract fee details
@@ -629,7 +632,7 @@ const updateAfterFibBuy = (state, buyDetails, config) => {
   state.totalAllocated += buyDetails.usdcAmount;
   state.totalIntervalsRun += 1;
   state.usdcFundSize -= (buyDetails.usdcAmount + buyNetFees);
-  state.lastRunId = getRunIdentifier(normalized.intervalType);
+  state.lastRunId = runId ?? getRunIdentifier(normalized.intervalType);
   state.lastRunTimestamp = Date.now();
 
   // Update cumulative fee tracking
@@ -638,6 +641,111 @@ const updateAfterFibBuy = (state, buyDetails, config) => {
   state.netFees = (state.netFees || 0) + buyNetFees;
 
   return state;
+};
+
+// ============================================================================
+// Accepted DCA buys awaiting fill recovery (issue #963)
+// ============================================================================
+
+/** How many booked buy order ids to remember for exactly-once booking. */
+const BOOKED_DCA_BUY_HISTORY = 200;
+
+/**
+ * Take ownership of an accepted market buy BEFORE its fill is polled.
+ *
+ * Between the exchange accepting a buy and the engine reading its fill, the
+ * order is real money with no accounting row. Recording it here (and the caller
+ * persisting state before the dispatch intent is released) means a failed or
+ * exhausted status read leaves the order owned — the next cycle resumes it by
+ * order id instead of buying again, across restarts.
+ * @param {BotState} state - Current state (mutated)
+ * @param {{orderId: string, clientOrderId?: string|null, requestedUsdc: number, runId: string, intervalType?: string, strategy?: string, productId?: string}} details - The accepted order
+ * @returns {Object} The pending record
+ */
+const recordPendingDcaBuy = (state, details) => {
+  const now = new Date().toISOString();
+  state.pendingDcaBuy = {
+    orderId: details.orderId,
+    clientOrderId: details.clientOrderId ?? null,
+    requestedUsdc: details.requestedUsdc,
+    runId: details.runId,
+    intervalType: details.intervalType ?? null,
+    strategy: details.strategy ?? null,
+    productId: details.productId ?? null,
+    acceptedAt: now,
+    lastCheckedAt: null,
+    statusChecks: 0,
+    lastError: null,
+  };
+  return state.pendingDcaBuy;
+};
+
+/**
+ * Note an inconclusive fill check on the pending buy (it stays pending).
+ * @param {BotState} state - Current state (mutated)
+ * @param {string} orderId - Pending buy order id
+ * @param {string} reason - Why the fill could not be established
+ * @returns {Object|null} Updated record, or null when no matching record exists
+ */
+const notePendingDcaBuyCheck = (state, orderId, reason) => {
+  const pending = state.pendingDcaBuy;
+  if (!pending || pending.orderId !== orderId) return null;
+  pending.lastCheckedAt = new Date().toISOString();
+  pending.statusChecks = (pending.statusChecks || 0) + 1;
+  pending.lastError = reason ?? null;
+  return pending;
+};
+
+/**
+ * Drop the pending record for `orderId` (booked, or confirmed never filled).
+ * @param {BotState} state - Current state (mutated)
+ * @param {string} orderId - Buy order id
+ * @returns {boolean} True when a record was removed
+ */
+const retirePendingDcaBuy = (state, orderId) => {
+  if (!state.pendingDcaBuy || state.pendingDcaBuy.orderId !== orderId) return false;
+  delete state.pendingDcaBuy;
+  return true;
+};
+
+/**
+ * Whether a buy order has already been credited to this fund.
+ * Fixed-strategy buys are also recognised by their order row, so buys booked
+ * before the booked-id history existed still count.
+ * @param {BotState} state - Current state
+ * @param {string} orderId - Buy order id
+ * @returns {boolean}
+ */
+const isDcaBuyBooked = (state, orderId) =>
+  (state.bookedDcaBuyOrderIds || []).includes(orderId)
+  || (state.orders || []).some(o => o.buyOrderId === orderId);
+
+/**
+ * Book a filled real DCA buy exactly once and retire its pending record in the
+ * SAME state mutation, so the caller's single save either contains both or
+ * neither. A crash or retry at this boundary therefore can never credit the
+ * order twice (the id is remembered) nor lose it (the pending record survives
+ * until the booking is durable).
+ * @param {BotState} state - Current state (mutated)
+ * @param {BuyResult} buyDetails - Confirmed fill
+ * @param {ExchangeConfig} config - Fund configuration
+ * @param {{strategy: 'fixed'|'fibonacci', runId?: string|null}} options - Strategy and the interval the buy belongs to
+ * @returns {boolean} True when booked now; false when it was already booked
+ */
+const bookDcaBuy = (state, buyDetails, config, { strategy, runId = null }) => {
+  const orderId = buyDetails.orderId;
+  if (isDcaBuyBooked(state, orderId)) {
+    retirePendingDcaBuy(state, orderId);
+    return false;
+  }
+  if (strategy === 'fibonacci') {
+    updateAfterFibBuy(state, buyDetails, config, runId);
+  } else {
+    recordBuyFill(state, buyDetails, config, runId);
+  }
+  state.bookedDcaBuyOrderIds = [...(state.bookedDcaBuyOrderIds || []), orderId].slice(-BOOKED_DCA_BUY_HISTORY);
+  retirePendingDcaBuy(state, orderId);
+  return true;
 };
 
 /**
@@ -1261,7 +1369,7 @@ const updatePlacementIntent = (exchange, pair, intentId, patch) => {
  * @param {string} exchange - Exchange name
  * @param {string|undefined} pair - Pair name
  * @param {string} intentId - Intent id
- * @param {{clientOrderId?: string|null, reason?: string|null}} [details] - What we know about the dispatch
+ * @param {{clientOrderId?: string|null, reason?: string|null, orderId?: string|null}} [details] - What we know about the dispatch
  * @returns {Object|null} Updated intent, or null when it no longer exists
  */
 const markPlacementIntentUnresolved = (exchange, pair, intentId, details = {}) =>
@@ -1269,7 +1377,30 @@ const markPlacementIntentUnresolved = (exchange, pair, intentId, details = {}) =
     status: PLACEMENT_INTENT_STATUS.UNRESOLVED,
     clientOrderId: details.clientOrderId ?? null,
     reason: details.reason ?? null,
+    ...(details.orderId ? { orderId: details.orderId } : {}),
   });
+
+/**
+ * Intent ids this process must treat as blocking even though their row may
+ * still read as its own in-flight dispatch. Used when an accepted order's
+ * handoff to its owner failed AND the follow-up write marking the row
+ * unresolved may also have failed (e.g. the disk is refusing writes): without
+ * this, the row would stay non-blocking for the rest of this process's life
+ * and the fund could buy again on top of an order nobody owns (issue #963).
+ * A restart needs no help — a foreign instance's dispatching row blocks.
+ * @type {Set<string>}
+ */
+const retainedIntentIds = new Set();
+
+/**
+ * Keep an intent blocking in this process regardless of its persisted status.
+ * Pure in-memory and cannot fail, so callers do it before attempting any write.
+ * @param {string} intentId - Intent id to retain
+ * @returns {void}
+ */
+const retainPlacementIntentInProcess = (intentId) => {
+  if (intentId) retainedIntentIds.add(intentId);
+};
 
 /**
  * Remove an intent whose outcome is now definitively known.
@@ -1288,6 +1419,7 @@ const resolvePlacementIntent = (exchange, pair, intentId) => {
   if (!removed) return null;
 
   savePlacementIntents(intents.filter(i => i?.id !== intentId), exchange, pair);
+  retainedIntentIds.delete(intentId);
   return removed;
 };
 
@@ -1298,6 +1430,7 @@ const resolvePlacementIntent = (exchange, pair, intentId) => {
  */
 const isBlockingPlacementIntent = (intent) => {
   if (!intent) return false;
+  if (retainedIntentIds.has(intent.id)) return true;
   // Our own in-flight dispatch is the only non-blocking shape. Anything else —
   // unresolved, a foreign instance's dispatch, an unrecognised status — blocks.
   return !(intent.status === PLACEMENT_INTENT_STATUS.DISPATCHING && intent.instanceId === PROCESS_INSTANCE_ID);
@@ -1404,6 +1537,11 @@ module.exports = {
   // Fibonacci state management
   initFibonacciState,
   updateAfterFibBuy,
+  recordPendingDcaBuy,
+  notePendingDcaBuyCheck,
+  retirePendingDcaBuy,
+  isDcaBuyBooked,
+  bookDcaBuy,
   updateAfterFibSellOrder,
   settleFibSellAndCarryUncoveredBuys,
   updateAfterFibSellFill: settleFibSellAndCarryUncoveredBuys,
@@ -1428,6 +1566,7 @@ module.exports = {
   recordPlacementIntent,
   updatePlacementIntent,
   markPlacementIntentUnresolved,
+  retainPlacementIntentInProcess,
   resolvePlacementIntent,
   isBlockingPlacementIntent,
   getBlockingPlacementIntents,

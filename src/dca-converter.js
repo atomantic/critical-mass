@@ -402,6 +402,13 @@ const loadEligibleOrders = (exchange, pair) => {
     );
   }
   const state = loadState(null, exchange, pair);
+  // An accepted buy still awaiting fill recovery is not in `orders` yet; a
+  // conversion now would strand it outside both engines (issue #963).
+  if (state.pendingDcaBuy?.orderId) {
+    throw new Error(
+      `DCA buy ${state.pendingDcaBuy.orderId} for ${fundLabel(exchange, pair)} is awaiting fill recovery — run a DCA trade to resume it before converting`,
+    );
+  }
   return { state, ...categorizeOrders(state.orders || []) };
 };
 

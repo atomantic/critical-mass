@@ -130,6 +130,8 @@
  * @property {number} [fibCumulativeCost] - Total cost basis for current Fibonacci cycle
  * @property {number} [fibCumulativeAsset] - Total BTC accumulated in current Fibonacci cycle
  * @property {string|null} [fibActiveSellOrderId] - Active consolidated sell order ID for Fibonacci cycle
+ * @property {Object} [pendingDcaBuy] - Accepted market buy awaiting fill recovery (issue #963): orderId, clientOrderId, requestedUsdc, runId, acceptedAt, statusChecks, lastError
+ * @property {string[]} [bookedDcaBuyOrderIds] - Recently booked buy order ids, for exactly-once booking (issue #963)
  */
 
 /**

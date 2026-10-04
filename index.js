@@ -117,6 +117,8 @@ const main = async () => {
       console.log(`Available: ${result.available.toFixed(2)} ${quoteCurrency}, Required: ${result.required.toFixed(2)} ${quoteCurrency}`);
     } else if (result.status === 'disabled') {
       console.log(`Bot is disabled for ${exchange}. Enable in config to run.`);
+    } else if (result.status === 'buy_fill_pending' || result.status === 'placement_unresolved') {
+      console.log(result.message);
     }
 
     return;

@@ -8,6 +8,7 @@ const {
   getBlockingPlacementIntents,
   recordPlacementIntent,
   markPlacementIntentUnresolved,
+  retainPlacementIntentInProcess,
   resolvePlacementIntent,
 } = require('./state-tracker');
 
@@ -85,38 +86,83 @@ const safeGetOrderFillSummary = async (adapter, orderId, { retries = 2, retryDel
 };
 
 /**
- * Wait for a market buy order to fill and get fill details with fees
- * @param {string} orderId - Order ID to check
- * @param {ExchangeAdapter} adapter - Exchange adapter
- * @param {number} [maxAttempts] - Maximum polling attempts
- * @param {number} [delayMs] - Delay between polls
- * @returns {Promise<BuyResult>} Fill details including fees and rebates
+ * Default fill-poll budget for a freshly accepted market buy, and the shorter
+ * budget used when a later cycle resumes a buy left pending (issue #963).
+ * Read at call time so tests can shorten the delays.
  */
-const waitForBuyFill = async (orderId, adapter, maxAttempts = 10, delayMs = 1000) => {
+const BUY_FILL_POLL = { maxAttempts: 10, delayMs: 1000 };
+const PENDING_BUY_RESUME_POLL = { maxAttempts: 3, delayMs: 1000 };
+
+/** Statuses meaning a buy left the book without completing. */
+const TERMINAL_UNFILLED_BUY_STATUSES = new Set(['CANCELLED', 'CANCELED', 'EXPIRED', 'FAILED', 'REJECTED']);
+
+/**
+ * Build the BuyResult for an order whose executed quantity is known.
+ * @param {string} orderId - Buy order id
+ * @param {Object} order - Exchange order status
+ * @param {{totalFees: number, totalRebates: number, netFees: number, fills: Array<Object>}} fillSummary - Fee detail
+ * @param {string} status - Status to report
+ * @returns {BuyResult} Fill details
+ */
+const toBuyResult = (orderId, order, fillSummary, status) => ({
+  orderId,
+  price: order.averageFilledPrice,
+  assetAmount: order.filledSize,
+  usdcAmount: order.filledValue,
+  // Fee details
+  fees: fillSummary.totalFees,
+  rebates: fillSummary.totalRebates,
+  netFees: fillSummary.netFees,
+  // Actual cost = amount spent + net fees
+  actualCost: order.filledValue + fillSummary.netFees,
+  status,
+  fills: fillSummary.fills,
+});
+
+/**
+ * Poll an accepted market buy until its outcome is KNOWN, without ever
+ * throwing on a status-read failure.
+ *
+ * - `filled`: real execution (including a cancelled IOC that partially filled)
+ *   with fill quantities and fees.
+ * - `unfilled`: the exchange confirmed a terminal status with zero executed
+ *   quantity — no money moved, so the buy may be released.
+ * - `unresolved`: status reads kept failing, or the order never reached a
+ *   terminal state within the budget. The order was accepted and may have
+ *   executed, so the caller must keep owning it and must not buy again.
+ *   A not-found answer is NOT treated as unfilled: a just-accepted order can be
+ *   briefly invisible on an eventually-consistent history endpoint.
+ * @param {string} orderId - Accepted buy order id
+ * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @param {{maxAttempts?: number, delayMs?: number}} [options] - Poll budget
+ * @returns {Promise<{outcome: 'filled', fill: BuyResult} | {outcome: 'unfilled', status: string} | {outcome: 'unresolved', reason: string, lastStatus: string|null, statusReadFailures: number}>} Outcome
+ */
+const awaitBuyOutcome = async (orderId, adapter, { maxAttempts = BUY_FILL_POLL.maxAttempts, delayMs = BUY_FILL_POLL.delayMs } = {}) => {
+  let lastStatus = null;
+  let lastError = null;
+  let statusReadFailures = 0;
+
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const order = await adapter.getOrder(orderId);
+    if (attempt > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
+
+    let order;
+    try {
+      order = await adapter.getOrder(orderId);
+    } catch (err) {
+      statusReadFailures += 1;
+      lastError = err;
+      continue;
+    }
+    lastError = null;
+    lastStatus = order?.status ?? null;
 
     if (isFilledStatus(order)) {
       // Get detailed fill info with fees/rebates
       const fillSummary = await safeGetOrderFillSummary(adapter, orderId);
-
-      return {
-        orderId,
-        price: order.averageFilledPrice,
-        assetAmount: order.filledSize,
-        usdcAmount: order.filledValue,
-        // Fee details
-        fees: fillSummary.totalFees,
-        rebates: fillSummary.totalRebates,
-        netFees: fillSummary.netFees,
-        // Actual cost = amount spent + net fees
-        actualCost: order.filledValue + fillSummary.netFees,
-        status: 'FILLED',
-        fills: fillSummary.fills,
-      };
+      return { outcome: 'filled', fill: toBuyResult(orderId, order, fillSummary, 'FILLED') };
     }
 
-    if (order.status === 'CANCELLED' || order.status === 'EXPIRED') {
+    if (TERMINAL_UNFILLED_BUY_STATUSES.has(String(order?.status || '').toUpperCase())) {
       // A cancelled/expired order can still carry a real partial fill — e.g.
       // Gemini's IOC market buy reports CANCELLED once the unfilled remainder
       // is cancelled, but order.filledSize/filledValue reflect what actually
@@ -124,26 +170,48 @@ const waitForBuyFill = async (orderId, adapter, maxAttempts = 10, delayMs = 1000
       // as a "money moved, engine recorded nothing" leak (issue #208A follow-up).
       if (order.filledSize > 0) {
         const fillSummary = await safeGetOrderFillSummary(adapter, orderId);
-        return {
-          orderId,
-          price: order.averageFilledPrice,
-          assetAmount: order.filledSize,
-          usdcAmount: order.filledValue,
-          fees: fillSummary.totalFees,
-          rebates: fillSummary.totalRebates,
-          netFees: fillSummary.netFees,
-          actualCost: order.filledValue + fillSummary.netFees,
-          status: order.status,
-          fills: fillSummary.fills,
-        };
+        return { outcome: 'filled', fill: toBuyResult(orderId, order, fillSummary, order.status) };
       }
-      throw new Error(`Buy order ${orderId} was ${order.status}`);
+      return { outcome: 'unfilled', status: order.status };
     }
-
-    await new Promise(resolve => setTimeout(resolve, delayMs));
   }
 
-  throw new Error(`Buy order ${orderId} did not fill within ${maxAttempts} attempts`);
+  const reason = lastError
+    ? `order status unavailable (${lastError.message})`
+    : `no terminal status after ${maxAttempts} attempt(s)${lastStatus ? ` (last status ${lastStatus})` : ''}`;
+  return { outcome: 'unresolved', reason, lastStatus, statusReadFailures };
+};
+
+/**
+ * Wait for a market buy order to fill and get fill details with fees.
+ *
+ * Throws when the fill cannot be returned, tagging WHY so callers can keep
+ * ownership of an accepted order (issue #963):
+ * - `buyUnfilled` — the exchange confirmed a terminal zero-fill outcome.
+ * - `buyFillPending` — status unavailable or poll budget exhausted; the order
+ *   may still execute or have executed, so it must not be treated as rejected.
+ * @param {string} orderId - Order ID to check
+ * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @param {number} [maxAttempts] - Maximum polling attempts
+ * @param {number} [delayMs] - Delay between polls
+ * @returns {Promise<BuyResult>} Fill details including fees and rebates
+ */
+const waitForBuyFill = async (orderId, adapter, maxAttempts = BUY_FILL_POLL.maxAttempts, delayMs = BUY_FILL_POLL.delayMs) => {
+  const result = await awaitBuyOutcome(orderId, adapter, { maxAttempts, delayMs });
+  if (result.outcome === 'filled') return result.fill;
+
+  const err = /** @type {any} */ (result.outcome === 'unfilled'
+    ? new Error(`Buy order ${orderId} was ${result.status}`)
+    : new Error(`Buy order ${orderId} fill not confirmed: ${result.reason}`));
+  err.orderId = orderId;
+  if (result.outcome === 'unfilled') {
+    err.buyUnfilled = true;
+    err.terminalStatus = result.status;
+  } else {
+    err.buyFillPending = true;
+    err.reason = result.reason;
+  }
+  throw err;
 };
 
 /**
@@ -179,8 +247,16 @@ const NON_ADOPTABLE_STATUSES = new Set(['CANCELLED', 'EXPIRED', 'FAILED', 'REJEC
  * @param {ExchangeAdapter} adapter - Exchange adapter
  * @param {string} productId - Product ID (scopes the reconcile lookup)
  * @param {() => Promise<BuyResult|SellOrder>} placeFn - Placement thunk
- * @param {number[]|{retryDelaysMs?: number[], intent?: {exchange: string, pair?: string, action: string, side?: string, price?: number, size?: number, sizeUsdc?: number}|null}} [options] - Backoff array (legacy positional form), or `{retryDelaysMs, intent}`. `intent` names the fund and the order being placed and turns on durable intent tracking; omit it only where no fund owns the placement (unit tests).
- * @returns {Promise<BuyResult|SellOrder|{success: false, pending: true, intentId: string|null, errorMessage: string}>} Placement result (possibly reconciled, possibly pending)
+ * An accepted placement can be handed to its owner through `onAccepted` BEFORE
+ * the dispatch intent is released (issue #963). The callback persists whatever
+ * makes the caller own the order (e.g. a pending DCA buy record); only once it
+ * returns is the intent cleared, so there is no window in which the accepted
+ * order has neither record. If the callback throws, the intent is kept
+ * blocking (in this process immediately, and on disk as unresolved with the
+ * accepted order id) and a PENDING result is returned — never an ordinary
+ * failure, because the exchange did accept the order.
+ * @param {number[]|{retryDelaysMs?: number[], intent?: {exchange: string, pair?: string, action: string, side?: string, price?: number, size?: number, sizeUsdc?: number}|null, onAccepted?: ((placement: {orderId: string, clientOrderId?: string|null}) => void|Promise<void>)|null}} [options] - Backoff array (legacy positional form), or `{retryDelaysMs, intent, onAccepted}`. `intent` names the fund and the order being placed and turns on durable intent tracking; omit it only where no fund owns the placement (unit tests).
+ * @returns {Promise<BuyResult|SellOrder|{success: false, pending: true, intentId: string|null, errorMessage: string, handoffFailed?: boolean, orderId?: string}>} Placement result (possibly reconciled, possibly pending)
  */
 // Backoff between reconcile-lookup attempts when the first comes back empty —
 // the exchange's order-history endpoint can be briefly eventually-consistent
@@ -198,7 +274,7 @@ const normalizePlaceOptions = (options) =>
   Array.isArray(options) ? { retryDelaysMs: options } : (options ?? {});
 
 const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = {}) => {
-  const { retryDelaysMs = RECONCILE_RETRY_DELAYS_MS, intent: intentScope = null } = normalizePlaceOptions(options);
+  const { retryDelaysMs = RECONCILE_RETRY_DELAYS_MS, intent: intentScope = null, onAccepted = null } = normalizePlaceOptions(options);
   const logger = orderLogger(adapter, productId);
   const exchange = intentScope?.exchange;
   const pair = intentScope?.pair;
@@ -287,6 +363,58 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
     return { success: false, pending: true, intentId: intent?.id ?? null, clientOrderId: clientOrderId ?? null, errorMessage: reason };
   };
 
+  /**
+   * Hand an accepted order to its owner, then release the dispatch intent.
+   * A handoff failure keeps the intent blocking and reports the placement as
+   * pending — the exchange accepted it, so it is never a rejection.
+   * @param {{orderId: string, clientOrderId?: string|null}} accepted - Accepted placement
+   * @param {string} context - Human label for the clear, for the log line
+   * @returns {Promise<Object>} The accepted placement, or a pending result
+   */
+  const handOffAccepted = async (accepted, context) => {
+    if (typeof onAccepted === 'function') {
+      try {
+        await onAccepted(accepted);
+      } catch (handoffErr) {
+        const reason = `exchange accepted order ${accepted.orderId} but its ownership record could not be persisted (${handoffErr.message})`;
+        if (intent) {
+          retainPlacementIntentInProcess(intent.id);
+          try {
+            markPlacementIntentUnresolved(exchange, pair, intent.id, {
+              clientOrderId: accepted.clientOrderId ?? null,
+              orderId: accepted.orderId,
+              reason,
+            });
+          } catch (markErr) {
+            logger.error(`⚠️ Could not mark placement intent ${intent.id} unresolved (${markErr.message}) — it stays blocking in this process and blocks any restarted process`, {
+              intentId: intent.id,
+              orderId: accepted.orderId,
+              error: markErr.message,
+            });
+          }
+        }
+        logger.error(`❌ Accepted order ${accepted.orderId} could not be handed off (${handoffErr.message}) — holding its placement intent; no replacement will be submitted until an operator reconciles`, {
+          orderId: accepted.orderId,
+          clientOrderId: accepted.clientOrderId ?? null,
+          intentId: intent?.id ?? null,
+          pending: true,
+          error: handoffErr.message,
+        });
+        return {
+          success: false,
+          pending: true,
+          handoffFailed: true,
+          orderId: accepted.orderId,
+          clientOrderId: accepted.clientOrderId ?? null,
+          intentId: intent?.id ?? null,
+          errorMessage: reason,
+        };
+      }
+    }
+    safeClearIntent(context);
+    return accepted;
+  };
+
   const placement = await placeFn().catch((err) => {
     // Only the ambiguous order-POST outcome is reconcilable; anything else
     // (validation errors, hard network failure on non-order POSTs) propagates.
@@ -306,7 +434,10 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
     // exchange genuinely accepted the order but the intent-file write then
     // hit a disk error — that must not cost the caller its successful
     // `placement`, so it's swallowed rather than allowed to escape here.
-    safeClearIntent('accepted or cleanly rejected');
+    if (placement?.success && placement.orderId) {
+      return handOffAccepted(placement, 'accepted');
+    }
+    safeClearIntent('cleanly rejected');
     return placement;
   }
 
@@ -358,16 +489,18 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
   if (found && (!NON_ADOPTABLE_STATUSES.has(found.status) || found.filledSize > 0)) {
     // The order DID reach the exchange — adopt it rather than re-place (which
     // would double-spend against the already-executing order). Clearing the
-    // intent here is what makes adoption exactly-once: the row is gone, so no
-    // later recovery pass or operator action can adopt the same order twice.
-    safeClearIntent('reconciled adoption');
+    // intent (after the owner's handoff) is what makes adoption exactly-once:
+    // the row is gone, so no later recovery pass or operator action can adopt
+    // the same order twice.
+    const adopted = await handOffAccepted({ orderId: found.orderId, clientOrderId, success: true, reconciled: true }, 'reconciled adoption');
+    if (!adopted.success) return adopted;
     logger.info(`ℹ️ ✅ Reconciled unknown placement — adopting exchange order ${found.orderId} (status ${found.status})`, {
       orderId: found.orderId,
       clientOrderId,
       status: found.status,
       reconciled: true,
     });
-    return { orderId: found.orderId, clientOrderId, success: true, reconciled: true };
+    return adopted;
   }
 
   // A positive not-found (adapter contract: null only on 404/OrderNotFound) or
@@ -398,6 +531,11 @@ const placementFailure = (label, result) => {
     err.intentId = result.intentId ?? null;
     err.message = `${label} outcome unknown and unresolved: ${result.errorMessage}`;
   }
+  if (result?.handoffFailed) {
+    err.handoffFailed = true;
+    err.orderId = result.orderId ?? null;
+    err.message = `${label} accepted but not handed off: ${result.errorMessage}`;
+  }
   return err;
 };
 
@@ -422,9 +560,10 @@ const fundIntent = (scope, action, side, details = {}) =>
  * @param {number} usdcAmount - Amount to spend in quote currency
  * @param {ExchangeAdapter|null} [adapter] - Exchange adapter (optional, uses coinbase by default)
  * @param {{exchange: string, pair?: string}|null} [scope] - Fund the placement belongs to, enabling durable placement intents (#472)
- * @returns {Promise<BuyResult>} Buy result with fill details
+ * @param {{onAccepted?: ((placement: {orderId: string, clientOrderId?: string|null}) => void|Promise<void>)|null, fillPoll?: {maxAttempts?: number, delayMs?: number}}} [options] - `onAccepted` durably takes ownership of the accepted order before its dispatch intent is released and before the fill is polled (issue #963)
+ * @returns {Promise<BuyResult>} Buy result with fill details. Throws with `buyFillPending` (accepted, fill not yet confirmed) or `buyUnfilled` (confirmed zero fill) when no fill can be returned.
  */
-const executeDailyBuy = async (config, usdcAmount, adapter = null, scope = null) => {
+const executeDailyBuy = async (config, usdcAmount, adapter = null, scope = null, { onAccepted = null, fillPoll = BUY_FILL_POLL } = {}) => {
   adapter = adapter || getAdapter('coinbase');
   const logger = orderLogger(adapter, config.productId);
 
@@ -438,7 +577,7 @@ const executeDailyBuy = async (config, usdcAmount, adapter = null, scope = null)
     adapter,
     config.productId,
     () => adapter.placeMarketBuy(config.productId, usdcAmount),
-    { intent: fundIntent(scope, 'dca_buy', 'buy', { sizeUsdc: usdcAmount }) }
+    { intent: fundIntent(scope, 'dca_buy', 'buy', { sizeUsdc: usdcAmount }), onAccepted }
   );
 
   if (!buyResult.success) {
@@ -448,7 +587,7 @@ const executeDailyBuy = async (config, usdcAmount, adapter = null, scope = null)
   logger.info(`ℹ️ Buy order placed: ${buyResult.orderId}`, { orderId: buyResult.orderId, usdcAmount });
 
   // Wait for fill
-  const fillDetails = await waitForBuyFill(buyResult.orderId, adapter);
+  const fillDetails = await waitForBuyFill(buyResult.orderId, adapter, fillPoll?.maxAttempts, fillPoll?.delayMs);
 
   // Extract base currency from product ID (e.g., CRO_USD -> CRO, BTC-USDC -> BTC)
   const baseCurrency = getBaseCurrency(config.productId);
@@ -1217,6 +1356,9 @@ module.exports = {
   placeSellOrderWithRetry,
   checkFilledOrders,
   waitForBuyFill,
+  awaitBuyOutcome,
+  BUY_FILL_POLL,
+  PENDING_BUY_RESUME_POLL,
   consolidatePendingOrders,
   // Fibonacci order management
   placeFibonacciSellOrder,

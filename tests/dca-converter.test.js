@@ -270,6 +270,19 @@ describe('dca-converter fund routing (issue #414)', () => {
     assert.deepEqual(backupsIn(fundDir(DEFAULT_PAIR)), []);
   });
 
+  it('refuses to convert or merge while a DCA buy awaits fill recovery (issue #963)', () => {
+    const dir = seedFund(DEFAULT_PAIR, { orders: sampleOrders('btc') });
+    const statePath = path.join(dir, 'state.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    fs.writeFileSync(statePath, JSON.stringify({ ...state, pendingDcaBuy: { orderId: 'buy-pending', runId: 'daily-x' } }));
+    const before = fs.readFileSync(statePath, 'utf8');
+
+    assert.throws(() => converter.executeConversion(EXCHANGE, DEFAULT_PAIR), /buy-pending .*awaiting fill recovery/);
+    assert.throws(() => converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR), /awaiting fill recovery/);
+    assert.equal(fs.readFileSync(statePath, 'utf8'), before, 'source state untouched');
+    assert.deepEqual(enabledCalls, [], 'DCA engine must stay enabled');
+  });
+
   it('mergeToRegime backs up and merges into the requested fund only', () => {
     seedFund(DEFAULT_PAIR, { orders: sampleOrders('btc') });
     seedFund(OTHER_PAIR, { orders: sampleOrders('eth') });

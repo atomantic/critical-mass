@@ -8,7 +8,7 @@ const { getExchangeConfig, getDefaultPair, updateExchangeConfig, setExchangeEnab
 const { syncOrderStatuses, runIntervalCycle } = require('../dca-engine');
 const { createContextLogger, getLogFile } = require('../logger');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
-const { asyncRoute } = require('./route-utils');
+const { asyncRoute, tradeResultStatusCode } = require('./route-utils');
 const { readBooleanFlag } = require('../shared-utils');
 
 /**
@@ -193,7 +193,7 @@ module.exports = (app, deps) => {
     }
     legacyLogger('/api/trade').info('ℹ️ Manual trade triggered via API', { action: 'manual-trade' });
     const result = await runIntervalCycle('coinbase', legacyPair());
-    res.json({ ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
+    res.status(tradeResultStatusCode(result)).json({ ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
   }));
 
   app.get('/api/trade', (req, res) => {
