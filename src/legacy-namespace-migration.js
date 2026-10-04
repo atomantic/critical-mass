@@ -31,8 +31,8 @@
  *  - serialises across processes with an exclusive lock file in the data
  *    directory and re-discovers the inventory after acquiring it, so two
  *    starters cannot both check and move. A lock left by a dead (or long
- *    silent) owner is broken safely, verified by inode so a fresh lock taken
- *    by someone else in between is restored rather than stolen.
+ *    silent) owner is broken under a separate breaker marker, re-judged stale
+ *    immediately before removal, so a fresh lock is never displaced.
  *
  * Pure with respect to `dataDir`; src/migration.js wires it to DATA_DIR.
  */
@@ -60,6 +60,8 @@ const LOCK_STALE_MS = 5 * 60 * 1000;
 /** How long a starter waits for another process's migration before refusing to start. */
 const LOCK_WAIT_MS = 30 * 1000;
 const LOCK_POLL_MS = 50;
+/** A breaker marker older than this was abandoned mid-break. */
+const BREAK_STALE_MS = 10 * 1000;
 
 /** Errors meaning "hard links are not available here" — fall back to rename under the lock. */
 const LINK_UNSUPPORTED = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV', 'EMLINK']);
@@ -139,7 +141,7 @@ const discoverLegacyArtifacts = (dataDir) => {
 
 /**
  * @param {string} lockPath
- * @returns {{pid: number|null, token: string|null, ino: number, mtimeMs: number}|null} null when the lock vanished
+ * @returns {{pid: number|null, token: string|null, mtimeMs: number}|null} null when the lock vanished
  */
 const readLockOwner = (lockPath) => {
   let stat;
@@ -160,38 +162,43 @@ const readLockOwner = (lockPath) => {
   return {
     pid: Number.isInteger(parsed?.pid) ? parsed.pid : null,
     token: typeof parsed?.token === 'string' ? parsed.token : null,
-    ino: stat.ino,
     mtimeMs: stat.mtimeMs,
   };
 };
 
 /**
- * Remove an abandoned lock without ever stealing a live one. The lock is first
- * renamed to a private tombstone (atomic); if the tombstone is not the inode we
- * judged stale, another starter broke and re-took the lock in between, so we
- * put its fresh lock back (link fails rather than clobbering a third owner).
+ * Remove an abandoned lock without ever displacing a live one. Breakers
+ * serialise on a second exclusive marker, and the holder re-reads the lock and
+ * re-judges it stale from scratch before unlinking it, so a lock that another
+ * starter broke and re-acquired since we first looked is left alone (identity
+ * is never inferred from an inode number, which filesystems reuse). The lock
+ * path is never vacated while a live owner holds it.
  * @param {string} lockPath
- * @param {{ino: number}} staleOwner
+ * @param {(owner: NonNullable<ReturnType<typeof readLockOwner>>) => boolean} isStale
+ * @param {() => number} [now]
  * @returns {void}
  */
-const breakStaleLock = (lockPath, staleOwner) => {
-  const tombstone = `${lockPath}.stale-${process.pid}-${randomUUID()}`;
+const breakStaleLock = (lockPath, isStale, now = Date.now) => {
+  const breakPath = `${lockPath}.break`;
   try {
-    fs.renameSync(lockPath, tombstone);
+    fs.closeSync(fs.openSync(breakPath, 'wx', 0o600));
   } catch (err) {
-    if (err.code === 'ENOENT') return;
-    throw err;
+    if (err.code !== 'EEXIST') throw err;
+    // Another starter is breaking it. A marker outliving BREAK_STALE_MS was
+    // left by a breaker that died mid-break (the break itself takes
+    // microseconds); clear it so recovery can make progress.
+    const marker = lstatOrNull(breakPath);
+    if (marker && now() - marker.mtimeMs > BREAK_STALE_MS) fs.rmSync(breakPath, { force: true });
+    return;
   }
   try {
-    if (fs.statSync(tombstone).ino !== staleOwner.ino) {
-      try {
-        fs.linkSync(tombstone, lockPath);
-      } catch (err) {
-        if (err.code !== 'EEXIST') throw err;
-      }
+    const owner = readLockOwner(lockPath);
+    if (owner && isStale(owner)) {
+      console.log(`  ⚠️  [Namespace Migration] Breaking abandoned migration lock (pid ${owner.pid ?? 'unknown'})`);
+      fs.unlinkSync(lockPath);
     }
   } finally {
-    fs.rmSync(tombstone, { force: true });
+    fs.rmSync(breakPath, { force: true });
   }
 };
 
@@ -221,6 +228,9 @@ const acquireMigrationLock = (dataDir, opts = {}) => {
   const lockPath = path.join(dataDir, LOCK_FILENAME);
   const token = randomUUID();
   const deadline = now() + waitMs;
+  /** @param {NonNullable<ReturnType<typeof readLockOwner>>} owner */
+  const isStale = (owner) => now() - owner.mtimeMs > staleMs
+    || (owner.pid !== null && owner.pid !== process.pid && !isAlive(owner.pid));
 
   for (;;) {
     let fd;
@@ -246,11 +256,8 @@ const acquireMigrationLock = (dataDir, opts = {}) => {
 
     const owner = readLockOwner(lockPath);
     if (!owner) continue;
-    const silentTooLong = now() - owner.mtimeMs > staleMs;
-    const ownerDead = owner.pid !== null && owner.pid !== process.pid && !isAlive(owner.pid);
-    if (silentTooLong || ownerDead) {
-      console.log(`  ⚠️  [Namespace Migration] Breaking abandoned migration lock (pid ${owner.pid ?? 'unknown'})`);
-      breakStaleLock(lockPath, owner);
+    if (isStale(owner)) {
+      breakStaleLock(lockPath, isStale, now);
       continue;
     }
     if (now() >= deadline) return null;
@@ -292,8 +299,8 @@ const releaseMigrationLock = (lock) => {
  */
 
 /**
- * Decide what to do with one root artifact. The existing copy that matters is
- * the exchange-level target, or — once a later pair migration has already
+ * Decide what to do with one root artifact. The existing copies that matter
+ * are the exchange-level target and — once a later pair migration has already
  * moved that name into the default fund directory — the per-fund copy, since
  * the pair migration would otherwise skip or append the root generation onto it.
  * @param {string} dataDir
@@ -307,16 +314,21 @@ const planArtifact = (dataDir, name, pairDir) => {
   const candidates = [target];
   if (pairDir && LEGACY_FILES.includes(name)) candidates.push(path.join(pairDir, name));
 
+  // Every existing copy must agree with the root bytes: one differing
+  // generation anywhere blocks the whole migration.
+  let identical = null;
   for (const existing of candidates) {
     const stat = lstatOrNull(existing);
     if (!stat) continue;
     if (!stat.isFile()) {
       return { name, source, target, existing, action: 'conflict', reason: 'existing target is not a regular file' };
     }
-    return filesIdentical(source, existing)
-      ? { name, source, target, existing, action: 'reconcile' }
-      : { name, source, target, existing, action: 'conflict', reason: 'source and existing target hold different bytes' };
+    if (!filesIdentical(source, existing)) {
+      return { name, source, target, existing, action: 'conflict', reason: 'source and existing target hold different bytes' };
+    }
+    identical = identical ?? existing;
   }
+  if (identical) return { name, source, target, existing: identical, action: 'reconcile' };
   return { name, source, target, action: 'move' };
 };
 
@@ -502,6 +514,7 @@ module.exports = {
   describeBlockedMigration,
   acquireMigrationLock,
   releaseMigrationLock,
+  breakStaleLock,
   LEGACY_EXCHANGE,
   LEGACY_FILES,
   LOCK_FILENAME,

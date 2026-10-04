@@ -280,6 +280,20 @@ describe('legacy namespace migration — conflicts fail closed (issue #971)', ()
     assert.deepEqual(snapshot(), before);
   });
 
+  it('an identical exchange-level copy does not hide a differing fund-directory generation', () => {
+    seedLegacy({ 'transactions.tsv': LEGACY['transactions.tsv'] });
+    const fundDir = path.join(dataDir, 'coinbase', PAIR);
+    fs.mkdirSync(fundDir, { recursive: true });
+    fs.writeFileSync(exch('transactions.tsv'), LEGACY['transactions.tsv']);
+    fs.writeFileSync(path.join(fundDir, 'transactions.tsv'), txLog('post-upgrade'));
+    const before = snapshot();
+
+    const result = migration.runMigrationIfNeeded();
+    assert.equal(result.namespace.status, 'conflict');
+    assert.equal(result.namespace.conflicts[0].target, path.join('data', 'coinbase', PAIR, 'transactions.tsv'));
+    assert.deepEqual(snapshot(), before, 'root copy kept; nothing retired');
+  });
+
   it('an identical copy in the default fund directory is reconciled', () => {
     seedLegacy({ 'state.json': LEGACY['state.json'] });
     const fundDir = path.join(dataDir, 'coinbase', PAIR);
@@ -294,6 +308,19 @@ describe('legacy namespace migration — conflicts fail closed (issue #971)', ()
 });
 
 describe('legacy namespace migration — cross-process ownership (issue #971)', () => {
+  const runChild = () => new Promise((resolve, reject) => {
+    const script = `
+      const ns = require(${JSON.stringify(nsPath)});
+      const r = ns.migrateLegacyNamespace({ dataDir: ${JSON.stringify(dataDir)} });
+      process.stdout.write(JSON.stringify(r));
+    `;
+    const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('error', reject);
+    child.on('close', () => resolve(JSON.parse(out.slice(out.lastIndexOf('{"status"')))));
+  });
+
   const writeLock = (pid, ageMs = 0) => {
     const lockPath = root(ns.LOCK_FILENAME);
     fs.mkdirSync(dataDir, { recursive: true });
@@ -338,24 +365,49 @@ describe('legacy namespace migration — cross-process ownership (issue #971)', 
     assertFullyMigrated();
   });
 
+  it('stale recovery never removes a lock another starter re-acquired after we judged it stale', () => {
+    // Starter B observed a dead owner's lock; before B breaks it, starter C
+    // broke it and took a fresh, live lock. B's break must leave C's alone.
+    const lockPath = writeLock(process.pid);
+    const freshBefore = read(lockPath);
+    const deadPid = spawnSync(process.execPath, ['-e', '']).pid;
+    const isStale = (owner) => owner.pid === deadPid;
+    ns.breakStaleLock(lockPath, isStale);
+    assert.equal(read(lockPath), freshBefore, 'live lock untouched');
+    assert.equal(fs.existsSync(`${lockPath}.break`), false, 'breaker marker released');
+  });
+
+  it('only one starter breaks at a time; an abandoned breaker marker is cleared', () => {
+    const deadPid = spawnSync(process.execPath, ['-e', '']).pid;
+    const lockPath = writeLock(deadPid);
+    const breakPath = `${lockPath}.break`;
+    fs.writeFileSync(breakPath, '');
+    const isStale = () => true;
+
+    ns.breakStaleLock(lockPath, isStale);
+    assert.ok(fs.existsSync(lockPath), 'another breaker holds the marker: lock left for it');
+    assert.ok(fs.existsSync(breakPath), 'a fresh marker is respected');
+
+    const old = new Date(Date.now() - 60000);
+    fs.utimesSync(breakPath, old, old);
+    ns.breakStaleLock(lockPath, isStale);
+    assert.equal(fs.existsSync(breakPath), false, 'abandoned marker cleared');
+    ns.breakStaleLock(lockPath, isStale);
+    assert.equal(fs.existsSync(lockPath), false, 'stale lock then broken');
+  });
+
+  it('concurrent starters with an abandoned lock still migrate each artifact exactly once', async () => {
+    seedLegacy();
+    writeLock(spawnSync(process.execPath, ['-e', '']).pid);
+    const results = await Promise.all(Array.from({ length: 5 }, () => runChild()));
+    for (const r of results) assert.ok(['migrated', 'none'].includes(r.status), `unexpected status ${r.status}: ${r.error}`);
+    assert.deepEqual(results.flatMap((r) => r.moved).sort(), [...ORDER].sort());
+    assertFullyMigrated();
+  });
+
   it('concurrent starters never clobber a target and leave a fully migrated namespace', async () => {
     seedLegacy();
-    const script = `
-      const ns = require(${JSON.stringify(nsPath)});
-      const r = ns.migrateLegacyNamespace({ dataDir: ${JSON.stringify(dataDir)} });
-      process.stdout.write(JSON.stringify(r));
-    `;
-    const runOne = () => new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'ignore'] });
-      let out = '';
-      child.stdout.on('data', (d) => { out += d; });
-      child.on('error', reject);
-      child.on('close', () => {
-        const json = out.slice(out.lastIndexOf('{"status"'));
-        resolve(JSON.parse(json));
-      });
-    });
-    const results = await Promise.all(Array.from({ length: 5 }, runOne));
+    const results = await Promise.all(Array.from({ length: 5 }, () => runChild()));
 
     for (const r of results) assert.ok(['migrated', 'none'].includes(r.status), `unexpected status ${r.status}: ${r.error}`);
     const moved = results.flatMap((r) => r.moved);
