@@ -31,7 +31,7 @@ function DataTable({ caption, columns, rows, pageSize }) {
           </thead>
           <tbody>
             {visible.length === 0 ? (
-              <tr><td colSpan={columns.length} className="py-1 text-gray-500">No data</td></tr>
+              <tr><td colSpan={columns.length} className="py-1 text-gray-400">No data</td></tr>
             ) : visible.map((row, i) => (
               <tr key={from + i} className="border-t border-gray-700">
                 {columns.map((col, c) => (
