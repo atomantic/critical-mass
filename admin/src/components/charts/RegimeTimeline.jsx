@@ -1,5 +1,13 @@
-import { useRef, useEffect, useMemo, useState } from 'react'
+import { useRef, useEffect, useId, useMemo, useState } from 'react'
 import * as d3 from 'd3'
+import ChartDataAlternative from './ChartDataAlternative'
+import {
+  REGIME_INTERVAL_COLUMNS,
+  buildRegimeIntervals,
+  describeRegimeIntervals,
+  formatClock,
+  regimeIntervalRows,
+} from './chartDataText'
 
 // Regime colors
 const REGIME_COLORS = {
@@ -28,6 +36,8 @@ function RegimeTimeline({
   const containerRef = useRef(null)
   const svgRef = useRef(null)
   const [containerWidth, setContainerWidth] = useState(0)
+  const headingId = useId()
+  const summaryId = useId()
 
   // Sort and prepare regime data
   const regimeData = useMemo(() => {
@@ -40,6 +50,29 @@ function RegimeTimeline({
     }
     return [...data].sort((a, b) => a.timestamp - b.timestamp)
   }, [data, currentRegime])
+
+  // One-hour window ending "now", fixed per data change so the drawn bar and the text equivalent
+  // below use identical boundaries.
+  const timeWindow = useMemo(() => {
+    const now = Date.now()
+    return { now, timeStart: now - 60 * 60 * 1000 }
+  }, [regimeData])
+
+  const textAlternative = useMemo(() => {
+    const { now, timeStart } = timeWindow
+    const intervals = buildRegimeIntervals(regimeData, timeStart, now)
+    return {
+      summary: [
+        `Window: ${formatClock(timeStart)} to now (${formatClock(now)}).`,
+        describeRegimeIntervals(intervals),
+      ],
+      tables: [{
+        caption: `Regime intervals from ${formatClock(timeStart)} to now`,
+        columns: REGIME_INTERVAL_COLUMNS,
+        rows: regimeIntervalRows(intervals),
+      }],
+    }
+  }, [regimeData, timeWindow])
 
   useEffect(() => {
     if (!svgRef.current || !containerRef.current || containerWidth === 0) return
@@ -59,8 +92,7 @@ function RegimeTimeline({
       .attr('transform', `translate(${margin.left},${margin.top})`)
 
     // Time range: last 1 hour
-    const now = Date.now()
-    const timeStart = now - 60 * 60 * 1000
+    const { now, timeStart } = timeWindow
 
     const xScale = d3.scaleTime()
       .domain([timeStart, now])
@@ -160,7 +192,7 @@ function RegimeTimeline({
       .attr('font-weight', '500')
       .text('Regime Timeline (1 hour)')
 
-  }, [regimeData, height, containerWidth])
+  }, [regimeData, timeWindow, height, containerWidth])
 
   // Handle resize
   useEffect(() => {
@@ -180,7 +212,16 @@ function RegimeTimeline({
 
   return (
     <div ref={containerRef} className={`bg-gray-800 rounded-lg p-3 ${className}`}>
-      <svg ref={svgRef} className="w-full" style={{ height }} />
+      <span id={headingId} className="sr-only">Regime Timeline (1 hour)</span>
+      <svg
+        ref={svgRef}
+        role="img"
+        aria-labelledby={headingId}
+        aria-describedby={summaryId}
+        className="w-full"
+        style={{ height }}
+      />
+      <ChartDataAlternative summaryId={summaryId} summary={textAlternative.summary} tables={textAlternative.tables} />
     </div>
   )
 }
