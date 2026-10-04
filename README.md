@@ -294,6 +294,8 @@ npm run pm2:restart    # Restart
 npm run pm2:stop       # Stop
 ```
 
+For upgrades and whole-stack restarts, do not use `pm2 restart all`. Follow the ordered, Critical Mass-only procedure in [UPGRADE.md](UPGRADE.md) (stop the gateway first, then engines; start engines first, then the gateway). Shutdown grace intervals (gateway 35 s, engines 25 s) are described in [docs/pm2-architecture.md](docs/pm2-architecture.md).
+
 ## Testing
 
 ```bash
