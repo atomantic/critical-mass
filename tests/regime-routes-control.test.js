@@ -591,3 +591,52 @@ describe('GET /regime/fills paging', () => {
     assert.equal(response.body.code, 'STALE_FILL_REVISION');
   });
 });
+
+describe('Manual Trades unaccounted-fills scan routes (issue #966)', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('starts a scan with the startDate and passes a pending job status through', async () => {
+    const calls = [];
+    const app = setupApp((channel, payload, exchange, pair) => {
+      calls.push({ channel, payload, exchange, pair });
+      return Promise.resolve({ success: true, pending: true, jobId: 'job-1', status: 'running', progress: null });
+    });
+    const res = await invoke(app, 'GET /api/:exchange/regime/unaccounted-fills', {
+      params: { exchange: 'cryptocom' }, query: { pair: 'CRO_USD', startDate: '2026-01-01' },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.pending, true);
+    assert.equal(res.body.jobId, 'job-1');
+    assert.deepEqual(calls, [{ channel: 'regime:unaccounted-fills', payload: { startDate: '2026-01-01' }, exchange: 'cryptocom', pair: 'CRO_USD' }]);
+  });
+
+  it('reads job status through its own channel without starting a scan', async () => {
+    const calls = [];
+    const app = setupApp((channel, payload) => {
+      calls.push({ channel, payload });
+      return Promise.resolve({ success: true, pending: false, jobId: 'job-1', status: 'complete', unaccountedOrders: [] });
+    });
+    const res = await invoke(app, 'GET /api/:exchange/regime/unaccounted-fills/jobs/:jobId', {
+      params: { exchange: 'cryptocom', jobId: 'job-1' }, query: { pair: 'CRO_USD' },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.status, 'complete');
+    assert.deepEqual(calls, [{ channel: 'regime:unaccounted-fills-status', payload: { jobId: 'job-1' } }]);
+  });
+
+  it('returns an error status for a failed job and 503 when the engine is unreachable', async () => {
+    let app = setupApp(() => Promise.resolve({ success: false, jobId: 'job-1', status: 'failed', error: 'Failed to fetch trades: Crypto.com API 401' }));
+    let res = await invoke(app, 'GET /api/:exchange/regime/unaccounted-fills/jobs/:jobId', {
+      params: { exchange: 'cryptocom', jobId: 'job-1' }, query: { pair: 'CRO_USD' },
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body.error, /401/);
+
+    mock.restoreAll();
+    app = setupApp(() => Promise.reject(new Error('IPC request timeout: regime:unaccounted-fills-status')));
+    res = await invoke(app, 'GET /api/:exchange/regime/unaccounted-fills/jobs/:jobId', {
+      params: { exchange: 'cryptocom', jobId: 'job-1' }, query: { pair: 'CRO_USD' },
+    });
+    assert.equal(res.statusCode, 503);
+  });
+});

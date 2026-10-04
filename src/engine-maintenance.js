@@ -47,6 +47,7 @@ const MAINTENANCE_SAFE_CHANNELS = new Set([
   'regime:fills',
   'regime:open-orders',
   'regime:unaccounted-fills',
+  'regime:unaccounted-fills-status',
   'regime:manual-trades',
   'regime:preview-ladder',
   'regime:dry-run-log',

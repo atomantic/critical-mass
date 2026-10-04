@@ -430,7 +430,18 @@ module.exports = (app, deps) => {
     const pair = getFundPair(req);
     const { startDate } = req.query;
     if (!startDate) return res.status(400).json({ success: false, error: 'startDate query parameter is required' });
+    // Starts (or joins) an engine-owned scan and answers promptly (issue #966):
+    // `pending: true` + `jobId` means poll the status route below; otherwise
+    // the body is the complete result.
     const result = await getIPC(exchange).request('regime:unaccounted-fills', { startDate }, exchange, pair).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
+  app.get('/api/:exchange/regime/unaccounted-fills/jobs/:jobId', async (req, res) => {
+    const { exchange, jobId } = req.params;
+    const pair = getFundPair(req);
+    const result = await getIPC(exchange).request('regime:unaccounted-fills-status', { jobId }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });

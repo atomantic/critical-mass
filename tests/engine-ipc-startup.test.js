@@ -83,6 +83,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
     '../src/fill-ledger': { createFillLedger: makePageLedger },
     '../src/transactions-regime-query': require('../src/transactions-regime-query'),
     '../src/manual-trade-import': {},
+    '../src/unaccounted-fills-jobs': require('../src/unaccounted-fills-jobs'),
     '../src/ipc/ipc-server': { createIPCServer: () => ipc },
     '../src/ipc/socket-io-proxy': { createSocketIOProxy: () => ({}), forwardTradeEvents: () => {} },
     '../src/shared-utils': {

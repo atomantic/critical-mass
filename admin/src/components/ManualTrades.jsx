@@ -1,6 +1,7 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { formatCurrency, formatPrice, formatDateTime } from './charts/chartUtils'
 import { pairQuery as buildPairQuery } from '../utils/api'
+import { runUnaccountedFillsScan, describeScanProgress } from '../utils/unaccountedFillsScan.mjs'
 
 const STATUS_COLORS = {
   sell_recorded: 'bg-blue-600/30 text-blue-400 border-blue-500/30',
@@ -63,6 +64,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   const [unaccountedOrders, setUnaccountedOrders] = useState([])
   const [manualTrades, setManualTrades] = useState([])
   const [loading, setLoading] = useState(false)
+  const [scanProgress, setScanProgress] = useState(null)
   const [tradesLoading, setTradesLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -86,26 +88,41 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   const [dismissing, setDismissing] = useState(null)
 
   const pairQuery = buildPairQuery(pair)
-  const pairSep = pairQuery ? '&' : '?'
+
+  // Each fetch takes a generation; a newer fetch, a fund switch or unmount
+  // supersedes it so a stale scan never commits its result (issue #966).
+  const scanGeneration = useRef(0)
+  useEffect(() => () => {
+    scanGeneration.current += 1
+    setLoading(false)
+    setScanProgress(null)
+  }, [exchange, pairQuery])
 
   const fetchUnaccounted = useCallback(async () => {
     if (!startDate) return
+    const generation = ++scanGeneration.current
+    const isCancelled = () => scanGeneration.current !== generation
     setLoading(true)
+    setScanProgress(null)
     setError(null)
-    try {
-      const res = await fetch(`/api/${exchange}/regime/unaccounted-fills${pairQuery}${pairSep}startDate=${encodeURIComponent(startDate)}`)
-      const data = await res.json()
-      if (data.success) {
-        setUnaccountedOrders(data.unaccountedOrders || [])
-      } else {
-        setError(data.error || 'Failed to fetch')
-      }
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
+    // The engine runs the history scan as a job; this start/poll loop shows
+    // progress and then the complete result or a genuine failure.
+    const outcome = await runUnaccountedFillsScan({
+      exchange,
+      pairQuery,
+      startDate,
+      isCancelled,
+      onProgress: (progress) => { if (!isCancelled()) setScanProgress(progress) },
+    })
+    if (outcome.status === 'cancelled' || isCancelled()) return
+    if (outcome.status === 'complete') {
+      setUnaccountedOrders(outcome.data.unaccountedOrders || [])
+    } else {
+      setError(outcome.error || 'Failed to fetch')
     }
-  }, [exchange, pairQuery, pairSep, startDate])
+    setScanProgress(null)
+    setLoading(false)
+  }, [exchange, pairQuery, startDate])
 
   const fetchManualTrades = useCallback(async () => {
     setTradesLoading(true)
@@ -362,6 +379,9 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
               >
                 {loading ? 'Fetching...' : 'Fetch'}
               </button>
+              {loading && (
+                <span className="text-xs text-gray-400" role="status" aria-live="polite">{describeScanProgress(scanProgress)}</span>
+              )}
               {unaccountedOrders.length > 0 && (
                 <span className="text-xs text-gray-400">{unaccountedOrders.length} unaccounted orders</span>
               )}
