@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-953] UpDown signal strength stays inside narrow columns** — The SignalBanner action and Strength group now wrap within the signal card instead of overflowing the page at the lg four-column breakpoint; containment is covered by layout tests.
 - **[issue-945] Upgrade instructions stop and start in dependency order** — UPGRADE.md now drains the gateway before stopping engines, starts engines before the gateway using only Critical Mass process names, drops `pm2 restart all`, and describes migration's configured-port exclusion accurately; README links to the procedure.
 - **[issue-946] Document engine prerequisite for development** — README and PM2 architecture docs now explain that `npm run dev` starts only the gateway and UI, and give commands to start, verify and stop the three engine processes, with auto-resume and dry-run warnings.
 - **[issue-944] Restore CLI run and status output** — Consume current asset-named DCA results and display configured base/quote currencies; clarify interval execution and status fill reconciliation.
