@@ -313,6 +313,27 @@ describe('accepted buy followed by a failed status read (issue #963)', () => {
     assert.equal(state.lastRunId, 'daily-2000-01-01');
     assert.equal(state.orders[0].runId, 'daily-2000-01-01');
     assert.equal(state.orders[0].buyOrderId, 'old-buy');
+    assert.equal(state.orders[0].status, 'pending', 'the recovered buy\'s live sell is persisted');
+    assert.equal(state.orders[0].orderId, 'sell-for-old-buy');
+  });
+
+  it('persists the replacement Fibonacci sell when an earlier-interval recovery is followed by a skip', async () => {
+    fundConfig.dcaStrategy = 'fibonacci';
+    seedState({
+      fibPosition: 0, fibCumulativeAsset: 0, fibCumulativeCost: 0, fibActiveSellOrderId: null, fibCycleStartTime: null,
+      pendingDcaBuy: { orderId: 'old-buy', runId: 'daily-2000-01-01', requestedUsdc: 100, strategy: 'fibonacci' },
+    });
+    exchange.statusMode = 'filled';
+    fundConfig.maxBuyPrice = 1;
+
+    const result = await dcaEngine.runIntervalCycle(EXCHANGE, PAIR);
+
+    assert.equal(result.status, 'price_too_high');
+    const state = readState();
+    assert.equal(state.pendingDcaBuy, undefined);
+    assert.equal(state.fibActiveSellOrderId, 'fib-sell-1', 'the live consolidated sell is tracked on disk');
+    assert.equal(state.fibPosition, 1);
+    assert.equal(state.lastRunId, 'daily-2000-01-01');
   });
 
   it('releases a confirmed terminal zero-fill order without fabricating a purchase', async () => {

@@ -590,6 +590,10 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
       tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
     }
 
+    // Persist the live sell now: a recovered earlier-interval buy is followed
+    // by this interval's own checks, which may return before the cycle's
+    // final save, and a placed sell must never be left tracked only in memory.
+    stateTracker.saveState(state, exchange, pair);
     return { sellOrder, holdbackAsset };
   };
 
