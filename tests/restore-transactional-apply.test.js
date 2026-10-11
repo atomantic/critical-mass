@@ -39,6 +39,38 @@ const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
 /** The real implementation, captured before any test swaps it out. */
 const realRenameSync = fs.renameSync;
 
+/** Trace durable storage boundaries while still performing real filesystem IO. */
+const traceStorage = () => {
+  const events = [];
+  const descriptors = new Map();
+  const open = fs.openSync;
+  const close = fs.closeSync;
+  const sync = fs.fsyncSync;
+  const remove = fs.rmSync;
+  mock.method(fs, 'openSync', (file, ...args) => {
+    const fd = open(file, ...args);
+    descriptors.set(fd, String(file));
+    return fd;
+  });
+  mock.method(fs, 'closeSync', (fd) => {
+    descriptors.delete(fd);
+    return close(fd);
+  });
+  mock.method(fs, 'fsyncSync', (fd) => {
+    events.push({ type: 'sync', file: descriptors.get(fd) });
+    return sync(fd);
+  });
+  mock.method(fs, 'renameSync', (from, to) => {
+    events.push({ type: 'rename', file: String(to), status: String(to).endsWith(JOURNAL_FILENAME) ? JSON.parse(read(from)).status : null });
+    return realRenameSync(from, to);
+  });
+  mock.method(fs, 'rmSync', (file, ...args) => {
+    events.push({ type: 'remove', file: String(file) });
+    return remove(file, ...args);
+  });
+  return { events, descriptors };
+};
+
 /** @type {Array<string>} */
 const roots = [];
 
@@ -162,6 +194,154 @@ describe('restore-apply — transactional application (#431)', () => {
     breakRenameFor({ [path.join(dataDir, 'beta.json')]: [1] });
     applyStagedFiles({ dataDir, stageDir, filename: 'backup-bad.zip', logger: silentLogger });
     assert.equal(fs.existsSync(path.join(dataDir, 'sub')), false);
+  });
+
+  it('rolls back instead of reporting success when the commit marker cannot be published', () => {
+    const before = preRestoreState();
+    mock.method(fs, 'renameSync', (from, to) => {
+      if (to === path.join(dataDir, JOURNAL_FILENAME)
+        && JSON.parse(read(from)).status === STATUS.COMMITTED) {
+        throw new Error('EIO: cannot publish commit marker');
+      }
+      return realRenameSync(from, to);
+    });
+
+    const result = applyStagedFiles({ dataDir, stageDir, logger: silentLogger });
+
+    assert.equal(result.success, false);
+    assert.equal(result.rolledBack, true);
+    assert.deepEqual(preRestoreState(), before);
+    assert.deepEqual(artifactNames(), []);
+  });
+
+  it('flushes rollback copies before publication, destinations before commit, and journal retirement before cleanup', () => {
+    const nested = path.join('existing', 'nested', 'state.json');
+    write(path.join(dataDir, nested), 'current');
+    write(path.join(stageDir, nested), 'archive');
+    const { events } = traceStorage();
+
+    assert.equal(applyStagedFiles({ dataDir, stageDir }).success, true);
+
+    const journal = path.join(dataDir, JOURNAL_FILENAME);
+    const prepared = events.findIndex((e) => e.type === 'rename' && e.file === journal && e.status === STATUS.APPLYING);
+    const commit = events.findIndex((e) => e.type === 'rename' && e.file === journal && e.status === STATUS.COMMITTED);
+    const originals = events.filter((e) => e.type === 'sync' && e.file.includes('.restore-originals-'));
+    assert.equal(originals.filter((e) => e.file.endsWith('.json')).length, 3, 'every replaced original must be flushed');
+    assert.ok(originals.some((e) => e.file.endsWith(path.join('existing', 'nested'))), 'nested rollback directory entries must be flushed');
+    assert.ok(originals.every((e) => events.indexOf(e) < prepared), 'rollback bytes and directory entries precede the applying journal');
+    for (const rel of ['alpha.json', 'beta.json', path.join('sub', 'gamma.json'), nested]) {
+      const published = events.findIndex((e) => e.type === 'rename' && e.file === path.join(dataDir, rel));
+      assert.ok(prepared < published && published < commit);
+      assert.ok(events.slice(published + 1, commit).some((e) => e.type === 'sync' && e.file === path.dirname(path.join(dataDir, rel))), 'each destination rename must be flushed before commit');
+    }
+    const retired = events.findIndex((e) => e.type === 'remove' && e.file === journal);
+    const discarded = events.findIndex((e) => e.type === 'remove' && e.file.includes('.restore-originals-'));
+    assert.ok(retired < discarded && events.slice(retired + 1, discarded).some((e) => e.type === 'sync' && e.file === dataDir), 'journal removal must be durable before discarding rollback files');
+  });
+
+  it('leaves all destinations unchanged when a rollback-copy flush fails', () => {
+    const before = preRestoreState();
+    const { descriptors } = traceStorage();
+    const sync = fs.fsyncSync;
+    mock.method(fs, 'fsyncSync', (fd) => {
+      if (descriptors.get(fd)?.includes('.restore-originals-')) throw new Error('EIO: original flush failed');
+      return sync(fd);
+    });
+
+    const result = applyStagedFiles({ dataDir, stageDir });
+
+    assert.equal(result.success, false);
+    assert.equal(result.code, 'rollback-snapshot-failed');
+    assert.equal(result.rolledBack, true);
+    assert.deepEqual(preRestoreState(), before);
+    assert.equal(fs.existsSync(path.join(dataDir, JOURNAL_FILENAME)), false);
+  });
+
+  it('rolls back a replacement whose directory flush fails instead of committing it', () => {
+    const before = preRestoreState();
+    const { descriptors } = traceStorage();
+    const sync = fs.fsyncSync;
+    let failed = false;
+    mock.method(fs, 'fsyncSync', (fd) => {
+      if (!failed && descriptors.get(fd) === path.join(dataDir, 'sub')) {
+        failed = true;
+        throw new Error('EIO: destination directory flush failed');
+      }
+      return sync(fd);
+    });
+
+    const result = applyStagedFiles({ dataDir, stageDir });
+
+    assert.equal(failed, true, 'the new file directory must be flushed');
+    assert.equal(result.success, false);
+    assert.equal(result.rolledBack, true);
+    assert.deepEqual(preRestoreState(), before);
+    assert.deepEqual(artifactNames(), []);
+  });
+
+  it('retains originals and blocks resumption if the rollback journal cannot be retired', () => {
+    const before = preRestoreState();
+    breakRenameFor({ [path.join(dataDir, 'beta.json')]: [1] });
+    const remove = fs.rmSync;
+    mock.method(fs, 'rmSync', (file, ...args) => {
+      if (file === path.join(dataDir, JOURNAL_FILENAME)) throw new Error('EIO: journal removal failed');
+      return remove(file, ...args);
+    });
+
+    const result = applyStagedFiles({ dataDir, stageDir });
+
+    assert.equal(result.success, false);
+    assert.equal(result.rolledBack, false, 'writers must stay stopped while a rollback marker can replay');
+    assert.equal(read(path.join(dataDir, result.recovery.originalsDir, 'alpha.json')), before.alpha);
+    mock.restoreAll();
+    assert.equal(recoverIncompleteRestore({ dataDir }).blocked, false);
+    assert.deepEqual(preRestoreState(), before);
+    assert.deepEqual(artifactNames(), []);
+  });
+
+  it('does not start rollback until its marker is durable after a failed commit', () => {
+    const before = preRestoreState();
+    mock.method(fs, 'renameSync', (from, to) => {
+      if (to === path.join(dataDir, JOURNAL_FILENAME)
+        && [STATUS.COMMITTED, STATUS.ROLLING_BACK].includes(JSON.parse(read(from)).status)) {
+        throw new Error('EIO: journal publication failed');
+      }
+      return realRenameSync(from, to);
+    });
+
+    const result = applyStagedFiles({ dataDir, stageDir });
+
+    assert.equal(result.success, false);
+    assert.equal(result.rolledBack, false);
+    assert.equal(preRestoreState().alpha, '{"gen":"archive-alpha"}', 'no rollback under an uncertain journal');
+    assert.equal(read(path.join(dataDir, result.recovery.originalsDir, 'alpha.json')), before.alpha);
+    mock.restoreAll();
+    assert.equal(recoverIncompleteRestore({ dataDir }).blocked, false);
+    assert.deepEqual(preRestoreState(), before);
+  });
+
+  it('reverts a commit whose rename landed but whose journal directory flush failed', () => {
+    const before = preRestoreState();
+    const { descriptors } = traceStorage();
+    const sync = fs.fsyncSync;
+    let failed = false;
+    mock.method(fs, 'fsyncSync', (fd) => {
+      const journal = read(path.join(dataDir, JOURNAL_FILENAME));
+      if (!failed && descriptors.get(fd) === dataDir && journal
+        && JSON.parse(journal).status === STATUS.COMMITTED) {
+        failed = true;
+        throw new Error('EIO: commit directory flush failed');
+      }
+      return sync(fd);
+    });
+
+    const result = applyStagedFiles({ dataDir, stageDir });
+
+    assert.equal(failed, true);
+    assert.equal(result.success, false);
+    assert.equal(result.rolledBack, true);
+    assert.deepEqual(preRestoreState(), before);
+    assert.deepEqual(artifactNames(), []);
   });
 
   it('refuses the whole archive before any write when a staged entry is not a regular file', () => {
