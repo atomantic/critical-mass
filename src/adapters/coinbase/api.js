@@ -605,14 +605,14 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const PAGE_LIMIT = 250;
     const basePath = `/api/v3/brokerage/orders/historical/fills?order_id=${orderId}&limit=${PAGE_LIMIT}`;
     let cursor = null;
-    let allFills = [];
+    const allFills = [];
 
     do {
       // Cursors are opaque tokens that may contain =, +, / — encode before interpolating.
       const apiPath = cursor ? `${basePath}&cursor=${encodeURIComponent(cursor)}` : basePath;
       const data = await makeRequest('GET', apiPath);
 
-      allFills = allFills.concat(data.fills || []);
+      allFills.push(...(data.fills || []));
 
       // Terminate on Coinbase's documented has_next === false signal (the response
       // can echo a non-empty cursor on the final page). Fall back to an empty/absent
@@ -621,6 +621,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
       cursor = (data.has_next !== false && nextCursor && nextCursor !== cursor) ? nextCursor : null;
     } while (cursor);
 
+    const fillsByTradeId = new Map();
     return allFills.map(fill => {
       // Extract detailed commission breakdown
       const commissionDetail = fill.commission_detail_total || {};
@@ -655,6 +656,21 @@ const createCoinbaseAdapter = (keysPath = null) => {
         tradeTime: fill.trade_time,
         liquidityIndicator: fill.liquidity_indicator, // MAKER or TAKER
       };
+    }).filter(fill => {
+      // Dedup before callers size bodies/recovery orders, but reject conflicting
+      // copies instead of hiding malformed economics behind a valid execution.
+      const tradeId = fill.tradeId;
+      if (typeof tradeId !== 'string' || !tradeId) return true;
+      const prior = fillsByTradeId.get(tradeId);
+      if (prior) {
+        // commissionDetail is debug-only; normalized scalar fields are canonical.
+        if (Object.keys(fill).some(key => key !== 'commissionDetail' && !Object.is(prior[key], fill[key]))) {
+          throw new Error(`Conflicting Coinbase fill data for trade ${tradeId} on order ${orderId}`);
+        }
+        return false;
+      }
+      fillsByTradeId.set(tradeId, fill);
+      return true;
     });
   };
 
