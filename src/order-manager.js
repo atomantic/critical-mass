@@ -221,6 +221,15 @@ const waitForBuyFill = async (orderId, adapter, maxAttempts = BUY_FILL_POLL.maxA
 const NON_ADOPTABLE_STATUSES = new Set(['CANCELLED', 'EXPIRED', 'FAILED', 'REJECTED']);
 
 /**
+ * Whether a client-order-id lookup result is an order that reached the
+ * exchange and still matters: live, filled, or terminal after a partial fill.
+ * Anything else (absent, or terminal with nothing executed) is safe to re-place.
+ * @param {{status?: string, filledSize?: number}|null} found - Lookup result
+ * @returns {boolean} True when the order must be adopted rather than re-placed
+ */
+const isAdoptableOrder = (found) => !!found && (!NON_ADOPTABLE_STATUSES.has(found.status) || found.filledSize > 0);
+
+/**
  * Place an order and, if the adapter reports an ambiguous 'unknown' outcome
  * (order-POST network error that may have reached the matching engine — issue
  * #199/#226), reconcile by client_order_id instead of treating it as a hard
@@ -486,7 +495,7 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
     return holdIntentPending(clientOrderId, `${err.message} — reconcile lookup failed: ${lookupError.message}`);
   }
 
-  if (found && (!NON_ADOPTABLE_STATUSES.has(found.status) || found.filledSize > 0)) {
+  if (isAdoptableOrder(found)) {
     // The order DID reach the exchange — adopt it rather than re-place (which
     // would double-spend against the already-executing order). Clearing the
     // intent (after the owner's handoff) is what makes adoption exactly-once:
@@ -522,13 +531,14 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
  * marker so a caller can tell "the exchange refused" from "we do not know".
  * @param {string} label - Human label for the placement
  * @param {{errorMessage?: string, pending?: boolean, intentId?: string|null}} result - Placement result
- * @returns {Error & {placementPending?: boolean, intentId?: string|null}} Error to throw
+ * @returns {Error & {placementPending?: boolean, intentId?: string|null, clientOrderId?: string|null}} Error to throw
  */
 const placementFailure = (label, result) => {
   const err = /** @type {any} */ (new Error(`${label} failed: ${result?.errorMessage}`));
   if (result?.pending) {
     err.placementPending = true;
     err.intentId = result.intentId ?? null;
+    err.clientOrderId = result.clientOrderId ?? null;
     err.message = `${label} outcome unknown and unresolved: ${result.errorMessage}`;
   }
   if (result?.handoffFailed) {
@@ -714,9 +724,14 @@ const checkFilledOrders = async (pendingOrders, adapter = null) => {
 };
 
 /**
- * Retry placing a sell order if post-only was rejected
+ * Retry placing a sell order if post-only was rejected.
+ *
+ * A fresh buy sizes its sell from the configured holdback. A buy row being
+ * re-covered passes its persisted `sellQuantity` instead: its holdback was
+ * already credited to reserves at booking, so a later holdbackPercent change
+ * must not move the sell size away from that accounting (issue #1035).
  * @param {ExchangeConfig} config - Configuration
- * @param {BuyResult} buyDetails - Buy order fill details
+ * @param {BuyResult & {sellQuantity?: number}} buyDetails - Buy order fill details
  * @param {ExchangeAdapter|null} [adapter] - Exchange adapter (optional)
  * @param {number} [maxRetries] - Maximum retry attempts
  * @returns {Promise<SellOrder>} Sell order result
@@ -730,7 +745,7 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     // Get fresh price for each attempt
     const currentPrice = await adapter.getCurrentPrice(config.productId);
-    const sellQuantity = buyDetails.assetAmount * (1 - config.holdbackPercent / 100);
+    const sellQuantity = buyDetails.sellQuantity ?? buyDetails.assetAmount * (1 - config.holdbackPercent / 100);
     const sellPrice = buyDetails.price * priceMultiplier;
 
     // Ensure sell price is above current market (for post-only)
@@ -1352,6 +1367,7 @@ const checkFibonacciSellFill = async (orderId, adapter) => {
 module.exports = {
   executeDailyBuy,
   placeWithUnknownReconcile,
+  isAdoptableOrder,
   placeSellOrder,
   placeSellOrderWithRetry,
   checkFilledOrders,

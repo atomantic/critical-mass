@@ -88,6 +88,28 @@ const CRITICAL_EVENTS = new Set([
 ]);
 
 /**
+ * Celestial-body TP events notify under the same operator switches as the
+ * core TP events (the UI only offers TP Filled / TP Placed). Emitted event
+ * names stay unchanged so other consumers keep their detail; only the
+ * settings lookup is canonicalized. Mirrors the vocabulary in trade-events.js.
+ */
+const NOTIFICATION_EVENT_KEY_ALIASES = Object.freeze({
+  body_tp_filled: 'tp_filled',
+  body_tp_placed: 'tp_placed',
+});
+
+/**
+ * Resolve the `config.events` key that governs an emitted event type.
+ * Unknown types resolve to themselves.
+ * @param {string} eventType
+ * @returns {string}
+ */
+const resolveNotificationEventKey = (eventType) =>
+  Object.hasOwn(NOTIFICATION_EVENT_KEY_ALIASES, eventType)
+    ? NOTIFICATION_EVENT_KEY_ALIASES[eventType]
+    : eventType;
+
+/**
  * Build the daily-summary lines for one fund. Pure with respect to its
  * inputs (no disk/network access) so the multi-fund formatting logic is
  * unit-testable without mocking the whole config/state layer.
@@ -150,7 +172,7 @@ const shouldSendEvent = (config, eventType, now = new Date()) => {
   if (!config.telegram.botToken || !config.telegram.chatId) return false;
 
   // Check event toggle
-  if (config.events[eventType] === false) return false;
+  if (config.events[resolveNotificationEventKey(eventType)] === false) return false;
 
   // Quiet hours check - critical events bypass
   if (isQuietHours(config.quietHours, now) && !CRITICAL_EVENTS.has(eventType)) return false;
@@ -560,6 +582,7 @@ const createNotifier = () => {
 };
 
 module.exports = {
+  resolveNotificationEventKey,
   createNotifier,
   escapeTelegramMarkdown,
   formatFundSummaryLines,

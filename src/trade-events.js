@@ -15,6 +15,11 @@ const EventEmitter = require('events');
  * @property {string} timestamp - ISO timestamp
  */
 
+/**
+ * Notification-setting vocabulary: the celestial-body events `body_tp_placed`
+ * and `body_tp_filled` are governed by the `tp_placed` / `tp_filled`
+ * notification switches (see NOTIFICATION_EVENT_KEY_ALIASES in notifier.js).
+ */
 class TradeEventEmitter extends EventEmitter {
   /**
    * Emit a trade event
