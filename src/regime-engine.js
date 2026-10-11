@@ -22,6 +22,7 @@ const { createFillLedger, FillValidationError, LEGACY_CONSUMPTION_KEY } = requir
 const { projectBuyCorrection, applyBuyCorrectionCapital } = require('./buy-fill-correction');
 const { applySellCorrectionCapital } = require('./sell-fill-correction');
 const { createClosedTrades } = require('./closed-trades');
+const { createTradeWindow } = require('./trade-window');
 const {
   createHealthMonitor,
   instrumentAdapterForHealth,
@@ -1062,6 +1063,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   // State (initialized before executor so dry-run can reference marketState)
   let marketState = createInitialMarketState();
+  const tradeWindow = createTradeWindow(3 * 60 * 1000);
+  Object.defineProperty(marketState, 'trades', { enumerable: true, get: tradeWindow.getTrades });
   let positionState = createInitialPositionState();
   let priceIncrement = 0.01; // Updated from product details in start()
   let productDetails = null; // Cached from start() for min-order-size checks
@@ -3528,14 +3531,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       marketState.lastUpdate = Date.now();
     }
 
-    marketState.trades.push(data);
-
-    // Prune old trades (keep 3 min)
-    const cutoff = Date.now() - 3 * 60 * 1000;
-    marketState.trades = marketState.trades.filter(t => t.timestamp >= cutoff);
-
-    // Update trade imbalance
-    updateTradeImbalance();
+    marketState.tradeImbalance = tradeWindow.add(data, Date.now());
   };
 
   /**
@@ -6006,34 +6002,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     delete body.pendingTpCancelExecution;
     return 'booked';
-  };
-
-  /**
-   * Update trade imbalance from recent trades
-   */
-  const updateTradeImbalance = () => {
-    const recentTrades = marketState.trades;
-    if (recentTrades.length === 0) {
-      marketState.tradeImbalance = 0;
-      return;
-    }
-
-    let buyVol = 0;
-    let sellVol = 0;
-
-    for (const trade of recentTrades) {
-      if (trade.side === 'buy') {
-        buyVol += trade.size;
-      } else {
-        sellVol += trade.size;
-      }
-    }
-
-    const totalVol = buyVol + sellVol;
-    if (totalVol > 0) {
-      // Imbalance: +1 = all buys, -1 = all sells, 0 = balanced
-      marketState.tradeImbalance = (buyVol - sellVol) / totalVol;
-    }
   };
 
   /**
