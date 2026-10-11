@@ -43,7 +43,7 @@ describe('Crypto.com shared limit-order placement', () => {
       };
     };
 
-    const buy = await adapter.placeLimitBuy('BTC-USD', 0.0199, 100.019);
+    const buy = await adapter.placeLimitBuy('BTC-USD', 0.0199, 100.019, { clientOrderId: 'caller-id-1058' });
     const sell = await adapter.placeLimitSell('BTC-USD', 0.0199, 100.019, { postOnly: false });
 
     assert.equal(buy.success, true);
@@ -53,6 +53,10 @@ describe('Crypto.com shared limit-order placement', () => {
     assert.deepEqual(params.map(p => p.price), ['100.01', '100.01']);
     assert.deepEqual(params[0].exec_inst, ['POST_ONLY']);
     assert.deepEqual(params[1].exec_inst, []);
+    // A caller-supplied client id is sent verbatim (issue #1058); otherwise one is generated.
+    assert.equal(params[0].client_oid, 'caller-id-1058');
+    assert.equal(buy.clientOrderId, 'caller-id-1058');
+    assert.match(params[1].client_oid, /^[0-9a-f]{32}$/);
   });
 
   it('rejects an undersized sell before sending it to the exchange', async () => {

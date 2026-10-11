@@ -509,7 +509,7 @@ describe('Gemini shared limit-order placement', () => {
       return { order_id: '123', is_cancelled: false };
     });
 
-    await adapter.placeLimitBuy('BTC-USD', 0.0199, 100.019);
+    const buy = await adapter.placeLimitBuy('BTC-USD', 0.0199, 100.019, { clientOrderId: 'caller-id-1058' });
     await adapter.placeLimitSell('BTC-USD', 0.0199, 100.019, { postOnly: false });
 
     const orders = calls.filter(call => call.endpoint === '/v1/order/new').map(call => call.payload);
@@ -518,6 +518,10 @@ describe('Gemini shared limit-order placement', () => {
     assert.deepEqual(orders.map(order => order.price), ['100.01', '100.01']);
     assert.deepEqual(orders[0].options, ['maker-or-cancel']);
     assert.deepEqual(orders[1].options, []);
+    // A caller-supplied client id is sent verbatim (issue #1058); otherwise one is generated.
+    assert.equal(orders[0].client_order_id, 'caller-id-1058');
+    assert.equal(buy.clientOrderId, 'caller-id-1058');
+    assert.match(orders[1].client_order_id, /^[0-9a-f]{32}$/);
   });
 });
 

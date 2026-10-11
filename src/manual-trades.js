@@ -37,6 +37,8 @@ const { createContextLogger } = require('./logger');
  * @property {'sell_first'|'buy_first'|'paired'} tradeType
  * @property {string|null} bodyId
  * @property {BodyIntent|null} bodyIntent
+ * @property {RecoveryIntent|null} [recoveryIntent] - Sell-first only: recovery buy submitted (or about to be) whose outcome is not yet recorded
+ * @property {number} [recoveryIntentSeq] - Sell-first only: recovery placements ever attempted; seeds each intent's client order id
  * @property {string} note
  * @property {number} createdAt
  * @property {number} updatedAt
@@ -54,6 +56,35 @@ const { createContextLogger } = require('./logger');
  * @property {number} createdAt
  * @property {number|null} committedAt
  */
+
+/**
+ * Durable record of a sell-first recovery buy placement (issue #1058). Written
+ * BEFORE the order is submitted, so a crash, restart or transport error between
+ * the exchange accepting the order and the store recording it can never be
+ * mistaken for "no buy placed": the intent blocks another placement until the
+ * exchange is asked about its client order id.
+ * @typedef {Object} RecoveryIntent
+ * @property {string} clientOrderId - Deterministic id sent with the order
+ * @property {number} attempt - 1-based placement sequence the id was derived from
+ * @property {string} productId
+ * @property {number} size
+ * @property {number} price
+ * @property {number} createdAt
+ */
+
+/**
+ * Deterministic client order id for one recovery placement: UUID-shaped (every
+ * adapter accepts it — Crypto.com caps client_oid at 36 characters) and derived
+ * only from the trade id and attempt number, so it is reproducible from the
+ * persisted record.
+ * @param {string} tradeId
+ * @param {number} attempt
+ * @returns {string}
+ */
+const recoveryClientOrderId = (tradeId, attempt) => {
+  const hex = crypto.createHash('sha256').update(`manual-recovery:${tradeId}:${attempt}`).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+};
 
 const INTENT_PHASE = Object.freeze({
   PENDING: 'pending',
@@ -204,6 +235,7 @@ const createManualTradeStore = (exchange, pair) => {
           if (!t.tradeType) t.tradeType = 'sell_first';
           if (t.bodyId === undefined) t.bodyId = null;
           if (t.bodyIntent === undefined) t.bodyIntent = null;
+          if (t.recoveryIntent === undefined) t.recoveryIntent = null;
           normalizeRecoveryAttempts(t);
           trades.set(t.id, t);
         }
@@ -271,6 +303,8 @@ const createManualTradeStore = (exchange, pair) => {
       tradeType: 'sell_first',
       bodyId: null,
       bodyIntent: null,
+      recoveryIntent: null,
+      recoveryIntentSeq: 0,
       note: sellData.note || '',
       createdAt: now,
       updatedAt: now,
@@ -519,7 +553,69 @@ const createManualTradeStore = (exchange, pair) => {
   };
 
   /**
-   * Record a recovery buy order (newly placed) as the trade's live attempt
+   * Durably record a recovery buy about to be submitted (issue #1058). Must
+   * land before placeLimitBuy is called: from then on the order may exist on
+   * the exchange, and only this record lets a later request find it by client
+   * order id instead of placing a second buy.
+   * @param {string} tradeId
+   * @param {{productId: string, size: number, price: number}} order
+   * @returns {RecoveryIntent|null} The persisted intent
+   */
+  const recordRecoveryIntent = (tradeId, { productId, size, price }) => {
+    const trade = trades.get(tradeId);
+    if (!trade) return null;
+
+    const prior = { recoveryIntent: trade.recoveryIntent, recoveryIntentSeq: trade.recoveryIntentSeq, updatedAt: trade.updatedAt };
+    const now = Date.now();
+    const attempt = (trade.recoveryIntentSeq || 0) + 1;
+    trade.recoveryIntentSeq = attempt;
+    trade.recoveryIntent = {
+      clientOrderId: recoveryClientOrderId(trade.id, attempt),
+      attempt,
+      productId,
+      size,
+      price,
+      createdAt: now,
+    };
+    trade.updatedAt = now;
+
+    try {
+      persist();
+    } catch (err) {
+      // An intent that never reached disk must not be submitted: the order
+      // would have no durable record to reconcile from.
+      Object.assign(trade, prior);
+      throw err;
+    }
+    return trade.recoveryIntent;
+  };
+
+  /**
+   * Drop a recovery intent the exchange positively confirmed it never holds
+   * (clean rejection, or a client-id lookup that found no order / a cancelled
+   * one with no executions), so a new placement may proceed.
+   * @param {string} tradeId
+   * @param {string} [message] - Recorded as the trade's lastCheck when given
+   * @returns {ManualTrade|null}
+   */
+  const releaseRecoveryIntent = (tradeId, message) => {
+    const trade = trades.get(tradeId);
+    if (!trade) return null;
+
+    const now = Date.now();
+    trade.recoveryIntent = null;
+    if (message) trade.lastCheck = { at: now, error: null, message };
+    trade.updatedAt = now;
+
+    persist();
+    return trade;
+  };
+
+  /**
+   * Record a recovery buy order (newly placed, or adopted by client order id)
+   * as the trade's live attempt.
+   * Also resolves the trade's recovery intent in the same write, so there is
+   * no moment on disk where the order is neither intended nor recorded.
    * @param {string} tradeId - Manual trade ID
    * @param {string} buyOrderId - Exchange order ID
    * @param {number} buyPrice - Limit price
@@ -530,6 +626,7 @@ const createManualTradeStore = (exchange, pair) => {
     const trade = trades.get(tradeId);
     if (!trade) return null;
 
+    trade.recoveryIntent = null;
     const now = Date.now();
     normalizeRecoveryAttempts(trade);
     trade.recoveryAttempts.push(newAttempt({ orderId: buyOrderId, kind: 'placed', price: buyPrice, size: buySize, startedAt: now }));
@@ -688,6 +785,12 @@ const createManualTradeStore = (exchange, pair) => {
   const getPendingBodyIntents = () => getAll().filter(t => t.bodyIntent?.phase === INTENT_PHASE.PENDING);
 
   /**
+   * Trades with a recovery buy whose submission outcome is unrecorded (#1058).
+   * @returns {ManualTrade[]}
+   */
+  const getPendingRecoveryIntents = () => getAll().filter(t => t.recoveryIntent);
+
+  /**
    * Get pending buy order IDs (for orphan protection)
    * @returns {Set<string>}
    */
@@ -752,6 +855,8 @@ const createManualTradeStore = (exchange, pair) => {
     addManualSell,
     addManualBuy,
     addPairedTrade,
+    recordRecoveryIntent,
+    releaseRecoveryIntent,
     recordRecoveryBuy,
     linkExistingBuy,
     settleRecoveryAttempt,
@@ -766,9 +871,10 @@ const createManualTradeStore = (exchange, pair) => {
     getAll,
     getPending,
     getPendingBodyIntents,
+    getPendingRecoveryIntents,
     getById,
     getPendingBuyOrderIds,
   };
 };
 
-module.exports = { createManualTradeStore, STATUS, INTENT_PHASE, SIZE_EPSILON, getUncoveredSize };
+module.exports = { createManualTradeStore, STATUS, INTENT_PHASE, SIZE_EPSILON, getUncoveredSize, recoveryClientOrderId };
