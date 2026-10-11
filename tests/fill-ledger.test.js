@@ -904,12 +904,14 @@ describe('Fill Ledger', () => {
   // =======================================================================
   it('persists a whole body of buy links once, including partial fills and duplicate IDs', () => {
     const ledger = createTestLedger();
+    const setupWritesBefore = ledger._test.getWriteCount();
     for (let i = 0; i < 496; i++) {
-      ledger.ingestFill(makeBuyFill({ tradeId: `batch-${i}`, orderId: `buy-${i}` }), { skipPersist: true });
+      ledger.ingestFill(makeBuyFill({ tradeId: `batch-${i}`, orderId: `buy-${i}` }), null, { skipPersist: true });
     }
-    ledger.ingestFill(makeBuyFill({ tradeId: 'partial', orderId: 'buy-0' }), { skipPersist: true });
-    ledger.ingestFill(makeBuyFill({ tradeId: 'unrelated', orderId: 'other' }), { skipPersist: true });
+    ledger.ingestFill(makeBuyFill({ tradeId: 'partial', orderId: 'buy-0' }), null, { skipPersist: true });
+    ledger.ingestFill(makeBuyFill({ tradeId: 'unrelated', orderId: 'other' }), null, { skipPersist: true });
     ledger.persist();
+    assert.equal(ledger._test.getWriteCount(), setupWritesBefore + 1, 'fixture setup flushes once');
     const writes = ledger._test.getWriteCount();
     const ids = Array.from({ length: 496 }, (_, i) => `buy-${i}`);
     ledger.annotateFillsByOrderIds([...ids, 'buy-0', 'missing'], {
@@ -3553,24 +3555,35 @@ describe('Fill Ledger', () => {
   describe('memoization performance (issue #365)', () => {
     it('serves 100 consecutive calls from cache without a single extra recomputation', () => {
       const ledger = createTestLedger();
-      ledger.startNewCycle();
+      const cycleId = ledger.startNewCycle();
+      const setupWritesBefore = ledger._test.getWriteCount();
       const n = 500;
       for (let i = 0; i < n; i++) {
         const buyOrderId = `perf-buy-${i}`;
         const sellOrderId = `perf-sell-${i}`;
-        ledger.ingestFill(
+        const buy = ledger.ingestFill(
           makeBuyFill({ tradeId: `perf-b-${i}`, orderId: buyOrderId, price: '100000', size: '0.001' }),
           Date.now() - 5000,
           { skipPersist: true },
         );
-        ledger.annotateFillsByOrderId(buyOrderId, { sellOrderId });
-        ledger.ingestFill(
+        buy.fill.sellOrderId = sellOrderId;
+        const sell = ledger.ingestFill(
           makeSellFill({ tradeId: `perf-s-${i}`, orderId: sellOrderId, price: '105000', size: '0.001' }),
           null,
           { skipPersist: true },
         );
-        ledger.annotateFillsByOrderId(sellOrderId, { bodyPnl: 1, bodyHoldbackAsset: 0, isBodyOwned: true });
+        Object.assign(sell.fill, { bodyPnl: 1, bodyHoldbackAsset: 0, isBodyOwned: true });
       }
+      ledger.persist();
+      assert.equal(ledger._test.getWriteCount(), setupWritesBefore + 1, 'fixture setup flushes once');
+      const fixtureFills = ledger.getAllFills();
+      assert.equal(fixtureFills.length, n * 2, 'fixture keeps all 500 buy/sell pairs');
+      assert.ok(fixtureFills.every(fill => fill.cycleId === cycleId), 'fixture rows keep their cycle association');
+      assert.ok(fixtureFills.filter(fill => fill.side === 'buy').every(fill => fill.sellOrderId),
+        'normalized buy rows keep their sell pairing');
+      assert.ok(fixtureFills.filter(fill => fill.side === 'sell').every(fill =>
+        fill.bodyPnl === 1 && fill.bodyHoldbackAsset === 0 && fill.isBodyOwned),
+      'normalized sell rows keep their body metadata');
 
       // Warm both caches once.
       const baselineRealized = ledger.getDerivedRealizedPnL();
