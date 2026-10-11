@@ -134,8 +134,9 @@ describe('coinbase order-placement network-error handling (issue #199)', () => {
     };
 
     await assert.rejects(
-      () => adapter.placeLimitBuy('BTC-USDC', 0.001, 50000),
-      (err) => err.status === 'unknown' && err.unknownOutcome === true
+      () => adapter.placeLimitBuy('BTC-USDC', 0.001, 50000, { clientOrderId: 'caller-id-1058' }),
+      // The caller-supplied id is the one sent and the one to reconcile by (issue #1058).
+      (err) => err.status === 'unknown' && err.unknownOutcome === true && err.clientOrderId === 'caller-id-1058'
     );
     assert.equal(orderPosts, 1, 'order POST must be attempted exactly once');
   });

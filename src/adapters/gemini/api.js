@@ -455,12 +455,14 @@ const createGeminiAdapter = (keysPath = null) => {
    * @param {string} productId
    * @param {number} baseAmount
    * @param {number} price
-   * @param {{postOnly?: boolean}} [options]
+   * @param {{postOnly?: boolean, clientOrderId?: string}} [options]
    * @returns {Promise<LimitSellResult|LimitBuyResult>}
    */
   const placeLimitOrder = async (side, productId, baseAmount, price, options = {}) => {
     const symbol = toGeminiSymbol(productId);
-    const clientOrderId = crypto.randomUUID().replace(/-/g, '');
+    // A caller-supplied id makes the placement reconcilable from its own
+    // durable record (manual recovery buys, issue #1058).
+    const clientOrderId = options.clientOrderId || crypto.randomUUID().replace(/-/g, '');
     const postOnly = options.postOnly !== false; // Default to true
 
     // Get product details for proper rounding

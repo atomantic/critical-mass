@@ -24,7 +24,7 @@ const migration = require('../src/migration');
 const originalGetExchangeDataDir = migration.getExchangeDataDir;
 
 const fillLedgerPath = require.resolve('../src/fill-ledger');
-const { STATUS } = require('../src/manual-trades');
+const { STATUS, recoveryClientOrderId } = require('../src/manual-trades');
 
 const EXCHANGE = 'test-exchange';
 const PAIR = 'BTC-USDC';
@@ -323,11 +323,13 @@ describe('Manual Trade Import', () => {
       assert.equal(placed.productId, 'BTC-USDC');
       assert.equal(placed.size, 0.003); // 0.002 + 0.001 — recover exactly what was sold
       assert.equal(placed.price, 95000);
-      assert.deepEqual(placed.options, { postOnly: false });
+      // Sent with the deterministic client id of the durable intent (#1058).
+      assert.deepEqual(placed.options, { postOnly: false, clientOrderId: recoveryClientOrderId(result.trade.id, 1) });
 
       const trade = result.trade;
       assert.equal(trade.status, STATUS.BUY_PENDING);
       assert.equal(trade.buyOrderId, 'recovery-1');
+      assert.equal(trade.recoveryIntent, null, 'the accepted order replaces its intent in the same write');
       assert.equal(trade.sellSize, 0.003);
       assert.equal(trade.note, 'rebalance');
       // Volume-weighted, not a plain mean of 100000/101000.
@@ -460,6 +462,224 @@ describe('Manual Trade Import', () => {
       assert.match(result.error, /INSUFFICIENT_FUNDS/);
       assert.equal(store.getAll()[0].buyOrderId, null);
       assert.equal(store.getAll()[0].status, STATUS.SELL_RECORDED);
+      assert.equal(store.getAll()[0].recoveryIntent, null, 'a clean rejection releases the intent');
+    });
+
+    describe('durable recovery-buy intent (#1058)', () => {
+      const payload = { sellOrderId: 'sell-1', recoveryBuyPrice: '95000' };
+
+      /**
+       * Adapter whose placements land on a fake exchange book keyed by client
+       * order id, so findOrderByClientOrderId sees exactly what was accepted.
+       */
+      const createExchange = (opts = {}) => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'sell-1': sellFills }, ...opts });
+        const book = new Map();
+        const basePlace = adapter.placeLimitBuy;
+        adapter.placeLimitBuy = async (...args) => {
+          const result = await basePlace(...args);
+          if (result?.success) book.set(args[3].clientOrderId, { orderId: result.orderId, status: 'OPEN', filledSize: 0 });
+          return result;
+        };
+        adapter.lookups = [];
+        adapter.findOrderByClientOrderId = async (clientOrderId, productId) => {
+          adapter.lookups.push({ clientOrderId, productId });
+          return book.get(clientOrderId) || null;
+        };
+        return { adapter, book };
+      };
+
+      /** A fresh store loaded from disk — what the engine sees after a restart. */
+      const reloadStore = () => {
+        const { createManualTradeStore } = require('../src/manual-trades');
+        const reloaded = createManualTradeStore(EXCHANGE, PAIR);
+        reloaded.load();
+        return reloaded;
+      };
+
+      /** Accept the order on the exchange, then die before the store records it. */
+      const crashAfterAcceptance = async (adapter) => {
+        const recordRecoveryBuy = store.recordRecoveryBuy;
+        store.recordRecoveryBuy = () => { throw new Error('simulated crash'); };
+        await assert.rejects(() => createImporter({ adapter }).importSell(payload), /simulated crash/);
+        store.recordRecoveryBuy = recordRecoveryBuy;
+        assert.equal(adapter.calls.placeLimitBuy.length, 1);
+        store = reloadStore();
+        const trade = store.getAll()[0];
+        assert.equal(trade.status, STATUS.SELL_RECORDED, 'the restart sees no recorded buy');
+        assert.equal(trade.buyOrderId, null);
+        assert.equal(trade.recoveryIntent.clientOrderId, recoveryClientOrderId(trade.id, 1));
+        assert.equal(trade.recoveryIntent.size, 0.003);
+        assert.equal(trade.recoveryIntent.price, 95000);
+        return trade;
+      };
+
+      it('never re-places after a crash between acceptance and record: a retried import adopts the order', async () => {
+        const { adapter } = createExchange();
+        const { clientOrderId } = (await crashAfterAcceptance(adapter)).recoveryIntent;
+
+        const retry = await createImporter({ adapter }).importSell(payload);
+        assert.equal(retry.success, true);
+        assert.equal(adapter.calls.placeLimitBuy.length, 1, 'no second live buy');
+        assert.deepEqual(adapter.lookups, [{ clientOrderId, productId: 'BTC-USDC' }]);
+        assert.equal(retry.trade.buyOrderId, 'recovery-1');
+        assert.equal(retry.trade.status, STATUS.BUY_PENDING);
+        assert.equal(retry.trade.buySize, 0.003);
+        assert.equal(retry.trade.recoveryIntent, null);
+
+        const again = await createImporter({ adapter }).importSell(payload);
+        assert.equal(again.success, true);
+        assert.equal(adapter.calls.placeLimitBuy.length, 1);
+        assert.equal(reloadStore().getAll()[0].buyOrderId, 'recovery-1');
+      });
+
+      it('adopts a crashed placement on the restart sweep, before any retry', async () => {
+        const { adapter } = createExchange();
+        await crashAfterAcceptance(adapter);
+
+        const swept = await createImporter({ adapter }).recoverPendingRecoveryIntents();
+        assert.equal(swept.length, 1);
+        assert.equal(swept[0].adopted, true);
+        assert.equal(swept[0].orderId, 'recovery-1');
+        const trade = reloadStore().getAll()[0];
+        assert.equal(trade.status, STATUS.BUY_PENDING);
+        assert.equal(trade.buyOrderId, 'recovery-1');
+        assert.equal(trade.recoveryIntent, null);
+
+        const retry = await createImporter({ adapter }).importSell(payload);
+        assert.equal(retry.success, true);
+        assert.equal(adapter.calls.placeLimitBuy.length, 1);
+      });
+
+      it('adopts a thrown placement whose order actually landed instead of re-placing it', async () => {
+        const { adapter, book } = createExchange();
+        const basePlace = adapter.placeLimitBuy;
+        adapter.placeLimitBuy = async (...args) => {
+          await basePlace(...args);
+          throw Object.assign(new Error('socket hang up'), { status: 'unknown', unknownOutcome: true, clientOrderId: args[3].clientOrderId });
+        };
+
+        const result = await createImporter({ adapter }).importSell(payload);
+        assert.equal(result.success, true);
+        assert.equal(adapter.calls.placeLimitBuy.length, 1);
+        assert.equal(adapter.lookups.length, 1);
+        assert.equal(result.trade.buyOrderId, 'recovery-1');
+        assert.equal(result.trade.status, STATUS.BUY_PENDING);
+        assert.equal(result.trade.recoveryIntent, null);
+        assert.ok(book.has(recoveryClientOrderId(result.trade.id, 1)));
+
+        const retry = await createImporter({ adapter }).importSell(payload);
+        assert.equal(retry.success, true);
+        assert.equal(adapter.calls.placeLimitBuy.length, 1, 'no duplicate after adoption');
+      });
+
+      it('retries a not-found lookup right after a throw before releasing it', async () => {
+        const { adapter } = createExchange();
+        const basePlace = adapter.placeLimitBuy;
+        adapter.placeLimitBuy = async (...args) => { await basePlace(...args); throw new Error('ETIMEDOUT'); };
+        // The exchange indexes the accepted order only after the first lookup.
+        const baseFind = adapter.findOrderByClientOrderId;
+        adapter.findOrderByClientOrderId = async (...args) => (adapter.lookups.length === 0
+          ? (adapter.lookups.push({}), null)
+          : baseFind(...args));
+
+        const result = await createImporter({ adapter, recoveryLookupRetryDelaysMs: [0] }).importSell(payload);
+        assert.equal(result.success, true);
+        assert.equal(adapter.lookups.length, 2);
+        assert.equal(result.trade.buyOrderId, 'recovery-1');
+      });
+
+      it('keeps the trade blocked with an actionable reason while the client-id lookup fails, then releases on a positive not-found', async () => {
+        const { adapter } = createExchange();
+        adapter.placeLimitBuy = async (productId, size, price, options) => {
+          adapter.calls.placeLimitBuy.push({ productId, size, price, options });
+          throw new Error('ECONNRESET');
+        };
+        adapter.findOrderByClientOrderId = async () => { throw new Error('503 Service Unavailable'); };
+
+        const first = await createImporter({ adapter }).importSell(payload);
+        assert.equal(first.success, false);
+        assert.match(first.error, /ECONNRESET/);
+        assert.match(first.error, /client order id lookup failed \(503 Service Unavailable\)/);
+        assert.match(first.error, /No new buy will be placed until the exchange confirms it/);
+        const blocked = reloadStore().getAll()[0];
+        assert.equal(blocked.status, STATUS.SELL_RECORDED);
+        assert.ok(blocked.recoveryIntent, 'the intent survives on disk');
+        // The row explains why nothing was placed (shown by the Manual Trades UI).
+        assert.match(blocked.lastCheck.error, /503 Service Unavailable/);
+        assert.match(blocked.lastCheck.error, new RegExp(blocked.recoveryIntent.clientOrderId));
+
+        // Neither a retried placement nor a link may proceed while unresolved.
+        const retry = await createImporter({ adapter }).importSell(payload);
+        assert.equal(retry.success, false);
+        assert.match(retry.error, /may already be on the exchange/);
+        const link = await createImporter({ adapter }).importSell({ sellOrderId: 'sell-1', existingBuyOrderId: 'manual-buy' });
+        assert.equal(link.success, false);
+        assert.equal(store.getAll()[0].buyOrderId, null);
+        const sweep = await createImporter({ adapter }).recoverPendingRecoveryIntents();
+        assert.equal(sweep[0].blocked, true);
+        assert.equal(adapter.calls.placeLimitBuy.length, 1);
+
+        // A positive not-found releases it; the next placement is a new attempt.
+        adapter.findOrderByClientOrderId = async () => null;
+        adapter.placeLimitBuy = async (productId, size, price, options) => {
+          adapter.calls.placeLimitBuy.push({ productId, size, price, options });
+          return { success: true, orderId: 'recovery-2' };
+        };
+        const released = await createImporter({ adapter }).importSell(payload);
+        assert.equal(released.success, true);
+        assert.equal(adapter.calls.placeLimitBuy.length, 2);
+        assert.equal(adapter.calls.placeLimitBuy[1].options.clientOrderId, recoveryClientOrderId(released.trade.id, 2));
+        assert.notEqual(adapter.calls.placeLimitBuy[1].options.clientOrderId, adapter.calls.placeLimitBuy[0].options.clientOrderId);
+        assert.equal(released.trade.buyOrderId, 'recovery-2');
+        assert.equal(released.trade.recoveryIntent, null);
+      });
+
+      it('releases an intent whose order the exchange holds only as cancelled with no executions', async () => {
+        const { adapter, book } = createExchange();
+        await crashAfterAcceptance(adapter);
+        const [clientOrderId] = book.keys();
+        book.set(clientOrderId, { orderId: 'recovery-1', status: 'CANCELLED', filledSize: 0 });
+
+        const swept = await createImporter({ adapter }).recoverPendingRecoveryIntents();
+        assert.equal(swept[0].released, true);
+        const trade = reloadStore().getAll()[0];
+        assert.equal(trade.recoveryIntent, null);
+        assert.equal(trade.buyOrderId, null);
+      });
+
+      it('adopts a cancelled order that partially executed rather than over-recovering', async () => {
+        const { adapter, book } = createExchange();
+        await crashAfterAcceptance(adapter);
+        const [clientOrderId] = book.keys();
+        book.set(clientOrderId, { orderId: 'recovery-1', status: 'CANCELLED', filledSize: 0.001 });
+
+        const retry = await createImporter({ adapter }).importSell(payload);
+        assert.equal(retry.success, true);
+        assert.equal(adapter.calls.placeLimitBuy.length, 1);
+        assert.equal(retry.trade.buyOrderId, 'recovery-1');
+      });
+
+      it('stays blocked when the adapter cannot look up client order ids', async () => {
+        const { adapter } = createExchange();
+        await crashAfterAcceptance(adapter);
+        delete adapter.findOrderByClientOrderId;
+
+        const retry = await createImporter({ adapter }).importSell(payload);
+        assert.equal(retry.success, false);
+        assert.match(retry.error, /cannot look up orders by client order id/);
+        assert.equal(adapter.calls.placeLimitBuy.length, 1);
+      });
+
+      it('places nothing when the intent cannot be persisted', async () => {
+        const { adapter } = createExchange();
+        store.recordRecoveryIntent = () => { throw new Error('ENOSPC'); };
+
+        const result = await createImporter({ adapter }).importSell(payload);
+        assert.equal(result.success, false);
+        assert.match(result.error, /Failed to record recovery buy intent; nothing was placed: ENOSPC/);
+        assert.deepEqual(adapter.calls.placeLimitBuy, []);
+      });
     });
 
     it('surfaces a fill-fetch failure', async () => {
@@ -850,6 +1070,101 @@ describe('Manual Trade Import', () => {
       assert.equal(store.getAll().length, 1, 'still one trade — the sell was never duplicated');
       assert.equal(fillLedger.getFillsForOrder('sell-1').length, sellRowsBefore);
       assert.equal(fillLedger.getFillsForOrder(newBuy)[0].sellOrderId, 'sell-1');
+    });
+
+    describe('durable intent on Retry recovery (#1058)', () => {
+      /** Exchange book keyed by client order id, fed by accepted placements. */
+      const withClientIdBook = (ex) => {
+        const book = new Map();
+        const basePlace = ex.adapter.placeLimitBuy;
+        ex.adapter.placeLimitBuy = async (...args) => {
+          const result = await basePlace(...args);
+          if (result?.success) book.set(args[3].clientOrderId, { orderId: result.orderId, status: 'OPEN', filledSize: 0 });
+          return result;
+        };
+        ex.adapter.lookups = [];
+        ex.adapter.findOrderByClientOrderId = async (clientOrderId) => {
+          ex.adapter.lookups.push(clientOrderId);
+          return book.get(clientOrderId) || null;
+        };
+        return book;
+      };
+
+      it('never places a second replacement after a crash between acceptance and record', async () => {
+        const ex = createExchange();
+        withClientIdBook(ex);
+        const { tradeId } = await seedCancelled(ex);
+
+        store.recordRecoveryBuy = () => { throw new Error('simulated crash'); };
+        await assert.rejects(() => createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, recoveryBuyPrice: 94000 }), /simulated crash/);
+        assert.equal(ex.adapter.calls.placeLimitBuy.length, 2);
+        reloadStore();
+        const crashed = store.getById(tradeId);
+        assert.equal(crashed.status, STATUS.BUY_CANCELLED, 'the restart sees only the cancelled attempt');
+        assert.equal(crashed.recoveryIntent.clientOrderId, recoveryClientOrderId(tradeId, 2));
+        assert.equal(ex.adapter.calls.placeLimitBuy[1].options.clientOrderId, crashed.recoveryIntent.clientOrderId);
+
+        const retry = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, recoveryBuyPrice: 94000 });
+        assert.equal(retry.success, false);
+        assert.match(retry.error, /still active or unconfirmed/);
+        assert.equal(ex.adapter.calls.placeLimitBuy.length, 2, 'no second replacement');
+        const adopted = store.getById(tradeId);
+        assert.equal(adopted.status, STATUS.BUY_PENDING);
+        assert.equal(adopted.buyOrderId, 'recovery-2');
+        assert.equal(adopted.recoveryIntent, null);
+        assert.deepEqual(adopted.recoveryAttempts.map((a) => [a.orderId, a.outcome]), [['recovery-1', 'cancelled'], ['recovery-2', null]]);
+      });
+
+      it('adopts a thrown replacement whose order actually landed', async () => {
+        const ex = createExchange();
+        withClientIdBook(ex);
+        const { tradeId } = await seedCancelled(ex);
+        const basePlace = ex.adapter.placeLimitBuy;
+        ex.adapter.placeLimitBuy = async (...args) => { await basePlace(...args); throw new Error('socket hang up'); };
+
+        const retried = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, recoveryBuyPrice: 94000 });
+        assert.equal(retried.success, true);
+        assert.equal(retried.trade.buyOrderId, 'recovery-2');
+        assert.equal(retried.trade.status, STATUS.BUY_PENDING);
+        assert.equal(ex.adapter.calls.placeLimitBuy.length, 2);
+        assert.equal(ex.adapter.calls.placeLimitBuy[1].size, 0.003, 'sized to the uncovered remainder');
+
+        const again = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, recoveryBuyPrice: 94000 });
+        assert.equal(again.success, false);
+        assert.equal(ex.adapter.calls.placeLimitBuy.length, 2);
+      });
+
+      it('keeps Retry and Link blocked while the lookup fails, and releases on a positive not-found', async () => {
+        const ex = createExchange();
+        const { tradeId } = await seedCancelled(ex);
+        ex.adapter.placeLimitBuy = async (productId, size, price, options) => {
+          ex.adapter.calls.placeLimitBuy.push({ productId, size, price, options });
+          throw new Error('ECONNRESET');
+        };
+        ex.adapter.findOrderByClientOrderId = async () => { throw new Error('503 Service Unavailable'); };
+
+        const first = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, recoveryBuyPrice: 94000 });
+        assert.equal(first.success, false);
+        assert.match(first.error, /lookup failed \(503 Service Unavailable\)/);
+        reloadStore();
+        assert.ok(store.getById(tradeId).recoveryIntent);
+        assert.match(store.getById(tradeId).lastCheck.error, /No new buy will be placed/);
+
+        const retry = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, recoveryBuyPrice: 94000 });
+        assert.equal(retry.success, false);
+        ex.orders['manual-replacement'] = { side: 'BUY', productId: 'BTC-USDC', status: 'OPEN', filledSize: 0, completionPercentage: 0 };
+        const link = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, existingBuyOrderId: 'manual-replacement' });
+        assert.equal(link.success, false);
+        assert.match(link.error, /may already be on the exchange/);
+        assert.equal(ex.adapter.calls.placeLimitBuy.length, 2, 'only the original and the ambiguous replacement');
+        assert.equal(store.getById(tradeId).status, STATUS.BUY_CANCELLED);
+
+        ex.adapter.findOrderByClientOrderId = async () => null;
+        const linked = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, existingBuyOrderId: 'manual-replacement' });
+        assert.equal(linked.success, true);
+        assert.equal(linked.trade.buyOrderId, 'manual-replacement');
+        assert.equal(linked.trade.recoveryIntent, null);
+      });
     });
 
     it('ingests a cancelled partial execution once and replaces only the remainder', async () => {
