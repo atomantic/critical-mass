@@ -19,6 +19,7 @@ async function main() {
     const requireAdmin = createRequire(path.join(admin, 'package.json'));
     const { build } = await import(pathToFileURL(requireAdmin.resolve('vite')).href);
     const { default: react } = await import(pathToFileURL(requireAdmin.resolve('@vitejs/plugin-react')).href);
+    // Vite 8 uses rolldownOptions; the legacy rollupOptions alias is deprecated.
     await build({ root: admin, configFile: false, plugins: [react()], logLevel: 'silent',
       build: { outDir: dir, rolldownOptions: { input: path.join(admin, 'tests/react19-smoke.html') } } });
     server = http.createServer((req, res) => {
