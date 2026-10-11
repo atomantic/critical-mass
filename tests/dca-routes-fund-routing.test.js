@@ -89,6 +89,8 @@ let originals;
 let engineCalls;
 /** @type {ReturnType<typeof createFakeApp>} */
 let app;
+/** @type {Object|null} Scripted retryFailedSell result (null = success) */
+let retryResult = null;
 
 /** A fund's pending sells, so the consolidate route's own pre-check passes. */
 const seedPendingOrders = (pair, count) => {
@@ -116,6 +118,7 @@ beforeEach(() => {
     runIntervalCycle: dcaEngine.runIntervalCycle,
     executeConsolidation: dcaEngine.executeConsolidation,
     reconcilePlacementIntent: dcaEngine.reconcilePlacementIntent,
+    retryFailedSell: dcaEngine.retryFailedSell,
   };
 
   migration.getExchangeDataDir = (exchange) => {
@@ -151,6 +154,11 @@ beforeEach(() => {
     engineCalls.push({ fn: 'reconcilePlacementIntent', exchange, pair, orderIds: [intentId, action] });
     return { success: true };
   };
+  dcaEngine.retryFailedSell = async (exchange, pair, buyOrderId) => {
+    engineCalls.push({ fn: 'retryFailedSell', exchange, pair, orderIds: [buyOrderId] });
+    return retryResult ?? { success: true, pair: pair ?? null, buyOrderId, sellOrder: { orderId: 'sell-1' } };
+  };
+  retryResult = null;
 
   // exchange-routes destructures the engine's entry points at require time.
   delete require.cache[EXCHANGE_ROUTES];
@@ -169,6 +177,7 @@ afterEach(() => {
   dcaEngine.runIntervalCycle = originals.runIntervalCycle;
   dcaEngine.executeConsolidation = originals.executeConsolidation;
   dcaEngine.reconcilePlacementIntent = originals.reconcilePlacementIntent;
+  dcaEngine.retryFailedSell = originals.retryFailedSell;
   delete require.cache[EXCHANGE_ROUTES];
   configUtils._resetConfigCacheForTests();
   realFs.rmSync(tempRoot, { recursive: true, force: true });
@@ -358,5 +367,100 @@ describe('POST /api/:exchange/reconcile-placement-intent fund routing (issue #54
 
     assert.equal(res.statusCode, 400);
     assert.deepEqual(engineCalls, []);
+  });
+});
+
+describe('POST /api/:exchange/retry-failed-sell (issue #1035)', () => {
+  const retry = (req) => invoke(app, 'POST /api/:exchange/retry-failed-sell', { params: { exchange: 'coinbase' }, ...req });
+
+  it('forwards the validated fund and buy id, and echoes the fund back', async () => {
+    const res = await retry({ query: { pair: OTHER_PAIR }, body: { buyOrderId: 'buy-7' } });
+
+    assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+    assert.deepEqual(engineCalls, [{ fn: 'retryFailedSell', exchange: 'coinbase', pair: OTHER_PAIR, orderIds: ['buy-7'] }]);
+    assert.equal(res.body.pair, OTHER_PAIR);
+    assert.equal(res.body.success, true);
+  });
+
+  it('keeps the Simple DCA gate', async () => {
+    BASE_CONFIG.global.simpleDcaEnabled = false;
+    try {
+      const res = await retry({ body: { buyOrderId: 'buy-7' } });
+      assert.equal(res.statusCode, 400);
+      assert.equal(res.body.error, 'Simple DCA is disabled. Use Regime engine.');
+      assert.deepEqual(engineCalls, []);
+    } finally {
+      BASE_CONFIG.global.simpleDcaEnabled = true;
+    }
+  });
+
+  it('rejects an unconfigured fund and a missing buy id before reaching the engine', async () => {
+    assert.equal((await retry({ query: { pair: 'DOGE-USDC' }, body: { buyOrderId: 'buy-7' } })).statusCode, 400);
+    assert.equal((await retry({ body: {} })).statusCode, 400);
+    assert.equal((await retry({ body: { buyOrderId: ['buy-7'] } })).statusCode, 400);
+    assert.deepEqual(engineCalls, []);
+  });
+
+  it('is blocked by the gateway maintenance guard like every other mutating route', () => {
+    const maintenance = require('../src/restore-maintenance');
+    maintenance.beginMaintenance('test restore');
+    try {
+      const res = createRes();
+      let reachedRoute = false;
+      maintenance.maintenanceGuard({ method: 'POST', path: '/coinbase/retry-failed-sell' }, res, () => { reachedRoute = true; });
+      assert.equal(res.statusCode, 503);
+      assert.equal(res.body.code, 'maintenance-in-progress');
+      assert.equal(reachedRoute, false);
+    } finally {
+      maintenance.endMaintenance();
+    }
+  });
+
+  it('maps engine refusals to distinct statuses and passes the reconciliation identity through', async () => {
+    retryResult = { success: false, code: 'placement_unresolved', intentId: 'intent-9', clientOrderId: 'coid-9', error: 'unresolved' };
+    let res = await retry({ body: { buyOrderId: 'buy-7' } });
+    assert.equal(res.statusCode, 409);
+    assert.equal(res.body.intentId, 'intent-9');
+    assert.equal(res.body.clientOrderId, 'coid-9');
+
+    retryResult = { success: false, code: 'not_failed', status: 'pending', error: 'covered' };
+    assert.equal((await retry({ body: { buyOrderId: 'buy-7' } })).statusCode, 409);
+    retryResult = { success: false, code: 'not_found', error: 'missing' };
+    assert.equal((await retry({ body: { buyOrderId: 'buy-7' } })).statusCode, 404);
+    retryResult = { success: false, code: 'sell_rejected', error: 'INSUFFICIENT_FUND' };
+    res = await retry({ body: { buyOrderId: 'buy-7' } });
+    assert.equal(res.statusCode, 502);
+    assert.equal(res.body.error, 'INSUFFICIENT_FUND');
+    retryResult = { success: false, code: 'dry_run', error: 'dry run' };
+    assert.equal((await retry({ body: { buyOrderId: 'buy-7' } })).statusCode, 400);
+  });
+});
+
+describe('GET /api/:exchange/status failed sells (issue #1035)', () => {
+  it('lists sell_failed rows from the fund state even with no pending sells', async () => {
+    const dir = path.join(tempRoot, 'coinbase', OTHER_PAIR);
+    realFs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({
+      initialAllocation: 1000,
+      totalAllocated: 100,
+      usdcFundSize: 900,
+      orders: [{
+        orderId: null,
+        buyOrderId: 'buy-failed-1',
+        buyPrice: 3000,
+        buyQuantity: 0.03,
+        sellQuantity: 0.027,
+        status: 'sell_failed',
+        sellFailedReason: 'Failed to place sell order after 3 attempts: INSUFFICIENT_FUND',
+      }],
+    }));
+
+    const res = await invoke(app, 'GET /api/:exchange/status', { params: { exchange: 'coinbase' }, query: { pair: OTHER_PAIR } });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.failedSells.length, 1);
+    assert.equal(res.body.failedSells[0].buyOrderId, 'buy-failed-1');
+    assert.equal(res.body.failedSells[0].buyQuantity, 0.03);
+    assert.match(res.body.failedSells[0].sellFailedReason, /INSUFFICIENT_FUND/);
   });
 });

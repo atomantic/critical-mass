@@ -1,9 +1,18 @@
 // @ts-check
-const { describe, it } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const { reconcileAwaitingSells } = require('../src/dca-engine');
 const { createInitialState, recordBuyFill, getPendingOrders } = require('../src/state-tracker');
+const stateTracker = require('../src/state-tracker');
+const migration = require('../src/migration');
+const configUtils = require('../src/config-utils');
+const orderManager = require('../src/order-manager');
+const adapters = require('../src/adapters');
+const logger = require('../src/logger');
 
 // ---------------------------------------------------------------------------
 // issue #129 — recover durable 'awaiting_sell' rows after a crash between the
@@ -87,6 +96,23 @@ describe('reconcileAwaitingSells (issue #129)', () => {
     assert.ok(Math.abs(state.outstandingOrdersAsset - 0.0009) < 1e-9);
   });
 
+  it('sizes the recovery sell from the row, not a since-changed holdbackPercent', async () => {
+    const state = stateWithAwaitingSells(['buy-1']);
+    const sizes = [];
+    const adapter = {
+      getCurrentPrice: async () => 100000,
+      placeLimitSell: async (productId, size, price) => {
+        sizes.push(size);
+        return { success: true, orderId: 'sell-1', baseSize: size, limitPrice: price };
+      },
+    };
+
+    await reconcileAwaitingSells(state, { ...config, holdbackPercent: 50 }, adapter, 'coinbase');
+
+    assert.ok(Math.abs(sizes[0] - state.orders[0].sellQuantity) < 1e-12);
+    assert.ok(Math.abs(state.outstandingOrdersAsset - sizes[0]) < 1e-12);
+  });
+
   it('marks the row sell_failed when placement keeps failing', async () => {
     const state = stateWithAwaitingSells(['buy-1']);
     const adapter = {
@@ -127,5 +153,379 @@ describe('reconcileAwaitingSells (issue #129)', () => {
     const bad = state.orders.find(o => o.buyOrderId === 'buy-bad');
     assert.equal(ok.status, 'pending');
     assert.equal(bad.status, 'sell_failed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// issue #1035 — a 'sell_failed' row is terminal for the automatic paths:
+// reconcileAwaitingSells selects only awaiting_sell and pending-order sync only
+// pending, so a real bought quantity sat with no tracked sell and no operator
+// exit. retryFailedSell finishes the ORIGINAL buy's sell without buying,
+// booking or crediting again, and refuses whenever an earlier sell for the fund
+// may be live.
+//
+// These drive the real engine, order manager (placeSellOrderWithRetry and the
+// durable placement-intent funnel) and state tracker against temporary fund
+// data and a stub adapter. Nothing touches a live exchange.
+// ---------------------------------------------------------------------------
+
+const DCA_ENGINE = require.resolve('../src/dca-engine');
+const EXCHANGE = 'coinbase';
+const PAIR = 'BTC-USDC';
+const PRICE = 50000;
+
+describe('retryFailedSell (issue #1035)', () => {
+  /** @type {string} */
+  let tmpDir;
+  /** @type {Object} */
+  let originals;
+  /** @type {Object} */
+  let fundConfig;
+  /** @type {any} */
+  let engine;
+  /** @type {any} */
+  let ex;
+
+  const stateFile = () => path.join(tmpDir, EXCHANGE, PAIR, 'state.json');
+  const readState = () => JSON.parse(fs.readFileSync(stateFile(), 'utf8'));
+  const writeState = (state) => fs.writeFileSync(stateFile(), JSON.stringify(state, null, 2));
+  const readIntents = () => stateTracker.loadPlacementIntents(EXCHANGE, PAIR);
+  /** Re-require the engine, as a restarted process would. */
+  const restartEngine = () => {
+    delete require.cache[DCA_ENGINE];
+    engine = require('../src/dca-engine');
+  };
+
+  /**
+   * Stub exchange. `sellMode`: 'reject' (definitive), 'accept', or 'unknown'
+   * (ambiguous POST carrying a client id). `lookup`: what a client-order-id
+   * lookup returns — 'throw', null (absent) or an order object.
+   */
+  const makeExchange = () => {
+    const stub = {
+      sellMode: 'reject',
+      lookup: /** @type {any} */ ('throw'),
+      /** @type {Promise<void>|null} */
+      sellGate: null,
+      placedBuys: 0,
+      sellAttempts: /** @type {Array<{size: number, price: number}>} */ ([]),
+      acceptedSells: 0,
+      adapter: {
+        name: EXCHANGE,
+        getCurrentPrice: async () => PRICE,
+        getAccountBalance: async () => ({ available: 100000, hold: 0 }),
+        placeMarketBuy: async () => {
+          stub.placedBuys += 1;
+          return { success: true, orderId: `buy-${stub.placedBuys}`, clientOrderId: `buy-coid-${stub.placedBuys}` };
+        },
+        getOrder: async (orderId) => ({ orderId, status: 'FILLED', filledSize: 0.002, filledValue: 100, averageFilledPrice: PRICE }),
+        getOrderFillSummary: async () => ({ totalFees: 0.5, totalRebates: 0, netFees: 0.5, fills: [] }),
+        placeLimitSell: async (_productId, size, price) => {
+          stub.sellAttempts.push({ size, price });
+          if (stub.sellGate) await stub.sellGate;
+          if (stub.sellMode === 'accept') {
+            stub.acceptedSells += 1;
+            return { success: true, orderId: `sell-${stub.acceptedSells}`, baseSize: size, limitPrice: price };
+          }
+          if (stub.sellMode === 'unknown') {
+            const err = /** @type {any} */ (new Error('socket hang up'));
+            err.unknownOutcome = true;
+            err.clientOrderId = `sell-coid-${stub.sellAttempts.length}`;
+            throw err;
+          }
+          return { success: false, errorMessage: 'INSUFFICIENT_FUND' };
+        },
+        findOrderByClientOrderId: async () => {
+          if (stub.lookup === 'throw') throw new Error('lookup 503');
+          return stub.lookup;
+        },
+      },
+    };
+    return stub;
+  };
+
+  /** Run a live cycle whose buy fills and whose covering sell fails. */
+  const buyWithFailedSell = async (sellMode = 'reject') => {
+    ex.sellMode = sellMode;
+    const result = await engine.runIntervalCycle(EXCHANGE, PAIR);
+    assert.equal(result.status, 'sell_placement_failed', JSON.stringify(result));
+    const [row] = readState().orders;
+    assert.equal(row.status, 'sell_failed');
+    return row;
+  };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dca-sell-retry-'));
+    ex = makeExchange();
+    fundConfig = {
+      productId: PAIR,
+      totalAllocation: 1000,
+      maxBuyPrice: 200000,
+      enabled: true,
+      dryRun: false,
+      dcaStrategy: 'fixed',
+      intervalType: 'daily',
+      intervalsToSpread: 10,
+      minOrderSize: 1,
+      holdbackPercent: 10,
+      sellMarkupPercent: 2,
+      consolidateAfterOrders: 0,
+      consolidateInterval: 'never',
+    };
+    originals = {
+      getExchangeDataDir: migration.getExchangeDataDir,
+      getFundConfig: configUtils.getFundConfig,
+      getDefaultPair: configUtils.getDefaultPair,
+      getAdapter: adapters.getAdapter,
+      checkFilledOrders: orderManager.checkFilledOrders,
+      buyPoll: { ...orderManager.BUY_FILL_POLL },
+      logBuy: logger.logBuy,
+      logSellOrder: logger.logSellOrder,
+      setTimeout: global.setTimeout,
+    };
+    migration.getExchangeDataDir = (exchange) => {
+      const dir = path.join(tmpDir, exchange);
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    };
+    configUtils.getDefaultPair = () => PAIR;
+    configUtils.getFundConfig = () => ({ ...fundConfig });
+    adapters.getAdapter = () => ex.adapter;
+    orderManager.checkFilledOrders = async () => [];
+    orderManager.BUY_FILL_POLL.delayMs = 0;
+    logger.logBuy = () => {};
+    logger.logSellOrder = () => {};
+    // placeSellOrderWithRetry and the reconcile lookup back off with real
+    // timers between attempts; collapse them so failure paths stay fast.
+    const realSetTimeout = originals.setTimeout;
+    // @ts-ignore — test-only shim
+    global.setTimeout = (fn, _ms, ...args) => realSetTimeout(fn, 0, ...args);
+
+    fs.mkdirSync(path.dirname(stateFile()), { recursive: true });
+    writeState(stateTracker.createInitialState(fundConfig));
+    restartEngine();
+  });
+
+  afterEach(() => {
+    global.setTimeout = originals.setTimeout;
+    migration.getExchangeDataDir = originals.getExchangeDataDir;
+    configUtils.getFundConfig = originals.getFundConfig;
+    configUtils.getDefaultPair = originals.getDefaultPair;
+    adapters.getAdapter = originals.getAdapter;
+    orderManager.checkFilledOrders = originals.checkFilledOrders;
+    Object.assign(orderManager.BUY_FILL_POLL, originals.buyPoll);
+    logger.logBuy = originals.logBuy;
+    logger.logSellOrder = originals.logSellOrder;
+    delete require.cache[DCA_ENGINE];
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('failure -> cold reload -> retry covers the original buy once, without buying or crediting again', async () => {
+    const row = await buyWithFailedSell();
+    const booked = readState();
+    assert.match(row.sellFailedReason, /INSUFFICIENT_FUND/);
+
+    // The automatic paths leave the row alone: that is the bug being fixed.
+    restartEngine();
+    const status = await engine.checkStatus(EXCHANGE, PAIR);
+    assert.equal(status.state.pendingOrders, 0);
+    assert.equal(status.state.failedSells.length, 1, 'the failed step stays visible after reload');
+    assert.equal(status.state.failedSells[0].buyOrderId, row.buyOrderId);
+    assert.equal(status.state.failedSells[0].buyQuantity, row.buyQuantity);
+    assert.match(status.state.failedSells[0].sellFailedReason, /INSUFFICIENT_FUND/);
+
+    ex.sellMode = 'accept';
+    const attemptsBefore = ex.sellAttempts.length;
+    const result = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+
+    assert.equal(result.success, true, JSON.stringify(result));
+    assert.equal(result.pair, PAIR);
+    assert.equal(result.sellOrder.orderId, 'sell-1');
+    assert.equal(ex.sellAttempts.length - attemptsBefore, 1, 'exactly one sell placed');
+    assert.equal(ex.placedBuys, 1, 'no new buy');
+    assert.ok(Math.abs(ex.sellAttempts.at(-1).size - row.sellQuantity) < 1e-12, 'sells the original buy quantity less holdback');
+
+    const after = readState();
+    const covered = after.orders.find(o => o.buyOrderId === row.buyOrderId);
+    assert.equal(after.orders.length, 1);
+    assert.equal(covered.status, 'pending');
+    assert.equal(covered.orderId, 'sell-1');
+    assert.equal(covered.sellFailedReason, undefined);
+    assert.equal(covered.sellRetryCount, 1);
+    assert.ok(Math.abs(after.outstandingOrdersAsset - row.sellQuantity) < 1e-12, 'sell accounting restored');
+    assert.ok(Math.abs(after.outstandingOrdersUSDC - row.sellQuantity * covered.sellPrice) < 1e-9);
+    // Booking is untouched: nothing credited, no interval advanced.
+    for (const key of ['totalAllocated', 'usdcFundSize', 'assetReserves', 'lastRunId', 'totalIntervalsRun', 'bookedDcaBuyOrderIds']) {
+      assert.deepEqual(after[key], booked[key], `${key} must not change`);
+    }
+    assert.deepEqual(readIntents(), []);
+
+    const again = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+    assert.equal(again.success, false);
+    assert.equal(again.code, 'not_failed');
+    assert.equal(ex.sellAttempts.length - attemptsBefore, 1, 'a covered buy is never sold twice');
+  });
+
+  it('a rejected retry keeps the row sell_failed with its new reason, and it stays retryable', async () => {
+    const row = await buyWithFailedSell();
+    ex.sellMode = 'reject';
+
+    const rejected = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+    assert.equal(rejected.success, false);
+    assert.equal(rejected.code, 'sell_rejected');
+    let stored = readState().orders[0];
+    assert.equal(stored.status, 'sell_failed');
+    assert.match(stored.sellFailedReason, /INSUFFICIENT_FUND/);
+    assert.equal(stored.sellPlacementUnresolved, undefined, 'a definitive rejection is not an unknown outcome');
+    assert.equal(readState().outstandingOrdersAsset, 0);
+
+    ex.sellMode = 'accept';
+    const ok = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+    assert.equal(ok.success, true, JSON.stringify(ok));
+    stored = readState().orders[0];
+    assert.equal(stored.status, 'pending');
+    assert.equal(stored.sellRetryCount, 2);
+  });
+
+  it('an unknown-outcome sell blocks retry until it is ruled out, then a later retry succeeds', async () => {
+    // The cycle's own sell is ambiguous and the reconcile lookup is
+    // inconclusive: the intent stays on disk, its identity on the row.
+    const row = await buyWithFailedSell('unknown');
+    const [intent] = readIntents();
+    assert.ok(intent, 'the ambiguous sell keeps its placement intent');
+    assert.deepEqual(row.sellPlacementUnresolved, { intentId: intent.id, clientOrderId: intent.clientOrderId });
+    assert.ok(intent.clientOrderId);
+
+    ex.sellMode = 'accept';
+    const attempts = ex.sellAttempts.length;
+
+    const blocked = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+    assert.equal(blocked.success, false);
+    assert.equal(blocked.code, 'placement_unresolved');
+    assert.equal(blocked.intentId, intent.id, 'the reconciliation identity is returned');
+    assert.equal(blocked.clientOrderId, intent.clientOrderId);
+    assert.equal(ex.sellAttempts.length, attempts, 'no sell while the earlier one may be live');
+
+    // An operator adopts it (the lookup finds it resting): the intent is
+    // gone, but the earlier sell is live — still no second sell.
+    ex.lookup = { orderId: 'sell-live', status: 'OPEN', filledSize: 0 };
+    const adopted = await engine.reconcilePlacementIntent(EXCHANGE, PAIR, intent.id, 'adopt');
+    assert.equal(adopted.success, true, JSON.stringify(adopted));
+    const live = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+    assert.equal(live.code, 'placement_unresolved');
+    assert.equal(live.orderId, 'sell-live');
+    assert.equal(ex.sellAttempts.length, attempts);
+
+    // A lookup failure is never read as absence.
+    ex.lookup = 'throw';
+    const unchecked = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+    assert.equal(unchecked.code, 'placement_unresolved');
+    assert.equal(ex.sellAttempts.length, attempts);
+
+    // The earlier sell ended with nothing executed: safe to cover the buy.
+    ex.lookup = { orderId: 'sell-live', status: 'CANCELLED', filledSize: 0 };
+    const ok = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+    assert.equal(ok.success, true, JSON.stringify(ok));
+    assert.equal(ex.sellAttempts.length, attempts + 1);
+    assert.equal(readState().orders[0].status, 'pending');
+  });
+
+  it("a retry whose own placement is ambiguous stays blocked with the new intent's identity", async () => {
+    const row = await buyWithFailedSell();
+    ex.sellMode = 'unknown';
+
+    const result = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+    assert.equal(result.success, false);
+    assert.equal(result.code, 'placement_unresolved');
+    const [intent] = readIntents();
+    assert.equal(result.intentId, intent.id);
+    const stored = readState().orders[0];
+    assert.equal(stored.status, 'sell_failed');
+    assert.deepEqual(stored.sellPlacementUnresolved, { intentId: intent.id, clientOrderId: intent.clientOrderId });
+
+    ex.sellMode = 'accept';
+    const attempts = ex.sellAttempts.length;
+    restartEngine();
+    const again = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+    assert.equal(again.code, 'placement_unresolved');
+    assert.equal(ex.sellAttempts.length, attempts);
+  });
+
+  it('concurrent duplicate retries place exactly one sell', async () => {
+    const row = await buyWithFailedSell();
+    ex.sellMode = 'accept';
+    /** @type {() => void} */
+    let release = () => {};
+    ex.sellGate = new Promise((resolve) => { release = resolve; });
+    const attempts = ex.sellAttempts.length;
+
+    const first = engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+    const second = engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+    await new Promise((resolve) => setImmediate(resolve));
+    release();
+    const results = await Promise.all([first, second]);
+
+    assert.equal(results.filter(r => r.success).length, 1, JSON.stringify(results));
+    assert.equal(results.find(r => !r.success).code, 'not_failed');
+    assert.equal(ex.sellAttempts.length - attempts, 1);
+    assert.equal(readState().orders.filter(o => o.status === 'pending').length, 1);
+  });
+
+  it('a cycle started during a retry waits instead of re-placing the reopened buy', async () => {
+    const row = await buyWithFailedSell();
+    // Next interval, so the cycle would run its awaiting-sell recovery.
+    writeState({ ...readState(), lastRunId: 'an-earlier-interval' });
+    ex.sellMode = 'accept';
+    /** @type {() => void} */
+    let release = () => {};
+    ex.sellGate = new Promise((resolve) => { release = resolve; });
+    const attempts = ex.sellAttempts.length;
+
+    const retry = engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+    const cycle = engine.runIntervalCycle(EXCHANGE, PAIR);
+    await new Promise((resolve) => setImmediate(resolve));
+    ex.sellGate = null;
+    release();
+    const [retried, cycled] = await Promise.all([retry, cycle]);
+
+    assert.equal(retried.success, true, JSON.stringify(retried));
+    assert.equal(cycled.status, 'success', JSON.stringify(cycled));
+    // One sell for the retried buy, one for the cycle's own new buy — never a
+    // second sell for the reopened row.
+    assert.equal(ex.sellAttempts.length - attempts, 2);
+    const orders = readState().orders;
+    assert.equal(orders.length, 2);
+    assert.deepEqual(orders.map(o => o.status), ['pending', 'pending']);
+    assert.equal(new Set(orders.map(o => o.orderId)).size, 2);
+  });
+
+  it('sells the quantity booked at buy time even if holdbackPercent changed since', async () => {
+    const row = await buyWithFailedSell();
+    const booked = readState();
+    fundConfig.holdbackPercent = 50;
+    ex.sellMode = 'accept';
+
+    const result = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+
+    assert.equal(result.success, true, JSON.stringify(result));
+    assert.ok(Math.abs(ex.sellAttempts.at(-1).size - row.sellQuantity) < 1e-12, 'placed size matches the row');
+    const after = readState();
+    assert.ok(Math.abs(after.outstandingOrdersAsset - row.sellQuantity) < 1e-12, 'accounting matches the placed size');
+    assert.equal(after.assetReserves, booked.assetReserves, 'reserves booked at buy time are untouched');
+  });
+
+  it('refuses rows it does not own and funds that cannot place a real sell', async () => {
+    const row = await buyWithFailedSell();
+    ex.sellMode = 'accept';
+    const attempts = ex.sellAttempts.length;
+
+    assert.equal((await engine.retryFailedSell(EXCHANGE, PAIR, 'no-such-buy')).code, 'not_found');
+    fundConfig.dryRun = true;
+    assert.equal((await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId)).code, 'dry_run');
+    fundConfig.dryRun = false;
+    fundConfig.dcaStrategy = 'fibonacci';
+    assert.equal((await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId)).code, 'unsupported_strategy');
+    assert.equal(ex.sellAttempts.length, attempts);
+    assert.equal(readState().orders[0].status, 'sell_failed');
   });
 });
