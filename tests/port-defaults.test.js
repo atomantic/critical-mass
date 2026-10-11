@@ -50,4 +50,26 @@ describe('resolveIpcPort', () => {
     assert.equal(IPC_PORT_DEFAULT.gemini, PORTS.GEMINI_IPC);
     assert.equal(IPC_PORT_DEFAULT.cryptocom, PORTS.CRYPTOCOM_IPC);
   });
+
+  it('.env.example matches ecosystem.config.cjs IPC port defaults without colliding with gateway or UI', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const content = fs.readFileSync(path.join(__dirname, '..', '.env.example'), 'utf8');
+
+    for (const [exchange, defaultPort] of Object.entries(IPC_PORT_DEFAULT)) {
+      const envVar = IPC_PORT_ENV_VAR[exchange];
+      const match = content.match(new RegExp(`^${envVar}=(\\d+)`, 'm'));
+      assert.ok(match, `.env.example should define ${envVar}`);
+      const port = Number(match[1]);
+      assert.equal(port, defaultPort, `${envVar} in .env.example should match PORTS default (${defaultPort})`);
+      assert.notEqual(port, PORTS.API, `${envVar} must not collide with PORTS.API (${PORTS.API})`);
+      assert.notEqual(port, PORTS.UI, `${envVar} must not collide with PORTS.UI (${PORTS.UI})`);
+
+      const commentMatch = content.match(new RegExp(`#.*${exchange}.*\\(default:\\s*(\\d+)\\)`, 'i'));
+      if (commentMatch) {
+        assert.equal(Number(commentMatch[1]), defaultPort, `${exchange} default comment in .env.example should state ${defaultPort}`);
+      }
+    }
+  });
 });
+
