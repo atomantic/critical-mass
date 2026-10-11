@@ -36,8 +36,8 @@ describe('ClosedFundCard layout', () => {
     assert.match(link, /flex-wrap/)
     assert.match(link, /min-w-0/)
     assert.doesNotMatch(link, /whitespace-nowrap/)
-    assert.match(html, /min-w-0[^"]*break-words/)
-    assert.match(html, /\[overflow-wrap:anywhere\]/)
+    assert.match(html, /min-w-0[^"]*wrap-break-word/)
+    assert.match(html, /wrap-anywhere/)
     assert.match(html, new RegExp(`href="/gemini/${longPair}"`))
   })
 
