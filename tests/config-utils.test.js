@@ -3,6 +3,10 @@ const { describe, it, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const pathsModule = require('../src/paths');
+// Keep native functions before transformation/failure cases install fs mocks.
+const realFs = { ...fs };
 
 const configUtils = require('../src/config-utils');
 const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../src/config-validator');
@@ -122,6 +126,49 @@ const setupFsMocks = ({ base = null, user = null } = {}) => {
   return {
     written: () => writtenData,
     writtenMode: () => writtenMode,
+  };
+};
+
+/**
+ * Exercise the real user-config publication path in a disposable data root.
+ * Only the machine-local base config is virtual; user writes, renames, reads
+ * and permission checks use the filesystem, including after a cache reset.
+ */
+const setupPublishedConfig = (t, { base, user = null, mode = 0o600 }) => {
+  const dataDir = realFs.mkdtempSync(path.join(os.tmpdir(), 'config-publication-'));
+  const originalDataDir = pathsModule.DATA_DIR;
+  const file = path.join(dataDir, 'config.json');
+  t.after(() => {
+    mock.restoreAll();
+    pathsModule.DATA_DIR = originalDataDir;
+    configUtils._resetConfigCacheForTests();
+    realFs.rmSync(dataDir, { recursive: true, force: true });
+  });
+  pathsModule.DATA_DIR = dataDir;
+  configUtils._resetConfigCacheForTests();
+  if (user !== null) {
+    realFs.writeFileSync(file, JSON.stringify(user));
+    realFs.chmodSync(file, mode);
+  }
+
+  const { existsSync, readFileSync, statSync } = realFs;
+  for (const method of ['writeFileSync', 'renameSync', 'mkdirSync']) {
+    mock.method(fs, method, realFs[method]);
+  }
+  mock.method(fs, 'existsSync', (target) => target === BASE_CONFIG_FILE || existsSync(target));
+  mock.method(fs, 'readFileSync', (target, ...args) => target === BASE_CONFIG_FILE
+    ? JSON.stringify(base) : readFileSync(target, ...args));
+  mock.method(fs, 'statSync', (target, ...args) => target === BASE_CONFIG_FILE
+    ? { mtimeMs: 1 } : statSync(target, ...args));
+
+  return {
+    user: () => {
+      if (!realFs.existsSync(file)) return null;
+      assert.deepStrictEqual(realFs.readdirSync(dataDir), ['config.json'], 'save must publish without leftover staging files');
+      return JSON.parse(realFs.readFileSync(file, 'utf8'));
+    },
+    mode: () => realFs.statSync(file).mode & 0o777,
+    restart: () => configUtils._resetConfigCacheForTests(),
   };
 };
 
@@ -607,12 +654,12 @@ describe('loadConfig', () => {
 describe('saveConfig', () => {
   afterEach(() => mock.restoreAll());
 
-  it('persists only the diff from base config', () => {
+  it('persists only the diff from base config', (t) => {
     const baseConfig = {
       exchanges: { coinbase: { enabled: false, productId: 'BTC-USDC' } },
       global: { schedulerInterval: 30000 },
     };
-    const mocks = setupFsMocks({ base: baseConfig, user: null });
+    const mocks = setupPublishedConfig(t, { base: baseConfig });
 
     const fullConfig = {
       exchanges: { coinbase: { enabled: true, productId: 'BTC-USDC' } },
@@ -620,7 +667,7 @@ describe('saveConfig', () => {
     };
     saveConfig(fullConfig);
 
-    const written = mocks.written();
+    const written = mocks.user();
     // Only the changed field should be in the diff
     assert.equal(written.exchanges.coinbase.enabled, true);
     // Unchanged fields should NOT be in the diff
@@ -628,28 +675,28 @@ describe('saveConfig', () => {
     assert.equal(written.global, undefined);
   });
 
-  it('preserves the existing config file permission mode on the atomic write', () => {
-    // statSync mock reports the existing file as 0600 — saveConfig must write
-    // the tmp file with that mode so an operator-locked-down config (it can
-    // hold secrets) isn't widened to default 0644 on save (#110 review).
-    const mocks = setupFsMocks({ base: { global: { schedulerInterval: 1 } }, user: { global: { schedulerInterval: 2 } } });
+  it('preserves the existing config file permission mode on the atomic write', (t) => {
+    // A non-default seeded mode catches replacement with the 0600 fallback.
+    const mocks = setupPublishedConfig(t, { base: { global: { schedulerInterval: 1 } }, user: { global: { schedulerInterval: 2 } }, mode: 0o640 });
     saveConfig({ global: { schedulerInterval: 3 } });
-    assert.equal(mocks.writtenMode() & 0o777, 0o600, 'atomic write must preserve the existing 0600 mode');
+    assert.deepStrictEqual(mocks.user(), { global: { schedulerInterval: 3 } });
+    assert.equal(mocks.mode(), 0o640, 'published file must preserve the existing 0640 mode');
   });
 
-  it('uses a restrictive 0600 mode for a brand-new config file', () => {
-    const mocks = setupFsMocks({ base: { global: { schedulerInterval: 1 } }, user: null });
+  it('uses a restrictive 0600 mode for a brand-new config file', (t) => {
+    const mocks = setupPublishedConfig(t, { base: { global: { schedulerInterval: 1 } } });
     saveConfig({ global: { schedulerInterval: 3 } });
-    assert.equal(mocks.writtenMode() & 0o777, 0o600, 'new config file must be created 0600 (may hold secrets)');
+    assert.deepStrictEqual(mocks.user(), { global: { schedulerInterval: 3 } });
+    assert.equal(mocks.mode(), 0o600, 'new published config must be 0600 (may hold secrets)');
   });
 
-  it('writes empty object when config matches base exactly', () => {
+  it('writes empty object when config matches base exactly', (t) => {
     const baseConfig = {
       exchanges: { coinbase: { enabled: false } },
     };
-    const mocks = setupFsMocks({ base: baseConfig, user: null });
+    const mocks = setupPublishedConfig(t, { base: baseConfig });
     saveConfig({ exchanges: { coinbase: { enabled: false } } });
-    assert.deepStrictEqual(mocks.written(), {});
+    assert.deepStrictEqual(mocks.user(), {});
   });
 
   // Issue #416: loadRawConfig() guards a corrupt base-config parse (#185),
@@ -1571,44 +1618,6 @@ describe('deep merge behavior (via loadRawConfig)', () => {
 // These tests pin the tombstone contract end to end.
 // ============================================================================
 
-/**
- * fs mocks that feed saveConfig's output back in as the user-override layer,
- * so a later load sees exactly what a fresh process would read off disk.
- * That round-trip (computeDiff -> data/config.json -> deepMerge) is the whole
- * point of these cases.
- * @param {Object} base - Base config.json contents
- * @returns {{ user: () => Object|null, restart: () => void }}
- */
-const setupRoundTripFsMocks = (base) => {
-  let userData = null;
-  configUtils._resetConfigCacheForTests();
-
-  mock.method(fs, 'existsSync', (filePath) => {
-    if (filePath === BASE_CONFIG_FILE) return true;
-    if (filePath === USER_CONFIG_FILE) return userData !== null;
-    return false;
-  });
-  mock.method(fs, 'readFileSync', (filePath) => {
-    if (filePath === BASE_CONFIG_FILE) return JSON.stringify(base);
-    if (filePath === USER_CONFIG_FILE && userData !== null) return JSON.stringify(userData);
-    throw new Error(`ENOENT: no such file: ${filePath}`);
-  });
-  let mtimeCounter = 0;
-  mock.method(fs, 'statSync', (filePath) => {
-    if (filePath === BASE_CONFIG_FILE) return { mtimeMs: ++mtimeCounter, mode: 0o100600 };
-    if (filePath === USER_CONFIG_FILE && userData !== null) return { mtimeMs: ++mtimeCounter, mode: 0o100600 };
-    const err = new Error(`ENOENT: no such file: ${filePath}`);
-    err.code = 'ENOENT';
-    throw err;
-  });
-  mock.method(fs, 'writeFileSync', (_filePath, data) => { userData = JSON.parse(data); });
-  mock.method(fs, 'renameSync', () => {});
-  mock.method(fs, 'mkdirSync', () => {});
-
-  // A fresh process keeps the files and loses the in-process cache.
-  return { user: () => userData, restart: () => configUtils._resetConfigCacheForTests() };
-};
-
 // Both funds live in the BASE layer — the case that used to resurrect.
 const TOMBSTONE_BASE = {
   exchanges: {
@@ -1624,8 +1633,8 @@ const TOMBSTONE_BASE = {
 describe('fund deletion tombstones', () => {
   afterEach(() => mock.restoreAll());
 
-  it('keeps a base-config fund deleted across a fresh load', () => {
-    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+  it('keeps a base-config fund deleted across a fresh load', (t) => {
+    const mocks = setupPublishedConfig(t, { base: TOMBSTONE_BASE });
 
     configUtils.removeFund('coinbase', 'ETH-USDC');
     assert.deepStrictEqual(configUtils.getFundsForExchange('coinbase'), ['BTC-USDC']);
@@ -1636,8 +1645,8 @@ describe('fund deletion tombstones', () => {
     assert.deepStrictEqual(configUtils.getConfiguredFunds(), [{ exchange: 'coinbase', pair: 'BTC-USDC' }]);
   });
 
-  it('persists the tombstone as a plain array the raw loader reads without throwing', () => {
-    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+  it('persists the tombstone as a plain array the raw loader reads without throwing', (t) => {
+    const mocks = setupPublishedConfig(t, { base: TOMBSTONE_BASE });
     configUtils.removeFund('coinbase', 'ETH-USDC');
 
     assert.deepStrictEqual(mocks.user().exchanges.coinbase.deletedPairs, ['ETH-USDC']);
@@ -1650,8 +1659,8 @@ describe('fund deletion tombstones', () => {
     assert.ok(raw.exchanges.coinbase.pairs['ETH-USDC'], 'base definition stays inert, not mutated');
   });
 
-  it('never surfaces a tombstoned pair as the default pair', () => {
-    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+  it('never surfaces a tombstoned pair as the default pair', (t) => {
+    const mocks = setupPublishedConfig(t, { base: TOMBSTONE_BASE });
     assert.equal(configUtils.getDefaultPair('coinbase'), 'BTC-USDC');
 
     configUtils.removeFund('coinbase', 'BTC-USDC');
@@ -1659,8 +1668,8 @@ describe('fund deletion tombstones', () => {
     assert.equal(configUtils.getDefaultPair('coinbase'), 'ETH-USDC');
   });
 
-  it('does not let an unrelated fund save resurrect a deleted fund', () => {
-    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+  it('does not let an unrelated fund save resurrect a deleted fund', (t) => {
+    const mocks = setupPublishedConfig(t, { base: TOMBSTONE_BASE });
     configUtils.removeFund('coinbase', 'ETH-USDC');
 
     configUtils.updateExchangeConfig('coinbase', { dryRun: true });
@@ -1670,8 +1679,8 @@ describe('fund deletion tombstones', () => {
     assert.deepStrictEqual(mocks.user().exchanges.coinbase.deletedPairs, ['ETH-USDC']);
   });
 
-  it('clears the tombstone when the pair is re-added', () => {
-    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+  it('clears the tombstone when the pair is re-added', (t) => {
+    const mocks = setupPublishedConfig(t, { base: TOMBSTONE_BASE });
     configUtils.removeFund('coinbase', 'ETH-USDC');
     mocks.restart();
 
@@ -1684,8 +1693,8 @@ describe('fund deletion tombstones', () => {
     assert.equal(configUtils.getFundConfig('coinbase', 'ETH-USDC').productId, 'ETH-USDC');
   });
 
-  it('leaves configs without tombstones byte-identical (no deletedPairs noise)', () => {
-    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+  it('leaves configs without tombstones byte-identical (no deletedPairs noise)', (t) => {
+    const mocks = setupPublishedConfig(t, { base: TOMBSTONE_BASE });
     configUtils.updateFundConfig('coinbase', 'BTC-USDC', { dryRun: true });
     assert.ok(!JSON.stringify(mocks.user()).includes('deletedPairs'),
       'ordinary saves must not introduce a tombstone key');
@@ -1696,8 +1705,8 @@ describe('fund deletion tombstones', () => {
   // a regime update on a tombstoned pair wrote into pairs[pair].regime while
   // normalizeExchangeBlock kept hiding that pair on every read. Both writers
   // now share mutateFundBlock, so they must agree here.
-  it('clears the tombstone when updateRegimeConfig targets a deleted pair (matches updateFundConfig)', () => {
-    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+  it('clears the tombstone when updateRegimeConfig targets a deleted pair (matches updateFundConfig)', (t) => {
+    const mocks = setupPublishedConfig(t, { base: TOMBSTONE_BASE });
     configUtils.removeFund('coinbase', 'ETH-USDC');
     mocks.restart();
     assert.ok(!configUtils.getFundsForExchange('coinbase').includes('ETH-USDC'));
@@ -1712,8 +1721,8 @@ describe('fund deletion tombstones', () => {
     assert.equal(configUtils.getRegimeConfig('coinbase', 'ETH-USDC').kFactor, 2);
   });
 
-  it('refuses to change an existing fund\'s traded asset (#685 defence in depth)', () => {
-    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+  it('refuses to change an existing fund\'s traded asset (#685 defence in depth)', (t) => {
+    const mocks = setupPublishedConfig(t, { base: TOMBSTONE_BASE });
     const before = JSON.stringify(mocks.user());
     assert.throws(
       () => configUtils.updateFundConfig('coinbase', 'BTC-USDC', { productId: 'ETH-USDC' }),
