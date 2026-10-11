@@ -102,6 +102,9 @@
  * @property {number} [netProceeds] - Net proceeds after fees
  * @property {string} [sellFailedReason] - Why sell placement failed (status 'sell_failed')
  * @property {string} [sellFailedAt] - ISO timestamp when sell placement failed
+ * @property {{intentId: string, clientOrderId: string|null}} [sellPlacementUnresolved] - Unknown-outcome sell placement that blocks a retry (issue #1035)
+ * @property {number} [sellRetryCount] - Operator retries of a failed sell placement
+ * @property {string|null} [lastSellFailedReason] - Failure reason before the latest retry
  * @property {string} [consolidatedInto] - Order ID of the consolidated order (for original orders)
  * @property {string} [consolidatedAt] - ISO timestamp when order was consolidated
  * @property {boolean} [isConsolidated] - Whether this order is a consolidated order

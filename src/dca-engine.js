@@ -71,6 +71,47 @@ const dcaLogger = (exchange, productId) => createContextLogger({
   pair: productId,
 });
 
+/**
+ * The unknown-outcome identity of a failed sell placement, or null.
+ *
+ * Only a sell that was actually dispatched under its own durable intent and
+ * whose outcome stayed unresolved qualifies. A refusal because ANOTHER intent
+ * was blocking the fund carries no intent of its own — nothing was dispatched,
+ * so it is a definitive non-placement.
+ * @param {Error & {placementPending?: boolean, intentId?: string|null, clientOrderId?: string|null}} err - Sell-placement error
+ * @returns {{intentId: string, clientOrderId: string|null}|null} Identity to record on the row
+ */
+const unresolvedSellPlacement = (err) => (err?.placementPending && err.intentId
+  ? { intentId: err.intentId, clientOrderId: err.clientOrderId ?? null }
+  : null);
+
+/** @type {Map<string, Promise<void>>} */
+const fundLocks = new Map();
+
+/**
+ * Serialize state-writing DCA operations on one fund.
+ *
+ * Each operation loads state.json, awaits the exchange, then saves; two of
+ * them interleaved on one fund lose one side's update, and an operator sell
+ * retry interleaved with a cycle could hand the same buy to the cycle's
+ * awaiting-sell recovery and place two sells for it (issue #1035). A rejected
+ * operation still releases the next one.
+ * @template T
+ * @param {string} key - Fund key
+ * @param {() => Promise<T>} run - Operation
+ * @returns {Promise<T>} The operation's own result
+ */
+const withFundLock = (key, run) => {
+  const previous = fundLocks.get(key) ?? Promise.resolve();
+  const current = previous.then(run);
+  const tail = current.then(() => {}, () => {});
+  fundLocks.set(key, tail);
+  tail.then(() => {
+    if (fundLocks.get(key) === tail) fundLocks.delete(key);
+  });
+  return current;
+};
+
 
 /**
  * Sync order statuses and update state for filled orders
@@ -283,7 +324,7 @@ const reconcileAwaitingSells = async (state, config, adapter, exchange, pair) =>
     try {
       sellOrder = await orderManager.placeSellOrderWithRetry(config, buyDetails, adapter, 3, { exchange, pair });
     } catch (err) {
-      stateTracker.markSellPlacementFailed(state, order.buyOrderId, err.message);
+      stateTracker.markSellPlacementFailed(state, order.buyOrderId, err.message, unresolvedSellPlacement(err));
       cycleLogger.error(`❌ 🔧 [${exchange}] Recovery sell failed for buy ${order.buyOrderId} — marked sell_failed: ${err.message}`, {
         orderId: order.buyOrderId,
         buyPrice: order.buyPrice,
@@ -474,10 +515,10 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
     /**
      * Contain a sell-placement failure: the buy is already persisted (with
      * lastRunId set), so the cycle's accounting survives and the next
-     * interval cannot double-buy. There is no retry mechanism for failed
-     * sell placement — fixed strategy marks the order entry 'sell_failed'
-     * for operator follow-up; Fibonacci self-heals next cycle via its
-     * consolidated sell (which re-covers the full cumulative position).
+     * interval cannot double-buy. Fixed strategy marks the order entry
+     * 'sell_failed'; the operator finishes it with retryFailedSell (issue
+     * #1035). Fibonacci self-heals next cycle via its consolidated sell
+     * (which re-covers the full cumulative position).
      * @param {Error} err - The sell-placement error
      * @returns {{failure: CycleResult}} Partial-cycle result
      */
@@ -580,7 +621,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
       try {
         sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter, 3, { exchange, pair });
       } catch (err) {
-        stateTracker.markSellPlacementFailed(state, buyResult.orderId, err.message);
+        stateTracker.markSellPlacementFailed(state, buyResult.orderId, err.message, unresolvedSellPlacement(err));
         stateTracker.saveState(state, exchange, pair);
         return sellPlacementFailed(err);
       }
@@ -1067,6 +1108,7 @@ const checkStatus = async (exchange = 'coinbase', pair) => {
       lastRunId: state.lastRunId,
       lastRunTimestamp: state.lastRunTimestamp,
       pendingBuy: state.pendingDcaBuy ? describePendingBuy(state.pendingDcaBuy) : null,
+      failedSells: stateTracker.getFailedSellOrders(state),
     },
     recentFills: filledOrders.length,
   };
@@ -1144,6 +1186,154 @@ const reconcilePlacementIntent = async (exchange, pair, intentId, action) => {
 };
 
 /**
+ * Prove an earlier unknown-outcome sell for this buy is not live before a
+ * retry places another (issue #1035). Returns a refusal, or null when safe.
+ *
+ * While its intent row exists the fund is blocked anyway. Once an operator
+ * resolved it, the intent may have been discarded (confirmed absent) or
+ * adopted (found on the exchange); only a client-order-id lookup tells those
+ * apart — absent, or terminal with nothing executed, is safe. An intent
+ * without a client id can only have been discarded — adoption requires the id.
+ * @param {{intentId: string, clientOrderId: string|null}} prior - Recorded unknown-outcome placement
+ * @param {ExchangeConfig} config - Fund configuration
+ * @param {Object} adapter - Exchange adapter
+ * @param {string} exchange - Exchange name
+ * @param {string|undefined} pair - Fund pair
+ * @returns {Promise<Object|null>} Refusal result, or null when no earlier sell is live
+ */
+const priorSellRefusal = async (prior, config, adapter, exchange, pair) => {
+  const refuse = (error, extra = {}) => ({
+    success: false,
+    code: 'placement_unresolved',
+    intentId: prior.intentId,
+    clientOrderId: prior.clientOrderId ?? null,
+    error,
+    ...extra,
+  });
+
+  if (stateTracker.loadPlacementIntents(exchange, pair).some(i => i?.id === prior.intentId)) {
+    return refuse(`The earlier sell attempt (intent ${prior.intentId}) is still unresolved — reconcile it before retrying`);
+  }
+  if (!prior.clientOrderId) return null;
+
+  if (typeof adapter.findOrderByClientOrderId !== 'function') {
+    return refuse(`${exchange} cannot look up client order id ${prior.clientOrderId}, so the earlier sell attempt cannot be ruled out — check the exchange manually`);
+  }
+  const found = await adapter.findOrderByClientOrderId(prior.clientOrderId, config.productId).catch((err) => ({ __lookupError: err }));
+  if (found?.__lookupError) {
+    return refuse(`Could not check the exchange for the earlier sell attempt (${found.__lookupError.message}) — not placing another sell`);
+  }
+  if (orderManager.isAdoptableOrder(found)) {
+    return refuse(
+      `The earlier sell attempt exists on the exchange as order ${found.orderId} (status ${found.status}) — not placing a second sell for this buy`,
+      { orderId: found.orderId, orderStatus: found.status ?? null },
+    );
+  }
+  return null;
+};
+
+/**
+ * Operator retry of one failed fixed-DCA sell placement (issue #1035).
+ *
+ * Finishes the ORIGINAL buy's sell: the buy row is found by its buyOrderId and
+ * covered through the same placeSellOrderWithRetry / attachSellOrder pair the
+ * cycle uses. No buy is submitted, nothing is booked or credited again and the
+ * interval schedule is untouched. Refuses while any placement intent on the
+ * fund is unresolved or the row's own earlier sell may be live. A rejected
+ * retry leaves the row 'sell_failed' with the new reason.
+ *
+ * Called under the fund lock (see module.exports), so it cannot interleave
+ * with a cycle, a consolidation or a duplicate retry of the same fund.
+ * @param {string} exchange - Exchange name
+ * @param {string|undefined} pair - Fund pair (resolved)
+ * @param {string} buyOrderId - Buy whose sell failed
+ * @returns {Promise<Object>} Result: `success`, plus `code` on refusal
+ */
+const retryFailedSell = async (exchange, pair, buyOrderId) => {
+  const config = loadConfig(exchange, pair);
+  const cycleLogger = dcaLogger(exchange, config.productId);
+
+  if (config.dcaStrategy === 'fibonacci') {
+    return { success: false, code: 'unsupported_strategy', error: 'Fibonacci funds re-cover uncovered buys with their next consolidated sell; there is no per-buy sell to retry' };
+  }
+  if (config.dryRun === true) {
+    return { success: false, code: 'dry_run', error: 'This fund is in Dry Run mode — turn Dry Run off to place a real sell' };
+  }
+  if (hasPendingDcaImport(exchange, pair)) {
+    return { success: false, code: 'import_recovery_pending', error: 'DCA import recovery is pending for this fund — retry after it completes' };
+  }
+
+  const state = stateTracker.loadState(config, exchange, pair);
+  const order = (state.orders || []).find(o => o.buyOrderId === buyOrderId);
+  if (!order) {
+    return { success: false, code: 'not_found', error: `No tracked buy ${buyOrderId} on this fund` };
+  }
+  if (order.status !== 'sell_failed') {
+    return { success: false, code: 'not_failed', status: order.status, error: `Buy ${buyOrderId} has no failed sell to retry (status ${order.status})` };
+  }
+
+  const blocking = stateTracker.getBlockingPlacementIntents(exchange, pair);
+  if (blocking.length > 0) {
+    const [oldest] = blocking;
+    return {
+      success: false,
+      code: 'placement_unresolved',
+      intentId: oldest.id,
+      clientOrderId: oldest.clientOrderId ?? null,
+      error: `Unresolved placement intent ${oldest.id} (${oldest.action ?? 'order'}) — reconcile it before retrying this sell`,
+    };
+  }
+
+  const adapter = getAdapter(exchange);
+  if (order.sellPlacementUnresolved?.intentId) {
+    const refusal = await priorSellRefusal(order.sellPlacementUnresolved, config, adapter, exchange, pair);
+    if (refusal) return refusal;
+  }
+
+  stateTracker.reopenFailedSell(state, buyOrderId);
+  stateTracker.saveState(state, exchange, pair);
+
+  const buyDetails = { orderId: order.buyOrderId, assetAmount: order.buyQuantity, price: order.buyPrice };
+  let sellOrder;
+  try {
+    sellOrder = await orderManager.placeSellOrderWithRetry(config, buyDetails, adapter, 3, { exchange, pair });
+  } catch (err) {
+    const unresolved = unresolvedSellPlacement(err);
+    stateTracker.markSellPlacementFailed(state, buyOrderId, err.message, unresolved);
+    stateTracker.saveState(state, exchange, pair);
+    cycleLogger.error(`❌ 🔁 [${exchange}] Retry of failed sell for buy ${buyOrderId} did not place: ${err.message}`, {
+      orderId: buyOrderId,
+      error: err.message,
+      unresolvedIntentId: unresolved?.intentId ?? null,
+    });
+    tradeEvents.error(exchange, `Sell retry failed: ${err.message}`, { buyOrderId });
+    return {
+      success: false,
+      code: err.placementPending ? 'placement_unresolved' : 'sell_rejected',
+      intentId: unresolved?.intentId ?? null,
+      clientOrderId: unresolved?.clientOrderId ?? null,
+      error: err.message,
+    };
+  }
+
+  stateTracker.attachSellOrder(state, buyOrderId, sellOrder);
+  stateTracker.saveState(state, exchange, pair);
+  logger.logSellOrder(sellOrder, state, exchange, pair);
+  cycleLogger.info(`ℹ️ 🔁 [${exchange}] Retried sell placed for buy ${buyOrderId}: ${sellOrder.orderId} @ ${sellOrder.limitPrice}`, {
+    orderId: buyOrderId,
+    sellOrderId: sellOrder.orderId,
+    limitPrice: sellOrder.limitPrice,
+  });
+  tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
+  return {
+    success: true,
+    buyOrderId,
+    sellOrder: { orderId: sellOrder.orderId, baseSize: sellOrder.baseSize, limitPrice: sellOrder.limitPrice },
+    message: `Sell ${sellOrder.orderId} placed for buy ${buyOrderId}`,
+  };
+};
+
+/**
  * Stamp the fund a mutating entry point actually acted on onto its result.
  *
  * Done once here rather than at each of the cycle's many return points, so
@@ -1157,31 +1347,41 @@ const reconcilePlacementIntent = async (exchange, pair, intentId, action) => {
  */
 const withFund = (result, pair) => result.then((value) => ({ ...value, pair: pair ?? null }));
 
-// The two mutating entry points are exported wrapped so a backup restore can
-// join a cycle that was already in flight when it took the maintenance lock
-// (issue #429). The wrapper also resolves the target fund once, so the
-// pending-write label, the work itself and the echoed result all name the same
-// fund. Internal calls (e.g. consolidation from inside a cycle) stay unwrapped
-// — they are already covered by the outer cycle's registration and fund.
+/**
+ * Wrap a mutating entry point: resolve its fund once, register it with the
+ * restore drain (issue #429) and serialize it with the fund's other
+ * state-writing operations (issue #1035).
+ * @template T
+ * @param {string} label - Pending-write label prefix
+ * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Requested fund pair
+ * @param {(fund: string|undefined) => Promise<T>} run - The operation
+ * @returns {Promise<T & {pair: string|null}>} Result carrying its fund
+ */
+const runFundWrite = (label, exchange, pair, run) => {
+  const fund = resolveFundPair(exchange, pair);
+  const key = fundKey(exchange, fund);
+  return withFund(trackPendingWrite(`${label}:${key}`, () => withFundLock(key, () => run(fund))), fund);
+};
+
+// The mutating entry points are exported wrapped so a backup restore can join
+// one that was already in flight when it took the maintenance lock (issue
+// #429), and so they never interleave on one fund (issue #1035). The wrapper
+// also resolves the target fund once, so the pending-write label, the work
+// itself and the echoed result all name the same fund. Internal calls (e.g.
+// consolidation from inside a cycle) stay unwrapped — they are already covered
+// by the outer cycle's registration, lock and fund.
 module.exports = {
   reconcilePlacementIntent: (exchange = 'coinbase', pair, intentId, action) =>
     reconcilePlacementIntent(exchange, resolveFundPair(exchange, pair), intentId, action),
-  runIntervalCycle: (exchange = 'coinbase', pair) => {
-    const fund = resolveFundPair(exchange, pair);
-    return withFund(
-      trackPendingWrite(`dca-cycle:${fundKey(exchange, fund)}`, () => runIntervalCycle(exchange, fund)),
-      fund,
-    );
-  },
+  runIntervalCycle: (exchange = 'coinbase', pair) =>
+    runFundWrite('dca-cycle', exchange, pair, (fund) => runIntervalCycle(exchange, fund)),
+  retryFailedSell: (exchange = 'coinbase', pair, buyOrderId) =>
+    runFundWrite('dca-sell-retry', exchange, pair, (fund) => retryFailedSell(exchange, fund, buyOrderId)),
   checkStatus,
   syncOrderStatuses,
   reconcileAwaitingSells,
   loadConfig,
-  executeConsolidation: (exchange = 'coinbase', pair, orderIds = null) => {
-    const fund = resolveFundPair(exchange, pair);
-    return withFund(
-      trackPendingWrite(`dca-consolidation:${fundKey(exchange, fund)}`, () => executeConsolidation(exchange, fund, orderIds)),
-      fund,
-    );
-  },
+  executeConsolidation: (exchange = 'coinbase', pair, orderIds = null) =>
+    runFundWrite('dca-consolidation', exchange, pair, (fund) => executeConsolidation(exchange, fund, orderIds)),
 };

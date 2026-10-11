@@ -28,7 +28,7 @@ const {
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
-const { syncOrderStatuses, runIntervalCycle, executeConsolidation, reconcilePlacementIntent } = require('../dca-engine');
+const { syncOrderStatuses, runIntervalCycle, executeConsolidation, reconcilePlacementIntent, retryFailedSell } = require('../dca-engine');
 const { shouldAutoResumeRegime, readBooleanFlag } = require('../shared-utils');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { prepareConfigUpdate, persistConfigUpdate } = require('./config-update');
@@ -47,6 +47,14 @@ const tagUpstreamStatus = (status) => (err) => {
   err.status = status;
   throw err;
 };
+
+/** HTTP status for each retry-failed-sell refusal code; anything else is 400. */
+const RETRY_FAILED_SELL_STATUS = Object.freeze({
+  not_found: 404,
+  not_failed: 409,
+  placement_unresolved: 409,
+  sell_rejected: 502,
+});
 
 /**
  * Context logger for the per-exchange fund routes. Every endpoint here is
@@ -450,6 +458,7 @@ module.exports = (app, deps) => {
       apiError,
       config,
       state,
+      failedSells: stateTracker.getFailedSellOrders(state),
       placementIntents: stateTracker.describePlacementIntents(exchange, pair),
       lastUpdated: new Date().toISOString(),
     });
@@ -625,6 +634,33 @@ module.exports = (app, deps) => {
       { action: `${action}-placement-intent`, intentId },
     );
     res.json({ exchange, pair, ...result, placementIntents: stateTracker.describePlacementIntents(exchange, pair) });
+  }));
+
+  // Operator retry of a fixed-DCA sell whose placement failed after its buy was
+  // booked (issue #1035). Covers that original buy only — no new buy, no
+  // re-booking, no interval change — and refuses while any earlier placement
+  // outcome on the fund is unknown.
+  app.post('/api/:exchange/retry-failed-sell', asyncRoute(async (req, res) => {
+    const { exchange } = req.params;
+    const { pair, error } = resolvePairParam(req);
+    if (error) return res.status(400).json({ success: false, error });
+
+    if (!getGlobalConfig().simpleDcaEnabled) {
+      return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
+    }
+
+    const { buyOrderId } = req.body || {};
+    if (!buyOrderId || typeof buyOrderId !== 'string') {
+      return res.status(400).json({ success: false, error: 'buyOrderId is required' });
+    }
+
+    exchangeLogger(exchange, pair, '/api/:exchange/retry-failed-sell').info(`ℹ️ [${exchange}/${pair}] Failed sell retry triggered via API for buy ${buyOrderId}`, {
+      action: 'retry-failed-sell',
+      buyOrderId,
+    });
+
+    const result = await retryFailedSell(exchange, pair, buyOrderId);
+    res.status(result.success ? 200 : (RETRY_FAILED_SELL_STATUS[result.code] ?? 400)).json({ exchange, ...result });
   }));
 
 };
