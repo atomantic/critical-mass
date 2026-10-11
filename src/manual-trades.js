@@ -480,8 +480,9 @@ const createManualTradeStore = (exchange, pair) => {
 
   /**
    * Close the trade's live recovery attempt with the executions the exchange
-   * confirmed for it, then settle the trade: COMPLETED once the attempt filled
-   * or everything sold is recovered, otherwise BUY_CANCELLED (recoverable).
+   * confirmed for it, then settle the trade: COMPLETED once the caller says the
+   * attempt covers the recovery or everything sold is recovered, otherwise
+   * BUY_CANCELLED (recoverable).
    * The trade's buy totals always describe every attempt's executions together.
    * @param {string} tradeId - Manual trade ID
    * @param {Object} result
@@ -490,10 +491,11 @@ const createManualTradeStore = (exchange, pair) => {
    * @param {number} result.filledSize
    * @param {number} result.filledQuote
    * @param {string[]} result.fillTradeIds
+   * @param {boolean} [result.completesRecovery] - The attempt covers the rest regardless of dust
    * @param {string} [result.message] - Recorded as the trade's lastCheck
    * @returns {ManualTrade|null}
    */
-  const settleRecoveryAttempt = (tradeId, { outcome, exchangeStatus, filledSize, filledQuote, fillTradeIds, message = '' }) => {
+  const settleRecoveryAttempt = (tradeId, { outcome, exchangeStatus, filledSize, filledQuote, fillTradeIds, completesRecovery = false, message = '' }) => {
     const trade = trades.get(tradeId);
     if (!trade) return null;
     normalizeRecoveryAttempts(trade);
@@ -503,7 +505,7 @@ const createManualTradeStore = (exchange, pair) => {
     const now = Date.now();
     Object.assign(attempt, { outcome, exchangeStatus, filledSize, filledQuote, fillTradeIds, endedAt: now });
     const recovered = getRecoveredTotals(trade);
-    const complete = outcome === 'filled' || getUncoveredSize(trade) === 0;
+    const complete = completesRecovery || getUncoveredSize(trade) === 0;
 
     trade.buyFillTradeIds = recovered.tradeIds;
     if (recovered.size > 0) {

@@ -109,6 +109,13 @@ const averagePrice = (totalQuote, totalSize) => (totalSize > 0 ? totalQuote / to
 const legTimestamp = (fills) => new Date(fills[0].tradeTime).getTime();
 
 /**
+ * Exchange-agnostic product identity: Coinbase `BTC-USDC`, Crypto.com
+ * `CRO_USD` and Gemini `btcusd` (which quotes USDC funds in USD) all compare
+ * on base asset + USD quote.
+ */
+const productKey = (productId) => String(productId || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/usdc$/, 'usd');
+
+/**
  * Key for the store's per-sell lock. Every operation that can place, link or
  * settle a recovery buy for one sell shares it, so they run one at a time.
  */
@@ -340,8 +347,8 @@ const createManualTradeImporter = ({
     if (invalidBuy) return checkFailed(invalidBuy);
     const visibleSize = buyFills.reduce((sum, f) => sum + f.size, 0);
     const reportedSize = Number(orderStatus?.filledSize) || 0;
-    if (!filled && reportedSize > visibleSize + SIZE_EPSILON) {
-      return checkFailed(`Buy order ${buyOrderId} is ${normalizedStatus} with ${reportedSize} executed, but only ${visibleSize} is visible in its fills so far — check again before retrying`);
+    if (reportedSize > visibleSize + SIZE_EPSILON) {
+      return checkFailed(`Buy order ${buyOrderId} is ${normalizedStatus || 'FILLED'} with ${reportedSize} executed, but only ${visibleSize} is visible in its fills so far — check again before retrying`);
     }
 
     const remainingBefore = getUncoveredSize(trade);
@@ -352,18 +359,26 @@ const createManualTradeImporter = ({
     }
     fillLedger.persist();
 
-    const remainingSize = filled ? 0 : Math.max(0, Math.round((remainingBefore - totalSize) * 1e10) / 1e10);
+    // An order we placed was sized to the remainder, so its fill completes the
+    // recovery (the adapter floors size to the product increment, which can
+    // leave sub-increment dust). A linked replacement is the operator's own
+    // order and completes it only when its executions actually cover the rest.
+    const attempt = trade.recoveryAttempts.find((a) => a.orderId === buyOrderId && !a.outcome);
+    const coversByFill = filled && attempt.kind === 'placed';
+    const remainingSize = coversByFill ? 0 : Math.max(0, Math.round((remainingBefore - totalSize) * 1e10) / 1e10);
+    const statusLabel = normalizedStatus || 'FILLED';
     let message = 'Recovery buy filled';
-    if (!filled && remainingSize <= SIZE_EPSILON) {
-      message = `Recovery buy ${buyOrderId} was ${normalizedStatus} after recovering the full quantity`;
-    } else if (!filled && totalSize > 0) {
-      message = `Recovery buy ${buyOrderId} was ${normalizedStatus} after executing ${totalSize}; ${remainingSize} still to recover`;
-    } else if (!filled) {
-      message = `Recovery buy ${buyOrderId} was ${normalizedStatus} with no executions; retry or link a replacement`;
+    if (!coversByFill && remainingSize <= SIZE_EPSILON) {
+      message = `Recovery buy ${buyOrderId} was ${statusLabel} after recovering the full quantity`;
+    } else if (!coversByFill && totalSize > 0) {
+      message = `Recovery buy ${buyOrderId} was ${statusLabel} after executing ${totalSize}; ${remainingSize} still to recover`;
+    } else if (!coversByFill) {
+      message = `Recovery buy ${buyOrderId} was ${statusLabel} with no executions; retry or link a replacement`;
     }
     const settled = store.settleRecoveryAttempt(tradeId, {
       outcome: filled ? 'filled' : 'cancelled',
-      exchangeStatus: normalizedStatus || 'FILLED',
+      exchangeStatus: statusLabel,
+      completesRecovery: coversByFill,
       filledSize: totalSize,
       filledQuote: totalQuote,
       fillTradeIds: tradeIds,
@@ -441,9 +456,6 @@ const createManualTradeImporter = ({
     if (trade.recoveryAttempts.some((a) => a.orderId === buyOrderId)) {
       return fail(`Buy order ${buyOrderId} was already used by this recovery`);
     }
-    const owner = store.getAll().find((t) => t.id !== trade.id
-      && (t.buyOrderId === buyOrderId || (t.recoveryAttempts || []).some((a) => a.orderId === buyOrderId)));
-    if (owner) return fail(`Buy order ${buyOrderId} already belongs to manual trade ${owner.id}`);
 
     let order;
     try {
@@ -452,16 +464,32 @@ const createManualTradeImporter = ({
       return fail(`Could not validate replacement buy ${buyOrderId}: ${err.message}`);
     }
     if (!order) return fail(`Could not validate replacement buy ${buyOrderId}: no order returned`);
+    // Fail closed: an order whose side or product the exchange did not report
+    // could be another asset's buy, whose fills would then close this sell.
     const side = String(order.side || '').toUpperCase();
-    if (side && side !== 'BUY') return fail(`Order ${buyOrderId} is a ${side} order, not a buy`);
+    if (side !== 'BUY') return fail(`Order ${buyOrderId} is ${side ? `a ${side} order` : 'not verifiably a buy'}; only a buy can recover this sell`);
+    const productId = fundConfig?.productId || 'BTC-USDC';
+    if (productKey(order.productId) !== productKey(productId)) {
+      return fail(`Order ${buyOrderId} is for ${order.productId || 'an unreported product'}, not this fund's ${productId}`);
+    }
     const executed = Number(order.filledSize) || 0;
     if (isCancelledStatus(order) && executed <= SIZE_EPSILON) {
       return fail(`Replacement buy ${buyOrderId} is already ${String(order.status).toUpperCase()} with no executions — it cannot recover anything`);
     }
+    // getOrder does not report an order's full size, but once it has executed
+    // anything the completion percentage reveals it; refuse one that would
+    // over-recover. (An untouched open order cannot be sized this way.)
+    const completion = Number(order.completionPercentage) || 0;
+    const orderSize = completion > 0 ? Math.max(executed, (executed * 100) / completion) : executed;
     const remaining = getUncoveredSize(trade);
-    if (executed > remaining + SIZE_EPSILON) {
-      return fail(`Replacement buy ${buyOrderId} has already executed ${executed}, more than the ${remaining} still to recover`);
+    if (orderSize > remaining + SIZE_EPSILON) {
+      return fail(`Replacement buy ${buyOrderId} is for ${orderSize}, more than the ${remaining} still to recover`);
     }
+    // Checked after the await, synchronously with the link below, so two
+    // sells racing to link the same order cannot both claim it.
+    const owner = store.getAll().find((t) => t.id !== trade.id
+      && (t.buyOrderId === buyOrderId || (t.recoveryAttempts || []).some((a) => a.orderId === buyOrderId)));
+    if (owner) return fail(`Buy order ${buyOrderId} already belongs to manual trade ${owner.id}`);
 
     store.linkExistingBuy(trade.id, buyOrderId);
     log.info(`ℹ️ 📝 [${exchange}] Manual trade: linked replacement recovery buy ${buyOrderId}`, { tradeId, orderId: buyOrderId, remaining });
