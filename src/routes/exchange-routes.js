@@ -4,7 +4,7 @@
  */
 
 const stateTracker = require('../state-tracker');
-const { buildFundSummary } = require('../fund-summary');
+const { buildFundSummary, buildDcaFundSummary } = require('../fund-summary');
 const {
   getExchangeConfig,
   getFundConfig,
@@ -465,16 +465,17 @@ module.exports = (app, deps) => {
   });
 
   // Get summary for an exchange/fund (?pair= optional).
-  // Reads from regime data (regime-state.json + fill-ledger.json) and exposes
-  // it in the legacy DCA shape so the main Dashboard.jsx keeps rendering. The
-  // legacy DCA state.json was frozen at the DCA→regime migration (Feb 2026)
-  // and has been silently 3+ months stale; everything below is rebuilt fresh.
+  // Match App.jsx's strategy selection. With Simple DCA disabled, keep using
+  // regime data even when the config still carries a legacy DCA strategy.
   app.get('/api/:exchange/summary', (req, res) => {
     const { exchange } = req.params;
     const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
 
-    const summary = buildFundSummary(exchange, pair);
+    const config = getFundConfig(exchange, pair);
+    const summary = getGlobalConfig().simpleDcaEnabled && config.dcaStrategy !== 'regime'
+      ? buildDcaFundSummary(exchange, pair, config)
+      : buildFundSummary(exchange, pair, { config });
     res.json(summary);
   });
 

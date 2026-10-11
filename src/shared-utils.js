@@ -12,6 +12,7 @@ const stateTracker = require('./state-tracker');
 const { createContextLogger } = require('./logger');
 const { DATA_DIR } = require('./paths');
 const { jsonReadError } = require('./json-diagnostics');
+const { getFibonacciBuyAmount } = require('./fibonacci-utils');
 const {
   normalizeConfig,
   getNextExecutionTime,
@@ -217,7 +218,9 @@ const getNextTradeInfo = (config, state) => {
 
   const remaining = (totalAllocation || 0) - (state.totalAllocated || 0);
   const intervalAmount = Math.min(
-    (totalAllocation || 0) / (intervalsToSpread || 1),
+    config.dcaStrategy === 'fibonacci'
+      ? getFibonacciBuyAmount(state.fibPosition || 0, config.fibBaseAmount)
+      : (totalAllocation || 0) / (intervalsToSpread || 1),
     remaining
   );
 

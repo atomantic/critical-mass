@@ -6,8 +6,59 @@
  */
 
 const { getFundConfig } = require('./config-utils');
-const { loadRegimeState } = require('./state-tracker');
+const { loadState, loadRegimeState } = require('./state-tracker');
 const { getCachedFillLedger } = require('./fill-ledger');
+const { getLogFile } = require('./logger');
+const { parseTSV, calculateCostBasis, getNextTradeInfo } = require('./shared-utils');
+
+/**
+ * Simple DCA continues to own state.json and transactions.tsv. Read them for
+ * the selected fund without reconciling orders or persisting migrated state.
+ * Regime snapshots can remain on disk after switching strategies and must
+ * never substitute for the active DCA engine's balances or pending sells.
+ */
+function buildDcaFundSummary(exchange, pair, config) {
+  const state = loadState(config, exchange, pair);
+  const transactions = parseTSV(getLogFile(exchange, pair));
+  const buys = transactions.filter(t => t.Type === 'BUY' || t.Type === 'FIB_BUY');
+  const sells = transactions.filter(t => t.Type === 'SELL_FILLED' || t.Type === 'FIB_SELL_FILLED');
+
+  return {
+    exchange,
+    config,
+    state,
+    stats: {
+      totalBuys: buys.length,
+      totalSells: sells.length,
+      pendingOrders: config.dcaStrategy === 'fibonacci'
+        ? Number(!!state.fibActiveSellOrderId)
+        : (state.orders || []).filter(o => o.status === 'pending').length,
+      totalBought: buys.reduce((sum, t) => sum + Math.abs(t['USDC Amount'] || 0), 0),
+      totalSold: sells.reduce((sum, t) => sum + (t['USDC Amount'] || 0), 0),
+      totalBTCBought: buys.reduce((sum, t) => sum + (t['BTC Amount'] || 0), 0),
+      totalBTCSold: sells.reduce((sum, t) => sum + Math.abs(t['BTC Amount'] || 0), 0),
+      totalFees: state.totalFees || 0,
+      totalRebates: state.totalRebates || 0,
+      netFees: state.netFees || 0,
+      assetReserves: state.assetReserves || 0,
+      usdcFundSize: state.usdcFundSize || 0,
+      outstandingOrdersUSDC: state.outstandingOrdersUSDC || 0,
+      outstandingOrdersAsset: state.outstandingOrdersAsset || 0,
+      allocationUsed: state.totalAllocated || 0,
+      allocationRemaining: config.totalAllocation - (state.totalAllocated || 0),
+      intervalsRun: state.totalIntervalsRun || 0,
+      // DCA has no cycle-pair realized-P&L ledger. A regime-derived zero (or
+      // stale profit from a previous strategy) is not a DCA accounting result.
+      realizedProfit: null,
+    },
+    // Fibonacci state carries the active cycle, not the historical cost of
+    // reserves/partial sales. A lifetime purchase average cannot price current
+    // holdings reliably. Keep that accounting surface unavailable for now.
+    costBasis: config.dcaStrategy === 'fibonacci' ? null : calculateCostBasis(state, transactions),
+    nextTrade: getNextTradeInfo(config, state),
+    transactions: transactions.slice(-50),
+  };
+}
 
 /**
  * Build a complete fund summary with financial metrics, cost basis, and state.
@@ -125,4 +176,5 @@ function buildFundSummary(exchange, pair, opts = {}) {
 
 module.exports = {
   buildFundSummary,
+  buildDcaFundSummary,
 };
