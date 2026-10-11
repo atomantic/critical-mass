@@ -85,6 +85,21 @@ const unresolvedSellPlacement = (err) => (err?.placementPending && err.intentId
   ? { intentId: err.intentId, clientOrderId: err.clientOrderId ?? null }
   : null);
 
+/**
+ * The buyDetails placeSellOrderWithRetry expects, re-derived from a persisted
+ * buy row. The sell is sized from the row's own sellQuantity — the holdback
+ * booked into reserves when the buy was recorded — never from the current
+ * holdbackPercent; the price is re-derived from the buy price + markup.
+ * @param {TrackedOrder} order - Persisted buy row
+ * @returns {{orderId: string, assetAmount: number, price: number, sellQuantity: number}} Sell placement input
+ */
+const sellDetailsForRow = (order) => ({
+  orderId: order.buyOrderId,
+  assetAmount: order.buyQuantity,
+  price: order.buyPrice,
+  sellQuantity: order.sellQuantity,
+});
+
 /** @type {Map<string, Promise<void>>} */
 const fundLocks = new Map();
 
@@ -311,14 +326,7 @@ const reconcileAwaitingSells = async (state, config, adapter, exchange, pair) =>
   let failed = 0;
 
   for (const order of awaiting) {
-    // Re-derive the buyDetails shape placeSellOrderWithRetry expects. The
-    // retry path recomputes sellQuantity from assetAmount + holdbackPercent and
-    // sellPrice from price + markup, so the original buy price/qty is enough.
-    const buyDetails = {
-      orderId: order.buyOrderId,
-      assetAmount: order.buyQuantity,
-      price: order.buyPrice,
-    };
+    const buyDetails = sellDetailsForRow(order);
 
     let sellOrder;
     try {
@@ -1293,7 +1301,7 @@ const retryFailedSell = async (exchange, pair, buyOrderId) => {
   stateTracker.reopenFailedSell(state, buyOrderId);
   stateTracker.saveState(state, exchange, pair);
 
-  const buyDetails = { orderId: order.buyOrderId, assetAmount: order.buyQuantity, price: order.buyPrice };
+  const buyDetails = sellDetailsForRow(order);
   let sellOrder;
   try {
     sellOrder = await orderManager.placeSellOrderWithRetry(config, buyDetails, adapter, 3, { exchange, pair });

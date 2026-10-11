@@ -724,9 +724,14 @@ const checkFilledOrders = async (pendingOrders, adapter = null) => {
 };
 
 /**
- * Retry placing a sell order if post-only was rejected
+ * Retry placing a sell order if post-only was rejected.
+ *
+ * A fresh buy sizes its sell from the configured holdback. A buy row being
+ * re-covered passes its persisted `sellQuantity` instead: its holdback was
+ * already credited to reserves at booking, so a later holdbackPercent change
+ * must not move the sell size away from that accounting (issue #1035).
  * @param {ExchangeConfig} config - Configuration
- * @param {BuyResult} buyDetails - Buy order fill details
+ * @param {BuyResult & {sellQuantity?: number}} buyDetails - Buy order fill details
  * @param {ExchangeAdapter|null} [adapter] - Exchange adapter (optional)
  * @param {number} [maxRetries] - Maximum retry attempts
  * @returns {Promise<SellOrder>} Sell order result
@@ -740,7 +745,7 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     // Get fresh price for each attempt
     const currentPrice = await adapter.getCurrentPrice(config.productId);
-    const sellQuantity = buyDetails.assetAmount * (1 - config.holdbackPercent / 100);
+    const sellQuantity = buyDetails.sellQuantity ?? buyDetails.assetAmount * (1 - config.holdbackPercent / 100);
     const sellPrice = buyDetails.price * priceMultiplier;
 
     // Ensure sell price is above current market (for post-only)

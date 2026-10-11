@@ -96,6 +96,23 @@ describe('reconcileAwaitingSells (issue #129)', () => {
     assert.ok(Math.abs(state.outstandingOrdersAsset - 0.0009) < 1e-9);
   });
 
+  it('sizes the recovery sell from the row, not a since-changed holdbackPercent', async () => {
+    const state = stateWithAwaitingSells(['buy-1']);
+    const sizes = [];
+    const adapter = {
+      getCurrentPrice: async () => 100000,
+      placeLimitSell: async (productId, size, price) => {
+        sizes.push(size);
+        return { success: true, orderId: 'sell-1', baseSize: size, limitPrice: price };
+      },
+    };
+
+    await reconcileAwaitingSells(state, { ...config, holdbackPercent: 50 }, adapter, 'coinbase');
+
+    assert.ok(Math.abs(sizes[0] - state.orders[0].sellQuantity) < 1e-12);
+    assert.ok(Math.abs(state.outstandingOrdersAsset - sizes[0]) < 1e-12);
+  });
+
   it('marks the row sell_failed when placement keeps failing', async () => {
     const state = stateWithAwaitingSells(['buy-1']);
     const adapter = {
@@ -480,6 +497,21 @@ describe('retryFailedSell (issue #1035)', () => {
     assert.equal(orders.length, 2);
     assert.deepEqual(orders.map(o => o.status), ['pending', 'pending']);
     assert.equal(new Set(orders.map(o => o.orderId)).size, 2);
+  });
+
+  it('sells the quantity booked at buy time even if holdbackPercent changed since', async () => {
+    const row = await buyWithFailedSell();
+    const booked = readState();
+    fundConfig.holdbackPercent = 50;
+    ex.sellMode = 'accept';
+
+    const result = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+
+    assert.equal(result.success, true, JSON.stringify(result));
+    assert.ok(Math.abs(ex.sellAttempts.at(-1).size - row.sellQuantity) < 1e-12, 'placed size matches the row');
+    const after = readState();
+    assert.ok(Math.abs(after.outstandingOrdersAsset - row.sellQuantity) < 1e-12, 'accounting matches the placed size');
+    assert.equal(after.assetReserves, booked.assetReserves, 'reserves booked at buy time are untouched');
   });
 
   it('refuses rows it does not own and funds that cannot place a real sell', async () => {
