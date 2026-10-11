@@ -14,7 +14,7 @@
 
 const { roundAsset, roundPrice } = require('./volatility-utils');
 const { getBaseCurrency } = require('./config-utils');
-const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, ENTRY_NOT_ADMITTED } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 
 /**
@@ -170,9 +170,14 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    * @param {number} [retryCount=0] - Current retry attempt (unused in dry-run, for API compatibility)
    * @param {number} [effectiveOffsetBps] - Optional dynamic offset (defaults to config.entryOffsetBps)
    * @param {number} [staleMs] - Optional per-order adaptive stale timeout (matches live executor)
-   * @returns {Promise<{success: boolean, orderId?: string, price?: number, assetQty?: number, errorMessage?: string}>}
+   * @param {Object} [options]
+   * @param {() => boolean} [options.isAdmitted] - Entry admission (matches live executor, #1009)
+   * @returns {Promise<{success: boolean, notAdmitted?: boolean, orderId?: string, price?: number, assetQty?: number, errorMessage?: string}>}
    */
-  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null, staleMs = null) => {
+  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null, staleMs = null, options = {}) => {
+    if (options.isAdmitted && !options.isAdmitted()) {
+      return { success: false, notAdmitted: true, errorMessage: ENTRY_NOT_ADMITTED };
+    }
     // Calculate bid price with offset below current bid (use dynamic offset if provided)
     const offsetBps = effectiveOffsetBps ?? config.entryOffsetBps;
     const offsetMultiplier = 1 - (offsetBps / BASIS_POINTS_DIVISOR);
@@ -800,13 +805,18 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   /**
    * Place liquidity ladder orders (simulated)
    * @param {Array<{index: number, price: number, assetQty: number, sizeUsdc: number}>} levels - Ladder levels to place
-   * @returns {Promise<{orders: Array<{orderId: string, ladderIndex: number, price: number, sizeUsdc: number, assetQty: number}>, failedCount: number}>}
+   * @param {Object} [options]
+   * @param {() => boolean} [options.isAdmitted] - Entry admission (matches live executor, #1009)
+   * @returns {Promise<{orders: Array<{orderId: string, ladderIndex: number, price: number, sizeUsdc: number, assetQty: number}>, failedCount: number, notAdmitted?: boolean}>}
    */
-  const placeLadderOrders = async (levels) => {
+  const placeLadderOrders = async (levels, options = {}) => {
     const results = [];
     let failedCount = 0;
 
     for (const level of levels) {
+      if (options.isAdmitted && !options.isAdmitted()) {
+        return { orders: results, failedCount, notAdmitted: true };
+      }
       if (!level || !level.price || !level.assetQty) {
         failedCount++;
         continue;

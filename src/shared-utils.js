@@ -30,6 +30,13 @@ const sharedUtilsLogger = createContextLogger({ module: 'shared-utils' });
  */
 const BASIS_POINTS_DIVISOR = 10000;
 
+/**
+ * Reason both executors return (`notAdmitted: true`) when an entry is refused
+ * because the engine stopped or the fund began draining while it was being
+ * prepared (#1009). Nothing reached the exchange.
+ */
+const ENTRY_NOT_ADMITTED = 'Entry admission closed (engine stopped or fund draining)';
+
 // ============ JSON / TSV Helpers ============
 
 /**
@@ -532,6 +539,7 @@ const finiteFloat = (value, fallback = 0) => {
 
 module.exports = {
   BASIS_POINTS_DIVISOR,
+  ENTRY_NOT_ADMITTED,
   isFilledStatus,
   isCancelledStatus,
   isTerminalStatus,
