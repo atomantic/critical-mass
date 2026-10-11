@@ -35,8 +35,7 @@ const { createFundStartSupervisor, isTransientStartError } = require('./fund-sta
  * @property {(exchange: string, pair: string, fundConfig: Object, callbacks: Object) => Object} createRegimeEngine - Regime engine factory
  * @property {(exchange: string, pair: string) => Object} createEngineCallbacks - Builds the callbacks handed to a new regime engine
  * @property {(exchange: string, pair: string) => Promise<{success: boolean, error?: string, message?: string}>} startMarketDataService - Starts the standalone market-data service for a fund
- * @property {(exchange: string, pair: string) => void} stopMarketDataService - Stops the standalone market-data service for a fund
- * @property {(exchange: string, pair: string) => Promise<{drained: boolean}>} [fenceMarketDataService] - Stops the standalone service and joins its in-flight start and order work; drained:false when it could not confirm
+ * @property {(exchange: string, pair: string) => Promise<{drained: boolean}>} fenceMarketDataService - Stops the standalone service and joins its in-flight start and order work; drained:false when it could not confirm. Required: a fence that cannot join would let two ledger writers overlap
  * @property {(exchange: string, pair: string) => void} wireMarketDataCallbacks - Wires a running standalone market-data service's callbacks
  * @property {(exchange: string, pair: string) => void} invalidateStandaloneLedger - Drops the cached standalone fill ledger for a fund
  * @property {(exchange: string, pair: string, isRunning: boolean) => void} saveRegimeRunningFlag - Persists the fund's running flag to disk
@@ -69,14 +68,10 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     createRegimeEngine,
     createEngineCallbacks,
     startMarketDataService,
-    stopMarketDataService,
     wireMarketDataCallbacks,
     invalidateStandaloneLedger,
     saveRegimeRunningFlag,
-    fenceMarketDataService = async (exchange, pair) => {
-      stopMarketDataService(exchange, pair);
-      return { drained: true };
-    },
+    fenceMarketDataService,
     drainFundWrites = async () => ({ drained: true }),
     recoverPendingImport = () => ({ recovered: false }),
   } = deps;

@@ -221,7 +221,6 @@ const { startFund, autoResumeFund, getStartStatus, cancelStarts } = registerEngi
   createRegimeEngine,
   createEngineCallbacks,
   startMarketDataService,
-  stopMarketDataService,
   fenceMarketDataService,
   wireMarketDataCallbacks,
   invalidateStandaloneLedger,

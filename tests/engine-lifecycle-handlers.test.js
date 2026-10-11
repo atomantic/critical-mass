@@ -109,10 +109,6 @@ const createHarness = (overrides = {}) => {
     return next;
   };
 
-  const stopMarketDataService = (exchange, pair) => {
-    calls.push({ op: 'stopMarketDataService', exchange, pair });
-  };
-
   const fenceMarketDataService = async (exchange, pair) => {
     calls.push({ op: 'fenceMarketDataService', exchange, pair });
     const queue = fenceQueues.get(fundKey(exchange, pair)) || [];
@@ -145,7 +141,6 @@ const createHarness = (overrides = {}) => {
     createRegimeEngine,
     createEngineCallbacks,
     startMarketDataService,
-    stopMarketDataService,
     fenceMarketDataService,
     wireMarketDataCallbacks,
     invalidateStandaloneLedger,
@@ -425,7 +420,6 @@ describe('engine-lifecycle-handlers', () => {
       assert.equal(h.regimeEngines.has(fundKey(EXCHANGE, PAIR_A)), false);
       assert.equal(h.runningFlags.get(fundKey(EXCHANGE, PAIR_A)), false);
       assert.equal(countOf(h.calls, 'startMarketDataService', PAIR_A), 1);
-      assert.equal(firstIndex(h.calls, 'stopMarketDataService', PAIR_A), -1);
     });
 
     for (const [label, makeStopBehavior] of [
@@ -710,7 +704,6 @@ describe('exclusive fill-ledger handover over real ledgers (issue #1008)', () =>
   const ledgerHarness = (consumer, overrides = {}) => createHarness({
     startMarketDataService: async () => consumer.start(),
     fenceMarketDataService: async () => consumer.fence(),
-    stopMarketDataService: () => { consumer.stopped = true; },
     ...overrides,
   });
 
