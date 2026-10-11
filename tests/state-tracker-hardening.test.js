@@ -183,4 +183,58 @@ describe('state-tracker hardening (issue #108)', () => {
     assert.equal(after.position.realizedPnL, 42,
       'protected field from the higher-versioned disk write must be preserved');
   });
+
+  it('saveRegimeState preserves unreadable bytes when quarantine fails, then recovers on retry', (t) => {
+    const st = freshModule();
+    const file = st.getRegimeStateFile('cb', 'BTC-USD');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const original = '{"position":{"depositedCapital":1234},"truncated":';
+    fs.writeFileSync(file, original);
+    const position = st.createInitialRegimePositionState();
+    const regime = st.createInitialRegimeState();
+    const rename = fs.renameSync;
+    const failure = t.mock.method(fs, 'renameSync', (source, dest) => {
+      if (source === file) throw Object.assign(new Error('quarantine denied'), { code: 'EACCES' });
+      return rename(source, dest);
+    });
+
+    assert.throws(() => st.saveRegimeState(position, regime, 'cb', null, null, 'BTC-USD'),
+      /Cannot save regime state.*quarantine.*Repair.*retry/i);
+    assert.equal(fs.readFileSync(file, 'utf8'), original, 'the only recovery copy must survive');
+    assert.equal(position._saveVersion, undefined, 'a failed save must not acknowledge a version');
+
+    failure.mock.restore();
+    st.saveRegimeState(position, regime, 'cb', null, null, 'BTC-USD');
+    const quarantined = fs.readdirSync(path.dirname(file)).filter(name => name.includes('.corrupt-'));
+    assert.equal(quarantined.length, 1);
+    assert.equal(fs.readFileSync(path.join(path.dirname(file), quarantined[0]), 'utf8'), original);
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).position._saveVersion, 1);
+  });
+
+  it('saveRegimeState preserves an external edit after a failed write and retries from the committed version', (t) => {
+    const st = freshModule();
+    const file = st.getRegimeStateFile('cb', 'BTC-USD');
+    const position = { ...st.createInitialRegimePositionState(), realizedPnL: 10 };
+    const regime = st.createInitialRegimeState();
+    st.saveRegimeState(position, regime, 'cb', null, null, 'BTC-USD');
+    const rename = fs.renameSync;
+    const failure = t.mock.method(fs, 'renameSync', (source, dest) => {
+      if (dest === file) throw Object.assign(new Error('disk write failed'), { code: 'EIO' });
+      return rename(source, dest);
+    });
+    assert.throws(() => st.saveRegimeState(position, regime, 'cb', null, null, 'BTC-USD'), /disk write failed/);
+    failure.mock.restore();
+    assert.equal(position._saveVersion, 1, 'failed write must leave the acknowledged version unchanged');
+
+    // Another writer commits version 2 while the engine still owns version 1.
+    const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
+    disk.position._saveVersion = 2;
+    disk.position.realizedPnL = 42;
+    fs.writeFileSync(file, JSON.stringify(disk));
+    st.saveRegimeState(position, regime, 'cb', null, null, 'BTC-USD');
+    const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(after.position.realizedPnL, 42, 'retry must preserve the committed external accounting edit');
+    assert.equal(after.position._saveVersion, 3);
+    assert.equal(position._saveVersion, 3);
+  });
 });

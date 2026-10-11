@@ -1197,11 +1197,9 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
 
   fs.mkdirSync(dir, { recursive: true });
 
-  // Optimistic version locking: detect external edits. A corrupt/unreadable
-  // disk file must not crash background savers (this runs from timer paths).
-  // But silently overwriting it would discard the operator's protected fields
-  // (regime state holds live financial position) — so quarantine the bad file
-  // aside for manual recovery before the fresh write below replaces it.
+  // Optimistic version locking: detect external edits. Preserve unreadable
+  // bytes before replacing them; saveLiveStateGuarded handles a failed save
+  // at the background boundary and records it as a persistence health fault.
   const myVersion = saveVersions.get(stateFile) || 0;
   let diskVersion = 0;
   if (fs.existsSync(stateFile)) {
@@ -1211,9 +1209,8 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
     } catch (err) {
       // Quarantine the unreadable file before overwriting so the operator can
       // recover protected fields. renameSync can itself throw (file vanished,
-      // permissions) on this timer-driven save path — guard it so a failed
-      // quarantine doesn't crash the background saver; fall through to the
-      // fresh write either way.
+      // permissions). If that fails, refuse the save rather than destroy the
+      // only recovery copy. The next save retries after the fault is repaired.
       const quarantinePath = `${stateFile}.corrupt-${Date.now()}`;
       try {
         fs.renameSync(stateFile, quarantinePath);
@@ -1223,12 +1220,13 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
           error: err.message,
         });
       } catch (renameErr) {
-        logger.error(`⚠️ Regime state unreadable (${err.message}) and quarantine failed (${renameErr.message}) — overwriting in place`, {
+        logger.error(`⚠️ Regime state unreadable (${err.message}) and quarantine failed (${renameErr.message}) — save refused; original retained`, {
           stateFile,
           quarantinePath,
           error: err.message,
           quarantineError: renameErr.message,
         });
+        throw new Error(`Cannot save regime state: unreadable file could not be quarantined (${renameErr.message}). Repair the file or quarantine permissions, then retry.`, { cause: renameErr });
       }
     }
     diskVersion = (diskData?.position && diskData.position._saveVersion) || 0;
@@ -1254,10 +1252,7 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
   // would make the next save think ITS state is the newer one and silently
   // clobber these just-merged protected fields (issue #108).
   const nextVersion = Math.max(myVersion, diskVersion) + 1;
-  position._saveVersion = nextVersion;
-  saveVersions.set(stateFile, nextVersion);
-
-  const stateData = { position, regime };
+  const stateData = { position: { ...position, _saveVersion: nextVersion }, regime };
   if (tpOptimizer) {
     stateData.tpOptimizer = tpOptimizer;
   }
@@ -1266,6 +1261,10 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
   }
 
   atomicWriteSync(stateFile, JSON.stringify(stateData, null, 2));
+  // Only acknowledge a committed save. Advancing before a failed write makes
+  // a later external edit at nextVersion look stale and lose protected fields.
+  position._saveVersion = nextVersion;
+  saveVersions.set(stateFile, nextVersion);
 };
 
 // ============================================================================
