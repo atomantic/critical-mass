@@ -191,10 +191,16 @@ describe('startup recovery step boundaries (#1006)', () => {
     const eng = makeEngine(pair, {
       getOrder: id => {
         reads.push(id);
-        return new Promise((resolve, reject) => waits.push(() => {
-          if (id.endsWith('reject')) reject(new Error('lookup unavailable'));
-          else resolve(id.endsWith('null') ? null : { status: 'OPEN', filledSize: 0 });
-        }));
+        return new Promise((resolve, reject) => {
+          const release = () => {
+            if (id.endsWith('reject')) reject(new Error('lookup unavailable'));
+            else resolve(id.endsWith('null') ? null : { status: 'OPEN', filledSize: 0 });
+          };
+          // Bound a failed characterization too: sequential or missing status
+          // reads must fail the assertion without stranding start()/cleanup.
+          const timeout = setTimeout(release, 1000);
+          waits.push(() => { clearTimeout(timeout); release(); });
+        });
       },
     });
     const pos = eng._getPositionState();
