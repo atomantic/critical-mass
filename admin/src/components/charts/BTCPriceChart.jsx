@@ -1,90 +1,18 @@
 import { useEffect, useMemo } from 'react'
 import {
   ComposedChart, Line, XAxis, YAxis, Tooltip, ReferenceLine,
-  ResponsiveContainer, CartesianGrid, LineChart, Customized,
+  ResponsiveContainer, CartesianGrid, LineChart,
 } from 'recharts'
 import { BarChart3 } from 'lucide-react'
 import useCandleData, { DEFAULT_VIEWS } from '../../hooks/useCandleData'
 import { BTC_TOOLTIP_STYLE, formatBTCPrice } from './chartUtils'
 import InactiveSafeTooltipContent from './InactiveSafeTooltipContent'
+import AtomokuCloudRenderer from './AtomokuCloudRenderer'
 import HeikinAshiRenderer from './HeikinAshiRenderer'
 import SignalAnnotationRenderer from './SignalAnnotationRenderer'
 
 // Stable empty arrays to avoid re-render loops from default prop values
 const EMPTY_ARRAY = []
-
-/**
- * Render atomoku cloud fills as raw SVG polygons.
- * Uses formattedGraphicalItems for accurate X positions and yAxis.scale for Y.
- */
-const AtomokuCloudRenderer = ({ formattedGraphicalItems, yAxisMap }) => {
-  const yAxis = yAxisMap && Object.values(yAxisMap)[0]
-  if (!yAxis?.scale || !formattedGraphicalItems?.length) return null
-
-  const yScale = yAxis.scale
-
-  // Get X positions and data payload from any graphical item's points
-  let points = null
-  for (const item of formattedGraphicalItems) {
-    const pts = item?.props?.points
-    if (pts?.length > 1) { points = pts; break }
-  }
-  if (!points) return null
-
-  const n = points.length
-  const polygons = []
-  let polyKey = 0
-
-  const buildCloud = (key1, key2, bullColor, bearColor) => {
-    let segStart = -1
-    let segBull = null
-
-    const flush = (end) => {
-      if (segStart < 0 || end <= segStart) return
-      const top = []
-      const bot = []
-      for (let i = segStart; i <= end; i++) {
-        const d = points[i]?.payload
-        const v1 = d?.[key1]
-        const v2 = d?.[key2]
-        if (v1 == null || v2 == null) continue
-        const x = points[i].x
-        const yT = yScale(Math.max(v1, v2))
-        const yB = yScale(Math.min(v1, v2))
-        if (x == null || isNaN(yT) || isNaN(yB)) continue
-        top.push(`${x},${yT}`)
-        bot.unshift(`${x},${yB}`)
-      }
-      if (top.length < 2) return
-      polygons.push(
-        <polygon key={`cloud-${polyKey++}`} points={[...top, ...bot].join(' ')}
-          fill={segBull ? bullColor : bearColor} strokeWidth={0} />
-      )
-    }
-
-    for (let i = 0; i < n; i++) {
-      const d = points[i]?.payload
-      const v1 = d?.[key1]
-      const v2 = d?.[key2]
-      if (v1 == null || v2 == null) {
-        flush(i - 1); segStart = -1; segBull = null
-        continue
-      }
-      const bull = v1 >= v2
-      if (segStart < 0) {
-        segStart = i; segBull = bull
-      } else if (bull !== segBull) {
-        flush(i); segStart = i; segBull = bull
-      }
-    }
-    flush(n - 1)
-  }
-
-  buildCloud('atomokuLead1', 'atomokuLead2', 'rgba(0,128,0,0.4)', 'rgba(255,0,0,0.4)')
-  buildCloud('atomokuConv', 'atomokuBase', 'rgba(0,51,51,0.3)', 'rgba(128,0,0,0.3)')
-
-  return <g>{polygons}</g>
-}
 
 /**
  * Shared composable BTC price chart.
@@ -190,8 +118,8 @@ export default function BTCPriceChart({
     // The periodic syncChart() in the hook will pick it up.
   }, [indicators, indicatorTf])
 
-  // displayData = enrichedData (indicators are now computed client-side in useCandleData)
-  const displayData = enrichedData
+  // A unique category keeps repeated time labels (e.g. across days) aligned.
+  const displayData = useMemo(() => enrichedData.map((point, chartIndex) => ({ ...point, chartIndex })), [enrichedData])
 
   const showBollinger = overlays.includes('bollinger')
   const showVwap = overlays.includes('vwap')
@@ -355,10 +283,11 @@ export default function BTCPriceChart({
           <ResponsiveContainer width="100%" height={height}>
             <ComposedChart data={displayData} margin={{ top: 5, right: 5, bottom: 0, left: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-              <XAxis dataKey="label" tick={{ fontSize: 10, fill: '#9ca3af' }} interval="preserveStartEnd" />
+              <XAxis dataKey="chartIndex" tickFormatter={index => displayData[index]?.label ?? ''} tick={{ fontSize: 10, fill: '#9ca3af' }} interval="preserveStartEnd" />
               <YAxis domain={priceDomain} allowDataOverflow tick={{ fontSize: 10, fill: '#9ca3af' }} tickFormatter={formatBTCPrice} width={70} />
               <Tooltip
                 content={InactiveSafeTooltipContent}
+                labelFormatter={index => displayData[index]?.label ?? ''}
                 contentStyle={BTC_TOOLTIP_STYLE}
                 labelStyle={{ color: '#9ca3af' }}
                 formatter={(value, name) => {
@@ -380,12 +309,12 @@ export default function BTCPriceChart({
 
               {/* Heikin Ashi candlestick renderer */}
               {isHA && (
-                <Customized component={HeikinAshiRenderer} />
+                <HeikinAshiRenderer data={displayData} />
               )}
 
-              {/* Atomoku cloud fills (rendered behind everything via Customized SVG) */}
+              {/* Atomoku cloud fills (rendered behind everything via custom SVG) */}
               {showAtomoku && (
-                <Customized component={AtomokuCloudRenderer} />
+                <AtomokuCloudRenderer data={displayData} />
               )}
 
               {/* Atomoku lines */}
@@ -427,7 +356,7 @@ export default function BTCPriceChart({
                 />
               ))}
 
-              {/* Main price line — transparent in HA mode so Customized renderers still get coordinate data */}
+              {/* Main price line — transparent in HA mode to retain price tooltips */}
               <Line
                 type="monotone"
                 dataKey="price"
@@ -454,7 +383,7 @@ export default function BTCPriceChart({
 
               {/* Signal change annotations */}
               {signalAnnotations?.length > 0 && (
-                <Customized component={SignalAnnotationRenderer} />
+                <SignalAnnotationRenderer data={displayData} />
               )}
             </ComposedChart>
           </ResponsiveContainer>

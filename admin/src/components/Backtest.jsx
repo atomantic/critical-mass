@@ -514,7 +514,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
             <div className="h-80">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={getChartData()}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                  <CartesianGrid yAxisId="usd" strokeDasharray="3 3" stroke="#374151" />
                   <XAxis
                     dataKey="date"
                     stroke="#9CA3AF"

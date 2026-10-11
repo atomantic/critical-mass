@@ -1,20 +1,9 @@
-/**
- * Custom SVG renderer for Heikin Ashi candlesticks inside Recharts <Customized>.
- * Same pattern as AtomokuCloudRenderer — reads data from formattedGraphicalItems.
- */
-const HeikinAshiRenderer = ({ formattedGraphicalItems, yAxisMap }) => {
-  const yAxis = yAxisMap && Object.values(yAxisMap)[0]
-  if (!yAxis?.scale || !formattedGraphicalItems?.length) return null
+import usePriceChartCoordinates from './usePriceChartCoordinates'
 
-  const yScale = yAxis.scale
-
-  // Get X positions and data payload from any graphical item's points
-  let points = null
-  for (const item of formattedGraphicalItems) {
-    const pts = item?.props?.points
-    if (pts?.length > 1) { points = pts; break }
-  }
-  if (!points || points.length < 2) return null
+/** Custom SVG candlesticks positioned by the public Recharts coordinate hooks. */
+const HeikinAshiRenderer = ({ data }) => {
+  const { points, yScale } = usePriceChartCoordinates(data)
+  if (!yScale || points.length < 2) return null
 
   // Auto-compute candle width from point spacing (70% of gap, min 2px)
   const xGap = points.length > 1 ? Math.abs(points[1].x - points[0].x) : 8
@@ -28,14 +17,14 @@ const HeikinAshiRenderer = ({ formattedGraphicalItems, yAxisMap }) => {
     if (!d || d.haOpen == null || d.haClose == null || d.haHigh == null || d.haLow == null) continue
 
     const x = points[i].x
-    if (x == null) continue
+    if (!Number.isFinite(x)) continue
 
     const yOpen = yScale(d.haOpen)
     const yClose = yScale(d.haClose)
     const yHigh = yScale(d.haHigh)
     const yLow = yScale(d.haLow)
 
-    if ([yOpen, yClose, yHigh, yLow].some(v => isNaN(v))) continue
+    if ([yOpen, yClose, yHigh, yLow].some(v => !Number.isFinite(v))) continue
 
     const bullish = d.haClose >= d.haOpen
     const color = bullish ? '#10b981' : '#ef4444'
@@ -54,7 +43,7 @@ const HeikinAshiRenderer = ({ formattedGraphicalItems, yAxisMap }) => {
           y={bodyTop}
           width={bodyWidth}
           height={bodyHeight}
-          fill={bullish ? color : color}
+          fill={color}
           stroke={color}
           strokeWidth={0.5}
         />
