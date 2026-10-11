@@ -567,6 +567,181 @@ describe('safeCancelOrder — surfaces cancelled-with-partials filledSize (issue
     assert.equal(result.cancelled, true);
     assert.equal(result.filledSize, 0.004, 'falls back to the tracked high-water mark when status omits it');
   });
+
+  const withImmediateTimeouts = async (run) => {
+    const originalSetTimeout = global.setTimeout;
+    global.setTimeout = (callback) => {
+      queueMicrotask(callback);
+      return 0;
+    };
+    try {
+      return await run();
+    } finally {
+      global.setTimeout = originalSetTimeout;
+    }
+  };
+
+  for (const status of ['CANCELLED', 'canceled', 'EXPIRED', 'failed']) {
+    for (const acknowledged of [false, true]) {
+      it(`resolves ${status} after ${acknowledged ? 'an acknowledged' : 'a refused'} cancel`, async () => {
+        await withImmediateTimeouts(async () => {
+          let getOrderCalls = 0;
+          let cancelCalls = 0;
+          const adapter = {
+            cancelOrder: async () => { cancelCalls++; return { success: acknowledged }; },
+            getOrder: async () => {
+              getOrderCalls++;
+              return {
+                status,
+                filledSize: 0.003,
+                filledValue: 153,
+                averageFilledPrice: 51000,
+                totalFees: 0.02,
+                side: 'SELL',
+              };
+            },
+          };
+          const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+          exec.restoreBodyTpOrder('body-terminal', 'tp-terminal', 0.01, 51000);
+
+          assert.deepEqual(await exec.cancelBodyTpOrder('body-terminal'), {
+            cancelled: true,
+            filled: false,
+            filledSize: 0.003,
+            filledValue: 153,
+            averageFilledPrice: 51000,
+            totalFees: 0.02,
+          });
+          assert.equal(exec.isBodyTpOrder('tp-terminal'), false);
+          assert.equal(getOrderCalls, 1, 'terminal status should resolve on its first read');
+          assert.equal(cancelCalls, 1, 'terminal status should avoid another cancel attempt');
+        });
+      });
+    }
+  }
+
+  for (const status of ['CANCELED', 'EXPIRED', 'FAILED']) {
+    for (const acknowledged of [false, true]) {
+      it(`resolves zero-fill ${status} after ${acknowledged ? 'an acknowledged' : 'a refused'} cancel`, async () => {
+        await withImmediateTimeouts(async () => {
+          let getOrderCalls = 0;
+          const adapter = {
+            cancelOrder: async () => ({ success: acknowledged }),
+            getOrder: async () => {
+              getOrderCalls++;
+              return { status, filledSize: 0, side: 'SELL' };
+            },
+          };
+          const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+          exec.restoreBodyTpOrder('body-zero', 'tp-zero', 0.01, 51000);
+
+          assert.deepEqual(await exec.cancelBodyTpOrder('body-zero'), {
+            cancelled: true,
+            filled: false,
+            filledSize: 0,
+            filledValue: 0,
+            averageFilledPrice: 0,
+            totalFees: 0,
+          });
+          assert.equal(getOrderCalls, 1, 'terminal status should resolve on its first read');
+        });
+      });
+    }
+  }
+
+  for (const acknowledged of [false, true]) {
+    it(`keeps filled classification ahead of cancellation for ${acknowledged ? 'acknowledged' : 'refused'} cancels`, async () => {
+      await withImmediateTimeouts(async () => {
+        const adapter = {
+          cancelOrder: async () => ({ success: acknowledged }),
+          getOrder: async () => ({ status: 'EXPIRED', completionPercentage: 100, filledSize: 0.01, side: 'SELL' }),
+        };
+        const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+        exec.restoreBodyTpOrder('body-filled', 'tp-filled', 0.01, 51000);
+
+        assert.deepEqual(await exec.cancelBodyTpOrder('body-filled'), {
+          cancelled: false,
+          filled: true,
+          filledSize: 0.01,
+        });
+        assert.equal(exec.getPendingOrdersList().some(order => order.orderId === 'tp-filled'), true);
+      });
+    });
+  }
+
+  for (const acknowledged of [false, true]) {
+    it(`retains tracking for unresolved status after ${acknowledged ? 'acknowledged' : 'refused'} cancel`, async () => {
+      await withImmediateTimeouts(async () => {
+        const adapter = {
+          cancelOrder: async () => ({ success: acknowledged }),
+          getOrder: async () => ({ status: 'PENDING_CANCEL', filledSize: 0, side: 'SELL' }),
+        };
+        const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+        exec.restoreBodyTpOrder('body-live', 'tp-live', 0.01, 51000);
+
+        assert.deepEqual(await exec.cancelBodyTpOrder('body-live'), {
+          cancelled: false,
+          filled: false,
+          filledSize: 0,
+        });
+        assert.equal(exec.isBodyTpOrder('tp-live'), true);
+      });
+    });
+  }
+
+  for (const statusResult of [
+    { label: 'OPEN', value: { status: 'OPEN', filledSize: 0, side: 'SELL' } },
+    { label: 'unknown', value: { status: 'MYSTERY', filledSize: 0, side: 'SELL' } },
+    { label: 'missing', value: null },
+    { label: 'failed read', error: new Error('status unavailable') },
+  ]) {
+    it(`keeps the order tracked after an acknowledged cancel with ${statusResult.label} status`, async () => {
+      await withImmediateTimeouts(async () => {
+        let getOrderCalls = 0;
+        const adapter = {
+          cancelOrder: async () => ({ success: true }),
+          getOrder: async () => {
+            getOrderCalls++;
+            if (statusResult.error) throw statusResult.error;
+            return statusResult.value;
+          },
+        };
+        const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+        exec.restoreBodyTpOrder('body-unknown', 'tp-unknown', 0.01, 51000);
+
+        assert.deepEqual(await exec.cancelBodyTpOrder('body-unknown'), {
+          cancelled: false,
+          filled: false,
+          filledSize: 0,
+        });
+        assert.equal(getOrderCalls, 6, 'unresolved status should exhaust the bounded verification reads');
+        assert.equal(exec.getPendingOrdersList().some(order => order.orderId === 'tp-unknown'), true);
+      });
+    });
+  }
+
+  it('agrees with polling when the same zero-fill EXPIRED order is already off-book', async () => {
+    const status = { status: 'EXPIRED', filledSize: 0, completionPercentage: 0, side: 'SELL' };
+    const cancelExec = createOrderExecutor('coinbase', baseConfig(), {
+      cancelOrder: async () => ({ success: true }),
+      getOrder: async () => status,
+    }, 'BTC-USDC', {});
+    cancelExec.restoreBodyTpOrder('body-agreement', 'tp-agreement', 0.01, 51000);
+    assert.deepEqual(await withImmediateTimeouts(() => cancelExec.cancelBodyTpOrder('body-agreement')), {
+      cancelled: true,
+      filled: false,
+      filledSize: 0,
+      filledValue: 0,
+      averageFilledPrice: 0,
+      totalFees: 0,
+    });
+
+    const pollExec = createOrderExecutor('coinbase', baseConfig(), { getOrder: async () => status }, 'BTC-USDC', {});
+    pollExec.restorePendingOrder('tp-agreement', { type: 'body_tp', price: 51000, size: 0.01, sizeUsdc: 510, placedAt: Date.now() });
+    const polled = await pollExec.checkPendingOrderFills();
+    assert.equal(polled.cancelled, 1);
+    assert.equal(pollExec.getPendingOrdersList().some(order => order.orderId === 'tp-agreement'), false);
+  });
 });
 
 describe('order-executor placement paths — unknown-outcome reconciliation (issue #226 follow-up)', () => {
