@@ -390,6 +390,26 @@ describe('AI runner lifecycle stop acknowledgement', () => {
     })
   }
 
+  it('keeps the stop failure visible across later successful status polls', async () => {
+    const h = await createHarness()
+    await startPolling(h, 'run-a')
+    h.lastCall('/api/runs/run-a').resolve(jsonResponse({ endTime: null, isActive: true }))
+    await flush()
+    h.lifecycle.stop()
+    await flush()
+    h.lastCall('/stop').resolve(failedResponse(500))
+    await flush()
+    assert.equal(h.view.notice.kind, 'stop')
+
+    await h.fireTimers()
+    h.lastCall('/api/runs/run-a').resolve(jsonResponse({ endTime: null, isActive: true }))
+    await flush()
+
+    assert.equal(h.view.notice?.kind, 'stop', 'polling does not erase the unacknowledged stop')
+    assert.equal(h.view.runningId, 'run-a')
+    assert.equal(h.timers.size, 1)
+  })
+
   it('re-reads authoritative status when the server reports the run is not active', async () => {
     const h = await createHarness()
     await startPolling(h, 'run-a')

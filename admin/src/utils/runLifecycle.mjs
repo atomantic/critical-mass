@@ -36,7 +36,7 @@ export const createRunLifecycle = ({
   refreshRuns = noop,
 } = {}) => {
   const state = {
-    generation: 0, timerId: null, controller: null, creating: false, runId: null, polling: false, stopping: false,
+    generation: 0, timerId: null, controller: null, creating: false, runId: null, polling: false, stopping: false, notice: null,
   }
 
   const owns = (token) => state.generation === token
@@ -45,6 +45,11 @@ export const createRunLifecycle = ({
     if (state.creating === creating) return
     state.creating = creating
     setPending(creating)
+  }
+
+  const setNotice = (notice) => {
+    state.notice = notice
+    setRunNotice(notice)
   }
 
   const markStopping = (stopping) => {
@@ -66,6 +71,7 @@ export const createRunLifecycle = ({
     state.controller = null
     state.runId = null
     state.polling = false
+    state.notice = null
     markCreating(false)
     markStopping(false)
   }
@@ -106,7 +112,7 @@ export const createRunLifecycle = ({
     // Ownership is kept: the run may still be live on the server, so an
     // unreadable status must be retryable rather than look like completion.
     if (!meta) {
-      setRunNotice({ kind: RUN_NOTICE.READ, message: error })
+      setNotice({ kind: RUN_NOTICE.READ, message: error })
       return
     }
 
@@ -114,7 +120,9 @@ export const createRunLifecycle = ({
     // active was interrupted (e.g. server restart) and will never finish.
     const interrupted = !meta.endTime && meta.isActive === false
     if (!meta.endTime && !interrupted) {
-      setRunNotice(null)
+      // A successful read only clears a read error; an unacknowledged stop stays
+      // visible until a retry begins or the run authoritatively settles.
+      if (state.notice?.kind === RUN_NOTICE.READ) setNotice(null)
       schedulePoll(token, runId)
       return
     }
@@ -124,7 +132,7 @@ export const createRunLifecycle = ({
 
     invalidate()
     setRunningId(null)
-    setRunNotice(null)
+    setNotice(null)
     const fallback = interrupted ? 'Run was interrupted before it finished.' : 'No output'
     setRunOutput(output || meta.error || fallback)
     refreshRuns()
@@ -140,7 +148,7 @@ export const createRunLifecycle = ({
     markCreating(true)
     state.controller = createAbortController()
     setRunOutput('')
-    setRunNotice(null)
+    setNotice(null)
 
     const result = await request('/api/runs', {
       method: 'POST',
@@ -171,7 +179,7 @@ export const createRunLifecycle = ({
     state.runId = runId
     state.controller = createAbortController()
     setRunOutput('')
-    setRunNotice(null)
+    setNotice(null)
     setRunningId(runId)
     pollRun(token, runId)
   }
@@ -184,7 +192,7 @@ export const createRunLifecycle = ({
       clearTimer(state.timerId)
       state.timerId = null
     }
-    setRunNotice(null)
+    setNotice(null)
     pollRun(state.generation, runId)
   }
 
@@ -197,7 +205,7 @@ export const createRunLifecycle = ({
     if (state.runId !== runId) return
     const token = state.generation
     markStopping(true)
-    setRunNotice(null)
+    setNotice(null)
 
     // Deliberately unsignalled: the cancellation must still reach the server if
     // the polling controller is aborted by navigation.
@@ -222,7 +230,7 @@ export const createRunLifecycle = ({
     }
 
     const reason = response ? `The server rejected the stop request (HTTP ${response.status}).` : 'Could not reach the server to stop the run.'
-    setRunNotice({ kind: RUN_NOTICE.STOP, message: `${reason} The run may still be working — retry Stop.` })
+    setNotice({ kind: RUN_NOTICE.STOP, message: `${reason} The run may still be working — retry Stop.` })
   }
 
   // Unmount/navigation: release local ownership only. Server-side work keeps

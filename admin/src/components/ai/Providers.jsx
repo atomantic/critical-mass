@@ -63,6 +63,7 @@ export default function AIProviders() {
   const loadDataRef = useRef(null)
   const reconciledRef = useRef(false)
   const mountedRef = useRef(false)
+  const operatorRunActionRef = useRef(false)
   const lifecycleRef = useRef(null)
   if (!lifecycleRef.current) {
     lifecycleRef.current = createRunLifecycle({
@@ -111,6 +112,8 @@ export default function AIProviders() {
     setRunStatuses(Object.fromEntries(entries))
     if (reconciledRef.current || !mountedRef.current) return
     reconciledRef.current = true
+    // An explicit operator choice made while classification was pending wins.
+    if (operatorRunActionRef.current) return
     const outstanding = entries.find(([, status]) => status === 'active')
       || entries.find(([, status]) => status === 'interrupted')
     if (!outstanding) return
@@ -171,12 +174,17 @@ export default function AIProviders() {
 
   const handleExecuteRun = () => {
     if (!runPrompt.trim() || !activeProviderId) return
+    operatorRunActionRef.current = true
     lifecycleRef.current.execute({ providerId: activeProviderId, prompt: runPrompt })
   }
 
-  const handleStopRun = (runId) => lifecycleRef.current.stop(runId)
+  const handleStopRun = (runId) => {
+    operatorRunActionRef.current = true
+    lifecycleRef.current.stop(runId)
+  }
 
   const handleAttachRun = (runId) => {
+    operatorRunActionRef.current = true
     setRunActionError('')
     setShowRunner(true)
     lifecycleRef.current.attach(runId)
