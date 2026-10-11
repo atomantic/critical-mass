@@ -579,6 +579,11 @@ describe('API key routes', () => {
       const writeJSON = (filePath, data) => fs.writeFileSync(filePath, JSON.stringify(data));
       registerKeysRoutes(app, { writeJSON });
 
+      const adapters = require('../src/adapters');
+      mock.method(adapters, 'getAdapter', () => ({
+        hasValidKeys: () => false,
+      }));
+
       // First, create keys
       await invoke(app, 'POST /api/:exchange/keys', {
         params: { exchange: 'coinbase' },
@@ -605,6 +610,11 @@ describe('API key routes', () => {
     it('succeeds gracefully even if keys file does not exist', async () => {
       const app = createFakeApp();
       registerKeysRoutes(app, { writeJSON: () => {} });
+
+      const adapters = require('../src/adapters');
+      mock.method(adapters, 'getAdapter', () => ({
+        hasValidKeys: () => false,
+      }));
 
       const res = await invoke(app, 'DELETE /api/:exchange/keys', {
         params: { exchange: 'gemini' },
