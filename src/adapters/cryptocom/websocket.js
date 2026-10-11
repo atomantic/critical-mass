@@ -14,14 +14,10 @@
  * - Must wait 1s after connection before subscribing (rate limit)
  */
 
-const WebSocket = require('ws');
+const { createWebSocketLifecycle } = require('../../websocket-lifecycle');
 const { createContextLogger } = require('../../logger');
 
 const CRYPTOCOM_WS_URL = 'wss://stream.crypto.com/exchange/v1/market';
-const HEARTBEAT_INTERVAL = 30000;
-const MAX_MISSED_PONGS = 2; // terminate after this many unanswered pings
-const RECONNECT_BASE_DELAY = 1000;
-const MAX_RECONNECT_DELAY = 60000;
 const POST_CONNECT_DELAY = 1000; // Wait 1s before subscribing
 
 /**
@@ -49,67 +45,10 @@ const toInstrumentName = (productId) =>
  */
 const createCryptocomWebSocketFeed = (exchange, config) => {
   const logger = createContextLogger({ exchange, pair: config.productId });
-  let ws = null;
-  let isConnected = false;
-  let shouldReconnect = true;
-  let reconnectAttempts = 0;
-  let heartbeatInterval = null;
-  let reconnectTimeout = null;
-  let subscribeTimeout = null;
   let requestId = 1;
-  let missedPongs = 0;
-
   const instrumentName = toInstrumentName(config.productId);
 
-  const connect = () => {
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-      return;
-    }
-
-    logger.info(`🔌 [${exchange}] Connecting to Crypto.com WebSocket...`, { lifecycle: 'connecting' });
-
-    ws = new WebSocket(CRYPTOCOM_WS_URL);
-
-    ws.on('open', () => {
-      logger.info(`✅ [${exchange}] Crypto.com WebSocket connected`, { lifecycle: 'connected' });
-      isConnected = true;
-      reconnectAttempts = 0;
-
-      // Wait 1s before subscribing (rate limit protection)
-      subscribeTimeout = setTimeout(() => {
-        subscribe();
-        startHeartbeat();
-        config.onConnect?.();
-      }, POST_CONNECT_DELAY);
-    });
-
-    ws.on('message', (data) => {
-      missedPongs = 0; // Any inbound data proves the connection is alive
-      handleMessage(data.toString());
-    });
-
-    ws.on('close', (code, reason) => {
-      logger.info(`🔌 [${exchange}] Crypto.com WebSocket closed: ${code} ${reason}`, {
-        lifecycle: 'closed',
-        code,
-        reason: reason.toString(),
-      });
-      handleDisconnect();
-    });
-
-    ws.on('error', (error) => {
-      logger.error(`❌ [${exchange}] Crypto.com WebSocket error: ${error.message}`, { error: error.message });
-      config.onError?.(error);
-    });
-
-    ws.on('pong', () => {
-      missedPongs = 0; // Connection alive
-    });
-  };
-
-  const subscribe = () => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
+  const subscribe = (ws) => {
     const tickerSub = {
       id: requestId++,
       method: 'subscribe',
@@ -138,7 +77,7 @@ const createCryptocomWebSocketFeed = (exchange, config) => {
    * Handle incoming messages from Crypto.com WebSocket
    * Message structure: { id, method, code, result: { channel, instrument_name, subscription, data: [...] } }
    */
-  const handleMessage = (data) => {
+  const handleMessage = (data, ws) => {
     const message = safeJsonParse(data);
     if (!message) return;
 
@@ -223,100 +162,11 @@ const createCryptocomWebSocketFeed = (exchange, config) => {
     }
   };
 
-  const handleDisconnect = () => {
-    isConnected = false;
-    stopHeartbeat();
-    config.onDisconnect?.();
-
-    if (shouldReconnect) {
-      scheduleReconnect();
-    }
-  };
-
-  const scheduleReconnect = () => {
-    if (reconnectTimeout) clearTimeout(reconnectTimeout);
-
-    const delay = Math.min(
-      RECONNECT_BASE_DELAY * Math.pow(2, reconnectAttempts),
-      MAX_RECONNECT_DELAY
-    );
-
-    logger.info(`🔄 [${exchange}] Reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts + 1})`, {
-      lifecycle: 'reconnecting',
-      delayMs: delay,
-      reconnectAttempt: reconnectAttempts + 1,
-    });
-
-    reconnectTimeout = setTimeout(() => {
-      reconnectAttempts++;
-      connect();
-    }, delay);
-  };
-
-  // Heartbeat with pong-timeout watchdog: if MAX_MISSED_PONGS pings go
-  // unanswered, terminate() forces 'close' so the reconnect/backoff path runs.
-  const startHeartbeat = () => {
-    stopHeartbeat();
-    missedPongs = 0;
-    heartbeatInterval = setInterval(() => {
-      if (ws?.readyState !== WebSocket.OPEN) return;
-
-      if (missedPongs >= MAX_MISSED_PONGS) {
-        logger.error(`💀 [${exchange}] No pong after ${missedPongs} pings (${(missedPongs * HEARTBEAT_INTERVAL) / 1000}s) — terminating dead WebSocket to trigger reconnect`, {
-          missedPongs,
-          elapsedMs: missedPongs * HEARTBEAT_INTERVAL,
-        });
-        ws.terminate();
-        return;
-      }
-
-      missedPongs++;
-      ws.ping();
-    }, HEARTBEAT_INTERVAL);
-  };
-
-  const stopHeartbeat = () => {
-    if (heartbeatInterval) {
-      clearInterval(heartbeatInterval);
-      heartbeatInterval = null;
-    }
-  };
-
-  const disconnect = () => {
-    shouldReconnect = false;
-    stopHeartbeat();
-
-    if (subscribeTimeout) {
-      clearTimeout(subscribeTimeout);
-      subscribeTimeout = null;
-    }
-    if (reconnectTimeout) {
-      clearTimeout(reconnectTimeout);
-      reconnectTimeout = null;
-    }
-
-    if (ws) {
-      ws.close();
-      ws = null;
-    }
-
-    isConnected = false;
-    logger.info(`🔌 [${exchange}] Crypto.com WebSocket disconnected`, { lifecycle: 'disconnected' });
-  };
-
-  const isActive = () => isConnected;
-
-  const getStatus = () => ({
-    connected: isConnected,
-    reconnectAttempts,
+  return createWebSocketLifecycle({
+    url: CRYPTOCOM_WS_URL, exchange, logger, config, subscribe, handleMessage,
+    name: 'Crypto.com WebSocket',
+    subscribeDelay: POST_CONNECT_DELAY,
   });
-
-  return {
-    connect,
-    disconnect,
-    isActive,
-    getStatus,
-  };
 };
 
 module.exports = {

@@ -315,6 +315,7 @@ describe('buildLadder', () => {
     // Small budget with fibonacci means top levels get tiny allocations
     const lc = calc({ minOrderSizeUsdc: 100, baseSizeUsdc: 10 });
     const result = lc.buildLadder(100000, 500, defaultContext());
+    assert.deepEqual(result.levels.map(level => level.sizeUsdc), [121.21, 196.98]);
     for (const level of result.levels) {
       assert.ok(level.sizeUsdc >= 100, `sizeUsdc ${level.sizeUsdc} should be >= 100`);
     }
@@ -324,6 +325,7 @@ describe('buildLadder', () => {
     const lc = calc();
     const currentPrice = 100000;
     const result = lc.buildLadder(currentPrice, 2000, defaultContext());
+    assert.ok(result.levels.length > 0, 'expected surviving ladder levels');
     for (const level of result.levels) {
       const expected = Math.round(((currentPrice - level.price) / currentPrice) * 10000) / 100;
       assert.ok(Math.abs(level.distancePct - expected) < 0.02,
@@ -334,6 +336,7 @@ describe('buildLadder', () => {
   it('each level has assetQty = sizeUsdc / price', () => {
     const lc = calc();
     const result = lc.buildLadder(100000, 2000, defaultContext());
+    assert.ok(result.levels.length > 0, 'expected surviving ladder levels');
     for (const level of result.levels) {
       const expected = Math.round((level.sizeUsdc / level.price) * 1e8) / 1e8;
       assert.equal(level.assetQty, expected);

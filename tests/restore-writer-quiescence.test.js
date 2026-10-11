@@ -575,8 +575,10 @@ describe('restore joins gateway work that was already in flight', () => {
     // exported through the tracker, not as the raw implementations.
     const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'dca-engine.js'), 'utf8');
     const exportsBlock = source.slice(source.lastIndexOf('module.exports = {'));
-    assert.match(exportsBlock, /runIntervalCycle:[\s\S]*?trackPendingWrite\(`dca-cycle:/);
-    assert.match(exportsBlock, /executeConsolidation:[\s\S]*?trackPendingWrite\(`dca-consolidation:/);
+    assert.match(source, /const runFundWrite = [\s\S]*?trackPendingWrite\(`\$\{label\}:\$\{key\}`/);
+    assert.match(exportsBlock, /runIntervalCycle:[\s\S]*?runFundWrite\('dca-cycle'/);
+    assert.match(exportsBlock, /executeConsolidation:[\s\S]*?runFundWrite\('dca-consolidation'/);
+    assert.match(exportsBlock, /retryFailedSell:[\s\S]*?runFundWrite\('dca-sell-retry'/);
   });
 });
 

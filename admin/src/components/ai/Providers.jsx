@@ -1,8 +1,26 @@
 import { useState, useEffect, useRef, useId } from 'react'
 import ModalDialog from '../ModalDialog'
-import { createRunLifecycle } from '../../utils/runLifecycle.mjs'
+import { createRunLifecycle, RUN_NOTICE } from '../../utils/runLifecycle.mjs'
 
 const PROVIDER_TYPES = { cli: 'CLI', api: 'API' }
+
+// A run record without endTime is either live or was interrupted; only the
+// per-run metadata (isActive) can tell them apart, so each is looked up.
+async function classifyRun(run) {
+  if (run.endTime) return 'done'
+  const response = await fetch(`/api/runs/${run.id}`).catch(() => null)
+  const meta = response?.ok ? await response.json().catch(() => null) : null
+  if (!meta) return 'unavailable'
+  if (meta.endTime) return 'done'
+  return meta.isActive === false ? 'interrupted' : 'active'
+}
+
+const RUN_STATUS_LABELS = {
+  active: 'Running...',
+  interrupted: 'Interrupted',
+  unavailable: 'Status unavailable',
+  done: 'Finished',
+}
 
 async function requireAcceptedResponse(response) {
   if (response.ok) return
@@ -31,6 +49,10 @@ export default function AIProviders() {
   const [runPrompt, setRunPrompt] = useState('')
   const [runningId, setRunningId] = useState(null)
   const [runOutput, setRunOutput] = useState('')
+  const [runNotice, setRunNotice] = useState(null)
+  const [stopPending, setStopPending] = useState(false)
+  const [runStatuses, setRunStatuses] = useState({})
+  const [runActionError, setRunActionError] = useState('')
   const [sampleProviders, setSampleProviders] = useState([])
   const [showSamples, setShowSamples] = useState(false)
   const [loadingSamples, setLoadingSamples] = useState(false)
@@ -39,12 +61,17 @@ export default function AIProviders() {
   const [mutationError, setMutationError] = useState('')
   const mutationLocks = useRef(new Set())
   const loadDataRef = useRef(null)
+  const reconciledRef = useRef(false)
+  const mountedRef = useRef(false)
+  const operatorRunActionRef = useRef(false)
   const lifecycleRef = useRef(null)
   if (!lifecycleRef.current) {
     lifecycleRef.current = createRunLifecycle({
       setRunningId,
       setRunOutput,
       setPending: setRunPending,
+      setStopPending,
+      setRunNotice,
       refreshRuns: () => loadDataRef.current?.(),
     })
   }
@@ -54,7 +81,13 @@ export default function AIProviders() {
   // The lifecycle owner holds every runner timer and in-flight read; unmounting
   // invalidates its generation so no pending continuation can revive polling on
   // a detached view. Server-side work is only cancelled by an explicit Stop.
-  useEffect(() => () => lifecycleRef.current.dispose(), [])
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      lifecycleRef.current.dispose()
+    }
+  }, [])
 
   const loadData = async () => {
     setLoading(true)
@@ -64,8 +97,28 @@ export default function AIProviders() {
     ])
     setProviders(providersRes.providers || [])
     setActiveProviderId(providersRes.activeProvider)
-    setRuns(runsRes.runs || [])
+    const loadedRuns = runsRes.runs || []
+    setRuns(loadedRuns)
     setLoading(false)
+    await reconcileRuns(loadedRuns)
+  }
+
+  // Server-side runs outlive the page. Classify every unfinished record, and on
+  // the first load re-attach to the newest live (else interrupted) one so its
+  // progress, output and Stop are visible again without creating a second run.
+  const reconcileRuns = async (loadedRuns) => {
+    const unfinished = loadedRuns.filter(run => !run.endTime)
+    const entries = await Promise.all(unfinished.map(async run => [run.id, await classifyRun(run)]))
+    setRunStatuses(Object.fromEntries(entries))
+    if (reconciledRef.current || !mountedRef.current) return
+    reconciledRef.current = true
+    // An explicit operator choice made while classification was pending wins.
+    if (operatorRunActionRef.current) return
+    const outstanding = entries.find(([, status]) => status === 'active')
+      || entries.find(([, status]) => status === 'interrupted')
+    if (!outstanding) return
+    setShowRunner(true)
+    lifecycleRef.current.attach(outstanding[0])
   }
 
   // Keep the lifecycle owner's run-list refresh pointed at the current closure
@@ -121,10 +174,34 @@ export default function AIProviders() {
 
   const handleExecuteRun = () => {
     if (!runPrompt.trim() || !activeProviderId) return
+    operatorRunActionRef.current = true
     lifecycleRef.current.execute({ providerId: activeProviderId, prompt: runPrompt })
   }
 
-  const handleStopRun = () => lifecycleRef.current.stop()
+  const handleStopRun = (runId) => {
+    operatorRunActionRef.current = true
+    lifecycleRef.current.stop(runId)
+  }
+
+  const handleAttachRun = (runId) => {
+    operatorRunActionRef.current = true
+    setRunActionError('')
+    setShowRunner(true)
+    lifecycleRef.current.attach(runId)
+  }
+
+  // Loads the persisted full prompt into the editor. Nothing runs until the
+  // operator presses Execute, so a rerun is always an explicit new run.
+  const handleRerun = async (runId) => {
+    setRunActionError('')
+    const response = await fetch(`/api/runs/${runId}/prompt`).catch(() => null)
+    if (!response?.ok) {
+      setRunActionError(`Could not load the original prompt${response ? ` (HTTP ${response.status})` : ''}.`)
+      return
+    }
+    setRunPrompt(await response.text())
+    setShowRunner(true)
+  }
 
   const handleLoadSamples = async () => {
     setLoadingSamples(true)
@@ -196,6 +273,7 @@ export default function AIProviders() {
       </div>
 
       {mutationError && <p role="alert" className="text-sm text-red-400">{mutationError}</p>}
+      {runActionError && <p role="alert" className="text-sm text-red-400">{runActionError}</p>}
 
       {/* Prompt Runner */}
       {showRunner && (
@@ -236,13 +314,35 @@ export default function AIProviders() {
             </button>
             {runningId && (
               <button
-                onClick={handleStopRun}
-                className="px-4 py-2 bg-red-700 hover:bg-red-800 text-white rounded-lg transition-colors text-sm"
+                onClick={() => handleStopRun()}
+                disabled={stopPending}
+                className="px-4 py-2 bg-red-700 hover:bg-red-800 text-white rounded-lg transition-colors text-sm disabled:opacity-50"
               >
-                Stop
+                {stopPending ? 'Stopping...' : runNotice?.kind === RUN_NOTICE.STOP ? 'Retry Stop' : 'Stop'}
               </button>
             )}
           </div>
+
+          {runningId && (
+            <p className="text-xs text-gray-400 font-mono truncate">
+              <span className="inline-block w-2 h-2 rounded-full bg-yellow-500 animate-pulse mr-2" />
+              Run {runningId} is in progress on the server
+            </p>
+          )}
+
+          {runNotice && (
+            <div role="alert" className="flex flex-col sm:flex-row sm:items-center gap-2 text-sm text-red-400">
+              <span>{runNotice.message}</span>
+              {runNotice.kind === RUN_NOTICE.READ && (
+                <button
+                  onClick={() => lifecycleRef.current.refresh()}
+                  className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm shrink-0"
+                >
+                  Retry status
+                </button>
+              )}
+            </div>
+          )}
 
           {runOutput && (
             <div className="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-64 overflow-auto">
@@ -457,29 +557,61 @@ export default function AIProviders() {
         <div className="mt-8">
           <h2 className="text-xl font-bold text-white mb-4">Recent Runs</h2>
           <div className="space-y-2">
-            {runs.map(run => (
-              <div
-                key={run.id}
-                className="bg-gray-800 border border-gray-700 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
-              >
-                <div className="flex items-start sm:items-center gap-3 min-w-0">
-                  <span className={`w-2 h-2 rounded-full shrink-0 mt-1.5 sm:mt-0 ${
-                    run.success === true ? 'bg-green-500' :
-                    run.success === false ? 'bg-red-500' :
-                    'bg-yellow-500 animate-pulse'
-                  }`} />
-                  <div className="min-w-0">
-                    <p className="text-sm text-white truncate">{run.prompt}</p>
-                    <p className="text-xs text-gray-400">
-                      {run.providerName} &middot; {new Date(run.startTime).toLocaleString()}
-                    </p>
+            {runs.map(run => {
+              const status = run.endTime ? 'done' : runStatuses[run.id]
+              const attached = runningId === run.id
+              return (
+                <div
+                  key={run.id}
+                  className="bg-gray-800 border border-gray-700 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                >
+                  <div className="flex items-start sm:items-center gap-3 min-w-0">
+                    <span className={`w-2 h-2 rounded-full shrink-0 mt-1.5 sm:mt-0 ${
+                      run.success === true ? 'bg-green-500' :
+                      run.success === false || status === 'interrupted' ? 'bg-red-500' :
+                      status === 'unavailable' ? 'bg-gray-500' :
+                      'bg-yellow-500 animate-pulse'
+                    }`} />
+                    <div className="min-w-0">
+                      <p className="text-sm text-white truncate">{run.prompt}</p>
+                      <p className="text-xs text-gray-400">
+                        {run.providerName} &middot; {new Date(run.startTime).toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0 pl-5 sm:pl-0">
+                    <span className={`text-sm ${status === 'interrupted' ? 'text-red-400' : 'text-gray-400'}`}>
+                      {run.duration ? `${(run.duration / 1000).toFixed(1)}s` : (RUN_STATUS_LABELS[status] || 'Checking...')}
+                    </span>
+                    <button
+                      onClick={() => handleAttachRun(run.id)}
+                      disabled={attached}
+                      className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors disabled:opacity-50"
+                    >
+                      {status === 'active' ? (attached ? 'Attached' : 'Attach') : 'View'}
+                    </button>
+                    {status === 'active' && (
+                      <button
+                        onClick={() => handleStopRun(run.id)}
+                        disabled={stopPending}
+                        className="px-3 py-1.5 text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-sm transition-colors disabled:opacity-50"
+                      >
+                        Stop
+                      </button>
+                    )}
+                    {status !== 'active' && status !== undefined && (
+                      <button
+                        onClick={() => handleRerun(run.id)}
+                        title="Load the full original prompt into the runner; nothing runs until Execute"
+                        className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors"
+                      >
+                        Rerun
+                      </button>
+                    )}
                   </div>
                 </div>
-                <div className="text-sm text-gray-400 shrink-0 pl-5 sm:pl-0">
-                  {run.duration ? `${(run.duration / 1000).toFixed(1)}s` : 'Running...'}
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}
