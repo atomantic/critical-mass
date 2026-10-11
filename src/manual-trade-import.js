@@ -27,7 +27,7 @@ const { createNewBody, syncPositionState, mergeIntoBody, computeBuyOrderShortfal
 const { loadRegimeState, saveRegimeState } = require('./state-tracker');
 const { STATUS, INTENT_PHASE } = require('./manual-trades');
 const { FillValidationError, validateFillInput, LEGACY_CONSUMPTION_KEY } = require('./fill-ledger');
-const { readBooleanFlag } = require('./shared-utils');
+const { readBooleanFlag, isCancelledStatus } = require('./shared-utils');
 const { getRegimeConfig } = require('./config-utils');
 
 /** Logger used when a caller supplies none (tests, CLI paths). */
@@ -108,6 +108,18 @@ const averagePrice = (totalQuote, totalSize) => (totalSize > 0 ? totalQuote / to
 /** Milliseconds of the first fill, used as the leg's timestamp. */
 const legTimestamp = (fills) => new Date(fills[0].tradeTime).getTime();
 
+/** Backoff between client-id lookups right after an ambiguous placement. */
+const RECOVERY_LOOKUP_RETRY_DELAYS_MS = [500, 1000];
+
+/**
+ * Whether an order found by client id never recovered anything and can never
+ * execute: off the book (or rejected) with no executions. Anything else —
+ * open, filled, or terminal with partial executions — is a real attempt.
+ * @param {{status?: string, filledSize?: number}} order
+ */
+const isNeverExecuted = (order) => (isCancelledStatus(order) || String(order.status || '').toUpperCase() === 'REJECTED')
+  && !(Number(order.filledSize) > 0);
+
 /**
  * Create the manual-trade importer for one fund.
  *
@@ -130,7 +142,9 @@ const legTimestamp = (fills) => new Date(fills[0].tradeTime).getTime();
  *   case the persisted body on regime-state.json is extended directly
  *   instead (synchronously, and flagged `needsTpReprice` rather than
  *   touched if it already carries a live TP from before the engine stopped).
- * @returns {Object} importSell / importBuy / importPair / checkPendingBuy / recoverPendingBodyIntents
+ * @param {number[]} [deps.recoveryLookupRetryDelaysMs] - Backoff between
+ *   client-id lookups after an ambiguous recovery-buy placement (tests pass [])
+ * @returns {Object} importSell / importBuy / importPair / checkPendingBuy / recoverPendingBodyIntents / recoverPendingRecoveryIntents
  */
 const createManualTradeImporter = ({
   exchange,
@@ -142,6 +156,7 @@ const createManualTradeImporter = ({
   logger,
   injectBody = null,
   extendBody = null,
+  recoveryLookupRetryDelaysMs = RECOVERY_LOOKUP_RETRY_DELAYS_MS,
 }) => {
   const log = logger || NOOP_LOGGER;
   const ok = (extra) => ({ success: true, exchange, pair, ...extra });
@@ -201,7 +216,7 @@ const createManualTradeImporter = ({
     fillLedger.persist();
 
     // Idempotent by sellOrderId — a retry returns the existing record.
-    const trade = store.addManualSell({
+    let trade = store.addManualSell({
       sellOrderId,
       sellPrice: averagePrice(totalQuote, totalSize),
       sellSize: totalSize,
@@ -210,6 +225,15 @@ const createManualTradeImporter = ({
       sellFillTradeIds: tradeIds,
       note: note || '',
     });
+
+    // An earlier placement whose outcome was never recorded (crash, restart,
+    // transport error) may be live on the exchange. Resolve it before placing
+    // or linking anything, so the checks below see the adopted order (#1058).
+    if ((placingRecoveryBuy || existingBuyOrderId) && trade.recoveryIntent) {
+      const resolved = await reconcileRecoveryIntent(trade);
+      if (resolved.blocked) return fail(resolved.error);
+      trade = store.getById(trade.id);
+    }
 
     if (existingBuyOrderId) {
       if (trade.buyOrderId && trade.buyOrderId !== existingBuyOrderId) {
@@ -223,20 +247,139 @@ const createManualTradeImporter = ({
       // this guard is what prevents the duplicate live order.
       log.info(`ℹ️ 📝 [${exchange}] Manual trade: recovery buy ${trade.buyOrderId} already placed for sell ${sellOrderId} — skipping duplicate order`, { orderId: trade.buyOrderId, sellOrderId });
     } else if (placingRecoveryBuy) {
-      const productId = fundConfig?.productId || 'BTC-USDC';
-      const buySize = totalSize; // Recover exactly what was sold
-      let result;
-      try {
-        result = await adapter.placeLimitBuy(productId, buySize, buyPrice, { postOnly: false });
-      } catch (err) {
-        return fail(`Failed to place recovery buy: ${err.message}`);
-      }
-      if (!result?.success) return fail(`Failed to place recovery buy: ${result?.errorMessage || 'unknown'}`);
-      store.recordRecoveryBuy(trade.id, result.orderId, buyPrice, buySize);
-      log.info(`ℹ️ 📝 [${exchange}] Manual trade: placed recovery buy ${buySize} @ $${buyPrice} (orderId=${result.orderId})`, { orderId: result.orderId, buySize, buyPrice });
+      // Recover exactly what was sold.
+      const placed = await placeRecoveryBuy(trade, totalSize, buyPrice);
+      if (!placed.success) return fail(placed.error);
     }
 
     return ok({ trade: store.getById(trade.id) });
+  };
+
+  /**
+   * Ask the exchange whether a recorded recovery intent's order exists
+   * (issue #1058) and settle the intent accordingly:
+   *  - found and live/executed → adopt it as the trade's recovery buy;
+   *  - positively absent, or off the book with no executions → release;
+   *  - lookup failed or unsupported → keep blocking, with the reason recorded
+   *    on the intent so the operator can see why nothing was placed.
+   * Callers must hold the sell's lock.
+   * @param {Object} trade - Trade carrying a recoveryIntent
+   * @param {{retryDelaysMs?: number[]}} [opts] - Retries a not-found lookup
+   *   (only right after a placement, when the order may not be indexed yet)
+   * @returns {Promise<{adopted?: boolean, released?: boolean, blocked?: boolean, orderId?: string, error?: string}>}
+   */
+  const reconcileRecoveryIntent = async (trade, { retryDelaysMs = [] } = {}) => {
+    const intent = trade.recoveryIntent;
+    const block = (reason) => {
+      const error = `Recovery buy for sell ${trade.sellOrderId} (client order id ${intent.clientOrderId}) may already be on the exchange: ${reason}. No new buy will be placed until the exchange confirms it — retry once it is reachable, or check the exchange for that client order id`;
+      store.noteRecoveryIntentCheck(trade.id, error);
+      log.warn(`⚠️ [${exchange}] Manual trade: ${error}`, { tradeId: trade.id, clientOrderId: intent.clientOrderId });
+      return { blocked: true, error };
+    };
+    if (typeof adapter.findOrderByClientOrderId !== 'function') {
+      return block(`${exchange} cannot look up orders by client order id`);
+    }
+
+    let found = null;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        found = await adapter.findOrderByClientOrderId(intent.clientOrderId, intent.productId);
+      } catch (err) {
+        return block(`the client order id lookup failed (${err.message})`);
+      }
+      if (found || attempt >= retryDelaysMs.length) break;
+      await new Promise((r) => setTimeout(r, retryDelaysMs[attempt]));
+    }
+
+    if (found && !found.orderId) return block('the exchange returned a match with no order id');
+    if (found && !isNeverExecuted(found)) {
+      store.recordRecoveryBuy(trade.id, found.orderId, intent.price, intent.size);
+      log.warn(`⚠️ [${exchange}] Manual trade: adopted recovery buy ${found.orderId} (status ${found.status}) found by client order id ${intent.clientOrderId} — no duplicate placed`, {
+        tradeId: trade.id,
+        orderId: found.orderId,
+        clientOrderId: intent.clientOrderId,
+        status: found.status,
+      });
+      return { adopted: true, orderId: found.orderId };
+    }
+
+    store.releaseRecoveryIntent(trade.id);
+    log.info(`ℹ️ 📝 [${exchange}] Manual trade: recovery buy with client order id ${intent.clientOrderId} ${found ? `is ${found.status} with no executions` : 'was never received by the exchange'} — released`, {
+      tradeId: trade.id,
+      clientOrderId: intent.clientOrderId,
+      status: found?.status ?? null,
+    });
+    return { released: true };
+  };
+
+  /**
+   * Place a recovery buy for a sell-first trade behind a durable intent
+   * (issue #1058). The intent, carrying a deterministic client order id, is
+   * persisted before submission; an acceptance converts it into the trade's
+   * recovery buy in one store write, a clean rejection releases it, and a
+   * throw (whose order may still have landed) is reconciled by client order
+   * id before reporting anything. Callers must hold the sell's lock and have
+   * resolved any earlier intent.
+   * @param {Object} trade - Sell-first trade with no recorded or pending buy
+   * @param {number} size
+   * @param {number} price
+   * @returns {Promise<{success: boolean, orderId?: string, adopted?: boolean, error?: string}>}
+   */
+  const placeRecoveryBuy = async (trade, size, price) => {
+    const productId = fundConfig?.productId || 'BTC-USDC';
+    let intent;
+    try {
+      intent = store.recordRecoveryIntent(trade.id, { productId, size, price });
+    } catch (err) {
+      return { success: false, error: `Failed to record recovery buy intent; nothing was placed: ${err.message}` };
+    }
+
+    let result;
+    let ambiguous = null;
+    try {
+      result = await adapter.placeLimitBuy(productId, size, price, { postOnly: false, clientOrderId: intent.clientOrderId });
+      // Accepted without an id: the order may be live but cannot be tracked
+      // by exchange id, so it is resolved by client id like a throw.
+      if (result?.success && !result.orderId) ambiguous = 'accepted without an order id';
+    } catch (err) {
+      ambiguous = err.message;
+    }
+    if (ambiguous) {
+      log.warn(`⚠️ [${exchange}] Manual trade: recovery buy placement outcome unknown (${ambiguous}) — reconciling by client order id ${intent.clientOrderId}`, {
+        tradeId: trade.id,
+        clientOrderId: intent.clientOrderId,
+      });
+      const resolved = await reconcileRecoveryIntent(store.getById(trade.id), { retryDelaysMs: recoveryLookupRetryDelaysMs });
+      if (resolved.adopted) return { success: true, orderId: resolved.orderId, adopted: true };
+      return { success: false, error: `Failed to place recovery buy: ${ambiguous}${resolved.blocked ? `. ${resolved.error}` : ''}` };
+    }
+    if (!result?.success) {
+      store.releaseRecoveryIntent(trade.id);
+      return { success: false, error: `Failed to place recovery buy: ${result?.errorMessage || 'unknown'}` };
+    }
+    store.recordRecoveryBuy(trade.id, result.orderId, price, size);
+    log.info(`ℹ️ 📝 [${exchange}] Manual trade: placed recovery buy ${size} @ $${price} (orderId=${result.orderId})`, { orderId: result.orderId, buySize: size, buyPrice: price, clientOrderId: intent.clientOrderId });
+    return { success: true, orderId: result.orderId };
+  };
+
+  /**
+   * Reconcile every recovery intent left unresolved by a crash or restart
+   * (issue #1058), so an order that reached the exchange becomes a tracked
+   * pending buy without waiting for the operator to retry that sell. Each sell
+   * resolves under its own lock; a failed lookup keeps that intent blocking.
+   * @returns {Promise<Array<{tradeId: string, adopted?: boolean, released?: boolean, blocked?: boolean, error?: string}>>}
+   */
+  const recoverPendingRecoveryIntents = async () => {
+    const results = [];
+    for (const pending of store.getPendingRecoveryIntents()) {
+      const result = await store.withSellLock(pending.sellOrderId, async () => {
+        const trade = store.getById(pending.id);
+        if (!trade?.recoveryIntent) return { released: true };
+        return reconcileRecoveryIntent(trade);
+      }).catch((err) => ({ blocked: true, error: err.message }));
+      results.push({ tradeId: pending.id, ...result });
+    }
+    return results;
   };
 
   /**
@@ -895,7 +1038,7 @@ const createManualTradeImporter = ({
     return ok({ trade: store.getById(trade.id) });
   };
 
-  return { importSell, importBuy, importPair, checkPendingBuy, recoverPendingBodyIntents };
+  return { importSell, importBuy, importPair, checkPendingBuy, recoverPendingBodyIntents, recoverPendingRecoveryIntents };
 };
 
 module.exports = { createManualTradeImporter };

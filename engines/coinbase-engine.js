@@ -658,6 +658,11 @@ const wireManualTradeImport = (channel, method) => {
     // #1022) before any new import work. Failures are logged by the importer
     // and leave the intent pending for the next request.
     await importer.recoverPendingBodyIntents();
+    // Likewise reconcile recovery buys whose placement outcome a crash or
+    // transport error left unrecorded (issue #1058): adopt an order the
+    // exchange holds, release one it positively never received. A failed
+    // lookup keeps that sell blocked from placing another buy.
+    await importer.recoverPendingRecoveryIntents();
     return importer[method](payload || {});
   });
 };

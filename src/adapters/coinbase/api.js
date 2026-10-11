@@ -399,10 +399,13 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @param {number} price - Limit price in quote currency
    * @param {Object} [options] - Order options
    * @param {boolean} [options.postOnly] - Whether to use post-only mode (default: true)
+   * @param {string} [options.clientOrderId] - Deterministic client order id to send (random when omitted)
    * @returns {Promise<LimitSellResult|LimitBuyResult>} Order result
    */
   const placeLimitOrder = async (side, productId, baseAmount, price, options = {}) => {
-    const clientOrderId = crypto.randomUUID();
+    // A caller-supplied id makes the placement reconcilable from its own
+    // durable record (manual recovery buys, issue #1058).
+    const clientOrderId = options.clientOrderId || crypto.randomUUID();
     const postOnly = options.postOnly !== false; // Default to true
 
     // Get product details for proper rounding
