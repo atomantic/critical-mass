@@ -1,6 +1,9 @@
+import { usePlotArea } from 'recharts'
+import usePriceChartCoordinates from './usePriceChartCoordinates'
+
 /**
  * Custom SVG renderer for signal change annotations on the price chart.
- * Uses the same <Customized> pattern as HeikinAshiRenderer / AtomokuCloudRenderer.
+ * Uses the public Recharts coordinate hooks, like the other price layers.
  *
  * Reads `signalChange` field from chart data points and renders small markers
  * at the bottom of the chart area.
@@ -25,21 +28,11 @@ const MARKER_LABELS = {
   CLOSE: 'CLOSE',
 }
 
-const SignalAnnotationRenderer = ({ formattedGraphicalItems, yAxisMap }) => {
-  const yAxis = yAxisMap && Object.values(yAxisMap)[0]
-  if (!yAxis?.scale || !formattedGraphicalItems?.length) return null
-
-  const yScale = yAxis.scale
-  const domain = yScale.domain()
-  // Place markers near the bottom of the chart (at 5% above the min)
-  const yBottom = yScale(domain[0]) - 6
-
-  let points = null
-  for (const item of formattedGraphicalItems) {
-    const pts = item?.props?.points
-    if (pts?.length > 1) { points = pts; break }
-  }
-  if (!points) return null
+const SignalAnnotationRenderer = ({ data }) => {
+  const { points } = usePriceChartCoordinates(data)
+  const plot = usePlotArea()
+  if (!plot || points.length < 2) return null
+  const yBottom = plot.y + plot.height - 6
 
   const markers = []
 
@@ -48,7 +41,7 @@ const SignalAnnotationRenderer = ({ formattedGraphicalItems, yAxisMap }) => {
     if (!d?.signalChange) continue
 
     const x = points[i].x
-    if (x == null) continue
+    if (!Number.isFinite(x)) continue
 
     const { type } = d.signalChange
     const isBuy = type === 'BUY' || type === 'STRONG_BUY' || type === 'OPEN' || type === 'ADD'
