@@ -1872,6 +1872,26 @@ describe('Manual Trade Import', () => {
         assert.equal(savedBodies().length, 1);
       });
 
+      it('links an unconfirmed pre-#1022 import to the live merge survivor, not its stale body id', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        const first = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+        const staleId = first.trade.bodyId;
+        // The body was absorbed into a survivor, and the trade predates intents.
+        const stateFile = path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
+        const state = readRegimeStateFile();
+        state.position.celestialBodies[0].id = 'body-survivor';
+        fs.writeFileSync(stateFile, JSON.stringify(state));
+        store.getAll()[0].bodyIntent = null;
+        store.persist();
+
+        const replay = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+        assert.equal(replay.success, true);
+        assert.notEqual(staleId, 'body-survivor');
+        assert.equal(replay.trade.bodyId, 'body-survivor');
+        assert.equal(savedBodies().length, 1);
+      });
+
       it('refuses success for pre-#1022 ownership that no saved body or sale backs', async () => {
         const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
         const importer = createImporter({ adapter, injectBody: async () => assert.fail('must not guess a body') });

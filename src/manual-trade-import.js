@@ -536,7 +536,9 @@ const createManualTradeImporter = ({
           });
           return fail(`Buy ${buyOrderId} claims body ${currentBodyId || '(none)'}, but no saved body or closed-body evidence was found; the import was not completed and can be retried once ownership is repaired`);
         }
-        currentBodyId = currentBodyId || committed.bodyId;
+        // A live body on disk is the authoritative owner — a merge survivor
+        // replaces whatever stale id the ledger or trade record still names.
+        currentBodyId = committed.live ? committed.bodyId : (currentBodyId || committed.bodyId);
       }
       // The buy order may have still been FILLING when the body above was
       // created — ingestAdapterFills already wrote any fills that arrived
