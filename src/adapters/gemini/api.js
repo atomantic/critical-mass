@@ -232,6 +232,11 @@ const createGeminiAdapter = (keysPath = null) => {
       clearTimeout(timeout);
 
       if (!response.ok) {
+        // A 5xx may originate after the order reached the matching engine.
+        // Keep the sent id reconcilable; never retry the POST blindly.
+        if (endpoint === ORDER_PLACEMENT_ENDPOINT && response.status >= 500) {
+          throw createAmbiguousPlacementError('Gemini', `POST ${endpoint}`, payload?.client_order_id, `HTTP ${response.status}`);
+        }
         if (retryRateLimit && isRetryableRateLimit(response.status, attempt, RATE_LIMIT_MAX_RETRIES)) {
           await awaitAndAccountQueuedTime(defaultSleep(RATE_LIMIT_BACKOFF_MS * (attempt + 1)));
           continue;
