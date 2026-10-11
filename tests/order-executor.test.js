@@ -23,6 +23,84 @@ const makeAdapter = (getOrderResult) => ({
   getOrderFills: async () => [],
 });
 
+describe('partial fill callback ownership', () => {
+  it('retries an unchanged partial after incomplete booking or a callback failure', async () => {
+    for (const failure of ['incomplete', 'rejection', 'throw']) {
+      let calls = 0;
+      const adapter = makeAdapter({ status: 'PARTIALLY_FILLED', side: 'BUY', filledSize: 0.01 });
+      const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {
+        onFillDetected: () => {
+          if (++calls > 1) return;
+          if (failure === 'incomplete') return Promise.resolve(false);
+          if (failure === 'rejection') return Promise.reject(new Error('booking failed'));
+          throw new Error('booking failed');
+        },
+      });
+      exec.restorePendingOrder('partial-retry', { type: 'entry', placedAt: Date.now() });
+      try {
+        await exec.checkPendingOrderFills();
+        await new Promise(setImmediate); // Flush the asynchronous callback outcome.
+        await exec.checkPendingOrderFills();
+        await new Promise(setImmediate);
+        await exec.checkPendingOrderFills();
+        assert.equal(calls, 2, `${failure}: retry once, then keep a successful unchanged partial deduplicated`);
+      } finally {
+        exec.clearTimers();
+      }
+    }
+  });
+
+  it('does not let an older failed booking clear a newer successful partial detection', async () => {
+    let rejectOlder;
+    const olderBooking = new Promise((resolve, reject) => { rejectOlder = reject; });
+    let calls = 0;
+    let status = { status: 'PARTIALLY_FILLED', side: 'BUY', filledSize: 0.01 };
+    const adapter = { getOrder: async () => status };
+    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {
+      onFillDetected: () => ++calls === 1 ? olderBooking : Promise.resolve(),
+    });
+    exec.restorePendingOrder('partial-overlap', { type: 'entry', placedAt: Date.now() });
+    try {
+      await exec.checkPendingOrderFills();
+      status = { ...status, filledSize: 0.02 };
+      await exec.checkPendingOrderFills();
+      rejectOlder(new Error('older booking failed'));
+      await new Promise(setImmediate);
+      await exec.checkPendingOrderFills();
+      assert.equal(calls, 2, 'the newer cumulative detection remains deduplicated');
+    } finally {
+      exec.clearTimers();
+    }
+  });
+
+  it('preserves known execution size when an incomplete partial is followed by an under-reporting cancel', async () => {
+    let status = { status: 'PARTIALLY_FILLED', side: 'BUY', filledSize: 0.01 };
+    const fills = [];
+    const cancellations = [];
+    const exec = createOrderExecutor('coinbase', baseConfig(), { getOrder: async () => status }, 'BTC-USDC', {
+      onFillDetected: (_id, fill) => { fills.push(fill); return Promise.resolve(false); },
+      onEntryCancelled: (_id, info) => cancellations.push(info),
+    });
+    exec.restorePendingOrder('partial-cancel', { type: 'entry', placedAt: Date.now() });
+    try {
+      await exec.checkPendingOrderFills();
+      await new Promise(setImmediate);
+      status = { ...status, filledSize: 0.005 };
+      await exec.checkPendingOrderFills();
+      assert.equal(fills.length, 1, 'a stale partial must not lower the known cumulative size');
+      status = { status: 'CANCELLED', side: 'BUY', filledSize: 0 };
+      await exec.checkPendingOrderFills();
+      await new Promise(setImmediate);
+      assert.deepEqual(cancellations, [{ filledSize: 0.01 }], 'persisted tracking must retain the known partial');
+      assert.equal(fills.length, 2, 'terminal booking must still run');
+      assert.equal(fills[1].filledSize, 0.01, 'terminal booking uses known execution evidence');
+      assert.equal(exec.getPendingCounts().total, 0);
+    } finally {
+      exec.clearTimers();
+    }
+  });
+});
+
 describe('checkPendingOrderFills — CANCELLED with partial fills', () => {
   it('routes partial fills through onFillDetected before clearing', async () => {
     // Models the leak pattern: a TP order cancels (externally or via Gemini

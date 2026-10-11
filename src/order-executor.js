@@ -29,7 +29,7 @@ const { createContextLogger } = require('./logger');
  * @param {ExchangeAdapter} adapter - Exchange adapter
  * @param {string} productId - Product to trade
  * @param {Object} [callbacks] - Event callbacks
- * @param {Function} [callbacks.onFillDetected] - Called when fill is detected via polling: (orderId, orderStatus)
+ * @param {Function} [callbacks.onFillDetected] - Called when fill is detected via polling: (orderId, orderStatus). Returning/resolving false leaves an unchanged partial retryable.
  * @param {(orderId: string) => number} [callbacks.getRecordedSizeForOrder] - Durable fill-ledger size, used to distinguish detected partials from booked partials during a cancel sweep
  * @param {Function} [callbacks.onEntryCancelled] - Called when an entry order is cancelled (stale timeout, refresh, etc.): (orderId, {filledSize})
  * @param {string} [pair] - Fund pair name (the `data/<exchange>/<pair>/` directory), used to scope durable placement intents; defaults to productId
@@ -92,6 +92,9 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
   /** @type {Map<string, number>} orderId -> last known partial filled size (high-water mark) */
   const partialFillTracker = new Map();
+  // Retry ownership follows the pending-order object; cancellation still needs
+  // the high-water mark above, even when booking failed or history lagged.
+  const retryablePartials = new WeakSet();
 
   /** @type {Map<string, string>} tpOrderId -> buyOrderId/bodyId for O(1) reverse lookups */
   const tpOrderToKey = new Map();
@@ -848,7 +851,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         // Partial fill detected — notify handler with partial flag so body state can be updated
         // Keep order in pendingOrders since it's still open on the exchange
         const lastPartialSize = partialFillTracker.get(orderId) || 0;
-        if (status.filledSize > lastPartialSize) {
+        if (status.filledSize > lastPartialSize
+          || status.filledSize === lastPartialSize && retryablePartials.has(order)) {
           const placedAt = order.placedAt;
           logger.info(`📦 [${exchange}] Fill check detected partial fill on ${order.type} order ${orderId}: ${status.filledSize} filled (was ${lastPartialSize})`, {
             orderId,
@@ -859,8 +863,23 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             reconciliationContext: 'Fill check',
           });
           partialFillTracker.set(orderId, status.filledSize);
+          retryablePartials.delete(order);
           if (callbacks.onFillDetected) {
-            callbacks.onFillDetected(orderId, { ...status, placedAt, isPartialFill: true });
+            // This watermark means detection, not completed booking. Keep the
+            // callback asynchronous (cancel sweeps can run while it books),
+            // but own its outcome so a failed/incomplete booking is offered
+            // again even if the exchange's cumulative size never advances.
+            const retryPartial = (err) => {
+              // A slower, older callback must not erase a newer detection.
+              if (pendingOrders.get(orderId) === order && partialFillTracker.get(orderId) === status.filledSize) retryablePartials.add(order);
+              if (err) logger.error(`❌ [${exchange}] Partial fill processing failed for ${orderId}: ${err.message}`, { orderId, error: err.message });
+            };
+            try {
+              Promise.resolve(callbacks.onFillDetected(orderId, { ...status, placedAt, isPartialFill: true }))
+                .then(result => { if (result === false) retryPartial(); }, retryPartial);
+            } catch (err) {
+              retryPartial(err);
+            }
           }
         }
       } else if (isCancelledStatus(status)) {
