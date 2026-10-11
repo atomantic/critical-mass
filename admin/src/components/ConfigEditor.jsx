@@ -270,11 +270,18 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     pendingWriteRef.current += 1
     setSaving(true)
     setMessage(null)
+    // Depth protection has no production market-data input yet. Keep legacy
+    // values in the draft/readback, but never send them as active UI edits.
+    const payload = { ...config }
+    if (config.regime) {
+      const { minDepthUsdc, depthPauseMs, ...editableRegime } = config.regime
+      payload.regime = editableRegime
+    }
     try {
       const res = await fetch(`/api/${exchange}/config${pairQuery}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
+        body: JSON.stringify(payload),
       })
       const result = await res.json().catch(() => ({}))
       if (res.ok) {
@@ -1057,6 +1064,9 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
 
             {/* Safety & Tail Events — only applies to reactive mode */}
             <SectionCard title="Safety & Tail Events">
+              <p className="text-xs text-gray-400 mb-3">
+                Depth-based entry protection is unavailable in this build.
+              </p>
               {regimeConfig.entryMode === 'ladder' ? (
                 <div className="text-xs text-gray-400 italic">
                   These settings apply to Reactive mode only. Ladder mode bypasses tail event checks — the ladder IS the flash event strategy.
@@ -1066,8 +1076,6 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                   <div className="grid grid-cols-2 gap-3">
                     <FormInput label="Max Spread (bps)" hint="Pause entries when bid-ask spread exceeds this" value={regimeConfig.maxSpreadBps || 50} onChange={(v) => handleRegimeChange('maxSpreadBps', v)} type="number" />
                     <FormInput label="Spread Pause (ms)" hint="How long to pause after spread breach" value={regimeConfig.spreadPauseMs || 300000} onChange={(v) => handleRegimeChange('spreadPauseMs', v)} type="number" />
-                    <FormInput label="Min Depth (USDC)" hint="Pause entries when orderbook depth is below this" value={regimeConfig.minDepthUsdc || 10000} onChange={(v) => handleRegimeChange('minDepthUsdc', v)} type="number" />
-                    <FormInput label="Depth Pause (ms)" hint="How long to pause after thin orderbook" value={regimeConfig.depthPauseMs || 300000} onChange={(v) => handleRegimeChange('depthPauseMs', v)} type="number" />
                     <FormInput label="Flash Move Mult" hint="ATR multiplier to detect flash crashes" value={regimeConfig.flashMoveMult || 3.0} onChange={(v) => handleRegimeChange('flashMoveMult', v)} type="number" />
                     <FormInput label="Flash Cooldown (ms)" hint="Pause duration after flash event detected" value={regimeConfig.flashCooldownMs || 600000} onChange={(v) => handleRegimeChange('flashCooldownMs', v)} type="number" />
                   </div>

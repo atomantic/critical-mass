@@ -19,7 +19,6 @@ const EVENT_GROUPS = {
     { key: 'regime_change', label: 'Regime Change' },
     { key: 'active_mode', label: 'Active Mode Restored' },
     { key: 'spread_pause', label: 'Spread Pause' },
-    { key: 'depth_pause', label: 'Depth Pause' },
     { key: 'regime_hourly', label: 'Hourly Summary' },
     { key: 'orders_consolidated', label: 'Orders Consolidated' },
   ],
@@ -110,7 +109,8 @@ function NotificationsConfig() {
     setSaving(true)
     setMessage(null)
 
-    const payload = { ...config }
+    const { depth_pause, ...editableEvents } = config.events || {}
+    const payload = { ...config, events: editableEvents }
     // Only send token if user entered a new one
     if (rawToken) {
       payload.telegram = { ...payload.telegram, botToken: rawToken }

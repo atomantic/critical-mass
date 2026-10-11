@@ -56,6 +56,32 @@ const bumpStopGeneration = (key) => {
   stopGenerations.set(key, (stopGenerations.get(key) || 0) + 1);
 };
 
+// Stopped services whose accepted order work may still be finishing, keyed
+// the same way (issue #1008). stop() fences new ledger writes immediately,
+// but a REST fetch already in flight settles later; fenceMarketDataService
+// joins these before a replacement writer may load the ledger.
+const retiringServices = new Map();
+
+/**
+ * Stop a service and keep it joinable until its order work has drained.
+ * @param {string} key
+ * @param {Object} service
+ */
+const retireService = (key, service) => {
+  service.stop?.();
+  if (!service.whenIdle) return;
+  if (!retiringServices.has(key)) retiringServices.set(key, new Set());
+  const retiring = retiringServices.get(key);
+  retiring.add(service);
+  service.whenIdle().finally(() => {
+    retiring.delete(service);
+    if (!retiring.size && retiringServices.get(key) === retiring) retiringServices.delete(key);
+  });
+};
+
+/** Default bound for a writer-handover join; matches the engine write drain. */
+const FENCE_TIMEOUT_MS = 30_000;
+
 // REST adapter methods this service actually calls (getOrderFills via
 // ingestNewFillsForOrder, getCandles via updateMetrics) — instrumented so a
 // REST-error burst / rate-limit / latency spike here feeds this service's own
@@ -553,7 +579,12 @@ const createWorkQueue = () => {
     next.then(cleanup, cleanup);
     return next;
   };
-  return { enqueue, size: () => chains.size };
+  // Resolves once every chain enqueued so far (and any work they chain on
+  // while settling) has finished — the join a writer handover waits on.
+  const whenIdle = async () => {
+    while (chains.size) await Promise.allSettled([...chains.values()]);
+  };
+  return { enqueue, size: () => chains.size, whenIdle };
 };
 
 const serviceKey = (exchange, pair) => fundKey(exchange, pair || getDefaultPair(exchange) || 'default');
@@ -810,11 +841,50 @@ const createMarketDataService = (exchange, pair) => {
 
     // Initial metrics fetch
     await updateMetrics(adapter, productId);
+    // A stop that landed during the fetch fenced this service: it must not
+    // touch the ledger again, not even to recover the handover gap below.
+    if (timerTracker.isStopped()) return { success: false, error: 'stopped during start' };
+
+    const gapRecovery = await recoverHandoverGap();
 
     logger.info(`📊 [${exchange}] Market data service started for ${productId}`, {
       productId,
     });
-    return { success: true };
+    return { success: true, gapRecovery };
+  };
+
+  /**
+   * Recover fills that executed while no consumer was listening (issue #1008).
+   * Ledger ownership moves between the engine and this service with a gap:
+   * the previous owner disconnects before this feed subscribes, and the
+   * user channel's subscribe snapshot lists only still-open orders — a
+   * tracked order that filled in between would never be reported. Ask the
+   * exchange for each tracked order's authoritative state and replay it
+   * through the same per-order path as a WS event. ingestFill dedupes on
+   * tradeId and the watermark skips covered sizes, so an order the feed
+   * reports too is still booked exactly once.
+   * @returns {Promise<{checked: number, failed: string[]}>}
+   */
+  const recoverHandoverGap = async () => {
+    const adapter = getActiveAdapter();
+    const failed = [];
+    let checked = 0;
+    if (typeof adapter.getOrder !== 'function') return { checked, failed };
+    for (const orderId of [...trackedOrders.keys()]) {
+      if (timerTracker.isStopped()) break;
+      try {
+        const order = await adapter.getOrder(orderId);
+        checked += 1;
+        if (order) await handleOrderUpdate({ ...order, orderId });
+      } catch (err) {
+        failed.push(orderId);
+        logger.warn(`⚠️ [${exchange}] Handover gap recovery could not check order ${orderId}: ${err.message}`, {
+          orderId,
+          error: err.message,
+        });
+      }
+    }
+    return { checked, failed };
   };
 
   /**
@@ -1879,6 +1949,10 @@ const createMarketDataService = (exchange, pair) => {
     // Health state (issue #228) — null until start() creates the monitor (or
     // a test injects one via _test.injectHealthMonitor).
     getHealthState: () => (healthMonitor ? healthMonitor.getState() : null),
+    // Resolves once order work accepted before stop() has finished. Queued
+    // work re-checks the stopped flag after every await, so after stop()
+    // this only waits out REST calls already in flight.
+    whenIdle: orderWorkQueue.whenIdle,
     // Test hooks. Expose enough surface to drive processOrderUpdate
     // through a real factory instance without spinning up the WS feed.
     _test: {
@@ -1937,19 +2011,19 @@ const startMarketDataService = async (exchange, pair) => {
   // regime:stop IPC handler that starts a standalone service for
   // handover) get a graceful failure they can decide on instead of an
   // unhandled rejection that aborts their flow.
+  const service = createMarketDataService(exchange, pair);
   const startPromise = (async () => {
-    const service = createMarketDataService(exchange, pair);
     const result = await service.start();
     if (!result.success) {
       // Failed start must not leak its WS feed / interval timers.
-      service.stop?.();
+      retireService(key, service);
       return result;
     }
     if ((stopGenerations.get(key) || 0) !== gen) {
       // A stop landed while we were connecting. Tear this service down and
       // leave the settled map untouched — publishing it now would hand the
       // fund a second fill-ledger writer nothing can reach to stop again.
-      service.stop?.();
+      retireService(key, service);
       return { success: false, error: 'stopped during start' };
     }
     marketDataServices.set(key, service);
@@ -1962,7 +2036,7 @@ const startMarketDataService = async (exchange, pair) => {
     }
   });
 
-  startingMarketDataServices.set(key, { promise: startPromise, gen });
+  startingMarketDataServices.set(key, { promise: startPromise, gen, service });
   return startPromise;
 };
 
@@ -1976,11 +2050,46 @@ const stopMarketDataService = (exchange, pair) => {
   // Bump unconditionally: the settled map can be empty while a start is still
   // connecting, and the generation is the only way that start learns it lost.
   bumpStopGeneration(key);
+  // Stop a still-connecting service now rather than when its start settles:
+  // start() keeps ingesting (handover gap recovery) after its last await.
+  const starting = startingMarketDataServices.get(key);
+  if (starting?.service) retireService(key, starting.service);
   const service = marketDataServices.get(key);
   if (service) {
-    service.stop();
+    retireService(key, service);
     marketDataServices.delete(key);
   }
+};
+
+/**
+ * Stop a fund's standalone service and wait until it can no longer write its
+ * fill ledger (issue #1008): every start still in flight has settled and every
+ * order handler it accepted has finished. Only then may a replacement owner
+ * (the regime engine) load the ledger — each instance persists its whole
+ * in-memory Map, so a writer that outlives the handover erases the
+ * replacement's fills on its next persist.
+ * @param {string} exchange
+ * @param {string} [pair]
+ * @param {number} [timeoutMs]
+ * @returns {Promise<{drained: boolean}>} drained:false when the join timed out
+ */
+const fenceMarketDataService = async (exchange, pair, timeoutMs = FENCE_TIMEOUT_MS) => {
+  const key = serviceKey(exchange, pair);
+  const starting = startingMarketDataServices.get(key)?.promise;
+  stopMarketDataService(exchange, pair);
+  const joined = (async () => {
+    // The fenced start may still be mid-await (candles, gap recovery); let it
+    // observe the stop and settle before joining the order work it queued.
+    await starting?.catch(() => {});
+    await Promise.allSettled([...(retiringServices.get(key) || [])].map((service) => service.whenIdle()));
+    return true;
+  })();
+  /** @type {NodeJS.Timeout | undefined} */
+  let timer;
+  const expired = new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); });
+  const drained = await Promise.race([joined, expired]);
+  clearTimeout(timer);
+  return { drained: drained === true };
 };
 
 /**
@@ -1999,8 +2108,11 @@ const stopAllMarketDataServices = () => {
   for (const key of new Set([...marketDataServices.keys(), ...startingMarketDataServices.keys()])) {
     bumpStopGeneration(key);
   }
-  for (const [, service] of marketDataServices) {
-    service.stop();
+  for (const [key, { service }] of startingMarketDataServices) {
+    if (service) retireService(key, service);
+  }
+  for (const [key, service] of marketDataServices) {
+    retireService(key, service);
   }
   marketDataServices.clear();
 };
@@ -2012,6 +2124,7 @@ module.exports = {
   drainMarketDataStarts: () => Promise.allSettled([...startingMarketDataServices.values()].map((entry) => entry.promise)),
   startMarketDataService,
   stopMarketDataService,
+  fenceMarketDataService,
   getMarketDataService,
   stopAllMarketDataServices,
   ingestNewFillsForOrder,
