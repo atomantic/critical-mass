@@ -165,10 +165,94 @@ beforeEach(() => {
   app = createFakeApp();
   require('../src/routes/exchange-routes')(app, {
     exchangeIPCMap: { coinbase: { request: async () => ({ success: true }) } },
-    parseTSV: () => [],
-    calculateCostBasis: () => ({}),
-    getNextTradeInfo: () => ({}),
+    ...require('../src/shared-utils'),
   });
+});
+
+describe('GET /api/:exchange/summary strategy routing', () => {
+  for (const strategy of ['fixed', 'fibonacci']) {
+    it(`reports live ${strategy} DCA balances, orders, history and schedule for the selected fund`, async () => {
+      const fund = BASE_CONFIG.exchanges.coinbase.pairs[OTHER_PAIR];
+      fund.dcaStrategy = strategy;
+      fund.totalAllocation = 1000;
+      try {
+        seedPendingOrders(DEFAULT_PAIR, 2);
+        const dir = path.join(tempRoot, 'coinbase', OTHER_PAIR);
+        fs.mkdirSync(dir, { recursive: true });
+        const state = {
+          initialAllocation: 1000, totalAllocated: 200, totalIntervalsRun: 2,
+          usdcFundSize: 900, assetReserves: 0.002, outstandingOrdersAsset: 0.009,
+          outstandingOrdersUSDC: 110, totalFees: 3, totalRebates: 1, netFees: 2,
+          orders: strategy === 'fixed' ? [{ orderId: 'selected-sell', status: 'pending',
+            buyQuantity: 0.01, buyCostBasis: 100, sellQuantity: 0.009, holdbackAsset: 0.001 }] : [],
+          ...(strategy === 'fibonacci' ? { fibPosition: 3, fibActiveSellOrderId: 'selected-fib-sell', fibCumulativeCost: 100, fibCumulativeAsset: 0.01 } : {}),
+        };
+        fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify(state));
+        // An irrelevant, unreadable regime snapshot must not block a DCA read.
+        fs.writeFileSync(path.join(dir, 'regime-state.json'), '{broken');
+        const history = [
+          ['Type', 'BTC Amount', 'USDC Amount', 'Net Fees'],
+          [strategy === 'fixed' ? 'BUY' : 'FIB_BUY', 0.02, -200, 1],
+          [strategy === 'fixed' ? 'SELL_FILLED' : 'FIB_SELL_FILLED', -0.009, 100, 1],
+        ].map(row => row.join('\t')).join('\n') + '\n';
+        fs.writeFileSync(path.join(dir, 'transactions.tsv'), history);
+        const before = fs.readFileSync(path.join(dir, 'state.json'), 'utf8');
+
+        const res = await invoke(app, 'GET /api/:exchange/summary', {
+          params: { exchange: 'coinbase' }, query: { pair: OTHER_PAIR },
+        });
+        assert.equal(res.statusCode, 200);
+        assert.equal(res.body.state.usdcFundSize, 900);
+        assert.equal(res.body.state.assetReserves, 0.002);
+        assert.equal(res.body.state.outstandingOrdersAsset, 0.009);
+        assert.equal(res.body.stats.pendingOrders, 1);
+        assert.equal(res.body.stats.totalBuys, 1);
+        assert.equal(res.body.stats.totalSells, 1);
+        assert.equal(res.body.stats.totalBought, 200);
+        assert.equal(res.body.stats.totalSold, 100);
+        assert.equal(res.body.stats.totalFees, 3);
+        assert.equal(res.body.stats.allocationRemaining, 800);
+        assert.equal(res.body.stats.intervalsRun, 2);
+        assert.equal(res.body.stats.realizedProfit, null, 'unsupported DCA realized P&L must not be fabricated as zero');
+        if (strategy === 'fixed') assert.equal(res.body.costBasis.pendingCostBasis, 90);
+        else assert.equal(res.body.costBasis, null, 'unsupported Fibonacci holdings costs must not use a lifetime average');
+        assert.equal(res.body.nextTrade.enabled, true);
+        assert.ok(Number.isFinite(Date.parse(res.body.nextTrade.nextTradeTime)));
+        assert.ok(res.body.nextTrade.nextTradeAmount > 0);
+        if (strategy === 'fibonacci') assert.equal(res.body.nextTrade.nextTradeAmount, 30);
+        assert.equal(res.body.transactions.length, 2);
+        assert.equal(fs.readFileSync(path.join(dir, 'state.json'), 'utf8'), before, 'summary reads never persist state');
+      } finally {
+        delete fund.dcaStrategy;
+        delete fund.totalAllocation;
+      }
+    });
+  }
+
+  for (const globalDca of [true, false]) {
+    it(`keeps regime data authoritative when ${globalDca ? 'the fund selects regime' : 'Simple DCA is disabled'}`, async () => {
+      const fund = BASE_CONFIG.exchanges.coinbase.pairs[OTHER_PAIR];
+      BASE_CONFIG.global.simpleDcaEnabled = globalDca;
+      fund.dcaStrategy = globalDca ? 'regime' : 'fixed';
+      try {
+        const dir = path.join(tempRoot, 'coinbase', OTHER_PAIR);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'state.json'), '{broken');
+        fs.writeFileSync(path.join(dir, 'regime-state.json'), JSON.stringify({
+          position: { depositedCapital: 432, cyclesCompleted: 3 }, regime: {},
+        }));
+        const res = await invoke(app, 'GET /api/:exchange/summary', {
+          params: { exchange: 'coinbase' }, query: { pair: OTHER_PAIR },
+        });
+        assert.equal(res.body.state.usdcFundSize, 432);
+        assert.equal(res.body.stats.intervalsRun, 3);
+        assert.equal(res.body.stats.realizedProfit, 0);
+      } finally {
+        BASE_CONFIG.global.simpleDcaEnabled = true;
+        delete fund.dcaStrategy;
+      }
+    });
+  }
 });
 
 afterEach(() => {

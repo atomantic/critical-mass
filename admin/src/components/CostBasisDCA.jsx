@@ -26,7 +26,9 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
   if (!summary?.costBasis) {
     return (
       <div className="text-center text-gray-400 py-8">
-        No cost basis data available yet. Run the bot to generate data.
+        {summary?.config?.dcaStrategy === 'fibonacci'
+          ? 'Cost basis is unavailable for Fibonacci DCA. Balances and transaction history remain available.'
+          : 'No cost basis data available yet. Run the bot to generate data.'}
       </div>
     )
   }
