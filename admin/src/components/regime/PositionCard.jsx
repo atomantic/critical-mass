@@ -92,13 +92,13 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
         </div>
       </div>
       <div className="mt-2 pt-2 border-t border-gray-700 grid grid-cols-2 gap-2 text-xs">
-        <div className="bg-gray-900/50 rounded p-2 min-w-0">
+        <div className="bg-gray-900/50 rounded-sm p-2 min-w-0">
           <div className="text-gray-400">Unrealized P&L</div>
           <div className={`font-mono text-base ${position.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
             {formatCurrency(position.unrealizedPnL || 0)}
           </div>
         </div>
-        <div className="bg-gray-900/50 rounded p-2 min-w-0">
+        <div className="bg-gray-900/50 rounded-sm p-2 min-w-0">
           {(() => {
             const usdPnL = position.realizedPnL || 0
             const assetPnL = position.realizedAssetPnL || 0
@@ -138,7 +138,7 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
         <button
           onClick={handleRecalculatePreview}
           disabled={recalculating}
-          className="mt-2 w-full text-xs px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 disabled:opacity-50 transition-colors"
+          className="mt-2 w-full text-xs px-3 py-1.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-300 disabled:opacity-50 transition-colors"
         >
           {recalculating ? 'Calculating...' : 'Recalculate from Fills'}
         </button>
@@ -146,7 +146,7 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
 
       {/* Recalculate Preview Modal */}
       {recalcPreview && (
-        <div className="mt-3 p-3 bg-gray-900 rounded border border-yellow-600/50">
+        <div className="mt-3 p-3 bg-gray-900 rounded-sm border border-yellow-600/50">
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm font-medium text-yellow-400">Recalculate Preview</span>
             <button
@@ -208,13 +208,13 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
             <button
               onClick={handleRecalculateApply}
               disabled={recalculating}
-              className="flex-1 text-xs px-3 py-1.5 rounded bg-yellow-800 hover:bg-yellow-900 text-white disabled:opacity-50"
+              className="flex-1 text-xs px-3 py-1.5 rounded-sm bg-yellow-800 hover:bg-yellow-900 text-white disabled:opacity-50"
             >
               {recalculating ? 'Applying...' : 'Apply Changes'}
             </button>
             <button
               onClick={() => setRecalcPreview(null)}
-              className="text-xs px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300"
+              className="text-xs px-3 py-1.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-300"
             >
               Cancel
             </button>
@@ -233,14 +233,14 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
             <span>{apy.cyclesPerDay?.toFixed(1)} cycles/day</span>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5 min-w-0">
+            <div className="bg-green-900/20 border border-green-700/30 rounded-sm p-1.5 min-w-0">
               <div className="text-green-400/70 text-[10px]">Daily ({(apy.dailyReturnPercent || 0).toFixed(2)}%)</div>
               <div className="flex flex-col font-mono text-xs min-w-0">
                 <span className="text-green-400">{formatCurrency(apy.estimatedDailyUsdc || 0)} + <span className="text-orange-400">{(apy.estimatedDailyAsset || 0).toFixed(8)}</span></span>
                 <span className="text-green-400">= {formatCurrency((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0))}</span>
               </div>
             </div>
-            <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5 min-w-0">
+            <div className="bg-cyan-900/20 border border-cyan-700/30 rounded-sm p-1.5 min-w-0">
               <div className="text-cyan-400/70 text-[10px]">Annual ({(apy.estimatedApy || 0) > 9999 ? '>9999' : (apy.estimatedApy || 0).toFixed(0)}% APY)</div>
               <div className="flex flex-col font-mono text-xs min-w-0">
                 <span className="text-green-400">{formatCurrency((apy.estimatedDailyUsdc || 0) * 365)} + <span className="text-orange-400">{((apy.estimatedDailyAsset || 0) * 365).toFixed(6)} {asset}</span></span>

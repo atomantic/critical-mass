@@ -104,13 +104,13 @@ function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, o
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center gap-1 md:gap-2 px-1.5 md:px-3 py-1.5 md:py-2 min-h-[40px] bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
       >
-        <span className={`w-5 h-5 md:w-6 md:h-6 text-xs md:text-sm flex items-center justify-center rounded shrink-0 ${EXCHANGE_COLORS[currentExchange] || 'bg-gray-600'}`}>
+        <span className={`w-5 h-5 md:w-6 md:h-6 text-xs md:text-sm flex items-center justify-center rounded-sm shrink-0 ${EXCHANGE_COLORS[currentExchange] || 'bg-gray-600'}`}>
           {EXCHANGE_ICONS[currentExchange] || '?'}
         </span>
         <span className="font-medium capitalize hidden md:inline">{currentExchange}</span>
         <span className="text-gray-400 hidden md:inline">/</span>
         <span className="text-xs md:text-sm text-gray-300 shrink-0">{displayPair}</span>
-        <span className={`text-[10px] md:text-xs px-1 md:px-2 py-0.5 rounded shrink-0 ${currentStatus.color} ${currentStatus.textColor} ${currentStatus.pulse ? 'animate-pulse' : ''}`}>
+        <span className={`text-[10px] md:text-xs px-1 md:px-2 py-0.5 rounded-sm shrink-0 ${currentStatus.color} ${currentStatus.textColor} ${currentStatus.pulse ? 'animate-pulse' : ''}`}>
           {currentStatus.label}
         </span>
         <svg className={`w-4 h-4 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -139,14 +139,14 @@ function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, o
                       : 'hover:bg-gray-700 text-gray-300'
                   }`}
                 >
-                  <span className={`w-7 h-7 flex items-center justify-center rounded shrink-0 ${EXCHANGE_COLORS[exchange.name] || 'bg-gray-600'}`}>
+                  <span className={`w-7 h-7 flex items-center justify-center rounded-sm shrink-0 ${EXCHANGE_COLORS[exchange.name] || 'bg-gray-600'}`}>
                     {EXCHANGE_ICONS[exchange.name] || '?'}
                   </span>
                   <div className="flex-1 text-left">
                     <div className="text-sm font-medium capitalize">{exchange.name}</div>
                     <div className="text-xs text-gray-400">{pairValue || 'Not configured'}</div>
                   </div>
-                  <span className={`text-xs px-2 py-0.5 rounded ${status.color}/50 ${status.textColor.replace('100', '200')} ${status.pulse ? 'animate-pulse' : ''}`}>
+                  <span className={`text-xs px-2 py-0.5 rounded-sm ${status.color}/50 ${status.textColor.replace('100', '200')} ${status.pulse ? 'animate-pulse' : ''}`}>
                     {status.label}
                   </span>
                 </button>

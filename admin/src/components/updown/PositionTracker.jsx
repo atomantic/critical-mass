@@ -99,7 +99,7 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
             value={entryPrice}
             onChange={e => setEntryPrice(e.target.value)}
             placeholder="97500"
-            className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+            className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-hidden focus:border-blue-500"
           />
         </div>
 
@@ -111,13 +111,13 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
             value={amount}
             onChange={e => setAmount(e.target.value)}
             placeholder="1"
-            className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+            className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-hidden focus:border-blue-500"
           />
         </div>
 
         {/* Computed P&L */}
         {hasPosition && pnl != null && (
-          <div className="bg-gray-900 rounded p-3 space-y-1">
+          <div className="bg-gray-900 rounded-sm p-3 space-y-1">
             <div className="flex justify-between text-xs">
               <span className="text-gray-400">Unrealized P&L</span>
               <span className={`font-medium ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
@@ -135,7 +135,7 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
           </div>
         )}
         {hasPosition && !priceFresh && (
-          <div className="bg-gray-900 rounded p-3" role="status">
+          <div className="bg-gray-900 rounded-sm p-3" role="status">
             <div className="flex justify-between gap-3 text-xs">
               <span className="text-gray-400">Unrealized P&amp;L</span>
               <span className="text-amber-400 text-right">Price unavailable — waiting for a fresh mark</span>
@@ -147,7 +147,7 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded text-sm font-medium transition-colors flex items-center justify-center gap-2"
+            className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm font-medium transition-colors flex items-center justify-center gap-2"
           >
             <Save size={14} />
             {saving ? 'Saving...' : 'Save'}
@@ -156,7 +156,7 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
             <button
               onClick={handleClear}
               disabled={clearing}
-              className="py-2 px-3 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 rounded text-sm text-red-400 transition-colors flex items-center gap-1"
+              className="py-2 px-3 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 rounded-sm text-sm text-red-400 transition-colors flex items-center gap-1"
             >
               <Trash2 size={14} />
               {clearing ? '...' : 'Clear tracker'}

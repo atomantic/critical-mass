@@ -68,7 +68,7 @@ export default function LogViewer({ processName }) {
             id={tailSelectId}
             value={tailLines}
             onChange={(e) => setTailLines(Number(e.target.value))}
-            className="bg-gray-700 text-gray-200 text-xs rounded px-2 py-1 border border-gray-600 focus:border-blue-500 focus:outline-none"
+            className="bg-gray-700 text-gray-200 text-xs rounded-sm px-2 py-1 border border-gray-600 focus:border-blue-500 focus:outline-hidden"
           >
             {TAIL_OPTIONS.map(n => (
               <option key={n} value={n}>{n}</option>
@@ -86,7 +86,7 @@ export default function LogViewer({ processName }) {
             {!subscribed && terminal && (
               <button
                 onClick={retry}
-                className="px-2 py-0.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 rounded transition-colors"
+                className="px-2 py-0.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-sm transition-colors"
               >
                 Retry
               </button>
@@ -95,7 +95,7 @@ export default function LogViewer({ processName }) {
 
           <button
             onClick={clear}
-            className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
+            className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-sm transition-colors"
           >
             Clear
           </button>
@@ -103,14 +103,14 @@ export default function LogViewer({ processName }) {
           <button
             onClick={flush}
             disabled={flushing}
-            className="px-2 py-1 text-xs bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:text-gray-500 text-yellow-100 rounded transition-colors"
+            className="px-2 py-1 text-xs bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:text-gray-500 text-yellow-100 rounded-sm transition-colors"
           >
             {flushing ? 'Flushing...' : 'Flush'}
           </button>
 
           <button
             onClick={() => setFullscreen(!fullscreen)}
-            className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
+            className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-sm transition-colors"
           >
             {fullscreen ? 'Close' : 'Fullscreen'}
           </button>
@@ -121,7 +121,7 @@ export default function LogViewer({ processName }) {
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        className={`${fullscreen ? 'flex-1' : 'h-[32rem]'} overflow-y-auto bg-gray-950 font-mono text-xs leading-5 p-3`}
+        className={`${fullscreen ? 'flex-1' : 'h-128'} overflow-y-auto bg-gray-950 font-mono text-xs leading-5 p-3`}
       >
         {logs.length === 0 ? (
           <div className="text-gray-400 text-center py-8">

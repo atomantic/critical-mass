@@ -76,9 +76,9 @@ function ActivityFeed({ exchange = null, maxEvents = 10, showWhenEmpty = true })
             return (
               <div
                 key={`${event.timestamp}-${i}`}
-                className={`flex items-start gap-3 p-2 rounded border ${style.bg} ${style.border} animate-fade-in`}
+                className={`flex items-start gap-3 p-2 rounded-sm border ${style.bg} ${style.border} animate-fade-in`}
               >
-                <span className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${style.dot}`} />
+                <span className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${style.dot}`} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     <span className="font-medium text-gray-300">{event.exchange}</span>

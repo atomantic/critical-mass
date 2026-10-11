@@ -335,7 +335,7 @@ function KeysConfig({ exchange, onSave }) {
               <label htmlFor={field.key} className="block text-sm font-medium text-gray-300 mb-1 flex items-center gap-2">
                 {field.label}
                 {isStored && (
-                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-900/50 border border-green-700 text-green-200">
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[10px] font-medium bg-green-900/50 border border-green-700 text-green-200">
                     configured
                   </span>
                 )}
@@ -347,7 +347,7 @@ function KeysConfig({ exchange, onSave }) {
                   onChange={(e) => handleChange(field.key, e.target.value)}
                   placeholder={placeholder}
                   rows={5}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:border-blue-500 resize-none"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white font-mono text-sm focus:outline-hidden focus:border-blue-500 resize-none"
                 />
               ) : (
                 <input
@@ -356,7 +356,7 @@ function KeysConfig({ exchange, onSave }) {
                   value={keys[field.key] || ''}
                   onChange={(e) => handleChange(field.key, e.target.value)}
                   placeholder={placeholder}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
                 />
               )}
               {field.help && <p className="mt-1 text-xs text-gray-400">{field.help}</p>}

@@ -224,7 +224,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
               id={intervalId}
               value={params.intervalType}
               onChange={(e) => handleIntervalTypeChange(e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
+              className="w-full bg-gray-700 border border-gray-600 rounded-sm px-3 py-2 text-white"
             >
               {INTERVAL_OPTIONS.map(opt => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -238,7 +238,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
               type="number"
               value={params.intervalBuyAmount}
               onChange={(e) => handleParamChange('intervalBuyAmount', e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
+              className="w-full bg-gray-700 border border-gray-600 rounded-sm px-3 py-2 text-white"
             />
           </div>
           <div>
@@ -249,7 +249,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
               value={params.fundSize}
               onChange={(e) => handleParamChange('fundSize', e.target.value)}
               placeholder="0 = unlimited"
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white placeholder:text-gray-400"
+              className="w-full bg-gray-700 border border-gray-600 rounded-sm px-3 py-2 text-white placeholder:text-gray-400"
             />
           </div>
           <div>
@@ -260,7 +260,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
               step="0.1"
               value={params.sellMarkupPercent}
               onChange={(e) => handleParamChange('sellMarkupPercent', e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
+              className="w-full bg-gray-700 border border-gray-600 rounded-sm px-3 py-2 text-white"
             />
           </div>
           <div>
@@ -271,7 +271,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
               step="0.1"
               value={params.holdbackPercent}
               onChange={(e) => handleParamChange('holdbackPercent', e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
+              className="w-full bg-gray-700 border border-gray-600 rounded-sm px-3 py-2 text-white"
             />
           </div>
           <div>
@@ -282,7 +282,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
               step="0.001"
               value={params.feePercent}
               onChange={(e) => handleParamChange('feePercent', e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
+              className="w-full bg-gray-700 border border-gray-600 rounded-sm px-3 py-2 text-white"
             />
           </div>
           <div>
@@ -293,12 +293,12 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
               step="0.001"
               value={params.rebatePercent}
               onChange={(e) => handleParamChange('rebatePercent', e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
+              className="w-full bg-gray-700 border border-gray-600 rounded-sm px-3 py-2 text-white"
             />
           </div>
           <div>
             <label className="block text-sm text-gray-400 mb-1">Net Fee</label>
-            <div className="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-gray-300">
+            <div className="bg-gray-700 border border-gray-600 rounded-sm px-3 py-2 text-gray-300">
               {formatPercent(params.feePercent - params.rebatePercent)}
             </div>
           </div>
@@ -325,21 +325,21 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
           <button
             onClick={runBacktest}
             disabled={loading}
-            className="px-6 py-2 bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded font-medium"
+            className="px-6 py-2 bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded-sm font-medium"
           >
             {loading ? 'Running Backtest...' : 'Run Backtest'}
           </button>
           <button
             onClick={loadFromConfig}
             disabled={!summary?.config}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 rounded font-medium"
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-sm font-medium"
             title="Load settings from current system config"
           >
             Load from Config
           </button>
           <button
             onClick={resetToDefaults}
-            className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded font-medium"
+            className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded-sm font-medium"
             title="Reset to default backtest values"
           >
             Reset Defaults
@@ -363,7 +363,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
               {results.params.productId || baseCurrency + '/' + quoteCurrency}: {results.params.intervals} {results.params.intervalType} intervals ({results.metrics.startDate?.split('T')[0]} to {results.metrics.endDate?.split('T')[0]})
             </h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="bg-gray-700/50 rounded p-3">
+              <div className="bg-gray-700/50 rounded-sm p-3">
                 <div className="text-sm text-gray-400">
                   {results.metrics.fundSize ? 'Initial Capital' : 'Total Invested'}
                 </div>
@@ -374,17 +374,17 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
                   </div>
                 )}
               </div>
-              <div className="bg-gray-700/50 rounded p-3">
+              <div className="bg-gray-700/50 rounded-sm p-3">
                 <div className="text-sm text-gray-400">Final Portfolio Value</div>
                 <div className="text-xl font-bold text-green-400">{formatCurrency(results.metrics.totalValue)}</div>
               </div>
-              <div className="bg-gray-700/50 rounded p-3">
+              <div className="bg-gray-700/50 rounded-sm p-3">
                 <div className="text-sm text-gray-400">ROI</div>
                 <div className={`text-xl font-bold ${results.metrics.roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                   {results.metrics.roi >= 0 ? '+' : ''}{formatPercent(results.metrics.roi)}
                 </div>
               </div>
-              <div className="bg-gray-700/50 rounded p-3">
+              <div className="bg-gray-700/50 rounded-sm p-3">
                 <div className="text-sm text-gray-400">Profit/Loss</div>
                 <div className={`text-xl font-bold ${results.metrics.totalValue - results.metrics.roiBasis >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                   {results.metrics.totalValue - results.metrics.roiBasis >= 0 ? '+' : ''}

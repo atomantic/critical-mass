@@ -57,7 +57,7 @@ export default function TimeWarningBanner({ timeRemaining, expiry }) {
         <div className="flex items-center gap-2">
           <Clock size={16} className={colors.text} />
           <span className="text-sm font-medium text-white">Time Remaining</span>
-          <span className={`px-1.5 py-0.5 text-xs rounded ${colors.text} bg-gray-700`}>{colors.label}</span>
+          <span className={`px-1.5 py-0.5 text-xs rounded-sm ${colors.text} bg-gray-700`}>{colors.label}</span>
           {colors.pulse && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />}
         </div>
         <span className={`text-lg font-mono font-bold ${colors.text}`}>

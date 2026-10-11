@@ -238,7 +238,7 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
       {showToggle && (
         <button
           onClick={handleToggle}
-          className="px-2 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-colors"
+          className="px-2 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-sm transition-colors"
         >
           {showLadderPanel ? 'Close' : 'Rebuild Ladder'}
         </button>
@@ -265,7 +265,7 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
                 }}
                 onBlur={() => commitNumber('ladderMaxAthDropPct')}
                 disabled={placingLadder}
-                className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
+                className="w-full bg-gray-700 text-white text-xs rounded-sm px-2 py-1"
               />
             </div>
             <div>
@@ -279,7 +279,7 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
                   setLadderEdits(prev => ({ ...prev, ladderSpacingMode: val }))
                   saveLadderEdits({ ladderSpacingMode: val })
                 }}
-                className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
+                className="w-full bg-gray-700 text-white text-xs rounded-sm px-2 py-1"
               >
                 <option value="linear">Linear</option>
                 <option value="sqrt">Sqrt</option>
@@ -297,7 +297,7 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
                   setLadderEdits(prev => ({ ...prev, ladderSizeMode: val }))
                   saveLadderEdits({ ladderSizeMode: val })
                 }}
-                className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
+                className="w-full bg-gray-700 text-white text-xs rounded-sm px-2 py-1"
               >
                 <option value="flat">Flat</option>
                 <option value="linear">Linear</option>
@@ -323,7 +323,7 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
                 }}
                 onBlur={() => commitNumber('ladderMinSpacingPct')}
                 disabled={placingLadder}
-                className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
+                className="w-full bg-gray-700 text-white text-xs rounded-sm px-2 py-1"
               />
             </div>
           </div>
@@ -363,7 +363,7 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
               <button
                 onClick={handlePlaceLadder}
                 disabled={placingLadder || panelState !== 'ready'}
-                className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded transition-colors"
+                className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-sm transition-colors"
               >
                 {placingLadder ? 'Placing...' : `Place ${ladderPreview.levelCount} Orders`}
               </button>

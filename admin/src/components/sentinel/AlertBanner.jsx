@@ -44,7 +44,7 @@ export default function AlertBanner() {
   return (
     <Link
       to="/sentinel"
-      className={`inline-flex items-center gap-2 px-4 py-2 text-sm w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 ${
+      className={`inline-flex items-center gap-2 px-4 py-2 text-sm w-full focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-0 ${
         hasCritical
           ? 'bg-red-900/70 border-b border-red-700 text-red-100 focus-visible:ring-white'
           : 'bg-yellow-900/70 border-b border-yellow-700 text-yellow-100 focus-visible:ring-white'

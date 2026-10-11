@@ -112,7 +112,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   return (
     <div className="space-y-4">
       {fillsError && <div role="alert" className="text-sm text-yellow-400">
-        {fillsError} <button type="button" onClick={() => fetchData()} className="px-2 py-1 rounded bg-gray-700">Retry</button>
+        {fillsError} <button type="button" onClick={() => fetchData()} className="px-2 py-1 rounded-sm bg-gray-700">Retry</button>
       </div>}
       {/* Header with status */}
       {isDryRun && (
@@ -134,7 +134,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                 ? `Open orders may be stale: ${ordersError}`
                 : `Open orders unavailable: ${ordersError}`}
             </span>
-            <button type="button" onClick={() => fetchData()} className="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs">
+            <button type="button" onClick={() => fetchData()} className="px-2 py-0.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs">
               Retry
             </button>
           </div>
@@ -158,13 +158,13 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                   <tr key={order.orderId} className="border-t border-gray-700/50 hover:bg-gray-700/30">
                     <td className="px-4 py-2">
                       {order.type === 'entry' ? (
-                        <span className="px-2 py-0.5 rounded text-xs bg-emerald-900/50 text-emerald-400" title="Limit buy entry order">Entry</span>
+                        <span className="px-2 py-0.5 rounded-sm text-xs bg-emerald-900/50 text-emerald-400" title="Limit buy entry order">Entry</span>
                       ) : (order.type === 'satellite_tp' || order.type === 'body_tp') ? (
-                        <span className="px-2 py-0.5 rounded text-xs bg-purple-900/50 text-purple-400" title={`Celestial body take-profit (${order.type.replace('_tp', '')})`}>
+                        <span className="px-2 py-0.5 rounded-sm text-xs bg-purple-900/50 text-purple-400" title={`Celestial body take-profit (${order.type.replace('_tp', '')})`}>
                           {order.tierEmoji || '🛰️'}
                         </span>
                       ) : (
-                        <span className="px-2 py-0.5 rounded text-xs bg-cyan-900/50 text-cyan-400" title="Take-profit sell order">TP</span>
+                        <span className="px-2 py-0.5 rounded-sm text-xs bg-cyan-900/50 text-cyan-400" title="Take-profit sell order">TP</span>
                       )}
                     </td>
                     <td className={`px-4 py-2 font-medium ${
@@ -184,11 +184,11 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                     <td className="px-4 py-2">{formatCurrency((order.price || 0) * (order.size || 0))}</td>
                     <td className="px-4 py-2">
                       {order.filledSize > 0 ? (
-                        <span className="px-2 py-0.5 rounded text-xs bg-orange-900/50 text-orange-400">
+                        <span className="px-2 py-0.5 rounded-sm text-xs bg-orange-900/50 text-orange-400">
                           partial
                         </span>
                       ) : (
-                        <span className="px-2 py-0.5 rounded text-xs bg-yellow-900/50 text-yellow-400">
+                        <span className="px-2 py-0.5 rounded-sm text-xs bg-yellow-900/50 text-yellow-400">
                           {order.status || 'open'}
                         </span>
                       )}
@@ -278,7 +278,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
             id={cycleFilterId}
             value={cycleFilter}
             onChange={(e) => { setCycleFilter(e.target.value); setPage(0) }}
-            className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white"
+            className="px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white"
           >
             <option value="all">All Cycles</option>
             <option value="current">Current</option>
@@ -401,7 +401,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                 type="button"
                 onClick={() => setPage(pageInfo.page - 1)}
                 disabled={!pageInfo.hasPrev}
-                className="px-3 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-3 py-1 rounded-sm bg-gray-700 text-gray-200 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Previous
               </button>
@@ -409,7 +409,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                 type="button"
                 onClick={() => setPage(pageInfo.page + 1)}
                 disabled={!pageInfo.hasNext}
-                className="px-3 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-3 py-1 rounded-sm bg-gray-700 text-gray-200 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Next
               </button>

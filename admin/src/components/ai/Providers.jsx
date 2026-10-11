@@ -223,7 +223,7 @@ export default function AIProviders() {
             onChange={(e) => setRunPrompt(e.target.value)}
             placeholder="Enter your prompt..."
             rows={3}
-            className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white resize-none focus:border-indigo-500 focus:outline-none"
+            className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white resize-none focus:border-indigo-500 focus:outline-hidden"
           />
 
           <div className="flex justify-between items-center">
@@ -287,10 +287,10 @@ export default function AIProviders() {
                   </div>
                   <div className="text-sm text-gray-400 mt-1 space-y-0.5">
                     {sp.type === 'cli' && (
-                      <p className="break-words">Command: <code className="text-gray-300 break-all">{sp.command} {sp.args?.join(' ')}</code></p>
+                      <p className="wrap-break-word">Command: <code className="text-gray-300 break-all">{sp.command} {sp.args?.join(' ')}</code></p>
                     )}
                     {sp.type === 'api' && (
-                      <p className="break-words">Endpoint: <code className="text-gray-300 break-all">{sp.endpoint}</code></p>
+                      <p className="wrap-break-word">Endpoint: <code className="text-gray-300 break-all">{sp.endpoint}</code></p>
                     )}
                     {sp.models?.length > 0 && (
                       <p className="text-xs">Models: {sp.models.join(', ')}</p>
@@ -303,7 +303,7 @@ export default function AIProviders() {
                 <button
                   onClick={() => handleAddSample(sp)}
                   disabled={Boolean(mutationPending[`sample:${sp.id}`] || mutationPending['sample-all'])}
-                  className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors text-sm disabled:opacity-50 flex-shrink-0"
+                  className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors text-sm disabled:opacity-50 shrink-0"
                 >
                   {mutationPending[`sample:${sp.id}`] ? 'Adding...' : 'Add'}
                 </button>
@@ -339,25 +339,25 @@ export default function AIProviders() {
                     {PROVIDER_TYPES[provider.type] || provider.type}
                   </span>
                   {provider.id === activeProviderId && (
-                    <span className="text-xs px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-400">DEFAULT</span>
+                    <span className="text-xs px-2 py-0.5 rounded-sm bg-indigo-500/20 text-indigo-400">DEFAULT</span>
                   )}
                   {!provider.enabled && (
-                    <span className="text-xs px-2 py-0.5 rounded bg-gray-500/20 text-gray-400">DISABLED</span>
+                    <span className="text-xs px-2 py-0.5 rounded-sm bg-gray-500/20 text-gray-400">DISABLED</span>
                   )}
                 </div>
 
                 <div className="mt-2 text-sm text-gray-400 space-y-1">
                   {provider.type === 'cli' && (
-                    <p className="break-words">Command: <code className="text-gray-300 break-all">{provider.command} {provider.args?.join(' ')}</code></p>
+                    <p className="wrap-break-word">Command: <code className="text-gray-300 break-all">{provider.command} {provider.args?.join(' ')}</code></p>
                   )}
                   {provider.type === 'api' && (
-                    <p className="break-words">Endpoint: <code className="text-gray-300 break-all">{provider.endpoint}</code></p>
+                    <p className="wrap-break-word">Endpoint: <code className="text-gray-300 break-all">{provider.endpoint}</code></p>
                   )}
                   {provider.models?.length > 0 && (
                     <p>Models: {provider.models.slice(0, 3).join(', ')}{provider.models.length > 3 ? ` +${provider.models.length - 3}` : ''}</p>
                   )}
                   {provider.defaultModel && (
-                    <p className="break-words">Default: <code className="text-gray-300 break-all">{provider.defaultModel}</code></p>
+                    <p className="wrap-break-word">Default: <code className="text-gray-300 break-all">{provider.defaultModel}</code></p>
                   )}
                   {(provider.lightModel || provider.mediumModel || provider.heavyModel) && (
                     <p className="text-xs">
@@ -383,7 +383,7 @@ export default function AIProviders() {
                 <button
                   onClick={() => handleTest(provider.id)}
                   disabled={testResults[provider.id]?.testing}
-                  className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors disabled:opacity-50"
+                  className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors disabled:opacity-50"
                 >
                   {testResults[provider.id]?.testing ? 'Testing...' : 'Test'}
                 </button>
@@ -392,7 +392,7 @@ export default function AIProviders() {
                   <button
                     onClick={() => handleRefreshModels(provider.id)}
                     disabled={Boolean(mutationPending[`refresh:${provider.id}`])}
-                    className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors"
+                    className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors"
                   >
                     Refresh
                   </button>
@@ -414,7 +414,7 @@ export default function AIProviders() {
                   <button
                     onClick={() => handleSetActive(provider.id)}
                     disabled={Boolean(mutationPending.active)}
-                    className="px-3 py-1.5 text-sm bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 rounded transition-colors"
+                    className="px-3 py-1.5 text-sm bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 rounded-sm transition-colors"
                   >
                     Set Default
                   </button>
@@ -422,7 +422,7 @@ export default function AIProviders() {
 
                 <button
                   onClick={() => { setEditingProvider(provider); setShowForm(true) }}
-                  className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors"
+                  className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors"
                 >
                   Edit
                 </button>
@@ -430,7 +430,7 @@ export default function AIProviders() {
                 <button
                   onClick={() => handleDelete(provider.id)}
                   disabled={Boolean(mutationPending[`delete:${provider.id}`])}
-                  className="px-3 py-1.5 text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded transition-colors"
+                  className="px-3 py-1.5 text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-sm transition-colors"
                 >
                   Delete
                 </button>
@@ -463,7 +463,7 @@ export default function AIProviders() {
                 className="bg-gray-800 border border-gray-700 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
               >
                 <div className="flex items-start sm:items-center gap-3 min-w-0">
-                  <span className={`w-2 h-2 rounded-full flex-shrink-0 mt-1.5 sm:mt-0 ${
+                  <span className={`w-2 h-2 rounded-full shrink-0 mt-1.5 sm:mt-0 ${
                     run.success === true ? 'bg-green-500' :
                     run.success === false ? 'bg-red-500' :
                     'bg-yellow-500 animate-pulse'
@@ -475,7 +475,7 @@ export default function AIProviders() {
                     </p>
                   </div>
                 </div>
-                <div className="text-sm text-gray-400 flex-shrink-0 pl-5 sm:pl-0">
+                <div className="text-sm text-gray-400 shrink-0 pl-5 sm:pl-0">
                   {run.duration ? `${(run.duration / 1000).toFixed(1)}s` : 'Running...'}
                 </div>
               </div>
@@ -589,7 +589,7 @@ function ProviderForm({ provider, onClose, onSave }) {
           id={fieldId}
           value={value}
           onChange={(e) => setFormData(prev => ({ ...prev, [field]: e.target.value }))}
-          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:border-indigo-500 focus:outline-none"
+          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:border-indigo-500 focus:outline-hidden"
         >
           <option value="">None</option>
           {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
@@ -600,7 +600,7 @@ function ProviderForm({ provider, onClose, onSave }) {
           type="text"
           value={value}
           onChange={(e) => setFormData(prev => ({ ...prev, [field]: e.target.value }))}
-          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:border-indigo-500 focus:outline-none"
+          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:border-indigo-500 focus:outline-hidden"
         />
       )}
     </div>
@@ -624,7 +624,7 @@ function ProviderForm({ provider, onClose, onSave }) {
               value={formData.name}
               onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
               required
-              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-none"
+              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-hidden"
             />
           </div>
 
@@ -634,7 +634,7 @@ function ProviderForm({ provider, onClose, onSave }) {
               id={typeSelectId}
               value={formData.type}
               onChange={(e) => setFormData(prev => ({ ...prev, type: e.target.value }))}
-              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-none"
+              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-hidden"
             >
               <option value="cli">CLI</option>
               <option value="api">API</option>
@@ -652,7 +652,7 @@ function ProviderForm({ provider, onClose, onSave }) {
                   onChange={(e) => setFormData(prev => ({ ...prev, command: e.target.value }))}
                   placeholder="claude"
                   required={formData.type === 'cli'}
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-none"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-hidden"
                 />
               </div>
               <div>
@@ -663,7 +663,7 @@ function ProviderForm({ provider, onClose, onSave }) {
                   value={formData.args}
                   onChange={(e) => setFormData(prev => ({ ...prev, args: e.target.value }))}
                   placeholder="--print -p"
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-none"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-hidden"
                 />
               </div>
             </>
@@ -680,7 +680,7 @@ function ProviderForm({ provider, onClose, onSave }) {
                   onChange={(e) => setFormData(prev => ({ ...prev, endpoint: e.target.value }))}
                   placeholder="http://localhost:1234/v1"
                   required={formData.type === 'api'}
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-none"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-hidden"
                 />
               </div>
               <div>
@@ -690,7 +690,7 @@ function ProviderForm({ provider, onClose, onSave }) {
                   type="password"
                   value={formData.apiKey}
                   onChange={(e) => setFormData(prev => ({ ...prev, apiKey: e.target.value }))}
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-none"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-hidden"
                 />
               </div>
             </>
@@ -708,7 +708,7 @@ function ProviderForm({ provider, onClose, onSave }) {
               onBlur={handleModelsBlur}
               placeholder="model-1, model-2, model-3"
               rows={2}
-              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white resize-none focus:border-indigo-500 focus:outline-none"
+              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white resize-none focus:border-indigo-500 focus:outline-hidden"
             />
           </div>
 
@@ -719,7 +719,7 @@ function ProviderForm({ provider, onClose, onSave }) {
                 id={defaultModelId}
                 value={formData.defaultModel}
                 onChange={(e) => setFormData(prev => ({ ...prev, defaultModel: e.target.value }))}
-                className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-none"
+                className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-hidden"
               >
                 <option value="">None</option>
                 {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
@@ -731,7 +731,7 @@ function ProviderForm({ provider, onClose, onSave }) {
                 value={formData.defaultModel}
                 onChange={(e) => setFormData(prev => ({ ...prev, defaultModel: e.target.value }))}
                 placeholder="claude-sonnet-4-6"
-                className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-none"
+                className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-hidden"
               />
             )}
           </div>
@@ -753,7 +753,7 @@ function ProviderForm({ provider, onClose, onSave }) {
               type="number"
               value={formData.timeout}
               onChange={(e) => setFormData(prev => ({ ...prev, timeout: e.target.value }))}
-              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-none"
+              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-hidden"
             />
           </div>
 
@@ -763,7 +763,7 @@ function ProviderForm({ provider, onClose, onSave }) {
               type="checkbox"
               checked={formData.enabled}
               onChange={(e) => setFormData(prev => ({ ...prev, enabled: e.target.checked }))}
-              className="w-4 h-4 rounded border-gray-700 bg-gray-900"
+              className="w-4 h-4 rounded-sm border-gray-700 bg-gray-900"
             />
             <span className="text-sm text-gray-400">Enabled</span>
           </label>

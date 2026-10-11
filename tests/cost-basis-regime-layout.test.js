@@ -16,9 +16,9 @@ const source = fs.readFileSync(
 describe('CostBasisRegime responsive layout (issue #499)', () => {
   it('stacks the price groups on phones and lets long values wrap', () => {
     assert.match(source, /flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between/)
-    assert.match(source, /<div className="min-w-0 flex-1">\s*<span className="block text-gray-400 break-words">Current/)
-    assert.match(source, /<span className="block text-3xl font-bold break-words">\{formatPrice\(currentPrice\)\}<\/span>/)
-    assert.match(source, /<span className="block text-2xl font-semibold break-words">\{formatPrice\(avgCost\)\}<\/span>/)
+    assert.match(source, /<div className="min-w-0 flex-1">\s*<span className="block text-gray-400 wrap-break-word">Current/)
+    assert.match(source, /<span className="block text-3xl font-bold wrap-break-word">\{formatPrice\(currentPrice\)\}<\/span>/)
+    assert.match(source, /<span className="block text-2xl font-semibold wrap-break-word">\{formatPrice\(avgCost\)\}<\/span>/)
     assert.doesNotMatch(source, /ml-4/)
   })
 
@@ -26,7 +26,7 @@ describe('CostBasisRegime responsive layout (issue #499)', () => {
     assert.match(source, /grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4/)
     assert.ok((source.match(/className="min-w-0 bg-gray-800 rounded-lg p-4"/g) || []).length >= 5)
     assert.ok((source.match(/flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1/g) || []).length >= 10)
-    assert.match(source, /min-w-0 max-w-full break-words text-right font-mono/)
+    assert.match(source, /min-w-0 max-w-full wrap-break-word text-right font-mono/)
   })
 
   it('wraps cycle metrics and keeps current-cycle table overflow local', () => {

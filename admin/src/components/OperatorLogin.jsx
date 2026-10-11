@@ -118,7 +118,7 @@ export default function OperatorLogin({ children }) {
               autoComplete="off"
               value={bootstrapSecret}
               onChange={(event) => setBootstrapSecret(event.target.value)}
-              className="mt-2 w-full rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-gray-100 focus:border-blue-500 focus:outline-none"
+              className="mt-2 w-full rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-gray-100 focus:border-blue-500 focus:outline-hidden"
               required
               autoFocus
             />
@@ -133,7 +133,7 @@ export default function OperatorLogin({ children }) {
           autoComplete={bootstrapRequired ? 'new-password' : 'current-password'}
           value={password}
           onChange={(event) => setPassword(event.target.value)}
-          className="mt-2 w-full rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-gray-100 focus:border-blue-500 focus:outline-none"
+          className="mt-2 w-full rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-gray-100 focus:border-blue-500 focus:outline-hidden"
           minLength={bootstrapRequired ? 8 : undefined}
           required
           autoFocus={!bootstrapSecretRequired}
@@ -147,7 +147,7 @@ export default function OperatorLogin({ children }) {
               autoComplete="new-password"
               value={confirm}
               onChange={(event) => setConfirm(event.target.value)}
-              className="mt-2 w-full rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-gray-100 focus:border-blue-500 focus:outline-none"
+              className="mt-2 w-full rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-gray-100 focus:border-blue-500 focus:outline-hidden"
               minLength={8}
               required
             />

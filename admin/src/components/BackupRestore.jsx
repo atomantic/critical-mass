@@ -373,7 +373,7 @@ function BackupRestore() {
           </p>
           <div className="flex justify-end gap-3">
             <button
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
               onClick={() => setDeleteConfirm(null)}
               disabled={deleting}
               autoFocus
@@ -381,7 +381,7 @@ function BackupRestore() {
               Cancel
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded transition-colors disabled:opacity-50"
+              className="px-4 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded-sm transition-colors disabled:opacity-50"
               onClick={handleExecuteDelete}
               disabled={deleting}
             >
@@ -437,7 +437,7 @@ function BackupRestore() {
           )}
           <div className="flex justify-end gap-3">
             <button
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
               onClick={cancelFundStateRestore}
               disabled={fundStateRestoring}
               autoFocus
@@ -445,7 +445,7 @@ function BackupRestore() {
               Cancel
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded transition-colors disabled:opacity-50"
+              className="px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded-sm transition-colors disabled:opacity-50"
               onClick={() => handleExecuteFundStateRestore()}
               disabled={fundStateRestoring}
             >
@@ -453,7 +453,7 @@ function BackupRestore() {
             </button>
             {fundStateBlockedBy && (
               <button
-                className="px-4 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded transition-colors disabled:opacity-50"
+                className="px-4 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded-sm transition-colors disabled:opacity-50"
                 onClick={() => handleExecuteFundStateRestore({ force: true })}
                 disabled={fundStateRestoring || !fundStateForceAcknowledged}
               >
@@ -483,7 +483,7 @@ function BackupRestore() {
             <span>Backup list may be out of date: {refreshError}</span>
             <button
               onClick={() => fetchData({ silent: true })}
-              className="px-3 py-1 bg-yellow-800 hover:bg-yellow-900 rounded font-medium transition-colors"
+              className="px-3 py-1 bg-yellow-800 hover:bg-yellow-900 rounded-sm font-medium transition-colors"
             >
               Refresh
             </button>
@@ -501,7 +501,7 @@ function BackupRestore() {
                 onChange={e => updateConfig(prev => ({ ...prev, enabled: e.target.checked }))}
                 className="sr-only peer"
               />
-              <div className="relative shrink-0 w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
+              <div className="relative shrink-0 w-11 h-6 bg-gray-600 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
               <span className="text-sm font-medium">Enable Scheduled Backups</span>
             </label>
           </div>
@@ -514,7 +514,7 @@ function BackupRestore() {
                   id="backup-interval"
                   value={config.intervalMs}
                   onChange={e => updateConfig(prev => ({ ...prev, intervalMs: parseInt(e.target.value) }))}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
                 >
                   {INTERVAL_OPTIONS.map(opt => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -527,7 +527,7 @@ function BackupRestore() {
                   id="fund-state-interval"
                   value={config.fundStateIntervalMs}
                   onChange={e => updateConfig(prev => ({ ...prev, fundStateIntervalMs: parseInt(e.target.value) }))}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
                 >
                   {FUND_STATE_INTERVAL_OPTIONS.map(opt => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -544,7 +544,7 @@ function BackupRestore() {
                   onChange={e => updateConfig(prev => ({ ...prev, maxBackups: Math.max(1, Math.min(30, parseInt(e.target.value) || 7)) }))}
                   min={1}
                   max={30}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
                 />
                 <p className="mt-1 text-xs text-gray-400">Oldest backups are pruned automatically</p>
               </div>
@@ -557,7 +557,7 @@ function BackupRestore() {
                   onChange={e => updateConfig(prev => ({ ...prev, fundStateMaxBackups: Math.max(1, Math.min(168, parseInt(e.target.value) || 24)) }))}
                   min={1}
                   max={168}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
                 />
                 <p className="mt-1 text-xs text-gray-400">Hourly recovery points retained</p>
               </div>
@@ -569,7 +569,7 @@ function BackupRestore() {
                 type="checkbox"
                 checked={config.includePriceCache}
                 onChange={e => updateConfig(prev => ({ ...prev, includePriceCache: e.target.checked }))}
-                className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
+                className="w-4 h-4 rounded-sm bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
               />
               Include price cache files
               <span className="text-xs text-gray-400">(~45MB per exchange, can be regenerated)</span>
@@ -629,7 +629,7 @@ function BackupRestore() {
                       <button
                         onClick={() => handleRestoreFundState(snapshot.snapshotId, fund.exchange, fund.pair)}
                         disabled={restoring || fundStateRestoring}
-                        className="px-3 py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded font-medium transition-colors"
+                        className="px-3 py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded-sm font-medium transition-colors"
                       >
                         Restore Fund State
                       </button>
@@ -847,14 +847,14 @@ function BackupRestore() {
                   <button
                     onClick={() => setRestoreTarget(backup.filename)}
                     disabled={restoring}
-                    className="px-3 py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded text-xs font-medium transition-colors"
+                    className="px-3 py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded-sm text-xs font-medium transition-colors"
                   >
                     Restore
                   </button>
                   <button
                     onClick={() => handleDelete(backup.filename)}
                     disabled={deleting === backup.filename || (deleteConfirm && deleteConfirm.filename === backup.filename)}
-                    className="px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:bg-red-900 disabled:cursor-not-allowed rounded text-xs font-medium transition-colors"
+                    className="px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:bg-red-900 disabled:cursor-not-allowed rounded-sm text-xs font-medium transition-colors"
                   >
                     {deleting === backup.filename ? '...' : 'Delete'}
                   </button>

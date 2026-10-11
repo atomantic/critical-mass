@@ -23,7 +23,7 @@ function FormInput({ label, hint, value, onChange, type = 'text', className = ''
           aria-describedby={hint ? hintId : undefined}
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+          className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white focus:outline-hidden focus:border-blue-500"
         />
         {hint && <div id={hintId} className="text-[10px] text-gray-400 mt-0.5 leading-tight">{hint}</div>}
       </div>
@@ -50,7 +50,7 @@ function FormInput({ label, hint, value, onChange, type = 'text', className = ''
         value={display}
         onChange={handleNumberChange}
         onBlur={() => setDraft(null)}
-        className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+        className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white focus:outline-hidden focus:border-blue-500"
       />
       {hint && <div id={hintId} className="text-[10px] text-gray-400 mt-0.5 leading-tight">{hint}</div>}
     </div>
@@ -68,7 +68,7 @@ function FormSelect({ label, hint, value, onChange, options, className = '' }) {
         aria-describedby={hint ? hintId : undefined}
         value={value ?? options[0]?.value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+        className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white focus:outline-hidden focus:border-blue-500"
       >
         {options.map(opt => (
           <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -505,7 +505,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               <button
                 onClick={handleReset}
                 disabled={locked}
-                className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Reset
               </button>
@@ -550,13 +550,13 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         </div>
 
         {restartNeeded && (
-          <div className="mb-3 p-2 rounded text-sm bg-amber-900/40 border border-amber-700 text-amber-200 flex items-center justify-between gap-3">
+          <div className="mb-3 p-2 rounded-sm text-sm bg-amber-900/40 border border-amber-700 text-amber-200 flex items-center justify-between gap-3">
             <span>⚠️ Dry-run mode is applied when the engine starts — restart it for this change to take effect.</span>
             <button
               type="button"
               onClick={handleRestartEngine}
               disabled={restarting}
-              className="px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium disabled:opacity-50 whitespace-nowrap"
+              className="px-3 py-1 rounded-sm bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium disabled:opacity-50 whitespace-nowrap"
             >
               {restarting ? 'Restarting…' : 'Restart Engine'}
             </button>
@@ -566,7 +566,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         {/* Strategy Header */}
         <div className="border-b border-gray-700 pb-3 mb-4">
           {isRegime ? (
-            <div className="bg-purple-900/30 border border-purple-700/50 rounded p-3 text-xs">
+            <div className="bg-purple-900/30 border border-purple-700/50 rounded-sm p-3 text-xs">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-purple-400 font-medium">Regime-Aware Volatility Engine Configuration</span>
               </div>
@@ -613,7 +613,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 )}
               </div>
               {isFibonacci && (
-                <div className="bg-gray-900/50 rounded p-3 text-xs">
+                <div className="bg-gray-900/50 rounded-sm p-3 text-xs">
                   <div className="text-gray-400 mb-1">
                     <span className="text-yellow-400 font-medium">Fibonacci Sequence:</span>{' '}
                     <span className="text-white font-mono">{getFibPreview(config.fibBaseAmount || 10)}</span>
@@ -666,7 +666,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
 
               if (holdback > markup && holdback > 0) {
                 return (
-                  <div className="mb-4 p-2 bg-amber-900/30 border border-amber-600/50 rounded text-xs">
+                  <div className="mb-4 p-2 bg-amber-900/30 border border-amber-600/50 rounded-sm text-xs">
                     <div className="text-amber-400 font-medium mb-1">⚠️ Holdback exceeds Markup</div>
                     <div className="text-gray-300">
                       Each cycle returns{' '}
@@ -695,7 +695,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                       type="number"
                       value={config.consolidateAfterOrders || 0}
                       onChange={(e) => handleChange('consolidateAfterOrders', parseInt(e.target.value) || 0)}
-                      className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                      className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white focus:outline-hidden focus:border-blue-500"
                     />
                   </div>
                   <div className="flex items-center gap-2">
@@ -704,7 +704,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                       aria-labelledby="consolidate-schedule-label"
                       value={config.consolidateInterval || 'never'}
                       onChange={(e) => handleChange('consolidateInterval', e.target.value)}
-                      className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                      className="px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white focus:outline-hidden focus:border-blue-500"
                     >
                       {CONSOLIDATE_INTERVAL_OPTIONS.map(opt => (
                         <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -809,7 +809,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                       id="ladderAutoSwitch"
                       checked={regimeConfig.ladderAutoSwitch || false}
                       onChange={(e) => handleRegimeChange('ladderAutoSwitch', e.target.checked)}
-                      className="w-4 h-4 rounded bg-gray-700 border-gray-600"
+                      className="w-4 h-4 rounded-sm bg-gray-700 border-gray-600"
                     />
                     <label htmlFor="ladderAutoSwitch" className="text-sm text-gray-300">Auto-Switch on Vol</label>
                   </div>
@@ -821,7 +821,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               </div>
               {(regimeConfig.entryMode === 'ladder' || regimeConfig.ladderAutoSwitch) && (
                 <>
-                  <div className="bg-indigo-900/20 border border-indigo-700/30 rounded p-3 mb-3">
+                  <div className="bg-indigo-900/20 border border-indigo-700/30 rounded-sm p-3 mb-3">
                     <div className="text-xs text-indigo-300">
                       <span className="font-medium">Ladder Mode:</span> Deploys all available USDC as limit buy orders from just below current price
                       down to an ATH-based floor with Fibonacci-weighted sizing. Orders stay in place during flash events; rebuild only after cycle reset.
@@ -924,7 +924,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                   </div>
                   <div className="mt-2 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-9 gap-1 text-xs text-center">
                     {CELESTIAL_TIERS.map(tier => (
-                      <div key={tier.name} className="bg-gray-800/50 rounded p-1">
+                      <div key={tier.name} className="bg-gray-800/50 rounded-sm p-1">
                         <div>{tier.emoji}</div>
                         <div className="text-gray-400">{tier.label}</div>
                         <div className="text-gray-400">{formatTierCapitalRange(tier, regimeConfig.maxUsdcDeployed || 10000)}</div>
@@ -959,7 +959,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                     <FormInput label="Markup Threshold" hint="Score above this = MARKUP" value={regimeConfig.macroMarkupThreshold ?? 35} onChange={(v) => handleRegimeChange('macroMarkupThreshold', v)} type="number" />
                   </div>
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-                    <div className="bg-green-900/15 border border-green-800/30 rounded p-3">
+                    <div className="bg-green-900/15 border border-green-800/30 rounded-sm p-3">
                       <div className="text-xs text-green-400 font-medium mb-2">Accumulation (buying dips harder)</div>
                       <div className="grid grid-cols-3 gap-2">
                         <FormInput label="Size" hint="0.1-3.0" value={regimeConfig.macroAccumulationSizeMult ?? 1.3} onChange={(v) => handleRegimeChange('macroAccumulationSizeMult', v)} type="number" />
@@ -967,7 +967,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                         <FormInput label="Offset" hint="Tighter" value={regimeConfig.macroAccumulationOffsetMult ?? 0.8} onChange={(v) => handleRegimeChange('macroAccumulationOffsetMult', v)} type="number" />
                       </div>
                     </div>
-                    <div className="bg-yellow-900/15 border border-yellow-800/30 rounded p-3">
+                    <div className="bg-yellow-900/15 border border-yellow-800/30 rounded-sm p-3">
                       <div className="text-xs text-yellow-400 font-medium mb-2">Markup (uptrend — reduce exposure)</div>
                       <div className="grid grid-cols-3 gap-2">
                         <FormInput label="Size" hint="0.1-3.0" value={regimeConfig.macroMarkupSizeMult ?? 0.7} onChange={(v) => handleRegimeChange('macroMarkupSizeMult', v)} type="number" />
@@ -975,7 +975,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                         <FormInput label="Offset" hint="Wider" value={regimeConfig.macroMarkupOffsetMult ?? 1.2} onChange={(v) => handleRegimeChange('macroMarkupOffsetMult', v)} type="number" />
                       </div>
                     </div>
-                    <div className="bg-red-900/15 border border-red-800/30 rounded p-3">
+                    <div className="bg-red-900/15 border border-red-800/30 rounded-sm p-3">
                       <div className="text-xs text-red-400 font-medium mb-2">Decline (capitulation — conservative)</div>
                       <div className="grid grid-cols-3 gap-2">
                         <FormInput label="Size" hint="0.1-3.0" value={regimeConfig.macroDeclineSizeMult ?? 0.4} onChange={(v) => handleRegimeChange('macroDeclineSizeMult', v)} type="number" />
@@ -1078,7 +1078,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                         id="cancelEntriesOnFlash"
                         checked={regimeConfig.cancelEntriesOnFlash !== false}
                         onChange={(e) => handleRegimeChange('cancelEntriesOnFlash', e.target.checked)}
-                        className="w-4 h-4 rounded bg-gray-700 border-gray-600"
+                        className="w-4 h-4 rounded-sm bg-gray-700 border-gray-600"
                       />
                       <label htmlFor="cancelEntriesOnFlash" className="text-sm text-gray-300">Cancel Entries on Flash</label>
                     </div>
@@ -1169,7 +1169,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                   {presetsDirty && (
                     <button
                       onClick={handleResetPresets}
-                      className="px-3 py-1.5 text-sm bg-gray-600 hover:bg-gray-500 rounded font-medium transition-colors"
+                      className="px-3 py-1.5 text-sm bg-gray-600 hover:bg-gray-500 rounded-sm font-medium transition-colors"
                     >
                       Reset
                     </button>

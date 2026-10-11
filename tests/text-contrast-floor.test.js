@@ -133,9 +133,9 @@ function findMatches(pattern) {
 const TEXT_GRAY_ALLOWLIST = new Set([
   // disabled controls (exempt from 1.4.3)
   'admin/src/components/NotificationsConfig.jsx::className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"',
-  'admin/src/components/LogViewer.jsx::className="px-2 py-1 text-xs bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:text-gray-500 text-yellow-100 rounded transition-colors"',
-  'admin/src/components/Backtest.jsx::className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 rounded font-medium"',
-  'admin/src/components/sentinel/Dashboard.jsx::className="px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm min-h-[44px]"',
+  'admin/src/components/LogViewer.jsx::className="px-2 py-1 text-xs bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:text-gray-500 text-yellow-100 rounded-sm transition-colors"',
+  'admin/src/components/Backtest.jsx::className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-sm font-medium"',
+  'admin/src/components/sentinel/Dashboard.jsx::className="px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded-sm text-sm min-h-[44px]"',
   // decorative separators / connective punctuation between two real text nodes
   'admin/src/components/ManualTrades.jsx::<span className="text-gray-600">&rarr;</span>',
   'admin/src/components/ManualTrades.jsx::<span className="text-gray-600">=</span>',
@@ -169,8 +169,8 @@ const BG_600_ALLOWLIST = new Set([
   // translucent status pills: bg-*-600/NN + text-*-400, a distinct pattern from solid buttons
   "admin/src/components/ManualTrades.jsx::buy_pending: 'bg-yellow-600/30 text-yellow-400 border-yellow-500/30',",
   "admin/src/components/ManualTrades.jsx::completed: 'bg-green-600/30 text-green-400 border-green-500/30',",
-  'admin/src/components/ManualTrades.jsx::className="px-2 py-0.5 rounded text-[10px] bg-yellow-600/30 text-yellow-400 hover:bg-yellow-600/50 border border-yellow-500/30"',
-  'admin/src/components/updown/PositionTracker.jsx::className="py-2 px-3 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 rounded text-sm text-red-400 transition-colors flex items-center gap-1"',
+  'admin/src/components/ManualTrades.jsx::className="px-2 py-0.5 rounded-sm text-[10px] bg-yellow-600/30 text-yellow-400 hover:bg-yellow-600/50 border border-yellow-500/30"',
+  'admin/src/components/updown/PositionTracker.jsx::className="py-2 px-3 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 rounded-sm text-sm text-red-400 transition-colors flex items-center gap-1"',
   // read-only table-cell status indicators, not action buttons
   "admin/src/components/updown/TradeHistory.jsx::? d === 'up' ? 'bg-green-600 text-white' : d === 'down' ? 'bg-red-600 text-white' : 'bg-gray-600 text-white'",
   // already passes 4.5:1 (explicit text-white on red-600 = 4.83:1; dark text-black on yellow-600 = 7.15:1)
@@ -178,7 +178,7 @@ const BG_600_ALLOWLIST = new Set([
   "admin/src/components/sentinel/Dashboard.jsx::warning: 'bg-yellow-600 text-black',",
   // icon-only / no-text controls (toggle knob, restart icon button — no visible label)
   "admin/src/components/sentinel/Dashboard.jsx::<span className={`block w-8 h-5 rounded-full relative transition-colors ${feed.enabled ? 'bg-green-600' : 'bg-gray-600'}`}>",
-  "admin/src/components/updown/Dashboard.jsx::className={`${ENGINE_CONTROL_CLASS} rounded transition-colors ${restarting ? 'bg-yellow-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}",
+  "admin/src/components/updown/Dashboard.jsx::className={`${ENGINE_CONTROL_CLASS} rounded-sm transition-colors ${restarting ? 'bg-yellow-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}",
 ])
 
 describe('admin/src text-gray-500/600 sweep (issue #538)', () => {
@@ -214,11 +214,11 @@ describe('admin/src bg-green/yellow/red-600 button-fill sweep (issue #538)', () 
     const backupRestore = fs.readFileSync(path.join(ADMIN_SRC, 'components', 'BackupRestore.jsx'), 'utf8')
     const sentinelDashboard = fs.readFileSync(path.join(ADMIN_SRC, 'components', 'sentinel', 'Dashboard.jsx'), 'utf8')
 
-    assert.match(backtest, /bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded font-medium/) // Run Backtest
-    assert.match(sentinelDashboard, /bg-green-800 hover:bg-green-900 rounded text-sm/) // Start
-    assert.match(sentinelDashboard, /bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm min-h-\[44px\]/) // Add Feed
+    assert.match(backtest, /bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded-sm font-medium/) // Run Backtest
+    assert.match(sentinelDashboard, /bg-green-800 hover:bg-green-900 rounded-sm text-sm/) // Start
+    assert.match(sentinelDashboard, /bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded-sm text-sm min-h-\[44px\]/) // Add Feed
     assert.match(backupRestore, /bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded-lg font-medium/) // Confirm Restore
-    assert.match(backupRestore, /bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded text-xs font-medium/) // Restore
-    assert.match(backupRestore, /bg-red-700 hover:bg-red-800 disabled:bg-red-900 disabled:cursor-not-allowed rounded text-xs font-medium/) // Delete
+    assert.match(backupRestore, /bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded-sm text-xs font-medium/) // Restore
+    assert.match(backupRestore, /bg-red-700 hover:bg-red-800 disabled:bg-red-900 disabled:cursor-not-allowed rounded-sm text-xs font-medium/) // Delete
   })
 })

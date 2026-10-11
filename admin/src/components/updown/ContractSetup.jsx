@@ -242,7 +242,7 @@ export default function ContractSetup({ initialContract }) {
             aria-label="AI Provider"
             value={selectedProvider}
             onChange={e => setSelectedProvider(e.target.value)}
-            className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-purple-500"
+            className="bg-gray-900 border border-gray-700 rounded-sm px-2 py-1 text-xs text-white focus:outline-hidden focus:border-purple-500"
           >
             <option value="">Provider...</option>
             {providers.map(p => (
@@ -255,7 +255,7 @@ export default function ContractSetup({ initialContract }) {
             value={selectedModel}
             onChange={e => setSelectedModel(e.target.value)}
             disabled={!currentProviderModels.length}
-            className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-purple-500 disabled:opacity-50"
+            className="bg-gray-900 border border-gray-700 rounded-sm px-2 py-1 text-xs text-white focus:outline-hidden focus:border-purple-500 disabled:opacity-50"
           >
             <option value="">Model...</option>
             {currentProviderModels.map(m => (
@@ -304,12 +304,12 @@ export default function ContractSetup({ initialContract }) {
 
         {/* Error display */}
         {screenshotError && (
-          <div className="text-xs text-red-400 bg-red-900/20 rounded px-2 py-1">
+          <div className="text-xs text-red-400 bg-red-900/20 rounded-sm px-2 py-1">
             {screenshotError}
           </div>
         )}
         {screenshotNotice && (
-          <div className="text-xs text-blue-300 bg-blue-900/20 border border-blue-700/40 rounded p-2" role="status">
+          <div className="text-xs text-blue-300 bg-blue-900/20 border border-blue-700/40 rounded-sm p-2" role="status">
             {screenshotNotice}
           </div>
         )}
@@ -448,13 +448,13 @@ export default function ContractSetup({ initialContract }) {
             <div className="flex gap-2 pt-1">
               <button
                 onClick={applyPreview}
-                className="flex-1 py-1.5 bg-purple-600 hover:bg-purple-700 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
+                className="flex-1 py-1.5 bg-purple-600 hover:bg-purple-700 rounded-sm text-xs font-medium transition-colors flex items-center justify-center gap-1"
               >
                 <Check size={12} /> Apply
               </button>
               <button
                 onClick={() => setPreview(null)}
-                className="flex-1 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
+                className="flex-1 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-sm text-xs font-medium transition-colors flex items-center justify-center gap-1"
               >
                 <X size={12} /> Cancel
               </button>
@@ -472,7 +472,7 @@ export default function ContractSetup({ initialContract }) {
             value={expiry}
             onChange={e => setExpiry(e.target.value)}
             placeholder="2026-02-21T00:00:00Z"
-            className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+            className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-hidden focus:border-blue-500"
           />
         </div>
 
@@ -485,7 +485,7 @@ export default function ContractSetup({ initialContract }) {
               value={target}
               onChange={e => setTarget(e.target.value)}
               placeholder="100000"
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+              className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-hidden focus:border-blue-500"
             />
           </div>
           <div>
@@ -496,7 +496,7 @@ export default function ContractSetup({ initialContract }) {
               value={stop}
               onChange={e => setStop(e.target.value)}
               placeholder="95000"
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+              className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-hidden focus:border-blue-500"
             />
           </div>
         </div>
@@ -508,7 +508,7 @@ export default function ContractSetup({ initialContract }) {
               id={rangeId}
               value={range}
               onChange={e => setRange(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+              className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white focus:outline-hidden focus:border-blue-500"
             >
               <option value="500">$500</option>
               <option value="2000">$2,000</option>
@@ -544,7 +544,7 @@ export default function ContractSetup({ initialContract }) {
         <button
           onClick={handleSave}
           disabled={saving}
-          className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded text-sm font-medium transition-colors flex items-center justify-center gap-2"
+          className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm font-medium transition-colors flex items-center justify-center gap-2"
         >
           <Save size={14} />
           {saving ? 'Saving...' : saved ? 'Saved' : 'Save Contract'}

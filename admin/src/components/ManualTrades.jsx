@@ -345,7 +345,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
           onClick={handleExpand}
           aria-expanded={expanded}
           aria-controls="manual-trades-content"
-          className="flex items-center gap-2 p-0 bg-transparent border-0 text-gray-300 hover:text-gray-100 transition-colors focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-offset-2 focus:ring-offset-gray-800 rounded"
+          className="flex items-center gap-2 p-0 bg-transparent border-0 text-gray-300 hover:text-gray-100 transition-colors focus:outline-hidden focus:ring-2 focus:ring-purple-400 focus:ring-offset-2 focus:ring-offset-gray-800 rounded-sm"
         >
           <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>&#9654;</span>
           Manual Trades
@@ -366,7 +366,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                 type="date"
                 value={startDate}
                 onChange={(e) => setStartDate(e.target.value)}
-                className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs text-gray-300"
+                className="px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-xs text-gray-300"
               />
               <button
                 onClick={fetchUnaccounted}
@@ -388,7 +388,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
             </div>
 
             {error && (
-              <div className="mb-2 p-2 rounded text-xs bg-red-900/30 border border-red-700/50 text-red-400">
+              <div className="mb-2 p-2 rounded-sm text-xs bg-red-900/30 border border-red-700/50 text-red-400">
                 {error}
                 <button onClick={() => setError(null)} className="ml-2 text-red-300 hover:text-red-100">&times;</button>
               </div>
@@ -422,14 +422,14 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                         <td className="px-2 py-1 flex gap-1">
                           <button
                             onClick={() => openImportModal(order)}
-                            className="px-2 py-0.5 rounded text-[10px] bg-blue-600/30 text-blue-400 hover:bg-blue-600/50 border border-blue-500/30"
+                            className="px-2 py-0.5 rounded-sm text-[10px] bg-blue-600/30 text-blue-400 hover:bg-blue-600/50 border border-blue-500/30"
                           >
                             Import
                           </button>
                           <button
                             onClick={() => handleDismiss(order.orderId)}
                             disabled={dismissing === order.orderId}
-                            className="px-2 py-0.5 rounded text-[10px] bg-gray-600/30 text-gray-400 hover:bg-gray-600/50 border border-gray-500/30"
+                            className="px-2 py-0.5 rounded-sm text-[10px] bg-gray-600/30 text-gray-400 hover:bg-gray-600/50 border border-gray-500/30"
                           >
                             {dismissing === order.orderId ? '...' : 'Dismiss'}
                           </button>
@@ -530,7 +530,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                             value={recoveryBuyPrice}
                             onChange={(e) => setRecoveryBuyPrice(e.target.value)}
                             placeholder="e.g. 70000"
-                            className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs text-gray-300"
+                            className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-xs text-gray-300"
                           />
                           <div className="text-[10px] text-gray-400 mt-0.5">
                             Will place a GTC limit buy for {importModal.totalBtc.toFixed(8)} BTC
@@ -545,7 +545,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                             value={existingBuyOrderId}
                             onChange={(e) => setExistingBuyOrderId(e.target.value)}
                             placeholder="e.g. abc123-def456-..."
-                            className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs text-gray-300 font-mono"
+                            className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-xs text-gray-300 font-mono"
                           />
                         </div>
                       )}
@@ -558,7 +558,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                           type="checkbox"
                           checked={createBody}
                           onChange={(e) => setCreateBody(e.target.checked)}
-                          className="rounded border-gray-600 bg-gray-700"
+                          className="rounded-sm border-gray-600 bg-gray-700"
                         />
                         Create celestial body for TP management
                       </label>
@@ -642,7 +642,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
 
                   {/* P&L preview when a match is selected */}
                   {selectedMatch && (
-                    <div className="mb-3 p-2 rounded bg-gray-800/50 border border-gray-700">
+                    <div className="mb-3 p-2 rounded-sm bg-gray-800/50 border border-gray-700">
                       <div className="text-xs text-gray-400 flex items-center gap-3">
                         {(() => {
                           const buyPrice = importModal.side === 'buy' ? importModal.avgPrice : selectedMatch.avgPrice
@@ -681,7 +681,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                   value={importNote}
                   onChange={(e) => setImportNote(e.target.value)}
                   placeholder="e.g. Manual rebalancing"
-                  className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs text-gray-300"
+                  className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-xs text-gray-300"
                 />
               </div>
 
@@ -700,7 +700,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                 </button>
                 <button
                   onClick={() => setImportModal(null)}
-                  className="px-3 py-1 rounded text-xs text-gray-400 hover:text-gray-300 bg-gray-700 border border-gray-600"
+                  className="px-3 py-1 rounded-sm text-xs text-gray-400 hover:text-gray-300 bg-gray-700 border border-gray-600"
                 >
                   Cancel
                 </button>
@@ -715,7 +715,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
               <button
                 onClick={fetchManualTrades}
                 disabled={tradesLoading}
-                className="ml-auto px-2 py-0.5 rounded text-[10px] bg-gray-700 text-gray-400 hover:bg-gray-600 border border-gray-600"
+                className="ml-auto px-2 py-0.5 rounded-sm text-[10px] bg-gray-700 text-gray-400 hover:bg-gray-600 border border-gray-600"
               >
                 {tradesLoading ? '...' : 'Refresh'}
               </button>
@@ -753,7 +753,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                       return (
                         <tr key={trade.id} className="border-t border-gray-700/50 hover:bg-gray-700/30">
                           <td className="px-2 py-1">
-                            <span className={`px-1.5 py-0.5 rounded text-[10px] border ${STATUS_COLORS[trade.status] || STATUS_COLORS.dismissed}`}>
+                            <span className={`px-1.5 py-0.5 rounded-sm text-[10px] border ${STATUS_COLORS[trade.status] || STATUS_COLORS.dismissed}`}>
                               {STATUS_LABELS[trade.status] || trade.status}
                             </span>
                           </td>
@@ -779,7 +779,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                               <button
                                 onClick={() => handleCheckStatus(trade.id)}
                                 disabled={checking === trade.id}
-                                className="px-2 py-0.5 rounded text-[10px] bg-yellow-600/30 text-yellow-400 hover:bg-yellow-600/50 border border-yellow-500/30"
+                                className="px-2 py-0.5 rounded-sm text-[10px] bg-yellow-600/30 text-yellow-400 hover:bg-yellow-600/50 border border-yellow-500/30"
                               >
                                 {checking === trade.id ? 'Checking...' : 'Check Status'}
                               </button>

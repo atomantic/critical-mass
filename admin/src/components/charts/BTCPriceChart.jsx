@@ -284,7 +284,7 @@ export default function BTCPriceChart({
 
         {/* Compact interval label when selector is hidden */}
         {isIntervalMode && !showIntervalSelector && (
-          <span className="ml-auto text-xs font-mono text-gray-400 bg-gray-700 px-2 py-0.5 rounded">{defaultInterval}</span>
+          <span className="ml-auto text-xs font-mono text-gray-400 bg-gray-700 px-2 py-0.5 rounded-sm">{defaultInterval}</span>
         )}
 
         {/* Interval/range selector (new decoupled mode) */}
@@ -463,7 +463,7 @@ export default function BTCPriceChart({
           {currentInd && subCharts.length > 0 && (
             <div className="grid grid-cols-3 gap-2 py-2 text-xs">
               {subCharts.includes('rsi') && (
-                <div className="bg-gray-900 rounded px-2 py-1 flex items-center justify-between">
+                <div className="bg-gray-900 rounded-sm px-2 py-1 flex items-center justify-between">
                   <span className="text-gray-400">RSI</span>
                   <span className={`font-mono font-medium ${
                     (currentInd.rsi ?? 50) > 70 ? 'text-red-400' : (currentInd.rsi ?? 50) < 30 ? 'text-green-400' : 'text-white'
@@ -471,7 +471,7 @@ export default function BTCPriceChart({
                 </div>
               )}
               {subCharts.includes('stochastic') && (
-                <div className="bg-gray-900 rounded px-2 py-1 flex items-center justify-between">
+                <div className="bg-gray-900 rounded-sm px-2 py-1 flex items-center justify-between">
                   <span className="text-gray-400">Stoch</span>
                   <span className="font-mono font-medium text-white">
                     {currentInd.stochastic?.k?.toFixed(0) ?? '---'}/{currentInd.stochastic?.d?.toFixed(0) ?? '---'}
@@ -479,7 +479,7 @@ export default function BTCPriceChart({
                 </div>
               )}
               {subCharts.includes('macd') && (
-                <div className="bg-gray-900 rounded px-2 py-1 flex items-center justify-between">
+                <div className="bg-gray-900 rounded-sm px-2 py-1 flex items-center justify-between">
                   <span className="text-gray-400">MACD</span>
                   <span className={`font-mono font-medium ${
                     (currentInd.macd?.histogram ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
