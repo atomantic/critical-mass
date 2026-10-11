@@ -1247,8 +1247,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // lands; sweeping first would miss it. Wait (bounded) for the entry-lock
       // holder — the epoch bump makes any not-yet-dispatched reactive bid bail.
       // A placement that outlives the wait is swept around, and the fence
-      // stays up for another sweep once it lands. A stopped engine leaves
-      // entries resting (as stop() always does), so stop ends the loop.
+      // stays up for another sweep once it lands — even across stop(), whose
+      // bounded wait moves on while the fund drain keeps joining this write.
       for (;;) {
         const deadline = Date.now() + flashEntryWaitMs;
         while (engineLocks.isEntryInProgress() && Date.now() < deadline) {
@@ -1259,7 +1259,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           logger.warn(`⚠️ [${exchange}] Flash cancel: an entry placement is still in flight after ${flashEntryWaitMs / 1000}s — sweeping now and again once it lands`);
         }
         await orderExecutor.cancelAllEntries();
-        if (!placementInFlight || !isRunning) break;
+        if (!placementInFlight) break;
       }
     }).catch((err) => logger.error(
       `❌ [${exchange}] Flash entry cancel failed: ${err.message}`, { error: err.message }

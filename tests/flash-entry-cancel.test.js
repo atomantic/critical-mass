@@ -227,38 +227,43 @@ describe('flash move cancels resting reactive entries (issue #1028)', () => {
     assert.equal(pending(eng).entries, 0, 'the pre-flash evaluation was refused admission');
   });
 
-  it('a dispatched placement that outlives the wait bound is swept once it lands', async () => {
-    const { eng } = await makeEngine();
-    eng._test.setFlashEntryWaitMs(20);
-    const exec = eng._test.getOrderExecutor();
-    // Model a bid already on the exchange whose response is slow: once the
-    // gate opens it lands regardless of admission (no isAdmitted forwarded).
-    const realPlace = exec.placeEntryBid;
-    const response = deferred();
-    let dispatched = false;
-    exec.placeEntryBid = async (...args) => {
-      dispatched = true;
-      await response.promise;
-      return realPlace(...args.slice(0, 6));
-    };
-    const spy = spyCancel(eng);
+  for (const stopMidFlight of [false, true]) {
+    it(`a dispatched placement that outlives the wait bound is swept once it lands${stopMidFlight ? ', even after stop()' : ''}`, async () => {
+      const { eng } = await makeEngine();
+      eng._test.setFillDrainMs(50);
+      eng._test.setFlashEntryWaitMs(20);
+      const exec = eng._test.getOrderExecutor();
+      // Model a bid already on the exchange whose response is slow: once the
+      // gate opens it lands regardless of admission (no isAdmitted forwarded).
+      const realPlace = exec.placeEntryBid;
+      const response = deferred();
+      let dispatched = false;
+      exec.placeEntryBid = async (...args) => {
+        dispatched = true;
+        await response.promise;
+        return realPlace(...args.slice(0, 6));
+      };
+      const spy = spyCancel(eng);
 
-    ticker(eng, 100); // seeds the anchor; its evaluation dispatches and waits
-    for (let i = 0; i < 50 && !dispatched; i++) await tick();
-    assert.equal(dispatched, true);
+      ticker(eng, 100); // seeds the anchor; its evaluation dispatches and waits
+      for (let i = 0; i < 50 && !dispatched; i++) await tick();
+      assert.equal(dispatched, true);
 
-    ticker(eng, 110);
-    const sweep = eng._test.getFlashCancelSweep();
-    for (let i = 0; i < 50 && spy.calls === 0; i++) await tick();
-    assert.equal(spy.calls, 1, 'the bounded wait expired and swept without the slow bid');
-    assert.equal(eng._test.getFlashCancelSweep(), sweep, 'the fence stays up while that bid is in flight');
+      ticker(eng, 110);
+      const sweep = eng._test.getFlashCancelSweep();
+      for (let i = 0; i < 50 && spy.calls === 0; i++) await tick();
+      assert.equal(spy.calls, 1, 'the bounded wait expired and swept without the slow bid');
+      assert.equal(eng._test.getFlashCancelSweep(), sweep, 'the fence stays up while that bid is in flight');
 
-    response.resolve();
-    await sweep;
-    assert.equal(spy.calls, 2, 'a follow-up sweep ran after the bid landed');
-    assert.equal(pending(eng).entries, 0, 'the late bid was cancelled');
-    assert.equal(eng._test.getFlashCancelSweep(), null);
-  });
+      // stop()'s bounded wait gives up on the sweep; the sweep must not give up on the bid.
+      if (stopMidFlight) await eng.stop();
+      response.resolve();
+      await sweep;
+      assert.ok(spy.calls >= 2, 'a follow-up sweep ran after the bid landed (one per expired wait while it was in flight)');
+      assert.equal(pending(eng).entries, 0, 'the late bid was cancelled');
+      assert.equal(eng._test.getFlashCancelSweep(), null);
+    });
+  }
 
   it('leaves ladder rungs alone', async () => {
     const { eng } = await makeEngine({ entryMode: 'ladder' });
