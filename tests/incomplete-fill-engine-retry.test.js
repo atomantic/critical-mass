@@ -139,7 +139,7 @@ describe('terminal fallback identity reconciliation (#807, #835)', () => {
   it('books only excess real quantity and manual import does not grow the body twice', async () => {
     const orderId = 'terminal-identity-buy';
     let available = false;
-    const realFill = { tradeId: 'terminal-real-trade', orderId, side: 'buy',
+    const realFill = { tradeId: 'terminal-real-trade', orderId, productId: TEST_PAIR, side: 'buy',
       size: 0.03, price: 2000, netFee: 0, tradeTime: new Date().toISOString() };
     const adapter = {
       getOrderFills: async () => {
@@ -188,7 +188,7 @@ describe('terminal fallback identity reconciliation (#807, #835)', () => {
     const { createManualTradeStore } = require('../src/manual-trades');
     const { createManualTradeImporter } = require('../src/manual-trade-import');
     const store = createManualTradeStore('coinbase', TEST_PAIR);
-    const importer = createManualTradeImporter({ exchange: 'coinbase', pair: TEST_PAIR,
+    const importer = createManualTradeImporter({ exchange: 'coinbase', pair: TEST_PAIR, fundConfig: { productId: TEST_PAIR },
       adapter, fillLedger: eng.getFillLedger(), store,
       extendBody: eng.extendBody, injectBody: eng.injectBody });
     for (let retry = 0; retry < 2; retry++) {

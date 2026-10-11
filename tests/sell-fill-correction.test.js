@@ -147,9 +147,9 @@ describe('terminal sell economic reconciliation (#837)', () => {
     const { createManualTradeStore } = require('../src/manual-trades');
     const { createManualTradeImporter } = require('../src/manual-trade-import');
     const store = createManualTradeStore(EXCHANGE, PAIR);
-    const importer = createManualTradeImporter({ exchange: EXCHANGE, pair: PAIR, store,
+    const importer = createManualTradeImporter({ exchange: EXCHANGE, pair: PAIR, fundConfig: { productId: PAIR }, store,
       fillLedger: ledger,
-      adapter: { getOrderFills: async () => [{ tradeId: 'manual-actual', orderId: 'sell', side: 'sell',
+      adapter: { getOrderFills: async () => [{ tradeId: 'manual-actual', orderId: 'sell', productId: PAIR, side: 'sell',
         size: 0.02, price: 2100, commission: 0.06, totalCommission: 0.06, netFee: 0.06,
         tradeTime: new Date().toISOString() }] },
     });

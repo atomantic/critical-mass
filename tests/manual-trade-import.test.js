@@ -38,8 +38,12 @@ const silentLogger = () => ({ info: () => {}, warn: () => {}, error: () => {} })
 /**
  * Build a fake exchange adapter.
  * `fillsByOrder` maps orderId -> fill array, or to an Error to make the fetch reject.
+ * Real adapters report order/product identity on every fill and order record
+ * (issue #1023), so by default missing orderId/productId are stamped onto
+ * fills and order records default to a BTC-USDC buy. `stampIdentity: false`
+ * returns the data exactly as given, for identity-verification tests.
  */
-const createFakeAdapter = ({ fillsByOrder = {}, orders = {}, placeResult } = {}) => {
+const createFakeAdapter = ({ fillsByOrder = {}, orders = {}, placeResult, stampIdentity = true } = {}) => {
   const calls = { getOrderFills: [], placeLimitBuy: [], getOrder: [] };
   return {
     calls,
@@ -47,11 +51,13 @@ const createFakeAdapter = ({ fillsByOrder = {}, orders = {}, placeResult } = {})
       calls.getOrderFills.push(orderId);
       const entry = fillsByOrder[orderId];
       if (entry instanceof Error) throw entry;
-      return entry || [];
+      if (!entry) return [];
+      return stampIdentity ? entry.map((f) => ({ orderId, productId: PAIR, ...f })) : entry;
     },
     getOrder: async (orderId) => {
       calls.getOrder.push(orderId);
-      return orders[orderId] || { status: 'OPEN', completionPercentage: 0 };
+      const order = orders[orderId] || { status: 'OPEN', completionPercentage: 0 };
+      return stampIdentity ? { productId: PAIR, side: 'buy', ...order } : order;
     },
     placeLimitBuy: async (productId, size, price, options) => {
       calls.placeLimitBuy.push({ productId, size, price, options });
@@ -1948,6 +1954,172 @@ describe('Manual Trade Import', () => {
       assert.equal(result.success, true);
       assert.equal(result.trade.status, STATUS.TP_PENDING);
       assert.ok(readRegimeStateFile(), 'a body was persisted');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Order identity: side, product and order id (issue #1023)
+  // -----------------------------------------------------------------------
+  describe('order identity validation (#1023)', () => {
+    const idFill = (overrides = {}) => makeFill({ orderId: 'o', productId: 'BTC-USDC', ...overrides });
+    const raw = (fillsByOrder, orders) => createFakeAdapter({ fillsByOrder, orders, stampIdentity: false });
+    const assertUntouched = (adapter) => {
+      assert.equal(fillLedger.getFillCount(), 0);
+      assert.equal(readManualTradesFile(), null);
+      assert.equal(readRegimeStateFile(), null);
+      assert.deepEqual(adapter.calls.placeLimitBuy, []);
+    };
+
+    it('importBuy rejects an order whose fills are sells', async () => {
+      const adapter = raw({ b: [idFill({ orderId: 'b', side: 'sell', size: 0.01, price: 2000 })] });
+      const result = await createImporter({ adapter }).importBuy({ buyOrderId: 'b' });
+      assert.equal(result.success, false);
+      assert.match(result.error, /is a sell order, not a buy/);
+      assertUntouched(adapter);
+    });
+
+    it('importBuy rejects another product on the same exchange', async () => {
+      const adapter = raw({ b: [idFill({ orderId: 'b', productId: 'ETH-USDC' })] });
+      const result = await createImporter({ adapter }).importBuy({ buyOrderId: 'b' });
+      assert.equal(result.success, false);
+      assert.match(result.error, /product ETH-USDC/);
+      assertUntouched(adapter);
+    });
+
+    it('rejects a different quote currency (USD vs USDC)', async () => {
+      const adapter = raw({ b: [idFill({ orderId: 'b', productId: 'BTC-USD' })] });
+      const result = await createImporter({ adapter }).importBuy({ buyOrderId: 'b' });
+      assert.equal(result.success, false);
+      assertUntouched(adapter);
+    });
+
+    it('rejects a fill that belongs to a different order id', async () => {
+      const adapter = raw({ b: [idFill({ orderId: 'other' })] });
+      const result = await createImporter({ adapter }).importBuy({ buyOrderId: 'b' });
+      assert.equal(result.success, false);
+      assert.match(result.error, /belongs to order other/);
+      assertUntouched(adapter);
+    });
+
+    it('importSell rejects buy fills before ledger, store or recovery buy', async () => {
+      const adapter = raw({ s: [idFill({ orderId: 's', side: 'buy' })] });
+      const result = await createImporter({ adapter }).importSell({ sellOrderId: 's', recoveryBuyPrice: '99000' });
+      assert.equal(result.success, false);
+      assert.match(result.error, /is a buy order, not a sell/);
+      assertUntouched(adapter);
+    });
+
+    it('importSell rejects a linked existing buy that is a sell or another product', async () => {
+      for (const orders of [
+        { eb: { status: 'OPEN', side: 'SELL', productId: 'BTC-USDC' } },
+        { eb: { status: 'OPEN', side: 'BUY', productId: 'ETH-USDC' } },
+      ]) {
+        const adapter = raw({ s: [idFill({ orderId: 's', side: 'sell' })] }, orders);
+        const result = await createImporter({ adapter }).importSell({ sellOrderId: 's', existingBuyOrderId: 'eb' });
+        assert.equal(result.success, false);
+        assertUntouched(adapter);
+      }
+    });
+
+    it('importPair with an invalid second leg leaves everything untouched', async () => {
+      const adapter = raw({
+        b: [idFill({ orderId: 'b', side: 'buy' })],
+        s: [idFill({ orderId: 's', side: 'sell', productId: 'ETH-USDC' })],
+      });
+      const result = await createImporter({ adapter }).importPair({ buyOrderId: 'b', sellOrderId: 's' });
+      assert.equal(result.success, false);
+      assertUntouched(adapter);
+    });
+
+    it('importPair rejects swapped legs', async () => {
+      const adapter = raw({
+        b: [idFill({ orderId: 'b', side: 'sell' })],
+        s: [idFill({ orderId: 's', side: 'buy' })],
+      });
+      const result = await createImporter({ adapter }).importPair({ buyOrderId: 'b', sellOrderId: 's' });
+      assert.equal(result.success, false);
+      assertUntouched(adapter);
+    });
+
+    it('a mixed batch with one wrong-identity fill ingests none', async () => {
+      const adapter = raw({ b: [idFill({ orderId: 'b' }), idFill({ orderId: 'b', productId: 'ETH-USDC' })] });
+      const result = await createImporter({ adapter }).importBuy({ buyOrderId: 'b' });
+      assert.equal(result.success, false);
+      assertUntouched(adapter);
+    });
+
+    it('fills missing identity are verified against order metadata', async () => {
+      const bare = [makeFill({ tradeId: 'bare-1' })];
+      const adapter = raw({ b: bare }, { b: { orderId: 'b', side: 'BUY', productId: 'BTC-USDC' } });
+      const result = await createImporter({ adapter }).importBuy({ buyOrderId: 'b', createBody: false });
+      assert.equal(result.success, true);
+      assert.deepEqual(adapter.calls.getOrder, ['b']);
+    });
+
+    it('fills missing identity are rejected when metadata shows the wrong side or product', async () => {
+      for (const meta of [
+        { orderId: 'b', side: 'SELL', productId: 'BTC-USDC' },
+        { orderId: 'b', side: 'BUY', productId: 'ETH-USDC' },
+      ]) {
+        const adapter = raw({ b: [makeFill({ tradeId: 'bare-1' })] }, { b: meta });
+        const result = await createImporter({ adapter }).importBuy({ buyOrderId: 'b' });
+        assert.equal(result.success, false);
+        assertUntouched(adapter);
+      }
+    });
+
+    it('fails closed when identity cannot be established', async () => {
+      const bare = [makeFill({ tradeId: 'bare-1' })];
+      const noMeta = raw({ b: bare }, { b: { status: 'FILLED' } });
+      let result = await createImporter({ adapter: noMeta }).importBuy({ buyOrderId: 'b' });
+      assert.equal(result.success, false);
+      assert.match(result.error, /Cannot verify/);
+      assertUntouched(noMeta);
+
+      const throwing = raw({ b: bare });
+      throwing.getOrder = async () => { throw new Error('boom'); };
+      result = await createImporter({ adapter: throwing }).importBuy({ buyOrderId: 'b' });
+      assert.equal(result.success, false);
+      assert.match(result.error, /boom/);
+      assertUntouched(throwing);
+    });
+
+    it('checkPendingBuy rejects filled fills of the wrong product without touching the ledger', async () => {
+      const sellAdapter = createFakeAdapter({ fillsByOrder: { 'sell-1': [makeFill({ tradeId: 's1', side: 'sell', size: 0.002 })] } });
+      const imported = await createImporter({ adapter: sellAdapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '99000' });
+      assert.equal(imported.success, true);
+      const tradeId = imported.trade.id;
+      const before = fillLedger.getFillCount();
+
+      const adapter = raw(
+        { 'recovery-1': [idFill({ orderId: 'recovery-1', productId: 'ETH-USDC' })] },
+        { 'recovery-1': { status: 'FILLED', completionPercentage: 100 } },
+      );
+      const result = await createImporter({ adapter }).checkPendingBuy({ tradeId });
+      assert.equal(result.success, false);
+      assert.equal(fillLedger.getFillCount(), before);
+      assert.equal(store.getById(tradeId).status, STATUS.BUY_PENDING);
+    });
+
+    describe('product aliases per exchange', () => {
+      const cases = [
+        ['coinbase', 'BTC-USDC', ['BTC-USDC', 'btc-usdc', 'BTC_USDC'], ['BTC-USD', 'ETH-USDC']],
+        ['cryptocom', 'BTC-USDC', ['BTC_USDC', 'btc_usdc'], ['BTC_USD', 'BTC_USDT']],
+        ['gemini', 'BTC-USDC', ['btcusd', 'BTCUSD'], ['btceur', 'ethusd']],
+      ];
+      for (const [exchange, fundProduct, accepted, rejected] of cases) {
+        it(`${exchange}: accepts ${accepted.join(', ')} and rejects ${rejected.join(', ')}`, async () => {
+          for (const productId of [...accepted, ...rejected]) {
+            const adapter = raw({ b: [idFill({ orderId: 'b', productId })] });
+            const importer = createImporter({ exchange, adapter, fundConfig: { productId: fundProduct } });
+            const outcome = await importer.importPair({ buyOrderId: 'b', sellOrderId: 'b' });
+            // Pair fetches the buy leg first; identity failure surfaces as a product error,
+            // acceptance proceeds to the sell leg (side mismatch) instead.
+            const productRejected = /product /.test(outcome.error || '');
+            assert.equal(productRejected, rejected.includes(productId), `${exchange} ${productId}`);
+          }
+        });
+      }
     });
   });
 });
