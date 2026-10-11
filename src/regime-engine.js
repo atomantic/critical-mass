@@ -5789,10 +5789,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // withFillGate increments the in-flight fill count (so dust consolidation
       // will not START a merge mid-fill) and waits out an already-running merge
       // (#196). Deadlock-free because withMergeLock never consults the fill gate.
-      return await serializeBuyBooking(fillData, () => engineLocks.withFillGate(
-        () => handleOrderFillImpl(fillData, dedupRef),
-        { exchange, orderId: fillData.orderId }
-      ));
+      return await serializeBuyBooking(fillData, async () => {
+        const result = await engineLocks.withFillGate(
+          () => handleOrderFillImpl(fillData, dedupRef),
+          { exchange, orderId: fillData.orderId }
+        );
+        // An open buy can have empty/lagging execution history. Book only
+        // confirmed rows, then leave BOTH detection and booking retryable for
+        // this same cumulative size. Clear the inner key before releasing the
+        // per-order queue, so a queued WS/poll pass can book the missing rows.
+        if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'buy' && !isTerminalStatus(fillData)
+          && fillLedger.getRecordedSizeForOrder(fillData.orderId) + 1e-9 < Number(fillData.filledSize)) {
+          if (dedupRef.set) dedupRef.set.delete(dedupRef.key);
+          return false;
+        }
+        return result;
+      });
     } catch (err) {
       if (dedupRef.set) dedupRef.set.delete(dedupRef.key);
       throw err;
@@ -8274,7 +8286,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // re-detected by the next reconcile poll, so it keeps the original
       // "log and wait" behavior below.
       try {
-        await handleOrderFill(fillData);
+        if (await handleOrderFill(fillData) === false) {
+          recentlyProcessedFills.delete(dedupKey);
+          return false;
+        }
         incompleteFillRetries.delete(dedupKey);
       } catch (err) {
         recentlyProcessedFills.delete(dedupKey);
@@ -8305,6 +8320,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           `❌ [${exchange}] Error processing polled fill ${orderId} (side=${status.side}): ${err.message} — will retry on next reconcile`,
           { orderId, side: status.side, error: err.message }
         );
+        return false;
       }
     });
   }

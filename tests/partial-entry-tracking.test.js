@@ -90,6 +90,57 @@ const makeEngine = (adapter, executor) => {
 };
 
 describe('partially-filled entry orders stay tracked', () => {
+  it('revisits an unchanged partial when trade history initially covers only part of it', async () => {
+    const orderId = 'poll-delayed-executions';
+    const status = { status: 'PARTIALLY_FILLED', side: 'BUY', filledSize: 0.01, averageFilledPrice: 2500 };
+    const firstFill = buyFill(orderId, 'delayed-a', 0.004, 2500);
+    const secondFill = buyFill(orderId, 'delayed-b', 0.006, 2500);
+    let fills = [];
+    let tpSequence = 0;
+    const cancelled = new Set();
+    const adapter = {
+      getOrder: async id => id === orderId ? status : { status: cancelled.has(id) ? 'CANCELLED' : 'OPEN', side: 'SELL', filledSize: 0 },
+      getOrderFills: async () => fills,
+      placeLimitSell: async () => ({ success: true, orderId: `delayed-tp-${++tpSequence}` }),
+      cancelOrder: async id => { cancelled.add(id); return { success: true }; },
+    };
+    const eng = makeEngine(adapter);
+    const callbacks = [];
+    const executor = createOrderExecutor('coinbase', eng._getConfig(), adapter, TEST_PAIR, {
+      onFillDetected: (id, orderStatus) => {
+        const booking = eng._test.handlePolledFill(id, orderStatus);
+        callbacks.push(booking);
+        return booking;
+      },
+    }, TEST_PAIR);
+    eng._test.setOrderExecutor(executor);
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [{ orderId, price: 2500, assetQty: 0.03, sizeUsdc: 75 }];
+    executor.restorePendingOrder(orderId, { type: 'entry', price: 2500, size: 0.03, sizeUsdc: 75, placedAt: Date.now() });
+    const poll = async () => {
+      await executor.checkPendingOrderFills();
+      await Promise.all(callbacks.splice(0));
+    };
+    const bookedQty = () => pos.celestialBodies.reduce((sum, body) => sum + body.assetQty, 0);
+    try {
+      await poll();
+      assert.equal(bookedQty(), 0, 'an open partial with no execution history must not synthesize a body');
+      fills = [firstFill];
+      await poll();
+      assert.ok(Math.abs(bookedQty() - 0.004) < 1e-8, 'only confirmed executions are booked initially');
+      fills = [firstFill, secondFill];
+      await poll(); // The exchange order has not advanced; its history caught up.
+      assert.ok(Math.abs(bookedQty() - 0.01) < 1e-8, 'the same cumulative partial must recover its missing execution');
+      assert.ok(Math.abs(pos.pendingEntryOrders[0].assetQty - 0.02) < 1e-8);
+      assert.equal(pos.cycleBuys, 1, 'retrying one order must not count a second cycle buy');
+      await poll();
+      assert.ok(Math.abs(bookedQty() - 0.01) < 1e-8, 'a fully booked unchanged partial is not counted twice');
+      assert.equal(executor.getPendingOrdersList().some(order => order.orderId === orderId), true);
+    } finally {
+      executor.clearTimers();
+    }
+  });
+
   for (const type of ['entry', 'ladder_entry']) {
     for (const terminalStatus of ['FILLED', 'CANCELLED']) {
       it(`keeps real ${type} polling through advancing partials until ${terminalStatus}`, async () => {
