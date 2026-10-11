@@ -90,25 +90,45 @@ const createEngineStopAllHandler = ({
       return Promise.resolve({ success: false, stopped: [], failed: [], error: 'Restore maintenance window is required' });
     }
     setQuiescing(true);
-    pending = Promise.resolve().then(async () => {
+    let acknowledge, reject;
+    pending = new Promise((resolve, rejectResponse) => { acknowledge = resolve; reject = rejectResponse; });
+    // A timeout answers the gateway without releasing writer ownership. Keep
+    // draining in the background before reopening intake or retiring caches.
+    const joinWrites = async (matches, error) => {
+      let result;
+      do {
+        result = await drainPendingWrites(30_000, matches);
+        if (!result.drained) acknowledge({ success: false, stopped: [], failed: [], error, pending: result.pending });
+      } while (!result.drained);
+      return result;
+    };
+    Promise.resolve().then(async () => {
       await cancelStarts({ clearDesired: true });
       // Join lifecycle commands before stopping owners: an accepted stop may
       // still be handing its fund to a newly starting standalone consumer.
       // Exclude this coordinator (and duplicate calls) to avoid joining itself.
-      const accepted = await drainPendingWrites(30_000,
-        entry => entry.label.startsWith('ipc:') && entry.label !== 'ipc:regime:stop-all');
-      if (!accepted.drained) return { success: false, stopped: [], failed: [], error: 'Accepted engine requests are still running', pending: accepted.pending };
+      await joinWrites(
+        entry => entry.label.startsWith('ipc:') && entry.label !== 'ipc:regime:stop-all',
+        'Accepted engine requests are still running');
       stopMarketServices();
       await drainMarketStarts();
       const result = await stopAllRegimeEngines(regimeEngines, {
         logger, label, setRunningFlag,
-        drainWrites: () => drainPendingWrites(30_000, entry => entry.label !== 'ipc:regime:stop-all'),
+        drainWrites: () => joinWrites(entry => entry.label !== 'ipc:regime:stop-all', 'Engine writers are still draining'),
       });
       // A stale stopped-fund ledger or manual-trade store must never persist
       // over the restored generation on the first request after the window.
       if (result.success) clearCaches();
       return result;
-    }).finally(() => { pending = null; setQuiescing(false); });
+    }).then(result => {
+      pending = null;
+      setQuiescing(false);
+      acknowledge(result);
+    }, error => {
+      pending = null;
+      setQuiescing(false);
+      reject(error);
+    });
     return pending;
   };
 };

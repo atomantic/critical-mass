@@ -97,7 +97,7 @@ describe('exchange restore process drain', () => {
     assert.equal(em.refuseDuringMaintenance('regime:start'), null);
   });
 
-  it('retains stopped owners on drain timeout and flushes their final generation on retry', async (t) => {
+  it('keeps intake fenced after a process drain timeout until final flush and cache retirement', async (t) => {
     maintenance(t);
     const gate = deferred();
     const writer = trackPendingWrite('engine-booking:test', () => gate.promise);
@@ -113,12 +113,39 @@ describe('exchange restore process drain', () => {
     assert.equal(h.engines.size, 1);
     assert.deepEqual(h.flags, []);
     assert.equal(flushes, 0);
+    em.setEngineMaintenance({ active: false });
+    assert.equal(em.refuseDuringMaintenance('regime:start').code, 'maintenance-in-progress');
+    assert.equal(em.refuseDuringMaintenance('regime:fills').code, 'maintenance-in-progress');
+    assert.equal(em.refuseDuringMaintenance('config_update').code, 'maintenance-in-progress');
     gate.resolve();
     await writer;
-    assert.equal((await h.handler()).success, true);
-    assert.equal(flushes, 1, 'a retry must still publish writes completed after the first stop');
+    await until(() => h.events.includes('clear-caches'), 'continuing process drain');
+    await tick();
+    assert.equal(em.refuseDuringMaintenance('regime:start'), null);
+    assert.equal(flushes, 1, 'cleanup must publish writes completed after the failure acknowledgement');
     assert.equal(h.engines.size, 0);
     assert.equal(h.events.filter(e => e === 'clear-caches').length, 1);
+  });
+
+  it('keeps intake fenced after an accepted IPC drain timeout until the request settles', async (t) => {
+    maintenance(t);
+    const gate = deferred();
+    const writer = trackPendingWrite('ipc:regime:stop', () => gate.promise);
+    t.after(async () => { gate.resolve(); await writer; });
+    const h = setup({ drainPendingWrites: (_, matches) => drainPendingWrites(0, matches) });
+    const result = await h.handler();
+    assert.equal(result.success, false);
+    assert.match(result.error, /Accepted engine requests/);
+    assert.deepEqual(h.events, ['cancel-starts']);
+    em.setEngineMaintenance({ active: false });
+    assert.equal(em.refuseDuringMaintenance('regime:fills').code, 'maintenance-in-progress');
+    assert.equal(em.refuseDuringMaintenance('config_update').code, 'maintenance-in-progress');
+    gate.resolve();
+    await writer;
+    await until(() => h.events.includes('clear-caches'), 'continuing accepted-request drain');
+    await tick();
+    assert.equal(em.refuseDuringMaintenance('regime:start'), null);
+    assert.deepEqual(h.events, ['cancel-starts', 'stop-market', 'join-market-starts', 'clear-caches']);
   });
 
   it('retains a failed final-flush owner and blocks restore', async (t) => {
