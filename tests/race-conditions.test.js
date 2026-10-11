@@ -46,12 +46,12 @@ describe('Mutex utility', () => {
     const secondAcquired = new Promise(resolve => {
       resolveSecondAcquired = resolve;
     });
-    const secondReleasePromise = mutex.acquire().then(release => {
+    const secondReleasePromise = mutex.acquire().then(secondHolderRelease => {
       resolveSecondAcquired();
-      return release;
+      return secondHolderRelease;
     });
 
-    firstRelease();
+    release();
     assert.equal(mutex.isLocked(), true);
     await secondAcquired;
 
