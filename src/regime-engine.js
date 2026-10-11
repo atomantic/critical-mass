@@ -2612,6 +2612,242 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
   };
 
+  /** Restore saved legacy TP ownership without replacing uncertain exchange orders. */
+  const restoreStartupLegacyTakeProfit = async () => {
+    // Restore TP order tracking if we have an active TP order ID - but validate it exists first.
+    // EXPIRED is a terminal cancellation per order-manager.js:49 — without
+    // excluding it here, an EXPIRED order would be restored as an open TP
+    // and block placement of a replacement. Same precedent across the
+    // codebase: order-manager / order-executor / market-data-service all
+    // treat EXPIRED as terminal-cancelled.
+    if (positionState.activeTpOrderId) {
+      let tpOrderStatus = null;
+      let tpLookupFailed = false;
+      try {
+        tpOrderStatus = await adapter.getOrder(positionState.activeTpOrderId);
+      } catch (err) {
+        // Same rule as the body-TP restore below: only definitive not-found
+        // clears tracking; transient failures must not orphan a live order.
+        tpLookupFailed = !isOrderNotFoundError(err);
+      }
+      const tpOrderExists = tpLookupFailed || (tpOrderStatus
+        && tpOrderStatus.status !== 'CANCELLED'
+        && tpOrderStatus.status !== 'FAILED'
+        && tpOrderStatus.status !== 'EXPIRED');
+
+      if (tpOrderExists) {
+        // Check if a celestial body owns this TP — restore as body_tp if so
+        const bodyOwner = (positionState.celestialBodies || []).find(b => b.tpOrderId === positionState.activeTpOrderId);
+        if (bodyOwner) {
+          const placedAt = tpOrderStatus?.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now());
+          orderExecutor.restoreBodyTpOrder(bodyOwner.id, positionState.activeTpOrderId, bodyOwner.assetQty, positionState.lastTpPrice, placedAt);
+          logger.info(`📋 [${exchange}] Restored legacy TP as body_tp: ${positionState.activeTpOrderId.slice(0, 8)} → body ${bodyOwner.id.slice(-8)}`);
+          positionState.activeTpOrderId = null;
+          positionState.lastTpPrice = 0;
+          positionState.assetOnOrder = 0;
+        } else {
+          orderExecutor.restorePendingOrder(positionState.activeTpOrderId, {
+            type: 'take_profit',
+            price: positionState.lastTpPrice,
+            size: positionState.assetOnOrder || positionState.totalAsset,
+            sizeUsdc: (positionState.lastTpPrice || 0) * (positionState.assetOnOrder || positionState.totalAsset),
+            placedAt: tpOrderStatus?.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now()),
+            status: 'open',
+          });
+          logger.info(`📋 [${exchange}] Restored TP order tracking: ${positionState.activeTpOrderId} @ ${fmtPrice(positionState.lastTpPrice)}`);
+        }
+      } else {
+        // TP order no longer exists on exchange - clear tracking so a new one gets placed.
+        //
+        // KNOWN LIMITATION: cancelled-with-fills recovery is incomplete here.
+        // The exchange may report status=CANCELLED with completionPercentage
+        // anywhere in (0, 100] — both the partial case (cancel won the race
+        // before all the asset filled) AND the full case (completion=100,
+        // cancel-after-fill: the order completed in full before the cancel
+        // was processed) land in this branch. checkOfflineOrderFills (which
+        // ran earlier in startup) is the canonical fill-ingest path; if it
+        // succeeded, positionState.totalAsset already reflects the sale and
+        // clearing activeTpOrderId here is correct (no replacement TP gets
+        // placed because totalAsset is 0). If it MISSED fills (REST call
+        // failed, recent-trade window aged out, etc.), this branch will
+        // clear the tracking and a subsequent regime tick can place a
+        // replacement TP for an already-(partially-)sold position — even
+        // ingesting fills here is insufficient on its own, because a
+        // correct fix must also reduce positionState.totalAsset, recompute
+        // avgCostBasis, and account for realized P&L from the sell.
+        //
+        // The same gap applies if the API process restarted while a market-
+        // data-service cancel-retry was still pending — those retries live
+        // in-memory only, so a restart loses them.
+        //
+        // The market-data-service catch-up retry covers the common case
+        // while the engine is stopped. Engine-side recovery on startup +
+        // disk-persisted retry markers are deferred; do not extend this
+        // branch to ingest fills until that bookkeeping is in place.
+        logger.warn(`⚠️ [${exchange}] Saved TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
+        positionState.activeTpOrderId = null;
+        positionState.lastTpPrice = 0;
+        positionState.assetOnOrder = 0;
+      }
+    }
+  };
+
+  /** Reprice restored body orders only after all body tracking has been rebuilt. */
+  const repriceStartupBodyTakeProfits = async (savedBodies) => {
+    // Reprice any restored body TPs whose TP% exceeds the effective max
+    // (fixes bodies that were placed with uncapped holdback floor), OR
+    // that a manual buy extend flagged needsTpReprice while this engine
+    // was stopped (issue #726 — extendPersistedBody grew the body's
+    // assetQty but had no adapter/executor to safely cancel the live TP
+    // itself, so it left a marker for this pass to pick up instead).
+    // Every body that still carries a tpOrderId here had its executor
+    // tracking restored just above, so cancel through the executor —
+    // cancelBodyTpForReplace books any tranche sold during the cancel
+    // instead of re-listing it (issue #670).
+    for (const body of [...savedBodies]) {
+      if (!body.tpOrderId || body.avgPrice <= 0) continue;
+      const currentTpPct = ((body.tpPrice - body.avgPrice) / body.avgPrice) * 100;
+      const bTierCfg = celestialHierarchy.getTierConfig(body.tier);
+      const bEffectiveMax = config.tpMaxPercent * (bTierCfg.tpMaxScale || 1);
+      // A manual TP override means the operator intentionally set this
+      // PERCENTAGE — never second-guess it via the overpriced-vs-max
+      // check below. But needsTpReprice is about SIZE, not price:
+      // placeBodyTp reapplies body.manualTpPct whenever it re-places
+      // (~line 5452), so a manual-TP body extended while the engine was
+      // stopped must still go through this cancel+replace — skipping it
+      // here left its TP undersized forever and the flag never cleared
+      // (codex delta review, round 5).
+      const overpriced = body.manualTpPct == null && currentTpPct > bEffectiveMax * 1.01;
+      if (overpriced || body.needsTpReprice) {
+        const reason = overpriced
+          ? `TP% ${currentTpPct.toFixed(2)}% exceeds max ${bEffectiveMax.toFixed(2)}%`
+          : 'extended by a manual buy import while stopped';
+        logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} needs TP reprice (${reason}) — cancelling and repricing`);
+        const oldTp = body.tpOrderId;
+        const outcome = await cancelBodyTpForReplace(body, 'Startup reprice');
+        if (outcome === 'cancelled') {
+          body.needsTpReprice = false;
+          await placeBodyTp(body);
+        } else if (outcome === 'booked') {
+          // cancelBodyTpForReplace already booked the tranche that sold
+          // during the cancel and re-placed a right-sized TP for the
+          // body's new (reduced) shape itself — nothing left to do.
+          body.needsTpReprice = false;
+        } else if (outcome === 'filled') {
+          logger.info(`📋 [${exchange}] Body TP ${oldTp.slice(0, 8)} needing reprice already filled — polling will process`);
+        } else if (outcome === 'unresolved') {
+          logger.warn(
+            `⚠️ [${exchange}] Failed to cancel body TP ${oldTp} needing reprice`,
+            { bodyId: body.id, orderId: oldTp }
+          );
+        }
+        // 'booking_failed': leave needsTpReprice set — the reconcile
+        // loop retries the booking independently, and a future startup
+        // retries this pass too.
+      }
+    }
+  };
+
+  /** Restore body TP tracking and repair saved body metadata before repricing. */
+  const restoreStartupBodyTakeProfits = async () => {
+    // Restore celestial body TP order tracking from saved state
+    const savedBodies = positionState.celestialBodies || [];
+    if (savedBodies.length > 0) {
+      let restoredBodies = 0;
+      let expiredBodies = 0;
+
+      // Backfill buyOrders for bodies that predate the tracking field
+      for (const body of savedBodies) {
+        if (!body.buyOrders) {
+          body.buyOrders = (body.sourceOrderIds || []).map(oid => ({
+            orderId: oid,
+            price: body.avgPrice,
+            assetQty: 0,
+            sizeUsdc: 0,
+            filledAt: body.createdAt || Date.now(),
+          }));
+        }
+      }
+
+      // Self-heal avgPrice for bodies where roundUSDC truncated precision
+      for (const body of savedBodies) {
+        if (body.assetQty > 0 && body.costBasis > 0) {
+          const correctedAvg = body.costBasis / body.assetQty;
+          if (Math.abs(correctedAvg - body.avgPrice) / correctedAvg > 0.001) {
+            logger.info(`🔧 [${exchange}] correcting body avgPrice bodyId=${body.id} old=${body.avgPrice} new=${correctedAvg}`);
+            body.avgPrice = correctedAvg;
+          }
+        }
+      }
+
+      for (const body of [...savedBodies]) {
+        if (!body.tpOrderId) continue;
+
+        let bodyStatus = null;
+        let bodyLookupFailed = false;
+        try {
+          bodyStatus = await adapter.getOrder(body.tpOrderId);
+        } catch (err) {
+          // Only a definitive not-found means the order is gone. Network/
+          // API failures keep the saved tpOrderId and restore tracking from
+          // saved state below; the interval reconciler re-checks once
+          // connectivity returns (see isOrderNotFoundError).
+          bodyLookupFailed = !isOrderNotFoundError(err);
+        }
+        // Mirror the core-TP exists check: EXPIRED is terminal cancellation.
+        const bodyExists = bodyLookupFailed || (bodyStatus
+          && bodyStatus.status !== 'CANCELLED'
+          && bodyStatus.status !== 'FAILED'
+          && bodyStatus.status !== 'EXPIRED');
+
+        if (bodyExists && isFilledStatus(bodyStatus)) {
+          // Body filled while offline — handled in checkOfflineOrderFills above
+          continue;
+        }
+
+        if (bodyExists) {
+          const bodyPlacedAt = bodyStatus?.createdTime ? new Date(bodyStatus.createdTime).getTime() : Date.now();
+          orderExecutor.restoreBodyTpOrder(
+            body.id,
+            body.tpOrderId,
+            body.assetOnOrder || body.assetQty,
+            body.tpPrice,
+            bodyPlacedAt
+          );
+          restoredBodies++;
+        } else {
+          // Body TP no longer on exchange — re-place TP.
+          // Same KNOWN LIMITATION as the core-TP branch above: cancelled-
+          // with-fills recovery is incomplete. Both the partial case
+          // (completion in (0,100)) and the full case (completion=100,
+          // cancel-after-fill where the order finished before the cancel
+          // was processed) land here — bodyExists filters out CANCELLED/
+          // FAILED/EXPIRED before the FILLED-or-completion=100 short-
+          // circuit at the top of this if. A body TP that filled before
+          // cancellation needs body.assetQty / body.costBasis proration
+          // and realized-P&L accounting; without it the replacement TP
+          // would be sized incorrectly. checkOfflineOrderFills handles the
+          // happy path; engine-side recovery is deferred.
+          body.tpOrderId = null;
+          expiredBodies++;
+          // The old TP is already gone — whatever fresh TP gets placed
+          // below (ensureTakeProfitPlaced, or the reprice pass below for
+          // an overpriced %) will size against the CURRENT (already-grown)
+          // assetQty. Nothing left for the reprice pass to cancel, so
+          // clear the flag here too; otherwise a needless cancel+re-place
+          // of the freshly-placed, already-correctly-sized TP would fire
+          // on the NEXT restart (codex delta review, round 5).
+          if (body.needsTpReprice) body.needsTpReprice = false;
+        }
+      }
+
+      if (restoredBodies > 0) logger.info(`🌌 [${exchange}] Restored ${restoredBodies} celestial body TP orders`);
+      if (expiredBodies > 0) logger.warn(`⚠️ [${exchange}] ${expiredBodies} body TP orders need re-placement`);
+
+      await repriceStartupBodyTakeProfits(savedBodies);
+    }
+  };
+
   /**
    * Start the regime engine
    * @returns {Promise<{success: boolean, error?: string}>}
@@ -2765,82 +3001,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         logger.info(`📝 [${exchange}] Position exists but no TP order, will place after metrics update`);
       }
 
-      // Restore TP order tracking if we have an active TP order ID - but validate it exists first.
-      // EXPIRED is a terminal cancellation per order-manager.js:49 — without
-      // excluding it here, an EXPIRED order would be restored as an open TP
-      // and block placement of a replacement. Same precedent across the
-      // codebase: order-manager / order-executor / market-data-service all
-      // treat EXPIRED as terminal-cancelled.
-      if (positionState.activeTpOrderId) {
-        let tpOrderStatus = null;
-        let tpLookupFailed = false;
-        try {
-          tpOrderStatus = await adapter.getOrder(positionState.activeTpOrderId);
-        } catch (err) {
-          // Same rule as the body-TP restore below: only definitive not-found
-          // clears tracking; transient failures must not orphan a live order.
-          tpLookupFailed = !isOrderNotFoundError(err);
-        }
-        const tpOrderExists = tpLookupFailed || (tpOrderStatus
-          && tpOrderStatus.status !== 'CANCELLED'
-          && tpOrderStatus.status !== 'FAILED'
-          && tpOrderStatus.status !== 'EXPIRED');
-
-        if (tpOrderExists) {
-          // Check if a celestial body owns this TP — restore as body_tp if so
-          const bodyOwner = (positionState.celestialBodies || []).find(b => b.tpOrderId === positionState.activeTpOrderId);
-          if (bodyOwner) {
-            const placedAt = tpOrderStatus?.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now());
-            orderExecutor.restoreBodyTpOrder(bodyOwner.id, positionState.activeTpOrderId, bodyOwner.assetQty, positionState.lastTpPrice, placedAt);
-            logger.info(`📋 [${exchange}] Restored legacy TP as body_tp: ${positionState.activeTpOrderId.slice(0, 8)} → body ${bodyOwner.id.slice(-8)}`);
-            positionState.activeTpOrderId = null;
-            positionState.lastTpPrice = 0;
-            positionState.assetOnOrder = 0;
-          } else {
-            orderExecutor.restorePendingOrder(positionState.activeTpOrderId, {
-              type: 'take_profit',
-              price: positionState.lastTpPrice,
-              size: positionState.assetOnOrder || positionState.totalAsset,
-              sizeUsdc: (positionState.lastTpPrice || 0) * (positionState.assetOnOrder || positionState.totalAsset),
-              placedAt: tpOrderStatus?.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now()),
-              status: 'open',
-            });
-            logger.info(`📋 [${exchange}] Restored TP order tracking: ${positionState.activeTpOrderId} @ ${fmtPrice(positionState.lastTpPrice)}`);
-          }
-        } else {
-          // TP order no longer exists on exchange - clear tracking so a new one gets placed.
-          //
-          // KNOWN LIMITATION: cancelled-with-fills recovery is incomplete here.
-          // The exchange may report status=CANCELLED with completionPercentage
-          // anywhere in (0, 100] — both the partial case (cancel won the race
-          // before all the asset filled) AND the full case (completion=100,
-          // cancel-after-fill: the order completed in full before the cancel
-          // was processed) land in this branch. checkOfflineOrderFills (which
-          // ran earlier in startup) is the canonical fill-ingest path; if it
-          // succeeded, positionState.totalAsset already reflects the sale and
-          // clearing activeTpOrderId here is correct (no replacement TP gets
-          // placed because totalAsset is 0). If it MISSED fills (REST call
-          // failed, recent-trade window aged out, etc.), this branch will
-          // clear the tracking and a subsequent regime tick can place a
-          // replacement TP for an already-(partially-)sold position — even
-          // ingesting fills here is insufficient on its own, because a
-          // correct fix must also reduce positionState.totalAsset, recompute
-          // avgCostBasis, and account for realized P&L from the sell.
-          //
-          // The same gap applies if the API process restarted while a market-
-          // data-service cancel-retry was still pending — those retries live
-          // in-memory only, so a restart loses them.
-          //
-          // The market-data-service catch-up retry covers the common case
-          // while the engine is stopped. Engine-side recovery on startup +
-          // disk-persisted retry markers are deferred; do not extend this
-          // branch to ingest fills until that bookkeeping is in place.
-          logger.warn(`⚠️ [${exchange}] Saved TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
-          positionState.activeTpOrderId = null;
-          positionState.lastTpPrice = 0;
-          positionState.assetOnOrder = 0;
-        }
-      }
+      await restoreStartupLegacyTakeProfit();
 
       // Cancel stale orders flagged for cleanup (e.g. partially-filled TPs from prior crashes)
       if (positionState._cancelOnStartup?.length > 0) {
@@ -2864,153 +3025,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
       }
 
-      // Restore celestial body TP order tracking from saved state
-      const savedBodies = positionState.celestialBodies || [];
-      if (savedBodies.length > 0) {
-        let restoredBodies = 0;
-        let expiredBodies = 0;
-
-        // Backfill buyOrders for bodies that predate the tracking field
-        for (const body of savedBodies) {
-          if (!body.buyOrders) {
-            body.buyOrders = (body.sourceOrderIds || []).map(oid => ({
-              orderId: oid,
-              price: body.avgPrice,
-              assetQty: 0,
-              sizeUsdc: 0,
-              filledAt: body.createdAt || Date.now(),
-            }));
-          }
-        }
-
-        // Self-heal avgPrice for bodies where roundUSDC truncated precision
-        for (const body of savedBodies) {
-          if (body.assetQty > 0 && body.costBasis > 0) {
-            const correctedAvg = body.costBasis / body.assetQty;
-            if (Math.abs(correctedAvg - body.avgPrice) / correctedAvg > 0.001) {
-              logger.info(`🔧 [${exchange}] correcting body avgPrice bodyId=${body.id} old=${body.avgPrice} new=${correctedAvg}`);
-              body.avgPrice = correctedAvg;
-            }
-          }
-        }
-
-        for (const body of [...savedBodies]) {
-          if (!body.tpOrderId) continue;
-
-          let bodyStatus = null;
-          let bodyLookupFailed = false;
-          try {
-            bodyStatus = await adapter.getOrder(body.tpOrderId);
-          } catch (err) {
-            // Only a definitive not-found means the order is gone. Network/
-            // API failures keep the saved tpOrderId and restore tracking from
-            // saved state below; the interval reconciler re-checks once
-            // connectivity returns (see isOrderNotFoundError).
-            bodyLookupFailed = !isOrderNotFoundError(err);
-          }
-          // Mirror the core-TP exists check: EXPIRED is terminal cancellation.
-          const bodyExists = bodyLookupFailed || (bodyStatus
-            && bodyStatus.status !== 'CANCELLED'
-            && bodyStatus.status !== 'FAILED'
-            && bodyStatus.status !== 'EXPIRED');
-
-          if (bodyExists && isFilledStatus(bodyStatus)) {
-            // Body filled while offline — handled in checkOfflineOrderFills above
-            continue;
-          }
-
-          if (bodyExists) {
-            const bodyPlacedAt = bodyStatus?.createdTime ? new Date(bodyStatus.createdTime).getTime() : Date.now();
-            orderExecutor.restoreBodyTpOrder(
-              body.id,
-              body.tpOrderId,
-              body.assetOnOrder || body.assetQty,
-              body.tpPrice,
-              bodyPlacedAt
-            );
-            restoredBodies++;
-          } else {
-            // Body TP no longer on exchange — re-place TP.
-            // Same KNOWN LIMITATION as the core-TP branch above: cancelled-
-            // with-fills recovery is incomplete. Both the partial case
-            // (completion in (0,100)) and the full case (completion=100,
-            // cancel-after-fill where the order finished before the cancel
-            // was processed) land here — bodyExists filters out CANCELLED/
-            // FAILED/EXPIRED before the FILLED-or-completion=100 short-
-            // circuit at the top of this if. A body TP that filled before
-            // cancellation needs body.assetQty / body.costBasis proration
-            // and realized-P&L accounting; without it the replacement TP
-            // would be sized incorrectly. checkOfflineOrderFills handles the
-            // happy path; engine-side recovery is deferred.
-            body.tpOrderId = null;
-            expiredBodies++;
-            // The old TP is already gone — whatever fresh TP gets placed
-            // below (ensureTakeProfitPlaced, or the reprice pass below for
-            // an overpriced %) will size against the CURRENT (already-grown)
-            // assetQty. Nothing left for the reprice pass to cancel, so
-            // clear the flag here too; otherwise a needless cancel+re-place
-            // of the freshly-placed, already-correctly-sized TP would fire
-            // on the NEXT restart (codex delta review, round 5).
-            if (body.needsTpReprice) body.needsTpReprice = false;
-          }
-        }
-
-        if (restoredBodies > 0) logger.info(`🌌 [${exchange}] Restored ${restoredBodies} celestial body TP orders`);
-        if (expiredBodies > 0) logger.warn(`⚠️ [${exchange}] ${expiredBodies} body TP orders need re-placement`);
-
-        // Reprice any restored body TPs whose TP% exceeds the effective max
-        // (fixes bodies that were placed with uncapped holdback floor), OR
-        // that a manual buy extend flagged needsTpReprice while this engine
-        // was stopped (issue #726 — extendPersistedBody grew the body's
-        // assetQty but had no adapter/executor to safely cancel the live TP
-        // itself, so it left a marker for this pass to pick up instead).
-        // Every body that still carries a tpOrderId here had its executor
-        // tracking restored just above, so cancel through the executor —
-        // cancelBodyTpForReplace books any tranche sold during the cancel
-        // instead of re-listing it (issue #670).
-        for (const body of [...savedBodies]) {
-          if (!body.tpOrderId || body.avgPrice <= 0) continue;
-          const currentTpPct = ((body.tpPrice - body.avgPrice) / body.avgPrice) * 100;
-          const bTierCfg = celestialHierarchy.getTierConfig(body.tier);
-          const bEffectiveMax = config.tpMaxPercent * (bTierCfg.tpMaxScale || 1);
-          // A manual TP override means the operator intentionally set this
-          // PERCENTAGE — never second-guess it via the overpriced-vs-max
-          // check below. But needsTpReprice is about SIZE, not price:
-          // placeBodyTp reapplies body.manualTpPct whenever it re-places
-          // (~line 5452), so a manual-TP body extended while the engine was
-          // stopped must still go through this cancel+replace — skipping it
-          // here left its TP undersized forever and the flag never cleared
-          // (codex delta review, round 5).
-          const overpriced = body.manualTpPct == null && currentTpPct > bEffectiveMax * 1.01;
-          if (overpriced || body.needsTpReprice) {
-            const reason = overpriced
-              ? `TP% ${currentTpPct.toFixed(2)}% exceeds max ${bEffectiveMax.toFixed(2)}%`
-              : 'extended by a manual buy import while stopped';
-            logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} needs TP reprice (${reason}) — cancelling and repricing`);
-            const oldTp = body.tpOrderId;
-            const outcome = await cancelBodyTpForReplace(body, 'Startup reprice');
-            if (outcome === 'cancelled') {
-              body.needsTpReprice = false;
-              await placeBodyTp(body);
-            } else if (outcome === 'booked') {
-              // cancelBodyTpForReplace already booked the tranche that sold
-              // during the cancel and re-placed a right-sized TP for the
-              // body's new (reduced) shape itself — nothing left to do.
-              body.needsTpReprice = false;
-            } else if (outcome === 'filled') {
-              logger.info(`📋 [${exchange}] Body TP ${oldTp.slice(0, 8)} needing reprice already filled — polling will process`);
-            } else if (outcome === 'unresolved') {
-              logger.warn(
-                `⚠️ [${exchange}] Failed to cancel body TP ${oldTp} needing reprice`,
-                { bodyId: body.id, orderId: oldTp }
-              );
-            }
-            // 'booking_failed': leave needsTpReprice set — the reconcile
-            // loop retries the booking independently, and a future startup
-            // retries this pass too.
-          }
-        }
-      }
+      await restoreStartupBodyTakeProfits();
 
       // Detect orphaned sell orders on exchange that we lost track of
       const exchangeOpenOrders = await adapter.getOpenOrders(productId);
