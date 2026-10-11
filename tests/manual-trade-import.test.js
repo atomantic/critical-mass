@@ -919,7 +919,7 @@ describe('Manual Trade Import', () => {
 
       const checked = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
       assert.equal(checked.success, false);
-      assert.match(checked.error, /40% complete, but none of its fills are visible/);
+      assert.match(checked.error, /0.0012 executed, but only 0 is visible/);
       assert.equal(store.getById(tradeId).status, STATUS.BUY_PENDING);
 
       // Once the executions surface, the same check settles the true remainder.
@@ -927,6 +927,21 @@ describe('Manual Trade Import', () => {
       const settled = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
       assert.equal(settled.cancelled, true);
       assert.equal(settled.remainingSize, 0.0018);
+    });
+
+    it('keeps a percentage-only cancellation pending while some of its executions are still hidden', async () => {
+      const ex = createExchange();
+      const imported = await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });
+      const { id: tradeId, buyOrderId } = imported.trade;
+      // 40% of the 0.003 placed = 0.0012 executed, but only 0.0006 is visible.
+      ex.orders[buyOrderId] = { status: 'CANCELLED', completionPercentage: 40 };
+      ex.fills[buyOrderId] = [makeFill({ tradeId: 'half-1', price: 95000, size: 0.0006 })];
+
+      const checked = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      assert.equal(checked.success, false);
+      assert.match(checked.error, /only 0.0006 is visible/);
+      assert.equal(store.getById(tradeId).status, STATUS.BUY_PENDING);
+      assert.equal(fillLedger.getFillsForOrder(buyOrderId).length, 0);
     });
 
     it('preserves the association and surfaces a failed status lookup', async () => {

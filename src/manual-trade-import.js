@@ -307,9 +307,8 @@ const createManualTradeImporter = ({
       store.recordCheck(tradeId, { error });
       return fail(error);
     };
-    if (!(trade.recoveryAttempts || []).some((a) => a.orderId === buyOrderId && !a.outcome)) {
-      return checkFailed(`Buy order ${buyOrderId} has no open recovery attempt on manual trade ${tradeId}`);
-    }
+    const attempt = (trade.recoveryAttempts || []).find((a) => a.orderId === buyOrderId && !a.outcome);
+    if (!attempt) return checkFailed(`Buy order ${buyOrderId} has no open recovery attempt on manual trade ${tradeId}`);
 
     let orderStatus;
     try {
@@ -346,14 +345,18 @@ const createManualTradeImporter = ({
     const invalidBuy = validateAdapterFills(buyFills, buyOrderId, 'buy');
     if (invalidBuy) return checkFailed(invalidBuy);
     const visibleSize = buyFills.reduce((sum, f) => sum + f.size, 0);
-    const reportedSize = Number(orderStatus?.filledSize) || 0;
-    if (reportedSize > visibleSize + SIZE_EPSILON) {
+    // Executions the exchange admits to but no visible fill shows yet are
+    // unverified, not zero — settling now could replace them and over-recover.
+    // filledSize is authoritative; a response that reports progress only as a
+    // percentage is sized from our own order (1% slack for increment dust).
+    const completion = Number(orderStatus?.completionPercentage) || 0;
+    const hasFilledSize = Number.isFinite(Number(orderStatus?.filledSize)) && orderStatus?.filledSize !== null && orderStatus?.filledSize !== undefined;
+    const reportedSize = hasFilledSize ? Number(orderStatus.filledSize) : ((attempt.size || 0) * completion) / 100;
+    const slack = hasFilledSize ? SIZE_EPSILON : Math.max(SIZE_EPSILON, (attempt.size || 0) * 0.01);
+    if (reportedSize > visibleSize + slack) {
       return checkFailed(`Buy order ${buyOrderId} is ${normalizedStatus || 'FILLED'} with ${reportedSize} executed, but only ${visibleSize} is visible in its fills so far — check again before retrying`);
     }
-    // Some responses report progress only as a percentage. Executions the
-    // exchange admits to but whose quantity no fill shows yet are unverified,
-    // not zero — settling now could replace them and over-recover.
-    if (visibleSize <= SIZE_EPSILON && (Number(orderStatus?.completionPercentage) || 0) > 0) {
+    if (visibleSize <= SIZE_EPSILON && completion > 0) {
       return checkFailed(`Buy order ${buyOrderId} is ${normalizedStatus || 'FILLED'} at ${orderStatus.completionPercentage}% complete, but none of its fills are visible yet — check again before retrying`);
     }
 
@@ -369,7 +372,6 @@ const createManualTradeImporter = ({
     // recovery (the adapter floors size to the product increment, which can
     // leave sub-increment dust). A linked replacement is the operator's own
     // order and completes it only when its executions actually cover the rest.
-    const attempt = trade.recoveryAttempts.find((a) => a.orderId === buyOrderId && !a.outcome);
     const coversByFill = filled && attempt.kind === 'placed';
     const remainingSize = coversByFill ? 0 : Math.max(0, Math.round((remainingBefore - totalSize) * 1e10) / 1e10);
     const statusLabel = normalizedStatus || 'FILLED';
