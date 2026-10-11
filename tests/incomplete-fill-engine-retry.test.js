@@ -832,3 +832,127 @@ describe('advancing retry books earlier unsettled tranches (#1021)', () => {
     assert.equal(pos.celestialBodies.length, 1);
   });
 });
+
+describe('synchronous order-fill evidence boundary (#1005)', () => {
+  const row = (orderId, suffix = 'valid') => ({ tradeId: `${orderId}-${suffix}`, orderId,
+    side: 'buy', size: 0.01, price: 2000, netFee: 0.02,
+    tradeTime: '2026-01-01T00:00:01.000Z' });
+  const status = (orderId, confirmedFills) => ({ orderId, side: 'buy', status: 'FILLED',
+    filledSize: 0.01, filledValue: 20, totalFees: 0.02, confirmedFills });
+  const bodyFor = (eng, orderId) => eng._getPositionState().celestialBodies
+    .find(body => body.sourceOrderIds.includes(orderId));
+
+  for (const confirmed of [true, false]) {
+    it(`ingests ${confirmed ? 'confirmed' : 'fetched'} row objects synchronously before booking`, async () => {
+      const orderId = `evidence-${confirmed ? 'confirmed' : 'fetched'}`;
+      const fills = [row(orderId)];
+      const calls = [];
+      const eng = makeEngine({ getOrderFills: async id => {
+        assert.equal(id, orderId);
+        calls.push('fetch');
+        return fills;
+      } }, orderId);
+      const ledger = eng.getFillLedger();
+      const cycleId = ledger.getCurrentCycleId();
+      const originalIngest = ledger.ingestFill;
+      const originalAggregate = ledger.aggregateFills;
+      let normalizedRow;
+      ledger.ingestFill = (fill, placedAt) => {
+        assert.equal(fill, fills[0], 'the original raw row reaches ingestion');
+        assert.equal(placedAt, 1767225600000);
+        calls.push('ingest');
+        queueMicrotask(() => calls.push('microtask'));
+        const result = originalIngest(fill, placedAt);
+        normalizedRow = result.fill;
+        return result;
+      };
+      ledger.aggregateFills = bookable => {
+        assert.equal(bookable[0], normalizedRow, 'booking uses the normalized ledger object');
+        assert.equal(calls.includes('microtask'), false, 'no scheduling boundary between ingest and booking');
+        calls.push('aggregate');
+        return originalAggregate(bookable);
+      };
+      eng._test.setOrderExecutor(makeExecutor({
+        getOrderPlacedAt: () => 1767225600000,
+        placeBodyTpOrder: async () => {
+          calls.push('place-tp');
+          return { success: true, orderId: `${orderId}-tp` };
+        },
+      }));
+      const pos = eng._getPositionState();
+      pos.pendingEntryOrders = [{ orderId, assetQty: 0.01, sizeUsdc: 20 }];
+      await eng._test.handleOrderFill(status(orderId, confirmed ? fills : undefined));
+      assert.deepEqual(calls.slice(0, confirmed ? 2 : 3), confirmed
+        ? ['ingest', 'aggregate'] : ['fetch', 'ingest', 'aggregate']);
+      assert.ok(calls.indexOf('place-tp') > calls.indexOf('aggregate'));
+      assert.equal(bodyFor(eng, orderId).assetQty, 0.01);
+      assert.equal(bodyFor(eng, orderId).costBasis, 20.02);
+      assert.equal(ledger.getFillsForOrder(orderId)[0].cycleId, cycleId);
+      assert.equal(ledger.getFillsForOrder(orderId)[0].netFee, 0.02);
+      assert.deepEqual(pos.pendingEntryOrders, []);
+    });
+  }
+
+  it('skips typed invalid rows while booking valid evidence with its fees and cycle', async () => {
+    const orderId = 'evidence-mixed';
+    const valid = row(orderId);
+    const invalid = { ...row(orderId, 'invalid'), size: -1 };
+    const eng = makeEngine({ getOrderFills: async () => assert.fail('confirmed rows bypass fetching') }, orderId);
+    const ledger = eng.getFillLedger();
+    const cycleId = ledger.getCurrentCycleId();
+    await eng._test.handleOrderFill(status(orderId, [invalid, valid]));
+    const rows = ledger.getFillsForOrder(orderId);
+    assert.deepEqual(rows.map(fill => fill.tradeId), [valid.tradeId]);
+    assert.equal(rows[0].cycleId, cycleId);
+    assert.equal(rows[0].netFee, 0.02);
+    assert.equal(bodyFor(eng, orderId).assetQty, 0.01);
+    assert.equal(bodyFor(eng, orderId).costBasis, 20.02);
+  });
+
+  it('propagates nonvalidation ingestion errors unchanged and allows the same execution to retry', async () => {
+    const orderId = 'evidence-ingest-error';
+    const fills = [row(orderId)];
+    const eng = makeEngine({}, orderId);
+    const ledger = eng.getFillLedger();
+    const original = ledger.ingestFill;
+    const failure = new Error('ledger write unavailable');
+    ledger.ingestFill = () => { throw failure; };
+    await assert.rejects(eng._test.handleOrderFill(status(orderId, fills)), error => error === failure);
+    assert.deepEqual(ledger.getFillsForOrder(orderId), []);
+    assert.equal(bodyFor(eng, orderId), undefined);
+    ledger.ingestFill = original;
+    await eng._test.handleOrderFill(status(orderId, fills));
+    assert.equal(bodyFor(eng, orderId).assetQty, 0.01);
+    assert.equal(bodyFor(eng, orderId).costBasis, 20.02);
+    assert.equal(ledger.getFillsForOrder(orderId).length, 1);
+  });
+
+  it('books persisted all-duplicate evidence after a booking failure without double counting replay', async () => {
+    const orderId = 'evidence-booking-retry';
+    const fills = [row(orderId)];
+    const calls = [];
+    const eng = makeEngine({ getOrderFills: async () => { calls.push('fetch'); return fills; } }, orderId);
+    const ledger = eng.getFillLedger();
+    const original = ledger.aggregateFills;
+    const failure = new Error('booking unavailable');
+    ledger.aggregateFills = () => { throw failure; };
+    await assert.rejects(eng._test.handleOrderFill(status(orderId)), error => error === failure);
+    assert.equal(bodyFor(eng, orderId), undefined);
+    assert.equal(ledger.getFillsForOrder(orderId).length, 1);
+    ledger.persist();
+    ledger.load();
+    const persisted = ledger.getFillsForOrder(orderId)[0];
+    ledger.aggregateFills = bookable => {
+      assert.equal(bookable[0], persisted, 'all-duplicate fallback retains ledger row identity');
+      calls.push('aggregate');
+      return original(bookable);
+    };
+    await eng._test.handleOrderFill(status(orderId));
+    await eng._test.handleOrderFill(status(orderId));
+    assert.deepEqual(calls, ['fetch', 'fetch', 'aggregate', 'fetch']);
+    assert.equal(ledger.getFillsForOrder(orderId).length, 1);
+    assert.equal(bodyFor(eng, orderId).assetQty, 0.01);
+    assert.equal(bodyFor(eng, orderId).costBasis, 20.02);
+    assert.equal(eng._getPositionState().cycleBuys, 1);
+  });
+});
