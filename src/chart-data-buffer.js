@@ -334,5 +334,7 @@ module.exports = {
   removeChartDataBuffer,
   getChartData,
   shutdownAllBuffers,
+  // Restore must retire cached generations as well as their save timers.
+  removeAllChartDataBuffers: () => { shutdownAllBuffers(); chartBuffers.clear(); },
   resumeAllBuffers: () => { for (const buffer of chartBuffers.values()) buffer.resume(); },
 };
