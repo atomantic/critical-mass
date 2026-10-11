@@ -2461,12 +2461,14 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * Annotate a fill with additional metadata (e.g. celestial body TP data)
    * @param {Iterable<string>} orderIds - Order IDs to annotate fills for
    * @param {Object} metadata - Key-value pairs to merge into the fill (bodyId, bodyTier, isBodyOwned, etc.)
+   * @param {{include?: (fill: Fill) => boolean}} [options] - `include` limits
+   *   the annotation to the rows it accepts (default: every row of the orders)
    */
-  const annotateFillsByOrderIds = (orderIds, metadata) => {
+  const annotateFillsByOrderIds = (orderIds, metadata, { include } = {}) => {
     const ids = new Set(orderIds);
     let matched = false;
     for (const [, fill] of fills) {
-      if (ids.has(fill.orderId)) {
+      if (ids.has(fill.orderId) && (!include || include(fill))) {
         Object.assign(fill, metadata);
         matched = true;
         dirtySinceLastPersist = true;

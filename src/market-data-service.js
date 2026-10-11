@@ -56,6 +56,32 @@ const bumpStopGeneration = (key) => {
   stopGenerations.set(key, (stopGenerations.get(key) || 0) + 1);
 };
 
+// Stopped services whose accepted order work may still be finishing, keyed
+// the same way (issue #1008). stop() fences new ledger writes immediately,
+// but a REST fetch already in flight settles later; fenceMarketDataService
+// joins these before a replacement writer may load the ledger.
+const retiringServices = new Map();
+
+/**
+ * Stop a service and keep it joinable until its order work has drained.
+ * @param {string} key
+ * @param {Object} service
+ */
+const retireService = (key, service) => {
+  service.stop?.();
+  if (!service.whenIdle) return;
+  if (!retiringServices.has(key)) retiringServices.set(key, new Set());
+  const retiring = retiringServices.get(key);
+  retiring.add(service);
+  service.whenIdle().finally(() => {
+    retiring.delete(service);
+    if (!retiring.size && retiringServices.get(key) === retiring) retiringServices.delete(key);
+  });
+};
+
+/** Default bound for a writer-handover join; matches the engine write drain. */
+const FENCE_TIMEOUT_MS = 30_000;
+
 // REST adapter methods this service actually calls (getOrderFills via
 // ingestNewFillsForOrder, getCandles via updateMetrics) — instrumented so a
 // REST-error burst / rate-limit / latency spike here feeds this service's own
@@ -526,34 +552,159 @@ const createTimerTracker = () => {
   return { trackedSetTimeout, cancel, cancelAll, size: () => pending.size, isStopped: () => stopped };
 };
 
+// Service-wide cap on REST-backed order consumers running at once (#1026).
+const ORDER_CONSUMER_CONCURRENCY = 4;
+
+const createDeferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
+
 /**
- * Per-key serialization queue. Returns an enqueue(key, work) function
- * that chains async work for the same key to run strictly in arrival
- * order — different keys run concurrently. Used so partial / FILLED /
- * CANCELLED WS events for the same orderId process in order, since
- * websocket-feed fire-and-forgets onOrderUpdate (websocket-feed.js
- * lines 335-336).
+ * Coalescing per-key mailbox (issue #1026). Replaces a per-arrival promise
+ * chain whose retained work grew with every WS update while a REST fetch
+ * for the same order was in flight.
  *
- * @returns {{ enqueue: (key: string, work: () => Promise<any>) => Promise<any>, size: () => number }}
+ * Each key (orderId) owns at most:
+ *   - one active pass (the batch of slots being consumed right now), and
+ *   - one pending batch of named slots. Posting to a slot that is already
+ *     pending REPLACES its work (and merges its payload when a `merge` is
+ *     given) instead of queueing another closure, so tens of thousands of
+ *     arrivals for one order retain a constant amount of work.
+ *
+ * Work for the same key never runs concurrently, and slots run in first-post
+ * order within a pass — so partial / FILLED / CANCELLED handling stays
+ * serialized (websocket-feed fire-and-forgets onOrderUpdate). A post that
+ * lands while a pass is awaiting schedules exactly one further pass.
+ *
+ * Across keys, at most `concurrency` passes run at once; waiting keys sit in
+ * an insertion-ordered Set, so each ready key appears once.
+ *
+ * Every caller posting to the same pending slot shares that slot's promise:
+ * it resolves with the work's result or rejects with its error (one failing
+ * slot never poisons the key — later posts run normally). Each key's
+ * lifetime (first post → mailbox empty) is one pending-writes entry, so the
+ * restore/backup drain can join it.
+ *
+ * stop() is final: pending slots resolve to undefined at once without
+ * running, new posts resolve immediately, and an in-flight pass settles its
+ * key once its current work returns. The returned promise is whenIdle().
+ *
+ * @param {{ concurrency?: number, label?: string }} [options]
  */
-const createWorkQueue = () => {
-  const chains = new Map(); // key -> Promise of latest enqueued work
-  const enqueue = (key, work) => {
-    const previous = chains.get(key) || Promise.resolve();
-    // catch() prevents one failure from poisoning the chain for that key.
-    const next = trackPendingWrite(`market-order:${key}`, () => previous.catch(() => {}).then(() => work()));
-    chains.set(key, next);
-    // Use .then(onFulfilled, onRejected) instead of .finally so rejection
-    // from `next` is swallowed here (the caller of enqueue() owns the
-    // returned promise's rejection); .finally would propagate it and
-    // produce an unhandled rejection.
-    const cleanup = () => {
-      if (chains.get(key) === next) chains.delete(key);
-    };
-    next.then(cleanup, cleanup);
-    return next;
+const createOrderMailbox = ({ concurrency = ORDER_CONSUMER_CONCURRENCY, label = 'market-order' } = {}) => {
+  const boxes = new Map(); // key -> { slots: Map<slot, entry>, running, owner }
+  const ready = new Set(); // keys waiting for a consumer
+  let active = 0;
+  let stopped = false;
+
+  const dropPending = (box) => {
+    for (const entry of box.slots.values()) entry.done.resolve(undefined);
+    box.slots.clear();
   };
-  return { enqueue, size: () => chains.size };
+
+  const settleKey = (key, box) => {
+    dropPending(box);
+    boxes.delete(key);
+    box.owner.resolve();
+  };
+
+  const runPass = async (box) => {
+    const batch = box.slots;
+    box.slots = new Map();
+    for (const entry of batch.values()) {
+      if (stopped) {
+        entry.done.resolve(undefined);
+        continue;
+      }
+      try {
+        entry.done.resolve(await entry.run(entry.payload));
+      } catch (err) {
+        entry.done.reject(err);
+      }
+    }
+  };
+
+  const finishPass = (key, box) => {
+    active -= 1;
+    box.running = false;
+    if (box.slots.size > 0 && !stopped) ready.add(key);
+    else settleKey(key, box);
+    pump();
+  };
+
+  const pump = () => {
+    while (active < concurrency && ready.size > 0) {
+      const key = ready.values().next().value;
+      ready.delete(key);
+      const box = boxes.get(key);
+      if (!box) continue;
+      active += 1;
+      box.running = true;
+      // Start on a microtask so a synchronous burst (one WS batch) merges
+      // into this pass instead of forcing a second one.
+      Promise.resolve().then(() => runPass(box)).then(() => finishPass(key, box));
+    }
+  };
+
+  /**
+   * @param {string} key
+   * @param {string} slot - Work kind; re-posting a pending slot replaces it
+   * @param {(payload: any) => any} run
+   * @param {{ payload?: any, merge?: (pending: any, next: any) => any }} [options]
+   * @returns {Promise<any>}
+   */
+  const post = (key, slot, run, { payload, merge } = {}) => {
+    if (stopped) return Promise.resolve();
+    let box = boxes.get(key);
+    if (!box) {
+      box = { slots: new Map(), running: false, owner: createDeferred() };
+      boxes.set(key, box);
+      trackPendingWrite(`${label}:${key}`, () => box.owner.promise);
+    }
+    const pending = box.slots.get(slot);
+    if (pending) {
+      pending.run = run;
+      pending.payload = merge ? merge(pending.payload, payload) : payload;
+      return pending.done.promise;
+    }
+    const entry = { run, payload, done: createDeferred() };
+    box.slots.set(slot, entry);
+    if (!box.running) {
+      ready.add(key);
+      pump();
+    }
+    return entry.done.promise;
+  };
+
+  // Resolves once every key accepted so far (and any work posted while it
+  // settles) has released ownership — the join a writer handover (#1008)
+  // and stop() wait on. Owner promises never reject.
+  const whenIdle = async () => {
+    while (boxes.size) await Promise.all([...boxes.values()].map((box) => box.owner.promise));
+  };
+
+  const stop = () => {
+    stopped = true;
+    ready.clear();
+    for (const [key, box] of boxes) {
+      // A running pass keeps ownership until its current await returns
+      // (finishPass settles it); its queued callers resolve now.
+      if (box.running) dropPending(box);
+      else settleKey(key, box);
+    }
+    return whenIdle();
+  };
+
+  const stats = () => {
+    let pendingSlots = 0;
+    for (const box of boxes.values()) pendingSlots += box.slots.size;
+    return { keys: boxes.size, pendingSlots, active, ready: ready.size };
+  };
+
+  return { post, stop, stats, whenIdle };
 };
 
 const serviceKey = (exchange, pair) => fundKey(exchange, pair || getDefaultPair(exchange) || 'default');
@@ -810,11 +961,50 @@ const createMarketDataService = (exchange, pair) => {
 
     // Initial metrics fetch
     await updateMetrics(adapter, productId);
+    // A stop that landed during the fetch fenced this service: it must not
+    // touch the ledger again, not even to recover the handover gap below.
+    if (timerTracker.isStopped()) return { success: false, error: 'stopped during start' };
+
+    const gapRecovery = await recoverHandoverGap();
 
     logger.info(`📊 [${exchange}] Market data service started for ${productId}`, {
       productId,
     });
-    return { success: true };
+    return { success: true, gapRecovery };
+  };
+
+  /**
+   * Recover fills that executed while no consumer was listening (issue #1008).
+   * Ledger ownership moves between the engine and this service with a gap:
+   * the previous owner disconnects before this feed subscribes, and the
+   * user channel's subscribe snapshot lists only still-open orders — a
+   * tracked order that filled in between would never be reported. Ask the
+   * exchange for each tracked order's authoritative state and replay it
+   * through the same per-order path as a WS event. ingestFill dedupes on
+   * tradeId and the watermark skips covered sizes, so an order the feed
+   * reports too is still booked exactly once.
+   * @returns {Promise<{checked: number, failed: string[]}>}
+   */
+  const recoverHandoverGap = async () => {
+    const adapter = getActiveAdapter();
+    const failed = [];
+    let checked = 0;
+    if (typeof adapter.getOrder !== 'function') return { checked, failed };
+    for (const orderId of [...trackedOrders.keys()]) {
+      if (timerTracker.isStopped()) break;
+      try {
+        const order = await adapter.getOrder(orderId);
+        checked += 1;
+        if (order) await handleOrderUpdate({ ...order, orderId });
+      } catch (err) {
+        failed.push(orderId);
+        logger.warn(`⚠️ [${exchange}] Handover gap recovery could not check order ${orderId}: ${err.message}`, {
+          orderId,
+          error: err.message,
+        });
+      }
+    }
+    return { checked, failed };
   };
 
   /**
@@ -921,13 +1111,16 @@ const createMarketDataService = (exchange, pair) => {
   };
 
   // Per-orderId update serialization. websocket-feed invokes onOrderUpdate
-  // without await (websocket-feed.js:335-336), so partial / FILLED /
-  // CANCELLED events for the same order can race. Without serialization
-  // a partial in-flight could ingest fills AFTER a later FILLED reads
-  // the watermark, causing FILLED to hit the empty-fills race and never
-  // settle. Chain updates per orderId so they process in arrival order.
-  const orderWorkQueue = createWorkQueue();
-  const enqueueOrderWork = (orderId, work) => orderWorkQueue.enqueue(orderId, work);
+  // without await, so partial / FILLED / CANCELLED events for the same
+  // order can race. Without serialization a partial in-flight could ingest
+  // fills AFTER a later FILLED reads the watermark, causing FILLED to hit
+  // the empty-fills race and never settle. The mailbox serializes per
+  // orderId, coalesces WS snapshots that arrive while a pass is awaiting
+  // REST (one pending merged snapshot per order — issue #1026), keeps each
+  // retry kind to one pending slot, and caps concurrent REST-backed
+  // consumers service-wide.
+  const orderMailbox = createOrderMailbox();
+  const enqueueOrderWork = (orderId, slot, work) => orderMailbox.post(orderId, slot, work);
 
   // Allows tests to substitute a fake adapter without monkey-patching
   // the require cache (market-data-service destructures getAdapter at
@@ -1100,7 +1293,7 @@ const createMarketDataService = (exchange, pair) => {
       delayMs: delay,
     });
     entry.timerId = trackedSetTimeout(
-      () => enqueueOrderWork(orderId, async () => {
+      () => enqueueOrderWork(orderId, 'partial-retry', async () => {
         // Read the (possibly updated) target out of the map; if the
         // entry was preempted by a terminal handler, bail.
         const cur = pendingPartialRetries.get(orderId);
@@ -1223,7 +1416,7 @@ const createMarketDataService = (exchange, pair) => {
       delayMs: delay,
     });
     target.timerId = trackedSetTimeout(
-      () => enqueueOrderWork(orderId, async () => {
+      () => enqueueOrderWork(orderId, 'filled-retry', async () => {
         target.timerScheduled = false;
         target.timerId = null;
         // Keep the entry alive during the retry so replayed FILLED
@@ -1277,7 +1470,7 @@ const createMarketDataService = (exchange, pair) => {
 
   // Drive a cancel/fail catch-up chain against settleCancelledOrder, with
   // the deps wiring needed to (a) keep the chain serialized through the
-  // work queue, (b) feed the latest cumulative filledSize back into each
+  // order mailbox, (b) feed the latest cumulative filledSize back into each
   // retry, and (c) flag the target as settled when the chain finishes so
   // replays with a larger cumulative can detect the gap and restart.
   //
@@ -1343,7 +1536,7 @@ const createMarketDataService = (exchange, pair) => {
           target.timerId = id;
           return id;
         },
-        enqueueWork: enqueueOrderWork,
+        enqueueWork: (id, run) => enqueueOrderWork(id, 'cancel-retry', run),
         // Coinbase's getOrderFills is the source of truth and never ages
         // out; capping the chain at 6h would silently drop fills the
         // adapter would still return after a long outage. Gemini and
@@ -1413,7 +1606,7 @@ const createMarketDataService = (exchange, pair) => {
     if (!orderId || !trackedOrders.has(orderId)) return;
 
     // Synchronously advance any pending terminal target BEFORE the replay
-    // enters the work queue. Otherwise a replay queued behind an in-flight
+    // enters the order mailbox. Otherwise a replay queued behind an in-flight
     // retry would update the target only after that retry has already
     // finalized the order with stale aggregates (the retry's await
     // resolves before the queued processOrderUpdate gets to run). This
@@ -1492,7 +1685,38 @@ const createMarketDataService = (exchange, pair) => {
       }
     }
 
-    return enqueueOrderWork(orderId, () => processOrderUpdate(data));
+    // Coalesce into the order's single pending snapshot. A snapshot posted
+    // while a pass awaits REST runs in exactly one further pass.
+    return orderMailbox.post(orderId, 'update', processOrderUpdate, { payload: data, merge: mergeOrderUpdates });
+  };
+
+  // Rank used when merging pending snapshots: a terminal classification is
+  // never downgraded by a later, lower-ranked snapshot, and 'filled' beats
+  // 'cancelled' (the cancel-after-fill reclassification).
+  const TERMINAL_RANK = { filled: 2, cancelled: 1 };
+  const terminalRank = (data) => TERMINAL_RANK[classifyTerminal(data)] || 0;
+
+  /**
+   * Merge a newer WS snapshot into the order's pending one. Feed snapshots
+   * are cumulative, so processing the merge once ingests everything each
+   * individual snapshot would have: the highest filledSize wins, the
+   * highest-ranked status (and its completionPercentage) is kept, and price/
+   * fee aggregates follow the same placeholder rules as the prelude above
+   * (a 0 price is a placeholder; a 0 fee only fills an unset/zero value).
+   */
+  const mergeOrderUpdates = (pending, next) => {
+    const base = terminalRank(next) >= terminalRank(pending) ? next : pending;
+    const nextFees = next.totalFees;
+    const keepPendingFees = !(Number.isFinite(nextFees) && nextFees !== 0) && Number.isFinite(pending.totalFees);
+    return {
+      ...pending,
+      ...next,
+      status: base.status,
+      completionPercentage: base.completionPercentage,
+      filledSize: Math.max(pending.filledSize || 0, next.filledSize || 0),
+      averageFilledPrice: next.averageFilledPrice || pending.averageFilledPrice,
+      totalFees: keepPendingFees ? pending.totalFees : nextFees,
+    };
   };
 
   const processOrderUpdate = async (data) => {
@@ -1734,6 +1958,9 @@ const createMarketDataService = (exchange, pair) => {
     // against this service's now-stale fillLedger after a replacement
     // service has taken over and overwrite its writes.
     timerTracker.cancelAll();
+    // Drop pending order work and settle its callers; an in-flight pass
+    // settles its key (and pending-writes entry) once its await returns.
+    orderMailbox.stop();
 
     isConnected = false;
     logger.info(`📊 [${exchange}] Market data service stopped`);
@@ -1879,6 +2106,10 @@ const createMarketDataService = (exchange, pair) => {
     // Health state (issue #228) — null until start() creates the monitor (or
     // a test injects one via _test.injectHealthMonitor).
     getHealthState: () => (healthMonitor ? healthMonitor.getState() : null),
+    // Resolves once order work accepted before stop() has finished. Queued
+    // work re-checks the stopped flag after every await, so after stop()
+    // this only waits out REST calls already in flight.
+    whenIdle: orderMailbox.whenIdle,
     // Test hooks. Expose enough surface to drive processOrderUpdate
     // through a real factory instance without spinning up the WS feed.
     _test: {
@@ -1896,6 +2127,7 @@ const createMarketDataService = (exchange, pair) => {
       pendingTerminalRetries,
       pendingPartialRetries,
       timerTracker,
+      orderMailbox,
     },
   };
 };
@@ -1937,19 +2169,19 @@ const startMarketDataService = async (exchange, pair) => {
   // regime:stop IPC handler that starts a standalone service for
   // handover) get a graceful failure they can decide on instead of an
   // unhandled rejection that aborts their flow.
+  const service = createMarketDataService(exchange, pair);
   const startPromise = (async () => {
-    const service = createMarketDataService(exchange, pair);
     const result = await service.start();
     if (!result.success) {
       // Failed start must not leak its WS feed / interval timers.
-      service.stop?.();
+      retireService(key, service);
       return result;
     }
     if ((stopGenerations.get(key) || 0) !== gen) {
       // A stop landed while we were connecting. Tear this service down and
       // leave the settled map untouched — publishing it now would hand the
       // fund a second fill-ledger writer nothing can reach to stop again.
-      service.stop?.();
+      retireService(key, service);
       return { success: false, error: 'stopped during start' };
     }
     marketDataServices.set(key, service);
@@ -1962,7 +2194,7 @@ const startMarketDataService = async (exchange, pair) => {
     }
   });
 
-  startingMarketDataServices.set(key, { promise: startPromise, gen });
+  startingMarketDataServices.set(key, { promise: startPromise, gen, service });
   return startPromise;
 };
 
@@ -1976,11 +2208,46 @@ const stopMarketDataService = (exchange, pair) => {
   // Bump unconditionally: the settled map can be empty while a start is still
   // connecting, and the generation is the only way that start learns it lost.
   bumpStopGeneration(key);
+  // Stop a still-connecting service now rather than when its start settles:
+  // start() keeps ingesting (handover gap recovery) after its last await.
+  const starting = startingMarketDataServices.get(key);
+  if (starting?.service) retireService(key, starting.service);
   const service = marketDataServices.get(key);
   if (service) {
-    service.stop();
+    retireService(key, service);
     marketDataServices.delete(key);
   }
+};
+
+/**
+ * Stop a fund's standalone service and wait until it can no longer write its
+ * fill ledger (issue #1008): every start still in flight has settled and every
+ * order handler it accepted has finished. Only then may a replacement owner
+ * (the regime engine) load the ledger — each instance persists its whole
+ * in-memory Map, so a writer that outlives the handover erases the
+ * replacement's fills on its next persist.
+ * @param {string} exchange
+ * @param {string} [pair]
+ * @param {number} [timeoutMs]
+ * @returns {Promise<{drained: boolean}>} drained:false when the join timed out
+ */
+const fenceMarketDataService = async (exchange, pair, timeoutMs = FENCE_TIMEOUT_MS) => {
+  const key = serviceKey(exchange, pair);
+  const starting = startingMarketDataServices.get(key)?.promise;
+  stopMarketDataService(exchange, pair);
+  const joined = (async () => {
+    // The fenced start may still be mid-await (candles, gap recovery); let it
+    // observe the stop and settle before joining the order work it queued.
+    await starting?.catch(() => {});
+    await Promise.allSettled([...(retiringServices.get(key) || [])].map((service) => service.whenIdle()));
+    return true;
+  })();
+  /** @type {NodeJS.Timeout | undefined} */
+  let timer;
+  const expired = new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); });
+  const drained = await Promise.race([joined, expired]);
+  clearTimeout(timer);
+  return { drained: drained === true };
 };
 
 /**
@@ -1999,8 +2266,11 @@ const stopAllMarketDataServices = () => {
   for (const key of new Set([...marketDataServices.keys(), ...startingMarketDataServices.keys()])) {
     bumpStopGeneration(key);
   }
-  for (const [, service] of marketDataServices) {
-    service.stop();
+  for (const [key, { service }] of startingMarketDataServices) {
+    if (service) retireService(key, service);
+  }
+  for (const [key, service] of marketDataServices) {
+    retireService(key, service);
   }
   marketDataServices.clear();
 };
@@ -2012,11 +2282,13 @@ module.exports = {
   drainMarketDataStarts: () => Promise.allSettled([...startingMarketDataServices.values()].map((entry) => entry.promise)),
   startMarketDataService,
   stopMarketDataService,
+  fenceMarketDataService,
   getMarketDataService,
   stopAllMarketDataServices,
   ingestNewFillsForOrder,
   INGEST_RETRY_REASON,
   settleCancelledOrder,
   createTimerTracker,
-  createWorkQueue,
+  createOrderMailbox,
+  ORDER_CONSUMER_CONCURRENCY,
 };

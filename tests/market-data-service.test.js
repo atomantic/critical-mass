@@ -3,9 +3,10 @@ const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  ingestNewFillsForOrder, INGEST_RETRY_REASON, settleCancelledOrder, createTimerTracker, createWorkQueue, createMarketDataService,
+  ingestNewFillsForOrder, INGEST_RETRY_REASON, settleCancelledOrder, createTimerTracker, createOrderMailbox, ORDER_CONSUMER_CONCURRENCY, createMarketDataService,
 } = require('../src/market-data-service');
 const { createHealthMonitor, instrumentAdapterForHealth, isRateLimitError } = require('../src/health-monitor');
+const { getPendingWrites } = require('../src/pending-writes');
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -868,46 +869,44 @@ describe('createTimerTracker', () => {
 });
 
 // ---------------------------------------------------------------------------
-// createWorkQueue: regression coverage for per-orderId update serialization
-// (T28 — partial / FILLED / CANCELLED for the same order must run in order)
+// createOrderMailbox: per-orderId serialization (T28 — partial / FILLED /
+// CANCELLED for the same order must run in order) with bounded, coalesced
+// retained work (issue #1026)
 // ---------------------------------------------------------------------------
 
-describe('createWorkQueue', () => {
-  // Helper: a deferred promise with explicit resolve handle
-  const deferred = () => {
-    let resolve;
-    const promise = new Promise(r => { resolve = r; });
-    return { promise, resolve };
-  };
+// Helper: a deferred promise with explicit resolve handle
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(r => { resolve = r; });
+  return { promise, resolve };
+};
+const tick = () => new Promise(r => setImmediate(r));
+const pendingOrderWrites = () => getPendingWrites().filter(w => w.label.startsWith('market-order:')).length;
 
-  it('serializes work for the same key in arrival order', async () => {
-    const q = createWorkQueue();
+describe('createOrderMailbox', () => {
+  it('serializes work for the same key in post order', async () => {
+    const mb = createOrderMailbox();
     const log = [];
     const a = deferred();
     const b = deferred();
 
-    // Enqueue two pieces of work for the same key. Second one must wait
-    // for the first to finish, even though both are "started" instantly.
-    const p1 = q.enqueue('order-1', async () => {
+    const p1 = mb.post('order-1', 'a', async () => {
       log.push('a:start');
       await a.promise;
       log.push('a:end');
     });
-    const p2 = q.enqueue('order-1', async () => {
+    const p2 = mb.post('order-1', 'b', async () => {
       log.push('b:start');
       await b.promise;
       log.push('b:end');
     });
 
-    // Yield: only 'a:start' should appear; b shouldn't have started yet.
-    await new Promise(r => setImmediate(r));
+    await tick();
     assert.deepEqual(log, ['a:start'], 'b must not start until a finishes');
 
     a.resolve();
     await p1;
-    // Yield once more so chained microtasks (work() invocation for p2)
-    // run before we assert.
-    await new Promise(r => setImmediate(r));
+    await tick();
     assert.deepEqual(log, ['a:start', 'a:end', 'b:start'], 'b starts only after a ends');
 
     b.resolve();
@@ -916,18 +915,16 @@ describe('createWorkQueue', () => {
   });
 
   it('different keys run concurrently', async () => {
-    const q = createWorkQueue();
+    const mb = createOrderMailbox();
     const log = [];
     const a = deferred();
 
-    const p1 = q.enqueue('order-1', async () => {
+    const p1 = mb.post('order-1', 'u', async () => {
       log.push('a:start');
       await a.promise;
       log.push('a:end');
     });
-    const p2 = q.enqueue('order-2', async () => {
-      log.push('b:run');
-    });
+    const p2 = mb.post('order-2', 'u', async () => { log.push('b:run'); });
 
     await p2;
     assert.ok(log.includes('a:start'), 'order-1 work started');
@@ -938,53 +935,308 @@ describe('createWorkQueue', () => {
     await p1;
   });
 
-  it('a failure on key A does not block subsequent work for the same key', async () => {
-    const q = createWorkQueue();
+  it('a failure rejects its own callers but does not poison the key', async () => {
+    const mb = createOrderMailbox();
     const log = [];
 
-    const p1 = q.enqueue('order-1', async () => { throw new Error('boom'); });
-    // Attach a noop catch immediately so the rejection isn't unhandled.
-    p1.catch(() => {});
-    const p2 = q.enqueue('order-1', async () => { log.push('ran'); });
+    const p1 = mb.post('order-1', 'u', async () => { throw new Error('boom'); });
+    await assert.rejects(p1, /boom/);
+    const p2 = mb.post('order-1', 'u', async () => { log.push('ran'); });
 
     await p2;
-    assert.deepEqual(log, ['ran'], 'second enqueue must run despite first throwing');
+    await tick();
+    assert.deepEqual(log, ['ran'], 'later work must run after a failed pass');
+    assert.equal(mb.stats().keys, 0, 'key released once its mailbox drains');
   });
 
-  it('integrates with handleOrderUpdate-style ordering: partial then FILLED for same orderId resolves correctly', async () => {
-    // Models the real race: partial-fill update is in flight (awaiting
-    // the adapter); FILLED update arrives before partial finishes.
-    // Without serialization, FILLED would read the watermark before the
-    // partial advanced it, hit the empty-fills race, and never settle.
-    // With createWorkQueue, the FILLED handler runs only after partial
-    // completes — and reads the post-partial watermark.
-    const q = createWorkQueue();
-    const watermark = { value: 0 }; // shared "trackedOrder" state
+  it('partial then FILLED for the same order: FILLED observes the partial-advanced watermark', async () => {
+    const mb = createOrderMailbox();
+    const watermark = { value: 0 };
     const log = [];
     const partialFetchDone = deferred();
 
-    // Partial-fill work — represents ingestion that takes time
-    q.enqueue('order-1', async () => {
+    mb.post('order-1', 'update', async () => {
       log.push('partial:fetch');
       await partialFetchDone.promise;
-      watermark.value = 0.4; // partial advances watermark
+      watermark.value = 0.4;
       log.push('partial:done');
     });
-
-    // FILLED arrives before partial completes
-    const filledP = q.enqueue('order-1', async () => {
+    await tick();
+    const filledP = mb.post('order-1', 'filled-retry', async () => {
       log.push('filled:read-watermark');
-      // Without serialization this would see watermark=0; with it, sees 0.4
       assert.equal(watermark.value, 0.4, 'FILLED must observe partial-advanced watermark');
       log.push('filled:done');
     });
 
-    await new Promise(r => setImmediate(r));
+    await tick();
     assert.deepEqual(log, ['partial:fetch'], 'FILLED must wait for partial');
 
     partialFetchDone.resolve();
     await filledP;
     assert.deepEqual(log, ['partial:fetch', 'partial:done', 'filled:read-watermark', 'filled:done']);
+  });
+
+  it('coalesces a sustained burst for one key into one pending merged snapshot', async () => {
+    const mb = createOrderMailbox();
+    const hold = deferred();
+    const seen = [];
+    const run = async (payload) => { seen.push(payload); if (seen.length === 1) await hold.promise; };
+    const merge = (pending, next) => Math.max(pending, next);
+
+    const first = mb.post('order-1', 'update', run, { payload: 0 });
+    await tick(); // first pass is now awaiting
+    const before = pendingOrderWrites();
+
+    const promises = new Set();
+    for (let i = 1; i <= 20_000; i += 1) promises.add(mb.post('order-1', 'update', run, { payload: i, merge }));
+
+    assert.equal(promises.size, 1, 'every coalesced caller shares one promise');
+    assert.deepEqual(mb.stats(), { keys: 1, pendingSlots: 1, active: 1, ready: 0 },
+      'one active pass plus one pending snapshot, regardless of arrivals');
+    assert.equal(pendingOrderWrites(), before, 'no pending-write entry per arrival');
+
+    hold.resolve();
+    await first;
+    await [...promises][0];
+    assert.deepEqual(seen, [0, 20_000], 'exactly one further pass with the merged (highest) snapshot');
+    await tick();
+    assert.equal(mb.stats().keys, 0);
+  });
+
+  it('runs at most `concurrency` keys at once and lists each ready key once', async () => {
+    const mb = createOrderMailbox({ concurrency: 4 });
+    const hold = deferred();
+    let running = 0;
+    let peak = 0;
+    const run = async () => {
+      running += 1;
+      peak = Math.max(peak, running);
+      await hold.promise;
+      running -= 1;
+    };
+
+    const all = [];
+    for (let k = 0; k < 10; k += 1) {
+      for (let i = 0; i < 50; i += 1) all.push(mb.post(`order-${k}`, 'update', run, { payload: i, merge: (_p, n) => n }));
+    }
+    await tick();
+    assert.equal(running, 4, 'only four consumers start');
+    assert.deepEqual(mb.stats(), { keys: 10, pendingSlots: 6, active: 4, ready: 6 },
+      'six waiting keys, each listed once with one slot');
+
+    hold.resolve();
+    await Promise.all(all);
+    assert.equal(peak, 4, 'never more than four concurrent consumers');
+    await tick();
+    assert.equal(mb.stats().keys, 0);
+  });
+
+  it('keeps one pending slot per retry kind', async () => {
+    const mb = createOrderMailbox();
+    const hold = deferred();
+    const log = [];
+    mb.post('order-1', 'update', async () => { await hold.promise; });
+    await tick();
+    for (let i = 0; i < 1000; i += 1) mb.post('order-1', 'filled-retry', async () => { log.push(`retry-${i}`); });
+    assert.equal(mb.stats().pendingSlots, 1);
+    hold.resolve();
+    await mb.post('order-1', 'filled-retry', async () => { log.push('latest'); });
+    assert.deepEqual(log, ['latest'], 'only the latest retry work runs');
+  });
+
+  it('stop settles pending callers and the in-flight key, and later posts resolve immediately', async () => {
+    const mb = createOrderMailbox();
+    const hold = deferred();
+    let pendingRan = false;
+    const active = mb.post('order-1', 'update', async () => { await hold.promise; return 'done'; });
+    await tick();
+    const queued = mb.post('order-1', 'update', async () => { pendingRan = true; });
+    const otherHold = deferred();
+    const waiting = [];
+    for (let k = 0; k < 6; k += 1) waiting.push(mb.post(`order-w${k}`, 'update', async () => { await otherHold.promise; }));
+    await tick();
+
+    const joined = mb.stop();
+    assert.equal(await queued, undefined, 'pending caller resolves without running');
+    await Promise.all(waiting.slice(4)); // the two keys that never got a consumer
+    assert.equal(await mb.post('order-2', 'update', async () => { throw new Error('must not run'); }), undefined);
+
+    hold.resolve();
+    otherHold.resolve();
+    assert.equal(await active, 'done', 'in-flight work completes normally');
+    await joined;
+    assert.equal(pendingRan, false);
+    assert.equal(mb.stats().keys, 0, 'ownership of every key released');
+  });
+});
+
+describe('handleOrderUpdate under a feed burst (issue #1026)', () => {
+  const makeSvc = (getOrderFills) => {
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter({ getOrderFills });
+    const ledger = makeLedger();
+    svc._test.injectFillLedger(ledger);
+    svc._test.injectProductId('BTC-USDC');
+    const fills = [];
+    svc.setOnOrderFill(f => fills.push(f));
+    return { svc, ledger, fills };
+  };
+  const fill = (tradeId, orderId, size) => ({ tradeId, orderId, side: 'sell', price: 70000, size, totalCommission: 0.01 });
+
+  it('a held fetch plus 20,001 updates for one order retains constant work', async () => {
+    const release = deferred();
+    let fetches = 0;
+    const { svc, ledger } = makeSvc(async () => {
+      fetches += 1;
+      if (fetches === 1) {
+        await release.promise;
+        return [fill('t1', 'order-B', 0.1)];
+      }
+      return [fill('t1', 'order-B', 0.1), fill('t2', 'order-B', 0.2)];
+    });
+    svc.trackOrder('order-B', { type: 'take_profit', price: 70000, size: 1, placedAt: Date.now() });
+
+    const first = svc._test.handleOrderUpdate({ orderId: 'order-B', status: 'OPEN', filledSize: 0.1, averageFilledPrice: 70000, totalFees: 0.01 });
+    while (fetches === 0) await tick();
+    const before = pendingOrderWrites();
+
+    const callers = new Set();
+    for (let i = 0; i < 20_001; i += 1) {
+      callers.add(svc._test.handleOrderUpdate({
+        orderId: 'order-B', status: 'OPEN', filledSize: i === 20_000 ? 0.3 : 0.1, averageFilledPrice: 70000, totalFees: 0.01,
+      }));
+    }
+    await tick();
+    assert.equal(fetches, 1, 'one active REST fetch');
+    assert.equal(pendingOrderWrites(), before, 'pending writes do not grow with arrivals');
+    assert.equal(svc._test.orderMailbox.stats().pendingSlots, 1, 'one pending merged snapshot');
+
+    release.resolve();
+    await first;
+    await Promise.all(callers);
+    assert.equal(fetches, 2, 'exactly one further pass after the held fetch');
+    assert.deepEqual([...ledger.seen].sort(), ['t1', 't2'], 'larger cumulative from the burst was ingested');
+    await tick();
+    assert.equal(svc._test.orderMailbox.stats().keys, 0);
+    svc.stop();
+  });
+
+  it('a FILLED correction arriving during a fetch books once with the latest aggregates', async () => {
+    const release = deferred();
+    let fetches = 0;
+    const { svc, ledger, fills } = makeSvc(async () => {
+      fetches += 1;
+      if (fetches === 1) {
+        await release.promise;
+        return [fill('f1', 'order-F', 0.2)];
+      }
+      return [fill('f1', 'order-F', 0.2), fill('f2', 'order-F', 0.4)];
+    });
+    svc.trackOrder('order-F', { type: 'take_profit', price: 70000, size: 0.6, placedAt: Date.now() });
+
+    const first = svc._test.handleOrderUpdate({ orderId: 'order-F', status: 'OPEN', filledSize: 0.2, averageFilledPrice: 70000, totalFees: 0.02 });
+    while (fetches === 0) await tick();
+    const burst = [];
+    for (let i = 0; i < 5000; i += 1) {
+      burst.push(svc._test.handleOrderUpdate({ orderId: 'order-F', status: 'OPEN', filledSize: 0.2, averageFilledPrice: 70000, totalFees: 0.02 }));
+    }
+    burst.push(svc._test.handleOrderUpdate({ orderId: 'order-F', status: 'FILLED', filledSize: 0.6, averageFilledPrice: 70100, totalFees: 0.06 }));
+    // Trailing placeholder snapshots must not downgrade the terminal or its fee.
+    burst.push(svc._test.handleOrderUpdate({ orderId: 'order-F', status: 'FILLED', filledSize: 0.6, averageFilledPrice: 0, totalFees: 0 }));
+    burst.push(svc._test.handleOrderUpdate({ orderId: 'order-F', status: 'OPEN', filledSize: 0.6, averageFilledPrice: 0, totalFees: 0 }));
+
+    release.resolve();
+    await first;
+    await Promise.all(burst);
+    assert.equal(fills.length, 1, 'exactly one terminal callback');
+    assert.equal(fills[0].size, 0.6);
+    assert.equal(fills[0].price, 70100);
+    assert.equal(fills[0].fees, 0.06);
+    assert.equal(ledger.ingested.length, 2, 'each trade booked once');
+
+    // A late duplicate after finalize stays a no-op.
+    await svc._test.handleOrderUpdate({ orderId: 'order-F', status: 'FILLED', filledSize: 0.6, averageFilledPrice: 70100, totalFees: 0.06 });
+    assert.equal(fills.length, 1);
+    svc.stop();
+  });
+
+  it('a CANCELLED-then-reclassified FILLED during a fetch finalizes as a fill', async () => {
+    const release = deferred();
+    let fetches = 0;
+    const { svc, fills } = makeSvc(async () => {
+      fetches += 1;
+      if (fetches === 1) await release.promise;
+      return [fill('c1', 'order-C', 0.5)];
+    });
+    svc.trackOrder('order-C', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
+
+    const first = svc._test.handleOrderUpdate({ orderId: 'order-C', status: 'OPEN', filledSize: 0.1, averageFilledPrice: 70000, totalFees: 0.01 });
+    while (fetches === 0) await tick();
+    const a = svc._test.handleOrderUpdate({ orderId: 'order-C', status: 'CANCELLED', filledSize: 0.3, averageFilledPrice: 70000, totalFees: 0, completionPercentage: 60 });
+    const b = svc._test.handleOrderUpdate({ orderId: 'order-C', status: 'CANCELLED', filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0.05, completionPercentage: 100 });
+    const c = svc._test.handleOrderUpdate({ orderId: 'order-C', status: 'CANCELLED', filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0, completionPercentage: 60 });
+
+    release.resolve();
+    await Promise.all([first, a, b, c]);
+    assert.equal(fills.length, 1, 'reclassified fill fires once');
+    assert.equal(fills[0].size, 0.5);
+    assert.equal(fills[0].fees, 0.05);
+    svc.stop();
+  });
+
+  it('across many orders no more than four REST-backed consumers run at once', async () => {
+    const release = deferred();
+    let inFlight = 0;
+    let peak = 0;
+    const { svc, ledger } = makeSvc(async (orderId) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await release.promise;
+      inFlight -= 1;
+      return [fill(`m-${orderId}`, orderId, 0.1)];
+    });
+    const all = [];
+    for (let k = 0; k < 12; k += 1) {
+      svc.trackOrder(`order-M${k}`, { type: 'take_profit', price: 70000, size: 0.1, placedAt: Date.now() });
+    }
+    for (let i = 0; i < 100; i += 1) {
+      for (let k = 0; k < 12; k += 1) {
+        all.push(svc._test.handleOrderUpdate({ orderId: `order-M${k}`, status: 'OPEN', filledSize: 0.1, averageFilledPrice: 70000, totalFees: 0.01 }));
+      }
+    }
+    await tick();
+    await tick();
+    assert.equal(inFlight, ORDER_CONSUMER_CONCURRENCY);
+    assert.equal(svc._test.orderMailbox.stats().ready, 12 - ORDER_CONSUMER_CONCURRENCY, 'each waiting order listed once');
+
+    release.resolve();
+    await Promise.all(all);
+    assert.equal(peak, ORDER_CONSUMER_CONCURRENCY);
+    assert.equal(ledger.ingested.length, 12, 'every order ingested once');
+    svc.stop();
+  });
+
+  it('stop during a held fetch settles every caller and releases the order key', async () => {
+    const release = deferred();
+    let fetches = 0;
+    const { svc } = makeSvc(async () => {
+      fetches += 1;
+      await release.promise;
+      return [];
+    });
+    svc.trackOrder('order-S', { type: 'take_profit', price: 70000, size: 1, placedAt: Date.now() });
+    const first = svc._test.handleOrderUpdate({ orderId: 'order-S', status: 'OPEN', filledSize: 0.1, averageFilledPrice: 70000, totalFees: 0 });
+    while (fetches === 0) await tick();
+    const queued = svc._test.handleOrderUpdate({ orderId: 'order-S', status: 'FILLED', filledSize: 1, averageFilledPrice: 70000, totalFees: 0.1 });
+
+    svc.stop();
+    assert.equal(await queued, undefined, 'queued caller settles on stop');
+    release.resolve();
+    await first;
+    await tick();
+    assert.equal(fetches, 1, 'queued work never ran after stop');
+    assert.equal(svc._test.orderMailbox.stats().keys, 0);
+    assert.equal(getPendingWrites().filter(w => w.label === 'market-order:order-S').length, 0, 'ownership released');
   });
 });
 
@@ -1100,7 +1352,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     assert.equal(target.filledSize, 0.3, 'pre-populated with first call\'s filledSize');
 
     // Replayed CANCELLED with larger filledSize. Don't await — the
-    // replay queues behind the first call (work-queue serialization),
+    // replay queues behind the first call (order-mailbox serialization),
     // which is itself blocked on resolveFetch. We only need to verify
     // the synchronous prelude advances the target.
     svc._test.handleOrderUpdate({
@@ -2029,6 +2281,7 @@ describe('service.start() cold-start fill-ledger corruption', () => {
     // Restore in afterEach so a failed assertion mid-test can't leak the
     // module-level patch into later tests in this file/run.
     migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it('service.start() returns {success:false} on corrupt cold-start ledger instead of throwing', async () => {
@@ -2755,5 +3008,178 @@ describe('startMarketDataService stop-during-start cancellation (issue #415)', (
 
     mds.stopAllMarketDataServices();
     assert.equal(stopCount, 1, 'only one service was ever created');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Exclusive fill-ledger handover (issue #1008)
+// ---------------------------------------------------------------------------
+// The engine and this service each load their own ledger and every persist
+// replaces the whole file, so ownership must transfer without overlap. These
+// drive a real service over a real ledger in disposable storage: the fence
+// must join in-flight starts and order work before a replacement may load the
+// ledger, and a fresh service must recover fills from the handover gap.
+describe('fenceMarketDataService + handover gap recovery (issue #1008)', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const migration = require('../src/migration');
+  const MDS_PATH = require.resolve('../src/market-data-service');
+  const STUBBED = {
+    adapters: require.resolve('../src/adapters'),
+    wsFeed: require.resolve('../src/websocket-feed'),
+    stateTracker: require.resolve('../src/state-tracker'),
+    health: require.resolve('../src/health-monitor'),
+  };
+  const EXCHANGE = 'test-mds-1008';
+  const TP = 'tp-gap';
+  const originalDir = migration.getExchangeDataDir;
+
+  /** @type {Record<string, any>} */
+  let savedCache;
+  /** @type {any} */
+  let mds;
+  /** @type {any} */
+  let adapter;
+  /** @type {any} */
+  let feedConfig;
+  let root;
+
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const gate = () => {
+    /** @type {() => void} */
+    let open = () => {};
+    const promise = new Promise((resolve) => { open = /** @type {any} */ (resolve); });
+    return { promise, open };
+  };
+  const openLedger = () => require('../src/fill-ledger').createFillLedger(EXCHANGE, 'BTC-USDC', undefined, { quiet: true });
+  const tradeIdsOnDisk = () => openLedger().getAllFills().map((f) => f.tradeId).sort();
+  const filled = { orderId: TP, status: 'FILLED', filledSize: 1, averageFilledPrice: 110, totalFees: 0.1, completionPercentage: 100 };
+  const tpFill = { tradeId: 'G1', orderId: TP, side: 'sell', price: 110, size: 1, totalCommission: 0.1 };
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'mds-1008-'));
+    migration.getExchangeDataDir = (exchange) => {
+      const dir = path.join(root, exchange);
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    };
+    openLedger().ingestFill({ tradeId: 'A', orderId: 'buy-a', side: 'buy', price: 100, size: 1, totalCommission: 0.1 });
+
+    savedCache = {};
+    for (const p of [...Object.values(STUBBED), MDS_PATH]) savedCache[p] = require.cache[p];
+    feedConfig = null;
+    adapter = {
+      loadCredentials: () => ({ apiKey: 'k', apiSecret: 's' }),
+      getCandles: async () => [],
+      getOrder: async () => ({ ...filled, status: 'OPEN', filledSize: 0, completionPercentage: 0 }),
+      getOrderFills: async () => [],
+    };
+    const realAdapters = require('../src/adapters');
+    const realHealth = require('../src/health-monitor');
+    /** @param {string} p @param {any} exports */
+    const stub = (p, exports) => { require.cache[p] = /** @type {any} */ ({ id: p, filename: p, loaded: true, exports }); };
+    stub(STUBBED.adapters, { ...realAdapters, isSupported: () => true, getAdapter: () => adapter });
+    stub(STUBBED.health, { ...realHealth, instrumentAdapterForHealth: (/** @type {any} */ a) => a });
+    stub(STUBBED.wsFeed, { createWebSocketFeed: (/** @type {any} */ _exchange, /** @type {any} */ config) => {
+      feedConfig = config;
+      return { connect: () => {}, disconnect: () => {} };
+    } });
+    stub(STUBBED.stateTracker, { loadRegimeState: () => ({
+      position: { celestialBodies: [{ id: 'body-1', tpOrderId: TP, tpPrice: 110, assetOnOrder: 1 }] },
+    }) });
+    delete require.cache[MDS_PATH];
+    mds = require('../src/market-data-service');
+  });
+
+  afterEach(async () => {
+    await mds.fenceMarketDataService(EXCHANGE, undefined, 1000);
+    for (const [p, entry] of Object.entries(savedCache)) {
+      if (entry) require.cache[p] = entry;
+      else delete require.cache[p];
+    }
+    migration.getExchangeDataDir = originalDir;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('recovers a fill that executed between owners exactly once, even when the feed replays it', async () => {
+    adapter.getOrder = async () => filled;
+    adapter.getOrderFills = async () => [tpFill];
+
+    const result = await mds.startMarketDataService(EXCHANGE);
+
+    assert.equal(result.success, true);
+    assert.deepEqual(result.gapRecovery, { checked: 1, failed: [] });
+    assert.deepEqual(tradeIdsOnDisk(), ['A', 'G1'], 'gap fill booked before the transfer is reported complete');
+
+    await feedConfig.onOrderUpdate(filled);
+    assert.deepEqual(tradeIdsOnDisk(), ['A', 'G1'], 'no duplicate booking from the replay');
+  });
+
+  it('reports orders it could not confirm without failing the start', async () => {
+    adapter.getOrder = async () => { throw new Error('API 503'); };
+
+    const result = await mds.startMarketDataService(EXCHANGE);
+
+    assert.equal(result.success, true);
+    assert.deepEqual(result.gapRecovery, { checked: 0, failed: [TP] });
+  });
+
+  it('fence joins order work already in flight and leaves the ledger to the next owner', async () => {
+    assert.equal((await mds.startMarketDataService(EXCHANGE)).success, true);
+    const fetch = gate();
+    adapter.getOrderFills = async () => { await fetch.promise; return [tpFill]; };
+    const accepted = feedConfig.onOrderUpdate(filled);
+    await settle();
+
+    let fenced = false;
+    const fence = mds.fenceMarketDataService(EXCHANGE).then((r) => { fenced = true; return r; });
+    await settle();
+    assert.equal(fenced, false, 'a replacement may not load the ledger while the fetch is in flight');
+    assert.equal(mds.getMarketDataService(EXCHANGE), undefined, 'no longer reachable as the fund consumer');
+
+    fetch.open();
+    await accepted;
+    assert.deepEqual(await fence, { drained: true });
+
+    // The replacement owner writes; nothing from the fenced service follows.
+    const next = openLedger();
+    next.ingestFill({ tradeId: 'E', orderId: 'buy-e', side: 'buy', price: 100, size: 1, totalCommission: 0.1 });
+    await settle();
+    assert.deepEqual(tradeIdsOnDisk(), ['A', 'E']);
+  });
+
+  it('fence reports drained:false when the in-flight work does not settle in time', async () => {
+    assert.equal((await mds.startMarketDataService(EXCHANGE)).success, true);
+    const fetch = gate();
+    adapter.getOrderFills = async () => { await fetch.promise; return []; };
+    const accepted = feedConfig.onOrderUpdate(filled);
+    await settle();
+
+    assert.deepEqual(await mds.fenceMarketDataService(EXCHANGE, undefined, 20), { drained: false });
+
+    fetch.open();
+    await accepted;
+  });
+
+  it('fence joins a start still connecting, so it never recovers the gap or registers', async () => {
+    const candles = gate();
+    let lookups = 0;
+    adapter.getCandles = async () => { await candles.promise; return []; };
+    adapter.getOrder = async () => { lookups += 1; return filled; };
+    const started = mds.startMarketDataService(EXCHANGE);
+    await settle();
+
+    let fenced = false;
+    const fence = mds.fenceMarketDataService(EXCHANGE).then((r) => { fenced = true; return r; });
+    await settle();
+    assert.equal(fenced, false, 'the start must settle before a replacement may load');
+
+    candles.open();
+    assert.deepEqual(await started, { success: false, error: 'stopped during start' });
+    assert.deepEqual(await fence, { drained: true });
+    assert.equal(lookups, 0, 'a fenced service runs no gap recovery');
+    assert.equal(mds.getMarketDataService(EXCHANGE), undefined);
+    assert.deepEqual(tradeIdsOnDisk(), ['A']);
   });
 });

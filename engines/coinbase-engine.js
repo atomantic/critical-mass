@@ -35,6 +35,7 @@ const {
   stopAllMarketDataServices,
   getMarketDataService,
   stopMarketDataService,
+  fenceMarketDataService,
 } = require('../src/market-data-service');
 const { getChartDataBuffer, getChartData, removeChartDataBuffer, shutdownAllBuffers, resumeAllBuffers } = require('../src/chart-data-buffer');
 const { createFillLedger } = require('../src/fill-ledger');
@@ -205,8 +206,9 @@ const createEngineCallbacks = (exchange, pair) => ({
 // Regime engine control — regime:start / regime:stop
 // Extracted to src/engine-lifecycle-handlers.js (issue #504) so the
 // fill-consumer handover ordering around engine stop/start can be tested
-// directly against these production callbacks.
-const { startFund, autoResumeFund, getStartStatus, cancelStarts } = registerEngineLifecycleHandlers(ipcServer, {
+// directly against these production callbacks. Ledger ownership transfers
+// exclusively between the engine and the standalone service (issue #1008).
+const { autoResumeFund, resumeAfterBackup, getStartStatus, cancelStarts, settleStarts } = registerEngineLifecycleHandlers(ipcServer, {
   regimeEngines,
   resolvePair,
   fundKey,
@@ -219,7 +221,7 @@ const { startFund, autoResumeFund, getStartStatus, cancelStarts } = registerEngi
   createRegimeEngine,
   createEngineCallbacks,
   startMarketDataService,
-  stopMarketDataService,
+  fenceMarketDataService,
   wireMarketDataCallbacks,
   invalidateStandaloneLedger,
   saveRegimeRunningFlag,
@@ -545,7 +547,8 @@ ipcServer.onRequest('regime:dry-run-state', async (payload, exchange, pair) => {
 registerEngineBackupHandlers(ipcServer, {
   regimeEngines, getMarketFunds: getActiveMarketDataFunds,
   stopMarketServices: stopAllMarketDataServices, drainMarketStarts: drainMarketDataStarts,
-  drainPendingWrites, startMarketService: startMarketDataService, startFund,
+  drainPendingWrites, startMarketService: startMarketDataService,
+  resumeFund: resumeAfterBackup, getStartStatus, drainStarts: settleStarts,
   pauseBuffers: shutdownAllBuffers, resumeBuffers: resumeAllBuffers,
   logger: engineLogger(EXCHANGE_NAME),
 });
@@ -622,7 +625,7 @@ const getManualTradeStore = (exchange, pair) => {
  * src/manual-trade-import.js; this resolves the fund's live dependencies.
  * Throws on cold-start ledger corruption (via getActiveLedger) — callers
  * convert that into the structured {success:false} IPC response.
- * @returns {Object} importSell / importBuy / importPair / checkPendingBuy
+ * @returns {Object} importSell / importBuy / importPair / checkPendingBuy / retryRecovery
  */
 const getManualTradeImporter = (exchange, resolvedPair) => {
   const { getAdapter } = require('../src/adapters');
@@ -643,7 +646,7 @@ const getManualTradeImporter = (exchange, resolvedPair) => {
 /**
  * Wire an IPC manual-trade request to one importer method.
  * @param {string} channel - IPC request channel
- * @param {'importSell'|'importBuy'|'importPair'|'checkPendingBuy'} method
+ * @param {'importSell'|'importBuy'|'importPair'|'checkPendingBuy'|'retryRecovery'} method
  */
 const wireManualTradeImport = (channel, method) => {
   ipcServer.onRequest(channel, async (payload, exchange, pair) => {
@@ -712,6 +715,7 @@ ipcServer.onRequest('regime:manual-trades', async (payload, exchange, pair) => {
 // effects). These handlers only resolve the fund and delegate.
 wireManualTradeImport('regime:manual-trade', 'importSell');
 wireManualTradeImport('regime:manual-trade-check', 'checkPendingBuy');
+wireManualTradeImport('regime:manual-trade-retry', 'retryRecovery');
 wireManualTradeImport('regime:manual-trade-buy', 'importBuy');
 wireManualTradeImport('regime:manual-trade-pair', 'importPair');
 

@@ -470,6 +470,17 @@ module.exports = (app, deps) => {
     res.json(result);
   });
 
+  // Continue a sell-first recovery whose buy is confirmed terminal (issue
+  // #1034): place a buy for the uncovered remainder, or link a replacement.
+  app.post('/api/:exchange/regime/manual-trade/:tradeId/retry', async (req, res) => {
+    const { exchange, tradeId } = req.params;
+    const pair = getFundPair(req);
+    const { recoveryBuyPrice, existingBuyOrderId } = req.body || {};
+    const result = await getIPC(exchange).request('regime:manual-trade-retry', { tradeId, recoveryBuyPrice, existingBuyOrderId }, exchange, pair).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
   app.post('/api/:exchange/regime/manual-trade-buy', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);

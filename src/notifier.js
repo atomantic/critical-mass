@@ -240,7 +240,10 @@ const createNotifier = () => {
     // event.exchange is an internal identifier (e.g. "coinbase"), not
     // user/feed-derived text, so it's safe to wrap in bold unescaped.
     const exchange = event.exchange ? `*${event.exchange}*` : '';
-    const lines = [`${emoji} ${exchange}`];
+    // Regime events carry their fund pair so a multi-fund exchange's alert
+    // names the fund it is about (issue #1030).
+    const pair = typeof event.data?.pair === 'string' ? ` ${escapeTelegramMarkdown(event.data.pair)}` : '';
+    const lines = [`${emoji} ${exchange}${pair}`];
     lines.push(escapeTelegramMarkdown(event.message));
     return lines.join('\n');
   };
