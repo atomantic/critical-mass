@@ -6,9 +6,10 @@
  * ordering these two handlers enforce can be exercised directly against the
  * real production callbacks instead of only through HTTP-proxy tests (which
  * stub IPC) or isolated service tests (which never invoke these handlers at
- * all). Automatic and manual starts share the same supervision and cleanup;
- * dependencies are injected so `regime:start`/`regime:stop` for other
- * exchange processes (gemini, cryptocom) keep working unmodified.
+ * all). Automatic and manual starts share the same supervision and cleanup.
+ * engines/coinbase-engine.js is the only production registration: the gemini
+ * and cryptocom engine processes are thin wrappers that set EXCHANGE_NAME and
+ * load it, so every exchange gets the same injected dependencies.
  *
  * Fill-ledger ownership is exclusive (issue #1008). Each consumer loads its
  * own in-memory ledger and every persist replaces the whole file, so two
