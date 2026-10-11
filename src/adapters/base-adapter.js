@@ -99,8 +99,8 @@ const REQUIRED_METHODS = [
 
 /**
  * Build the ambiguous-placement error every adapter throws when an order POST
- * fails in transport (socket reset, timeout, abort) or when its response cannot
- * be decoded. In both cases the exchange may ALREADY hold the order, so the
+ * fails in transport (socket reset, timeout, abort), returns a server error,
+ * or has an undecodable response. The exchange may ALREADY hold the order, so the
  * outcome is UNKNOWN — never a clean failure and never safe to blind-retry.
  *
  * `clientOrderId` is the deterministic id the adapter sent with the placement:

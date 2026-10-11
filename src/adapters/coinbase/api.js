@@ -186,6 +186,15 @@ const createCoinbaseAdapter = (keysPath = null) => {
         });
 
         if (!response.ok) {
+          // A server/gateway failure is not proof that the matching engine
+          // rejected the order. Reconcile the sent id instead of releasing
+          // its intent and allowing the next cycle to submit another order.
+          if (method === 'POST' && isOrderPlacementEndpoint(apiPath) && response.status >= 500) {
+            // We do not need the error body; abort it before finally clears
+            // the deadline so a stalled body cannot retain the connection.
+            controller.abort();
+            throw createAmbiguousPlacementError('Coinbase', `${method} ${apiPath.split('?')[0]}`, data?.client_order_id, `HTTP ${response.status}`);
+          }
           const errData = await response.json().catch(() => ({}));
           const message = errData.message || errData.error_details || response.statusText;
           const errorData = errData.error || '';
@@ -211,8 +220,8 @@ const createCoinbaseAdapter = (keysPath = null) => {
       } catch (err) {
         lastError = err;
         // Already-classified outcomes must propagate untouched: a definitive
-        // HTTP rejection (numeric status — the exchange read the request and
-        // refused it) and an ambiguous placement outcome (unknownOutcome —
+        // HTTP client rejection (numeric status) and an ambiguous placement
+        // outcome (unknownOutcome —
         // thrown above for exactly this attempt, never retried) both bypass
         // the network-error classification below.
         if (typeof lastError.status === 'number' || lastError.unknownOutcome) {

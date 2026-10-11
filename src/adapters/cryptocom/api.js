@@ -173,6 +173,11 @@ const createCryptocomAdapter = (keysPath = null) => {
     clearTimeout(timeout);
 
     if (!response.ok) {
+      // A 5xx may originate after the order reached the matching engine.
+      // Preserve the client id so the owner reconciles before placing again.
+      if (method === ORDER_PLACEMENT_METHOD && response.status >= 500) {
+        throw createAmbiguousPlacementError('Crypto.com', method, params?.client_oid, `HTTP ${response.status}`);
+      }
       let errData;
       try { errData = safeParseBigInt(rawText); } catch { errData = {}; }
       const detail = errData?.message || errData?.description || '';
