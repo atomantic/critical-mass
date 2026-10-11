@@ -18,7 +18,6 @@ const matchedPairs = [
   { buyOrderId: "796eea49-0d67-49a1-a422-2e06f388ca56", sellOrderId: "14e7f0b1-2c63-4e60-b70c-d16465adcce7", note: "Manual flip 0.5 BTC Jan" },
   { buyOrderId: "ccbca736-d7fc-4437-ae84-f1db33b62f12", sellOrderId: "1d90f021-774a-42bd-bafd-37564fde7984", note: "Manual flip 1 BTC Feb" },
   { buyOrderId: "d2147728-ec1d-49d6-a904-a87b938b2747", sellOrderId: "6ef9ffed-57c4-4a05-ad11-b7e21f3830b2", note: "Manual flip 1 BTC Feb→Apr" },
-  { buyOrderId: "c01cd924-6bda-46a4-8d67-296c6979921e", sellOrderId: "268e53b4-0e5e-453b-8225-ed367748c0d3", note: "Manual flip 1 BTC Feb" },
   { buyOrderId: "c91e1270-c824-42a4-8ed9-70712afdde5d", sellOrderId: "61cb06fc-f182-493d-b36a-edff42f9402d", note: "Manual flip 1 BTC Feb" },
   { buyOrderId: "a5e6b114-edba-4077-bf6b-03e0e5651329", sellOrderId: "232ef7ab-e3dd-476a-be41-38ad63f8a3e9", note: "Manual flip 1 BTC Feb→Mar" },
   { buyOrderId: "e3e89832-4f00-42cd-acdc-4c8742ddbd64", sellOrderId: "bfc05fd2-e9a6-48bc-9c8b-859594e03f97", note: "Manual flip 1 BTC Feb" },
