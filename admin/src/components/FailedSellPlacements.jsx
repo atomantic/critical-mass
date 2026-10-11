@@ -26,6 +26,7 @@ function FailedSellPlacements({ failedSells = [], placementIntents = [], baseCur
       {blockingIntents.length > 0 && (
         <div className="mb-3 p-2 rounded bg-yellow-900/40 border border-yellow-700 text-xs text-yellow-200 space-y-1" data-testid="failed-sell-blocked">
           <div className="font-semibold">Retry is blocked: an earlier placement outcome on this fund is unknown.</div>
+          <a href="#dca-placement-recovery" className="underline">Resolve the blocked placement above</a>
           {blockingIntents.map(intent => (
             <div key={intent.id} className="break-words">
               Intent <span className="font-mono">{intent.id}</span>

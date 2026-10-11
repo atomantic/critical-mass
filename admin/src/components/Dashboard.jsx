@@ -1,11 +1,13 @@
 import { getIntervalMs } from '../utils/intervals.mjs'
-import { useState, useEffect, useCallback, useId } from 'react'
+import { useState, useEffect, useCallback, useId, useRef } from 'react'
 import ActivityFeed from './ActivityFeed'
 import FailedSellPlacements from './FailedSellPlacements'
+import DcaPlacementRecovery from './DcaPlacementRecovery'
 import { useToast } from './Toast'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
+import { createRequestOwner } from '../utils/requestOwner.mjs'
 import { runDashboardAction } from '../utils/dashboardAction.mjs'
 
 function ToggleSwitch({ label, checked, onChange, disabled, colorOn = 'bg-green-500', colorOff = 'bg-gray-600' }) {
@@ -86,21 +88,24 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const [retryingBuyId, setRetryingBuyId] = useState(null)
   const { addToast } = useToast()
   const pairQuery = buildPairQuery(pair)
+  const liveOwnerRef = useRef(null)
+  if (!liveOwnerRef.current) liveOwnerRef.current = createRequestOwner()
 
   // The live status read is the authoritative DCA state.json view: failed sell
   // placements come from here alongside current exchange balances and price.
   const fetchLive = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/status${pairQuery}`)
-    if (res.ok) {
-      const data = await res.json()
-      setLiveData(data)
-    }
+    const { owned, data } = await liveOwnerRef.current.read(`/api/${exchange}/status${pairQuery}`)
+    if (owned && data) setLiveData(data)
+    return Boolean(owned && data)
   }, [exchange, pairQuery])
 
   useEffect(() => {
     fetchLive()
     const interval = setInterval(fetchLive, 10000)
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      liveOwnerRef.current.invalidate()
+    }
   }, [fetchLive])
 
   // Live countdown timer
@@ -257,6 +262,15 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
     <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 overflow-hidden">
       {/* Main Content Column */}
       <div className="flex-1 space-y-4 min-w-0">
+        <DcaPlacementRecovery
+          intents={liveData?.placementIntents}
+          exchange={exchange}
+          pair={pair}
+          onResolved={async (data) => {
+            setLiveData(previous => ({ ...previous, placementIntents: data.placementIntents }))
+            if (!await fetchLive()) throw new Error('Status unavailable')
+          }}
+        />
         {/* Live Price Banner + Controls */}
         <div className="bg-gray-800 rounded-lg p-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">

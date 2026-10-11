@@ -28,6 +28,8 @@ before(async () => {
       '../utils/intervals.mjs': { getIntervalMs: () => 86400000 },
       './ActivityFeed': () => null,
       './FailedSellPlacements': () => null,
+      './DcaPlacementRecovery': () => null,
+      '../utils/requestOwner.mjs': { createRequestOwner: () => ({}) },
       './Toast': { useToast: () => ({ addToast() {} }) },
       './charts/chartUtils': { formatCurrency: n => `$${n.toFixed(2)}`, formatPrice: String, formatAsset: String },
       '../App': { getBaseCurrency: () => 'ETH', getQuoteCurrency: () => 'USDC' },
