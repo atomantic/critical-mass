@@ -3,6 +3,11 @@
 const { computeFillsWithPnL } = require('../shared/transactions-regime-pnl.mjs');
 const { sortFills, summarizeFills, paginate } = require('../shared/transactions-regime-page.mjs');
 
+// Page rows contain only table fields. Ledger ownership annotations and raw
+// exchange records remain server-side; accounting still uses the full ledger.
+const PAGE_FIELDS = ['tradeId', 'orderId', 'timestamp', 'cycleId', 'side', 'size', 'price', 'quoteAmount', 'fee', 'netFee', 'pnl', 'holdbackAsset', 'holdbackValue', 'avgCost'];
+const projectPageRow = row => Object.fromEntries(PAGE_FIELDS.filter(key => key in row).map(key => [key, row[key]]));
+
 const SORT_FIELDS = new Set(['timestamp', 'cycleId', 'side', 'size', 'price', 'quoteAmount', 'fee', 'holdbackAsset', 'pnl']);
 const badQuery = error => ({ success: false, statusCode: 400, error });
 
@@ -68,7 +73,7 @@ function createTransactionsReadView(readFills, readRevision) {
         queries.set(key, result);
       }
       const { rows, ...pageInfo } = paginate(result.rows, query.page, query.pageSize);
-      return { fills: rows.map(row => ({ ...row })), pageInfo, summary: { ...result.summary }, cycleIds: [...snapshot.cycleIds], revision };
+      return { fills: rows.map(projectPageRow), pageInfo, summary: { ...result.summary }, cycleIds: [...snapshot.cycleIds], revision };
     },
     getRecomputeCount: () => recomputations,
   };
