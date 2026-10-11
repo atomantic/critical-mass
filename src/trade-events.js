@@ -102,6 +102,8 @@ class TradeEventEmitter extends EventEmitter {
   // ============================================================================
   // Regime Engine Events
   // ============================================================================
+  // The trailing `extra` argument carries fund identity (e.g. `{ pair }`) so a
+  // multi-fund exchange's notifications say which fund they are about.
 
   regimeChange(exchange, prevMode, newMode, reason) {
     this.emitTradeEvent('regime_change', exchange,
@@ -151,10 +153,10 @@ class TradeEventEmitter extends EventEmitter {
       { delta, multiple });
   }
 
-  spreadPause(exchange, spreadBps, threshold) {
+  spreadPause(exchange, spreadBps, threshold, extra = {}) {
     this.emitTradeEvent('spread_pause', exchange,
       `Spread pause: ${spreadBps.toFixed(1)} bps > ${threshold} bps`,
-      { spreadBps, threshold });
+      { ...extra, spreadBps, threshold });
   }
 
   depthPause(exchange, depth, threshold) {
@@ -163,34 +165,34 @@ class TradeEventEmitter extends EventEmitter {
       { depth, threshold });
   }
 
-  safeMode(exchange, reason) {
+  safeMode(exchange, reason, extra = {}) {
     this.emitTradeEvent('safe_mode', exchange,
       `SAFE mode: ${reason}`,
-      { reason });
+      { ...extra, reason });
   }
 
-  activeMode(exchange) {
+  activeMode(exchange, extra = {}) {
     this.emitTradeEvent('active_mode', exchange,
       'Returned to ACTIVE mode',
-      {});
+      { ...extra });
   }
 
-  capReached(exchange, capType, current, limit) {
+  capReached(exchange, capType, current, limit, extra = {}) {
     this.emitTradeEvent('cap_reached', exchange,
       `${capType} cap reached: ${current}/${limit}`,
-      { capType, current, limit });
+      { ...extra, capType, current, limit });
   }
 
-  cycleReset(exchange, cyclesCompleted, realizedPnL) {
+  cycleReset(exchange, cyclesCompleted, realizedPnL, extra = {}) {
     this.emitTradeEvent('cycle_reset', exchange,
       `Cycle reset (${cyclesCompleted} completed, $${realizedPnL.toFixed(2)} realized)`,
-      { cyclesCompleted, realizedPnL });
+      { ...extra, cyclesCompleted, realizedPnL });
   }
 
-  regimeHourlySummary(exchange, regime, entries, exposure, drawdown) {
+  regimeHourlySummary(exchange, regime, entries, exposure, drawdown, extra = {}) {
     this.emitTradeEvent('regime_hourly', exchange,
       `Hour: regime=${regime} entries=${entries} exposure=${exposure} drawdown=${drawdown}%`,
-      { regime, entries, exposure, drawdown });
+      { ...extra, regime, entries, exposure, drawdown });
   }
 }
 

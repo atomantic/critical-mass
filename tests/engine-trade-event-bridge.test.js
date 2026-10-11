@@ -113,3 +113,23 @@ it('keeps non-trade IPC events on their existing global or room destinations', (
     { room: 'coinbase', channel: 'coinbase:book', payload: { bids: [] } },
   ]);
 });
+
+it('carries regime notification events across IPC with their exchange and pair (issue #1030)', () => {
+  const engineEvents = new TradeEventEmitter();
+  const frames = [];
+  const stop = forwardTradeEvents({ broadcast: (channel, payload) => frames.push({ channel, payload }) }, engineEvents);
+  engineEvents.safeMode('coinbase', 'ws_disconnected', { pair: 'ETH-USDC' });
+  engineEvents.capReached('coinbase', 'USDC', 1050, 1000, { pair: 'ETH-USDC' });
+  stop();
+
+  const gatewayBus = new TradeEventEmitter();
+  const delivered = [];
+  gatewayBus.on('trade', (event) => delivered.push(event));
+  const io = { emit: () => assert.fail('trade events must ride the gateway bus'), to: () => assert.fail('no room') };
+  for (const frame of frames) forwardIPCEvent(io, { channel: frame.channel, payload: frame.payload }, gatewayBus);
+
+  assert.deepEqual(delivered.map(e => [e.type, e.exchange, e.data.pair]), [
+    ['safe_mode', 'coinbase', 'ETH-USDC'],
+    ['cap_reached', 'coinbase', 'ETH-USDC'],
+  ]);
+});

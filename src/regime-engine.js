@@ -65,6 +65,17 @@ const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
 
 /** Interval between periodic metrics/regime-classification updates (ms) */
 const METRICS_INTERVAL_MS = 60000;
+const HOURLY_SUMMARY_EVENT_MS = 60 * 60 * 1000;
+
+/**
+ * Risk-manager block-reason prefixes that are cap conditions, mapped to the
+ * label a cap_reached notification shows. Drawdown pauses are not caps.
+ */
+const CAP_ALERT_LABELS = {
+  asset_cap_exceeded: 'Asset',
+  usdc_cap_exceeded: 'USDC',
+  cycle_buys_limit_reached: 'Cycle buys',
+};
 // How often a fund that is blocked by an unresolved placement intent repeats
 // the reason in its log (the guard itself is evaluated on every tick).
 const PLACEMENT_BLOCK_LOG_INTERVAL_MS = 60_000;
@@ -914,22 +925,36 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     timestamp: summary.lastTimestamp || Date.now(),
     cycleId: summary.cycleId ?? fillLedger.getCurrentCycleId(),
   });
+  // Fund identity stamped on the notifier-facing events below (issue #1030),
+  // so an exchange with several funds says which one tripped.
+  const fundEventData = { pair };
   const healthMonitor = createHealthMonitor(exchange, config, {
-    onSafeMode: (reason) => trackPendingWrite(`engine-safe-mode:${fundLabel}`, async () => {
-      logger.warn(`⚠️ [${exchange}] SAFE mode: ${reason}`, { reason });
-      // A disk fault is not an exchange fault (issue #532): the intervention is
-      // to stop opening NEW entries (canPlaceEntry blocks them in SAFE), not to
-      // cancel orders that are already resting. Pulling them because a write
-      // failed would turn an unpersistable-state fault into an
-      // unmanaged-position fault, which is strictly worse.
-      if (!isPersistenceOnlySafeReason(reason)) {
-        await orderExecutor.cancelAllEntries();
-      }
-      if (callbacks.onHealthChange) {
-        callbacks.onHealthChange('SAFE', reason);
-      }
-    }),
+    onSafeMode: (reason) => {
+      // Publish BEFORE the cancel sweep starts: a slow or rejected cancel must
+      // never delay or swallow the operator's SAFE warning (issue #1030).
+      tradeEvents.safeMode(exchange, reason, fundEventData);
+      return trackPendingWrite(`engine-safe-mode:${fundLabel}`, async () => {
+        logger.warn(`⚠️ [${exchange}] SAFE mode: ${reason}`, { reason });
+        // A disk fault is not an exchange fault (issue #532): the intervention is
+        // to stop opening NEW entries (canPlaceEntry blocks them in SAFE), not to
+        // cancel orders that are already resting. Pulling them because a write
+        // failed would turn an unpersistable-state fault into an
+        // unmanaged-position fault, which is strictly worse.
+        if (!isPersistenceOnlySafeReason(reason)) {
+          // A failed sweep is logged rather than thrown: the health monitor
+          // never awaits this callback, so a rejection would go unhandled, and
+          // the dashboard still has to hear about the SAFE transition.
+          await orderExecutor.cancelAllEntries().catch((err) => logger.error(
+            `❌ [${exchange}] SAFE-mode entry cancel failed: ${err.message}`, { error: err.message, reason }
+          ));
+        }
+        if (callbacks.onHealthChange) {
+          callbacks.onHealthChange('SAFE', reason);
+        }
+      });
+    },
     onActiveMode: () => {
+      tradeEvents.activeMode(exchange, fundEventData);
       if (callbacks.onHealthChange) {
         callbacks.onHealthChange('ACTIVE', null);
       }
@@ -957,6 +982,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const tailEvents = createTailEventsMonitor(exchange, config, {
     onFlashMove: (delta, multiple) => {
       tradeEvents.emitTradeEvent('flash_move', exchange, `Flash move: ${multiple.toFixed(1)}x ATR`, { delta, multiple });
+    },
+    // Fired once per pause entry; a breach during an active pause is a no-op.
+    onSpreadPause: (spreadBps, maxSpreadBps) => {
+      tradeEvents.spreadPause(exchange, spreadBps, maxSpreadBps, fundEventData);
     },
     onRegimeTransition: (newMode, reason) => {
       regimeDetector.forceTransition(newMode, reason);
@@ -987,6 +1016,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let usdcCapWarningLogged = false;
   // Track if budget exhausted warning has been logged (to avoid log spam)
   let budgetExhaustedWarningLogged = false;
+  // Cap types (CAP_ALERT_LABELS keys) currently blocking entries and already
+  // announced as cap_reached. A type leaves the set as soon as an entry check
+  // no longer reports it, so re-entering that cap alerts again (issue #1030).
+  let announcedCaps = new Set();
+  // Notifications advertise an HOURLY summary; the summary log itself runs on
+  // every metrics tick, so the event is throttled separately.
+  let lastHourlySummaryEventAt = Date.now();
   // Guard against concurrent ATH backfill requests
   let athUpdateInProgress = false;
 
@@ -6938,6 +6974,30 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Publish cap_reached once per cap-block episode (issue #1030). The risk
+   * manager re-evaluates every cap on each entry check, so `reason` (its
+   * comma-joined block reasons, '' when allowed) is the complete set of caps
+   * blocking right now: a newly present cap alerts, and a cap that cleared is
+   * forgotten so hitting it again later alerts again.
+   * @param {string} reason
+   */
+  const announceCapTransitions = (reason) => {
+    const blocking = new Map();
+    for (const part of reason.split(',')) {
+      const match = part.trim().match(/^(\w+):(.+?)>=?(.+)$/);
+      if (match && CAP_ALERT_LABELS[match[1]]) {
+        blocking.set(match[1], { current: Number(match[2]), limit: Number(match[3]) });
+      }
+    }
+    for (const [capKey, { current, limit }] of blocking) {
+      if (!announcedCaps.has(capKey)) {
+        tradeEvents.capReached(exchange, CAP_ALERT_LABELS[capKey], current, limit, fundEventData);
+      }
+    }
+    announcedCaps = new Set(blocking.keys());
+  };
+
+  /**
    * Execute entry
    * @param {string} triggerType - What triggered the entry
    * @param {() => boolean} isAdmitted - Entry admission captured when the evaluation began (#1009)
@@ -6981,6 +7041,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.cycleBuys = 0;
       cycleBuysLimitWarningLogged = false;
     }
+
+    announceCapTransitions(riskCheck.allowed ? '' : riskCheck.reason);
 
     if (!riskCheck.allowed) {
       // Only log certain warnings once until they reset (to avoid log spam)
@@ -7644,6 +7706,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     cycleBuysLimitWarningLogged = false;
     usdcCapWarningLogged = false;
     budgetExhaustedWarningLogged = false;
+    announcedCaps = new Set();
     // Reset the low-balance pause throttle on cycle reset too (not only on the
     // funded-entry path): an earlier guard (risk/budget) can return before the
     // balance preflight, so without this a recovered-then-redrained wallet could
@@ -7712,6 +7775,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const bodyCount = bodies.length;
     const bodyLabel = bodyCount > 0 ? `, ${bodyCount} celestial bodies preserved` : '';
     logger.info(`🔄 [${exchange}] Cycle reset, starting new cycle${bodyLabel}`);
+    // Only a reset that actually turned the cycle over reaches here — the
+    // stale/duplicate queued resets returned above without announcing.
+    tradeEvents.cycleReset(exchange, positionState.cyclesCompleted, positionState.realizedPnL || 0, {
+      ...fundEventData,
+      resetKind,
+      closedCycleId: closingCycleId,
+      cycleId: positionState.activeCycleId,
+    });
 
     // If the fund is draining, this cycle's TP fill is the trigger to close.
     // Defer the engine stop to next tick so the current call stack
@@ -7749,6 +7820,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       `exposure=${riskSummary} ` +
       `atr=${fmtPrice(marketState.atr1m)} vol=${marketState.realizedVol.toFixed(2)}%`
     );
+
+    const now = Date.now();
+    if (now - lastHourlySummaryEventAt >= HOURLY_SUMMARY_EVENT_MS) {
+      lastHourlySummaryEventAt = now;
+      const drawdown = (riskManager.getState().currentDrawdownPercent || 0).toFixed(1);
+      tradeEvents.regimeHourlySummary(exchange, regime, counts.entries, riskSummary, drawdown, fundEventData);
+    }
   };
 
   // Set up dry-run callbacks now that all functions are defined
@@ -9694,6 +9772,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       saveLiveStateGuarded,
       reloadStateFromDisk,
       getHealth: () => healthMonitor.getState(),
+      healthMonitor,
       getPositionState: () => positionState,
       // Clear the background TTL timers a merge/fill schedules (5-min dedup
       // sweeps) so a test process can exit without waiting on them.
