@@ -382,12 +382,18 @@ const attachSellOrder = (state, buyOrderId, sellOrder) => {
  * Mark a recorded buy fill whose sell placement failed.
  * Excluded from pending-order checks (status filter) but kept visible in
  * state for operator follow-up — the buy's accounting is already recorded.
+ *
+ * `unresolved` names the placement intent of a sell whose outcome is UNKNOWN
+ * (dispatched, ambiguous response, reconciliation inconclusive). It travels
+ * with the row so an operator retry can refuse to place a second sell while
+ * that earlier one may be resting live (issue #1035).
  * @param {BotState} state - Current state
  * @param {string} buyOrderId - Buy order ID
  * @param {string} reason - Failure reason
+ * @param {{intentId: string, clientOrderId?: string|null}|null} [unresolved] - Unknown-outcome placement identity
  * @returns {BotState} Updated state
  */
-const markSellPlacementFailed = (state, buyOrderId, reason) => {
+const markSellPlacementFailed = (state, buyOrderId, reason, unresolved = null) => {
   const order = findAwaitingSellOrder(state, buyOrderId);
   if (!order) {
     stateTrackerLogger.warn(`⚠️ markSellPlacementFailed: no awaiting_sell order for buy ${buyOrderId} — failure not recorded (reason: ${reason})`, {
@@ -400,8 +406,44 @@ const markSellPlacementFailed = (state, buyOrderId, reason) => {
   order.status = 'sell_failed';
   order.sellFailedReason = reason;
   order.sellFailedAt = new Date().toISOString();
+  if (unresolved?.intentId) {
+    order.sellPlacementUnresolved = { intentId: unresolved.intentId, clientOrderId: unresolved.clientOrderId ?? null };
+  } else {
+    delete order.sellPlacementUnresolved;
+  }
 
   return state;
+};
+
+/**
+ * Buy rows whose covering sell could not be placed (status 'sell_failed').
+ * @param {BotState} state - Current state
+ * @returns {TrackedOrder[]} Failed sell placements
+ */
+const getFailedSellOrders = (state) => (state.orders || []).filter(o => o.status === 'sell_failed');
+
+/**
+ * Return a 'sell_failed' row to 'awaiting_sell' ahead of an operator retry, so
+ * the canonical attachSellOrder/markSellPlacementFailed pair applies to it
+ * again. The caller persists this BEFORE dispatching the sell: a crash between
+ * dispatch and attach then leaves an awaiting_sell row (recovered by the next
+ * cycle, guarded by the placement intent) rather than a sell_failed row that
+ * hides a live sell. Touches no accounting — the buy was booked once already.
+ * @param {BotState} state - Current state
+ * @param {string} buyOrderId - Buy order ID
+ * @returns {TrackedOrder|null} The reopened row, or null when no failed row matches
+ */
+const reopenFailedSell = (state, buyOrderId) => {
+  const order = (state.orders || []).find(o => o.buyOrderId === buyOrderId && o.status === 'sell_failed');
+  if (!order) return null;
+
+  order.status = 'awaiting_sell';
+  order.sellRetryCount = (order.sellRetryCount || 0) + 1;
+  order.lastSellFailedReason = order.sellFailedReason ?? null;
+  delete order.sellFailedReason;
+  delete order.sellFailedAt;
+  delete order.sellPlacementUnresolved;
+  return order;
 };
 
 /**
@@ -1528,6 +1570,8 @@ module.exports = {
   recordBuyFill,
   attachSellOrder,
   markSellPlacementFailed,
+  getFailedSellOrders,
+  reopenFailedSell,
   updateAfterBuy,
   updateAfterSellFill,
   updateAfterConsolidation,
