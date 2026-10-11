@@ -1308,6 +1308,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Hand a closed (drained) fund to the host's onLifecycleClosed callback on the
+   * next tick, so teardown never waits on the call stack that requested it.
+   * The whole deferral + async callback is one tracked pending write (visible
+   * to restore drains from scheduling until teardown settles), and every sync
+   * throw or async rejection is contained and logged here — an unowned
+   * rejection would reach the process guard and kill every fund in the process.
+   */
+  const scheduleLifecycleClosed = () => {
+    if (!callbacks.onLifecycleClosed) return;
+    trackPendingWrite(`engine-lifecycle-close:${fundLabel}`, async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      await callbacks.onLifecycleClosed();
+    }).catch((err) => logger.warn(`⚠️ [${exchange}] onLifecycleClosed callback error: ${err.message}`, { error: err.message }));
+  };
+
+  /**
    * Record cycle completion for Size optimizer
    *
    * Feeds the optimizer the REAL available quote balance (the same
@@ -2983,11 +2999,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         positionState.lifecycleClosedCycle = positionState.cyclesCompleted || 0;
         logger.info(`🛑 [${exchange}] Draining fund has empty position — auto-closing`);
         if (!isDryRun) saveLiveState();
-        if (callbacks.onLifecycleClosed) {
-          trackPendingWrite(`engine-lifecycle:${fundLabel}`, () => new Promise((resolve) => setImmediate(resolve)))
-            .then(() => trackPendingWrite(`engine-lifecycle-close:${fundLabel}`, () => callbacks.onLifecycleClosed()))
-            .catch((err) => logger.warn(`⚠️ [${exchange}] onLifecycleClosed callback error: ${err.message}`, { error: err.message }));
-        }
+        scheduleLifecycleClosed();
         return { success: true, autoClosed: true };
       }
     }
@@ -7744,13 +7756,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         cyclesCompleted: positionState.cyclesCompleted,
         reason: positionState.lifecycleReason,
       });
-      if (callbacks.onLifecycleClosed) {
-        setImmediate(() => {
-          try { callbacks.onLifecycleClosed(); } catch (err) {
-            logger.warn(`⚠️ [${exchange}] onLifecycleClosed callback error: ${err.message}`, { error: err.message });
-          }
-        });
-      }
+      scheduleLifecycleClosed();
     }
     return { turnedOver: true };
   };
