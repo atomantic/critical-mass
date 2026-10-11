@@ -3,14 +3,20 @@
  * Engine IPC lifecycle handlers: `regime:start` / `regime:stop`.
  *
  * Extracted from engines/coinbase-engine.js (issue #504) so the ownership
- * ordering these two handlers enforce — standalone fill-consumer handover
- * around engine stop, failure teardown, and post-stop retry — can be
- * exercised directly against the real production callbacks instead of only
- * through HTTP-proxy tests (which stub IPC) or isolated service tests
- * (which never invoke these handlers at all). Automatic and manual starts
- * share the same supervision and cleanup; dependencies are injected so
- * `regime:start`/`regime:stop` for other exchange processes (gemini,
- * cryptocom) keep working unmodified.
+ * ordering these two handlers enforce can be exercised directly against the
+ * real production callbacks instead of only through HTTP-proxy tests (which
+ * stub IPC) or isolated service tests (which never invoke these handlers at
+ * all). Automatic and manual starts share the same supervision and cleanup;
+ * dependencies are injected so `regime:start`/`regime:stop` for other
+ * exchange processes (gemini, cryptocom) keep working unmodified.
+ *
+ * Fill-ledger ownership is exclusive (issue #1008). Each consumer loads its
+ * own in-memory ledger and every persist replaces the whole file, so two
+ * live writers silently erase each other's fills. A handover therefore never
+ * overlaps owners: stop drains and flushes the engine BEFORE the standalone
+ * consumer loads the ledger, and start fences and joins the standalone
+ * consumer BEFORE the engine loads it. The consumer that takes over recovers
+ * fills from the connection gap via exchange reconciliation.
  */
 
 const { createFundStartSupervisor, isTransientStartError } = require('./fund-start-supervisor');
@@ -30,6 +36,7 @@ const { createFundStartSupervisor, isTransientStartError } = require('./fund-sta
  * @property {(exchange: string, pair: string) => Object} createEngineCallbacks - Builds the callbacks handed to a new regime engine
  * @property {(exchange: string, pair: string) => Promise<{success: boolean, error?: string, message?: string}>} startMarketDataService - Starts the standalone market-data service for a fund
  * @property {(exchange: string, pair: string) => void} stopMarketDataService - Stops the standalone market-data service for a fund
+ * @property {(exchange: string, pair: string) => Promise<{drained: boolean}>} [fenceMarketDataService] - Stops the standalone service and joins its in-flight start and order work; drained:false when it could not confirm
  * @property {(exchange: string, pair: string) => void} wireMarketDataCallbacks - Wires a running standalone market-data service's callbacks
  * @property {(exchange: string, pair: string) => void} invalidateStandaloneLedger - Drops the cached standalone fill ledger for a fund
  * @property {(exchange: string, pair: string, isRunning: boolean) => void} saveRegimeRunningFlag - Persists the fund's running flag to disk
@@ -66,9 +73,35 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     wireMarketDataCallbacks,
     invalidateStandaloneLedger,
     saveRegimeRunningFlag,
+    fenceMarketDataService = async (exchange, pair) => {
+      stopMarketDataService(exchange, pair);
+      return { drained: true };
+    },
     drainFundWrites = async () => ({ drained: true }),
     recoverPendingImport = () => ({ recovered: false }),
   } = deps;
+
+  /**
+   * Hand a stopped fund to the standalone consumer. Callers must already
+   * have drained and flushed the previous owner: the service loads the
+   * ledger as part of start().
+   */
+  const startStandaloneConsumer = async (exchange, pair, fundLogger, label) => {
+    // A rejected start (e.g. its candle fetch threw) is a missing consumer,
+    // not a failed handover: the previous owner has already let go.
+    const result = await startMarketDataService(exchange, pair)
+      .catch((err) => ({ success: false, error: err.message }));
+    if (!result?.success) {
+      fundLogger.warn(`⚠️ [${label}] Standalone market-data-service not available (${result?.error || 'unknown'}) — fund has no WS service while stopped`, { error: result?.error || 'unknown' });
+      return result;
+    }
+    wireMarketDataCallbacks(exchange, pair);
+    const unrecovered = result.gapRecovery?.failed || [];
+    if (unrecovered.length) {
+      fundLogger.warn(`⚠️ [${label}] Handover gap recovery could not confirm ${unrecovered.length} order(s); engine startup reconciliation will recheck them`, { orderIds: unrecovered });
+    }
+    return result;
+  };
 
   const startAttempt = async (payload, exchange, pair, isCurrent) => {
     const resolvedPair = resolvePair(exchange, pair);
@@ -103,6 +136,23 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
       return { success: false, error: 'API keys not configured for this exchange', needsOperator: true };
     }
 
+    // The engine loads the ledger in its constructor, so the standalone
+    // consumer must be fenced first and its accepted work joined. If that
+    // cannot be confirmed, the old writer may still persist: build nothing.
+    const fence = await fenceMarketDataService(exchange, resolvedPair);
+    if (!fence?.drained) {
+      fundLogger.error(`❌ [${label}] Standalone fill consumer did not finish its in-flight work; engine not started`);
+      return { success: false, error: 'Standalone fill consumer is still draining — retry the start shortly', retryable: true };
+    }
+    invalidateStandaloneLedger(exchange, resolvedPair);
+    // Any exit that leaves the fund stopped hands it back to passive
+    // monitoring; the engine object (if any) has been released by then.
+    const restoreStandalone = () => startStandaloneConsumer(exchange, resolvedPair, fundLogger, label);
+    if (!isCurrent()) {
+      await restoreStandalone();
+      return { success: false, error: 'Engine start cancelled' };
+    }
+
     // createRegimeEngine builds its fill ledger eagerly in the constructor
     // (regime-engine.js:226). createFillLedger refuses to boot on cold-start
     // corruption, so a corrupt ledger file would otherwise bubble up through
@@ -115,6 +165,7 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
       engine = createRegimeEngine(exchange, resolvedPair, fundConfig, createEngineCallbacks(exchange, resolvedPair));
     } catch (err) {
       fundLogger.error(`❌ [${label}] Fill ledger init failed on regime:start: ${err.message}`, { error: err.message });
+      await restoreStandalone();
       return { success: false, error: `Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details`, needsOperator: true };
     }
     regimeEngines.set(key, engine);
@@ -143,6 +194,8 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
         fundLogger.error(`❌ [${label}] Failed startup cleanup: ${err.message}`, { error: err.message });
         return { success: false, error: 'Engine cleanup failed — operator action required', needsOperator: true };
       }
+      // A closed fund has nothing left to watch (mirrors onLifecycleClosed).
+      if (!startResult?.autoClosed) await restoreStandalone();
       if (!isCurrent()) return { success: false, error: 'Engine start cancelled' };
       if (startResult?.autoClosed) {
         saveRegimeRunningFlag(exchange, resolvedPair, false);
@@ -152,7 +205,6 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     }
 
     try {
-      stopMarketDataService(exchange, resolvedPair);
       invalidateStandaloneLedger(exchange, resolvedPair);
       saveRegimeRunningFlag(exchange, resolvedPair, true);
       fundLogger.info(`ℹ️ 🚀 [${label}] Regime engine started`);
@@ -160,6 +212,7 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     } catch (err) {
       fundLogger.error(`❌ [${label}] Failed startup handover: ${err.message}`, { error: err.message });
       await releaseAttempt();
+      await restoreStandalone();
       return { success: false, error: 'Engine startup handover failed — operator action required', needsOperator: true };
     }
   };
@@ -185,20 +238,10 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
 
     fundLogger.info(`ℹ️ 🛑 [${label}] Stopping regime engine...`);
 
-    // Spin up the standalone market-data-service for fill-handover during
-    // shutdown. If the on-disk fill-ledger is corrupt, createFillLedger
-    // throws on cold start (refuses to boot empty); startMarketDataService
-    // surfaces that as { success: false, error }. Skip wiring callbacks
-    // and proceed to engine.stop() anyway — the operator's stop intent
-    // takes precedence over the handover, and the running engine still
-    // has its own (good) in-memory ledger to flush.
-    const mdsResult = await startMarketDataService(exchange, resolvedPair);
-    if (mdsResult?.success) {
-      wireMarketDataCallbacks(exchange, resolvedPair);
-    } else {
-      fundLogger.warn(`⚠️ [${label}] Standalone market-data-service did not start (${mdsResult?.error || 'unknown'}); proceeding with engine stop, will retry handover after stop in case its persist repaired a corrupt ledger`, { error: mdsResult?.error || 'unknown' });
-    }
-
+    // Close engine admission, wait for every accepted fund mutation, and let
+    // stop() flush the final state + ledger. Until that succeeds the engine
+    // remains the fund's only ledger writer and stays registered, so a failed
+    // drain or flush returns failure with no second consumer started.
     const stopResult = await engine.stop().then(async (result) => {
       if (result?.error) return result;
       const drain = await drainFundWrites(exchange, resolvedPair);
@@ -210,35 +253,17 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     });
 
     if (stopResult?.error) {
-      // Engine stop failed but the standalone market-data-service we just
-      // started is now running independently. Without tearing it down, the
-      // engine remains registered AND the WS service is also processing
-      // events for the same fund — two live processors that can double-
-      // ingest fills and emit conflicting status until the process is
-      // restarted. Stop the standalone service before returning so the
-      // operator can retry from a single-processor state.
-      if (mdsResult?.success) {
-        stopMarketDataService(exchange, resolvedPair);
-      }
       return { success: false, error: stopResult.error };
     }
 
-    // Retry the standalone WS handover if the initial start failed —
-    // engine.stop()'s force-persist may have replaced an unreadable
-    // ledger file with a healthy in-memory snapshot, so a second attempt
-    // can now read it. Without this retry, the fund would be left with
-    // no stopped-engine WS service even though the underlying corruption
-    // is now resolved, and any fills/cancels that arrive while the
-    // engine remains stopped would be missed until manual restart.
-    if (!mdsResult?.success) {
-      const retryResult = await startMarketDataService(exchange, resolvedPair);
-      if (retryResult?.success) {
-        wireMarketDataCallbacks(exchange, resolvedPair);
-        fundLogger.info(`ℹ️ ✅ [${label}] Standalone market-data-service started after engine stop`);
-      } else {
-        fundLogger.warn(`⚠️ [${label}] Standalone market-data-service still not available after engine stop (${retryResult?.error || 'unknown'}) — fund has no WS service while stopped`, { error: retryResult?.error || 'unknown' });
-      }
-    }
+    // Only now may the standalone consumer load the ledger: it reads the
+    // engine's final generation (stop's force-persist also repairs a ledger
+    // file that became unreadable mid-run) and recovers any fill that landed
+    // between the engine's disconnect and its own subscribe. The engine stays
+    // registered until this completes, so no replacement start can enter the
+    // transfer. A consumer that cannot start is reported, not fatal — the
+    // operator's stop intent takes precedence.
+    await startStandaloneConsumer(exchange, resolvedPair, fundLogger, label);
 
     regimeEngines.delete(key);
     invalidateStandaloneLedger(exchange, resolvedPair);

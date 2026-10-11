@@ -35,6 +35,7 @@ const {
   stopAllMarketDataServices,
   getMarketDataService,
   stopMarketDataService,
+  fenceMarketDataService,
 } = require('../src/market-data-service');
 const { getChartDataBuffer, getChartData, removeChartDataBuffer, shutdownAllBuffers, resumeAllBuffers } = require('../src/chart-data-buffer');
 const { createFillLedger } = require('../src/fill-ledger');
@@ -205,7 +206,8 @@ const createEngineCallbacks = (exchange, pair) => ({
 // Regime engine control — regime:start / regime:stop
 // Extracted to src/engine-lifecycle-handlers.js (issue #504) so the
 // fill-consumer handover ordering around engine stop/start can be tested
-// directly against these production callbacks.
+// directly against these production callbacks. Ledger ownership transfers
+// exclusively between the engine and the standalone service (issue #1008).
 const { startFund, autoResumeFund, getStartStatus, cancelStarts } = registerEngineLifecycleHandlers(ipcServer, {
   regimeEngines,
   resolvePair,
@@ -220,6 +222,7 @@ const { startFund, autoResumeFund, getStartStatus, cancelStarts } = registerEngi
   createEngineCallbacks,
   startMarketDataService,
   stopMarketDataService,
+  fenceMarketDataService,
   wireMarketDataCallbacks,
   invalidateStandaloneLedger,
   saveRegimeRunningFlag,
