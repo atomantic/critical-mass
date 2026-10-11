@@ -94,7 +94,8 @@ async function main(argv = process.argv.slice(2)) {
     // Only fixed harness messages are surfaced; gateway/browser exceptions may
     // contain identifiers or response data, and are deliberately not serialized.
     output = { verdict: 'UNVERIFIED', reasons: ['isolated browser scenario unavailable or incomplete'], stage: fixture ? 'scenario' : browser ? 'fixture' : 'browser' };
-    if (/Chrome unavailable|invalid idle duration|unsupported argument/.test(error.message)) output.reasons = [error.message];
+    const safeReasons = ['fixture UI build failed', 'isolated gateway exited', 'isolated gateway startup timed out', 'fixture enrollment failed', 'invalid idle duration', 'unsupported argument', 'browser content did not become useful before the deadline'];
+    if (safeReasons.includes(error.message) || error.message.startsWith('Chrome unavailable;')) output.reasons = [error.message];
   } finally {
     await browser?.stop();
     await fixture?.stop();
