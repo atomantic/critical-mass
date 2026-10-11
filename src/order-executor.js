@@ -219,7 +219,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           });
           return { cancelled: false, filled: true, ...fillDetails(status, resolveFilledSize(status)) };
         }
-        if (status && status.status === 'CANCELLED') {
+        if (isCancelledStatus(status)) {
           return { cancelled: true, filled: false, ...fillDetails(status, resolveFilledSize(status)) };
         }
         if (attempt < maxAckRetries) {
@@ -245,7 +245,14 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         await new Promise(r => setTimeout(r, poll === 0 ? verifyDelayMs : pollDelayMs));
         const verified = await adapter.getOrder(orderId).catch(() => null);
 
-        if (verified?.status === 'CANCELLED') {
+        if (isFilledStatus(verified)) {
+          logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`, {
+            orderId,
+            status: verified?.status || 'unknown',
+          });
+          return { cancelled: false, filled: true, ...fillDetails(verified, resolveFilledSize(verified)) };
+        }
+        if (isCancelledStatus(verified)) {
           const filledSize = resolveFilledSize(verified);
           if (filledSize > 0) {
             logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} cancelled with ${filledSize} partial fill`, {
@@ -254,13 +261,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             });
           }
           return { cancelled: true, filled: false, ...fillDetails(verified, filledSize) };
-        }
-        if (isFilledStatus(verified)) {
-          logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`, {
-            orderId,
-            status: verified?.status || 'unknown',
-          });
-          return { cancelled: false, filled: true, ...fillDetails(verified, resolveFilledSize(verified)) };
         }
         // status OPEN, PENDING_CANCEL, null (fetch error), or unknown — keep polling
       }
