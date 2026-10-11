@@ -207,7 +207,7 @@ function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfi
           <h3 className="text-xs font-medium text-gray-400">
             Long-Term Bias<ConfigTooltip tip={LONG_TERM_BIAS_TOOLTIP} align="left" width="w-80" />
           </h3>
-          <span className={`px-1.5 py-0.5 rounded text-[10px] ${healthStyle.bg} ${healthStyle.text}`}>
+          <span className={`px-1.5 py-0.5 rounded-sm text-[10px] ${healthStyle.bg} ${healthStyle.text}`}>
             {healthStyle.label}
           </span>
         </div>
@@ -229,10 +229,10 @@ function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfi
           Long-Term Bias<ConfigTooltip tip={LONG_TERM_BIAS_TOOLTIP} align="left" width="w-80" />
         </h3>
         <div className="flex items-center gap-1">
-          <span className={`px-1.5 py-0.5 rounded text-[10px] ${healthStyle.bg} ${healthStyle.text}`}>
+          <span className={`px-1.5 py-0.5 rounded-sm text-[10px] ${healthStyle.bg} ${healthStyle.text}`}>
             {healthStyle.label}
           </span>
-          <span className="px-1.5 py-0.5 rounded text-[10px] bg-gray-900 text-gray-400 border border-gray-700">
+          <span className="px-1.5 py-0.5 rounded-sm text-[10px] bg-gray-900 text-gray-400 border border-gray-700">
             Advisory
           </span>
         </div>
@@ -244,7 +244,7 @@ function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfi
           <span>Depression Score</span>
           <span className={`font-mono ${suggestedStyle.text}`}>{scorePct}/100</span>
         </div>
-        <div className="h-2 bg-gray-900 rounded overflow-hidden">
+        <div className="h-2 bg-gray-900 rounded-sm overflow-hidden">
           <div
             className={`h-full ${suggestedStyle.bar} transition-all`}
             style={{ width: `${scorePct}%` }}
@@ -253,7 +253,7 @@ function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfi
       </div>
 
       {/* Suggested vs current level */}
-      <div className={`p-2 rounded mb-2 ${suggestedStyle.bg} border ${suggestedStyle.border}`}>
+      <div className={`p-2 rounded-sm mb-2 ${suggestedStyle.bg} border ${suggestedStyle.border}`}>
         <div className="flex items-center justify-between text-xs">
           <span className="text-gray-400">Suggested</span>
           <span className={`font-semibold ${suggestedStyle.text}`}>{suggestedStyle.label}</span>
@@ -273,7 +273,7 @@ function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfi
             onClick={handleApplySuggested}
             disabled={applying}
             title={`Apply ${suggestedLabel} preset to ${exchange}`}
-            className={`mt-2 w-full px-2 py-1 text-[11px] font-medium rounded border transition-all ${suggestedStyle.border} ${suggestedStyle.text} hover:bg-gray-900/60 ${applying ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+            className={`mt-2 w-full px-2 py-1 text-[11px] font-medium rounded-sm border transition-all ${suggestedStyle.border} ${suggestedStyle.text} hover:bg-gray-900/60 ${applying ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
           >
             {applying ? 'Applying…' : `Apply Suggested (${suggestedLabel})`}
           </button>
@@ -396,7 +396,7 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
     const progress = total ? Math.min(100, ((total - remaining) / total) * 100) : 0
 
     return (
-      <div className="bg-gray-900 rounded p-1.5">
+      <div className="bg-gray-900 rounded-sm p-1.5">
         <div className="text-[10px] text-gray-400 mb-0.5">{label}</div>
         <div className="flex items-center gap-1">
           <span className="text-sm font-mono text-cyan-400">{formatCountdown(remaining)}</span>
@@ -417,7 +417,7 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
   if (variant === 'elapsed') {
     const display = resolveElapsedDisplay(elapsed, now, formatDuration)
     return (
-      <div className="bg-gray-900 rounded p-1.5">
+      <div className="bg-gray-900 rounded-sm p-1.5">
         <div className="text-[10px] text-gray-400 mb-0.5">{label}</div>
         <span className="text-sm font-mono text-gray-300">{display.primary}</span>
         {display.secondary && (
@@ -499,7 +499,7 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs text-gray-400">Aggressiveness Level</span>
         {currentLevel === 'custom' && (
-          <span className="px-1.5 py-0.5 bg-purple-900/50 text-purple-400 text-[10px] rounded">
+          <span className="px-1.5 py-0.5 bg-purple-900/50 text-purple-400 text-[10px] rounded-sm">
             Custom
           </span>
         )}
@@ -529,7 +529,7 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
 
       {/* Preview panel */}
       {previewParams && (
-        <div className="bg-gray-900 rounded p-2 text-xs">
+        <div className="bg-gray-900 rounded-sm p-2 text-xs">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-1">
             <div className="flex justify-between">
               <span className="text-gray-400">kFactor</span>
@@ -579,7 +579,7 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
               type="button"
               onClick={() => handleLevelChange(previewLevel)}
               disabled={updating}
-              className={`mt-2 min-w-11 min-h-11 w-full px-3 py-1.5 text-xs font-medium rounded border border-blue-400 bg-blue-600 text-white ${updating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-blue-500'}`}
+              className={`mt-2 min-w-11 min-h-11 w-full px-3 py-1.5 text-xs font-medium rounded-sm border border-blue-400 bg-blue-600 text-white ${updating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-blue-500'}`}
             >
               {updating ? 'Applying...' : `Apply ${previewMeta?.label || previewLevel}`}
             </button>
@@ -600,7 +600,7 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
   const distanceToTrigger = Math.max(0, triggerDistance - priceMove)
 
   return (
-    <div className="bg-gray-900 rounded p-1.5">
+    <div className="bg-gray-900 rounded-sm p-1.5">
       <div className="text-[10px] text-gray-400 mb-0.5">ATR Trigger Distance</div>
       <div className="flex items-center justify-between">
         <span className="text-xs font-mono text-gray-300">
@@ -1087,7 +1087,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     <div className="space-y-6">
       {/* Error display */}
       {error && (
-        <div className="p-3 bg-red-900/50 border border-red-700 rounded text-red-200 text-sm">
+        <div className="p-3 bg-red-900/50 border border-red-700 rounded-sm text-red-200 text-sm">
           {error}
         </div>
       )}
@@ -1137,7 +1137,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
           <button
             onClick={handleResumeFromAuthDenied}
             disabled={resumingAuth}
-            className="shrink-0 px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors"
+            className="shrink-0 px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:opacity-50 text-white text-xs font-medium rounded-sm transition-colors"
           >
             {resumingAuth ? 'Resuming…' : 'Resume'}
           </button>
@@ -1162,7 +1162,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             <button
               onClick={() => setResetCycleConfirm(true)}
               disabled={resettingCycle}
-              className="shrink-0 px-3 py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors"
+              className="shrink-0 px-3 py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:opacity-50 text-white text-xs font-medium rounded-sm transition-colors"
             >
               {resettingCycle ? 'Resetting…' : 'Reset cycle & resume buying'}
             </button>
@@ -1246,7 +1246,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
               {/* Entry Status */}
               <div className="col-span-1">
-                <div className="bg-gray-900 rounded p-1.5 h-full">
+                <div className="bg-gray-900 rounded-sm p-1.5 h-full">
                   <div className="text-[10px] text-gray-400 mb-0.5">
                     Entry Status<ConfigTooltip tip={REGIME_TOOLTIPS.entryStatus} align="left" width="w-72" />
                   </div>
@@ -1284,12 +1284,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               </div>
 
               {/* Compact Current Regime */}
-              <div className={`col-span-1 ${regimeStyle.bg} border ${regimeStyle.border} rounded p-1.5`}>
+              <div className={`col-span-1 ${regimeStyle.bg} border ${regimeStyle.border} rounded-sm p-1.5`}>
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] text-gray-400">
                     Regime<ConfigTooltip tip={REGIME_TOOLTIPS.micro} align="left" width="w-80" />
                   </span>
-                  <span className={`${healthStyle.bg} ${healthStyle.text} px-1 py-0.5 rounded text-[10px]`}>
+                  <span className={`${healthStyle.bg} ${healthStyle.text} px-1 py-0.5 rounded-sm text-[10px]`}>
                     {health.mode || 'ACTIVE'}
                   </span>
                 </div>
@@ -1302,13 +1302,13 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   const ltStyle = lt?.ready ? SUGGESTED_LEVEL_STYLES[lt.suggestedLevel] : null
                   return (
                     <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-                      <span className={`px-1 py-0.5 rounded text-[10px] ${macroStyle.bg} border ${macroStyle.border} ${macroStyle.text}`}>
+                      <span className={`px-1 py-0.5 rounded-sm text-[10px] ${macroStyle.bg} border ${macroStyle.border} ${macroStyle.text}`}>
                         {macroStyle.label}
                       </span>
                       <span className="text-[10px] text-gray-400">{status.macro.score?.toFixed(0)}</span>
                       {ltStyle && (
                         <span
-                          className={`px-1 py-0.5 rounded text-[10px] ${ltStyle.bg} border ${ltStyle.border} ${ltStyle.text}`}
+                          className={`px-1 py-0.5 rounded-sm text-[10px] ${ltStyle.bg} border ${ltStyle.border} ${ltStyle.text}`}
                           title={`Long-term bias: ${(lt.score * 100).toFixed(0)}/100 — suggests ${ltStyle.label}`}
                         >
                           🤖 {ltStyle.label}
@@ -1324,13 +1324,13 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               </div>
 
               {/* Entry Mode */}
-              <div className={`col-span-1 ${status?.entryMode === 'ladder' ? 'bg-indigo-900/30 border-indigo-700/50' : 'bg-gray-800 border-gray-700'} border rounded p-1.5`}>
+              <div className={`col-span-1 ${status?.entryMode === 'ladder' ? 'bg-indigo-900/30 border-indigo-700/50' : 'bg-gray-800 border-gray-700'} border rounded-sm p-1.5`}>
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] text-gray-400">
                     Entry<ConfigTooltip tip={REGIME_TOOLTIPS.entryMode} align="right" width="w-72" />
                   </span>
                   {config?.ladderAutoSwitch && (
-                    <span className="px-1 py-0.5 bg-purple-900/50 text-purple-400 text-[10px] rounded">Auto</span>
+                    <span className="px-1 py-0.5 bg-purple-900/50 text-purple-400 text-[10px] rounded-sm">Auto</span>
                   )}
                 </div>
                 <div className={`text-xl font-bold ${status?.entryMode === 'ladder' ? 'text-indigo-400' : 'text-gray-300'}`}>
@@ -1402,14 +1402,14 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               <div className="bg-gray-800 rounded-lg p-3">
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-xs font-medium text-gray-400">TP Auto-Management</h3>
-                  <span className="px-1.5 py-0.5 bg-green-900/50 text-green-400 text-[10px] rounded">
+                  <span className="px-1.5 py-0.5 bg-green-900/50 text-green-400 text-[10px] rounded-sm">
                     Active
                   </span>
                 </div>
 
                 <div className="space-y-2 text-xs">
                   {/* Current Config */}
-                  <div className="p-2 bg-gray-900/50 rounded">
+                  <div className="p-2 bg-gray-900/50 rounded-sm">
                     <div className="text-gray-400 text-[10px] mb-1">Current TP Settings</div>
                     <div className="grid grid-cols-3 gap-2">
                       <div>
@@ -1429,7 +1429,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
                   {/* Observed Percentiles */}
                   {(tpOptimizer.totalCombinedSamples || tpOptimizer.sampleCount || 0) >= 3 && (
-                    <div className="p-2 bg-cyan-900/20 border border-cyan-700/30 rounded">
+                    <div className="p-2 bg-cyan-900/20 border border-cyan-700/30 rounded-sm">
                       <div className="text-cyan-400/70 text-[10px] mb-1">Observed Percentiles ({tpOptimizer.sampleCount || 0} cycles + {tpOptimizer.volSampleCount || 0} vol)</div>
                       <div className="grid grid-cols-3 gap-2">
                         <div>
@@ -1479,14 +1479,14 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               <div className="bg-gray-800 rounded-lg p-3">
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-xs font-medium text-gray-400">Size Auto-Management</h3>
-                  <span className="px-1.5 py-0.5 bg-green-900/50 text-green-400 text-[10px] rounded">
+                  <span className="px-1.5 py-0.5 bg-green-900/50 text-green-400 text-[10px] rounded-sm">
                     Active
                   </span>
                 </div>
 
                 <div className="space-y-2 text-xs">
                   {/* Current Sizing Config */}
-                  <div className="p-2 bg-gray-900/50 rounded">
+                  <div className="p-2 bg-gray-900/50 rounded-sm">
                     <div className="text-gray-400 text-[10px] mb-1">Current Size Settings</div>
                     <div className="grid grid-cols-3 gap-2">
                       <div>
@@ -1506,7 +1506,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
                   {/* Cycle Stats */}
                   {sizeOptimizer.totalCycleCount >= 3 && (
-                    <div className="p-2 bg-purple-900/20 border border-purple-700/30 rounded">
+                    <div className="p-2 bg-purple-900/20 border border-purple-700/30 rounded-sm">
                       <div className="text-purple-400/70 text-[10px] mb-1">Step Usage ({sizeOptimizer.totalCycleCount} cycles)</div>
                       <div className="grid grid-cols-3 gap-2">
                         <div>
@@ -1608,7 +1608,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
                 {/* Current Cycle (if in position) */}
                 {dryRunState.optimalTpAnalytics.currentCycle && (
-                  <div className="mb-2 p-2 bg-blue-900/30 border border-blue-700/50 rounded">
+                  <div className="mb-2 p-2 bg-blue-900/30 border border-blue-700/50 rounded-sm">
                     <div className="text-[10px] text-blue-400 mb-1">Current Position</div>
                     <div className="grid grid-cols-2 gap-1 text-[10px]">
                       <div>
@@ -1724,7 +1724,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   <button
                     onClick={() => setDrawdownResumeConfirm(true)}
                     title={risk.equityDepleted ? 'Fund equity is depleted — the time-based auto-reset does not apply; resume manually once equity recovers.' : undefined}
-                    className="px-2 py-0.5 bg-green-800 hover:bg-green-900 text-white text-[10px] rounded flex items-center gap-1"
+                    className="px-2 py-0.5 bg-green-800 hover:bg-green-900 text-white text-[10px] rounded-sm flex items-center gap-1"
                   >
                     <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
                     Resume
@@ -1839,7 +1839,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <h3 className="text-xs font-medium text-gray-400">
                       Macro Regime<ConfigTooltip tip={REGIME_TOOLTIPS.macro} align="left" width="w-80" />
                     </h3>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${macroStyle.bg} ${macroStyle.text}`}>
+                    <span className={`px-1.5 py-0.5 rounded-sm text-[10px] font-medium ${macroStyle.bg} ${macroStyle.text}`}>
                       {macroStyle.label} ({m.score?.toFixed(0)})
                     </span>
                   </div>
@@ -1914,7 +1914,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-medium text-gray-400">Configuration Summary</h3>
                   {config.dryRun && (
-                    <span className="px-2 py-0.5 bg-purple-900/50 text-purple-400 text-xs rounded">
+                    <span className="px-2 py-0.5 bg-purple-900/50 text-purple-400 text-xs rounded-sm">
                       Dry-Run Enabled
                     </span>
                   )}
@@ -1937,7 +1937,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <div className="flex items-center gap-1">
                       <span className="text-white">${config.baseSizeUsdc}</span>
                       {config.sizeAutoManaged && (
-                        <span className="px-1 py-0.5 bg-purple-900/50 text-purple-400 text-xs rounded">Auto</span>
+                        <span className="px-1 py-0.5 bg-purple-900/50 text-purple-400 text-xs rounded-sm">Auto</span>
                       )}
                     </div>
                   </div>
@@ -1962,7 +1962,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <div className="flex items-center gap-1">
                       <span className="text-white">{config.tpMinPercent?.toFixed(4)}% - {config.tpMaxPercent?.toFixed(4)}%</span>
                       {config.tpAutoManaged && (
-                        <span className="px-1 py-0.5 bg-cyan-900/50 text-cyan-400 text-xs rounded">Auto</span>
+                        <span className="px-1 py-0.5 bg-cyan-900/50 text-cyan-400 text-xs rounded-sm">Auto</span>
                       )}
                     </div>
                   </div>
@@ -1996,7 +1996,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   <button
                     onClick={handleCancelLadder}
                     disabled={cancellingLadder}
-                    className="px-2 py-1 text-xs bg-red-700 hover:bg-red-800 text-white rounded transition-colors disabled:opacity-50"
+                    className="px-2 py-1 text-xs bg-red-700 hover:bg-red-800 text-white rounded-sm transition-colors disabled:opacity-50"
                   >
                     {cancellingLadder ? 'Cancelling…' : 'Cancel Ladder → Reactive'}
                   </button>
@@ -2006,7 +2006,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     onClick={() => setCollapseAllConfirm(true)}
                     disabled={collapsingAll}
                     title="Cancel all body TP orders, combine into one body, place a single TP"
-                    className="px-2 py-1 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded transition-colors disabled:opacity-50"
+                    className="px-2 py-1 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-sm transition-colors disabled:opacity-50"
                   >
                     {collapsingAll ? 'Collapsing…' : `Collapse All (${status.celestial.bodies.length})`}
                   </button>
@@ -2018,7 +2018,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     value={openSearchId}
                     onChange={e => setOpenSearchId(e.target.value)}
                     placeholder="Filter by ID…"
-                    className="bg-gray-700 text-gray-200 text-xs rounded px-2 py-1 placeholder-gray-400 w-36"
+                    className="bg-gray-700 text-gray-200 text-xs rounded-sm px-2 py-1 placeholder-gray-400 w-36"
                   />
                 )}
               </div>
@@ -2063,7 +2063,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               </div>
               <div className="space-y-2">
                 {placementIntents.map(intent => (
-                  <div key={intent.id} className="rounded bg-gray-900/60 p-3 text-xs">
+                  <div key={intent.id} className="rounded-sm bg-gray-900/60 p-3 text-xs">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="font-mono text-gray-200">
                         <span className={intent.needsAttention ? 'text-amber-400' : 'text-gray-400'}>
@@ -2079,7 +2079,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                           onClick={() => setIntentConfirm({ intent, action: 'adopt' })}
                           disabled={reconcilingIntent || !intent.clientOrderId}
                           title={intent.clientOrderId ? 'Look the order up on the exchange and adopt it into tracking' : 'No client order id was recorded — check the exchange manually, then discard'}
-                          className="px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors disabled:opacity-50"
+                          className="px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-sm transition-colors disabled:opacity-50"
                         >
                           Adopt
                         </button>
@@ -2087,7 +2087,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                           type="button"
                           onClick={() => setIntentConfirm({ intent, action: 'discard' })}
                           disabled={reconcilingIntent}
-                          className="px-2 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded transition-colors disabled:opacity-50"
+                          className="px-2 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded-sm transition-colors disabled:opacity-50"
                         >
                           Discard
                         </button>

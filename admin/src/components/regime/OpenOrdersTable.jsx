@@ -55,7 +55,7 @@ function OpenOrdersTable({
     return (
       <button
         title="Edit TP target"
-        className={`${REGIME_ORDER_TOUCH_TARGET} text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded text-sm leading-none`}
+        className={`${REGIME_ORDER_TOUCH_TARGET} text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded-sm text-sm leading-none`}
         onClick={(e) => {
           e.stopPropagation()
           setTpEditModal({ bodyId: bd.id, currentTpPct: order.tpPercent, currentPrice: order.price, avgPrice: bd.avgPrice, bodyLabel: bd.id.slice(-8), inputValue: String(order.tpPercent ?? ''), priceValue: String(order.price ?? ''), mode })
@@ -141,7 +141,7 @@ function OpenOrdersTable({
                     {isTp && hasBuys ? (
                       <button type="button" aria-label={`Buy details for open order ${order.orderId}`}
                         aria-expanded={isExpanded} aria-controls={detailsId}
-                        className="min-h-11 min-w-11 inline-flex items-center justify-center rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+                        className="min-h-11 min-w-11 inline-flex items-center justify-center rounded-sm focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-cyan-400"
                         onClick={() => toggleOrder(order.orderId)}>
                         <span aria-hidden="true" className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
                       </button>
@@ -170,9 +170,9 @@ function OpenOrdersTable({
                         const s = tierStyles[tier];
                         const tierDef = CELESTIAL_TIERS.find(t => t.name === tier);
                         const emoji = order.tierEmoji || bodyInfo?.emoji || '🛰️';
-                        return <span className={`px-1.5 py-0.5 rounded text-xs ${s.bg} ${s.text}`} title={formatTierTooltip(tierDef)}>{emoji}</span>;
+                        return <span className={`px-1.5 py-0.5 rounded-sm text-xs ${s.bg} ${s.text}`} title={formatTierTooltip(tierDef)}>{emoji}</span>;
                       }
-                      return <span className="px-1.5 py-0.5 rounded text-xs bg-cyan-900/50 text-cyan-400" title="Take-profit sell order">TP</span>;
+                      return <span className="px-1.5 py-0.5 rounded-sm text-xs bg-cyan-900/50 text-cyan-400" title="Take-profit sell order">TP</span>;
                     })()}
                   </td>
                   <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
@@ -184,7 +184,7 @@ function OpenOrdersTable({
                   <td className="text-right py-2 pr-2 font-mono text-white">
                     {order.size?.toFixed(8)}
                     {order.filledSize > 0 && (
-                      <span className="ml-1 px-1 py-0.5 rounded text-[10px] bg-orange-900/50 text-orange-400" title={`${order.filledSize.toFixed(8)} of ${order.size?.toFixed(8)} filled`}>
+                      <span className="ml-1 px-1 py-0.5 rounded-sm text-[10px] bg-orange-900/50 text-orange-400" title={`${order.filledSize.toFixed(8)} of ${order.size?.toFixed(8)} filled`}>
                         {order.filledSize.toFixed(8)} filled
                       </span>
                     )}
@@ -229,7 +229,7 @@ function OpenOrdersTable({
                       return (
                         <button
                           title={`Roll up into ${tgtLabel}`}
-                          className={`${REGIME_ORDER_TOUCH_TARGET} px-1 py-0.5 text-xs text-yellow-400 hover:text-yellow-300 hover:bg-yellow-900/30 rounded transition-colors`}
+                          className={`${REGIME_ORDER_TOUCH_TARGET} px-1 py-0.5 text-xs text-yellow-400 hover:text-yellow-300 hover:bg-yellow-900/30 rounded-sm transition-colors`}
                           onClick={(e) => {
                             e.stopPropagation()
                             setRollUpConfirm({ bodyId: bodyData.id, bodyLabel: srcLabel, targetLabel: tgtLabel })

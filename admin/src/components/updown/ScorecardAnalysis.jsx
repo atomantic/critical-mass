@@ -112,7 +112,7 @@ export default function ScorecardAnalysis() {
             <button
               onClick={fetchData}
               disabled={loading}
-              className="p-1.5 bg-gray-700 hover:bg-gray-600 rounded transition-colors text-gray-400 hover:text-white"
+              className="p-1.5 bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors text-gray-400 hover:text-white"
             >
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             </button>
@@ -205,7 +205,7 @@ export default function ScorecardAnalysis() {
                         return (
                           <div
                             key={tf}
-                            className={`text-center p-1.5 rounded text-xs font-mono ${heatmapColor(cell?.accuracy)}`}
+                            className={`text-center p-1.5 rounded-sm text-xs font-mono ${heatmapColor(cell?.accuracy)}`}
                             title={cell?.total > 0 ? `${cell.correct}/${cell.total}` : 'No data'}
                           >
                             {cell?.accuracy != null ? `${cell.accuracy.toFixed(0)}%` : '---'}
@@ -318,7 +318,7 @@ export default function ScorecardAnalysis() {
                             {p.indicators.map(ind => (
                               <span
                                 key={ind}
-                                className="px-1.5 py-0.5 rounded text-xs font-medium"
+                                className="px-1.5 py-0.5 rounded-sm text-xs font-medium"
                                 style={{ backgroundColor: INDICATOR_COLORS[ind] + '30', color: INDICATOR_COLORS[ind] }}
                               >
                                 {indicatorLabels[ind] || ind}

@@ -109,7 +109,7 @@ class RouteErrorBoundary extends Component {
         <p className="text-gray-300">This page could not be loaded.</p>
         <button
           type="button"
-          className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+          className="rounded-sm bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
           onClick={() => window.location.reload()}
         >
           Reload page
@@ -591,7 +591,7 @@ function AppContent() {
     <div className="min-h-screen">
         <a
           href="#main-content"
-          className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-2 focus:left-2 focus:px-4 focus:py-2 focus:rounded focus:bg-blue-600 focus:text-white"
+          className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-2 focus:left-2 focus:px-4 focus:py-2 focus:rounded-sm focus:bg-blue-600 focus:text-white"
         >
           Skip to main content
         </a>
@@ -702,56 +702,56 @@ function AppContent() {
                 <Link
                   to="/"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
                 >
                   DCA
                 </Link>
                 <Link
                   to="/notifications"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
                 >
                   Notifications
                 </Link>
                 <Link
                   to="/backups"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
                 >
                   Backups
                 </Link>
                 <Link
                   to="/systems"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
                 >
                   Systems
                 </Link>
                 <Link
                   to="/updown"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
                 >
                   UpDown
                 </Link>
                 <Link
                   to="/sentinel"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
                 >
                   Sentinel
                 </Link>
                 <Link
                   to="/ai"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
                 >
                   AI Providers
                 </Link>
                 <Link
                   to="/gateway"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
                 >
                   Gateway
                 </Link>
@@ -793,17 +793,17 @@ function AppContent() {
                 {currentStrategy === 'regime' && (<>
 
                     {regimeDryRun && (
-                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-[10px] md:text-xs font-medium rounded">
+                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-[10px] md:text-xs font-medium rounded-sm">
                         DRY-RUN
                       </span>
                     )}
                     {regimeLifecycle === 'draining' && (
-                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-yellow-900/50 border border-yellow-500 text-yellow-300 text-[10px] md:text-xs font-medium rounded animate-pulse" title="Draining: blocking new entries; will close after current cycle's TP fills.">
+                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-yellow-900/50 border border-yellow-500 text-yellow-300 text-[10px] md:text-xs font-medium rounded-sm animate-pulse" title="Draining: blocking new entries; will close after current cycle's TP fills.">
                         DRAINING
                       </span>
                     )}
                     {regimeLifecycle === 'closed' && (
-                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-red-900/50 border border-red-500 text-red-300 text-[10px] md:text-xs font-medium rounded" title="Fund is closed. Click Reopen to reactivate.">
+                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-red-900/50 border border-red-500 text-red-300 text-[10px] md:text-xs font-medium rounded-sm" title="Fund is closed. Click Reopen to reactivate.">
                         CLOSED
                       </span>
                     )}
@@ -825,7 +825,7 @@ function AppContent() {
                           <button
                             onClick={handleResetDryRun}
                             disabled={resetting}
-                            className={`${REGIME_ACTION_TOUCH_TARGET} px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded text-[10px] md:text-xs transition-colors`}
+                            className={`${REGIME_ACTION_TOUCH_TARGET} px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded-sm text-[10px] md:text-xs transition-colors`}
                             title="Reset dry-run state"
                           >
                             {resetting ? '...' : 'Reset'}
@@ -835,7 +835,7 @@ function AppContent() {
                           <button
                             onClick={openCloseFundDialog}
                             disabled={closing}
-                            className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 rounded text-xs md:text-sm font-medium transition-colors`}
+                            className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 rounded-sm text-xs md:text-sm font-medium transition-colors`}
                             title="Block new entries; auto-close after current cycle's TP fills"
                           >
                             {closing ? '...' : 'Close Fund'}
@@ -844,7 +844,7 @@ function AppContent() {
                         <button
                           onClick={handleStopRegime}
                           disabled={stopping}
-                          className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded text-xs md:text-sm font-medium transition-colors`}
+                          className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded-sm text-xs md:text-sm font-medium transition-colors`}
                         >
                           {stopping ? '...' : 'Stop'}
                         </button>
@@ -853,7 +853,7 @@ function AppContent() {
                       <button
                         onClick={openReopenFundDialog}
                         disabled={reopening}
-                        className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded text-xs md:text-sm font-medium transition-colors`}
+                        className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-xs md:text-sm font-medium transition-colors`}
                         title="Reopen fund (does not restart the engine)"
                       >
                         {reopening ? '...' : 'Reopen'}
@@ -862,7 +862,7 @@ function AppContent() {
                       <button
                         onClick={handleStartRegime}
                         disabled={starting}
-                        className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded text-xs md:text-sm font-medium transition-colors`}
+                        className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded-sm text-xs md:text-sm font-medium transition-colors`}
                       >
                         {starting ? '...' : 'Start'}
                       </button>
@@ -907,13 +907,13 @@ function AppContent() {
                 onChange={(e) => setCloseFundReason(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && submitCloseFund()}
                 placeholder="e.g. winding down for tax season"
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white text-sm focus:border-yellow-500 focus:outline-none"
+                className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white text-sm focus:border-yellow-500 focus:outline-hidden"
                 disabled={closing}
               />
             </div>
             <div className="flex justify-end gap-3">
               <button
-                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors disabled:opacity-50"
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors disabled:opacity-50"
                 onClick={() => setCloseFundDialogOpen(false)}
                 disabled={closing}
                 autoFocus
@@ -921,7 +921,7 @@ function AppContent() {
                 Cancel
               </button>
               <button
-                className="px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded transition-colors disabled:opacity-50"
+                className="px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded-sm transition-colors disabled:opacity-50"
                 onClick={submitCloseFund}
                 disabled={closing}
               >
@@ -969,7 +969,7 @@ function AppContent() {
             </p>
             <div className="flex justify-end gap-3">
               <button
-                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors disabled:opacity-50"
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors disabled:opacity-50"
                 onClick={() => setReopenFundDialogOpen(false)}
                 disabled={reopening}
                 autoFocus
@@ -977,7 +977,7 @@ function AppContent() {
                 Cancel
               </button>
               <button
-                className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded transition-colors disabled:opacity-50"
+                className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded-sm transition-colors disabled:opacity-50"
                 onClick={submitReopenFund}
                 disabled={reopening}
               >
@@ -1004,7 +1004,7 @@ function AppContent() {
             </p>
             <div className="flex justify-end gap-3">
               <button
-                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
                 onClick={() => setResetDryRunConfirm(false)}
                 disabled={resetting}
                 autoFocus
@@ -1012,7 +1012,7 @@ function AppContent() {
                 Cancel
               </button>
               <button
-                className="px-4 py-2 text-sm text-white bg-purple-600 hover:bg-purple-700 rounded transition-colors disabled:opacity-50"
+                className="px-4 py-2 text-sm text-white bg-purple-600 hover:bg-purple-700 rounded-sm transition-colors disabled:opacity-50"
                 onClick={handleExecuteResetDryRun}
                 disabled={resetting}
               >
@@ -1023,7 +1023,7 @@ function AppContent() {
         )}
 
         {/* Main Content */}
-        <main id="main-content" tabIndex={-1} className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6 focus:outline-none">
+        <main id="main-content" tabIndex={-1} className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6 focus:outline-hidden">
           {error && (
             <div className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200">
               Error: {error}

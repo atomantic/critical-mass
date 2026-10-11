@@ -22,7 +22,7 @@ describe('Sentinel dashboard touch targets', () => {
 
   it('lets long feed content reflow without hiding controls', () => {
     assert.match(src, /flex flex-wrap items-center/)
-    assert.match(src, /basis-full sm:order-none/)
+    assert.match(src, /basis-full sm:order-0/)
     assert.match(src, /min-w-0/)
   })
 })

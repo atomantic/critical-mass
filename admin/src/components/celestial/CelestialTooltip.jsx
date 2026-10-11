@@ -16,7 +16,7 @@ const CelestialTooltip = ({ body, position, maxUsdcDeployed, baseCurrency = 'BTC
 
   return (
     <Html position={position} center style={{ pointerEvents: 'none' }}>
-      <div className="bg-gray-900/95 border border-gray-600 rounded-lg px-3 py-2 text-xs whitespace-nowrap shadow-xl backdrop-blur-sm" style={{ transform: 'translateY(-60px)' }}>
+      <div className="bg-gray-900/95 border border-gray-600 rounded-lg px-3 py-2 text-xs whitespace-nowrap shadow-xl backdrop-blur-xs" style={{ transform: 'translateY(-60px)' }}>
         <div className="font-medium text-white mb-1">
           {emoji} {body.tier.replace('_', ' ')}
           {body.mergeCount > 0 && <span className="text-gray-400 ml-1">×{body.mergeCount + 1}</span>}

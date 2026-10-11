@@ -442,7 +442,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
                 {!regimeRunning && (
                   <button
                     onClick={handlePreviewExport}
-                    className="px-3 py-1 text-xs rounded font-medium bg-indigo-600 hover:bg-indigo-500 text-white"
+                    className="px-3 py-1 text-xs rounded-sm font-medium bg-indigo-600 hover:bg-indigo-500 text-white"
                   >
                     Export to Regime
                   </button>
@@ -478,7 +478,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
       </div>
 
       {/* Sidebar */}
-      <div className="w-80 flex-shrink-0 hidden lg:block">
+      <div className="w-80 shrink-0 hidden lg:block">
         <div className="sticky top-4 space-y-4">
           {/* Next Trade Info */}
           {nextTrade && (
@@ -491,7 +491,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
               <div className="text-xs text-gray-400 mb-1">
                 Next {nextTrade.intervalLabel || 'Daily'} Trade
                 {nextTrade.dryRun && nextTrade.enabled && (
-                  <span className="ml-2 px-1.5 py-0.5 bg-yellow-800 text-yellow-100 text-xs rounded">DRY RUN</span>
+                  <span className="ml-2 px-1.5 py-0.5 bg-yellow-800 text-yellow-100 text-xs rounded-sm">DRY RUN</span>
                 )}
               </div>
               <div className="text-xl font-bold">
@@ -566,14 +566,14 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
             </p>
             <div className="flex justify-end gap-3">
               <button
-                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
                 onClick={() => setShowConvertConfirm(false)}
                 disabled={converting}
               >
                 Cancel
               </button>
               <button
-                className="px-4 py-2 text-sm text-white bg-indigo-600 hover:bg-indigo-500 rounded transition-colors disabled:opacity-50"
+                className="px-4 py-2 text-sm text-white bg-indigo-600 hover:bg-indigo-500 rounded-sm transition-colors disabled:opacity-50"
                 onClick={handleExecuteExport}
                 disabled={converting}
               >

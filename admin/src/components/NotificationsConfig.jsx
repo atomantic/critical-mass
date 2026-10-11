@@ -250,7 +250,7 @@ function NotificationsConfig() {
           <button
             onClick={() => fetchConfig({ silent: true })}
             disabled={saving}
-            className="px-3 py-1 bg-yellow-800 hover:bg-yellow-900 rounded font-medium transition-colors"
+            className="px-3 py-1 bg-yellow-800 hover:bg-yellow-900 rounded-sm font-medium transition-colors"
           >
             Refresh
           </button>
@@ -297,7 +297,7 @@ function NotificationsConfig() {
                   onChange={e => updateConfig(prev => ({ ...prev, enabled: e.target.checked }))}
                   className="sr-only peer"
                 />
-                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
+                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
                 <span className="ml-3 text-sm font-medium">Enable notifications</span>
               </label>
             </div>
@@ -317,7 +317,7 @@ function NotificationsConfig() {
                   value={rawToken || ''}
                   onChange={e => updateToken(e.target.value)}
                   placeholder={config.telegram.botToken || 'Enter bot token from @BotFather'}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
                 />
                 {config.telegram.botToken && !rawToken && (
                   <p className="mt-1 text-xs text-gray-400">Token configured (masked). Enter a new value to change.</p>
@@ -334,7 +334,7 @@ function NotificationsConfig() {
                     telegram: { ...prev.telegram, chatId: e.target.value },
                   }))}
                   placeholder="Your Telegram chat ID"
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
                 />
               </div>
             </div>
@@ -354,7 +354,7 @@ function NotificationsConfig() {
                     onChange={e => updateConfig(prev => ({ ...prev, rateLimitMs: parseInt(e.target.value) || 5000 }))}
                     min={1000}
                     max={60000}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
                   />
                   <p className="mt-1 text-xs text-gray-400">Batch window for rapid events</p>
                 </div>
@@ -370,7 +370,7 @@ function NotificationsConfig() {
                     }}
                     min={0}
                     max={23}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
                   />
                   <p className="mt-1 text-xs text-gray-400">Hour (0-23) for daily summary</p>
                 </div>
@@ -390,7 +390,7 @@ function NotificationsConfig() {
                       }))}
                       className="sr-only peer"
                     />
-                    <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
+                    <div className="w-11 h-6 bg-gray-600 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
                     <span className="ml-3 text-sm font-medium">Quiet Hours</span>
                   </label>
                   <span className="text-xs text-gray-400">(critical events still sent)</span>
@@ -412,7 +412,7 @@ function NotificationsConfig() {
                         }}
                         min={0}
                         max={23}
-                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
                       />
                     </div>
                     <div>
@@ -430,7 +430,7 @@ function NotificationsConfig() {
                         }}
                         min={0}
                         max={23}
-                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
                       />
                     </div>
                   </div>
@@ -454,7 +454,7 @@ function NotificationsConfig() {
                         type="checkbox"
                         checked={config.events[evt.key] !== false}
                         onChange={e => updateEvent(evt.key, e.target.checked)}
-                        className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
+                        className="w-4 h-4 rounded-sm bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
                       />
                       {evt.label}
                     </label>

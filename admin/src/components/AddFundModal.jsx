@@ -222,7 +222,7 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
               id="add-fund-exchange"
               value={exchange}
               onChange={(e) => handleExchangeChange(e.target.value)}
-              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white focus:border-blue-500 focus:outline-none"
+              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white focus:border-blue-500 focus:outline-hidden"
               disabled={submitting}
             >
               {exchangeNames.map((name) => (
@@ -241,7 +241,7 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
               onChange={(e) => setPair(formatPairForExchange(e.target.value, exchange))}
               onFocus={(e) => e.target.select()}
               placeholder={fmt.placeholder}
-              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-none"
+              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-hidden"
               disabled={submitting}
               autoComplete="off"
             />
@@ -257,7 +257,7 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
               step="100"
               value={totalAllocation}
               onChange={(e) => setTotalAllocation(e.target.value)}
-              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-none"
+              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-hidden"
               disabled={submitting}
             />
             <div className="text-xs text-gray-400 mt-1">Seeds <span className="font-mono">deposited capital</span> and <span className="font-mono">max deployed</span> for this fund. You can adjust both later in the fund's config.</div>
@@ -269,7 +269,7 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
               type="checkbox"
               checked={dryRun}
               onChange={(e) => setDryRun(e.target.checked)}
-              className="w-4 h-4 bg-gray-900 border-gray-700 rounded"
+              className="w-4 h-4 bg-gray-900 border-gray-700 rounded-sm"
               disabled={submitting}
             />
             <label htmlFor="addFundDryRun" className="text-sm text-gray-300">
@@ -278,7 +278,7 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
           </div>
 
           {error && (
-            <div className="bg-red-900/50 border border-red-700 text-red-200 text-sm rounded p-3">
+            <div className="bg-red-900/50 border border-red-700 text-red-200 text-sm rounded-sm p-3">
               {error}
             </div>
           )}
@@ -295,7 +295,7 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
             <button
               type="submit"
               disabled={submitting}
-              className="min-h-11 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded text-sm font-medium text-white"
+              className="min-h-11 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm font-medium text-white"
             >
               {submitting ? 'Creating...' : 'Create Fund'}
             </button>

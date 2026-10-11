@@ -187,7 +187,7 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
             </span>
           </div>
           {isDryRun && (
-            <span className="px-2 py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-xs rounded">
+            <span className="px-2 py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-xs rounded-sm">
               Dry-Run Mode
             </span>
           )}
@@ -302,19 +302,19 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
         <h4 className="font-semibold text-gray-300 mb-2">Chart Legend</h4>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 bg-green-500 rounded"></div>
+            <div className="w-3 h-3 bg-green-500 rounded-sm"></div>
             <span>HARVEST regime (full entries)</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 bg-yellow-500 rounded"></div>
+            <div className="w-3 h-3 bg-yellow-500 rounded-sm"></div>
             <span>CAUTION regime (reduced entries)</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 bg-red-500 rounded"></div>
+            <div className="w-3 h-3 bg-red-500 rounded-sm"></div>
             <span>TREND regime (exits only)</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 bg-blue-500 rounded"></div>
+            <div className="w-3 h-3 bg-blue-500 rounded-sm"></div>
             <span>ATR trigger band</span>
           </div>
         </div>

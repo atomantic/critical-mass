@@ -157,8 +157,8 @@ const Systems = () => {
 
       <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-2 text-sm">
         {TIER_ORDER.map((tier) => (
-          <div key={tier} className="flex items-center gap-2 px-3 py-2 bg-gray-800 rounded">
-            <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: TIER_COLORS[tier] }} />
+          <div key={tier} className="flex items-center gap-2 px-3 py-2 bg-gray-800 rounded-sm">
+            <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: TIER_COLORS[tier] }} />
             <span className="text-gray-300 truncate">{TIER_EMOJIS[tier]} {tier.replace('_', ' ')}</span>
           </div>
         ))}
@@ -195,7 +195,7 @@ const Systems = () => {
                       </span>
                     </div>
                     <span
-                      className="text-xs font-mono font-medium px-1.5 py-0.5 rounded"
+                      className="text-xs font-mono font-medium px-1.5 py-0.5 rounded-sm"
                       style={{ backgroundColor: `${TIER_COLORS[tier]}22`, color: TIER_COLORS[tier], border: `1px solid ${TIER_COLORS[tier]}55` }}
                     >{TIER_RANGES[tier]}</span>
                   </div>

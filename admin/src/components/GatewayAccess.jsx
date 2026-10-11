@@ -123,7 +123,7 @@ export default function GatewayAccess() {
                 value={currentPassword}
                 onChange={(e) => setCurrentPassword(e.target.value)}
                 autoComplete="current-password"
-                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white focus:outline-hidden focus:border-blue-500"
               />
             </div>
           )}
@@ -135,7 +135,7 @@ export default function GatewayAccess() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="new-password"
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+              className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white focus:outline-hidden focus:border-blue-500"
               required
               minLength={8}
             />
@@ -148,7 +148,7 @@ export default function GatewayAccess() {
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
               autoComplete="new-password"
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+              className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white focus:outline-hidden focus:border-blue-500"
               required
               minLength={8}
             />
@@ -157,7 +157,7 @@ export default function GatewayAccess() {
             <button
               type="submit"
               disabled={saving}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded text-sm font-medium"
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm font-medium"
             >
               {saving ? 'Saving...' : required ? 'Change password' : 'Require sign-in'}
             </button>
@@ -166,7 +166,7 @@ export default function GatewayAccess() {
                 type="button"
                 onClick={handleClear}
                 disabled={clearing || !currentPassword}
-                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded text-sm"
+                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded-sm text-sm"
               >
                 {clearing ? '...' : 'Remove password'}
               </button>
@@ -175,7 +175,7 @@ export default function GatewayAccess() {
               <button
                 type="button"
                 onClick={handleSignOut}
-                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm ml-auto"
+                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-sm text-sm ml-auto"
               >
                 Sign out
               </button>

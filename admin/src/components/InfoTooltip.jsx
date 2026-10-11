@@ -89,7 +89,7 @@ export default function InfoTooltip({ tip, label = 'More information', align = '
         onClick={() => setOpen(o => !o)}
         onPointerEnter={hoverOpen}
         onPointerLeave={hoverClose}
-        className="relative inline-flex items-center justify-center cursor-help text-gray-400 hover:text-gray-200 focus-visible:text-gray-200 focus-visible:outline focus-visible:outline-1 focus-visible:outline-gray-400 rounded-full transition-colors [@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-4 [@media(pointer:coarse)]:after:content-['']"
+        className="relative inline-flex items-center justify-center cursor-help text-gray-400 hover:text-gray-200 focus-visible:text-gray-200 focus-visible:outline-solid focus-visible:outline-1 focus-visible:outline-gray-400 rounded-full transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-4 pointer-coarse:after:content-['']"
       >
         <svg className={iconClassName} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
           <circle cx="12" cy="12" r="10" />
@@ -107,7 +107,7 @@ export default function InfoTooltip({ tip, label = 'More information', align = '
           style={pos
             ? { left: pos.left, top: pos.top, width: pos.width, maxHeight: pos.maxHeight }
             : { left: MARGIN, top: MARGIN, width: Math.min(maxWidth, (typeof window === 'undefined' ? maxWidth : window.innerWidth) - MARGIN * 2), visibility: 'hidden' }}
-          className="fixed overflow-y-auto overscroll-contain break-words px-3 py-2 bg-gray-900 border border-gray-700 text-xs text-gray-300 rounded-lg shadow-lg z-50 space-y-0.5 leading-snug text-left normal-case font-normal"
+          className="fixed overflow-y-auto overscroll-contain wrap-break-word px-3 py-2 bg-gray-900 border border-gray-700 text-xs text-gray-300 rounded-lg shadow-lg z-50 space-y-0.5 leading-snug text-left normal-case font-normal"
         >
           {tip}
         </div>,

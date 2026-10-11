@@ -166,7 +166,7 @@ export default function TradeHistory() {
         <button
           disabled={busy}
           onClick={() => { resetForm(); setShowForm(!showForm) }}
-          className="flex items-center justify-center gap-1 min-h-11 px-2 text-xs bg-emerald-600 hover:bg-emerald-700 rounded transition-colors"
+          className="flex items-center justify-center gap-1 min-h-11 px-2 text-xs bg-emerald-600 hover:bg-emerald-700 rounded-sm transition-colors"
         >
           <Plus size={12} /> Add Trade
         </button>
@@ -175,30 +175,30 @@ export default function TradeHistory() {
       {/* P&L Summary */}
       {summary && (<>
         <div className="grid grid-cols-2 gap-1.5 mb-2 text-xs">
-          <div className="bg-gray-900 rounded px-2 py-1">
+          <div className="bg-gray-900 rounded-sm px-2 py-1">
             <div className="text-gray-400 text-[10px]">P&L</div>
             <div className={`font-mono font-semibold ${pnlColor(summary.totalPnl)}`}>
               {summary.totalPnl >= 0 ? '+' : ''}{fmt(summary.totalPnl)}
             </div>
           </div>
-          <div className="bg-gray-900 rounded px-2 py-1">
+          <div className="bg-gray-900 rounded-sm px-2 py-1">
             <div className="text-gray-400 text-[10px]">Win Rate</div>
             <div className="font-mono font-medium text-white">
               {winRate}% <span className="text-gray-400 text-[10px]">{summary.wins}W/{summary.losses}L</span>
             </div>
           </div>
-          <div className="bg-gray-900 rounded px-2 py-1">
+          <div className="bg-gray-900 rounded-sm px-2 py-1">
             <div className="text-gray-400 text-[10px]">Cost</div>
             <div className="font-mono font-medium text-white">{fmt(summary.totalCost)}</div>
           </div>
-          <div className="bg-gray-900 rounded px-2 py-1">
+          <div className="bg-gray-900 rounded-sm px-2 py-1">
             <div className="text-gray-400 text-[10px]">Return</div>
             <div className="font-mono font-medium text-white">{fmt(summary.totalReturn)}</div>
           </div>
         </div>
         {(summary.upCount > 0 || summary.downCount > 0) && (
           <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
-            <div className="bg-gray-900 rounded px-2 py-1.5 flex items-center gap-1.5">
+            <div className="bg-gray-900 rounded-sm px-2 py-1.5 flex items-center gap-1.5">
               <ArrowUp size={12} className="text-green-400" />
               <div>
                 <span className="text-gray-400">Up: </span>
@@ -206,7 +206,7 @@ export default function TradeHistory() {
                 <span className="text-gray-400 ml-1">({summary.upCount})</span>
               </div>
             </div>
-            <div className="bg-gray-900 rounded px-2 py-1.5 flex items-center gap-1.5">
+            <div className="bg-gray-900 rounded-sm px-2 py-1.5 flex items-center gap-1.5">
               <ArrowDown size={12} className="text-red-400" />
               <div>
                 <span className="text-gray-400">Down: </span>
@@ -233,7 +233,7 @@ export default function TradeHistory() {
                 type="date"
                 value={form.date}
                 onChange={e => setForm({ ...form, date: e.target.value })}
-                className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-emerald-500"
+                className="w-full bg-gray-800 border border-gray-700 rounded-sm px-2 py-1 text-xs text-white focus:outline-hidden focus:border-emerald-500"
               />
             </div>
             <div>
@@ -249,7 +249,7 @@ export default function TradeHistory() {
                 required
                 aria-invalid={Boolean(validationErrors.cost)}
                 aria-describedby={validationErrors.cost ? costErrorId : undefined}
-                className={`w-full bg-gray-800 border rounded px-2 py-1 text-xs text-white placeholder-gray-400 focus:outline-none ${validationErrors.cost ? 'border-red-500 focus:border-red-500' : 'border-gray-700 focus:border-emerald-500'}`}
+                className={`w-full bg-gray-800 border rounded-sm px-2 py-1 text-xs text-white placeholder-gray-400 focus:outline-hidden ${validationErrors.cost ? 'border-red-500 focus:border-red-500' : 'border-gray-700 focus:border-emerald-500'}`}
               />
               {validationErrors.cost && (
                 <div id={costErrorId} role="alert" className="text-[10px] text-red-400 mt-0.5">{validationErrors.cost}</div>
@@ -271,7 +271,7 @@ export default function TradeHistory() {
                 required
                 aria-invalid={Boolean(validationErrors.returnAmount)}
                 aria-describedby={validationErrors.returnAmount ? returnErrorId : undefined}
-                className={`w-full bg-gray-800 border rounded px-2 py-1 text-xs text-white placeholder-gray-400 focus:outline-none ${validationErrors.returnAmount ? 'border-red-500 focus:border-red-500' : 'border-gray-700 focus:border-emerald-500'}`}
+                className={`w-full bg-gray-800 border rounded-sm px-2 py-1 text-xs text-white placeholder-gray-400 focus:outline-hidden ${validationErrors.returnAmount ? 'border-red-500 focus:border-red-500' : 'border-gray-700 focus:border-emerald-500'}`}
               />
               {validationErrors.returnAmount && (
                 <div id={returnErrorId} role="alert" className="text-[10px] text-red-400 mt-0.5">{validationErrors.returnAmount}</div>
@@ -289,7 +289,7 @@ export default function TradeHistory() {
               type="time"
               value={form.boughtTime}
               onChange={e => setForm({ ...form, boughtTime: e.target.value })}
-              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-emerald-500"
+              className="w-full bg-gray-800 border border-gray-700 rounded-sm px-2 py-1 text-xs text-white focus:outline-hidden focus:border-emerald-500"
             />
           </div>
           <div>
@@ -321,7 +321,7 @@ export default function TradeHistory() {
               value={form.note}
               onChange={e => setForm({ ...form, note: e.target.value })}
               placeholder="e.g. Up $500 range, hit target"
-              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white placeholder-gray-400 focus:outline-none focus:border-emerald-500"
+              className="w-full bg-gray-800 border border-gray-700 rounded-sm px-2 py-1 text-xs text-white placeholder-gray-400 focus:outline-hidden focus:border-emerald-500"
             />
           </div>
           {form.cost && form.returnAmount && !Number.isNaN(parsedCost) && !Number.isNaN(parsedReturnAmount) && (
@@ -336,7 +336,7 @@ export default function TradeHistory() {
             <button
               disabled={busy}
               type="submit"
-              className="flex-1 min-h-11 bg-emerald-600 hover:bg-emerald-700 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
+              className="flex-1 min-h-11 bg-emerald-600 hover:bg-emerald-700 rounded-sm text-xs font-medium transition-colors flex items-center justify-center gap-1"
             >
               <Check size={12} /> {editId != null ? 'Update' : 'Save'}
             </button>
@@ -344,7 +344,7 @@ export default function TradeHistory() {
               disabled={busy}
               type="button"
               onClick={resetForm}
-              className="flex-1 min-h-11 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
+              className="flex-1 min-h-11 bg-gray-700 hover:bg-gray-600 rounded-sm text-xs font-medium transition-colors flex items-center justify-center gap-1"
             >
               <X size={12} /> Cancel
             </button>

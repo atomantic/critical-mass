@@ -110,7 +110,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
               return (
                 <div
                   key={h.key}
-                  className="flex items-center gap-1 px-2 py-1 rounded bg-gray-800/60 border border-gray-700/50"
+                  className="flex items-center gap-1 px-2 py-1 rounded-sm bg-gray-800/60 border border-gray-700/50"
                   title={`${desc} — Score: ${h.score.toFixed(1)}`}
                 >
                   <span className="text-xs text-gray-400">{h.key}</span>
@@ -125,7 +125,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
         {/* Flush-reversal setup (1m flush vs prior daily close) */}
         {flushSetup?.phase === 'armed' && (
           <div
-            className="px-2 py-1 rounded text-xs font-bold bg-amber-900/40 text-amber-300 border border-amber-700/40"
+            className="px-2 py-1 rounded-sm text-xs font-bold bg-amber-900/40 text-amber-300 border border-amber-700/40"
             title={`1m flushed ${flushSetup.armedMetrics?.dropPct ?? '?'}% to a fresh 24h low, ${flushSetup.armedMetrics?.belowDailyPct ?? '?'}% under the prior daily close (1m RSI ${flushSetup.armedMetrics?.rsi ?? '?'}). Waiting for a bounce off ${formatCurrency(flushSetup.flushLow)} to confirm the turn.`}
           >
             FLUSH ARMED
@@ -133,7 +133,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
         )}
         {flushSetup?.phase === 'active' && (
           <div
-            className="px-2 py-1 rounded text-xs font-bold bg-green-900/50 text-green-300 border border-green-600/50"
+            className="px-2 py-1 rounded-sm text-xs font-bold bg-green-900/50 text-green-300 border border-green-600/50"
             title={`Dip buy confirmed off the ${formatCurrency(flushSetup.flushLow)} flush low. Entry ${formatCurrency(flushSetup.entryPrice)}, take profit ${formatCurrency(flushSetup.targetPrice)}, stop ${formatCurrency(flushSetup.stopPrice)}.`}
           >
             DIP BUY {formatCurrency(flushSetup.entryPrice)} → {formatCurrency(flushSetup.targetPrice)}
@@ -166,11 +166,11 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
           </div>
         )}
         {trendFilter?.trendBias === 'neutral' && (
-          <div className="px-2 py-1 rounded text-xs font-bold bg-gray-700/40 text-gray-400" title="Trend: EMA(50) ≈ EMA(200) on 1h candles — no trend bias applied">FLAT</div>
+          <div className="px-2 py-1 rounded-sm text-xs font-bold bg-gray-700/40 text-gray-400" title="Trend: EMA(50) ≈ EMA(200) on 1h candles — no trend bias applied">FLAT</div>
         )}
         {trendGate && !trendGate.open && (
           <div
-            className="px-2 py-1 rounded text-xs font-bold bg-yellow-900/40 text-yellow-400"
+            className="px-2 py-1 rounded-sm text-xs font-bold bg-yellow-900/40 text-yellow-400"
             title={`Long gate closed (${trendGate.reason}) — 15m/1h tape is bearish, no new UP entries`}
           >
             GATE CLOSED
@@ -209,7 +209,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
         {/* Best horizon badge */}
         {horizonPrediction?.bestHorizon && (
           <div
-            className="px-2 py-1 rounded text-xs font-mono bg-purple-900/40 text-purple-400 border border-purple-700/40"
+            className="px-2 py-1 rounded-sm text-xs font-mono bg-purple-900/40 text-purple-400 border border-purple-700/40"
             title={`Best prediction window from scorecard — ${horizonPrediction.bestHorizon} has highest accuracy (${horizonPrediction.bestAccuracy?.toFixed(0) ?? '?'}%)`}
           >
             Best: {horizonPrediction.bestHorizon}

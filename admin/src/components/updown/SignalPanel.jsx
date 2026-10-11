@@ -100,7 +100,7 @@ export default function SignalPanel({ signal, indicators, position }) {
                   <span className="text-gray-400">
                     {h.timestamp ? new Date(h.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true }) : '---'}
                   </span>
-                  <span className={`px-1.5 py-0.5 rounded text-xs ${hColors}`}>{hAction}</span>
+                  <span className={`px-1.5 py-0.5 rounded-sm text-xs ${hColors}`}>{hAction}</span>
                   {h.confidence != null && (
                     <span className="text-gray-400 font-mono" title="Heuristic signal strength">S {(h.confidence * 100).toFixed(0)}%</span>
                   )}

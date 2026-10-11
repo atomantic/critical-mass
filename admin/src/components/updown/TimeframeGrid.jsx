@@ -86,7 +86,7 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
           const lowCandles = row.candleCount > 0 && row.candleCount < MACD_MIN_CANDLES
 
           return (
-            <div key={row.key} className={`flex items-center gap-1.5 px-1.5 rounded ${cfg.bgTint}`} title={TF_TOOLTIPS[row.key]}>
+            <div key={row.key} className={`flex items-center gap-1.5 px-1.5 rounded-sm ${cfg.bgTint}`} title={TF_TOOLTIPS[row.key]}>
               <span className="text-[10px] font-mono text-gray-400 w-6 text-right shrink-0 cursor-help">{row.key}</span>
               <cfg.Icon size={12} className={cfg.color} />
               <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden" title={`Signal strength: ${Math.abs(row.score).toFixed(0)}% — bar shows relative magnitude`}>
@@ -127,7 +127,7 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
 
         {/* Tick momentum row */}
         <div
-          className={`flex items-center gap-1.5 px-1.5 rounded border-t border-gray-700 mt-1 pt-1 ${tickCfg.bgTint}`}
+          className={`flex items-center gap-1.5 px-1.5 rounded-sm border-t border-gray-700 mt-1 pt-1 ${tickCfg.bgTint}`}
           title="Real-time tick momentum from raw price updates (not candle-based). Shows basis points moved and price velocity in $/sec."
         >
           <span className="text-[10px] font-mono text-gray-400 w-6 text-right shrink-0 cursor-help">Tick</span>

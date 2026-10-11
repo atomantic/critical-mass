@@ -94,7 +94,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
             <button
               type="button"
               onClick={e => { e.currentTarget.focus(); setShowAllCycles(!showAllCycles); setExpandedCycles(new Set()); cycleInitRef.current = false }}
-              className={`text-xs px-2 py-1 rounded transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400 ${
+              className={`text-xs px-2 py-1 rounded transition-colors focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-cyan-400 ${
                 showAllCycles
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
@@ -121,7 +121,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
             value={fillSearchId}
             onChange={e => setFillSearchId(e.target.value)}
             placeholder="Filter by ID…"
-            className="bg-gray-700 text-gray-200 text-xs rounded px-2 py-1 placeholder-gray-400 w-36"
+            className="bg-gray-700 text-gray-200 text-xs rounded-sm px-2 py-1 placeholder-gray-400 w-36"
           />
         </div>
       </div>
@@ -182,7 +182,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                       {(buys.length > 0 || sell.duplicateTpNote || sell.untrackedSell) && (
                         <button type="button" aria-label={`Buy details for filled sell ${sell.orderId} (${group.key})`}
                           aria-expanded={isExpanded} aria-controls={detailsId}
-                          className="min-h-11 min-w-11 inline-flex items-center justify-center rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+                          className="min-h-11 min-w-11 inline-flex items-center justify-center rounded-sm focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-cyan-400"
                           onClick={() => toggleFill(group.key)}>
                           <span aria-hidden="true" className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
                         </button>
@@ -318,7 +318,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                   const showReserves = totalHoldback !== 0
                   const reservesClass = totalHoldback < 0 ? 'text-amber-400' : 'text-cyan-400'
                   return (
-                    <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded text-xs">
+                    <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded-sm text-xs">
                       <span className="text-gray-400">{sellGroups.length} sells across {cycleGroups.length} {cycleGroups.length === 1 ? 'cycle' : 'cycles'}</span>
                       <span className="font-mono">
                         <span className={totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}>
@@ -346,7 +346,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                   <div className="border border-yellow-700/40 rounded-lg">
                     <button type="button"
                       aria-label="Orphaned buy details" aria-expanded={expandedCycles.has('orphans')} aria-controls={`${disclosureId}-orphans`}
-                      className="w-full min-h-11 flex items-center justify-between text-left px-3 py-2 hover:bg-gray-700/40 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+                      className="w-full min-h-11 flex items-center justify-between text-left px-3 py-2 hover:bg-gray-700/40 transition-colors focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-cyan-400"
                       onClick={() => {
                         setExpandedCycles(prev => {
                           const next = new Set(prev)
@@ -358,7 +358,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                     >
                       <span className="flex items-center gap-2">
                         <span aria-hidden="true" className={`inline-block transition-transform text-xs text-gray-400 ${expandedCycles.has('orphans') ? 'rotate-90' : ''}`}>&#9654;</span>
-                        <span className="px-2 py-0.5 rounded text-xs bg-yellow-900/50 text-yellow-400">Orphaned</span>
+                        <span className="px-2 py-0.5 rounded-sm text-xs bg-yellow-900/50 text-yellow-400">Orphaned</span>
                         <span className="text-xs text-gray-400">{orphanedBuys.length} buys not linked to any sell</span>
                       </span>
                       <span className="font-mono text-xs text-yellow-400">{orphanedBuys.reduce((s, b) => s + (b.size || 0), 0).toFixed(8)} {asset}</span>
@@ -422,7 +422,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                     <div key={cycle.cycleId} className="border border-gray-700 rounded-lg">
                       <button type="button"
                         aria-label={`Details for cycle ${cycleLabel}`} aria-expanded={isCycleExpanded} aria-controls={`${disclosureId}-cycle-${encodeURIComponent(cycle.cycleId)}`}
-                        className="w-full min-h-11 flex items-center justify-between text-left px-3 py-2 hover:bg-gray-700/40 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+                        className="w-full min-h-11 flex items-center justify-between text-left px-3 py-2 hover:bg-gray-700/40 transition-colors focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-cyan-400"
                         onClick={() => {
                           setExpandedCycles(prev => {
                             const next = new Set(prev)

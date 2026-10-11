@@ -193,7 +193,7 @@ export default function UpDownDashboard() {
             </div>
             <Link
               to="/updown/analysis"
-              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300 hover:text-white transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-sm text-xs text-gray-300 hover:text-white transition-colors"
               title="Scorecard Analysis"
             >
               <BarChart3 size={14} />
@@ -220,7 +220,7 @@ export default function UpDownDashboard() {
             {/* Audio toggle */}
             <button
               onClick={() => setAudioEnabled(!audioEnabled)}
-              className={`${ENGINE_CONTROL_CLASS} rounded transition-colors ${audioEnabled ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'}`}
+              className={`${ENGINE_CONTROL_CLASS} rounded-sm transition-colors ${audioEnabled ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'}`}
               title={audioEnabled ? 'Disable audio alerts' : 'Enable audio alerts'}
               aria-label={audioEnabled ? 'Disable audio alerts' : 'Enable audio alerts'}
             >
@@ -245,7 +245,7 @@ export default function UpDownDashboard() {
                 }
               }}
               disabled={restarting}
-              className={`${ENGINE_CONTROL_CLASS} rounded transition-colors ${restarting ? 'bg-yellow-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
+              className={`${ENGINE_CONTROL_CLASS} rounded-sm transition-colors ${restarting ? 'bg-yellow-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
               title="Restart server (pm2)"
               aria-label="Restart server"
             >
@@ -257,7 +257,7 @@ export default function UpDownDashboard() {
               <button
                 onClick={handleStop}
                 disabled={stopping}
-                className={`${ENGINE_CONTROL_CLASS} px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded text-sm font-medium transition-colors gap-1.5`}
+                className={`${ENGINE_CONTROL_CLASS} px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded-sm text-sm font-medium transition-colors gap-1.5`}
               >
                 <Square size={14} />
                 {stopping ? '...' : 'Stop'}
@@ -266,7 +266,7 @@ export default function UpDownDashboard() {
               <button
                 onClick={handleStart}
                 disabled={starting}
-                className={`${ENGINE_CONTROL_CLASS} px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded text-sm font-medium transition-colors gap-1.5`}
+                className={`${ENGINE_CONTROL_CLASS} px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded-sm text-sm font-medium transition-colors gap-1.5`}
               >
                 <Play size={14} />
                 {starting ? '...' : 'Start'}

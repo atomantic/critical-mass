@@ -62,14 +62,14 @@ function Toast({ id, type, title, message, onClose }) {
       className={`flex items-start gap-3 p-4 rounded-lg border shadow-lg animate-slide-in ${toastStyles[type]}`}
       role="alert"
     >
-      <div className="flex-shrink-0 mt-0.5">{toastIcons[type]}</div>
+      <div className="shrink-0 mt-0.5">{toastIcons[type]}</div>
       <div className="flex-1 min-w-0">
         {title && <div className="font-semibold text-sm">{title}</div>}
         <div className="text-sm opacity-90">{message}</div>
       </div>
       <button
         onClick={handleDismiss}
-        className="flex-shrink-0 opacity-70 hover:opacity-100 transition-opacity"
+        className="shrink-0 opacity-70 hover:opacity-100 transition-opacity"
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />

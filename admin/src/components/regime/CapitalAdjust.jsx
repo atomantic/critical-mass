@@ -61,7 +61,7 @@ function CapitalAdjust({ apy, exchange, pairQuery, fetchConfig, fetchStatus, add
         <input
           id={capitalAdjustInputId}
           type="number"
-          className="w-24 bg-gray-700 border border-cyan-500 rounded px-1 py-0.5 text-cyan-400 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500"
+          className="w-24 bg-gray-700 border border-cyan-500 rounded-sm px-1 py-0.5 text-cyan-400 text-xs font-mono focus:outline-hidden focus:ring-1 focus:ring-cyan-500"
           value={capitalAdjustValue}
           onChange={(e) => setCapitalAdjustValue(e.target.value)}
           onKeyDown={(e) => {

@@ -48,7 +48,7 @@ function DataTable({ caption, columns, rows, pageSize }) {
         <nav aria-label={`${caption} pages`} className="flex items-center gap-2 mt-1 text-xs text-gray-400">
           <button
             type="button"
-            className="px-2 py-0.5 rounded bg-gray-700 text-gray-200 disabled:opacity-40"
+            className="px-2 py-0.5 rounded-sm bg-gray-700 text-gray-200 disabled:opacity-40"
             disabled={safePage === 0}
             onClick={() => setPage(safePage - 1)}
           >
@@ -57,7 +57,7 @@ function DataTable({ caption, columns, rows, pageSize }) {
           <span>Rows {from + 1} to {from + visible.length} of {rows.length}</span>
           <button
             type="button"
-            className="px-2 py-0.5 rounded bg-gray-700 text-gray-200 disabled:opacity-40"
+            className="px-2 py-0.5 rounded-sm bg-gray-700 text-gray-200 disabled:opacity-40"
             disabled={safePage >= pageCount - 1}
             onClick={() => setPage(safePage + 1)}
           >
@@ -82,7 +82,7 @@ export default function ChartDataAlternative({ summaryId, summary = [], tables =
         {summary.map((line, i) => <p key={i} className="mb-0.5">{line}</p>)}
       </div>
       <details className="mt-1" data-chart-data>
-        <summary className="cursor-pointer text-gray-300 hover:text-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 w-fit">
+        <summary className="cursor-pointer text-gray-300 hover:text-gray-100 focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-blue-400 w-fit">
           View chart data
         </summary>
         {tables.map((table, i) => (

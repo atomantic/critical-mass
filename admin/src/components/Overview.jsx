@@ -285,7 +285,7 @@ function Overview() {
         <h1 className="text-xl font-bold text-white">Funds</h1>
         <button
           onClick={() => setAddFundOpen(true)}
-          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium text-white transition-colors"
+          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded-sm text-sm font-medium text-white transition-colors"
           title="Create a new trading fund on an existing exchange"
         >
           + Add Fund
@@ -371,7 +371,7 @@ function Overview() {
               {/* Header: icon + name + pair + badges */}
               <Link to={`/${card.exchange}/${card.pair}`} className="flex items-center justify-between mb-3 hover:opacity-80 transition-opacity">
                 <div className="flex items-center gap-2">
-                  <span className={`w-7 h-7 flex items-center justify-center rounded shrink-0 ${EXCHANGE_COLORS[card.exchange] || 'bg-gray-600'}`}>
+                  <span className={`w-7 h-7 flex items-center justify-center rounded-sm shrink-0 ${EXCHANGE_COLORS[card.exchange] || 'bg-gray-600'}`}>
                     {EXCHANGE_ICONS[card.exchange] || '?'}
                   </span>
                   <div>
@@ -381,18 +381,18 @@ function Overview() {
                   </div>
                   <ExternalLink className="w-3.5 h-3.5 text-gray-500" />
                 </div>
-                <span className={`text-xs px-2 py-0.5 rounded ${engineStatus.color} ${engineStatus.textColor} ${engineStatus.pulse ? 'animate-pulse' : ''}`}>
+                <span className={`text-xs px-2 py-0.5 rounded-sm ${engineStatus.color} ${engineStatus.textColor} ${engineStatus.pulse ? 'animate-pulse' : ''}`}>
                   {engineStatus.label}
                 </span>
               </Link>
 
               {/* Status pills */}
               <div className="flex items-center gap-2 mb-3">
-                <span className={`text-xs px-2 py-0.5 rounded bg-gray-700 ${healthColor}`}>
+                <span className={`text-xs px-2 py-0.5 rounded-sm bg-gray-700 ${healthColor}`}>
                   {card.healthMode}
                 </span>
                 {card.regimeMode && (
-                  <span className={`text-xs px-2 py-0.5 rounded ${regimeColor.bg || 'bg-gray-700'} ${regimeColor.text || 'text-gray-400'}`}>
+                  <span className={`text-xs px-2 py-0.5 rounded-sm ${regimeColor.bg || 'bg-gray-700'} ${regimeColor.text || 'text-gray-400'}`}>
                     {card.regimeMode}
                   </span>
                 )}
@@ -401,7 +401,7 @@ function Overview() {
               {/* Celestial Visualization */}
               {card.celestial?.enabled && card.celestial?.bodies?.length > 0 && (
                 <div className="pointer-events-none mb-3">
-                  <Suspense fallback={<div className="bg-gray-900 rounded p-2 text-xs text-gray-400">Loading...</div>}>
+                  <Suspense fallback={<div className="bg-gray-900 rounded-sm p-2 text-xs text-gray-400">Loading...</div>}>
                     <CelestialVisualization
                       celestial={card.celestial}
                       currentPrice={card.lastPrice}
@@ -484,7 +484,7 @@ function Overview() {
                     <span>Buys {card.cycleBuys}/{card.maxCycleBuys}</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5 min-w-0 overflow-hidden">
+                    <div className="bg-green-900/20 border border-green-700/30 rounded-sm p-1.5 min-w-0 overflow-hidden">
                       <div className="text-green-400/70 text-[10px]">Daily ({card.dailyReturnPercent.toFixed(2)}%)</div>
                       <div className="font-mono text-xs text-green-400 truncate">
                         {formatCurrency(card.estimatedDailyUsdc + (card.estimatedDailyAsset * card.lastPrice))}
@@ -496,7 +496,7 @@ function Overview() {
                         </div>
                       )}
                     </div>
-                    <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5 min-w-0 overflow-hidden">
+                    <div className="bg-cyan-900/20 border border-cyan-700/30 rounded-sm p-1.5 min-w-0 overflow-hidden">
                       <div className="text-cyan-400/70 text-[10px] truncate">Annual ({card.estimatedApy > 9999 ? '>9999' : card.estimatedApy.toFixed(0)}% APY)</div>
                       <div className="font-mono text-xs text-cyan-400 truncate">
                         {formatCurrency((card.estimatedDailyUsdc * 365) + (card.estimatedDailyAsset * 365 * card.lastPrice))}/yr
