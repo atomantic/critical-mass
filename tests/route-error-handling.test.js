@@ -5,7 +5,7 @@
  * trace and the install's filesystem path), and the pre-auth rate-limit
  * path (src/operator-auth.js) must return JSON with a Retry-After header.
  */
-const { describe, it } = require('node:test');
+const { describe, it, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('crypto');
 const express = require('express');
@@ -22,6 +22,11 @@ const { readJSON, writeJSON } = require('../src/shared-utils');
 const PASSWORD = 'gateway-password-1';
 
 const tmpFiles = [];
+// Registered at file scope so every case's auth fixture is removed even when
+// its assertions throw.
+afterEach(() => {
+  for (const file of tmpFiles.splice(0)) fs.rmSync(file, { force: true });
+});
 const tmpAuthFile = () => {
   const file = path.join(os.tmpdir(), `route-error-handling-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
   tmpFiles.push(file);

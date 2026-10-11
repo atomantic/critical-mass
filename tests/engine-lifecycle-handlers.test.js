@@ -808,3 +808,24 @@ describe('exclusive fill-ledger handover over real ledgers (issue #1008)', () =>
     assert.deepEqual([...onDisk().keys()].sort(), ['A', 'R', 'S']);
   });
 });
+
+it('admits the internal backup-resume start while paused but defers its retries (#1025)', async () => {
+  let paused = true;
+  const h = retryHarness({ isPaused: () => paused });
+  let attempts = 0;
+  h.engineFactories.set(fundKey(EXCHANGE, PAIR_A), () => ({ start: async () => { attempts++; throw new Error('fetch failed'); }, stop: async () => {} }));
+  assert.equal((await h.autoResumeFund(EXCHANGE, PAIR_A)).success, false);
+  assert.equal(attempts, 0, 'public automatic starts stay gated');
+  await h.resumeAfterBackup(EXCHANGE, PAIR_A);
+  assert.equal(attempts, 1);
+  assert.equal(h.getStartStatus(EXCHANGE, PAIR_A).state, 'retrying');
+  await h.fire();
+  assert.equal(attempts, 1, 'retry waits for the pause to end');
+  assert.equal(h.timers.size, 1);
+  paused = false;
+  await h.fire();
+  assert.equal(attempts, 2);
+  assert.equal(h.timers.size, 1, 'still one timer per fund');
+  await h.cancelStarts({ shutdown: true });
+  assert.equal(h.timers.size, 0);
+});

@@ -208,7 +208,7 @@ const createEngineCallbacks = (exchange, pair) => ({
 // fill-consumer handover ordering around engine stop/start can be tested
 // directly against these production callbacks. Ledger ownership transfers
 // exclusively between the engine and the standalone service (issue #1008).
-const { startFund, autoResumeFund, getStartStatus, cancelStarts } = registerEngineLifecycleHandlers(ipcServer, {
+const { autoResumeFund, resumeAfterBackup, getStartStatus, cancelStarts, settleStarts } = registerEngineLifecycleHandlers(ipcServer, {
   regimeEngines,
   resolvePair,
   fundKey,
@@ -547,7 +547,8 @@ ipcServer.onRequest('regime:dry-run-state', async (payload, exchange, pair) => {
 registerEngineBackupHandlers(ipcServer, {
   regimeEngines, getMarketFunds: getActiveMarketDataFunds,
   stopMarketServices: stopAllMarketDataServices, drainMarketStarts: drainMarketDataStarts,
-  drainPendingWrites, startMarketService: startMarketDataService, startFund,
+  drainPendingWrites, startMarketService: startMarketDataService,
+  resumeFund: resumeAfterBackup, getStartStatus, drainStarts: settleStarts,
   pauseBuffers: shutdownAllBuffers, resumeBuffers: resumeAllBuffers,
   logger: engineLogger(EXCHANGE_NAME),
 });
