@@ -31,7 +31,9 @@ const { createContextLogger } = require('./logger');
  * @property {number|null} buyPlacedAt
  * @property {number|null} buyFilledAt
  * @property {string[]} buyFillTradeIds
- * @property {'sell_recorded'|'buy_pending'|'buy_recorded'|'tp_pending'|'completed'|'dismissed'} status
+ * @property {RecoveryAttempt[]} [recoveryAttempts] - Sell-first only: every recovery buy placed or linked, oldest first
+ * @property {{at:number, error:string|null, message:string}|null} [lastCheck] - Outcome of the most recent status check or recovery operation
+ * @property {'sell_recorded'|'buy_pending'|'buy_cancelled'|'buy_recorded'|'tp_pending'|'completed'|'dismissed'} status
  * @property {'sell_first'|'buy_first'|'paired'} tradeType
  * @property {string|null} bodyId
  * @property {string} note
@@ -39,14 +41,106 @@ const { createContextLogger } = require('./logger');
  * @property {number} updatedAt
  */
 
+/**
+ * One recovery buy order for a sell-first trade (issue #1034). The attempt list
+ * is append-only history: a terminal attempt keeps its order id and whatever
+ * it executed, so a replacement only has to cover what is still missing.
+ * @typedef {Object} RecoveryAttempt
+ * @property {string} orderId
+ * @property {'placed'|'linked'} kind
+ * @property {number|null} price - Limit price when placed by us
+ * @property {number|null} size - Planned quantity when placed by us
+ * @property {number|null} startedAt
+ * @property {'filled'|'cancelled'|null} outcome - null while the order may still be live
+ * @property {string|null} exchangeStatus - Terminal status the exchange reported
+ * @property {number} filledSize
+ * @property {number} filledQuote
+ * @property {string[]} fillTradeIds
+ * @property {number|null} endedAt
+ */
+
+/** Quantities closer than this are treated as equal (1 satoshi). */
+const SIZE_EPSILON = 0.00000001;
+
 const STATUS = Object.freeze({
   SELL_RECORDED: 'sell_recorded',
   BUY_PENDING: 'buy_pending',
+  // The recovery buy left the book without covering the whole sell (issue
+  // #1034). Terminal for that order, but the trade itself stays recoverable:
+  // retryRecovery places/links a replacement for the uncovered remainder.
+  BUY_CANCELLED: 'buy_cancelled',
   BUY_RECORDED: 'buy_recorded',
   TP_PENDING: 'tp_pending',
   COMPLETED: 'completed',
   DISMISSED: 'dismissed',
 });
+
+/** @returns {RecoveryAttempt} */
+const newAttempt = ({ orderId, kind, price = null, size = null, startedAt = Date.now() }) => ({
+  orderId,
+  kind,
+  price,
+  size,
+  startedAt,
+  outcome: null,
+  exchangeStatus: null,
+  filledSize: 0,
+  filledQuote: 0,
+  fillTradeIds: [],
+  endedAt: null,
+});
+
+/**
+ * Give a record written before attempts were tracked an attempt list that
+ * matches its legacy fields, so every reader can rely on it.
+ * @param {ManualTrade} trade
+ */
+const normalizeRecoveryAttempts = (trade) => {
+  if (trade.tradeType !== 'sell_first' || Array.isArray(trade.recoveryAttempts)) return;
+  trade.recoveryAttempts = [];
+  if (!trade.buyOrderId) return;
+  const attempt = newAttempt({
+    orderId: trade.buyOrderId,
+    kind: trade.buyPlacedAt ? 'placed' : 'linked',
+    price: trade.buyPlacedAt ? trade.buyPrice : null,
+    size: trade.buyPlacedAt ? trade.buySize : null,
+    startedAt: trade.buyPlacedAt || trade.updatedAt || null,
+  });
+  if (trade.status === STATUS.COMPLETED) {
+    attempt.outcome = 'filled';
+    attempt.filledSize = trade.buySize || 0;
+    attempt.filledQuote = (trade.buySize || 0) * (trade.buyPrice || 0);
+    attempt.fillTradeIds = trade.buyFillTradeIds || [];
+    attempt.endedAt = trade.buyFilledAt || null;
+  }
+  trade.recoveryAttempts.push(attempt);
+};
+
+/**
+ * Quantity and quote already recovered by a sell-first trade's terminal
+ * attempts. A live attempt contributes nothing until it is confirmed terminal.
+ * @param {ManualTrade} trade
+ * @returns {{size:number, quote:number, tradeIds:string[]}}
+ */
+const getRecoveredTotals = (trade) => {
+  const done = (trade.recoveryAttempts || []).filter((a) => a.outcome);
+  return {
+    size: done.reduce((sum, a) => sum + a.filledSize, 0),
+    quote: done.reduce((sum, a) => sum + a.filledQuote, 0),
+    tradeIds: done.flatMap((a) => a.fillTradeIds),
+  };
+};
+
+/**
+ * Sold quantity a sell-first trade still has to buy back, with float noise
+ * removed so the adapter's floor-to-increment does not shave a satoshi.
+ * @param {ManualTrade} trade
+ * @returns {number}
+ */
+const getUncoveredSize = (trade) => {
+  const remaining = (trade.sellSize || 0) - getRecoveredTotals(trade).size;
+  return remaining > SIZE_EPSILON ? Math.round(remaining * 1e10) / 1e10 : 0;
+};
 
 const getStorePath = (exchange, pair) => {
   return path.join(resolveFundDataDir(exchange, pair), 'manual-trades.json');
@@ -90,6 +184,7 @@ const createManualTradeStore = (exchange, pair) => {
         for (const t of raw.trades) {
           if (!t.tradeType) t.tradeType = 'sell_first';
           if (t.bodyId === undefined) t.bodyId = null;
+          normalizeRecoveryAttempts(t);
           trades.set(t.id, t);
         }
       }
@@ -150,6 +245,8 @@ const createManualTradeStore = (exchange, pair) => {
       buyPlacedAt: null,
       buyFilledAt: null,
       buyFillTradeIds: [],
+      recoveryAttempts: [],
+      lastCheck: null,
       status: STATUS.SELL_RECORDED,
       tradeType: 'sell_first',
       bodyId: null,
@@ -333,7 +430,7 @@ const createManualTradeStore = (exchange, pair) => {
   };
 
   /**
-   * Record a recovery buy order (newly placed)
+   * Record a recovery buy order (newly placed) as the trade's live attempt
    * @param {string} tradeId - Manual trade ID
    * @param {string} buyOrderId - Exchange order ID
    * @param {number} buyPrice - Limit price
@@ -344,19 +441,24 @@ const createManualTradeStore = (exchange, pair) => {
     const trade = trades.get(tradeId);
     if (!trade) return null;
 
+    const now = Date.now();
+    normalizeRecoveryAttempts(trade);
+    trade.recoveryAttempts.push(newAttempt({ orderId: buyOrderId, kind: 'placed', price: buyPrice, size: buySize, startedAt: now }));
     trade.buyOrderId = buyOrderId;
     trade.buyPrice = buyPrice;
     trade.buySize = buySize;
-    trade.buyPlacedAt = Date.now();
+    trade.buyPlacedAt = now;
     trade.status = STATUS.BUY_PENDING;
-    trade.updatedAt = Date.now();
+    trade.lastCheck = null;
+    trade.updatedAt = now;
 
     persist();
     return trade;
   };
 
   /**
-   * Link an existing buy order (already placed on exchange)
+   * Link an existing buy order (already placed on exchange) as the trade's
+   * live attempt
    * @param {string} tradeId - Manual trade ID
    * @param {string} buyOrderId - Exchange order ID
    * @returns {ManualTrade|null}
@@ -365,8 +467,11 @@ const createManualTradeStore = (exchange, pair) => {
     const trade = trades.get(tradeId);
     if (!trade) return null;
 
+    normalizeRecoveryAttempts(trade);
+    trade.recoveryAttempts.push(newAttempt({ orderId: buyOrderId, kind: 'linked' }));
     trade.buyOrderId = buyOrderId;
     trade.status = STATUS.BUY_PENDING;
+    trade.lastCheck = null;
     trade.updatedAt = Date.now();
 
     persist();
@@ -374,25 +479,58 @@ const createManualTradeStore = (exchange, pair) => {
   };
 
   /**
-   * Mark the recovery buy as filled
+   * Close the trade's live recovery attempt with the executions the exchange
+   * confirmed for it, then settle the trade: COMPLETED once the attempt filled
+   * or everything sold is recovered, otherwise BUY_CANCELLED (recoverable).
+   * The trade's buy totals always describe every attempt's executions together.
    * @param {string} tradeId - Manual trade ID
-   * @param {Object} fillInfo
-   * @param {number} fillInfo.buyPrice - Actual fill price
-   * @param {number} fillInfo.buySize - Actual fill size
-   * @param {string[]} fillInfo.buyFillTradeIds - Trade IDs from exchange
+   * @param {Object} result
+   * @param {'filled'|'cancelled'} result.outcome
+   * @param {string} result.exchangeStatus - Status the exchange reported
+   * @param {number} result.filledSize
+   * @param {number} result.filledQuote
+   * @param {string[]} result.fillTradeIds
+   * @param {string} [result.message] - Recorded as the trade's lastCheck
    * @returns {ManualTrade|null}
    */
-  const markBuyFilled = (tradeId, fillInfo) => {
+  const settleRecoveryAttempt = (tradeId, { outcome, exchangeStatus, filledSize, filledQuote, fillTradeIds, message = '' }) => {
+    const trade = trades.get(tradeId);
+    if (!trade) return null;
+    normalizeRecoveryAttempts(trade);
+    const attempt = trade.recoveryAttempts.find((a) => a.orderId === trade.buyOrderId && !a.outcome);
+    if (!attempt) return null;
+
+    const now = Date.now();
+    Object.assign(attempt, { outcome, exchangeStatus, filledSize, filledQuote, fillTradeIds, endedAt: now });
+    const recovered = getRecoveredTotals(trade);
+    const complete = outcome === 'filled' || getUncoveredSize(trade) === 0;
+
+    trade.buyFillTradeIds = recovered.tradeIds;
+    if (recovered.size > 0) {
+      trade.buyPrice = recovered.quote / recovered.size;
+      trade.buySize = recovered.size;
+    }
+    if (complete) trade.buyFilledAt = now;
+    trade.status = complete ? STATUS.COMPLETED : STATUS.BUY_CANCELLED;
+    trade.lastCheck = { at: now, error: null, message };
+    trade.updatedAt = now;
+
+    persist();
+    return trade;
+  };
+
+  /**
+   * Record the outcome of a status check or recovery operation that did not
+   * change the trade's lifecycle, so the row can explain itself after a reload.
+   * @param {string} tradeId
+   * @param {{error?: string|null, message?: string}} check
+   * @returns {ManualTrade|null}
+   */
+  const recordCheck = (tradeId, { error = null, message = '' }) => {
     const trade = trades.get(tradeId);
     if (!trade) return null;
 
-    trade.buyPrice = fillInfo.buyPrice;
-    trade.buySize = fillInfo.buySize;
-    trade.buyFilledAt = Date.now();
-    trade.buyFillTradeIds = fillInfo.buyFillTradeIds || [];
-    trade.status = STATUS.COMPLETED;
-    trade.updatedAt = Date.now();
-
+    trade.lastCheck = { at: Date.now(), error, message };
     persist();
     return trade;
   };
@@ -499,7 +637,8 @@ const createManualTradeStore = (exchange, pair) => {
     addPairedTrade,
     recordRecoveryBuy,
     linkExistingBuy,
-    markBuyFilled,
+    settleRecoveryAttempt,
+    recordCheck,
     markTpPlaced,
     refreshBuyTotals,
     dismiss,
@@ -512,4 +651,4 @@ const createManualTradeStore = (exchange, pair) => {
   };
 };
 
-module.exports = { createManualTradeStore, STATUS };
+module.exports = { createManualTradeStore, STATUS, SIZE_EPSILON, getUncoveredSize };

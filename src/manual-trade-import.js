@@ -25,9 +25,9 @@
 
 const { createNewBody, syncPositionState, mergeIntoBody, computeBuyOrderShortfall } = require('./celestial-hierarchy');
 const { loadRegimeState, saveRegimeState } = require('./state-tracker');
-const { STATUS } = require('./manual-trades');
+const { STATUS, SIZE_EPSILON, getUncoveredSize } = require('./manual-trades');
 const { FillValidationError, validateFillInput } = require('./fill-ledger');
-const { readBooleanFlag } = require('./shared-utils');
+const { readBooleanFlag, isFilledStatus, isCancelledStatus } = require('./shared-utils');
 const { getRegimeConfig } = require('./config-utils');
 
 /** Logger used when a caller supplies none (tests, CLI paths). */
@@ -109,6 +109,32 @@ const averagePrice = (totalQuote, totalSize) => (totalSize > 0 ? totalQuote / to
 const legTimestamp = (fills) => new Date(fills[0].tradeTime).getTime();
 
 /**
+ * Key for the store's per-sell lock. Every operation that can place, link or
+ * settle a recovery buy for one sell shares it, so they run one at a time.
+ */
+const recoveryLockKey = (trade) => trade.sellOrderId || `trade:${trade.id}`;
+
+/**
+ * Why a sell-first trade cannot start a new recovery attempt right now, or
+ * null when it can (issue #1034). A replacement is allowed only once every
+ * earlier attempt is confirmed terminal — an active or unconfirmed order may
+ * still execute, and a second order beside it would over-recover.
+ * @returns {string|null}
+ */
+const recoveryRefusal = (trade) => {
+  if (trade.tradeType !== 'sell_first') return `Manual trade ${trade.id} is not a sell-first recovery`;
+  const live = (trade.recoveryAttempts || []).find((a) => !a.outcome);
+  if (live || trade.status === STATUS.BUY_PENDING) {
+    return `Recovery buy ${live?.orderId || trade.buyOrderId} is still active or unconfirmed — use Check Status; a replacement is allowed only after the exchange confirms it filled or cancelled`;
+  }
+  if (trade.status !== STATUS.SELL_RECORDED && trade.status !== STATUS.BUY_CANCELLED) {
+    return `Manual trade ${trade.id} is ${trade.status}; there is no recovery to retry`;
+  }
+  if (getUncoveredSize(trade) === 0) return `Manual trade ${trade.id} has nothing left to recover`;
+  return null;
+};
+
+/**
  * Create the manual-trade importer for one fund.
  *
  * @param {Object} deps
@@ -130,7 +156,7 @@ const legTimestamp = (fills) => new Date(fills[0].tradeTime).getTime();
  *   case the persisted body on regime-state.json is extended directly
  *   instead (synchronously, and flagged `needsTpReprice` rather than
  *   touched if it already carries a live TP from before the engine stopped).
- * @returns {Object} importSell / importBuy / importPair / checkPendingBuy
+ * @returns {Object} importSell / importBuy / importPair / checkPendingBuy / retryRecovery
  */
 const createManualTradeImporter = ({
   exchange,
@@ -213,10 +239,15 @@ const createManualTradeImporter = ({
 
     if (existingBuyOrderId) {
       if (trade.buyOrderId && trade.buyOrderId !== existingBuyOrderId) {
-        return fail(`Sell ${sellOrderId} is already associated with buy order ${trade.buyOrderId}; refusing to overwrite with ${existingBuyOrderId}`);
+        const hint = trade.status === STATUS.BUY_CANCELLED ? ' (that buy is terminal — use Link replacement on the tracked trade instead)' : '';
+        return fail(`Sell ${sellOrderId} is already associated with buy order ${trade.buyOrderId}; refusing to overwrite with ${existingBuyOrderId}${hint}`);
       }
-      store.linkExistingBuy(trade.id, existingBuyOrderId);
-      log.info(`ℹ️ 📝 [${exchange}] Manual trade: linked existing buy order ${existingBuyOrderId}`, { orderId: existingBuyOrderId });
+      // Re-linking the order already on record is a retry, not a new attempt:
+      // relinking would reopen a settled (filled or cancelled) order as pending.
+      if (!trade.buyOrderId) {
+        store.linkExistingBuy(trade.id, existingBuyOrderId);
+        log.info(`ℹ️ 📝 [${exchange}] Manual trade: linked existing buy order ${existingBuyOrderId}`, { orderId: existingBuyOrderId });
+      }
     } else if (placingRecoveryBuy && trade.buyOrderId) {
       // Operator retried an import whose recovery buy is already on the book.
       // Store idempotency alone does not stop a second placeLimitBuy here —
@@ -240,7 +271,10 @@ const createManualTradeImporter = ({
   };
 
   /**
-   * Poll a pending recovery buy and, once filled, pair it to its sell.
+   * Poll a pending recovery buy and settle it once the exchange reports it
+   * terminal. A fill completes the trade; a cancellation (CANCELLED / EXPIRED /
+   * FAILED) first ingests whatever the order executed, then leaves the trade
+   * BUY_CANCELLED so retryRecovery can cover the remainder (issue #1034).
    * @param {Object} payload
    * @param {string} payload.tradeId
    */
@@ -249,60 +283,189 @@ const createManualTradeImporter = ({
 
     const trade = store.getById(tradeId);
     if (!trade) return fail(`Manual trade ${tradeId} not found`);
+    // Shares importSell/retryRecovery's lock so an attempt is never settled
+    // while a concurrent request is deciding whether to replace it.
+    return store.withSellLock(recoveryLockKey(trade), () => checkPendingBuyLocked(tradeId));
+  };
+
+  const checkPendingBuyLocked = async (tradeId) => {
+    const trade = store.getById(tradeId);
     if (trade.status !== STATUS.BUY_PENDING || !trade.buyOrderId) {
       return ok({ trade, message: 'No pending buy to check' });
+    }
+    const buyOrderId = trade.buyOrderId;
+    // A failed or inconclusive check changes nothing but the row's explanation:
+    // the association and BUY_PENDING stay, so the order is never forgotten.
+    const checkFailed = (error) => {
+      store.recordCheck(tradeId, { error });
+      return fail(error);
+    };
+    if (!(trade.recoveryAttempts || []).some((a) => a.orderId === buyOrderId && !a.outcome)) {
+      return checkFailed(`Buy order ${buyOrderId} has no open recovery attempt on manual trade ${tradeId}`);
     }
 
     let orderStatus;
     try {
-      orderStatus = await adapter.getOrder(trade.buyOrderId);
+      orderStatus = await adapter.getOrder(buyOrderId);
     } catch (err) {
-      return fail(`Failed to check buy order: ${err.message}`);
+      return checkFailed(`Failed to check buy order: ${err.message}`);
     }
 
     const normalizedStatus = (orderStatus?.status || '').toUpperCase();
+    const filled = isFilledStatus(orderStatus);
 
-    if (normalizedStatus === 'FILLED' || orderStatus?.completionPercentage >= 100) {
-      let buyFills;
-      try {
-        buyFills = await adapter.getOrderFills(trade.buyOrderId);
-      } catch (err) {
-        return fail(`Buy order filled but failed to fetch fills: ${err.message}`);
-      }
-      if (!buyFills || buyFills.length === 0) {
-        return fail(`Buy order filled but no fills found for order ${trade.buyOrderId}`);
-      }
-
-      const invalidBuy = validateAdapterFills(buyFills, trade.buyOrderId, 'buy');
-      if (invalidBuy) return fail(invalidBuy);
-      const { tradeIds, totalSize, totalQuote } = ingestAdapterFills(fillLedger, buyFills, trade.buyOrderId, 'buy');
-      // Pair the buy to its sell so it is not counted as an open position.
-      fillLedger.annotateFillsByOrderId(trade.buyOrderId, { sellOrderId: trade.sellOrderId });
-      fillLedger.persist();
-
-      const avgBuyPrice = averagePrice(totalQuote, totalSize);
-      store.markBuyFilled(tradeId, { buyPrice: avgBuyPrice, buySize: totalSize, buyFillTradeIds: tradeIds });
-
-      log.info(`ℹ️ ✅ [${exchange}] Manual trade completed: sold ${trade.sellSize} @ $${trade.sellPrice.toFixed(2)}, bought back ${totalSize} @ $${avgBuyPrice.toFixed(2)}`, {
-        tradeId,
-        buyOrderId: trade.buyOrderId,
-        sellOrderId: trade.sellOrderId,
-        buySize: totalSize,
-        buyPrice: avgBuyPrice,
+    if (!filled && !isCancelledStatus(orderStatus)) {
+      const message = `Buy order is ${normalizedStatus || 'UNKNOWN'}`;
+      store.recordCheck(tradeId, { message });
+      return ok({
+        trade: store.getById(tradeId),
+        orderStatus: normalizedStatus,
+        filledPercent: orderStatus?.completionPercentage || 0,
+        message,
       });
-      return ok({ trade: store.getById(tradeId), filled: true });
     }
 
-    if (normalizedStatus === 'CANCELLED') {
-      return ok({ trade, cancelled: true, message: 'Buy order was cancelled on exchange' });
+    // Terminal either way: reconcile the order's own executions before deciding
+    // what is still missing. A cancelled order can have partially executed.
+    let buyFills;
+    try {
+      buyFills = (await adapter.getOrderFills(buyOrderId)) || [];
+    } catch (err) {
+      return checkFailed(`Buy order ${filled ? 'filled' : normalizedStatus} but failed to fetch fills: ${err.message}`);
+    }
+    if (filled && buyFills.length === 0) {
+      return checkFailed(`Buy order filled but no fills found for order ${buyOrderId}`);
+    }
+    const invalidBuy = validateAdapterFills(buyFills, buyOrderId, 'buy');
+    if (invalidBuy) return checkFailed(invalidBuy);
+    const visibleSize = buyFills.reduce((sum, f) => sum + f.size, 0);
+    const reportedSize = Number(orderStatus?.filledSize) || 0;
+    if (!filled && reportedSize > visibleSize + SIZE_EPSILON) {
+      return checkFailed(`Buy order ${buyOrderId} is ${normalizedStatus} with ${reportedSize} executed, but only ${visibleSize} is visible in its fills so far — check again before retrying`);
     }
 
-    return ok({
-      trade,
-      orderStatus: normalizedStatus,
-      filledPercent: orderStatus?.completionPercentage || 0,
-      message: `Buy order is ${normalizedStatus}`,
+    const remainingBefore = getUncoveredSize(trade);
+    const { tradeIds, totalSize, totalQuote } = ingestAdapterFills(fillLedger, buyFills, buyOrderId, 'buy');
+    if (buyFills.length > 0) {
+      // Pair the buy to its sell so it is not counted as an open position.
+      fillLedger.annotateFillsByOrderId(buyOrderId, { sellOrderId: trade.sellOrderId });
+    }
+    fillLedger.persist();
+
+    const remainingSize = filled ? 0 : Math.max(0, Math.round((remainingBefore - totalSize) * 1e10) / 1e10);
+    let message = 'Recovery buy filled';
+    if (!filled && remainingSize <= SIZE_EPSILON) {
+      message = `Recovery buy ${buyOrderId} was ${normalizedStatus} after recovering the full quantity`;
+    } else if (!filled && totalSize > 0) {
+      message = `Recovery buy ${buyOrderId} was ${normalizedStatus} after executing ${totalSize}; ${remainingSize} still to recover`;
+    } else if (!filled) {
+      message = `Recovery buy ${buyOrderId} was ${normalizedStatus} with no executions; retry or link a replacement`;
+    }
+    const settled = store.settleRecoveryAttempt(tradeId, {
+      outcome: filled ? 'filled' : 'cancelled',
+      exchangeStatus: normalizedStatus || 'FILLED',
+      filledSize: totalSize,
+      filledQuote: totalQuote,
+      fillTradeIds: tradeIds,
+      message,
     });
+    if (!settled) return checkFailed(`Buy order ${buyOrderId} has no open recovery attempt on manual trade ${tradeId}`);
+
+    if (settled.status === STATUS.COMPLETED) {
+      log.info(`ℹ️ ✅ [${exchange}] Manual trade completed: sold ${trade.sellSize} @ $${trade.sellPrice.toFixed(2)}, bought back ${settled.buySize} @ $${settled.buyPrice.toFixed(2)}`, {
+        tradeId,
+        buyOrderId,
+        sellOrderId: trade.sellOrderId,
+        buySize: settled.buySize,
+        buyPrice: settled.buyPrice,
+      });
+      return ok({ trade: settled, filled, completed: true, message });
+    }
+
+    log.warn(`⚠️ [${exchange}] Manual trade: ${message}`, { tradeId, buyOrderId, sellOrderId: trade.sellOrderId, recoveredSize: totalSize, remainingSize });
+    return ok({ trade: settled, cancelled: true, recoveredSize: totalSize, remainingSize, message });
+  };
+
+  /**
+   * Continue a sell-first recovery whose earlier attempt is confirmed terminal
+   * (issue #1034): place a new buy for exactly the uncovered remainder, or link
+   * a validated replacement order. The original sell, its ledger rows and the
+   * earlier attempts' history are untouched.
+   * @param {Object} payload
+   * @param {string} payload.tradeId
+   * @param {string|number} [payload.recoveryBuyPrice] - Limit price for a new buy
+   * @param {string} [payload.existingBuyOrderId] - Already-placed replacement to link instead
+   */
+  const retryRecovery = async ({ tradeId, recoveryBuyPrice, existingBuyOrderId } = {}) => {
+    if (!tradeId) return fail('tradeId is required');
+    const hasPrice = recoveryBuyPrice !== undefined && recoveryBuyPrice !== null && recoveryBuyPrice !== '';
+    const linking = existingBuyOrderId !== undefined && existingBuyOrderId !== null && existingBuyOrderId !== '';
+    if (hasPrice === linking) return fail('Provide exactly one of recoveryBuyPrice or existingBuyOrderId');
+    if (linking && (typeof existingBuyOrderId !== 'string' || !existingBuyOrderId.trim())) {
+      return fail('existingBuyOrderId must be a non-blank string');
+    }
+    const buyPrice = linking ? 0 : Number(recoveryBuyPrice);
+    if (!linking && (!Number.isFinite(buyPrice) || buyPrice <= 0)) return fail('Invalid recoveryBuyPrice');
+
+    const trade = store.getById(tradeId);
+    if (!trade) return fail(`Manual trade ${tradeId} not found`);
+    return store.withSellLock(recoveryLockKey(trade), () => (linking
+      ? linkReplacementLocked(tradeId, existingBuyOrderId.trim())
+      : placeReplacementLocked(tradeId, buyPrice)));
+  };
+
+  const placeReplacementLocked = async (tradeId, buyPrice) => {
+    const trade = store.getById(tradeId);
+    const refusal = recoveryRefusal(trade);
+    if (refusal) return fail(refusal);
+
+    const productId = fundConfig?.productId || 'BTC-USDC';
+    const buySize = getUncoveredSize(trade);
+    let result;
+    try {
+      result = await adapter.placeLimitBuy(productId, buySize, buyPrice, { postOnly: false });
+    } catch (err) {
+      return fail(`Failed to place recovery buy: ${err.message}`);
+    }
+    if (!result?.success) return fail(`Failed to place recovery buy: ${result?.errorMessage || 'unknown'}`);
+    store.recordRecoveryBuy(trade.id, result.orderId, buyPrice, buySize);
+    log.info(`ℹ️ 📝 [${exchange}] Manual trade: placed replacement recovery buy ${buySize} @ $${buyPrice} (orderId=${result.orderId})`, { tradeId, orderId: result.orderId, buySize, buyPrice });
+    return ok({ trade: store.getById(trade.id), placed: true });
+  };
+
+  const linkReplacementLocked = async (tradeId, buyOrderId) => {
+    const trade = store.getById(tradeId);
+    const refusal = recoveryRefusal(trade);
+    if (refusal) return fail(refusal);
+
+    if (trade.recoveryAttempts.some((a) => a.orderId === buyOrderId)) {
+      return fail(`Buy order ${buyOrderId} was already used by this recovery`);
+    }
+    const owner = store.getAll().find((t) => t.id !== trade.id
+      && (t.buyOrderId === buyOrderId || (t.recoveryAttempts || []).some((a) => a.orderId === buyOrderId)));
+    if (owner) return fail(`Buy order ${buyOrderId} already belongs to manual trade ${owner.id}`);
+
+    let order;
+    try {
+      order = await adapter.getOrder(buyOrderId);
+    } catch (err) {
+      return fail(`Could not validate replacement buy ${buyOrderId}: ${err.message}`);
+    }
+    if (!order) return fail(`Could not validate replacement buy ${buyOrderId}: no order returned`);
+    const side = String(order.side || '').toUpperCase();
+    if (side && side !== 'BUY') return fail(`Order ${buyOrderId} is a ${side} order, not a buy`);
+    const executed = Number(order.filledSize) || 0;
+    if (isCancelledStatus(order) && executed <= SIZE_EPSILON) {
+      return fail(`Replacement buy ${buyOrderId} is already ${String(order.status).toUpperCase()} with no executions — it cannot recover anything`);
+    }
+    const remaining = getUncoveredSize(trade);
+    if (executed > remaining + SIZE_EPSILON) {
+      return fail(`Replacement buy ${buyOrderId} has already executed ${executed}, more than the ${remaining} still to recover`);
+    }
+
+    store.linkExistingBuy(trade.id, buyOrderId);
+    log.info(`ℹ️ 📝 [${exchange}] Manual trade: linked replacement recovery buy ${buyOrderId}`, { tradeId, orderId: buyOrderId, remaining });
+    return ok({ trade: store.getById(trade.id), linked: true });
   };
 
   /**
@@ -773,7 +936,7 @@ const createManualTradeImporter = ({
     return ok({ trade: store.getById(trade.id) });
   };
 
-  return { importSell, importBuy, importPair, checkPendingBuy };
+  return { importSell, importBuy, importPair, checkPendingBuy, retryRecovery };
 };
 
 module.exports = { createManualTradeImporter };
