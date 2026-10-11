@@ -4730,6 +4730,281 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Book a matched celestial body's TP fill, including partial re-placement
+   * and a final body's durable cycle close. Keep the booking and body mutation
+   * together before any await; the caller owns fill dedup and executor cleanup.
+   */
+  const handleBodyTpFill = async (fillData, summary, booking, bodies, bodyIdx, bookedTradeIds) => {
+    // CELESTIAL BODY TP FILL (full or partial)
+    const body = bodies[bodyIdx];
+    const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+    const proceeds = summary.totalValue - summary.totalFees;
+    // Prorate cost basis when sell doesn't cover full body (stale TP / partial fill)
+    const soldRatio = body.assetQty > 0 ? Math.min(summary.totalSize / body.assetQty, 1) : 1;
+    const proratedCostBasis = roundUSDC(body.costBasis * soldRatio);
+    const pnl = proceeds - proratedCostBasis;
+    const { holdbackAsset, reservesSoldAsset } = splitTpHoldback(roundAsset(body.assetQty - summary.totalSize));
+
+    // Detect a TRUE partial fill: the TP was placed for body.assetOnOrder
+    // but the exchange filled less than that. This is distinct from
+    // designed holdback (totalSize === assetOnOrder < assetQty on a healthy
+    // 100% fill). Comparing against assetQty (the old soldRatio<0.95 check)
+    // misclassified healthy fills as partial whenever holdback ≳ 5% of the
+    // body — zeroing the reserve and re-listing it for sale (issue #107 M1).
+    // Fall back to the soldRatio heuristic only when assetOnOrder is
+    // missing (legacy bodies / migration) so behavior degrades safely.
+    const onOrder = body.assetOnOrder || 0;
+    // A sale that took the body's whole inventory is never a partial, even
+    // when a stale TP's assetOnOrder (sized for a larger, pre-deduction
+    // body) says it filled less than planned: nothing is left to re-list,
+    // and the partial path would drive assetQty negative. Designed
+    // holdback keeps a healthy fill strictly below assetQty (issue #770).
+    const soldWholeBody = body.assetQty > 0 && summary.totalSize >= body.assetQty;
+    const isPartial = !soldWholeBody && (fillData.isPartialFill ||
+      (onOrder > 0
+        ? summary.totalSize < onOrder * 0.99 // 1% tolerance for rounding/fees
+        : soldRatio < 0.95));
+
+    // Update celestial state
+    const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
+    if (!isPartial) cs.bodiesCompleted += 1;
+    positionState.celestialState = cs;
+    // Partial fills are handled naturally — FIFO sees only the actual sold qty.
+
+    // Grow capital (idempotent per booked amount — issues #210-B, #777)
+    const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl, booking);
+
+    // Record per buy order what this sale consumed (issue #607), before
+    // the body is reduced. A partial consumes only what sold (no reserve
+    // is booked); a full fill consumes the whole body — sold + the
+    // holdback booked as reserves.
+    recordBodyConsumption({
+      entries: body.buyOrders,
+      bodyQty: body.assetQty,
+      // A closing sale consumes exactly the body; any excess came out of
+      // reserves (bodyReservesSoldAsset, issue #770).
+      qty: isPartial ? summary.totalSize : body.assetQty,
+      closesBody: !isPartial,
+      sellOrderId: fillData.orderId,
+      bodyId: body.id,
+      additive: booking.additive,
+    });
+
+    // Annotate the sell with its body booking, committed synchronously
+    // with the credit and consumption above — before any await below, so
+    // a concurrent booking of the same order cannot interleave between
+    // the plan and the commit, and a later throw cannot leave a mutated
+    // body without its commit marker. Adds to a booking this order
+    // already committed when this pass booked new execution (issue #777).
+    // body.assetQty/avgPrice are still the pre-sale values here.
+    fillLedger.commitSellBooking(fillData.orderId, {
+      isBodyOwned: true,
+      bodyId: body.id,
+      bodyTier: body.tier,
+      bodyCostBasis: proratedCostBasis,
+      bodyAvgPrice: body.avgPrice,
+      bodyBtcQty: isPartial ? summary.totalSize : body.assetQty,
+      bodyHoldbackAsset: isPartial ? 0 : holdbackAsset,
+      ...(!isPartial && reservesSoldAsset > 0 && { bodyReservesSoldAsset: reservesSoldAsset }),
+      bodyPnl: pnl,
+      ...(isPartial && { partialFill: true }),
+    }, { additive: booking.additive, soldSize: summary.totalSize, bookedTradeIds });
+
+    let closesCycle = false;
+    if (isPartial) {
+      // PARTIAL FILL: reduce body size, keep body active, re-place TP for remaining
+      const remainingAsset = roundAsset(body.assetQty - summary.totalSize);
+      const remainingCostBasis = roundUSDC(body.costBasis * (1 - soldRatio));
+
+      // Track the cumulative fraction of the body's ORIGINAL cost basis that
+      // has now been realized via partial sells (issue #128). This partial
+      // consumed `soldRatio` of the CURRENT (remaining) body; compose it
+      // with any prior consumption so the fraction is relative to the
+      // original: consumed = 1 − Π(1 − soldRatioᵢ). Annotating the source
+      // buys with it lets computeRealizedFromCyclePairs subtract the
+      // already-realized portion from heldOpenBuyCostBasis while the residual
+      // TP rests — otherwise the sold tranche's cost is double-counted (once
+      // realized via bodyPnl, once held), transiently understating return.
+      const prevConsumed = body.consumedCostFraction || 0;
+      body.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - soldRatio);
+      // Legacy fallback for buys the sale could not record per order.
+      stampConsumedCostFraction(body, soldRatio);
+
+      body.assetQty = remainingAsset;
+      body.costBasis = remainingCostBasis;
+      // avgPrice stays the same (weighted average of buys doesn't change)
+
+      // Remove old TP tracking — engine will re-place for correct remaining size
+      orderExecutor.removeBodyTracking(fillData.orderId);
+      body.tpOrderId = null;
+      body.tpPrice = 0;
+      body.assetOnOrder = 0;
+
+      // Sync aggregate fields
+      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+
+      logger.info(`${tierCfg.emoji} [${exchange}] Body TP PARTIAL fill (${body.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, remaining=${remainingAsset} ${baseCurrency}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+
+      tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)} [PARTIAL]`, {
+        assetAmount: summary.totalSize,
+        price: summary.avgPrice,
+        pnl,
+        holdbackAsset: remainingAsset,
+        bodyId: body.id,
+        bodyTier: body.tier,
+        isPartialFill: true,
+        remainingAsset,
+      });
+
+      // Re-place TP for remaining body size
+      await placeBodyTp(body);
+    } else {
+      // FULL FILL: remove body entirely
+      // Remove body from array
+      positionState.celestialBodies.splice(bodyIdx, 1);
+
+      // Remove executor tracking
+      orderExecutor.removeBodyTracking(fillData.orderId);
+
+      // Sync aggregate fields
+      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+
+      const remaining = positionState.celestialBodies.length;
+      logger.info(`${tierCfg.emoji} [${exchange}] Body TP filled (${body.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} ${baseCurrency}${reservesSoldAsset > 0 ? ` (sold ${reservesSoldAsset.toFixed(6)} ${baseCurrency} beyond the body — drawn from reserves, #770)` : ''}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed} (${remaining} remaining)`);
+
+      tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
+        assetAmount: summary.totalSize,
+        price: summary.avgPrice,
+        pnl,
+        holdbackAsset,
+        ...(reservesSoldAsset > 0 && { reservesSoldAsset }),
+        bodyId: body.id,
+        bodyTier: body.tier,
+        bodiesRemaining: remaining,
+        capitalGrowth: pnl,
+        newMaxUsdcDeployed: config.maxUsdcDeployed,
+      });
+
+      // No bodies left: the cycle closes. The reset runs below, after this
+      // sell's P&L annotation and closed-trade record are committed (#766).
+      closesCycle = positionState.celestialBodies.length === 0;
+    }
+
+    // Link source buy fills to this sell order for buy→sell display linkage.
+    // Skip on partial fills: placeBodyTp above already re-linked the buys to
+    // the re-placed TP for the remainder — stamping the filled orderId here
+    // would clobber that linkage and make the remaining tranche's cost basis
+    // vanish from heldOpenBuyCostBasis until the residual TP fills.
+    if (!isPartial) {
+      const annotatedSrcIds = new Set();
+      for (const srcId of (body.sourceOrderIds || [])) {
+        fillLedger.annotateFillsByOrderId(srcId, { sellOrderId: fillData.orderId });
+        annotatedSrcIds.add(srcId);
+      }
+      for (const buyOrder of (body.buyOrders || [])) {
+        if (buyOrder.orderId !== 'core-migration' && !annotatedSrcIds.has(buyOrder.orderId)) {
+          fillLedger.annotateFillsByOrderId(buyOrder.orderId, { sellOrderId: fillData.orderId });
+        }
+      }
+    }
+
+    // Record the aggregate closed trade. A second booking of the same
+    // order adds its newly-booked tranche; a replay remains idempotent.
+    closedTrades.record({
+      sellOrderId: fillData.orderId,
+      ...sellTradeStamp(summary),
+      recordedAt: Date.now(),
+      qtySold: summary.totalSize,
+      sellProceeds: roundUSDC(proceeds),
+      sellFees: roundUSDC(summary.totalFees),
+      costBasis: proratedCostBasis,
+      buyAvgPrice: roundUSDC(body.avgPrice),
+      pnl: roundUSDC(pnl),
+      holdbackAsset: isPartial ? 0 : holdbackAsset,
+      ...(!isPartial && reservesSoldAsset > 0 && { reservesSoldAsset }),
+      isPartial,
+      bodyId: body.id,
+      bodyTier: body.tier,
+      buyOrderIds: [...(body.sourceOrderIds || []), ...(body.buyOrders || []).map(b => b.orderId)].filter(id => id !== 'core-migration'),
+      source: 'live',
+    }, { additive: booking.additive });
+
+    // If no bodies remain, do a full cycle reset — AFTER the bookkeeping
+    // above, persisted first: resetCycle can wait on the ladder lock behind
+    // an in-flight rebuild (#766), and a crash during that wait must not
+    // lose this sell's bodyPnl/holdback annotation (the realized-P&L source
+    // of truth) with the body it came from already gone.
+    if (closesCycle) {
+      positionState.cyclesCompleted += 1;
+
+      const actualTpPct = body.avgPrice > 0
+        ? ((summary.avgPrice - body.avgPrice) / body.avgPrice) * 100
+        : 0;
+      // Durable "this close still owes a cycle reset" marker: once the sell
+      // is annotated, a retry of this fill (after resetCycle throws) takes
+      // the already-processed branch below, which finishes the reset from
+      // it instead of skipping it.
+      positionState.pendingCycleResetFor = fillData.orderId;
+      saveLiveState();
+      fillLedger.persist();
+      // Capture before resetCycle() zeroes cycleBuys, and run the
+      // optimizer's real-balance fetch (issue #694) AFTER resetCycle()
+      // flips the fill-ledger's cycle boundary (fillLedger.startNewCycle())
+      // — not before it — so the network round-trip never widens the
+      // window where a concurrent entry evaluation (gated only by
+      // isEntryInProgress(), not isMutatingPosition()) could land a buy
+      // fill still attributed to the closing cycle (Claude review).
+      const cycleBuysAtClose = positionState.cycleBuys;
+      // try/finally: resetCycle()'s only network call (ladder cancel)
+      // runs before any state mutation, so a throw there means nothing
+      // else in resetCycle() ran either — but capitalDeployed/stepsUsed
+      // above are already committed facts about this fill, independent
+      // of whether the ladder cleanup succeeds. Recording them in
+      // `finally` means a resetCycle() failure (the sell itself is
+      // already booked and persisted above, so it is never re-booked)
+      // can never permanently drop this cycle from the optimizer's stats
+      // (codex review round 1). A reset that reports it was stale skips
+      // those samples below because another close already counted it.
+      // Deliberately NOT awaited: the caller's own saveLiveState()/
+      // fillLedger.persist() (below) durably persist this already-
+      // completed sell/cycle-close before the optimizer's balance-fetch
+      // (up to a 30s exchange timeout) gets a chance to delay them — a
+      // crash during that fetch loses only this one best-effort
+      // optimizer stats sample, never the P&L-critical state (codex
+      // review round 2). recordCycleForSizeOptimizer never rejects (its
+      // own body is try/caught), so no unhandled-rejection risk. Once
+      // it DOES resolve, re-save so the recorded sample/balance isn't
+      // left ONLY in memory until some unrelated future save happens to
+      // pick it up (codex review round 3) — cheap and idempotent, same
+      // as the periodic save timer already does.
+      let resetResult;
+      try {
+        resetResult = await resetCycle();
+      } finally {
+        // Keep the close count persisted before the reset wait above, but
+        // undo it when a queued reset discovers that an earlier close
+        // already turned over this cycle. An operator boundary can also
+        // supersede the queued reset, but it does not make this genuine
+        // close a duplicate, so its optimizer samples still belong here.
+        if (resetResult?.turnedOver === false && resetResult.duplicateClose) {
+          positionState.cyclesCompleted -= 1;
+        } else {
+          recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
+          recordCycleForSizeOptimizer({
+            stepsUsed: cycleBuysAtClose,
+            capitalDeployed: body.costBasis,
+          }).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
+        }
+      }
+    }
+
+    saveLiveState();
+    fillLedger.persist();
+    if (callbacks.onStatusUpdate) callbacks.onStatusUpdate(getState());
+
+  };
+
+  /**
    * Handle order fill
    * @param {Object} fillData - Fill data
    */
@@ -5326,273 +5601,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const legacySatellite = null;
 
       if (bodyIdx !== -1) {
-        // CELESTIAL BODY TP FILL (full or partial)
-        const body = bodies[bodyIdx];
-        const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-        const proceeds = summary.totalValue - summary.totalFees;
-        // Prorate cost basis when sell doesn't cover full body (stale TP / partial fill)
-        const soldRatio = body.assetQty > 0 ? Math.min(summary.totalSize / body.assetQty, 1) : 1;
-        const proratedCostBasis = roundUSDC(body.costBasis * soldRatio);
-        const pnl = proceeds - proratedCostBasis;
-        const { holdbackAsset, reservesSoldAsset } = splitTpHoldback(roundAsset(body.assetQty - summary.totalSize));
-
-        // Detect a TRUE partial fill: the TP was placed for body.assetOnOrder
-        // but the exchange filled less than that. This is distinct from
-        // designed holdback (totalSize === assetOnOrder < assetQty on a healthy
-        // 100% fill). Comparing against assetQty (the old soldRatio<0.95 check)
-        // misclassified healthy fills as partial whenever holdback ≳ 5% of the
-        // body — zeroing the reserve and re-listing it for sale (issue #107 M1).
-        // Fall back to the soldRatio heuristic only when assetOnOrder is
-        // missing (legacy bodies / migration) so behavior degrades safely.
-        const onOrder = body.assetOnOrder || 0;
-        // A sale that took the body's whole inventory is never a partial, even
-        // when a stale TP's assetOnOrder (sized for a larger, pre-deduction
-        // body) says it filled less than planned: nothing is left to re-list,
-        // and the partial path would drive assetQty negative. Designed
-        // holdback keeps a healthy fill strictly below assetQty (issue #770).
-        const soldWholeBody = body.assetQty > 0 && summary.totalSize >= body.assetQty;
-        const isPartial = !soldWholeBody && (fillData.isPartialFill ||
-          (onOrder > 0
-            ? summary.totalSize < onOrder * 0.99 // 1% tolerance for rounding/fees
-            : soldRatio < 0.95));
-
-        // Update celestial state
-        const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
-        if (!isPartial) cs.bodiesCompleted += 1;
-        positionState.celestialState = cs;
-        // Partial fills are handled naturally — FIFO sees only the actual sold qty.
-
-        // Grow capital (idempotent per booked amount — issues #210-B, #777)
-        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl, booking);
-
-        // Record per buy order what this sale consumed (issue #607), before
-        // the body is reduced. A partial consumes only what sold (no reserve
-        // is booked); a full fill consumes the whole body — sold + the
-        // holdback booked as reserves.
-        recordBodyConsumption({
-          entries: body.buyOrders,
-          bodyQty: body.assetQty,
-          // A closing sale consumes exactly the body; any excess came out of
-          // reserves (bodyReservesSoldAsset, issue #770).
-          qty: isPartial ? summary.totalSize : body.assetQty,
-          closesBody: !isPartial,
-          sellOrderId: fillData.orderId,
-          bodyId: body.id,
-          additive: booking.additive,
-        });
-
-        // Annotate the sell with its body booking, committed synchronously
-        // with the credit and consumption above — before any await below, so
-        // a concurrent booking of the same order cannot interleave between
-        // the plan and the commit, and a later throw cannot leave a mutated
-        // body without its commit marker. Adds to a booking this order
-        // already committed when this pass booked new execution (issue #777).
-        // body.assetQty/avgPrice are still the pre-sale values here.
-        fillLedger.commitSellBooking(fillData.orderId, {
-          isBodyOwned: true,
-          bodyId: body.id,
-          bodyTier: body.tier,
-          bodyCostBasis: proratedCostBasis,
-          bodyAvgPrice: body.avgPrice,
-          bodyBtcQty: isPartial ? summary.totalSize : body.assetQty,
-          bodyHoldbackAsset: isPartial ? 0 : holdbackAsset,
-          ...(!isPartial && reservesSoldAsset > 0 && { bodyReservesSoldAsset: reservesSoldAsset }),
-          bodyPnl: pnl,
-          ...(isPartial && { partialFill: true }),
-        }, { additive: booking.additive, soldSize: summary.totalSize, bookedTradeIds });
-
-        let closesCycle = false;
-        if (isPartial) {
-          // PARTIAL FILL: reduce body size, keep body active, re-place TP for remaining
-          const remainingAsset = roundAsset(body.assetQty - summary.totalSize);
-          const remainingCostBasis = roundUSDC(body.costBasis * (1 - soldRatio));
-
-          // Track the cumulative fraction of the body's ORIGINAL cost basis that
-          // has now been realized via partial sells (issue #128). This partial
-          // consumed `soldRatio` of the CURRENT (remaining) body; compose it
-          // with any prior consumption so the fraction is relative to the
-          // original: consumed = 1 − Π(1 − soldRatioᵢ). Annotating the source
-          // buys with it lets computeRealizedFromCyclePairs subtract the
-          // already-realized portion from heldOpenBuyCostBasis while the residual
-          // TP rests — otherwise the sold tranche's cost is double-counted (once
-          // realized via bodyPnl, once held), transiently understating return.
-          const prevConsumed = body.consumedCostFraction || 0;
-          body.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - soldRatio);
-          // Legacy fallback for buys the sale could not record per order.
-          stampConsumedCostFraction(body, soldRatio);
-
-          body.assetQty = remainingAsset;
-          body.costBasis = remainingCostBasis;
-          // avgPrice stays the same (weighted average of buys doesn't change)
-
-          // Remove old TP tracking — engine will re-place for correct remaining size
-          orderExecutor.removeBodyTracking(fillData.orderId);
-          body.tpOrderId = null;
-          body.tpPrice = 0;
-          body.assetOnOrder = 0;
-
-          // Sync aggregate fields
-          celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
-
-          logger.info(`${tierCfg.emoji} [${exchange}] Body TP PARTIAL fill (${body.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, remaining=${remainingAsset} ${baseCurrency}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
-
-          tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)} [PARTIAL]`, {
-            assetAmount: summary.totalSize,
-            price: summary.avgPrice,
-            pnl,
-            holdbackAsset: remainingAsset,
-            bodyId: body.id,
-            bodyTier: body.tier,
-            isPartialFill: true,
-            remainingAsset,
-          });
-
-          // Re-place TP for remaining body size
-          await placeBodyTp(body);
-        } else {
-          // FULL FILL: remove body entirely
-          // Remove body from array
-          positionState.celestialBodies.splice(bodyIdx, 1);
-
-          // Remove executor tracking
-          orderExecutor.removeBodyTracking(fillData.orderId);
-
-          // Sync aggregate fields
-          celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
-
-          const remaining = positionState.celestialBodies.length;
-          logger.info(`${tierCfg.emoji} [${exchange}] Body TP filled (${body.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} ${baseCurrency}${reservesSoldAsset > 0 ? ` (sold ${reservesSoldAsset.toFixed(6)} ${baseCurrency} beyond the body — drawn from reserves, #770)` : ''}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed} (${remaining} remaining)`);
-
-          tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
-            assetAmount: summary.totalSize,
-            price: summary.avgPrice,
-            pnl,
-            holdbackAsset,
-            ...(reservesSoldAsset > 0 && { reservesSoldAsset }),
-            bodyId: body.id,
-            bodyTier: body.tier,
-            bodiesRemaining: remaining,
-            capitalGrowth: pnl,
-            newMaxUsdcDeployed: config.maxUsdcDeployed,
-          });
-
-          // No bodies left: the cycle closes. The reset runs below, after this
-          // sell's P&L annotation and closed-trade record are committed (#766).
-          closesCycle = positionState.celestialBodies.length === 0;
-        }
-
-        // Link source buy fills to this sell order for buy→sell display linkage.
-        // Skip on partial fills: placeBodyTp above already re-linked the buys to
-        // the re-placed TP for the remainder — stamping the filled orderId here
-        // would clobber that linkage and make the remaining tranche's cost basis
-        // vanish from heldOpenBuyCostBasis until the residual TP fills.
-        if (!isPartial) {
-          const annotatedSrcIds = new Set();
-          for (const srcId of (body.sourceOrderIds || [])) {
-            fillLedger.annotateFillsByOrderId(srcId, { sellOrderId: fillData.orderId });
-            annotatedSrcIds.add(srcId);
-          }
-          for (const buyOrder of (body.buyOrders || [])) {
-            if (buyOrder.orderId !== 'core-migration' && !annotatedSrcIds.has(buyOrder.orderId)) {
-              fillLedger.annotateFillsByOrderId(buyOrder.orderId, { sellOrderId: fillData.orderId });
-            }
-          }
-        }
-
-        // Record the aggregate closed trade. A second booking of the same
-        // order adds its newly-booked tranche; a replay remains idempotent.
-        closedTrades.record({
-          sellOrderId: fillData.orderId,
-          ...sellTradeStamp(summary),
-          recordedAt: Date.now(),
-          qtySold: summary.totalSize,
-          sellProceeds: roundUSDC(proceeds),
-          sellFees: roundUSDC(summary.totalFees),
-          costBasis: proratedCostBasis,
-          buyAvgPrice: roundUSDC(body.avgPrice),
-          pnl: roundUSDC(pnl),
-          holdbackAsset: isPartial ? 0 : holdbackAsset,
-          ...(!isPartial && reservesSoldAsset > 0 && { reservesSoldAsset }),
-          isPartial,
-          bodyId: body.id,
-          bodyTier: body.tier,
-          buyOrderIds: [...(body.sourceOrderIds || []), ...(body.buyOrders || []).map(b => b.orderId)].filter(id => id !== 'core-migration'),
-          source: 'live',
-        }, { additive: booking.additive });
-
-        // If no bodies remain, do a full cycle reset — AFTER the bookkeeping
-        // above, persisted first: resetCycle can wait on the ladder lock behind
-        // an in-flight rebuild (#766), and a crash during that wait must not
-        // lose this sell's bodyPnl/holdback annotation (the realized-P&L source
-        // of truth) with the body it came from already gone.
-        if (closesCycle) {
-          positionState.cyclesCompleted += 1;
-
-          const actualTpPct = body.avgPrice > 0
-            ? ((summary.avgPrice - body.avgPrice) / body.avgPrice) * 100
-            : 0;
-          // Durable "this close still owes a cycle reset" marker: once the sell
-          // is annotated, a retry of this fill (after resetCycle throws) takes
-          // the already-processed branch below, which finishes the reset from
-          // it instead of skipping it.
-          positionState.pendingCycleResetFor = fillData.orderId;
-          saveLiveState();
-          fillLedger.persist();
-          // Capture before resetCycle() zeroes cycleBuys, and run the
-          // optimizer's real-balance fetch (issue #694) AFTER resetCycle()
-          // flips the fill-ledger's cycle boundary (fillLedger.startNewCycle())
-          // — not before it — so the network round-trip never widens the
-          // window where a concurrent entry evaluation (gated only by
-          // isEntryInProgress(), not isMutatingPosition()) could land a buy
-          // fill still attributed to the closing cycle (Claude review).
-          const cycleBuysAtClose = positionState.cycleBuys;
-          // try/finally: resetCycle()'s only network call (ladder cancel)
-          // runs before any state mutation, so a throw there means nothing
-          // else in resetCycle() ran either — but capitalDeployed/stepsUsed
-          // above are already committed facts about this fill, independent
-          // of whether the ladder cleanup succeeds. Recording them in
-          // `finally` means a resetCycle() failure (the sell itself is
-          // already booked and persisted above, so it is never re-booked)
-          // can never permanently drop this cycle from the optimizer's stats
-          // (codex review round 1). A reset that reports it was stale skips
-          // those samples below because another close already counted it.
-          // Deliberately NOT awaited: the caller's own saveLiveState()/
-          // fillLedger.persist() (below) durably persist this already-
-          // completed sell/cycle-close before the optimizer's balance-fetch
-          // (up to a 30s exchange timeout) gets a chance to delay them — a
-          // crash during that fetch loses only this one best-effort
-          // optimizer stats sample, never the P&L-critical state (codex
-          // review round 2). recordCycleForSizeOptimizer never rejects (its
-          // own body is try/caught), so no unhandled-rejection risk. Once
-          // it DOES resolve, re-save so the recorded sample/balance isn't
-          // left ONLY in memory until some unrelated future save happens to
-          // pick it up (codex review round 3) — cheap and idempotent, same
-          // as the periodic save timer already does.
-          let resetResult;
-          try {
-            resetResult = await resetCycle();
-          } finally {
-            // Keep the close count persisted before the reset wait above, but
-            // undo it when a queued reset discovers that an earlier close
-            // already turned over this cycle. An operator boundary can also
-            // supersede the queued reset, but it does not make this genuine
-            // close a duplicate, so its optimizer samples still belong here.
-            if (resetResult?.turnedOver === false && resetResult.duplicateClose) {
-              positionState.cyclesCompleted -= 1;
-            } else {
-              recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
-              recordCycleForSizeOptimizer({
-                stepsUsed: cycleBuysAtClose,
-                capitalDeployed: body.costBasis,
-              }).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
-            }
-          }
-        }
-
-        saveLiveState();
-        fillLedger.persist();
-        if (callbacks.onStatusUpdate) callbacks.onStatusUpdate(getState());
-
+        await handleBodyTpFill(fillData, summary, booking, bodies, bodyIdx, bookedTradeIds);
       } else {
         // UNTRACKED SELL — could be a core TP from before migration
         const summary2 = fillLedger.aggregateFills(fillsToAggregate);
