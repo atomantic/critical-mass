@@ -1460,7 +1460,11 @@ describe('Manual Trade Import', () => {
 
       // Simulates the window in which that TP goes on to fully fill and its
       // body is removed from the engine's live position before the operator
-      // retries — exactly what makes the in-memory duplicate check blind.
+      // retries — exactly what makes the in-memory duplicate check blind. The
+      // fill handler books that sale against the body before removing it.
+      fillLedger.ingestFill({ tradeId: 'tp-fill-1', orderId: 'tp-order-1', side: 'sell', size: 0.003, price: 95000, netFee: 0 }, null, { skipPersist: true, cycleId: null });
+      fillLedger.annotateFillsByOrderId('tp-order-1', { bodyId: 'body-live-1', isBodyOwned: true, bodyPnl: 1 });
+      fillLedger.persist();
       const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
 
       assert.equal(second.success, true);
@@ -1585,6 +1589,14 @@ describe('Manual Trade Import', () => {
       };
 
       const savedBodies = () => readRegimeStateFile()?.position?.celestialBodies || [];
+
+      /** The ledger trail of a body TP sale: placeBodyTp's link, then the booked sell. */
+      const bookBodySale = (buyOrderId, sellOrderId, bodyId) => {
+        fillLedger.annotateFillsByOrderId(buyOrderId, { sellOrderId, bodyId });
+        fillLedger.ingestFill({ tradeId: `${sellOrderId}-fill`, orderId: sellOrderId, side: 'sell', size: 0.009, price: 110000, netFee: 0 }, null, { skipPersist: true, cycleId: null });
+        fillLedger.annotateFillsByOrderId(sellOrderId, { bodyId, isBodyOwned: true, bodyPnl: 5 });
+        fillLedger.persist();
+      };
 
       /** Fake running engine that mirrors injectBody's duplicate refusal. */
       const createFakeEngine = () => {
@@ -1770,8 +1782,7 @@ describe('Manual Trade Import', () => {
         // The engine starts, places the body's TP (placeBodyTp stamps
         // sellOrderId + bodyId), the TP fills, and the body is retired.
         coldReload();
-        fillLedger.annotateFillsByOrderId('buy-1', { sellOrderId: 'tp-1', bodyId: savedBody.id });
-        fillLedger.persist();
+        bookBodySale('buy-1', 'tp-1', savedBody.id);
         const stateFile = path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
         const state = readRegimeStateFile();
         state.position.celestialBodies = [];
@@ -1784,6 +1795,51 @@ describe('Manual Trade Import', () => {
         assert.equal(savedBodies().length, 0, 'sold inventory must never be resurrected');
         assert.equal(retried.trade.bodyId, savedBody.id);
         assert.equal(retried.trade.status, STATUS.TP_PENDING);
+      });
+
+      it('does not mistake a cycle-heuristic sellOrderId beside an optimistic bodyId for a retired body', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        const importer = createImporter({ adapter });
+        await importer.importBuy({ buyOrderId: 'buy-1', createBody: false });
+        // Pre-#1022 optimistic stamp, plus recalculateCycles linking an
+        // unrelated, non-body sell (with fills) onto the same buy.
+        fillLedger.annotateFillsByOrderId('buy-1', { bodyId: 'body-never-saved', isBodyOwned: true, sellOrderId: 'cycle-sell' });
+        fillLedger.ingestFill({ tradeId: 'cycle-sell-fill', orderId: 'cycle-sell', side: 'sell', size: 0.02, price: 105000, netFee: 0 }, null, { skipPersist: true, cycleId: null });
+        fillLedger.persist();
+
+        const replay = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+        assert.equal(replay.success, false, 'unsold inventory must not be reported as managed');
+        assert.equal(store.getAll()[0].status, STATUS.BUY_RECORDED);
+      });
+
+      it('rolls back an intent whose store write failed, so same-process recovery cannot publish it', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        const realRename = fs.renameSync;
+        let failNextStoreWrite = false;
+        fs.renameSync = (from, to) => {
+          if (failNextStoreWrite && String(to).endsWith('manual-trades.json')) {
+            failNextStoreWrite = false;
+            throw Object.assign(new Error('ENOSPC: manual-trades.json'), { code: 'ENOSPC' });
+          }
+          return realRename(from, to);
+        };
+        const realRecord = store.recordBodyIntent;
+        store.recordBodyIntent = (...args) => { failNextStoreWrite = true; return realRecord(...args); };
+        try {
+          await assert.rejects(createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true }), /ENOSPC/);
+        } finally {
+          fs.renameSync = realRename;
+          store.recordBodyIntent = realRecord;
+        }
+
+        assert.equal(store.getAll()[0].bodyIntent, null, 'no in-memory intent without a durable one');
+        assert.equal(savedBodies().length, 0, 'nothing was published');
+        assert.deepEqual(await createImporter({ adapter }).recoverPendingBodyIntents(), []);
+
+        const retried = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+        assert.equal(retried.success, true);
+        assert.equal(savedBodies().length, 1);
       });
 
       it('refuses success for pre-#1022 ownership that no saved body or sale backs', async () => {

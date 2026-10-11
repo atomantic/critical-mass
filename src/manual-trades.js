@@ -351,6 +351,7 @@ const createManualTradeStore = (exchange, pair) => {
     const trade = trades.get(tradeId);
     if (!trade) return null;
 
+    const prior = { bodyIntent: trade.bodyIntent, updatedAt: trade.updatedAt };
     const now = Date.now();
     trade.bodyIntent = {
       bodyId: body.id,
@@ -361,7 +362,15 @@ const createManualTradeStore = (exchange, pair) => {
     };
     trade.updatedAt = now;
 
-    persist();
+    try {
+      persist();
+    } catch (err) {
+      // An intent that never reached disk must not linger in memory, where
+      // the next request's recovery would publish a body with no durable
+      // record behind it.
+      Object.assign(trade, prior);
+      throw err;
+    }
     return trade;
   };
 

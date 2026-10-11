@@ -26,7 +26,7 @@
 const { createNewBody, syncPositionState, mergeIntoBody, computeBuyOrderShortfall } = require('./celestial-hierarchy');
 const { loadRegimeState, saveRegimeState } = require('./state-tracker');
 const { STATUS, INTENT_PHASE } = require('./manual-trades');
-const { FillValidationError, validateFillInput } = require('./fill-ledger');
+const { FillValidationError, validateFillInput, LEGACY_CONSUMPTION_KEY } = require('./fill-ledger');
 const { readBooleanFlag } = require('./shared-utils');
 const { getRegimeConfig } = require('./config-utils');
 
@@ -336,25 +336,34 @@ const createManualTradeImporter = ({
    * before any body was saved. Two kinds of evidence count:
    *  - live: a body on regime-state.json owns the order (by id, or through
    *    sourceOrderIds/buyOrders after a merge);
-   *  - retired: the order's buy rows carry TP-placement linkage (placeBodyTp
-   *    stamps bodyId together with sellOrderId only once the body is live) or
-   *    a per-sell consumption record. A bare sellOrderId is NOT evidence:
-   *    recalculateCycles stamps one onto every buy of a >=50%-sold cycle for
-   *    display. Every path that removes a body goes through a TP sell, so this
-   *    distinguishes a legitimately sold body — which must never be
-   *    recreated — from one that was never committed.
+   *  - retired: a sell order linked from the buy's rows (its TP link or a
+   *    per-sell `consumedBy` key) was booked as a body sale — its own ledger
+   *    rows carry the selling body's id. Linkage alone is NOT evidence:
+   *    recalculateCycles stamps a cycle's sell onto every buy of a >=50%-sold
+   *    cycle for display, independently of any body stamp, and the legacy
+   *    closure seal derives `consumedBy.__legacy__` from that same link.
+   * Every path that removes a body books a TP sale first, so this separates a
+   * legitimately sold body — which must never be recreated — from one that was
+   * never committed.
    * @param {string} buyOrderId
    * @param {string|null|undefined} bodyId - Expected id (intent or ledger)
-   * @returns {{bodyId: string|null, tier?: string, live: boolean}|null}
+   * @returns {{bodyId: string, tier?: string, live: boolean}|null}
    */
   const findCommittedBody = (buyOrderId, bodyId) => {
     const persisted = loadRegimeState(exchange, pair).position?.celestialBodies
       ?.find((body) => bodyOwnsOrder(body, bodyId, buyOrderId));
     if (persisted) return { bodyId: persisted.id, tier: persisted.tier, live: true };
-    const rows = fillLedger.getFillsForOrder(buyOrderId);
-    const consumed = (row) => row.consumedBy && typeof row.consumedBy === 'object' && Object.keys(row.consumedBy).length > 0;
-    const evidence = rows.find((row) => row.bodyId && row.sellOrderId) || rows.find(consumed);
-    if (evidence) return { bodyId: evidence.bodyId || bodyId || null, live: false };
+    const linkedSellIds = new Set();
+    for (const row of fillLedger.getFillsForOrder(buyOrderId)) {
+      if (row.sellOrderId) linkedSellIds.add(row.sellOrderId);
+      for (const sellOrderId of Object.keys(row.consumedBy || {})) {
+        if (sellOrderId !== LEGACY_CONSUMPTION_KEY) linkedSellIds.add(sellOrderId);
+      }
+    }
+    for (const sellOrderId of linkedSellIds) {
+      const booked = fillLedger.getFillsForOrder(sellOrderId).find((row) => row.side === 'sell' && row.bodyId);
+      if (booked) return { bodyId: booked.bodyId, live: false };
+    }
     return null;
   };
 
@@ -774,7 +783,7 @@ const createManualTradeImporter = ({
    */
   const resumeBodyIntent = async (trade) => {
     const committed = findCommittedBody(trade.buyOrderId, trade.bodyIntent.bodyId);
-    if (committed?.bodyId) {
+    if (committed) {
       log.info(`ℹ️ 📦 [${exchange}] Manual buy import: resumed intent for buy ${trade.buyOrderId} — body ${committed.bodyId} already ${committed.live ? 'saved' : 'retired'}, linking it`, {
         bodyId: committed.bodyId,
         buyOrderId: trade.buyOrderId,
