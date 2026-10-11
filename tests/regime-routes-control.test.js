@@ -523,6 +523,32 @@ describe('POST /api/:exchange/regime/manual-trade-buy', () => {
   });
 });
 
+describe('POST /api/:exchange/regime/manual-trade/:tradeId/retry (#1034)', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('forwards only the trade id and recovery fields to the retry channel', async () => {
+    let seen;
+    const app = setupApp((op, payload) => { seen = { op, payload }; return Promise.resolve({ success: true, placed: true }); });
+
+    const req = reqFor({ recoveryBuyPrice: 95000, sellOrderId: 'ignored', status: 'completed' });
+    const res = await invoke(app, 'POST /api/:exchange/regime/manual-trade/:tradeId/retry', { ...req, params: { ...req.params, tradeId: 't-1' } });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(seen.op, 'regime:manual-trade-retry');
+    assert.deepEqual(seen.payload, { tradeId: 't-1', recoveryBuyPrice: 95000, existingBuyOrderId: undefined });
+  });
+
+  it('returns a refused retry as a 400 with the engine explanation', async () => {
+    const app = setupApp(() => Promise.resolve({ success: false, error: 'Recovery buy b-1 is still active or unconfirmed' }));
+
+    const req = reqFor({ existingBuyOrderId: 'b-2' });
+    const res = await invoke(app, 'POST /api/:exchange/regime/manual-trade/:tradeId/retry', { ...req, params: { ...req.params, tradeId: 't-1' } });
+
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body.error, /still active or unconfirmed/);
+  });
+});
+
 
 describe('placement intent discard respects engine ownership', () => {
   afterEach(() => mock.restoreAll());

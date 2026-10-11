@@ -689,23 +689,32 @@ describe('Manual Trade Import', () => {
       assert.equal(buyRows[0].cycleId, null);
     });
 
-    it('reports a cancelled buy without mutating the ledger', async () => {
+    it('settles a zero-fill cancelled buy as terminal without mutating the ledger (#1034)', async () => {
       const adapter = createFakeAdapter({ fillsByOrder: { 'sell-1': sellFills } });
       const tradeId = await seedPendingTrade(adapter);
       const buyOrderId = store.getById(tradeId).buyOrderId;
       const fillCountBefore = fillLedger.getFillCount();
 
       const cancelAdapter = createFakeAdapter({
-        fillsByOrder: { [buyOrderId]: buyFills },
-        orders: { [buyOrderId]: { status: 'CANCELLED', completionPercentage: 0 } },
+        orders: { [buyOrderId]: { status: 'CANCELLED', completionPercentage: 0, filledSize: 0 } },
       });
       const result = await createImporter({ adapter: cancelAdapter }).checkPendingBuy({ tradeId });
 
       assert.equal(result.success, true);
       assert.equal(result.cancelled, true);
+      assert.equal(result.remainingSize, 0.003);
       assert.equal(fillLedger.getFillCount(), fillCountBefore);
-      assert.deepEqual(cancelAdapter.calls.getOrderFills, []);
-      assert.equal(store.getById(tradeId).status, STATUS.BUY_PENDING);
+      // Executions are reconciled from the order's own fills before deciding.
+      assert.deepEqual(cancelAdapter.calls.getOrderFills, [buyOrderId]);
+      const trade = store.getById(tradeId);
+      assert.equal(trade.status, STATUS.BUY_CANCELLED);
+      assert.equal(trade.buyOrderId, buyOrderId, 'the terminal order id is retained as history');
+      assert.equal(trade.recoveryAttempts.length, 1);
+      assert.equal(trade.recoveryAttempts[0].outcome, 'cancelled');
+      assert.equal(trade.recoveryAttempts[0].exchangeStatus, 'CANCELLED');
+      assert.match(trade.lastCheck.message, /no executions/);
+      // A terminal order needs no orphan protection any more.
+      assert.equal(store.getPendingBuyOrderIds().has(buyOrderId), false);
     });
 
     it('reports an open order without mutating the ledger', async () => {
@@ -740,6 +749,420 @@ describe('Manual Trade Import', () => {
       assert.equal(result.success, true);
       assert.equal(result.message, 'No pending buy to check');
       assert.deepEqual(adapter.calls.getOrder, []);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Terminal recovery attempts and their continuation (issue #1034)
+  // -----------------------------------------------------------------------
+  describe('recovery after a terminal buy (#1034)', () => {
+    const sellFills = [makeFill({ tradeId: 'rec-sell-1', side: 'sell', price: 100000, size: 0.003 })];
+    const tick = () => new Promise((r) => setImmediate(r));
+
+    /** Reload the store from disk, as a gateway/engine restart would. */
+    const reloadStore = () => {
+      const { createManualTradeStore } = require('../src/manual-trades');
+      store = createManualTradeStore(EXCHANGE, PAIR);
+      store.load();
+      return store;
+    };
+
+    /**
+     * Fake exchange whose order book is mutable per test: `orders[id]` is what
+     * getOrder reports and `fills[id]` what getOrderFills returns.
+     */
+    const createExchange = () => {
+      const orders = {};
+      const fills = { 'sell-1': sellFills };
+      const adapter = createFakeAdapter({ fillsByOrder: fills, orders });
+      return { adapter, orders, fills };
+    };
+
+    /** Import the sell, place its recovery buy, and have the exchange cancel it. */
+    const seedCancelled = async (ex, { executed = [] } = {}) => {
+      const imported = await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });
+      assert.equal(imported.success, true);
+      const buyOrderId = imported.trade.buyOrderId;
+      const filledSize = executed.reduce((sum, f) => sum + f.size, 0);
+      ex.orders[buyOrderId] = { status: 'CANCELLED', completionPercentage: (filledSize / 0.003) * 100, filledSize };
+      ex.fills[buyOrderId] = executed;
+      const checked = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId: imported.trade.id });
+      assert.equal(checked.success, true);
+      return { tradeId: imported.trade.id, buyOrderId, checked };
+    };
+
+    it('keeps a zero-fill cancelled recovery terminal and recoverable across a cold reload', async () => {
+      const ex = createExchange();
+      const { tradeId, buyOrderId } = await seedCancelled(ex);
+
+      reloadStore();
+      const trade = store.getById(tradeId);
+      assert.equal(trade.status, STATUS.BUY_CANCELLED);
+      assert.equal(trade.recoveryAttempts[0].orderId, buyOrderId);
+      assert.equal(trade.recoveryAttempts[0].outcome, 'cancelled');
+
+      // Checking again neither re-polls the dead order nor changes the record.
+      const again = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      assert.equal(again.message, 'No pending buy to check');
+      assert.equal(store.getById(tradeId).status, STATUS.BUY_CANCELLED);
+    });
+
+    it('finishes the same trade through Retry recovery without re-importing the sell', async () => {
+      const ex = createExchange();
+      const { tradeId, buyOrderId } = await seedCancelled(ex);
+      reloadStore();
+      const sellRowsBefore = fillLedger.getFillsForOrder('sell-1').length;
+
+      // Replaying the original import still never places a second order...
+      const replay = await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });
+      assert.equal(replay.success, true);
+      assert.equal(ex.adapter.calls.placeLimitBuy.length, 1);
+      // ...and relinking through it points the operator at the row action.
+      const relink = await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', existingBuyOrderId: 'other' });
+      assert.equal(relink.success, false);
+      assert.match(relink.error, /Link replacement/);
+
+      const retried = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, recoveryBuyPrice: 94000 });
+      assert.equal(retried.success, true);
+      assert.equal(retried.placed, true);
+      assert.equal(ex.adapter.calls.placeLimitBuy.length, 2);
+      assert.equal(ex.adapter.calls.placeLimitBuy[1].size, 0.003);
+      assert.equal(ex.adapter.calls.placeLimitBuy[1].price, 94000);
+      const newBuy = retried.trade.buyOrderId;
+      assert.notEqual(newBuy, buyOrderId);
+      assert.equal(retried.trade.status, STATUS.BUY_PENDING);
+      assert.deepEqual(retried.trade.recoveryAttempts.map((a) => [a.orderId, a.outcome]), [[buyOrderId, 'cancelled'], [newBuy, null]]);
+      assert.equal(store.getPendingBuyOrderIds().has(newBuy), true);
+
+      ex.orders[newBuy] = { status: 'FILLED', completionPercentage: 100, filledSize: 0.003 };
+      ex.fills[newBuy] = [makeFill({ tradeId: 'rec-buy-2', price: 94000, size: 0.003 })];
+      const done = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      assert.equal(done.success, true);
+      assert.equal(done.trade.status, STATUS.COMPLETED);
+      assert.equal(done.trade.buySize, 0.003);
+      assert.equal(done.trade.buyPrice, 94000);
+      assert.equal(store.getAll().length, 1, 'still one trade — the sell was never duplicated');
+      assert.equal(fillLedger.getFillsForOrder('sell-1').length, sellRowsBefore);
+      assert.equal(fillLedger.getFillsForOrder(newBuy)[0].sellOrderId, 'sell-1');
+    });
+
+    it('ingests a cancelled partial execution once and replaces only the remainder', async () => {
+      const ex = createExchange();
+      const partial = [makeFill({ tradeId: 'rec-part-1', price: 95000, size: 0.001 })];
+      const { tradeId, buyOrderId, checked } = await seedCancelled(ex, { executed: partial });
+
+      assert.equal(checked.cancelled, true);
+      assert.equal(checked.recoveredSize, 0.001);
+      assert.equal(checked.remainingSize, 0.002);
+      const partialRows = fillLedger.getFillsForOrder(buyOrderId);
+      assert.equal(partialRows.length, 1);
+      assert.equal(partialRows[0].sellOrderId, 'sell-1', 'partial recovery closes part of the sell');
+      assert.equal(store.getById(tradeId).status, STATUS.BUY_CANCELLED);
+
+      // A repeated check and a reload never ingest the partial twice.
+      await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      reloadStore();
+      assert.equal(fillLedger.getFillsForOrder(buyOrderId).length, 1);
+
+      const retried = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, recoveryBuyPrice: '96000' });
+      assert.equal(retried.success, true);
+      assert.equal(ex.adapter.calls.placeLimitBuy[1].size, 0.002);
+
+      const newBuy = retried.trade.buyOrderId;
+      ex.orders[newBuy] = { status: 'FILLED', completionPercentage: 100, filledSize: 0.002 };
+      ex.fills[newBuy] = [makeFill({ tradeId: 'rec-part-2', price: 96000, size: 0.002 })];
+      const done = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      assert.equal(done.trade.status, STATUS.COMPLETED);
+      assert.ok(Math.abs(done.trade.buySize - 0.003) < 1e-12);
+      assert.ok(Math.abs(done.trade.buyPrice - (95000 * 0.001 + 96000 * 0.002) / 0.003) < 1e-6);
+      assert.deepEqual(done.trade.buyFillTradeIds, ['rec-part-1', 'rec-part-2']);
+    });
+
+    it('completes the trade when a cancelled order had already recovered the full quantity', async () => {
+      const ex = createExchange();
+      const { tradeId, checked } = await seedCancelled(ex, { executed: [makeFill({ tradeId: 'rec-full', price: 95000, size: 0.003 })] });
+      assert.equal(checked.completed, true);
+      assert.equal(store.getById(tradeId).status, STATUS.COMPLETED);
+      const retry = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, recoveryBuyPrice: 1 });
+      assert.equal(retry.success, false);
+      assert.equal(ex.adapter.calls.placeLimitBuy.length, 1);
+    });
+
+    it('keeps a cancellation whose executions are not yet visible pending, and blocks a retry', async () => {
+      const ex = createExchange();
+      const imported = await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });
+      const { id: tradeId, buyOrderId } = imported.trade;
+      ex.orders[buyOrderId] = { status: 'CANCELLED', completionPercentage: 33, filledSize: 0.001 };
+      ex.fills[buyOrderId] = [];
+
+      const checked = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      assert.equal(checked.success, false);
+      assert.match(checked.error, /only 0 is visible/);
+      assert.equal(fillLedger.getFillsForOrder(buyOrderId).length, 0);
+      const trade = store.getById(tradeId);
+      assert.equal(trade.status, STATUS.BUY_PENDING);
+      assert.equal(trade.buyOrderId, buyOrderId);
+      assert.match(trade.lastCheck.error, /only 0 is visible/);
+
+      const retry = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, recoveryBuyPrice: 95000 });
+      assert.equal(retry.success, false);
+      assert.match(retry.error, /still active or unconfirmed/);
+      assert.equal(ex.adapter.calls.placeLimitBuy.length, 1);
+    });
+
+    it('keeps a cancellation pending when only its completion percentage reports executions', async () => {
+      const ex = createExchange();
+      const imported = await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });
+      const { id: tradeId, buyOrderId } = imported.trade;
+      ex.orders[buyOrderId] = { status: 'CANCELLED', completionPercentage: 40 };
+      ex.fills[buyOrderId] = [];
+
+      const checked = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      assert.equal(checked.success, false);
+      assert.match(checked.error, /0.0012 executed, but only 0 is visible/);
+      assert.equal(store.getById(tradeId).status, STATUS.BUY_PENDING);
+
+      // Once the executions surface, the same check settles the true remainder.
+      ex.fills[buyOrderId] = [makeFill({ tradeId: 'late-1', price: 95000, size: 0.0012 })];
+      const settled = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      assert.equal(settled.cancelled, true);
+      assert.equal(settled.remainingSize, 0.0018);
+    });
+
+    it('keeps a percentage-only cancellation pending while some of its executions are still hidden', async () => {
+      const ex = createExchange();
+      const imported = await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });
+      const { id: tradeId, buyOrderId } = imported.trade;
+      // 40% of the 0.003 placed = 0.0012 executed, but only 0.0006 is visible.
+      ex.orders[buyOrderId] = { status: 'CANCELLED', completionPercentage: 40 };
+      ex.fills[buyOrderId] = [makeFill({ tradeId: 'half-1', price: 95000, size: 0.0006 })];
+
+      const checked = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      assert.equal(checked.success, false);
+      assert.match(checked.error, /only 0.0006 is visible/);
+      assert.equal(store.getById(tradeId).status, STATUS.BUY_PENDING);
+      assert.equal(fillLedger.getFillsForOrder(buyOrderId).length, 0);
+    });
+
+    it('preserves the association and surfaces a failed status lookup', async () => {
+      const ex = createExchange();
+      const imported = await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });
+      const failing = { ...ex.adapter, getOrder: async () => { throw new Error('503 upstream'); } };
+
+      const checked = await createImporter({ adapter: failing }).checkPendingBuy({ tradeId: imported.trade.id });
+      assert.equal(checked.success, false);
+      assert.match(checked.error, /503 upstream/);
+      reloadStore();
+      const trade = store.getById(imported.trade.id);
+      assert.equal(trade.status, STATUS.BUY_PENDING);
+      assert.equal(trade.buyOrderId, imported.trade.buyOrderId);
+      assert.match(trade.lastCheck.error, /503 upstream/);
+    });
+
+    it('refuses to replace an attempt that is still open on the exchange', async () => {
+      const ex = createExchange();
+      const imported = await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });
+      const retry = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId: imported.trade.id, existingBuyOrderId: 'other-buy' });
+      assert.equal(retry.success, false);
+      assert.match(retry.error, /still active or unconfirmed/);
+      assert.deepEqual(ex.adapter.calls.getOrder, []);
+      assert.equal(store.getById(imported.trade.id).buyOrderId, imported.trade.buyOrderId);
+    });
+
+    it('places one replacement across concurrent retry requests', async () => {
+      const ex = createExchange();
+      const { tradeId } = await seedCancelled(ex);
+      let release;
+      const gate = new Promise((r) => { release = r; });
+      const basePlace = ex.adapter.placeLimitBuy;
+      ex.adapter.placeLimitBuy = async (...args) => { const r = await basePlace(...args); await gate; return r; };
+
+      const p1 = createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, recoveryBuyPrice: 94000 });
+      while (ex.adapter.calls.placeLimitBuy.length < 2) await tick();
+      const p2 = createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, recoveryBuyPrice: 94000 });
+      const p3 = createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, existingBuyOrderId: 'manual-buy' });
+      for (let i = 0; i < 5; i++) await tick();
+      release();
+      const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+
+      assert.equal(r1.success, true);
+      assert.equal(r2.success, false);
+      assert.equal(r3.success, false);
+      assert.equal(ex.adapter.calls.placeLimitBuy.length, 2, 'seed placement + exactly one replacement');
+      assert.equal(store.getById(tradeId).recoveryAttempts.length, 2);
+    });
+
+    it('links a validated replacement and refuses invalid ones without changing the record', async () => {
+      const ex = createExchange();
+      const { tradeId, buyOrderId } = await seedCancelled(ex);
+      const retry = (existingBuyOrderId) => createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, existingBuyOrderId });
+
+      const reused = await retry(buyOrderId);
+      assert.match(reused.error, /already used by this recovery/);
+
+      const buy = (extra) => ({ side: 'BUY', productId: 'BTC-USDC', status: 'OPEN', filledSize: 0, ...extra });
+      ex.orders['wrong-side'] = buy({ side: 'SELL' });
+      assert.match((await retry('wrong-side')).error, /a SELL order; only a buy/);
+
+      ex.orders['no-side'] = buy({ side: undefined });
+      assert.match((await retry('no-side')).error, /not verifiably a buy/);
+
+      ex.orders['other-asset'] = buy({ productId: 'ETH-USDC' });
+      assert.match((await retry('other-asset')).error, /for ETH-USDC, not this fund's BTC-USDC/);
+
+      ex.orders['no-product'] = buy({ productId: '' });
+      assert.match((await retry('no-product')).error, /an unreported product/);
+
+      ex.orders['dead'] = buy({ status: 'EXPIRED' });
+      assert.match((await retry('dead')).error, /already EXPIRED with no executions/);
+
+      ex.orders['too-big'] = buy({ filledSize: 0.004 });
+      assert.match((await retry('too-big')).error, /more than the 0.003 still to recover/);
+
+      // 0.001 executed at 25% reveals a 0.004 order — it would over-recover.
+      ex.orders['too-big-open'] = buy({ status: 'PARTIALLY_FILLED', filledSize: 0.001, completionPercentage: 25 });
+      assert.match((await retry('too-big-open')).error, /is for 0.004, more than the 0.003/);
+
+      const failing = { ...ex.adapter, getOrder: async () => { throw new Error('timeout'); } };
+      const unchecked = await createImporter({ adapter: failing }).retryRecovery({ tradeId, existingBuyOrderId: 'any' });
+      assert.match(unchecked.error, /Could not validate replacement buy any: timeout/);
+      assert.equal(store.getById(tradeId).status, STATUS.BUY_CANCELLED);
+      assert.equal(store.getById(tradeId).buyOrderId, buyOrderId);
+
+      // Gemini reports a USDC fund's order on its USD symbol.
+      ex.orders['manual-buy'] = buy({ productId: 'btcusd' });
+      const linked = await retry('manual-buy');
+      assert.equal(linked.success, true);
+      assert.equal(linked.linked, true);
+      assert.equal(linked.trade.status, STATUS.BUY_PENDING);
+      assert.equal(linked.trade.buyOrderId, 'manual-buy');
+      assert.equal(ex.adapter.calls.placeLimitBuy.length, 1, 'linking never places an order');
+    });
+
+    it('refuses to link an order another manual trade already owns', async () => {
+      const ex = createExchange();
+      ex.fills['sell-2'] = [makeFill({ tradeId: 'rec-sell-2', side: 'sell', size: 0.001 })];
+      await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-2', existingBuyOrderId: 'owned-buy' });
+      ex.orders['owned-buy'] = { side: 'BUY', productId: 'BTC-USDC', status: 'OPEN', filledSize: 0 };
+      const { tradeId } = await seedCancelled(ex);
+      const result = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, existingBuyOrderId: 'owned-buy' });
+      assert.equal(result.success, false);
+      assert.match(result.error, /already belongs to manual trade/);
+    });
+
+    it('lets only one of two sells racing to link the same replacement claim it', async () => {
+      const ex = createExchange();
+      ex.fills['sell-2'] = [makeFill({ tradeId: 'rec-sell-2', side: 'sell', size: 0.003 })];
+      const { tradeId: first } = await seedCancelled(ex);
+      const second = (await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-2', existingBuyOrderId: 'dead-2' })).trade.id;
+      ex.orders['dead-2'] = { status: 'CANCELLED', filledSize: 0 };
+      ex.fills['dead-2'] = [];
+      await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId: second });
+      assert.equal(store.getById(second).status, STATUS.BUY_CANCELLED);
+
+      // Both lookups are in flight before either links (different sell locks).
+      ex.orders['shared-buy'] = { side: 'BUY', productId: 'BTC-USDC', status: 'OPEN', filledSize: 0 };
+      let release;
+      const gate = new Promise((r) => { release = r; });
+      const baseGetOrder = ex.adapter.getOrder;
+      let waiting = 0;
+      ex.adapter.getOrder = async (id) => { const o = await baseGetOrder(id); waiting++; await gate; return o; };
+      const p1 = createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId: first, existingBuyOrderId: 'shared-buy' });
+      const p2 = createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId: second, existingBuyOrderId: 'shared-buy' });
+      while (waiting < 2) await tick();
+      release();
+      const results = await Promise.all([p1, p2]);
+
+      assert.deepEqual(results.map((r) => r.success).sort(), [false, true]);
+      assert.match(results.find((r) => !r.success).error, /already belongs to manual trade/);
+      assert.equal(store.getAll().filter((t) => t.buyOrderId === 'shared-buy').length, 1);
+    });
+
+    it('keeps a filled linked replacement that covers only part of the remainder recoverable', async () => {
+      const ex = createExchange();
+      const { tradeId } = await seedCancelled(ex);
+      ex.orders['small-buy'] = { side: 'BUY', productId: 'BTC-USDC', status: 'OPEN', filledSize: 0 };
+      await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, existingBuyOrderId: 'small-buy' });
+
+      ex.orders['small-buy'] = { side: 'BUY', status: 'FILLED', completionPercentage: 100, filledSize: 0.001 };
+      ex.fills['small-buy'] = [makeFill({ tradeId: 'small-1', price: 95000, size: 0.001 })];
+      const checked = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      assert.equal(checked.success, true);
+      assert.equal(checked.remainingSize, 0.002);
+      const trade = store.getById(tradeId);
+      assert.equal(trade.status, STATUS.BUY_CANCELLED);
+      assert.equal(trade.recoveryAttempts[1].outcome, 'filled');
+
+      const retried = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId, recoveryBuyPrice: 94000 });
+      assert.equal(retried.success, true);
+      assert.equal(ex.adapter.calls.placeLimitBuy.at(-1).size, 0.002);
+    });
+
+    it('keeps a filled order pending while its executions are not fully visible', async () => {
+      const ex = createExchange();
+      const imported = await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });
+      const { id: tradeId, buyOrderId } = imported.trade;
+      ex.orders[buyOrderId] = { status: 'FILLED', completionPercentage: 100, filledSize: 0.003 };
+      ex.fills[buyOrderId] = [makeFill({ tradeId: 'vis-1', price: 95000, size: 0.001 })];
+
+      const checked = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      assert.equal(checked.success, false);
+      assert.match(checked.error, /only 0.001 is visible/);
+      assert.equal(store.getById(tradeId).status, STATUS.BUY_PENDING);
+      assert.equal(fillLedger.getFillsForOrder(buyOrderId).length, 0);
+    });
+
+    it('validates retry input before touching the store or exchange', async () => {
+      const ex = createExchange();
+      const { tradeId } = await seedCancelled(ex);
+      const importer = createImporter({ adapter: ex.adapter });
+      const getOrderCalls = ex.adapter.calls.getOrder.length;
+      assert.match((await importer.retryRecovery({ tradeId })).error, /exactly one/);
+      assert.match((await importer.retryRecovery({ tradeId, recoveryBuyPrice: 1, existingBuyOrderId: 'x' })).error, /exactly one/);
+      assert.equal((await importer.retryRecovery({ tradeId, recoveryBuyPrice: 'abc' })).error, 'Invalid recoveryBuyPrice');
+      assert.equal((await importer.retryRecovery({ tradeId, recoveryBuyPrice: -1 })).error, 'Invalid recoveryBuyPrice');
+      assert.match((await importer.retryRecovery({ tradeId: 'nope', recoveryBuyPrice: 1 })).error, /not found/);
+      assert.equal(ex.adapter.calls.getOrder.length, getOrderCalls);
+      assert.equal(ex.adapter.calls.placeLimitBuy.length, 1);
+    });
+
+    it('re-linking the same order through importSell does not reopen a settled attempt', async () => {
+      const ex = createExchange();
+      await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', existingBuyOrderId: 'linked-1' });
+      ex.orders['linked-1'] = { status: 'CANCELLED', filledSize: 0 };
+      ex.fills['linked-1'] = [];
+      const tradeId = store.getAll()[0].id;
+      await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      assert.equal(store.getById(tradeId).status, STATUS.BUY_CANCELLED);
+
+      const replay = await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', existingBuyOrderId: 'linked-1' });
+      assert.equal(replay.success, true);
+      assert.equal(replay.trade.status, STATUS.BUY_CANCELLED);
+      assert.equal(replay.trade.recoveryAttempts.length, 1);
+    });
+
+    it('upgrades a pre-#1034 pending record on load so it can be settled and retried', async () => {
+      const dir = migration.resolveFundDataDir(EXCHANGE, PAIR);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'manual-trades.json'), JSON.stringify({
+        trades: [{
+          id: 'legacy-1', sellOrderId: 'sell-1', sellPrice: 100000, sellSize: 0.003, sellQuoteAmount: 300,
+          sellTimestamp: 1, sellFillTradeIds: ['rec-sell-1'], buyOrderId: 'old-buy', buyPrice: 95000, buySize: 0.003,
+          buyPlacedAt: 2, buyFilledAt: null, buyFillTradeIds: [], status: 'buy_pending', tradeType: 'sell_first',
+          bodyId: null, note: '', createdAt: 1, updatedAt: 2,
+        }],
+        dismissedFillOrderIds: [],
+      }));
+      reloadStore();
+      assert.deepEqual(store.getById('legacy-1').recoveryAttempts.map((a) => [a.orderId, a.kind, a.outcome]), [['old-buy', 'placed', null]]);
+
+      const ex = createExchange();
+      ex.orders['old-buy'] = { status: 'EXPIRED', filledSize: 0 };
+      const checked = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId: 'legacy-1' });
+      assert.equal(checked.cancelled, true);
+      const retried = await createImporter({ adapter: ex.adapter }).retryRecovery({ tradeId: 'legacy-1', recoveryBuyPrice: 94000 });
+      assert.equal(retried.success, true);
+      assert.equal(ex.adapter.calls.placeLimitBuy[0].size, 0.003);
     });
   });
 
