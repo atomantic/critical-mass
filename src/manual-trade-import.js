@@ -336,12 +336,14 @@ const createManualTradeImporter = ({
    * before any body was saved. Two kinds of evidence count:
    *  - live: a body on regime-state.json owns the order (by id, or through
    *    sourceOrderIds/buyOrders after a merge);
-   *  - retired: a sell order linked from the buy's rows (its TP link or a
-   *    per-sell `consumedBy` key) was booked as a body sale — its own ledger
-   *    rows carry the selling body's id. Linkage alone is NOT evidence:
-   *    recalculateCycles stamps a cycle's sell onto every buy of a >=50%-sold
-   *    cycle for display, independently of any body stamp, and the legacy
-   *    closure seal derives `consumedBy.__legacy__` from that same link.
+   *  - retired: a body sale demonstrably consumed THIS buy — a per-sell
+   *    `consumedBy` entry (written only when a body sale books against the
+   *    buy) naming a booked sell, or the buy's sellOrderId naming a sell
+   *    booked to this buy's own body identity (the intent's id or a bodyId
+   *    on its rows, which merges re-stamp). Linkage alone is NOT evidence:
+   *    recalculateCycles stamps a cycle's sell — possibly another body's
+   *    sale — onto every buy of a >=50%-sold cycle for display, and the
+   *    legacy closure seal derives `consumedBy.__legacy__` from that link.
    * Every path that removes a body books a TP sale first, so this separates a
    * legitimately sold body — which must never be recreated — from one that was
    * never committed.
@@ -353,15 +355,19 @@ const createManualTradeImporter = ({
     const persisted = loadRegimeState(exchange, pair).position?.celestialBodies
       ?.find((body) => bodyOwnsOrder(body, bodyId, buyOrderId));
     if (persisted) return { bodyId: persisted.id, tier: persisted.tier, live: true };
-    const linkedSellIds = new Set();
-    for (const row of fillLedger.getFillsForOrder(buyOrderId)) {
-      if (row.sellOrderId) linkedSellIds.add(row.sellOrderId);
-      for (const sellOrderId of Object.keys(row.consumedBy || {})) {
-        if (sellOrderId !== LEGACY_CONSUMPTION_KEY) linkedSellIds.add(sellOrderId);
+    const rows = fillLedger.getFillsForOrder(buyOrderId);
+    const ownBodyIds = new Set([bodyId, ...rows.map((row) => row.bodyId)].filter(Boolean));
+    const bookedSale = (sellOrderId, acceptBody) => fillLedger.getFillsForOrder(sellOrderId)
+      .find((row) => row.side === 'sell' && row.bodyId && acceptBody(row.bodyId));
+    for (const row of rows) {
+      for (const [sellOrderId, qty] of Object.entries(row.consumedBy || {})) {
+        if (sellOrderId === LEGACY_CONSUMPTION_KEY || !(Number(qty) > 0)) continue;
+        const booked = bookedSale(sellOrderId, () => true);
+        if (booked) return { bodyId: booked.bodyId, live: false };
       }
     }
-    for (const sellOrderId of linkedSellIds) {
-      const booked = fillLedger.getFillsForOrder(sellOrderId).find((row) => row.side === 'sell' && row.bodyId);
+    for (const sellOrderId of new Set(rows.map((row) => row.sellOrderId).filter(Boolean))) {
+      const booked = bookedSale(sellOrderId, (id) => ownBodyIds.has(id));
       if (booked) return { bodyId: booked.bodyId, live: false };
     }
     return null;

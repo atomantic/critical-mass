@@ -1590,6 +1590,16 @@ describe('Manual Trade Import', () => {
 
       const savedBodies = () => readRegimeStateFile()?.position?.celestialBodies || [];
 
+      /** Remove every body from regime-state.json, keeping aggregates consistent. */
+      const dropSavedBodies = () => {
+        const { syncPositionState } = require('../src/celestial-hierarchy');
+        const stateFile = path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
+        const state = readRegimeStateFile();
+        state.position.celestialBodies = [];
+        syncPositionState(state.position, []);
+        fs.writeFileSync(stateFile, JSON.stringify(state));
+      };
+
       /** The ledger trail of a body TP sale: placeBodyTp's link, then the booked sell. */
       const bookBodySale = (buyOrderId, sellOrderId, bodyId) => {
         fillLedger.annotateFillsByOrderId(buyOrderId, { sellOrderId, bodyId });
@@ -1783,10 +1793,7 @@ describe('Manual Trade Import', () => {
         // sellOrderId + bodyId), the TP fills, and the body is retired.
         coldReload();
         bookBodySale('buy-1', 'tp-1', savedBody.id);
-        const stateFile = path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
-        const state = readRegimeStateFile();
-        state.position.celestialBodies = [];
-        fs.writeFileSync(stateFile, JSON.stringify(state));
+        dropSavedBodies();
 
         const retried = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true });
 
@@ -1811,6 +1818,29 @@ describe('Manual Trade Import', () => {
 
         assert.equal(replay.success, false, 'unsold inventory must not be reported as managed');
         assert.equal(store.getAll()[0].status, STATUS.BUY_RECORDED);
+      });
+
+      it('does not treat another body\'s sale, linked by the cycle heuristic, as this buy\'s retirement', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        store.markTpPlaced = () => { throw new Error('process crashed (simulated)'); };
+        await assert.rejects(createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true }));
+        const [savedBody] = savedBodies();
+
+        // The body is lost from regime-state.json, and recalculateCycles links
+        // a sale booked by an UNRELATED body onto this still-unsold buy.
+        coldReload();
+        dropSavedBodies();
+        fillLedger.annotateFillsByOrderId('buy-1', { sellOrderId: 'other-tp' });
+        fillLedger.ingestFill({ tradeId: 'other-tp-fill', orderId: 'other-tp', side: 'sell', size: 0.02, price: 110000, netFee: 0 }, null, { skipPersist: true, cycleId: null });
+        fillLedger.annotateFillsByOrderId('other-tp', { bodyId: 'body-unrelated', isBodyOwned: true, bodyPnl: 3 });
+        fillLedger.persist();
+
+        const retried = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+        assert.equal(retried.success, true);
+        assert.equal(savedBodies().length, 1, 'the unsold buy gets its body back');
+        assert.equal(savedBodies()[0].id, savedBody.id);
+        assert.equal(retried.trade.bodyId, savedBody.id);
       });
 
       it('rolls back an intent whose store write failed, so same-process recovery cannot publish it', async () => {
