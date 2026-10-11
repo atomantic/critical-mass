@@ -291,3 +291,68 @@ test('Filled Orders reserves net a stale-TP reserves drawdown, matching the serv
   assert.ok(Math.abs(result.totalHoldback - 0.5) < 1e-12, `0.7 − 0.2, got ${result.totalHoldback}`);
   assert.ok(Math.abs(result.totalHoldback - pairCycleFills(fills).realizedAssetPnL) < 1e-12, 'UI reserves equal the server realizedAssetPnL');
 });
+
+test('deriveRegimeCumulativePnl derives chronological points matching totalPnl and cycle-pairing model', async () => {
+  const { deriveRegimeCumulativePnl, deriveRegimeFillGroups } = await load();
+
+  // Empty cases
+  assert.deepEqual(deriveRegimeCumulativePnl(), []);
+  assert.deepEqual(deriveRegimeCumulativePnl({ fills: [] }), []);
+  assert.deepEqual(deriveRegimeCumulativePnl({ fills: [buy('b1')] }), []);
+
+  // Live fills with paired cycles and body annotations
+  const fills = [
+    buy('b1', { timestamp: 1000 }),
+    sell('s1', { timestamp: 2000, bodyPnl: 25.5, bodyHoldbackAsset: 0.5 }),
+    buy('b2', { timestamp: 3000 }),
+    sell('s2', { timestamp: 4000, bodyPnl: -10.2 }),
+    sell('s3', { timestamp: 5000, bodyPnl: 15.0 }),
+  ];
+
+  const points = deriveRegimeCumulativePnl({ fills });
+  assert.equal(points.length, 3);
+  assert.equal(points[0].pnl, 25.5);
+  assert.equal(points[0].cumulative, 25.5);
+  assert.equal(points[0].date.getTime(), 2000);
+
+  assert.equal(points[1].pnl, -10.2);
+  assert.equal(points[1].cumulative, 15.3);
+  assert.equal(points[1].date.getTime(), 4000);
+
+  assert.equal(points[2].pnl, 15.0);
+  assert.equal(points[2].cumulative, 30.3);
+  assert.equal(points[2].date.getTime(), 5000);
+
+  // Parity with deriveRegimeFillGroups grand total
+  const groups = deriveRegimeFillGroups(fills);
+  assert.ok(Math.abs(points[points.length - 1].cumulative - groups.totalPnl) < 1e-9);
+});
+
+test('deriveRegimeCumulativePnl handles string timestamps and dry-run filled orders', async () => {
+  const { deriveRegimeCumulativePnl } = await load();
+
+  // String timestamps
+  const fillsWithStrings = [
+    buy('b1', { timestamp: '2026-01-01T00:00:00.000Z' }),
+    sell('s1', { timestamp: '2026-01-01T01:00:00.000Z', bodyPnl: 50 }),
+    sell('s2', { timestamp: '2026-01-01T02:00:00.000Z', bodyPnl: 30 }),
+  ];
+  const pts = deriveRegimeCumulativePnl({ fills: fillsWithStrings });
+  assert.equal(pts.length, 2);
+  assert.equal(pts[0].cumulative, 50);
+  assert.equal(pts[1].cumulative, 80);
+  assert.equal(pts[0].date.getTime(), new Date('2026-01-01T01:00:00.000Z').getTime());
+
+  // Dry run mode
+  const dryRunOrders = [
+    { orderId: 'd-b1', side: 'buy', size: 1, price: 100, filledAt: 1000 },
+    { orderId: 'd-s1', side: 'sell', size: 1, price: 120, pnl: 20, filledAt: 2000 },
+    { orderId: 'd-b2', side: 'buy', size: 1, price: 110, filledAt: 3000 },
+    { orderId: 'd-s2', side: 'sell', size: 1, price: 130, pnl: 20, filledAt: 4000 },
+  ];
+  const dryRunPts = deriveRegimeCumulativePnl({ isDryRun: true, dryRunFilled: dryRunOrders });
+  assert.equal(dryRunPts.length, 2);
+  assert.equal(dryRunPts[0].cumulative, 20);
+  assert.equal(dryRunPts[1].cumulative, 40);
+});
+
