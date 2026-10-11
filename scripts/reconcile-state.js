@@ -38,7 +38,7 @@ const CORRECT_CYCLE = 'cycle-11';
 
 // Manual order IDs to exclude from fill ingestion
 const MANUAL_ORDER_PREFIXES = [
-  '268e53b4', 'b9f57446', 'c01cd924', 'd2147728', 'ccbca736', '1d90f021',
+  'b9f57446', 'd2147728', 'ccbca736', '1d90f021',
 ];
 
 // Body TP orders that filled while engine was down
