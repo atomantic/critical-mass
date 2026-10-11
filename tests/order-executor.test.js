@@ -567,6 +567,181 @@ describe('safeCancelOrder — surfaces cancelled-with-partials filledSize (issue
     assert.equal(result.cancelled, true);
     assert.equal(result.filledSize, 0.004, 'falls back to the tracked high-water mark when status omits it');
   });
+
+  const withImmediateTimeouts = async (run) => {
+    const originalSetTimeout = global.setTimeout;
+    global.setTimeout = (callback) => {
+      queueMicrotask(callback);
+      return 0;
+    };
+    try {
+      return await run();
+    } finally {
+      global.setTimeout = originalSetTimeout;
+    }
+  };
+
+  for (const status of ['CANCELLED', 'canceled', 'EXPIRED', 'failed']) {
+    for (const acknowledged of [false, true]) {
+      it(`resolves ${status} after ${acknowledged ? 'an acknowledged' : 'a refused'} cancel`, async () => {
+        await withImmediateTimeouts(async () => {
+          let getOrderCalls = 0;
+          let cancelCalls = 0;
+          const adapter = {
+            cancelOrder: async () => { cancelCalls++; return { success: acknowledged }; },
+            getOrder: async () => {
+              getOrderCalls++;
+              return {
+                status,
+                filledSize: 0.003,
+                filledValue: 153,
+                averageFilledPrice: 51000,
+                totalFees: 0.02,
+                side: 'SELL',
+              };
+            },
+          };
+          const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+          exec.restoreBodyTpOrder('body-terminal', 'tp-terminal', 0.01, 51000);
+
+          assert.deepEqual(await exec.cancelBodyTpOrder('body-terminal'), {
+            cancelled: true,
+            filled: false,
+            filledSize: 0.003,
+            filledValue: 153,
+            averageFilledPrice: 51000,
+            totalFees: 0.02,
+          });
+          assert.equal(exec.isBodyTpOrder('tp-terminal'), false);
+          assert.equal(getOrderCalls, 1, 'terminal status should resolve on its first read');
+          assert.equal(cancelCalls, 1, 'terminal status should avoid another cancel attempt');
+        });
+      });
+    }
+  }
+
+  for (const status of ['CANCELED', 'EXPIRED', 'FAILED']) {
+    for (const acknowledged of [false, true]) {
+      it(`resolves zero-fill ${status} after ${acknowledged ? 'an acknowledged' : 'a refused'} cancel`, async () => {
+        await withImmediateTimeouts(async () => {
+          let getOrderCalls = 0;
+          const adapter = {
+            cancelOrder: async () => ({ success: acknowledged }),
+            getOrder: async () => {
+              getOrderCalls++;
+              return { status, filledSize: 0, side: 'SELL' };
+            },
+          };
+          const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+          exec.restoreBodyTpOrder('body-zero', 'tp-zero', 0.01, 51000);
+
+          assert.deepEqual(await exec.cancelBodyTpOrder('body-zero'), {
+            cancelled: true,
+            filled: false,
+            filledSize: 0,
+            filledValue: 0,
+            averageFilledPrice: 0,
+            totalFees: 0,
+          });
+          assert.equal(getOrderCalls, 1, 'terminal status should resolve on its first read');
+        });
+      });
+    }
+  }
+
+  for (const acknowledged of [false, true]) {
+    it(`keeps filled classification ahead of cancellation for ${acknowledged ? 'acknowledged' : 'refused'} cancels`, async () => {
+      await withImmediateTimeouts(async () => {
+        const adapter = {
+          cancelOrder: async () => ({ success: acknowledged }),
+          getOrder: async () => ({ status: 'EXPIRED', completionPercentage: 100, filledSize: 0.01, side: 'SELL' }),
+        };
+        const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+        exec.restoreBodyTpOrder('body-filled', 'tp-filled', 0.01, 51000);
+
+        assert.deepEqual(await exec.cancelBodyTpOrder('body-filled'), {
+          cancelled: false,
+          filled: true,
+          filledSize: 0.01,
+        });
+        assert.equal(exec.getPendingOrdersList().some(order => order.orderId === 'tp-filled'), true);
+      });
+    });
+  }
+
+  for (const acknowledged of [false, true]) {
+    it(`retains tracking for unresolved status after ${acknowledged ? 'acknowledged' : 'refused'} cancel`, async () => {
+      await withImmediateTimeouts(async () => {
+        const adapter = {
+          cancelOrder: async () => ({ success: acknowledged }),
+          getOrder: async () => ({ status: 'PENDING_CANCEL', filledSize: 0, side: 'SELL' }),
+        };
+        const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+        exec.restoreBodyTpOrder('body-live', 'tp-live', 0.01, 51000);
+
+        assert.deepEqual(await exec.cancelBodyTpOrder('body-live'), {
+          cancelled: false,
+          filled: false,
+          filledSize: 0,
+        });
+        assert.equal(exec.isBodyTpOrder('tp-live'), true);
+      });
+    });
+  }
+
+  for (const statusResult of [
+    { label: 'OPEN', value: { status: 'OPEN', filledSize: 0, side: 'SELL' } },
+    { label: 'unknown', value: { status: 'MYSTERY', filledSize: 0, side: 'SELL' } },
+    { label: 'missing', value: null },
+    { label: 'failed read', error: new Error('status unavailable') },
+  ]) {
+    it(`keeps the order tracked after an acknowledged cancel with ${statusResult.label} status`, async () => {
+      await withImmediateTimeouts(async () => {
+        let getOrderCalls = 0;
+        const adapter = {
+          cancelOrder: async () => ({ success: true }),
+          getOrder: async () => {
+            getOrderCalls++;
+            if (statusResult.error) throw statusResult.error;
+            return statusResult.value;
+          },
+        };
+        const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+        exec.restoreBodyTpOrder('body-unknown', 'tp-unknown', 0.01, 51000);
+
+        assert.deepEqual(await exec.cancelBodyTpOrder('body-unknown'), {
+          cancelled: false,
+          filled: false,
+          filledSize: 0,
+        });
+        assert.equal(getOrderCalls, 6, 'unresolved status should exhaust the bounded verification reads');
+        assert.equal(exec.getPendingOrdersList().some(order => order.orderId === 'tp-unknown'), true);
+      });
+    });
+  }
+
+  it('agrees with polling when the same zero-fill EXPIRED order is already off-book', async () => {
+    const status = { status: 'EXPIRED', filledSize: 0, completionPercentage: 0, side: 'SELL' };
+    const cancelExec = createOrderExecutor('coinbase', baseConfig(), {
+      cancelOrder: async () => ({ success: true }),
+      getOrder: async () => status,
+    }, 'BTC-USDC', {});
+    cancelExec.restoreBodyTpOrder('body-agreement', 'tp-agreement', 0.01, 51000);
+    assert.deepEqual(await withImmediateTimeouts(() => cancelExec.cancelBodyTpOrder('body-agreement')), {
+      cancelled: true,
+      filled: false,
+      filledSize: 0,
+      filledValue: 0,
+      averageFilledPrice: 0,
+      totalFees: 0,
+    });
+
+    const pollExec = createOrderExecutor('coinbase', baseConfig(), { getOrder: async () => status }, 'BTC-USDC', {});
+    pollExec.restorePendingOrder('tp-agreement', { type: 'body_tp', price: 51000, size: 0.01, sizeUsdc: 510, placedAt: Date.now() });
+    const polled = await pollExec.checkPendingOrderFills();
+    assert.equal(polled.cancelled, 1);
+    assert.equal(pollExec.getPendingOrdersList().some(order => order.orderId === 'tp-agreement'), false);
+  });
 });
 
 describe('order-executor placement paths — unknown-outcome reconciliation (issue #226 follow-up)', () => {
@@ -1127,5 +1302,118 @@ describe('isTrackedTpOrder — legacy core TP ownership (issue #672)', () => {
     assert.equal(exec.isTrackedTpOrder('body-tp'), false);
     assert.equal(exec.isTrackedTpOrder('entry-1'), false);
     assert.equal(exec.isTrackedTpOrder(null), false);
+  });
+});
+
+describe('entry admission — stop/close fences pending entry dispatch (issue #1009)', () => {
+  const configFor = () => ({
+    entryOffsetBps: 10,
+    entryMaxRetries: 3,
+    orderStaleMs: 30000,
+    cancelRateLimitMs: 0,
+    maxOpenOrders: 20,
+  });
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((r) => { resolve = r; });
+    return { promise, resolve };
+  };
+  const tick = () => new Promise((r) => setImmediate(r));
+
+  it('placeEntryBid submits nothing when admission is already closed', async () => {
+    let placeCalls = 0;
+    const adapter = { placeLimitBuy: async () => { placeCalls++; return { success: true, orderId: 'x' }; } };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+
+    const result = await exec.placeEntryBid(1000, 100_000, 100_010, 0, null, null, { isAdmitted: () => false });
+
+    assert.equal(placeCalls, 0);
+    assert.equal(result.success, false);
+    assert.equal(result.notAdmitted, true);
+    assert.equal(exec.getPendingCounts().entries, 0);
+  });
+
+  it('a post-only retry is not dispatched once admission closes while fresh prices are fetched', async () => {
+    let placeCalls = 0;
+    let admitted = true;
+    const prices = deferred();
+    const adapter = {
+      placeLimitBuy: async () => { placeCalls++; return { success: false, errorMessage: 'INVALID_LIMIT_PRICE_POST_ONLY' }; },
+      getBidAsk: () => prices.promise,
+    };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+
+    const pending = exec.placeEntryBid(1000, 100_000, 100_010, 0, null, null, { isAdmitted: () => admitted });
+    await tick();
+    assert.equal(placeCalls, 1, 'first attempt was dispatched while admitted');
+    admitted = false; // stop()/close() lands during the retry's price fetch
+    prices.resolve({ bid: 99_000, ask: 99_010 });
+    const result = await pending;
+
+    assert.equal(placeCalls, 1, 'the retry must not reach the exchange');
+    assert.equal(result.notAdmitted, true);
+  });
+
+  it('an order already dispatched when admission closes is still tracked', async () => {
+    let admitted = true;
+    const placed = deferred();
+    const adapter = {
+      placeLimitBuy: () => placed.promise,
+      getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
+    };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+
+    const pending = exec.placeEntryBid(1000, 100_000, 100_010, 0, null, null, { isAdmitted: () => admitted });
+    await tick();
+    admitted = false; // closes while the exchange response is in flight
+    placed.resolve({ success: true, orderId: 'accepted-1' });
+    const result = await pending;
+
+    assert.equal(result.success, true, 'an accepted order is never discarded');
+    assert.equal(result.orderId, 'accepted-1');
+    assert.equal(exec.getPendingCounts().entries, 1, 'the accepted bid stays tracked for fills/reconciliation');
+    exec.clearTimers();
+  });
+
+  it('placeLadderOrders stops dispatching rungs once admission closes, keeping placed rungs tracked', async () => {
+    const placed = [];
+    let admitted = true;
+    const adapter = {
+      placeLimitBuy: async (_productId, _size, price) => {
+        placed.push(price);
+        if (placed.length === 2) admitted = false; // stop()/close() lands between rungs
+        return { success: true, orderId: `rung-${placed.length}` };
+      },
+      getOrder: async () => ({ status: 'OPEN' }),
+    };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+
+    const result = await exec.placeLadderOrders([
+      { index: 0, price: 99_000, sizeUsdc: 100, assetQty: 0.001 },
+      { index: 1, price: 98_000, sizeUsdc: 100, assetQty: 0.001 },
+      { index: 2, price: 97_000, sizeUsdc: 100, assetQty: 0.001 },
+      { index: 3, price: 96_000, sizeUsdc: 100, assetQty: 0.001 },
+    ], { isAdmitted: () => admitted });
+
+    assert.deepEqual(placed, [99_000, 98_000], 'no rung is dispatched after admission closes');
+    assert.equal(result.notAdmitted, true);
+    assert.equal(result.failedCount, 0, 'unplaced rungs are not exchange failures');
+    assert.deepEqual(result.orders.map((o) => o.orderId), ['rung-1', 'rung-2']);
+    assert.equal(exec.getPendingCounts().ladderEntries, 2, 'rungs placed before the close stay tracked');
+  });
+
+  it('without an admission predicate, placement is unchanged', async () => {
+    let placeCalls = 0;
+    const adapter = {
+      placeLimitBuy: async () => { placeCalls++; return { success: true, orderId: `o-${placeCalls}` }; },
+      getOrder: async () => ({ status: 'OPEN' }),
+    };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+    const result = await exec.placeLadderOrders([
+      { index: 0, price: 99_000, sizeUsdc: 100, assetQty: 0.001 },
+      { index: 1, price: 98_000, sizeUsdc: 100, assetQty: 0.001 },
+    ]);
+    assert.equal(placeCalls, 2);
+    assert.equal(result.notAdmitted, undefined);
   });
 });

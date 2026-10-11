@@ -12,7 +12,7 @@
 const { roundAsset, roundPrice } = require('./volatility-utils');
 const { createMutex } = require('./async-mutex');
 const { getBaseCurrency } = require('./config-utils');
-const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, isFilledStatus, isCancelledStatus } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus } = require('./shared-utils');
 const { placeWithUnknownReconcile } = require('./order-manager');
 const { createContextLogger } = require('./logger');
 
@@ -219,7 +219,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           });
           return { cancelled: false, filled: true, ...fillDetails(status, resolveFilledSize(status)) };
         }
-        if (status && status.status === 'CANCELLED') {
+        if (isCancelledStatus(status)) {
           return { cancelled: true, filled: false, ...fillDetails(status, resolveFilledSize(status)) };
         }
         if (attempt < maxAckRetries) {
@@ -245,7 +245,14 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         await new Promise(r => setTimeout(r, poll === 0 ? verifyDelayMs : pollDelayMs));
         const verified = await adapter.getOrder(orderId).catch(() => null);
 
-        if (verified?.status === 'CANCELLED') {
+        if (isFilledStatus(verified)) {
+          logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`, {
+            orderId,
+            status: verified?.status || 'unknown',
+          });
+          return { cancelled: false, filled: true, ...fillDetails(verified, resolveFilledSize(verified)) };
+        }
+        if (isCancelledStatus(verified)) {
           const filledSize = resolveFilledSize(verified);
           if (filledSize > 0) {
             logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} cancelled with ${filledSize} partial fill`, {
@@ -254,13 +261,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             });
           }
           return { cancelled: true, filled: false, ...fillDetails(verified, filledSize) };
-        }
-        if (isFilledStatus(verified)) {
-          logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`, {
-            orderId,
-            status: verified?.status || 'unknown',
-          });
-          return { cancelled: false, filled: true, ...fillDetails(verified, resolveFilledSize(verified)) };
         }
         // status OPEN, PENDING_CANCEL, null (fetch error), or unknown — keep polling
       }
@@ -283,9 +283,17 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @param {number} [retryCount=0] - Current retry attempt
    * @param {number} [effectiveOffsetBps] - Optional dynamic offset (defaults to config.entryOffsetBps)
    * @param {number} [staleMs] - Optional per-order stale timeout (ATR/offset-adaptive, computed by the engine); defaults to the regime-adjusted global timeout
-   * @returns {Promise<{success: boolean, orderId?: string, price?: number, assetQty?: number, errorMessage?: string}>}
+   * @param {Object} [options]
+   * @param {() => boolean} [options.isAdmitted] - Entry admission (#1009), checked before the first dispatch and every post-only retry
+   * @returns {Promise<{success: boolean, notAdmitted?: boolean, orderId?: string, price?: number, assetQty?: number, errorMessage?: string}>}
    */
-  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null, staleMs = null) => {
+  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null, staleMs = null, options = {}) => {
+    // The engine stopped or the fund started draining while this entry was
+    // being prepared (or between retries): submit nothing new (#1009).
+    if (options.isAdmitted && !options.isAdmitted()) {
+      return { success: false, notAdmitted: true, errorMessage: ENTRY_NOT_ADMITTED };
+    }
+
     // Calculate bid price with offset below current bid (use dynamic offset if provided)
     const offsetBps = effectiveOffsetBps ?? config.entryOffsetBps;
     const offsetMultiplier = 1 - (offsetBps / BASIS_POINTS_DIVISOR);
@@ -377,7 +385,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           // Preserve the dynamic (momentum-adjusted) offset and adaptive stale
           // timeout across retries — dropping the args silently reverts to
           // config.entryOffsetBps / the global stale timeout.
-          return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1, effectiveOffsetBps, staleMs);
+          return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1, effectiveOffsetBps, staleMs, options);
         }
 
         return {
@@ -406,7 +414,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
       const freshPrices = await adapter.getBidAsk(productId);
       // Preserve the dynamic offset and stale timeout across retries (see note above).
-      return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1, effectiveOffsetBps, staleMs);
+      return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1, effectiveOffsetBps, staleMs, options);
     }
 
     logger.error(`❌ [${exchange}] Entry bid failed: ${result.errorMessage || 'unknown error'} (${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)})`, {
@@ -1412,13 +1420,23 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   /**
    * Place multiple ladder entry orders
    * @param {Array<{index: number, price: number, sizeUsdc: number, assetQty: number}>} levels - Ladder levels
-   * @returns {Promise<{orders: Array<{orderId: string, index: number, price: number, sizeUsdc: number, assetQty: number}>, failedCount: number}>}
+   * @param {Object} [options]
+   * @param {() => boolean} [options.isAdmitted] - Entry admission (#1009), checked before every rung; once it closes, no further rung is dispatched and rungs already placed stay tracked
+   * @returns {Promise<{orders: Array<{orderId: string, index: number, price: number, sizeUsdc: number, assetQty: number}>, failedCount: number, notAdmitted?: boolean}>}
    */
-  const placeLadderOrders = async (levels) => {
+  const placeLadderOrders = async (levels, options = {}) => {
     const results = [];
     let failedCount = 0;
 
     for (const level of levels) {
+      if (options.isAdmitted && !options.isAdmitted()) {
+        logger.info(`🚦 [${exchange}] Ladder halted before level ${level.index} — ${ENTRY_NOT_ADMITTED}`, {
+          ladderIndex: level.index,
+          placed: results.length,
+        });
+        return { orders: results, failedCount, notAdmitted: true };
+      }
+
       // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue
       // #226 follow-up) instead of treating a network error as a clean
       // failure — a real ladder entry may have reached the exchange despite it.

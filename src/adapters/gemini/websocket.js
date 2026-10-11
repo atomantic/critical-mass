@@ -14,14 +14,10 @@
  * - No auth needed for public market data
  */
 
-const WebSocket = require('ws');
+const { createWebSocketLifecycle } = require('../../websocket-lifecycle');
 const { createContextLogger } = require('../../logger');
 
 const GEMINI_WS_URL = 'wss://api.gemini.com/v2/marketdata';
-const HEARTBEAT_INTERVAL = 30000;
-const MAX_MISSED_PONGS = 2; // terminate after this many unanswered pings
-const RECONNECT_BASE_DELAY = 1000;
-const MAX_RECONNECT_DELAY = 60000;
 
 /**
  * Safely parse JSON, returning null on failure
@@ -49,14 +45,6 @@ const toGeminiSymbol = (productId) =>
  */
 const createGeminiWebSocketFeed = (exchange, config) => {
   const logger = createContextLogger({ exchange, pair: config.productId });
-  let ws = null;
-  let isConnected = false;
-  let shouldReconnect = true;
-  let reconnectAttempts = 0;
-  let heartbeatInterval = null;
-  let reconnectTimeout = null;
-  let missedPongs = 0;
-
   const symbol = toGeminiSymbol(config.productId).toUpperCase();
 
   // Track best bid/ask from L2 updates.
@@ -71,63 +59,7 @@ const createGeminiWebSocketFeed = (exchange, config) => {
   const bidLevels = new Map(); // price -> qty
   const askLevels = new Map(); // price -> qty
 
-  const connect = () => {
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-      return;
-    }
-
-    logger.info(`🔌 [${exchange}] Connecting to Gemini WebSocket...`, { lifecycle: 'connecting' });
-
-    ws = new WebSocket(GEMINI_WS_URL);
-
-    ws.on('open', () => {
-      logger.info(`✅ [${exchange}] Gemini WebSocket connected`, { lifecycle: 'connected' });
-      isConnected = true;
-      reconnectAttempts = 0;
-
-      // A (re)connection means the next l2_updates is a fresh full snapshot.
-      // Drop any prior book state so removals from the old session can't
-      // linger as phantom levels and re-cross the recomputed best. lastPrice
-      // is reset too so the first post-reconnect ticker reports the fresh
-      // bestBid rather than a stale pre-disconnect trade price.
-      bidLevels.clear();
-      askLevels.clear();
-      bestBid = 0;
-      bestAsk = 0;
-      lastPrice = 0;
-
-      subscribe();
-      startHeartbeat();
-      config.onConnect?.();
-    });
-
-    ws.on('message', (data) => {
-      missedPongs = 0; // Any inbound data proves the connection is alive
-      handleMessage(data.toString());
-    });
-
-    ws.on('close', (code, reason) => {
-      logger.info(`🔌 [${exchange}] Gemini WebSocket closed: ${code} ${reason}`, {
-        lifecycle: 'closed',
-        code,
-        reason: reason.toString(),
-      });
-      handleDisconnect();
-    });
-
-    ws.on('error', (error) => {
-      logger.error(`❌ [${exchange}] Gemini WebSocket error: ${error.message}`, { error: error.message });
-      config.onError?.(error);
-    });
-
-    ws.on('pong', () => {
-      missedPongs = 0; // Connection alive
-    });
-  };
-
-  const subscribe = () => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
+  const subscribe = (ws) => {
     const sub = {
       type: 'subscribe',
       subscriptions: [
@@ -264,96 +196,18 @@ const createGeminiWebSocketFeed = (exchange, config) => {
     emitTicker();
   };
 
-  const handleDisconnect = () => {
-    isConnected = false;
-    stopHeartbeat();
-    config.onDisconnect?.();
-
-    if (shouldReconnect) {
-      scheduleReconnect();
-    }
-  };
-
-  const scheduleReconnect = () => {
-    if (reconnectTimeout) clearTimeout(reconnectTimeout);
-
-    const delay = Math.min(
-      RECONNECT_BASE_DELAY * Math.pow(2, reconnectAttempts),
-      MAX_RECONNECT_DELAY
-    );
-
-    logger.info(`🔄 [${exchange}] Reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts + 1})`, {
-      lifecycle: 'reconnecting',
-      delayMs: delay,
-      reconnectAttempt: reconnectAttempts + 1,
-    });
-
-    reconnectTimeout = setTimeout(() => {
-      reconnectAttempts++;
-      connect();
-    }, delay);
-  };
-
-  // Heartbeat with pong-timeout watchdog: if MAX_MISSED_PONGS pings go
-  // unanswered, terminate() forces 'close' so the reconnect/backoff path runs.
-  const startHeartbeat = () => {
-    stopHeartbeat();
-    missedPongs = 0;
-    heartbeatInterval = setInterval(() => {
-      if (ws?.readyState !== WebSocket.OPEN) return;
-
-      if (missedPongs >= MAX_MISSED_PONGS) {
-        logger.error(`💀 [${exchange}] No pong after ${missedPongs} pings (${(missedPongs * HEARTBEAT_INTERVAL) / 1000}s) — terminating dead WebSocket to trigger reconnect`, {
-          missedPongs,
-          elapsedMs: missedPongs * HEARTBEAT_INTERVAL,
-        });
-        ws.terminate();
-        return;
-      }
-
-      missedPongs++;
-      ws.ping();
-    }, HEARTBEAT_INTERVAL);
-  };
-
-  const stopHeartbeat = () => {
-    if (heartbeatInterval) {
-      clearInterval(heartbeatInterval);
-      heartbeatInterval = null;
-    }
-  };
-
-  const disconnect = () => {
-    shouldReconnect = false;
-    stopHeartbeat();
-
-    if (reconnectTimeout) {
-      clearTimeout(reconnectTimeout);
-      reconnectTimeout = null;
-    }
-
-    if (ws) {
-      ws.close();
-      ws = null;
-    }
-
-    isConnected = false;
-    logger.info(`🔌 [${exchange}] Gemini WebSocket disconnected`, { lifecycle: 'disconnected' });
-  };
-
-  const isActive = () => isConnected;
-
-  const getStatus = () => ({
-    connected: isConnected,
-    reconnectAttempts,
+  return createWebSocketLifecycle({
+    url: GEMINI_WS_URL, exchange, logger, config, subscribe, handleMessage,
+    name: 'Gemini WebSocket',
+    onOpen: () => {
+      // Reconnect starts a fresh full book snapshot and trade price.
+      bidLevels.clear();
+      askLevels.clear();
+      bestBid = 0;
+      bestAsk = 0;
+      lastPrice = 0;
+    },
   });
-
-  return {
-    connect,
-    disconnect,
-    isActive,
-    getStatus,
-  };
 };
 
 module.exports = {
