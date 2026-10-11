@@ -115,14 +115,14 @@ const ticker = (eng, price) => {
 
 const pending = (eng) => eng._test.getOrderExecutor().getPendingCounts();
 
-/** Count cancelAllEntries calls while still running the real sweep. */
+/** Count cancelAllEntries calls while still running the real sweep; `failWith` rejects the first call only. */
 const spyCancel = (eng, { gate = null, failWith = null } = {}) => {
   const exec = eng._test.getOrderExecutor();
   const real = exec.cancelAllEntries;
   const spy = { calls: 0, settled: false };
   exec.cancelAllEntries = async () => {
     spy.calls++;
-    if (failWith) throw failWith;
+    if (failWith && spy.calls === 1) throw failWith;
     const cancelled = await real();
     if (gate) await gate.promise;
     spy.settled = true;
@@ -227,8 +227,9 @@ describe('flash move cancels resting reactive entries (issue #1028)', () => {
     assert.equal(pending(eng).entries, 0, 'the pre-flash evaluation was refused admission');
   });
 
-  for (const stopMidFlight of [false, true]) {
-    it(`a dispatched placement that outlives the wait bound is swept once it lands${stopMidFlight ? ', even after stop()' : ''}`, async () => {
+  for (const variant of ['', 'stop', 'reject']) {
+    const suffix = { '': '', stop: ', even after stop()', reject: ', even when the first sweep rejects' }[variant];
+    it(`a dispatched placement that outlives the wait bound is swept once it lands${suffix}`, async () => {
       const { eng } = await makeEngine();
       eng._test.setFillDrainMs(50);
       eng._test.setFlashEntryWaitMs(20);
@@ -243,7 +244,7 @@ describe('flash move cancels resting reactive entries (issue #1028)', () => {
         await response.promise;
         return realPlace(...args.slice(0, 6));
       };
-      const spy = spyCancel(eng);
+      const spy = spyCancel(eng, { failWith: variant === 'reject' ? new Error('exchange 503') : null });
 
       ticker(eng, 100); // seeds the anchor; its evaluation dispatches and waits
       for (let i = 0; i < 50 && !dispatched; i++) await tick();
@@ -256,7 +257,7 @@ describe('flash move cancels resting reactive entries (issue #1028)', () => {
       assert.equal(eng._test.getFlashCancelSweep(), sweep, 'the fence stays up while that bid is in flight');
 
       // stop()'s bounded wait gives up on the sweep; the sweep must not give up on the bid.
-      if (stopMidFlight) await eng.stop();
+      if (variant === 'stop') await eng.stop();
       response.resolve();
       await sweep;
       assert.ok(spy.calls >= 2, 'a follow-up sweep ran after the bid landed (one per expired wait while it was in flight)');

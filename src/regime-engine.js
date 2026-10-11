@@ -1258,11 +1258,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (placementInFlight) {
           logger.warn(`⚠️ [${exchange}] Flash cancel: an entry placement is still in flight after ${flashEntryWaitMs / 1000}s — sweeping now and again once it lands`);
         }
-        await orderExecutor.cancelAllEntries();
+        // A failed sweep is logged, not thrown: it must not end the loop while
+        // a late placement still needs its follow-up sweep. Orders it could
+        // not cancel stay tracked by the executor.
+        await orderExecutor.cancelAllEntries().catch((err) => logger.error(
+          `❌ [${exchange}] Flash entry cancel failed: ${err.message}`, { error: err.message }
+        ));
         if (!placementInFlight) break;
       }
     }).catch((err) => logger.error(
-      `❌ [${exchange}] Flash entry cancel failed: ${err.message}`, { error: err.message }
+      `❌ [${exchange}] Flash entry cancel sweep aborted: ${err.message}`, { error: err.message }
     )).finally(() => { flashCancelSweep = null; });
   };
   let stateSaveInterval = null;
