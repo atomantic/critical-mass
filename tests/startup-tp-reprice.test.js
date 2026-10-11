@@ -135,6 +135,65 @@ const makeEngine = (pair, adapterOverrides, executorOverrides = {}) => {
 };
 
 describe('startup TP reprice for a manual-TP body flagged needsTpReprice (issue #726 delta review, round 5)', () => {
+  it('retains legacy and body TP tracking when status lookups are temporarily unavailable', async () => {
+    const legacyRestores = [];
+    const { eng, restores, cancels, placed } = makeEngine('__startup_tp_unknown__', {
+      getOrder: async () => { throw new Error('exchange temporarily unavailable'); },
+    }, {
+      restorePendingOrder: (id, options) => legacyRestores.push({ id, ...options }),
+    });
+    const pos = eng._getPositionState();
+    pos.activeTpOrderId = 'legacy-tp';
+    pos.lastTpPrice = 95000;
+    pos.assetOnOrder = 0.002;
+    pos.lastEntryTime = 123456;
+    pos.celestialBodies = [{ ...makeBody(), needsTpReprice: false }];
+
+    assert.equal((await eng.start()).success, true);
+    assert.deepEqual(legacyRestores, [{ id: 'legacy-tp', type: 'take_profit',
+      price: 95000, size: 0.002, sizeUsdc: 190, placedAt: 123456, status: 'open' }]);
+    assert.equal(restores.length, 1);
+    assert.equal(restores[0].tpOrderId, TP_ORDER_ID);
+    assert.equal(restores[0].assetOnOrder, 0.004, 'retain the resting size, not the grown body size');
+    assert.equal(eng._getPositionState().activeTpOrderId, 'legacy-tp');
+    assert.equal(eng._getPositionState().celestialBodies[0].tpOrderId, TP_ORDER_ID);
+    assert.deepEqual(cancels, []);
+    assert.deepEqual(placed, [], 'uncertainty must not produce a duplicate sell');
+  });
+
+  it('migrates a body-owned legacy TP and restores all bodies before repricing', async () => {
+    const calls = [];
+    const { eng } = makeEngine('__startup_tp_owned__', {}, {
+      restorePendingOrder: () => assert.fail('a body-owned legacy TP must use body tracking'),
+      restoreBodyTpOrder: (bodyId, orderId) => calls.push(`restore:${orderId}`),
+      cancelBodyTpOrder: async (bodyId, orderId) => {
+        calls.push(`cancel:${orderId}`);
+        return { cancelled: true, filled: false, filledSize: 0 };
+      },
+      placeBodyTpOrder: async () => {
+        calls.push('place');
+        return { success: true, orderId: 'replacement-tp' };
+      },
+    });
+    const pos = eng._getPositionState();
+    pos.activeTpOrderId = TP_ORDER_ID;
+    pos.lastTpPrice = 92700;
+    pos.assetOnOrder = 0.004;
+    pos.celestialBodies = [makeBody(), { ...makeBody(), id: 'body-sibling',
+      tpOrderId: 'sibling-tp', needsTpReprice: false, sourceOrderIds: ['sibling-buy'],
+      buyOrders: [{ orderId: 'sibling-buy', price: 90333.33, assetQty: 0.006, sizeUsdc: 542 }] }];
+
+    assert.equal((await eng.start()).success, true);
+    assert.deepEqual(calls, [`restore:${TP_ORDER_ID}`, `restore:${TP_ORDER_ID}`,
+      'restore:sibling-tp', `cancel:${TP_ORDER_ID}`, 'place']);
+    const live = eng._getPositionState();
+    assert.equal(live.activeTpOrderId, null);
+    assert.equal(live.lastTpPrice, 0);
+    assert.equal(live.celestialBodies[0].tpOrderId, 'replacement-tp');
+    assert.equal(live.celestialBodies[0].needsTpReprice, false);
+    assert.equal(live.celestialBodies[1].tpOrderId, 'sibling-tp');
+  });
+
   it('cancels and re-places the TP at the grown assetQty, reapplies manualTpPct, and clears the flag', async () => {
     const { eng, cancels, placed, restores } = makeEngine('__test726reprice_a__');
     const pos = eng._getPositionState();
