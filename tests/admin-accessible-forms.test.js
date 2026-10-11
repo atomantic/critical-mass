@@ -58,7 +58,7 @@ function createView(component, extraStubs = {}, fetchResponse = null) {
   const fetch = async (url, options = {}) => {
     if (options.method) writes.push({ url, method: options.method, body: options.body && JSON.parse(options.body) })
     return (fetchResponse && fetchResponse(url, options)) || { ok: true, status: 200, json: async () => url === '/api/providers'
-      ? { providers: [{ id: 'one', name: 'Test Provider', enabled: true, type: 'cli' }], activeProvider: 'one' }
+      ? { providers: [{ id: 'one', name: 'Test Provider', enabled: true, type: 'api' }], activeProvider: 'one' }
       : { success: true, runs: [], trades: [], summary: null } }
   }
   const stubs = {
@@ -140,7 +140,9 @@ describe('admin accessible operational forms', () => {
     find(tree, node => node.type === 'button' && text(node) === 'Add Provider').props.onClick()
     const modal = find(view.render(), node => typeof node.type === 'function')
     tree = view.renderChild(modal)
-    labeled(tree, 'Available Models').props.onChange({ target: { value: 'fast, capable' } })
+    const modelsLabel = find(tree, node => node.type === 'label' && text(node).trim().startsWith('Available Models'))
+    find(tree, node => node.type === 'textarea' && node.props.id === modelsLabel.props.htmlFor)
+      .props.onChange({ target: { value: 'fast, capable' } })
     tree = view.renderChild(modal)
     await find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} })
     assert.deepEqual(view.writes[0].body.models, ['fast', 'capable'])
@@ -177,8 +179,8 @@ describe('admin accessible operational forms', () => {
     const view = createView('ai/Providers.jsx', {}, async (url, options) => {
       if (url === '/api/providers' && !options.method) return { ok: true, status: 200, json: async () => ({
         providers: [
-          { id: 'one', name: 'First', enabled: true, type: 'cli' },
-          { id: 'two', name: 'Second', enabled: true, type: 'cli' },
+          { id: 'one', name: 'First', enabled: true, type: 'api' },
+          { id: 'two', name: 'Second', enabled: true, type: 'api' },
         ], activeProvider: 'one'
       }) }
       if (url === '/api/providers/active') return { ok: false, status: 503, json: async () => ({ error: 'Provider settings are temporarily unavailable' }) }
@@ -217,8 +219,8 @@ describe('admin accessible operational forms', () => {
   it('removes accepted sample providers from retry after a later Add All failure', async () => {
     const view = createView('ai/Providers.jsx', {}, async (url, options) => {
       if (url === '/api/providers/samples') return { ok: true, status: 200, json: async () => ({ providers: [
-        { id: 'sample-one', name: 'Sample One', enabled: true, type: 'cli' },
-        { id: 'sample-two', name: 'Sample Two', enabled: true, type: 'cli' },
+        { id: 'sample-one', name: 'Sample One', enabled: true, type: 'api' },
+        { id: 'sample-two', name: 'Sample Two', enabled: true, type: 'api' },
       ] }) }
       if (options.method === 'POST' && options.body.includes('sample-two')) return { ok: false, status: 409, json: async () => ({ error: 'Sample Two already exists' }) }
       return { ok: true, status: 200, json: async () => url === '/api/providers' ? { providers: [], activeProvider: null } : { runs: [] } }
@@ -240,7 +242,7 @@ describe('admin accessible operational forms', () => {
     let finishAdd
     const view = createView('ai/Providers.jsx', {}, async (url, options) => {
       if (url === '/api/providers/samples') return { ok: true, status: 200, json: async () => ({ providers: [
-        { id: 'sample-one', name: 'Sample One', enabled: true, type: 'cli' },
+        { id: 'sample-one', name: 'Sample One', enabled: true, type: 'api' },
       ] }) }
       if (options.method === 'POST') return new Promise(resolve => { finishAdd = resolve })
       return { ok: true, status: 200, json: async () => url === '/api/providers' ? { providers: [], activeProvider: null } : { runs: [] } }

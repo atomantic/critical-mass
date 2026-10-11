@@ -9405,7 +9405,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   /**
    * Inject an externally-created celestial body into the running engine.
-   * Syncs position aggregates, places TP, and saves state.
+   * Syncs position aggregates, saves state, places TP, and saves again.
    * @param {Object} body - A body created via celestialHierarchy.createNewBody()
    * @returns {Promise<{success: boolean, bodyId: string, tpPlaced: boolean}>}
    */
@@ -9438,6 +9438,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     positionState.celestialBodies.push(body);
     celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+    // Make the accepted body durable BEFORE the first TP-placement await
+    // (issue #1022): a live TP must never exist for a body regime-state.json
+    // does not hold. If this save throws, take the body back out so nothing
+    // (this call or the next safety-net tick) places a TP for it, and let the
+    // throw reach the importer, whose pending intent re-publishes it later.
+    try {
+      saveLiveState();
+    } catch (err) {
+      const idx = positionState.celestialBodies.indexOf(body);
+      if (idx !== -1) positionState.celestialBodies.splice(idx, 1);
+      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+      throw err;
+    }
     const tpResult = await placeBodyTp(body);
     saveLiveState();
     logger.info(`📦 [${exchange}] Injected body ${body.id} (${body.tier}): ${body.assetQty} BTC @ $${body.avgPrice.toFixed(2)}, TP placed: ${!!tpResult}`);

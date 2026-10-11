@@ -1830,11 +1830,12 @@ describe('Manual Trade Import', () => {
       assert.equal(afterFirst.length, 1);
       assert.equal(afterFirst[0].bodyId, null, 'a failed injection must never be linked to the trade');
       assert.notEqual(afterFirst[0].status, STATUS.TP_PENDING, 'the trade must stay retryable, not TP_PENDING');
-      // The optimistic ledger annotation from before the (failed) injection
-      // attempt must be rolled back too.
+      // Ownership is only stamped once a body is durable (issue #1022), so a
+      // refused injection leaves the ledger rows unowned and no intent behind.
       const rowAfterFirst = fillLedger.getFillsForOrder('buy-1')[0];
-      assert.equal(rowAfterFirst.bodyId, null);
-      assert.equal(rowAfterFirst.isBodyOwned, false);
+      assert.ok(!rowAfterFirst.bodyId);
+      assert.ok(!rowAfterFirst.isBodyOwned);
+      assert.equal(afterFirst[0].bodyIntent, null, 'a confirmed non-publication drops the intent');
 
       // A retry (e.g. once the engine finishes starting) must actually try
       // again — the top-of-function guard must not silently treat this as
@@ -1882,7 +1883,11 @@ describe('Manual Trade Import', () => {
 
       // Simulates the window in which that TP goes on to fully fill and its
       // body is removed from the engine's live position before the operator
-      // retries — exactly what makes the in-memory duplicate check blind.
+      // retries — exactly what makes the in-memory duplicate check blind. The
+      // fill handler books that sale against the body before removing it.
+      fillLedger.ingestFill({ tradeId: 'tp-fill-1', orderId: 'tp-order-1', side: 'sell', size: 0.003, price: 95000, netFee: 0 }, null, { skipPersist: true, cycleId: null });
+      fillLedger.annotateFillsByOrderId('tp-order-1', { bodyId: 'body-live-1', isBodyOwned: true, bodyPnl: 1 });
+      fillLedger.persist();
       const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
 
       assert.equal(second.success, true);
@@ -1970,6 +1975,369 @@ describe('Manual Trade Import', () => {
       assert.equal(second.trade.buySize, fullSize);
       assert.equal(fillLedger.getFillsForOrder('buy-1').length, buyFills.length + 1);
       assert.ok(fillLedger.getFillsForOrder('buy-1').every((row) => row.bodyId === second.trade.bodyId));
+    });
+
+    // Issue #1022: the pre-fix importer stamped ledger ownership BEFORE any
+    // body was saved, so a crash or a thrown regime-state.json publication in
+    // between left a ledger bodyId with no body, and the next replay reported
+    // success/TP_PENDING off that stamp alone. Body creation is now a durable
+    // intent: published first, linked second, resumed on retry/cold start.
+    describe('interrupted body creation (#1022)', () => {
+      const singleFill = [makeFill({ tradeId: 'intent-buy-1', size: 0.01, price: 100000, commission: 1, totalCommission: 1 })];
+
+      /** Discard every in-memory handle and reload ledger + store from disk. */
+      const coldReload = () => {
+        const { createFillLedger } = require('../src/fill-ledger');
+        fillLedger = createFillLedger(EXCHANGE, 'BTC-USDC', PAIR);
+        fillLedger.load();
+        const { createManualTradeStore } = require('../src/manual-trades');
+        store = createManualTradeStore(EXCHANGE, PAIR);
+        store.load();
+      };
+
+      /** Run `fn` with every regime-state.json rename failing ENOSPC. */
+      const withRegimeStateEnospc = async (fn) => {
+        const realRename = fs.renameSync;
+        fs.renameSync = (from, to) => {
+          if (String(to).endsWith('regime-state.json')) {
+            throw Object.assign(new Error('ENOSPC: no space left on device, rename'), { code: 'ENOSPC' });
+          }
+          return realRename(from, to);
+        };
+        try {
+          return await fn();
+        } finally {
+          fs.renameSync = realRename;
+        }
+      };
+
+      const savedBodies = () => readRegimeStateFile()?.position?.celestialBodies || [];
+
+      /** Remove every body from regime-state.json, keeping aggregates consistent. */
+      const dropSavedBodies = () => {
+        const { syncPositionState } = require('../src/celestial-hierarchy');
+        const stateFile = path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
+        const state = readRegimeStateFile();
+        state.position.celestialBodies = [];
+        syncPositionState(state.position, []);
+        fs.writeFileSync(stateFile, JSON.stringify(state));
+      };
+
+      /** The ledger trail of a body TP sale: placeBodyTp's link, then the booked sell. */
+      const bookBodySale = (buyOrderId, sellOrderId, bodyId) => {
+        fillLedger.annotateFillsByOrderId(buyOrderId, { sellOrderId, bodyId });
+        fillLedger.ingestFill({ tradeId: `${sellOrderId}-fill`, orderId: sellOrderId, side: 'sell', size: 0.009, price: 110000, netFee: 0 }, null, { skipPersist: true, cycleId: null });
+        fillLedger.annotateFillsByOrderId(sellOrderId, { bodyId, isBodyOwned: true, bodyPnl: 5 });
+        fillLedger.persist();
+      };
+
+      /** Fake running engine that mirrors injectBody's duplicate refusal. */
+      const createFakeEngine = () => {
+        const bodies = [];
+        const injected = [];
+        return {
+          bodies,
+          injected,
+          injectBody: async (body) => {
+            injected.push(body);
+            const duplicate = bodies.find((b) => b.id === body.id || b.sourceOrderIds.includes(body.sourceOrderIds[0]));
+            if (duplicate) return { success: false, error: 'duplicate body', bodyId: duplicate.id, tpPlaced: true };
+            bodies.push(body);
+            return { success: true, bodyId: body.id, tpPlaced: true };
+          },
+        };
+      };
+
+      it('cold retry after an ENOSPC publishing regime-state.json saves exactly one body (engine stopped)', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+
+        await withRegimeStateEnospc(() => assert.rejects(
+          createImporter({ adapter, injectBody: null }).importBuy({ buyOrderId: 'buy-1', createBody: true }),
+          /ENOSPC/,
+        ));
+
+        // Nothing claims ownership of inventory no body holds.
+        assert.equal(savedBodies().length, 0);
+        const rows = fillLedger.getFillsForOrder('buy-1');
+        assert.equal(rows.length, 1);
+        assert.ok(!rows[0].bodyId, 'no ledger ownership before a body is saved');
+        assert.ok(!rows[0].isBodyOwned);
+        const [pending] = store.getAll();
+        assert.equal(pending.status, STATUS.BUY_RECORDED);
+        assert.equal(pending.bodyIntent.phase, 'pending');
+        const intentBodyId = pending.bodyIntent.bodyId;
+
+        // Cold reload, then replay the unchanged order.
+        coldReload();
+        const retried = await createImporter({ adapter, injectBody: null }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+        assert.equal(retried.success, true);
+        const bodies = savedBodies();
+        assert.equal(bodies.length, 1, 'exactly one saved body for the buy');
+        assert.equal(bodies[0].id, intentBodyId, 'the resumed body keeps the intent\'s identity');
+        assert.equal(bodies[0].assetQty, 0.01);
+        assert.equal(retried.trade.status, STATUS.TP_PENDING);
+        assert.equal(retried.trade.bodyId, intentBodyId);
+        assert.equal(retried.trade.bodyIntent.phase, 'committed');
+        assert.equal(fillLedger.getFillsForOrder('buy-1').length, 1);
+        assert.equal(fillLedger.getFillsForOrder('buy-1')[0].bodyId, intentBodyId);
+
+        // A further replay is a plain idempotent no-op.
+        const again = await createImporter({ adapter, injectBody: null }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+        assert.equal(again.success, true);
+        assert.equal(again.alreadyImported, true);
+        assert.equal(savedBodies().length, 1);
+      });
+
+      it('never turns a repeated thrown publication into success or TP_PENDING', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+
+        await withRegimeStateEnospc(async () => {
+          await assert.rejects(createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true }), /ENOSPC/);
+          coldReload();
+          await assert.rejects(createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true }), /ENOSPC/);
+        });
+
+        assert.equal(savedBodies().length, 0);
+        const [trade] = store.getAll();
+        assert.equal(trade.status, STATUS.BUY_RECORDED);
+        assert.equal(trade.bodyId, null);
+        assert.equal(trade.bodyIntent.phase, 'pending');
+        assert.ok(!fillLedger.getFillsForOrder('buy-1')[0].bodyId);
+      });
+
+      it('recovers a pending intent on cold start without the operator replaying that buy', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        await withRegimeStateEnospc(() => assert.rejects(
+          createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true }),
+        ));
+
+        coldReload();
+        const results = await createImporter({ adapter }).recoverPendingBodyIntents();
+
+        assert.equal(results.length, 1);
+        assert.equal(results[0].success, true);
+        assert.equal(results[0].buyOrderId, 'buy-1');
+        assert.equal(adapter.calls.getOrderFills.length, 1, 'recovery needs no exchange fetch');
+        assert.equal(savedBodies().length, 1);
+        const [trade] = store.getAll();
+        assert.equal(trade.status, STATUS.TP_PENDING);
+        assert.equal(trade.bodyId, savedBodies()[0].id);
+        assert.equal(store.getPendingBodyIntents().length, 0);
+        assert.deepEqual(await createImporter({ adapter }).recoverPendingBodyIntents(), []);
+      });
+
+      it('links an already-saved body after a crash before store linkage, without a duplicate (engine stopped)', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        store.markTpPlaced = () => { throw new Error('process crashed (simulated)'); };
+        await assert.rejects(createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true }), /crashed/);
+        assert.equal(savedBodies().length, 1, 'the body was saved before the crash');
+
+        coldReload();
+        const retried = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+        assert.equal(retried.success, true);
+        assert.equal(savedBodies().length, 1, 'no duplicate body');
+        assert.equal(retried.trade.bodyId, savedBodies()[0].id);
+        assert.equal(retried.trade.status, STATUS.TP_PENDING);
+      });
+
+      it('links the live body after a crash before store linkage, without a second injection (engine running)', async () => {
+        const engine = createFakeEngine();
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        store.markTpPlaced = () => { throw new Error('process crashed (simulated)'); };
+        await assert.rejects(createImporter({ adapter, injectBody: engine.injectBody }).importBuy({ buyOrderId: 'buy-1', createBody: true }));
+        assert.equal(engine.bodies.length, 1);
+
+        coldReload();
+        const retried = await createImporter({ adapter, injectBody: engine.injectBody }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+        assert.equal(retried.success, true);
+        assert.equal(engine.bodies.length, 1, 'no second body was ever accepted');
+        assert.equal(retried.trade.bodyId, engine.bodies[0].id);
+        assert.equal(retried.trade.status, STATUS.TP_PENDING);
+      });
+
+      it('re-injects the same body identity when the engine refused it by throwing (engine running)', async () => {
+        const engine = createFakeEngine();
+        let attempts = 0;
+        // regime-engine's injectBody takes the body back out when its first
+        // save throws, so a thrown call leaves nothing live.
+        const injectBody = async (body) => {
+          attempts++;
+          if (attempts === 1) { engine.injected.push(body); throw new Error('ENOSPC: saveLiveState'); }
+          return engine.injectBody(body);
+        };
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        await assert.rejects(createImporter({ adapter, injectBody }).importBuy({ buyOrderId: 'buy-1', createBody: true }), /ENOSPC/);
+        assert.equal(store.getAll()[0].status, STATUS.BUY_RECORDED);
+
+        coldReload();
+        const retried = await createImporter({ adapter, injectBody }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+        assert.equal(retried.success, true);
+        assert.equal(engine.bodies.length, 1);
+        assert.equal(engine.injected[0].id, engine.injected[1].id, 'the retry publishes the intent\'s body, not a new one');
+        assert.equal(retried.trade.bodyId, engine.injected[0].id);
+      });
+
+      it('resumes one stable operation for concurrent same-buy imports from separate importers', async () => {
+        const engine = createFakeEngine();
+        let release;
+        const gate = new Promise((resolve) => { release = resolve; });
+        const injectBody = async (body) => { await gate; return engine.injectBody(body); };
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+
+        const first = createImporter({ adapter, injectBody }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+        let bodiesWhenSecondSettled = null;
+        const second = createImporter({ adapter, injectBody }).importBuy({ buyOrderId: 'buy-1', createBody: true })
+          .then((result) => { bodiesWhenSecondSettled = engine.bodies.length; return result; });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(bodiesWhenSecondSettled, null, 'the second import must not report success while the first body is unpublished');
+        release();
+        const [a, b] = await Promise.all([first, second]);
+        assert.equal(bodiesWhenSecondSettled, 1);
+
+        assert.equal(a.success, true);
+        assert.equal(b.success, true);
+        assert.equal(engine.injected.length, 1, 'the second import waits for, then reuses, the first');
+        assert.equal(b.alreadyImported, true);
+        assert.equal(a.trade.bodyId, b.trade.bodyId);
+        assert.equal(store.getAll().length, 1);
+      });
+
+      it('does not recreate a body that was saved, sold and retired before the interrupted intent resumed', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        store.markTpPlaced = () => { throw new Error('process crashed (simulated)'); };
+        await assert.rejects(createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true }));
+        const [savedBody] = savedBodies();
+
+        // The engine starts, places the body's TP (placeBodyTp stamps
+        // sellOrderId + bodyId), the TP fills, and the body is retired.
+        coldReload();
+        bookBodySale('buy-1', 'tp-1', savedBody.id);
+        dropSavedBodies();
+
+        const retried = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+        assert.equal(retried.success, true);
+        assert.equal(retried.alreadyImported, true);
+        assert.equal(savedBodies().length, 0, 'sold inventory must never be resurrected');
+        assert.equal(retried.trade.bodyId, savedBody.id);
+        assert.equal(retried.trade.status, STATUS.TP_PENDING);
+      });
+
+      it('does not mistake a cycle-heuristic sellOrderId beside an optimistic bodyId for a retired body', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        const importer = createImporter({ adapter });
+        await importer.importBuy({ buyOrderId: 'buy-1', createBody: false });
+        // Pre-#1022 optimistic stamp, plus recalculateCycles linking an
+        // unrelated, non-body sell (with fills) onto the same buy.
+        fillLedger.annotateFillsByOrderId('buy-1', { bodyId: 'body-never-saved', isBodyOwned: true, sellOrderId: 'cycle-sell' });
+        fillLedger.ingestFill({ tradeId: 'cycle-sell-fill', orderId: 'cycle-sell', side: 'sell', size: 0.02, price: 105000, netFee: 0 }, null, { skipPersist: true, cycleId: null });
+        fillLedger.persist();
+
+        const replay = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+        assert.equal(replay.success, false, 'unsold inventory must not be reported as managed');
+        assert.equal(store.getAll()[0].status, STATUS.BUY_RECORDED);
+      });
+
+      it('does not treat another body\'s sale, linked by the cycle heuristic, as this buy\'s retirement', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        store.markTpPlaced = () => { throw new Error('process crashed (simulated)'); };
+        await assert.rejects(createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true }));
+        const [savedBody] = savedBodies();
+
+        // The body is lost from regime-state.json, and recalculateCycles links
+        // a sale booked by an UNRELATED body onto this still-unsold buy.
+        coldReload();
+        dropSavedBodies();
+        fillLedger.annotateFillsByOrderId('buy-1', { sellOrderId: 'other-tp' });
+        fillLedger.ingestFill({ tradeId: 'other-tp-fill', orderId: 'other-tp', side: 'sell', size: 0.02, price: 110000, netFee: 0 }, null, { skipPersist: true, cycleId: null });
+        fillLedger.annotateFillsByOrderId('other-tp', { bodyId: 'body-unrelated', isBodyOwned: true, bodyPnl: 3 });
+        fillLedger.persist();
+
+        const retried = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+        assert.equal(retried.success, true);
+        assert.equal(savedBodies().length, 1, 'the unsold buy gets its body back');
+        assert.equal(savedBodies()[0].id, savedBody.id);
+        assert.equal(retried.trade.bodyId, savedBody.id);
+      });
+
+      it('rolls back an intent whose store write failed, so same-process recovery cannot publish it', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        const realRename = fs.renameSync;
+        let failNextStoreWrite = false;
+        fs.renameSync = (from, to) => {
+          if (failNextStoreWrite && String(to).endsWith('manual-trades.json')) {
+            failNextStoreWrite = false;
+            throw Object.assign(new Error('ENOSPC: manual-trades.json'), { code: 'ENOSPC' });
+          }
+          return realRename(from, to);
+        };
+        const realRecord = store.recordBodyIntent;
+        store.recordBodyIntent = (...args) => { failNextStoreWrite = true; return realRecord(...args); };
+        try {
+          await assert.rejects(createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true }), /ENOSPC/);
+        } finally {
+          fs.renameSync = realRename;
+          store.recordBodyIntent = realRecord;
+        }
+
+        assert.equal(store.getAll()[0].bodyIntent, null, 'no in-memory intent without a durable one');
+        assert.equal(savedBodies().length, 0, 'nothing was published');
+        assert.deepEqual(await createImporter({ adapter }).recoverPendingBodyIntents(), []);
+
+        const retried = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+        assert.equal(retried.success, true);
+        assert.equal(savedBodies().length, 1);
+      });
+
+      it('links an unconfirmed pre-#1022 import to the live merge survivor, not its stale body id', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        const first = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+        const staleId = first.trade.bodyId;
+        // The body was absorbed into a survivor, and the trade predates intents.
+        const stateFile = path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
+        const state = readRegimeStateFile();
+        state.position.celestialBodies[0].id = 'body-survivor';
+        fs.writeFileSync(stateFile, JSON.stringify(state));
+        store.getAll()[0].bodyIntent = null;
+        store.persist();
+
+        const replay = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+        assert.equal(replay.success, true);
+        assert.notEqual(staleId, 'body-survivor');
+        assert.equal(replay.trade.bodyId, 'body-survivor');
+        assert.equal(savedBodies().length, 1);
+      });
+
+      it('refuses success for pre-#1022 ownership that no saved body or sale backs', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        const importer = createImporter({ adapter, injectBody: async () => assert.fail('must not guess a body') });
+        await importer.importBuy({ buyOrderId: 'buy-1', createBody: false });
+        // The old importer's optimistic stamp, left behind by a crash.
+        fillLedger.annotateFillsByOrderId('buy-1', { bodyId: 'body-never-saved', isBodyOwned: true, isSatellite: true });
+        fillLedger.persist();
+
+        const replay = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+
+        assert.equal(replay.success, false);
+        assert.match(replay.error, /no saved body or closed-body evidence/);
+        assert.equal(store.getAll()[0].status, STATUS.BUY_RECORDED, 'never TP_PENDING against a missing body');
+        assert.equal(savedBodies().length, 0);
+
+        // The old cold retry's output (TP_PENDING off the stamp) is not trusted either.
+        store.markTpPlaced(store.getAll()[0].id, 'body-never-saved');
+        const trade = store.getAll()[0];
+        trade.bodyIntent = null;
+        store.persist();
+        const legacy = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+        assert.equal(legacy.success, false);
+      });
     });
 
     it('requires a buyOrderId', async () => {
