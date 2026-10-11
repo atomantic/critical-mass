@@ -59,7 +59,7 @@ const {
 } = require('./state-tracker');
 const { resolveFundDataDir } = require('./migration');
 const celestialHierarchy = require('./celestial-hierarchy');
-const { fmtCurrency: fmtPrice, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
 
@@ -1133,6 +1133,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   let isRunning = false;
   let isStarting = false; // reentrancy guard for start() (#113)
+  // Entry admission (#1009). An entry evaluation captures this generation
+  // before its balance preflight; stop() and close() bump it synchronously and
+  // a successful start opens a fresh one, so an evaluation still awaiting the
+  // exchange when the fund stops or starts draining can never submit later —
+  // not even after a restart revived isRunning.
+  let entryAdmissionGeneration = 0;
+  const invalidateEntryAdmission = () => { entryAdmissionGeneration += 1; };
+  /**
+   * Capture entry admission for one evaluation.
+   * @returns {() => boolean} true while the same generation is open on a running ACTIVE fund
+   */
+  const captureEntryAdmission = () => {
+    const generation = entryAdmissionGeneration;
+    return () => generation === entryAdmissionGeneration
+      && isRunning
+      && (!positionState.lifecycle || positionState.lifecycle === LIFECYCLE.ACTIVE);
+  };
   let wsFeed = null;
   let metricsInterval = null;
   let reconcileInterval = null;
@@ -3017,6 +3034,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       stateSaveInterval = setInterval(saveDryRunState, 60000);
     }
 
+    invalidateEntryAdmission();
     isRunning = true;
 
     // Recovered partial rows of a body's own buy order (#752) grow that body
@@ -3081,6 +3099,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Stop the regime engine
    */
   const stop = async ({ keepHeartbeat = false } = {}) => {
+    // Close entry admission before any await: an entry still in its balance
+    // preflight must not submit once stop() has been requested (#1009).
+    invalidateEntryAdmission();
     // A stop must outlive startup before releasing its resources. Failed
     // partial starts also own sockets/timers even though isRunning is false.
     if (startPromise) await startPromise.catch(() => {});
@@ -6728,6 +6749,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Fund lifecycle guard: when draining/closed, never place new entries
     if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) return;
+    const isAdmitted = captureEntryAdmission();
 
     // Don't place a new reactive entry if there's already a pending entry OR a
     // resting ladder rung on the exchange. ladder_entry orders were previously
@@ -6767,7 +6789,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     if (volTrigger || timeTrigger) {
       await engineLocks.withEntryLock(() =>
-        executeEntry(volTrigger ? 'volatility' : 'timer')
+        executeEntry(volTrigger ? 'volatility' : 'timer', isAdmitted)
       );
     }
   };
@@ -6778,6 +6800,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const evaluateLadderEntry = async () => {
     // Fund lifecycle guard: when draining/closed, never place new entries
     if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) return;
+    const isAdmitted = captureEntryAdmission();
 
     // Skip if in insufficient funds cooldown
     if (Date.now() < insufficientFundsCooldownUntil) return;
@@ -6822,6 +6845,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
       if (!quoteBalance) {
         // Can't verify balance — skip ladder to avoid placing orders we can't fund
+        return;
+      }
+      // A stop/close that landed during the balance await closes admission (#1009).
+      if (!isAdmitted()) {
+        logger.info(`🚦 [${exchange}] Ladder skipped during the balance preflight — ${ENTRY_NOT_ADMITTED}`);
         return;
       }
       const availableQuote = parseFloat(quoteBalance.available) || 0;
@@ -6874,8 +6902,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
         // Place ladder orders
         const generationAtPlace = cycleResetGeneration;
-        const result = await orderExecutor.placeLadderOrders(ladder.levels);
+        const result = await orderExecutor.placeLadderOrders(ladder.levels, { isAdmitted });
         if (await abandonLadderPlacedAcrossReset(generationAtPlace, 'Ladder placement')) return;
+        // Admission closed before any rung went out: nothing to track. Rungs
+        // that DID go out are recorded below like any ladder, so their fills
+        // and cancels reconcile normally.
+        if (result.notAdmitted && result.orders.length === 0) {
+          logger.info(`🚦 [${exchange}] Ladder not placed — ${ENTRY_NOT_ADMITTED}`);
+          return;
+        }
 
         // Update position state
         positionState.ladderActive = true;
@@ -6905,8 +6940,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   /**
    * Execute entry
    * @param {string} triggerType - What triggered the entry
+   * @param {() => boolean} isAdmitted - Entry admission captured when the evaluation began (#1009)
    */
-  const executeEntry = async (triggerType) => {
+  const executeEntry = async (triggerType, isAdmitted) => {
     const regime = regimeDetector.getMode();
 
     // Calculate size (apply macro multiplier to sizing)
@@ -6994,6 +7030,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     lowBalancePauseLogged = false;
     sizing.sizeUsdc = budget.sizeUsdc;
 
+    // A stop/close that landed during the balance await closes admission (#1009).
+    if (!isAdmitted()) {
+      logger.info(`🚦 [${exchange}] Entry skipped during the balance preflight — ${ENTRY_NOT_ADMITTED}`);
+      return;
+    }
+
     // Calculate dynamic offset based on momentum direction
     // UP momentum: smaller offset to get fills before price rises further
     // DOWN momentum: larger offset to catch the falling price
@@ -7032,7 +7074,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     };
 
     try {
-      result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps, entryStaleMs);
+      result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps, entryStaleMs, { isAdmitted });
     } catch (err) {
       if (isInsufficientFundsMessage(err.message) || err.status === 406) {
         const cooldownMs = config.insufficientFundsCooldownMs || 60000;
@@ -7052,6 +7094,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return;
     }
 
+    if (result.notAdmitted) {
+      logger.info(`🚦 [${exchange}] Entry not placed — ${ENTRY_NOT_ADMITTED}`);
+      return;
+    }
+
+    // An accepted bid is tracked even if admission closed while its response
+    // was pending: the order is live on the exchange and must reconcile.
     if (result.success) {
       positionState.lastEntryTime = Date.now();
       positionState.anchorPrice = marketState.lastPrice;
@@ -8124,6 +8173,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: false, error: 'Fund is already draining' };
     }
     positionState.lifecycle = LIFECYCLE.DRAINING;
+    invalidateEntryAdmission();
     positionState.lifecycleChangedAt = Date.now();
     positionState.lifecycleReason = reason || null;
     if (!isDryRun) {
@@ -9136,6 +9186,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if ((config.entryMode || 'reactive') !== 'ladder') {
       return { success: false, message: 'Entry mode is not ladder' };
     }
+    // A draining/closed fund places no new buys — rebuild included (#1009).
+    if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) {
+      return { success: false, message: `Fund is ${positionState.lifecycle} — new entries are blocked` };
+    }
+    const isAdmitted = captureEntryAdmission();
     // A manual rebuild places fresh buy rungs — the drawdown pause (#693)
     // applies; the operator clears it explicitly via Resume first.
     if (riskManager.getState().isDrawdownPaused) {
@@ -9267,9 +9322,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Place ladder orders
     const generationAtPlace = cycleResetGeneration;
-    const result = await orderExecutor.placeLadderOrders(ladder.levels);
+    const result = await orderExecutor.placeLadderOrders(ladder.levels, { isAdmitted });
     if (await abandonLadderPlacedAcrossReset(generationAtPlace, 'Ladder rebuild')) {
       return { success: false, message: 'A cycle reset ran while the new ladder was being placed, so it was cancelled — rebuild again if appropriate.' };
+    }
+    if (result.notAdmitted && result.orders.length === 0) {
+      saveLiveState();
+      return { success: false, message: 'The engine stopped or the fund started draining before the new ladder was placed — the old ladder was cancelled and no new rungs went out.' };
     }
 
     // Update position state

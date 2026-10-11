@@ -1129,3 +1129,116 @@ describe('isTrackedTpOrder — legacy core TP ownership (issue #672)', () => {
     assert.equal(exec.isTrackedTpOrder(null), false);
   });
 });
+
+describe('entry admission — stop/close fences pending entry dispatch (issue #1009)', () => {
+  const configFor = () => ({
+    entryOffsetBps: 10,
+    entryMaxRetries: 3,
+    orderStaleMs: 30000,
+    cancelRateLimitMs: 0,
+    maxOpenOrders: 20,
+  });
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((r) => { resolve = r; });
+    return { promise, resolve };
+  };
+  const tick = () => new Promise((r) => setImmediate(r));
+
+  it('placeEntryBid submits nothing when admission is already closed', async () => {
+    let placeCalls = 0;
+    const adapter = { placeLimitBuy: async () => { placeCalls++; return { success: true, orderId: 'x' }; } };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+
+    const result = await exec.placeEntryBid(1000, 100_000, 100_010, 0, null, null, { isAdmitted: () => false });
+
+    assert.equal(placeCalls, 0);
+    assert.equal(result.success, false);
+    assert.equal(result.notAdmitted, true);
+    assert.equal(exec.getPendingCounts().entries, 0);
+  });
+
+  it('a post-only retry is not dispatched once admission closes while fresh prices are fetched', async () => {
+    let placeCalls = 0;
+    let admitted = true;
+    const prices = deferred();
+    const adapter = {
+      placeLimitBuy: async () => { placeCalls++; return { success: false, errorMessage: 'INVALID_LIMIT_PRICE_POST_ONLY' }; },
+      getBidAsk: () => prices.promise,
+    };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+
+    const pending = exec.placeEntryBid(1000, 100_000, 100_010, 0, null, null, { isAdmitted: () => admitted });
+    await tick();
+    assert.equal(placeCalls, 1, 'first attempt was dispatched while admitted');
+    admitted = false; // stop()/close() lands during the retry's price fetch
+    prices.resolve({ bid: 99_000, ask: 99_010 });
+    const result = await pending;
+
+    assert.equal(placeCalls, 1, 'the retry must not reach the exchange');
+    assert.equal(result.notAdmitted, true);
+  });
+
+  it('an order already dispatched when admission closes is still tracked', async () => {
+    let admitted = true;
+    const placed = deferred();
+    const adapter = {
+      placeLimitBuy: () => placed.promise,
+      getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
+    };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+
+    const pending = exec.placeEntryBid(1000, 100_000, 100_010, 0, null, null, { isAdmitted: () => admitted });
+    await tick();
+    admitted = false; // closes while the exchange response is in flight
+    placed.resolve({ success: true, orderId: 'accepted-1' });
+    const result = await pending;
+
+    assert.equal(result.success, true, 'an accepted order is never discarded');
+    assert.equal(result.orderId, 'accepted-1');
+    assert.equal(exec.getPendingCounts().entries, 1, 'the accepted bid stays tracked for fills/reconciliation');
+    exec.clearTimers();
+  });
+
+  it('placeLadderOrders stops dispatching rungs once admission closes, keeping placed rungs tracked', async () => {
+    const placed = [];
+    let admitted = true;
+    const adapter = {
+      placeLimitBuy: async (_productId, _size, price) => {
+        placed.push(price);
+        if (placed.length === 2) admitted = false; // stop()/close() lands between rungs
+        return { success: true, orderId: `rung-${placed.length}` };
+      },
+      getOrder: async () => ({ status: 'OPEN' }),
+    };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+
+    const result = await exec.placeLadderOrders([
+      { index: 0, price: 99_000, sizeUsdc: 100, assetQty: 0.001 },
+      { index: 1, price: 98_000, sizeUsdc: 100, assetQty: 0.001 },
+      { index: 2, price: 97_000, sizeUsdc: 100, assetQty: 0.001 },
+      { index: 3, price: 96_000, sizeUsdc: 100, assetQty: 0.001 },
+    ], { isAdmitted: () => admitted });
+
+    assert.deepEqual(placed, [99_000, 98_000], 'no rung is dispatched after admission closes');
+    assert.equal(result.notAdmitted, true);
+    assert.equal(result.failedCount, 0, 'unplaced rungs are not exchange failures');
+    assert.deepEqual(result.orders.map((o) => o.orderId), ['rung-1', 'rung-2']);
+    assert.equal(exec.getPendingCounts().ladderEntries, 2, 'rungs placed before the close stay tracked');
+  });
+
+  it('without an admission predicate, placement is unchanged', async () => {
+    let placeCalls = 0;
+    const adapter = {
+      placeLimitBuy: async () => { placeCalls++; return { success: true, orderId: `o-${placeCalls}` }; },
+      getOrder: async () => ({ status: 'OPEN' }),
+    };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+    const result = await exec.placeLadderOrders([
+      { index: 0, price: 99_000, sizeUsdc: 100, assetQty: 0.001 },
+      { index: 1, price: 98_000, sizeUsdc: 100, assetQty: 0.001 },
+    ]);
+    assert.equal(placeCalls, 2);
+    assert.equal(result.notAdmitted, undefined);
+  });
+});
