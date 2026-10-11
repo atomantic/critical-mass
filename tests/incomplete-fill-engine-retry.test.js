@@ -18,7 +18,7 @@
 //
 // Disk safety: throwaway pair lives under a disposable temp root, removed
 // in after().
-const { describe, it, after } = require('node:test');
+const { describe, it, beforeEach, afterEach, after, mock } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createIsolatedDataDir } = require('./test-data-dir');
@@ -36,8 +36,56 @@ const { createRegimeEngine, buildPartialFillData } = require('../src/regime-engi
 const TEST_PAIR = '__testincompletefillretry__';
 
 const engines = [];
+// setImmediate stays real: it drains the fill pass's promise continuations
+// without advancing fallback, engine retry, or deduplication TTL deadlines.
+const drainPromises = () => new Promise(resolve => setImmediate(resolve));
+const advanceClock = async (ms) => {
+  mock.timers.tick(ms);
+  await drainPromises();
+};
+
+beforeEach(() => mock.timers.enable({ apis: ['setTimeout'] }));
+afterEach(async () => {
+  try {
+    await drainPromises();
+  } finally {
+    for (const eng of engines.splice(0)) {
+      eng._test.setRunning(false);
+      eng._test.clearTimers();
+    }
+    mock.timers.reset();
+  }
+});
+
+// A pass that has not settled after its stubbed I/O drains is waiting for
+// the engine's one 2,000ms fallback. Advance only that deadline, never runAll:
+// expiring the 60s/5min dedup timers would weaken the replay assertions.
+const runFillPass = async (operation, beforeRetry = () => {}) => {
+  let settled = false;
+  // Attach rejection handling immediately; assertions may run before the
+  // caller's assert.rejects gets the eventual rejection.
+  const result = operation().then(
+    value => { settled = true; return { value }; },
+    error => { settled = true; return { error }; },
+  );
+  await drainPromises();
+  if (!settled) {
+    beforeRetry();
+    await advanceClock(1999);
+    assert.equal(settled, false, 'the fallback must still be pending before 2,000ms');
+    beforeRetry();
+    await advanceClock(1);
+    assert.equal(settled, true, 'the fill pass must finish at its fallback deadline');
+  }
+  const outcome = await result;
+  if ('error' in outcome) throw outcome.error;
+  return outcome.value;
+};
+const handleFill = (eng, status) => runFillPass(() => eng._test.handleOrderFill(status));
+const handlePolledFill = (eng, orderId, status) =>
+  runFillPass(() => eng._test.handlePolledFill(orderId, status));
+
 after(() => {
-  for (const eng of engines) eng._test.clearTimers();
   configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
   isolatedData.cleanup();
 });
@@ -116,7 +164,7 @@ describe('terminal fallback identity reconciliation (#807, #835)', () => {
         return { success: true, orderId: 'terminal-identity-tp' };
       },
     }));
-    await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'FILLED',
+    await handleFill(eng, { orderId, side: 'buy', status: 'FILLED',
       filledSize: 0.02, filledValue: 40, averageFilledPrice: 2000, totalFees: 0 });
     const getBody = () => eng._getPositionState().celestialBodies.find(b => b.sourceOrderIds.includes(orderId));
     assert.ok(getBody());
@@ -125,14 +173,14 @@ describe('terminal fallback identity reconciliation (#807, #835)', () => {
     available = true;
     const realStatus = { orderId, side: 'buy', status: 'FILLED',
       filledSize: 0.03, filledValue: 60, averageFilledPrice: 2000, totalFees: 0 };
-    await assert.rejects(eng._test.handleOrderFill(realStatus), /cancel transiently failed/);
+    await assert.rejects(handleFill(eng, realStatus), /cancel transiently failed/);
     assert.equal(getBody().assetQty, 0.02, 'failed TP cancellation leaves the existing body unchanged');
-    await eng._test.handleOrderFill(realStatus);
+    await handleFill(eng, realStatus);
     assert.equal(getBody().assetQty, 0.03);
     assert.equal(getBody().costBasis, 60);
     assert.equal(tpCount, originalTpCount + 1, 'the new tranche re-sizes the existing body TP once');
     const tpCountAfterGrowth = tpCount;
-    await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'FILLED',
+    await handleFill(eng, { orderId, side: 'buy', status: 'FILLED',
       filledSize: 0.03, filledValue: 60, averageFilledPrice: 2000, totalFees: 0 });
     assert.equal(getBody().assetQty, 0.03);
     assert.equal(tpCount, tpCountAfterGrowth, 'replaying the same real identity is a no-op');
@@ -188,14 +236,14 @@ describe('terminal fallback reconciles cumulative quote (#808)', () => {
     it(`prices the ${fixture.name} gap from remaining quote, including replay after ledger reload`, async () => {
       const orderId = `quote-${fixture.name}`;
       const eng = makeEngine(unavailable);
-      await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'PARTIALLY_FILLED',
+      await handleFill(eng, { orderId, side: 'buy', status: 'PARTIALLY_FILLED',
         filledSize: 0.01, isPartialFill: true, confirmedFills: [realPartial(orderId)] });
       const rawStatus = { orderId, side: 'buy', status: 'FILLED', filledSize: 0.02,
         filledValue: fixture.quote, averageFilledPrice: fixture.average, totalFees: 0.06 };
       const status = fixture.shaped
         ? buildPartialFillData(orderId, 'buy', rawStatus, { isPartialFill: false, totalFees: 0.06 })
         : rawStatus;
-      await eng._test.handleOrderFill(status);
+      await handleFill(eng, status);
       const ledger = eng.getFillLedger();
       const rows = ledger.getFillsForOrder(orderId);
       const synthetic = rows.find(row => row.syntheticCoverage);
@@ -215,7 +263,7 @@ describe('terminal fallback reconciles cumulative quote (#808)', () => {
       near(ownedTotals().cost, expectedQuote + 0.06);
       ledger.persist();
       ledger.load();
-      await eng._test.handleOrderFill(status);
+      await handleFill(eng, status);
       assert.equal(ledger.getFillsForOrder(orderId).length, 2);
       near(ownedTotals().qty, 0.02);
       near(ownedTotals().cost, expectedQuote + 0.06);
@@ -240,7 +288,7 @@ describe('terminal fallback reconciles cumulative quote (#808)', () => {
   it('uses the full cumulative value when there are no earlier fills', async () => {
     const eng = makeEngine(unavailable);
     const orderId = 'quote-no-prior';
-    await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'FILLED',
+    await handleFill(eng, { orderId, side: 'buy', status: 'FILLED',
       filledSize: 0.02, filledValue: 60, averageFilledPrice: 3000, totalFees: 0 });
     const row = eng.getFillLedger().getFillsForOrder(orderId)[0];
     near(row.price, 3000);
@@ -254,16 +302,16 @@ describe('terminal fallback reconciles cumulative quote (#808)', () => {
     it(`leaves a ${name} cumulative quote retryable without body mutation`, async () => {
       const orderId = `quote-invalid-${name}`;
       const eng = makeEngine(unavailable);
-      await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'PARTIALLY_FILLED',
+      await handleFill(eng, { orderId, side: 'buy', status: 'PARTIALLY_FILLED',
         filledSize: 0.01, isPartialFill: true, confirmedFills: [realPartial(orderId)] });
       const before = JSON.stringify(eng._getPositionState().celestialBodies);
-      await assert.rejects(eng._test.handleOrderFill({ orderId, side: 'buy', status: 'FILLED',
+      await assert.rejects(handleFill(eng, { orderId, side: 'buy', status: 'FILLED',
         filledSize: 0.02, filledValue: value, averageFilledPrice: 3000 }),
       error => error.incompleteFills === true);
       assert.equal(eng.getFillLedger().getFillsForOrder(orderId).length, 1);
       assert.equal(JSON.stringify(eng._getPositionState().celestialBodies), before);
       // A corrected status can recover the same pending execution.
-      await eng._test.handleOrderFill({ orderId, side: 'buy', status: 'FILLED',
+      await handleFill(eng, { orderId, side: 'buy', status: 'FILLED',
         filledSize: 0.02, filledValue: 60, averageFilledPrice: 3000 });
       near(eng.getFillLedger().getFillsForOrder(orderId).reduce((sum, row) => sum + row.quoteAmount, 0), 60);
     });
@@ -289,12 +337,12 @@ describe('terminal fallback reconciles cumulative quote (#808)', () => {
     pos.celestialBodies = [{ id: 'quote-sell-body', tier: 'satellite', assetQty: 0.02,
       costBasis: 20, avgPrice: 1000, assetOnOrder: 0.02, tpOrderId: orderId,
       sourceOrderIds: [], buyOrders: [] }];
-    await eng._test.handleOrderFill({ orderId, side: 'sell', status: 'PARTIALLY_FILLED',
+    await handleFill(eng, { orderId, side: 'sell', status: 'PARTIALLY_FILLED',
       filledSize: 0.01, isPartialFill: true });
     detailAvailable = false;
     const terminal = { orderId, side: 'sell', status: 'FILLED', filledSize: 0.02,
       filledValue: 60, averageFilledPrice: 3000, totalFees: 0.06 };
-    await eng._test.handleOrderFill(terminal);
+    await handleFill(eng, terminal);
     const ledger = eng.getFillLedger();
     const rows = ledger.getFillsForOrder(orderId);
     near(rows.reduce((sum, row) => sum + row.quoteAmount - row.netFee, 0), 59.94);
@@ -302,7 +350,7 @@ describe('terminal fallback reconciles cumulative quote (#808)', () => {
     const bookedPnl = pos.realizedPnL;
     ledger.persist();
     ledger.load();
-    await eng._test.handleOrderFill(terminal);
+    await handleFill(eng, terminal);
     assert.equal(ledger.getFillsForOrder(orderId).length, 2);
     near(pos.realizedPnL, bookedPnl);
   });
@@ -326,7 +374,7 @@ describe('terminal fallback reconciles cumulative quote (#808)', () => {
       sourceOrderIds: [], buyOrders: [] }];
     const terminal = { orderId, side: 'sell', status: 'FILLED', filledSize: 0.02,
       filledValue: 40, averageFilledPrice: 2000, totalFees: 0.04 };
-    await eng._test.handleOrderFill(terminal);
+    await handleFill(eng, terminal);
     near(pos.realizedPnL, 5);
     const capitalAfterBooking = eng._getConfig().maxUsdcDeployed;
 
@@ -336,7 +384,7 @@ describe('terminal fallback reconciles cumulative quote (#808)', () => {
     configUtils.getRegimeConfig = () => ({ ...eng._getConfig() });
     configUtils.updateRegimeConfig = (_exchange, _pair, updates) => Object.assign(eng._getConfig(), updates);
     try {
-      await eng._test.handleOrderFill({ ...terminal, filledValue: 42, averageFilledPrice: 2100, totalFees: 0.06 });
+      await handleFill(eng, { ...terminal, filledValue: 42, averageFilledPrice: 2100, totalFees: 0.06 });
     } finally {
       configUtils.getRegimeConfig = previousGetConfig;
       configUtils.updateRegimeConfig = previousUpdateConfig;
@@ -353,7 +401,7 @@ describe('terminal fallback reconciles cumulative quote (#808)', () => {
     assert.equal(ledger.getRecordedSizeForOrder(orderId), 0.02);
     assert.equal(ledger.getFillsForOrder(orderId).length, 1);
     assert.ok(pos.appliedSellCorrections.includes(actualFill.tradeId));
-    await eng._test.handleOrderFill({ ...terminal, filledValue: 42, averageFilledPrice: 2100, totalFees: 0.06 });
+    await handleFill(eng, { ...terminal, filledValue: 42, averageFilledPrice: 2100, totalFees: 0.06 });
     near(pos.realizedPnL, 6.98);
     near(eng._getConfig().maxUsdcDeployed, capitalAfterBooking + 1.98);
   });
@@ -384,7 +432,7 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [];
 
-    await eng._test.handleOrderFill({
+    await handleFill(eng, {
       orderId, side: 'buy', status: 'PARTIALLY_FILLED',
       filledSize: 0.01, filledValue: 20, averageFilledPrice: 2000, isPartialFill: true,
     });
@@ -395,12 +443,12 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
 
     // Terminal poll: order status now reports the full 0.03, but every
     // getOrderFills call from here on fails.
-    await eng._test.handleOrderFill({
+    await handleFill(eng, {
       orderId, side: 'buy', status: 'FILLED',
       filledSize: 0.03, filledValue: 60, averageFilledPrice: 2000, isPartialFill: false,
     });
 
-    assert.ok(getOrderFillsCalls >= 3, 'must have attempted the terminal rescan and its 2s retry');
+    assert.equal(getOrderFillsCalls, 3, 'one partial fetch, one terminal fetch and one delayed retry');
     const afterTerminal = eng._getPositionState().celestialBodies.find(b => (b.sourceOrderIds || []).includes(orderId));
     assert.ok(afterTerminal, 'the body must still exist after the terminal rescan failure');
     assert.ok(
@@ -434,7 +482,7 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [];
 
-    await eng._test.handleOrderFill({
+    await handleFill(eng, {
       orderId, side: 'buy', status: 'PARTIALLY_FILLED',
       filledSize: 0.01, filledValue: 20, averageFilledPrice: 2000, isPartialFill: true,
     });
@@ -442,7 +490,7 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
     // Terminal poll: order status now reports the full 0.03 filled with a
     // CUMULATIVE totalFees of 0.06 (0.02 already booked + 0.04 for the new
     // 0.02 tranche) — every getOrderFills call from here on fails.
-    await eng._test.handleOrderFill({
+    await handleFill(eng, {
       orderId, side: 'buy', status: 'FILLED',
       filledSize: 0.03, filledValue: 60, averageFilledPrice: 2000, totalFees: 0.06, isPartialFill: false,
     });
@@ -492,7 +540,7 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [];
 
-    await eng._test.handleOrderFill({
+    await handleFill(eng, {
       orderId, side: 'buy', status: 'PARTIALLY_FILLED',
       filledSize: 0.01, filledValue: 20, averageFilledPrice: 2000, isPartialFill: true,
     });
@@ -501,7 +549,7 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
 
     // Poll 2: order advanced to 0.02 (STILL PARTIALLY_FILLED — not
     // terminal), but getOrderFills fails both attempts. Must NOT synthesize.
-    await eng._test.handleOrderFill({
+    await handleFill(eng, {
       orderId, side: 'buy', status: 'PARTIALLY_FILLED',
       filledSize: 0.02, filledValue: 40, averageFilledPrice: 2000, isPartialFill: true,
     });
@@ -511,7 +559,7 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
     );
 
     // Poll 3: still 0.02, getOrderFills now succeeds with the real trades.
-    await eng._test.handleOrderFill({
+    await handleFill(eng, {
       orderId, side: 'buy', status: 'FILLED',
       filledSize: 0.02, filledValue: 40, averageFilledPrice: 2000, isPartialFill: false,
     });
@@ -560,7 +608,7 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
 
     try {
       await assert.rejects(
-        eng._test.handleOrderFill({
+        handleFill(eng, {
           orderId, side: 'buy', status: 'FILLED',
           filledSize: 100, filledValue: 200000, averageFilledPrice: 2000, isPartialFill: false,
         }),
@@ -601,7 +649,7 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
     pos.pendingEntryOrders = [];
     const cycleBuysBefore = pos.cycleBuys;
 
-    await eng._test.handleOrderFill({
+    await handleFill(eng, {
       orderId, side: 'buy', status: 'PARTIALLY_FILLED',
       filledSize: 0.03, filledValue: 60, averageFilledPrice: 2000, isPartialFill: true,
     });
@@ -614,6 +662,33 @@ describe('synthetic fallback accounts for the GAP, not the stale ledger total (c
 });
 
 describe('incompleteFills engine-level retry (issue #679 follow-up)', () => {
+  for (const emptyResult of ['empty', 'throwing']) {
+    it(`waits for the exact fallback deadline after an initially ${emptyResult} fetch`, async () => {
+      const orderId = `fallback-clock-${emptyResult}`;
+      let calls = 0;
+      const eng = makeEngine({ getOrderFills: async () => {
+        calls++;
+        if (calls === 1) {
+          if (emptyResult === 'throwing') throw incompleteFillsError();
+          return [];
+        }
+        return [{ tradeId: `${orderId}-real`, orderId, side: 'buy', size: 1.5,
+          price: 2000, tradeTime: new Date().toISOString(), netFee: 0 }];
+      } }, orderId);
+      let deadlineChecks = 0;
+      await runFillPass(() => eng._test.handleOrderFill(filledBuyStatus(orderId)), () => {
+        deadlineChecks++;
+        assert.equal(calls, 1, 'only the initial fetch runs before the deadline');
+        assert.deepEqual(eng.getFillLedger().getFillsForOrder(orderId), []);
+        assert.deepEqual(eng._getPositionState().celestialBodies, []);
+      });
+      assert.equal(deadlineChecks, 2, 'state checked initially and one millisecond before retry');
+      assert.equal(calls, 2, 'exactly one second fetch after advancing to 2,000ms');
+      assert.equal(eng.getFillLedger().getFillsForOrder(orderId).length, 1);
+      assert.equal(eng._getPositionState().celestialBodies[0].assetQty, 1.5);
+    });
+  }
+
   it('a persistently-incomplete getOrderFills still succeeds via the order-status fallback, with no engine-level retry needed', async () => {
     // handleOrderFillImpl's own order-status synthetic-fill fallback (a
     // sibling fix to this one) already absorbs a getOrderFills rejection
@@ -627,7 +702,7 @@ describe('incompleteFills engine-level retry (issue #679 follow-up)', () => {
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [];
 
-    await eng._test.handlePolledFill(orderId, filledBuyStatus(orderId));
+    await handlePolledFill(eng, orderId, filledBuyStatus(orderId));
 
     assert.equal(calls, 2, 'getOrderFills is attempted (and its own internal empty-rawFills retry runs) before falling back');
     assert.equal(eng._test.getIncompleteFillRetryCount(orderId), 0, 'no engine-level retry needed — the fallback already succeeded');
@@ -659,10 +734,16 @@ describe('incompleteFills engine-level retry (issue #679 follow-up)', () => {
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [];
 
-    await eng._test.handlePolledFill(orderId, filledBuyStatus(orderId));
-    // First call + 3 scheduled retries at 5ms apart; wait comfortably past
-    // all of them, then a bit more to confirm no further retry fires.
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await handlePolledFill(eng, orderId, filledBuyStatus(orderId));
+    assert.equal(calls, 1, 'the initial attempt finishes before the retry deadline');
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      assert.equal(eng._test.getIncompleteFillRetryCount(orderId), attempt);
+      await advanceClock(4);
+      assert.equal(calls, attempt, 'no retry before its five-millisecond deadline');
+      await advanceClock(1);
+      assert.equal(calls, attempt + 1, 'one retry at each deadline');
+    }
+    await advanceClock(100);
 
     assert.equal(calls, 4, 'must attempt the initial call plus every configured retry, then stop');
     assert.equal(eng._test.getIncompleteFillRetryCount(orderId), 0, 'the retry counter must be cleared once exhausted, not leaked');
@@ -684,9 +765,16 @@ describe('incompleteFills engine-level retry (issue #679 follow-up)', () => {
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [];
 
-    await eng._test.handlePolledFill(orderId, filledBuyStatus(orderId));
-    // 2 failures * 5ms apart, plus slack for the successful pass's own work.
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await handlePolledFill(eng, orderId, filledBuyStatus(orderId));
+    assert.equal(calls, 1);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      assert.equal(eng._test.getIncompleteFillRetryCount(orderId), attempt);
+      await advanceClock(4);
+      assert.equal(calls, attempt, 'no retry before its five-millisecond deadline');
+      await advanceClock(1);
+      assert.equal(calls, attempt + 1);
+    }
+    await advanceClock(100);
 
     assert.equal(calls, 3, 'must stop retrying as soon as a call succeeds');
     assert.equal(eng._test.getIncompleteFillRetryCount(orderId), 0, 'the retry counter must be cleared on success');
@@ -741,7 +829,7 @@ describe('synchronous order-fill evidence boundary (#1005)', () => {
       }));
       const pos = eng._getPositionState();
       pos.pendingEntryOrders = [{ orderId, assetQty: 0.01, sizeUsdc: 20 }];
-      await eng._test.handleOrderFill(status(orderId, confirmed ? fills : undefined));
+      await handleFill(eng, status(orderId, confirmed ? fills : undefined));
       assert.deepEqual(calls.slice(0, confirmed ? 2 : 3), confirmed
         ? ['ingest', 'aggregate'] : ['fetch', 'ingest', 'aggregate']);
       assert.ok(calls.indexOf('place-tp') > calls.indexOf('aggregate'));
@@ -760,7 +848,7 @@ describe('synchronous order-fill evidence boundary (#1005)', () => {
     const eng = makeEngine({ getOrderFills: async () => assert.fail('confirmed rows bypass fetching') }, orderId);
     const ledger = eng.getFillLedger();
     const cycleId = ledger.getCurrentCycleId();
-    await eng._test.handleOrderFill(status(orderId, [invalid, valid]));
+    await handleFill(eng, status(orderId, [invalid, valid]));
     const rows = ledger.getFillsForOrder(orderId);
     assert.deepEqual(rows.map(fill => fill.tradeId), [valid.tradeId]);
     assert.equal(rows[0].cycleId, cycleId);
@@ -777,11 +865,11 @@ describe('synchronous order-fill evidence boundary (#1005)', () => {
     const original = ledger.ingestFill;
     const failure = new Error('ledger write unavailable');
     ledger.ingestFill = () => { throw failure; };
-    await assert.rejects(eng._test.handleOrderFill(status(orderId, fills)), error => error === failure);
+    await assert.rejects(handleFill(eng, status(orderId, fills)), error => error === failure);
     assert.deepEqual(ledger.getFillsForOrder(orderId), []);
     assert.equal(bodyFor(eng, orderId), undefined);
     ledger.ingestFill = original;
-    await eng._test.handleOrderFill(status(orderId, fills));
+    await handleFill(eng, status(orderId, fills));
     assert.equal(bodyFor(eng, orderId).assetQty, 0.01);
     assert.equal(bodyFor(eng, orderId).costBasis, 20.02);
     assert.equal(ledger.getFillsForOrder(orderId).length, 1);
@@ -796,7 +884,7 @@ describe('synchronous order-fill evidence boundary (#1005)', () => {
     const original = ledger.aggregateFills;
     const failure = new Error('booking unavailable');
     ledger.aggregateFills = () => { throw failure; };
-    await assert.rejects(eng._test.handleOrderFill(status(orderId)), error => error === failure);
+    await assert.rejects(handleFill(eng, status(orderId)), error => error === failure);
     assert.equal(bodyFor(eng, orderId), undefined);
     assert.equal(ledger.getFillsForOrder(orderId).length, 1);
     ledger.persist();
@@ -807,8 +895,8 @@ describe('synchronous order-fill evidence boundary (#1005)', () => {
       calls.push('aggregate');
       return original(bookable);
     };
-    await eng._test.handleOrderFill(status(orderId));
-    await eng._test.handleOrderFill(status(orderId));
+    await handleFill(eng, status(orderId));
+    await handleFill(eng, status(orderId));
     assert.deepEqual(calls, ['fetch', 'fetch', 'aggregate', 'fetch']);
     assert.equal(ledger.getFillsForOrder(orderId).length, 1);
     assert.equal(bodyFor(eng, orderId).assetQty, 0.01);
