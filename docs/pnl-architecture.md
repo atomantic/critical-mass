@@ -249,46 +249,89 @@ linked memory or commit first.
 
 ## Recovery playbook
 
-When P&L looks wrong, work through these in order:
+Run diagnostics from the repository root. Select the configured exchange, pair,
+and base asset explicitly; the example below is for Coinbase BTC-USDC. Set
+`OPERATOR_PASSWORD` in your local shell to the gateway operator password, and
+use your configured gateway URL if it differs. Do not put the password in a URL
+or commit it to a script.
+
+```bash
+export EXCHANGE=coinbase PAIR=BTC-USDC ASSET=BTC
+export GATEWAY_URL=http://localhost:5570
+```
 
 ### Step 1: Compare authoritative numbers
 ```bash
-# What the engine reports
-curl -s 'http://localhost:5570/api/<exchange>/regime/status?pair=<PAIR>' \
-  | jq '.status.position | {realizedPnL, realizedAssetPnL, totalAsset}'
+# What the gateway reports for this fund (requires operator authentication)
+curl --fail-with-body --silent --show-error --get \
+  "$GATEWAY_URL/api/$EXCHANGE/regime/status" \
+  --data-urlencode "pair=$PAIR" \
+  -H "Authorization: Bearer $OPERATOR_PASSWORD" \
+  | jq -e '.status.position | select(type == "object") | {realizedPnL, realizedAssetPnL, totalAsset}'
 
-# What cycle-pair derivation says (should match)
+# What cycle-pair derivation says for the same fund on disk
 node -e '
-const fl = require("./src/fill-ledger").createFillLedger("<exchange>","<PAIR>","<PAIR>");
+const { EXCHANGE, PAIR } = process.env;
+const fl = require("./src/fill-ledger").createFillLedger(EXCHANGE, PAIR, PAIR);
 console.log(fl.computeRealizedFromCyclePairs());'
 ```
-If these disagree → bug in `refreshRealizedFromCyclePairs` or state staleness.
+The gateway can serve persisted status when engine IPC is disconnected; check
+`engineDown` and `status.health.mode` in the full response before treating it as
+live evidence. Compare during a quiet interval: new fills can change the ledger
+between these reads. A persistent disagreement needs investigation of
+`refreshRealizedFromCyclePairs` or stale state, not an automatic ledger rebuild.
 
 ### Step 2: Check exchange truth
 ```bash
 NODE_OPTIONS="--dns-result-order=ipv4first" node -e '
-const a = require("./src/adapters/<exchange>/api").createAdapter();
-a.getAccountBalance("<ASSET>").then(b => console.log(b));'
+const a = require("./src/adapters").createAdapter(process.env.EXCHANGE);
+a.getAccountBalance(process.env.ASSET)
+  .then(b => console.log(b))
+  .catch(error => { console.error(error.message); process.exitCode = 1; });'
 ```
-If `Σ active_body.assetQty + realizedAssetPnL ≠ exchange.total` → data
-integrity issue, run rectification.
+The adapter uses this install's exchange keys and returns the **account-wide**
+asset balance. Compare it with all live funds sharing that asset and account,
+including reserves and any holdings outside the bot. One fund's bodies plus
+reserves need not equal the entire account balance. A difference alone does not
+establish missing fills or justify rewriting state.
 
-### Step 3: Pull exchange trade history and diff
-```bash
-NODE_OPTIONS="--dns-result-order=ipv4first" node scripts/fetch-cryptocom-trades.js
-node scripts/diff-cryptocom-ledger.js
-```
-Reveals fills the engine missed via WS dropouts.
+### Step 3: Establish the missing or misattributed fills
 
-### Step 4: Rectify
-```bash
-pm2 stop critical-mass-<exchange>
-node scripts/cryptocom-rectify-from-exchange.js          # dry-run
-node scripts/cryptocom-rectify-from-exchange.js --apply
-pm2 restart critical-mass-<exchange>
-```
-Rebuilds the ledger purely from exchange truth, drains drained bodies,
-re-derives all P&L from cycle pairs.
+Export the affected product's trade history from the exchange and compare trade
+IDs, order IDs, quantities, fees and buy-to-sell consumption records with
+`data/<exchange>/<pair>/fill-ledger.json`. Confirm the export covers the required
+dates and includes every page and partial fill before using it as repair input.
+
+`scripts/fetch-cryptocom-trades.js` and `scripts/diff-cryptocom-ledger.js` are
+historical CRO_USD investigation tools, not exchange/pair-selectable commands.
+The fetch script fixes the product and inception date in its source and writes
+`data/cryptocom/CRO_USD/exchange-trades.json`; setting `EXCHANGE` or `PAIR` above
+does not retarget it.
+
+### Step 4: Prepare a targeted repair
+
+There is no general-purpose rectification command in this playbook.
+`scripts/cryptocom-rectify-from-exchange.js` is a one-time CRO_USD incident repair:
+it hardcodes historical order/body IDs and a 100 CRO dust threshold. With
+`--apply` it replaces that fund's ledger, clears `closed-trades.json`, and writes
+FIFO-derived position values. It does **not** derive the current cycle-pair P&L
+contract. Do not use it as a generic remedy, even for a new CRO_USD discrepancy;
+changing the exchange name in a PM2 command does not change its write targets.
+
+For a new repair:
+
+1. Identify the exact affected fund, exchange fills and annotations to change.
+   Preserve cycle ownership, consumption records and intentional holdback.
+2. Drain the gateway, then stop the associated exchange engine and any manual
+   writers before editing files. Follow the ordered shutdown in
+   [UPGRADE.md](../UPGRADE.md#tldr); stopping just the gateway leaves engines
+   writing, and each engine owns every fund on its exchange.
+3. Preserve copies of the affected fund files and export. Validate a targeted
+   repair on disposable copies first, reviewing the diff and cycle-pair totals.
+4. Apply only that validated repair while writers remain stopped. Restart the
+   engine before the gateway, then repeat the diagnostics and verify open orders
+   against the exchange. Gemini requires a running heartbeat; orders can be
+   auto-cancelled during engine downtime.
 
 ## Invariants — code review checklist
 

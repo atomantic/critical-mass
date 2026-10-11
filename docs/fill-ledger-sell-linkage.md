@@ -79,25 +79,30 @@ When a body's TP order is cancelled and re-placed (e.g., on merge or reprice), t
 
 **Fix**: Root cause 1 fix ensures annotations succeed. The `annotateFillsByOrderId` function uses `Object.assign`, so successful annotation overwrites the stale `sellOrderId`.
 
-### Repair Script
+### Historical repair script
 
-One-time repair script: `scripts/repair-sell-linkage.js`
+`scripts/repair-sell-linkage.js` records the one-time repair for this incident.
+It is **not a general repair command**: it reads the legacy
+`data/coinbase/fill-ledger.json`, selects a hardcoded historical cycle and TP
+order IDs, and writes immediately when it finds changes. There is no dry-run
+flag or exchange/pair option. Merely changing the file path to a modern fund's
+`data/<exchange>/<pair>/fill-ledger.json` does not make its matching assumptions
+valid for that fund.
 
-Strategy:
-1. **Price matching**: Each satellite sell has `satelliteAvgPrice` recording the source buy's exact price. Match sells to buys by price (single-buy satellites have exact price match).
-2. **Multi-buy body matching**: For bodies with multiple buys (planet+ tier), find buys with stale `sellOrderId` that were placed before the sell, verify BTC sum matches `satelliteBtcQty`.
-3. **Orphan cleanup**: Clear stale `sellOrderId` references pointing to non-existent sells.
+The incident repair matched single-buy sells by recorded average price, checked
+the total quantity before remapping the known multi-buy body, and cleared the
+known stale TP reference. It marked repaired buys `isBodyOwned: true` and added
+`bodyId` where available; it does not set `isSatellite: true`.
 
-### Data Repair Procedure
+### Data repair procedure
 
-The engine holds the fill ledger in memory and persists it to disk on annotation changes. **Any external disk edits will be overwritten** by the engine's in-memory state.
-
-To safely repair fill ledger data:
-1. `pm2 stop critical-mass-coinbase` (stop the associated engine first; `pm2 stop critical-mass` only stops the API gateway, leaving the engine active to overwrite disk changes. Alternatively, `pm2 stop ecosystem.config.cjs` stops all processes)
-2. Run the repair script (`node scripts/repair-sell-linkage.js` — for modern multi-pair funds, ensure the script targets `data/<exchange>/<pair>/fill-ledger.json`)
-3. `pm2 start critical-mass-coinbase` (engine loads the repaired file; or `pm2 start ecosystem.config.cjs`)
-
-The repair script also sets `isSatellite: true` on all repaired buys. This prevents the engine's core TP annotation path from reclaiming them on subsequent restarts.
+The engine holds the fill ledger in memory and persists annotation changes.
+External disk edits can be overwritten while it is running. For a new incident,
+use the [P&L recovery playbook](pnl-architecture.md#recovery-playbook) to gather
+fund-specific evidence, drain the gateway before stopping the associated engine,
+and validate a targeted repair against copies before applying it. Preserve the
+current consumption records described below; reassigning `sellOrderId` alone
+cannot establish how much of a buy has been consumed.
 
 ### Prevention Checklist
 
@@ -109,7 +114,7 @@ When modifying annotation code, verify:
 - [ ] Body TP re-placement annotates with new orderId via both `sourceOrderIds` and `buyOrders`
 - [ ] Offline fill detection also links source buys to the sell orderId
 - [ ] `placeTakeProfitOrder` in celestial mode checks `ownedByBody` before cancelling `activeTpOrderId`
-- [ ] Repair scripts always set `isSatellite: true` on affected buys as a defensive measure
+- [ ] Repair scripts preserve the affected body's ownership and consumption metadata; do not relabel every repaired buy as a satellite
 
 ## What `sellOrderId` is not (2026-09-20)
 
