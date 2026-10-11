@@ -1,5 +1,5 @@
 // @ts-check
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
@@ -531,25 +531,31 @@ describe('createMacroRegime: start/stop', () => {
     regime?.stop();
   });
 
-  it('start() begins periodic updates and stop() clears the timer', async () => {
-    let callCount = 0;
+  it('start() updates periodically and stop() prevents further updates', async () => {
+    mock.timers.enable({ apis: ['setInterval'] });
+    const calls = { hourly: 0, daily: 0 };
     const adapter = {
-      getCandles: async () => {
-        callCount++;
+      getCandles: async (_productId, _start, _end, granularity) => {
+        calls[granularity === 'ONE_HOUR' ? 'hourly' : 'daily']++;
         return [];
       },
     };
-    const config = { ...defaultConfig(), macroUpdateIntervalMs: 50 };
+    const config = { ...defaultConfig(), macroUpdateIntervalMs: 50, longTermBiasEnabled: false };
     regime = createMacroRegime('test', config, adapter, 'BTC-USDC');
     regime.start();
 
-    // Wait for initial + at least one periodic call
-    await new Promise(r => setTimeout(r, 130));
-    regime.stop();
+    // Let the initial update settle before advancing the mocked interval.
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(calls, { hourly: 1, daily: 1 }, 'startup should make one request per timeframe');
 
-    // Initial call + at least 1 periodic call = at least 2
-    // (getCandles is called twice per update: hourly + daily)
-    assert.ok(callCount >= 4, `expected >= 4 getCandles calls (2 per update), got ${callCount}`);
+    mock.timers.tick(50);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(calls, { hourly: 2, daily: 2 }, 'one interval should trigger a second update');
+
+    regime.stop();
+    mock.timers.tick(100);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(calls, { hourly: 2, daily: 2 }, 'stopping should prevent subsequent updates');
   });
 
   it('stop() is safe to call without start()', () => {

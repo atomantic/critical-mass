@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **[issue-1013] Macro timer lifecycle test isolates periodic updates** — Replaced the real-time delay and aggregate candle count with mocked intervals, separate timeframe request counts, and assertions before and after stop.
+
 ### Added
 - **[issue-1000] React 19 admin rendering** — Upgrade the dashboard chart and 3D ecosystems together, preserve candlesticks, cloud overlays and signal markers through public Recharts coordinates, and add isolated browser rendering coverage.
 - **[issue-935] Authenticated browser performance coverage** — A disposable real gateway/IPC fixture and headless Chrome scenario measure protected Transactions load, Config idle traffic for 60 seconds, consumer cleanup and reconnect recovery. Page responses now omit ledger metadata; incomplete browser evidence and protocol-only replays report UNVERIFIED. See `docs/perf-route-audit.md`.
