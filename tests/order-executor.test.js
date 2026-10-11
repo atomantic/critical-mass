@@ -453,6 +453,26 @@ describe('cancelAllEntries — refused-cancel fill handling (issue #209 A)', () 
     assert.equal(captured[0].orderId, 'entry-threw');
     assert.equal(exec.getPendingCounts().entries, 0);
   });
+
+  it('cancels only reactive entries — ladder rungs and TPs stay resting and tracked (issue #1028)', async () => {
+    // The flash-move sweep reuses this primitive; the ladder exemption and
+    // TP safety depend on its type filter.
+    const cancelledIds = [];
+    const adapter = {
+      cancelOrder: async (orderId) => { cancelledIds.push(orderId); return { success: true }; },
+      getOrder: async () => ({ status: 'CANCELLED', filledSize: 0, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+    const placedAt = Date.now();
+    exec.restorePendingOrder('e-1', { type: 'entry', price: 100, size: 1, sizeUsdc: 100, placedAt });
+    exec.restorePendingOrder('l-1', { type: 'ladder_entry', price: 99, size: 1, sizeUsdc: 99, placedAt });
+    exec.restorePendingOrder('tp-1', { type: 'body_tp', price: 110, size: 1, sizeUsdc: 110, placedAt });
+    exec.restorePendingOrder('tp-2', { type: 'take_profit', price: 111, size: 1, sizeUsdc: 111, placedAt });
+
+    assert.equal(await exec.cancelAllEntries(), 1);
+    assert.deepEqual(cancelledIds, ['e-1']);
+    assert.deepEqual(exec.getPendingOrdersList().map(o => o.orderId).sort(), ['l-1', 'tp-1', 'tp-2']);
+  });
 });
 
 describe('getPendingCounts — ladder_entry visibility (issue #107 M5)', () => {

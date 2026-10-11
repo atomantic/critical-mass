@@ -33,9 +33,10 @@ const BASIS_POINTS_DIVISOR = 10000;
 /**
  * Reason both executors return (`notAdmitted: true`) when an entry is refused
  * because the engine stopped or the fund began draining while it was being
- * prepared (#1009). Nothing reached the exchange.
+ * prepared (#1009), or a flash move began cancelling reactive entries (#1028).
+ * Nothing reached the exchange.
  */
-const ENTRY_NOT_ADMITTED = 'Entry admission closed (engine stopped or fund draining)';
+const ENTRY_NOT_ADMITTED = 'Entry admission closed (engine stopped, fund draining, or flash-move entry cancel)';
 
 // ============ JSON / TSV Helpers ============
 
