@@ -1,5 +1,5 @@
 // @ts-check
-const { describe, it, beforeEach } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
@@ -303,6 +303,10 @@ describe('Race 2: Atomic writes and version locking', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'race2-'));
   });
 
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   it('atomicWriteSync leaves no .tmp artifacts on success', () => {
     const { atomicWriteSync } = require('../src/state-tracker');
     const filePath = path.join(tmpDir, 'test-state.json');
@@ -368,17 +372,18 @@ describe('Race 2: Atomic writes and version locking', () => {
     const position = { totalBTC: 0.1, totalCostBasis: 10000, celestialBodies: [] };
     const regime = { mode: 'HARVEST', since: Date.now() };
 
-    saveRegimeState(position, regime, testExchange);
-    const data1 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    const v1 = data1.position._saveVersion;
+    try {
+      saveRegimeState(position, regime, testExchange);
+      const data1 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      const v1 = data1.position._saveVersion;
 
-    saveRegimeState(position, regime, testExchange);
-    const data2 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    const v2 = data2.position._saveVersion;
+      saveRegimeState(position, regime, testExchange);
+      const data2 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      const v2 = data2.position._saveVersion;
 
-    assert.ok(v2 > v1, `Version should increment: ${v2} > ${v1}`);
-
-    // Clean up
-    fs.rmSync(dir, { recursive: true, force: true });
+      assert.ok(v2 > v1, `Version should increment: ${v2} > ${v1}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
