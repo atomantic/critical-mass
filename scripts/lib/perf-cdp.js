@@ -21,7 +21,7 @@ async function startChrome(executable = process.env.CM_PERF_CHROME) {
     pending.clear();
     socket?.close();
     await stopChild(child);
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   };
   try {
     child = spawn(executable, ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${dir}`, '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-component-update', '--disable-sync', 'about:blank'], { stdio: 'ignore', env: Object.fromEntries(['PATH', 'SystemRoot', 'TMPDIR'].filter(key => process.env[key]).map(key => [key, process.env[key]])) });

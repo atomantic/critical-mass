@@ -37,7 +37,7 @@ async function startBrowserFixture() {
     clearInterval(feed);
     await stopChild(gateway);
     await Promise.all(engines.map(engine => engine.stop()));
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   };
   try {
     for (const file of ['server.js', 'package.json', 'ecosystem.config.cjs', 'config.example.json', 'src', 'shared']) {

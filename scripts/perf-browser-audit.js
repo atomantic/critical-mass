@@ -97,8 +97,8 @@ async function main(argv = process.argv.slice(2)) {
     const safeReasons = ['fixture UI build failed', 'isolated gateway exited', 'isolated gateway startup timed out', 'fixture enrollment failed', 'invalid idle duration', 'unsupported argument', 'browser content did not become useful before the deadline'];
     if (safeReasons.includes(error.message) || error.message.startsWith('Chrome unavailable;')) output.reasons = [error.message];
   } finally {
-    await browser?.stop();
-    await fixture?.stop();
+    const cleanup = await Promise.allSettled([browser?.stop(), fixture?.stop()]);
+    if (cleanup.some(result => result.status === 'rejected')) output = { verdict: 'UNVERIFIED', reasons: ['fixture cleanup incomplete'] };
   }
   console.log(JSON.stringify(output, null, 2));
   return output.verdict === 'PASS' ? 0 : output.verdict === 'FAIL' ? 1 : 2;
