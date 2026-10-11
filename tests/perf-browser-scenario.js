@@ -77,22 +77,29 @@ async function runBrowserScenario({ browser, fixture, metrics, idleMs = 60000 })
   await metrics.flush();
   check('remount invalidates stable config after a change', edited && metrics.changedConfigRead);
   metrics.phase = 'reconnect';
-  const reconnect = async () => {
+  const visiblePrices = `(() => {
+    const prices = document.querySelector('main').textContent.match(/(?:61|62|63|64),[0-9]{3}(?:\\.[0-9]{2})?/g) || [];
+    return Object.fromEntries(prices.map(price => [price.slice(0, 2), price]));
+  })()`;
+  const reconnect = async prefixes => {
+    await waitFor(browser, `${JSON.stringify(prefixes)}.every(prefix => (${visiblePrices})[prefix])`);
+    const beforePrices = await browser.evaluate(visiblePrices);
     const before = await browser.evaluate(state);
     await browser.evaluate('void window.__perfSocket().io.engine.close()');
     await waitFor(browser, `window.__perfSocket().connected && window.__perfSocket().id !== ${JSON.stringify(before.id)}`);
-    await pause(1200);
+    // Existing DOM values cannot establish recovery: require a newer live
+    // fixture tick for each visible fund after the new transport connects.
+    await waitFor(browser, `${JSON.stringify(prefixes)}.every(prefix => (${visiblePrices})[prefix] && (${visiblePrices})[prefix] !== ${JSON.stringify(beforePrices)}[prefix])`);
     const after = await browser.evaluate(state);
     return ['statusListeners', 'connectListeners', 'tradeListeners'].every(key => before[key] === after[key]);
   };
   await browser.evaluate(`document.querySelector('a[href="/coinbase/BTC-USDC"]').click()`);
   await waitFor(browser, `(window.__perfSocket?.().listeners('regime:status').length || 0) === ${configState.statusListeners + 1}`);
-  check('fund-specific consumer reconnect restores exactly its listeners', await reconnect());
-  check('fund consumer displays its telemetry after reconnect', await browser.evaluate("document.querySelector('main').textContent.includes('61,') && !document.querySelector('main').textContent.includes('62,')"));
+  check('fund-specific consumer reconnect restores exactly its listeners', await reconnect(['61']));
+  check('fund consumer filters sibling telemetry after reconnect', await browser.evaluate("!document.querySelector('main').textContent.includes('62,')"));
   await browser.evaluate(`document.querySelector('a[href="/"]').click()`);
   await waitFor(browser, `location.pathname === '/' && (window.__perfSocket?.().listeners('regime:status').length || 0) === ${configState.statusListeners + 1}`);
-  check('Overview all-fund consumer reconnect restores exactly its listeners', await reconnect());
-  check('Overview displays telemetry for every synthetic fund after reconnect', await browser.evaluate("['61,', '62,', '63,', '64,'].every(price => document.querySelector('main').textContent.includes(price))"));
+  check('Overview all-fund consumer reconnect restores exactly its listeners', await reconnect(['61', '62', '63', '64']));
   await browser.evaluate(`document.querySelector('a[href="/coinbase/BTC-USDC"]').click()`);
   await waitFor(browser, `location.pathname === '/coinbase/BTC-USDC' && !!document.querySelector('a[href="/coinbase/BTC-USDC/config"]')`);
   await browser.evaluate(`document.querySelector('a[href="/coinbase/BTC-USDC/config"]').click()`);

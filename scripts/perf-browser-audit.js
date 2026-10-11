@@ -24,7 +24,7 @@ function instrument(browser, baseUrl) {
         if (row.recorded) continue;
         row.recorded = true;
         metrics.incomplete++;
-        collector.recordHttp({ ...row, status: row.status || 0, end: row.start + timeoutMs, wireBytes: null });
+        collector.recordHttp({ ...row, status: row.status || 0, end: row.start + performance.now() - row.observedAt, wireBytes: null });
       }
       if (tasks.size) metrics.incomplete++;
     },
@@ -32,7 +32,7 @@ function instrument(browser, baseUrl) {
   browser.on('Runtime.exceptionThrown', () => metrics.runtimeErrors++);
   browser.on('Network.requestWillBeSent', msg => {
     if (!msg.request.url.startsWith(baseUrl + '/') || !['Fetch', 'XHR'].includes(msg.type)) return;
-    requests.set(msg.requestId, { url: msg.request.url, method: msg.request.method, start: msg.timestamp * 1000, phase: metrics.phase, decodedBytes: 0 });
+    requests.set(msg.requestId, { url: msg.request.url, method: msg.request.method, start: msg.timestamp * 1000, observedAt: performance.now(), phase: metrics.phase, decodedBytes: 0 });
   });
   browser.on('Network.responseReceived', msg => { const row = requests.get(msg.requestId); if (row) row.status = msg.response.status; });
   browser.on('Network.dataReceived', msg => { const row = requests.get(msg.requestId); if (row) row.decodedBytes += msg.dataLength; });
