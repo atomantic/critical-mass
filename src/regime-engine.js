@@ -2042,6 +2042,398 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     productId
   );
 
+  /** Collect independently persisted corrective/manual buys before classifying orphans. */
+  const collectStartupBuyExclusions = () => {
+    // Load corrective buy order IDs to avoid cancelling them as orphans
+    const correctiveBuyIds = new Set();
+    try {
+      const cbPath = require('path').join(resolveFundDataDir(exchange, pair), 'pending-corrective-buys.json');
+      const cbData = JSON.parse(require('fs').readFileSync(cbPath, 'utf8'));
+      for (const cb of cbData) {
+        if (!cb.filled && !cb.cancelled) correctiveBuyIds.add(cb.buyOrderId);
+      }
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        logger.error(
+          `[regime-engine] Error reading pending-corrective-buys.json: ${err.message}`,
+          { error: err.message, errorCode: err.code, path: 'pending-corrective-buys.json' }
+        );
+      }
+    }
+
+    // Load manual trade recovery buy order IDs to avoid cancelling them as orphans
+    try {
+      const mtPath = require('path').join(resolveFundDataDir(exchange, pair), 'manual-trades.json');
+      const mtData = JSON.parse(require('fs').readFileSync(mtPath, 'utf8'));
+      for (const mt of (mtData.trades || [])) {
+        if (mt.buyOrderId && mt.status === 'buy_pending') correctiveBuyIds.add(mt.buyOrderId);
+      }
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        logger.error(
+          `[regime-engine] Error reading manual-trades.json: ${err.message}`,
+          { error: err.message, errorCode: err.code, path: 'manual-trades.json' }
+        );
+      }
+    }
+    return correctiveBuyIds;
+  };
+
+  /**
+   * Book the already-filled tranche of an entry that is still open on the
+   * exchange through the standard fill pipeline (issue #671), so it joins
+   * a celestial body, gets a TP, and shrinks the tracked pending entry.
+   * A failure is logged, not thrown: the caller has already restored the
+   * order's executor tracking, so the live poll/WS path books the fills
+   * once the engine is running — and since nothing was ingested here,
+   * that later pass sees every row as new instead of a deduped remainder.
+   * @param {Object} order - Open order from getOpenOrders
+   * @param {number} placedAt - Order placement time (ms)
+   * @param {string} label - Log label for the calling branch
+   * @returns {Promise<void>}
+   */
+  const bookStartupOpenEntryPartial = async (order, placedAt, label) => {
+    const fillArgs = { status: order.status || 'OPEN', isPartialFill: true, placedAt };
+    // Rows no body ever booked were ingested by the pre-#671 startup path.
+    // The normal pass below would dedup them away and build the body from
+    // only the newer tranches, so commit them into a body first, on their
+    // own. Rows a body already booked are settled and never rebooked.
+    const legacyRows = isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)
+      ? []
+      : fillLedger.getFillsForOrder(order.orderId)
+        .filter(isUnsettledBuyRow);
+    // What this call commits is measured from the order's tranches, so a
+    // throw can shrink the entry by exactly that (issue #756).
+    const tranchesOf = () => (positionState.celestialBodies || [])
+      .flatMap(b => (b.buyOrders || []).filter(bo => bo && bo.orderId === order.orderId));
+    const tranchesBefore = new Set(tranchesOf());
+    const entryBefore = (positionState.pendingEntryOrders || []).find(e => e.orderId === order.orderId);
+    try {
+      if (legacyRows.length > 0) {
+        // A current-cycle order was already counted by the cycleBuys
+        // auto-correct above; a first commit here would count it again.
+        const alreadyCounted = fillLedger.getCurrentCycleFills()
+          .some(f => f.side === 'buy' && f.orderId === order.orderId);
+        const cycleBuysBefore = positionState.cycleBuys;
+        try {
+          await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, {
+            ...fillArgs,
+            filledSize: legacyRows.reduce((sum, f) => sum + Number(f.size || 0), 0),
+            confirmedFills: legacyRows,
+          }));
+        } finally {
+          if (alreadyCounted && positionState.cycleBuys === cycleBuysBefore + 1) {
+            positionState.cycleBuys = cycleBuysBefore;
+          }
+        }
+      }
+      await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, fillArgs));
+    } catch (err) {
+      logger.error(`❌ [${exchange}] Could not book offline partial fills for ${label} ${order.orderId}: ${err.message} — will pick them up on the next reconcile/poll`, {
+        orderId: order.orderId,
+        error: err.message,
+        incompleteFills: err.incompleteFills === true,
+      });
+      // A throw after a body took a tranche but before the pending entry
+      // shrank would leave the entry at its full notional beside that
+      // body, overstating deployed capital. Shrink it by exactly the
+      // tranches this call committed — not to the exchange's remainder,
+      // which would also subtract tranches that are still unbooked (a
+      // legacy-row pass that committed and then threw leaves the main
+      // pass's tranches to the live path, which shrinks the entry
+      // itself when it books them).
+      if (entryBefore) {
+        const committed = tranchesOf().filter(bo => !tranchesBefore.has(bo));
+        const qty = committed.reduce((sum, bo) => sum + (Number(bo.assetQty) || 0), 0);
+        const cost = committed.reduce((sum, bo) => sum + (Number(bo.sizeUsdc) || 0), 0);
+        positionState.pendingEntryOrders = (positionState.pendingEntryOrders || []).map(e => (
+          e.orderId !== order.orderId ? e : {
+            ...e,
+            assetQty: Math.max(0, (Number(entryBefore.assetQty) || 0) - qty),
+            sizeUsdc: Math.max(0, (Number(entryBefore.sizeUsdc) || 0) - cost),
+          }
+        ));
+      }
+    }
+  };
+
+  /** Restore open entries sequentially, booking offline partials before moving on. */
+  const restoreStartupOpenEntries = async (savedPendingEntries, savedOrderIds, savedLadderIds, openEntries, correctiveBuyIds) => {
+    let restoredEntries = 0;
+    let orphanedEntries = 0;
+
+    for (const order of openEntries) {
+      if (savedOrderIds.has(order.orderId)) {
+        // This is our order - restore tracking instead of canceling
+        const savedEntry = savedPendingEntries.find(e => e.orderId === order.orderId);
+        const restoredPlacedAt = order.createdTime ? new Date(order.createdTime).getTime() : (savedEntry.placedAt || Date.now());
+        orderExecutor.restorePendingOrder(order.orderId, {
+          type: 'entry',
+          price: savedEntry.price,
+          size: savedEntry.assetQty,
+          sizeUsdc: savedEntry.sizeUsdc,
+          placedAt: restoredPlacedAt,
+        });
+        restoredEntries++;
+        logger.info(`🔄 [${exchange}] Restored pending entry: ${order.orderId} @ ${fmtPrice(savedEntry.price)}`);
+
+        // Check if order has any fills while offline (partial fills).
+        // Route them through the standard fill pipeline (issue #671) so the
+        // tranche lands in a celestial body (with a TP) and shrinks the
+        // tracked entry. Ingesting straight into the ledger here left the
+        // tranche in no body: the later terminal fill deduped those rows
+        // and built its body from the new tranche alone.
+        if (order.filledSize && order.filledSize > 0) {
+          logger.info(`✅ [${exchange}] Entry ${order.orderId} has partial fills (${order.filledSize})`);
+          await bookStartupOpenEntryPartial(order, restoredPlacedAt, 'entry');
+        }
+      } else if (correctiveBuyIds.has(order.orderId)) {
+        logger.info(`📋 [${exchange}] Skipping corrective buy order ${order.orderId.slice(0, 8)} (tracked in pending-corrective-buys)`);
+      } else if (!savedLadderIds.has(order.orderId)) {
+        // Check if this "orphan" has partial fills — if so, restore it instead of cancelling
+        if (order.filledSize && order.filledSize > 0) {
+          logger.info(`📦 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} has partial fills (${order.filledSize} ${baseCurrency}) — restoring instead of cancelling`);
+          // Every sibling restorePendingOrder({type: 'entry', ...}) call in
+          // this file sets `size` to the order's ORIGINAL placed quantity
+          // (e.g. savedEntry.assetQty above), not what's left unfilled —
+          // the dashboard reads it as the "of N" denominator alongside
+          // filledSize (RegimeDashboard.jsx: "X of Y filled"). order.size
+          // is now the REMAINING unfilled quantity (issue #684); use
+          // order.originalSize here to match the established convention.
+          const orphanPlacedAt = order.createdTime ? new Date(order.createdTime).getTime() : Date.now();
+          orderExecutor.restorePendingOrder(order.orderId, {
+            type: 'entry',
+            price: order.price,
+            size: order.originalSize,
+            sizeUsdc: order.originalSize * order.price,
+            placedAt: orphanPlacedAt,
+          });
+          // Keep the adopted order in the persisted pending list so it
+          // survives the next restart, then book its filled tranche through
+          // the standard pipeline (issue #671) — which also shrinks this
+          // entry from its original quantity to its unfilled remainder.
+          if (!positionState.pendingEntryOrders) positionState.pendingEntryOrders = [];
+          if (!positionState.pendingEntryOrders.some(e => e.orderId === order.orderId)) {
+            // The orphan-buy recovery above may already have booked some of
+            // it into a body; track only what no body holds (issue #756).
+            const held = (positionState.celestialBodies || [])
+              .flatMap(b => b.buyOrders || [])
+              .filter(bo => bo && bo.orderId === order.orderId);
+            const heldQty = held.reduce((sum, bo) => sum + (Number(bo.assetQty) || 0), 0);
+            const heldCost = held.reduce((sum, bo) => sum + (Number(bo.sizeUsdc) || 0), 0);
+            positionState.pendingEntryOrders.push({
+              orderId: order.orderId,
+              price: order.price,
+              assetQty: Math.max(0, order.originalSize - heldQty),
+              sizeUsdc: Math.max(0, order.originalSize * order.price - heldCost),
+              placedAt: orphanPlacedAt,
+            });
+          }
+          await bookStartupOpenEntryPartial(order, orphanPlacedAt, 'orphan entry');
+          restoredEntries++;
+        } else {
+          // Orphan entry with no fills — cancel it
+          orphanedEntries++;
+          logger.info(`🧹 [${exchange}] Cancelling orphan entry order ${order.orderId} (not tracked by regime engine)`);
+          const cancelResult = await adapter.cancelOrder(order.orderId);
+          if (cancelResult.success) {
+            logger.info(`✅ [${exchange}] Cancelled orphan entry ${order.orderId.slice(0, 8)}`);
+          } else {
+            const orphanStatus = await adapter.getOrder(order.orderId).catch(() => null);
+            if (orphanStatus?.status === 'FILLED') {
+              logger.info(`📋 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} already filled — recovery will process`);
+            } else {
+              logger.warn(
+                `⚠️ [${exchange}] Failed to cancel orphan entry ${order.orderId.slice(0, 8)}: ${cancelResult.errorMessage || 'unknown'}`,
+                { orderId: order.orderId, orderType: 'entry', error: cancelResult.errorMessage || 'unknown' }
+              );
+            }
+          }
+        }
+      }
+    }
+
+    if (restoredEntries > 0) {
+      logger.info(`✅ [${exchange}] Restored ${restoredEntries} pending entry orders from state`);
+    }
+    if (orphanedEntries > 0) {
+      logger.info(`🧹 [${exchange}] Cancelled ${orphanedEntries} orphan entry orders`);
+    }
+  };
+
+  /** Catch up absent saved entries, then purge against the post-booking live list. */
+  const catchUpStartupSavedEntries = async (savedPendingEntries, exchangeOpenOrders) => {
+    const allOpenIds = new Set(exchangeOpenOrders.map(o => o.orderId));
+
+    // Catch up fills for saved entries that became terminal during downtime.
+    // The for-loop above only iterates exchangeOpenOrders, so saved entries
+    // that already cleared on the exchange skip its partial-fill ingest path;
+    // without this catch-up they would be purged below with no ledger record.
+    const terminalSavedEntries = savedPendingEntries.filter(e => !allOpenIds.has(e.orderId));
+    // Prefetch statuses in parallel; handleOrderFill is still sequential
+    // since it mutates positionState.
+    const entryStatuses = await Promise.all(
+      terminalSavedEntries.map(e => adapter.getOrder(e.orderId).catch(err => ({ __err: err })))
+    );
+    let caughtUpEntries = 0;
+    // Orders whose catch-up handleOrderFill threw (issue #679's stricter
+    // getOrderFills contract) — must NOT be purged below with no ledger
+    // record. Re-armed via restorePendingOrder (inside catchUpTerminalEntry) so the
+    // next reconcile's checkPendingOrderFills polls this (already-terminal
+    // on the exchange) order again and routes it through the
+    // retry-hardened live polling fill path.
+    const failedCatchUpIds = new Set();
+    for (let i = 0; i < terminalSavedEntries.length; i++) {
+      const savedEntry = terminalSavedEntries[i];
+      const orderStatus = entryStatuses[i];
+      if (!orderStatus || orderStatus.__err) {
+        if (orderStatus?.__err) {
+          logger.warn(
+            `⚠️ [${exchange}] Failed to catch up offline entry ${savedEntry.orderId.slice(0, 8)}: ${orderStatus.__err.message}`,
+            { orderId: savedEntry.orderId, error: orderStatus.__err.message }
+          );
+        }
+        continue;
+      }
+      // Shared with reconcileTick's orphan sweep (issue #764): honors the
+      // saved row's knownFilledSize high-water mark, so a restart during the
+      // exposure window can't misread a real partial as an empty cancel just
+      // because this fresh poll under-reports filledSize. On a throw (issue
+      // #679's stricter getOrderFills contract) it has already re-armed
+      // executor tracking for the SAME orderId and stamped the resolved size
+      // onto the row; keep it in pendingEntryOrders (below) instead of
+      // purging it.
+      const result = await catchUpTerminalEntry(savedEntry, orderStatus, 'entry');
+      if (result.outcome === 'filled') caughtUpEntries++;
+      else if (result.outcome === 'failed') failedCatchUpIds.add(savedEntry.orderId);
+      // 'empty': truly empty cancel, ok to purge below
+    }
+    if (caughtUpEntries > 0) {
+      logger.info(`📥 [${exchange}] Caught up ${caughtUpEntries} offline-terminal entries before purge`);
+    }
+    if (failedCatchUpIds.size > 0) {
+      logger.info(`🔁 [${exchange}] Re-armed ${failedCatchUpIds.size} offline-terminal entries whose fill catch-up failed, for retry`);
+    }
+
+    // Remove saved pending entries that are no longer open on the exchange
+    // (filled or cancelled while engine was offline — fills already ingested above).
+    // A failed catch-up (failedCatchUpIds) is retained even though it is
+    // also not open on the exchange — it needs a retry, not a purge.
+    // Filters the LIVE list, not the savedPendingEntries snapshot: the
+    // handleOrderFill calls above shrank partially-filled entries to their
+    // unfilled remainder and appended adopted orphans (issue #671), and
+    // re-filtering the stale snapshot would silently undo both. A failed
+    // catch-up may have thrown AFTER handleOrderFill already dropped its
+    // entry from the live list, so those are re-added from the snapshot.
+    const livePendingEntries = positionState.pendingEntryOrders || [];
+    const liveIds = new Set(livePendingEntries.map(e => e.orderId));
+    const currentPendingEntries = [
+      ...livePendingEntries,
+      ...savedPendingEntries.filter(e => failedCatchUpIds.has(e.orderId) && !liveIds.has(e.orderId)),
+    ];
+    if (currentPendingEntries.length > 0) {
+      positionState.pendingEntryOrders = currentPendingEntries.filter(
+        e => allOpenIds.has(e.orderId) || failedCatchUpIds.has(e.orderId)
+      );
+      const purged = currentPendingEntries.length - positionState.pendingEntryOrders.length;
+      if (purged > 0) {
+        logger.info(`🧹 [${exchange}] Purged ${purged} stale pending entry orders (filled/cancelled while offline)`);
+      }
+    }
+    return allOpenIds;
+  };
+
+  /** Snapshot ladder state only after entry catch-up; preserve its distinct retry policy. */
+  const restoreStartupLadderOrders = async (savedLadderIds, openEntries, allOpenIds) => {
+    // Catch up saved ladder rungs that went terminal while offline, the same
+    // way as entries above (issue #764): the restore block below keeps only
+    // rungs still open on the exchange, so without this a rung that filled —
+    // or was cancelled with a partial, possibly recorded only as its
+    // knownFilledSize — would be dropped with nothing booked. A failed
+    // catch-up is retained (re-armed by catchUpTerminalEntry) for the
+    // reconcile sweep to retry, exactly like failedCatchUpIds for entries.
+    const savedLadderSnapshot = positionState.pendingLadderOrders || [];
+    const terminalSavedLadder = savedLadderSnapshot.filter(o => !allOpenIds.has(o.orderId));
+    const failedLadderCatchUpIds = new Set();
+    if (terminalSavedLadder.length > 0) {
+      const ladderStatuses = await Promise.all(
+        terminalSavedLadder.map(o => adapter.getOrder(o.orderId).catch(err => ({ __err: err })))
+      );
+      for (let i = 0; i < terminalSavedLadder.length; i++) {
+        const savedRung = terminalSavedLadder[i];
+        const orderStatus = ladderStatuses[i];
+        if (!orderStatus || orderStatus.__err) {
+          // Unknown status — keep the row rather than drop a possible fill;
+          // the reconcile sweep re-polls it.
+          logger.warn(
+            `⚠️ [${exchange}] Failed to check offline ladder rung ${savedRung.orderId.slice(0, 8)}: ${orderStatus?.__err?.message || 'no status'} — keeping it for the reconcile sweep`,
+            { orderId: savedRung.orderId, orderType: 'ladder_entry', error: orderStatus?.__err?.message }
+          );
+          failedLadderCatchUpIds.add(savedRung.orderId);
+          continue;
+        }
+        if (!isTerminalStatus(orderStatus)) {
+          // Missing from the open-orders snapshot but not terminal (a
+          // listing race) — keep it for the sweep, which re-arms live rungs.
+          failedLadderCatchUpIds.add(savedRung.orderId);
+          continue;
+        }
+        const result = await catchUpTerminalEntry(savedRung, orderStatus, 'ladder_entry');
+        if (result.outcome === 'failed') failedLadderCatchUpIds.add(savedRung.orderId);
+      }
+      // A catch-up that threw after handleOrderFill already dropped the live
+      // row must not lose it — re-add from the snapshot (as entries do).
+      const liveLadderIds = new Set((positionState.pendingLadderOrders || []).map(o => o.orderId));
+      const droppedRetained = savedLadderSnapshot.filter(
+        o => failedLadderCatchUpIds.has(o.orderId) && !liveLadderIds.has(o.orderId)
+      );
+      if (droppedRetained.length > 0) {
+        positionState.pendingLadderOrders = [...(positionState.pendingLadderOrders || []), ...droppedRetained];
+      }
+    }
+
+    // Restore or cancel persisted ladder orders. Gated on the PRE-catch-up
+    // snapshot: a catch-up that booked (and so removed) every rung must still
+    // reach the ladderActive=false reset below, exactly as the old purge of
+    // those same no-longer-open rungs did.
+    const savedLadderOrders = positionState.pendingLadderOrders || [];
+    if (positionState.ladderActive && savedLadderSnapshot.length > 0) {
+      let restoredLadder = 0;
+      let cancelledLadder = 0;
+
+      for (const order of openEntries) {
+        if (savedLadderIds.has(order.orderId)) {
+          const savedOrder = savedLadderOrders.find(o => o.orderId === order.orderId);
+          orderExecutor.restorePendingOrder(order.orderId, {
+            type: 'ladder_entry',
+            price: savedOrder.price,
+            size: savedOrder.assetQty,
+            sizeUsdc: savedOrder.sizeUsdc,
+            ladderIndex: savedOrder.ladderIndex,
+            placedAt: order.createdTime ? new Date(order.createdTime).getTime() : (savedOrder.placedAt || Date.now()),
+          });
+          restoredLadder++;
+        }
+      }
+
+      // Remove any saved ladder orders that are no longer open on the exchange
+      // — except rungs whose offline catch-up above must be retried.
+      const openOrderIds = new Set(openEntries.map(o => o.orderId));
+      positionState.pendingLadderOrders = savedLadderOrders.filter(
+        o => openOrderIds.has(o.orderId) || failedLadderCatchUpIds.has(o.orderId)
+      );
+
+      cancelledLadder = savedLadderOrders.length - positionState.pendingLadderOrders.length;
+
+      if (positionState.pendingLadderOrders.length === 0) {
+        positionState.ladderActive = false;
+      }
+
+      if (restoredLadder > 0) logger.info(`✅ [${exchange}] Restored ${restoredLadder} pending ladder orders`);
+      if (cancelledLadder > 0) logger.info(`ℹ️ [${exchange}] ${cancelledLadder} saved ladder orders no longer open on exchange`);
+    }
+  };
+
   /**
    * Start the regime engine
    * @returns {Promise<{success: boolean, error?: string}>}
@@ -2522,383 +2914,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Pre-build ladder order ID set so we don't flag them as orphans
       const savedLadderIds = new Set((positionState.pendingLadderOrders || []).map(o => o.orderId));
 
-      // Load corrective buy order IDs to avoid cancelling them as orphans
-      const correctiveBuyIds = new Set();
-      try {
-        const cbPath = require('path').join(resolveFundDataDir(exchange, pair), 'pending-corrective-buys.json');
-        const cbData = JSON.parse(require('fs').readFileSync(cbPath, 'utf8'));
-        for (const cb of cbData) {
-          if (!cb.filled && !cb.cancelled) correctiveBuyIds.add(cb.buyOrderId);
-        }
-      } catch (err) {
-        if (err.code !== 'ENOENT') {
-          logger.error(
-            `[regime-engine] Error reading pending-corrective-buys.json: ${err.message}`,
-            { error: err.message, errorCode: err.code, path: 'pending-corrective-buys.json' }
-          );
-        }
-      }
-
-      // Load manual trade recovery buy order IDs to avoid cancelling them as orphans
-      try {
-        const mtPath = require('path').join(resolveFundDataDir(exchange, pair), 'manual-trades.json');
-        const mtData = JSON.parse(require('fs').readFileSync(mtPath, 'utf8'));
-        for (const mt of (mtData.trades || [])) {
-          if (mt.buyOrderId && mt.status === 'buy_pending') correctiveBuyIds.add(mt.buyOrderId);
-        }
-      } catch (err) {
-        if (err.code !== 'ENOENT') {
-          logger.error(
-            `[regime-engine] Error reading manual-trades.json: ${err.message}`,
-            { error: err.message, errorCode: err.code, path: 'manual-trades.json' }
-          );
-        }
-      }
-
-      let restoredEntries = 0;
-      let orphanedEntries = 0;
-
-      /**
-       * Book the already-filled tranche of an entry that is still open on the
-       * exchange through the standard fill pipeline (issue #671), so it joins
-       * a celestial body, gets a TP, and shrinks the tracked pending entry.
-       * A failure is logged, not thrown: the caller has already restored the
-       * order's executor tracking, so the live poll/WS path books the fills
-       * once the engine is running — and since nothing was ingested here,
-       * that later pass sees every row as new instead of a deduped remainder.
-       * @param {Object} order - Open order from getOpenOrders
-       * @param {number} placedAt - Order placement time (ms)
-       * @param {string} label - Log label for the calling branch
-       * @returns {Promise<void>}
-       */
-      const bookStartupOpenEntryPartial = async (order, placedAt, label) => {
-        const fillArgs = { status: order.status || 'OPEN', isPartialFill: true, placedAt };
-        // Rows no body ever booked were ingested by the pre-#671 startup path.
-        // The normal pass below would dedup them away and build the body from
-        // only the newer tranches, so commit them into a body first, on their
-        // own. Rows a body already booked are settled and never rebooked.
-        const legacyRows = isBuyAlreadyCommitted(positionState.celestialBodies, order.orderId)
-          ? []
-          : fillLedger.getFillsForOrder(order.orderId)
-            .filter(isUnsettledBuyRow);
-        // What this call commits is measured from the order's tranches, so a
-        // throw can shrink the entry by exactly that (issue #756).
-        const tranchesOf = () => (positionState.celestialBodies || [])
-          .flatMap(b => (b.buyOrders || []).filter(bo => bo && bo.orderId === order.orderId));
-        const tranchesBefore = new Set(tranchesOf());
-        const entryBefore = (positionState.pendingEntryOrders || []).find(e => e.orderId === order.orderId);
-        try {
-          if (legacyRows.length > 0) {
-            // A current-cycle order was already counted by the cycleBuys
-            // auto-correct above; a first commit here would count it again.
-            const alreadyCounted = fillLedger.getCurrentCycleFills()
-              .some(f => f.side === 'buy' && f.orderId === order.orderId);
-            const cycleBuysBefore = positionState.cycleBuys;
-            try {
-              await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, {
-                ...fillArgs,
-                filledSize: legacyRows.reduce((sum, f) => sum + Number(f.size || 0), 0),
-                confirmedFills: legacyRows,
-              }));
-            } finally {
-              if (alreadyCounted && positionState.cycleBuys === cycleBuysBefore + 1) {
-                positionState.cycleBuys = cycleBuysBefore;
-              }
-            }
-          }
-          await handleOrderFill(buildPartialFillData(order.orderId, 'buy', order, fillArgs));
-        } catch (err) {
-          logger.error(`❌ [${exchange}] Could not book offline partial fills for ${label} ${order.orderId}: ${err.message} — will pick them up on the next reconcile/poll`, {
-            orderId: order.orderId,
-            error: err.message,
-            incompleteFills: err.incompleteFills === true,
-          });
-          // A throw after a body took a tranche but before the pending entry
-          // shrank would leave the entry at its full notional beside that
-          // body, overstating deployed capital. Shrink it by exactly the
-          // tranches this call committed — not to the exchange's remainder,
-          // which would also subtract tranches that are still unbooked (a
-          // legacy-row pass that committed and then threw leaves the main
-          // pass's tranches to the live path, which shrinks the entry
-          // itself when it books them).
-          if (entryBefore) {
-            const committed = tranchesOf().filter(bo => !tranchesBefore.has(bo));
-            const qty = committed.reduce((sum, bo) => sum + (Number(bo.assetQty) || 0), 0);
-            const cost = committed.reduce((sum, bo) => sum + (Number(bo.sizeUsdc) || 0), 0);
-            positionState.pendingEntryOrders = (positionState.pendingEntryOrders || []).map(e => (
-              e.orderId !== order.orderId ? e : {
-                ...e,
-                assetQty: Math.max(0, (Number(entryBefore.assetQty) || 0) - qty),
-                sizeUsdc: Math.max(0, (Number(entryBefore.sizeUsdc) || 0) - cost),
-              }
-            ));
-          }
-        }
-      };
-
-      for (const order of openEntries) {
-        if (savedOrderIds.has(order.orderId)) {
-          // This is our order - restore tracking instead of canceling
-          const savedEntry = savedPendingEntries.find(e => e.orderId === order.orderId);
-          const restoredPlacedAt = order.createdTime ? new Date(order.createdTime).getTime() : (savedEntry.placedAt || Date.now());
-          orderExecutor.restorePendingOrder(order.orderId, {
-            type: 'entry',
-            price: savedEntry.price,
-            size: savedEntry.assetQty,
-            sizeUsdc: savedEntry.sizeUsdc,
-            placedAt: restoredPlacedAt,
-          });
-          restoredEntries++;
-          logger.info(`🔄 [${exchange}] Restored pending entry: ${order.orderId} @ ${fmtPrice(savedEntry.price)}`);
-
-          // Check if order has any fills while offline (partial fills).
-          // Route them through the standard fill pipeline (issue #671) so the
-          // tranche lands in a celestial body (with a TP) and shrinks the
-          // tracked entry. Ingesting straight into the ledger here left the
-          // tranche in no body: the later terminal fill deduped those rows
-          // and built its body from the new tranche alone.
-          if (order.filledSize && order.filledSize > 0) {
-            logger.info(`✅ [${exchange}] Entry ${order.orderId} has partial fills (${order.filledSize})`);
-            await bookStartupOpenEntryPartial(order, restoredPlacedAt, 'entry');
-          }
-        } else if (correctiveBuyIds.has(order.orderId)) {
-          logger.info(`📋 [${exchange}] Skipping corrective buy order ${order.orderId.slice(0, 8)} (tracked in pending-corrective-buys)`);
-        } else if (!savedLadderIds.has(order.orderId)) {
-          // Check if this "orphan" has partial fills — if so, restore it instead of cancelling
-          if (order.filledSize && order.filledSize > 0) {
-            logger.info(`📦 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} has partial fills (${order.filledSize} ${baseCurrency}) — restoring instead of cancelling`);
-            // Every sibling restorePendingOrder({type: 'entry', ...}) call in
-            // this file sets `size` to the order's ORIGINAL placed quantity
-            // (e.g. savedEntry.assetQty above), not what's left unfilled —
-            // the dashboard reads it as the "of N" denominator alongside
-            // filledSize (RegimeDashboard.jsx: "X of Y filled"). order.size
-            // is now the REMAINING unfilled quantity (issue #684); use
-            // order.originalSize here to match the established convention.
-            const orphanPlacedAt = order.createdTime ? new Date(order.createdTime).getTime() : Date.now();
-            orderExecutor.restorePendingOrder(order.orderId, {
-              type: 'entry',
-              price: order.price,
-              size: order.originalSize,
-              sizeUsdc: order.originalSize * order.price,
-              placedAt: orphanPlacedAt,
-            });
-            // Keep the adopted order in the persisted pending list so it
-            // survives the next restart, then book its filled tranche through
-            // the standard pipeline (issue #671) — which also shrinks this
-            // entry from its original quantity to its unfilled remainder.
-            if (!positionState.pendingEntryOrders) positionState.pendingEntryOrders = [];
-            if (!positionState.pendingEntryOrders.some(e => e.orderId === order.orderId)) {
-              // The orphan-buy recovery above may already have booked some of
-              // it into a body; track only what no body holds (issue #756).
-              const held = (positionState.celestialBodies || [])
-                .flatMap(b => b.buyOrders || [])
-                .filter(bo => bo && bo.orderId === order.orderId);
-              const heldQty = held.reduce((sum, bo) => sum + (Number(bo.assetQty) || 0), 0);
-              const heldCost = held.reduce((sum, bo) => sum + (Number(bo.sizeUsdc) || 0), 0);
-              positionState.pendingEntryOrders.push({
-                orderId: order.orderId,
-                price: order.price,
-                assetQty: Math.max(0, order.originalSize - heldQty),
-                sizeUsdc: Math.max(0, order.originalSize * order.price - heldCost),
-                placedAt: orphanPlacedAt,
-              });
-            }
-            await bookStartupOpenEntryPartial(order, orphanPlacedAt, 'orphan entry');
-            restoredEntries++;
-          } else {
-            // Orphan entry with no fills — cancel it
-            orphanedEntries++;
-            logger.info(`🧹 [${exchange}] Cancelling orphan entry order ${order.orderId} (not tracked by regime engine)`);
-            const cancelResult = await adapter.cancelOrder(order.orderId);
-            if (cancelResult.success) {
-              logger.info(`✅ [${exchange}] Cancelled orphan entry ${order.orderId.slice(0, 8)}`);
-            } else {
-              const orphanStatus = await adapter.getOrder(order.orderId).catch(() => null);
-              if (orphanStatus?.status === 'FILLED') {
-                logger.info(`📋 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} already filled — recovery will process`);
-              } else {
-                logger.warn(
-                  `⚠️ [${exchange}] Failed to cancel orphan entry ${order.orderId.slice(0, 8)}: ${cancelResult.errorMessage || 'unknown'}`,
-                  { orderId: order.orderId, orderType: 'entry', error: cancelResult.errorMessage || 'unknown' }
-                );
-              }
-            }
-          }
-        }
-      }
-
-      if (restoredEntries > 0) {
-        logger.info(`✅ [${exchange}] Restored ${restoredEntries} pending entry orders from state`);
-      }
-      if (orphanedEntries > 0) {
-        logger.info(`🧹 [${exchange}] Cancelled ${orphanedEntries} orphan entry orders`);
-      }
-
-      const allOpenIds = new Set(exchangeOpenOrders.map(o => o.orderId));
-
-      // Catch up fills for saved entries that became terminal during downtime.
-      // The for-loop above only iterates exchangeOpenOrders, so saved entries
-      // that already cleared on the exchange skip its partial-fill ingest path;
-      // without this catch-up they would be purged below with no ledger record.
-      const terminalSavedEntries = savedPendingEntries.filter(e => !allOpenIds.has(e.orderId));
-      // Prefetch statuses in parallel; handleOrderFill is still sequential
-      // since it mutates positionState.
-      const entryStatuses = await Promise.all(
-        terminalSavedEntries.map(e => adapter.getOrder(e.orderId).catch(err => ({ __err: err })))
-      );
-      let caughtUpEntries = 0;
-      // Orders whose catch-up handleOrderFill threw (issue #679's stricter
-      // getOrderFills contract) — must NOT be purged below with no ledger
-      // record. Re-armed via restorePendingOrder (inside catchUpTerminalEntry) so the
-      // next reconcile's checkPendingOrderFills polls this (already-terminal
-      // on the exchange) order again and routes it through the
-      // retry-hardened live polling fill path.
-      const failedCatchUpIds = new Set();
-      for (let i = 0; i < terminalSavedEntries.length; i++) {
-        const savedEntry = terminalSavedEntries[i];
-        const orderStatus = entryStatuses[i];
-        if (!orderStatus || orderStatus.__err) {
-          if (orderStatus?.__err) {
-            logger.warn(
-              `⚠️ [${exchange}] Failed to catch up offline entry ${savedEntry.orderId.slice(0, 8)}: ${orderStatus.__err.message}`,
-              { orderId: savedEntry.orderId, error: orderStatus.__err.message }
-            );
-          }
-          continue;
-        }
-        // Shared with reconcileTick's orphan sweep (issue #764): honors the
-        // saved row's knownFilledSize high-water mark, so a restart during the
-        // exposure window can't misread a real partial as an empty cancel just
-        // because this fresh poll under-reports filledSize. On a throw (issue
-        // #679's stricter getOrderFills contract) it has already re-armed
-        // executor tracking for the SAME orderId and stamped the resolved size
-        // onto the row; keep it in pendingEntryOrders (below) instead of
-        // purging it.
-        const result = await catchUpTerminalEntry(savedEntry, orderStatus, 'entry');
-        if (result.outcome === 'filled') caughtUpEntries++;
-        else if (result.outcome === 'failed') failedCatchUpIds.add(savedEntry.orderId);
-        // 'empty': truly empty cancel, ok to purge below
-      }
-      if (caughtUpEntries > 0) {
-        logger.info(`📥 [${exchange}] Caught up ${caughtUpEntries} offline-terminal entries before purge`);
-      }
-      if (failedCatchUpIds.size > 0) {
-        logger.info(`🔁 [${exchange}] Re-armed ${failedCatchUpIds.size} offline-terminal entries whose fill catch-up failed, for retry`);
-      }
-
-      // Remove saved pending entries that are no longer open on the exchange
-      // (filled or cancelled while engine was offline — fills already ingested above).
-      // A failed catch-up (failedCatchUpIds) is retained even though it is
-      // also not open on the exchange — it needs a retry, not a purge.
-      // Filters the LIVE list, not the savedPendingEntries snapshot: the
-      // handleOrderFill calls above shrank partially-filled entries to their
-      // unfilled remainder and appended adopted orphans (issue #671), and
-      // re-filtering the stale snapshot would silently undo both. A failed
-      // catch-up may have thrown AFTER handleOrderFill already dropped its
-      // entry from the live list, so those are re-added from the snapshot.
-      const livePendingEntries = positionState.pendingEntryOrders || [];
-      const liveIds = new Set(livePendingEntries.map(e => e.orderId));
-      const currentPendingEntries = [
-        ...livePendingEntries,
-        ...savedPendingEntries.filter(e => failedCatchUpIds.has(e.orderId) && !liveIds.has(e.orderId)),
-      ];
-      if (currentPendingEntries.length > 0) {
-        positionState.pendingEntryOrders = currentPendingEntries.filter(
-          e => allOpenIds.has(e.orderId) || failedCatchUpIds.has(e.orderId)
-        );
-        const purged = currentPendingEntries.length - positionState.pendingEntryOrders.length;
-        if (purged > 0) {
-          logger.info(`🧹 [${exchange}] Purged ${purged} stale pending entry orders (filled/cancelled while offline)`);
-        }
-      }
-
-      // Catch up saved ladder rungs that went terminal while offline, the same
-      // way as entries above (issue #764): the restore block below keeps only
-      // rungs still open on the exchange, so without this a rung that filled —
-      // or was cancelled with a partial, possibly recorded only as its
-      // knownFilledSize — would be dropped with nothing booked. A failed
-      // catch-up is retained (re-armed by catchUpTerminalEntry) for the
-      // reconcile sweep to retry, exactly like failedCatchUpIds for entries.
-      const savedLadderSnapshot = positionState.pendingLadderOrders || [];
-      const terminalSavedLadder = savedLadderSnapshot.filter(o => !allOpenIds.has(o.orderId));
-      const failedLadderCatchUpIds = new Set();
-      if (terminalSavedLadder.length > 0) {
-        const ladderStatuses = await Promise.all(
-          terminalSavedLadder.map(o => adapter.getOrder(o.orderId).catch(err => ({ __err: err })))
-        );
-        for (let i = 0; i < terminalSavedLadder.length; i++) {
-          const savedRung = terminalSavedLadder[i];
-          const orderStatus = ladderStatuses[i];
-          if (!orderStatus || orderStatus.__err) {
-            // Unknown status — keep the row rather than drop a possible fill;
-            // the reconcile sweep re-polls it.
-            logger.warn(
-              `⚠️ [${exchange}] Failed to check offline ladder rung ${savedRung.orderId.slice(0, 8)}: ${orderStatus?.__err?.message || 'no status'} — keeping it for the reconcile sweep`,
-              { orderId: savedRung.orderId, orderType: 'ladder_entry', error: orderStatus?.__err?.message }
-            );
-            failedLadderCatchUpIds.add(savedRung.orderId);
-            continue;
-          }
-          if (!isTerminalStatus(orderStatus)) {
-            // Missing from the open-orders snapshot but not terminal (a
-            // listing race) — keep it for the sweep, which re-arms live rungs.
-            failedLadderCatchUpIds.add(savedRung.orderId);
-            continue;
-          }
-          const result = await catchUpTerminalEntry(savedRung, orderStatus, 'ladder_entry');
-          if (result.outcome === 'failed') failedLadderCatchUpIds.add(savedRung.orderId);
-        }
-        // A catch-up that threw after handleOrderFill already dropped the live
-        // row must not lose it — re-add from the snapshot (as entries do).
-        const liveLadderIds = new Set((positionState.pendingLadderOrders || []).map(o => o.orderId));
-        const droppedRetained = savedLadderSnapshot.filter(
-          o => failedLadderCatchUpIds.has(o.orderId) && !liveLadderIds.has(o.orderId)
-        );
-        if (droppedRetained.length > 0) {
-          positionState.pendingLadderOrders = [...(positionState.pendingLadderOrders || []), ...droppedRetained];
-        }
-      }
-
-      // Restore or cancel persisted ladder orders. Gated on the PRE-catch-up
-      // snapshot: a catch-up that booked (and so removed) every rung must still
-      // reach the ladderActive=false reset below, exactly as the old purge of
-      // those same no-longer-open rungs did.
-      const savedLadderOrders = positionState.pendingLadderOrders || [];
-      if (positionState.ladderActive && savedLadderSnapshot.length > 0) {
-        let restoredLadder = 0;
-        let cancelledLadder = 0;
-
-        for (const order of openEntries) {
-          if (savedLadderIds.has(order.orderId)) {
-            const savedOrder = savedLadderOrders.find(o => o.orderId === order.orderId);
-            orderExecutor.restorePendingOrder(order.orderId, {
-              type: 'ladder_entry',
-              price: savedOrder.price,
-              size: savedOrder.assetQty,
-              sizeUsdc: savedOrder.sizeUsdc,
-              ladderIndex: savedOrder.ladderIndex,
-              placedAt: order.createdTime ? new Date(order.createdTime).getTime() : (savedOrder.placedAt || Date.now()),
-            });
-            restoredLadder++;
-          }
-        }
-
-        // Remove any saved ladder orders that are no longer open on the exchange
-        // — except rungs whose offline catch-up above must be retried.
-        const openOrderIds = new Set(openEntries.map(o => o.orderId));
-        positionState.pendingLadderOrders = savedLadderOrders.filter(
-          o => openOrderIds.has(o.orderId) || failedLadderCatchUpIds.has(o.orderId)
-        );
-
-        cancelledLadder = savedLadderOrders.length - positionState.pendingLadderOrders.length;
-
-        if (positionState.pendingLadderOrders.length === 0) {
-          positionState.ladderActive = false;
-        }
-
-        if (restoredLadder > 0) logger.info(`✅ [${exchange}] Restored ${restoredLadder} pending ladder orders`);
-        if (cancelledLadder > 0) logger.info(`ℹ️ [${exchange}] ${cancelledLadder} saved ladder orders no longer open on exchange`);
-      }
+      const correctiveBuyIds = collectStartupBuyExclusions();
+      await restoreStartupOpenEntries(savedPendingEntries, savedOrderIds, savedLadderIds, openEntries, correctiveBuyIds);
+      const allOpenIds = await catchUpStartupSavedEntries(savedPendingEntries, exchangeOpenOrders);
+      await restoreStartupLadderOrders(savedLadderIds, openEntries, allOpenIds);
 
       // Ensure all celestial bodies have TP orders
       // (covers bodies with null tpOrderId from saved state, e.g. after a cancelled TP wasn't re-placed)
