@@ -3888,120 +3888,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Handle order fill
-   * @param {Object} fillData - Fill data
+   * Ingest trade evidence and terminal coverage before booking an order fill.
+   * Keep this synchronous: the cycle snapshot and ledger rows must reach the
+   * buy/sell booking branch without introducing another scheduling boundary.
    */
-  const handleOrderFillImpl = async (fillData, dedupRef) => {
-    // dedupRef is a per-call holder: the buy/sell branches record the inner
-    // dedup key they add ({ set, key }) into it so the wrapper can clear that
-    // key if processing throws. A per-call object (not a shared closure var)
-    // keeps this correct even if two handleOrderFill calls interleave across
-    // awaits (WS vs polling).
-    // An open partial buy must remain in BOTH pending-order stores: the
-    // executor map drives future polls and the position list survives restart.
-    // CANCELLED-with-execution is terminal even when isPartialFill is true.
-    const keepEntryTracked = fillData.isPartialFill
-      && fillData.side?.toLowerCase() === 'buy' && !isTerminalStatus(fillData);
-    // Snapshot the legacy core TP id BEFORE any await (issue #672): a
-    // concurrent fill's resetCycle() nulls positionState.activeTpOrderId, and
-    // the untracked-sell branch below must still recognise this order as the
-    // engine's own TP when deciding whether it may close the cycle.
-    const entryCoreTpOrderId = positionState.activeTpOrderId;
-    // Freeze a partially-filled sell before resizing — see cancelPartialFillOrder.
-    if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'sell') {
-      const cancellation = await cancelPartialFillOrder({ adapter, exchange, pair: productId }, fillData.orderId);
-      if (!cancellation.cancelled) {
-        throw new Error(`Partial TP ${fillData.orderId} cancellation unresolved; retry reconciliation`);
-      }
-      // The sell may have advanced or fully filled while cancellation was in flight.
-      const knownFilledSize = fillData.filledSize || 0;
-      fillData = buildPartialFillData(fillData.orderId, 'sell', cancellation.order, {
-        isPartialFill: !isFilledStatus(cancellation.order),
-        totalFees: cancellation.order.totalFees,
-        source: fillData.source,
-      });
-      // Some exchanges omit cumulative filledSize on a CANCELLED status (the
-      // executor then reports its polled high-water mark instead). Filled size
-      // only grows, so never let the frozen status undercut a size the caller
-      // already knew — the trade-level fill check below still has to match it.
-      const statusOmittedSize = !(parseFloat(cancellation.order.filledSize) > 0);
-      if (!(fillData.filledSize >= knownFilledSize)) fillData.filledSize = knownFilledSize;
-      // Require the final fill set before accounting; never synthesize a stale
-      // partial from the pre-cancel poll while the fills endpoint catches up.
-      const finalFills = await adapter.getOrderFills(fillData.orderId);
-      const finalSize = finalFills.reduce((sum, fill) => sum + Number(fill.size || 0), 0);
-      // With no size on the status, the known size may be only the executor's
-      // polled high-water mark, below the true final fill. The trade-level
-      // fills are then the best evidence — accept them when they cover at
-      // least what was known, or the size check below throws on every retry.
-      if (statusOmittedSize && Number.isFinite(finalSize) && finalSize > 0 && finalSize >= knownFilledSize - 1e-8) {
-        fillData.filledSize = finalSize;
-      }
-      if (!(fillData.filledSize > 0) || !Number.isFinite(finalSize) || Math.abs(finalSize - fillData.filledSize) > 1e-8) {
-        throw new Error(`Partial TP ${fillData.orderId} final fills incomplete; retry reconciliation`);
-      }
-      fillData.confirmedFills = finalFills;
-      // A body TP that executed its whole planned size is a completed TP,
-      // not a partial, even when the exchange reports it CANCELLED (or still
-      // OPEN with a sub-1% sliver, now frozen) and carries no
-      // completionPercentage for isFilledStatus to read. Without this, the
-      // reconcile / startup partial routes force the partial branch: the
-      // designed holdback stays an active body and is re-listed for sale
-      // (issue #744). Same classification as bookTpCancelExecution (#670).
-      if (fillData.isPartialFill) {
-        const tpBody = (positionState.celestialBodies || []).find(b => b.tpOrderId === fillData.orderId);
-        if (isFullTpExecution(tpBody, fillData.filledSize)) fillData.isPartialFill = false;
-      }
-    }
-
-    // getOrderFills now rejects (issue #679) instead of silently returning a
-    // partial/empty set when the order-detail/status lookup fails or the
-    // matched fills fall short of the exchange's own filled quantity. A
-    // throw and an empty array both mean "we could not confirm the real
-    // trade-level fills," so treat them the same: fall through to the
-    // existing empty-rawFills retry, and ultimately the order-status
-    // synthetic-fill fallback below (originally built for Coinbase's
-    // empty-array eventual-consistency case) — that fallback is the
-    // pre-existing safety net for exactly this situation, sourced from
-    // fillData (order status, from a SEPARATE already-succeeded
-    // adapter.getOrder call), never from the failed getOrderFills call.
-    let rawFills;
-    if (fillData.confirmedFills) {
-      rawFills = fillData.confirmedFills;
-    } else {
-      try {
-        rawFills = await adapter.getOrderFills(fillData.orderId);
-      } catch (err) {
-        logger.warn(
-          `⚠️ [${exchange}] getOrderFills failed for ${fillData.orderId}: ${err.message} — will retry once, then fall back to order-status data if it still fails`,
-          { orderId: fillData.orderId, side: fillData.side, error: err.message, incompleteFills: err.incompleteFills === true }
-        );
-        rawFills = [];
-      }
-    }
-
-    // If getOrderFills returned empty (either because it legitimately found no
-    // fills yet, or because it just threw above), but we have fill data from
-    // order status (polling detection), retry once after a short delay -
-    // Coinbase has eventual consistency, and Crypto.com/Gemini's own scan may
-    // need a moment longer than getOrderFills' internal retry budget.
-    if (rawFills.length === 0 && fillData.filledSize > 0) {
-      logger.info(
-        `⏳ [${exchange}] No fills yet for ${fillData.orderId}, retrying in 2s (status shows ${fillData.filledSize} filled)`,
-        { orderId: fillData.orderId, side: fillData.side, filledSize: fillData.filledSize, retryDelayMs: 2000 }
-      );
-      await new Promise(r => setTimeout(r, 2000));
-      try {
-        rawFills = await adapter.getOrderFills(fillData.orderId);
-      } catch (err) {
-        logger.warn(
-          `⚠️ [${exchange}] getOrderFills still failing for ${fillData.orderId} after the retry: ${err.message} — falling back to order-status data`,
-          { orderId: fillData.orderId, side: fillData.side, error: err.message, incompleteFills: err.incompleteFills === true }
-        );
-        rawFills = [];
-      }
-    }
-
+  const ingestOrderFillEvidence = (fillData, rawFills) => {
     // Get order placement time for fill time tracking (entry orders only)
     // Use placedAt from fillData (polling callback) or fall back to order executor lookup
     const orderPlacedAt = fillData.side.toLowerCase() === 'buy'
@@ -4175,6 +4066,128 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         );
       }
     }
+
+    return { ingestCycleId, ingestedFills, fillsToAggregate, isTerminalFill };
+  };
+
+  /**
+   * Handle order fill
+   * @param {Object} fillData - Fill data
+   */
+  const handleOrderFillImpl = async (fillData, dedupRef) => {
+    // dedupRef is a per-call holder: the buy/sell branches record the inner
+    // dedup key they add ({ set, key }) into it so the wrapper can clear that
+    // key if processing throws. A per-call object (not a shared closure var)
+    // keeps this correct even if two handleOrderFill calls interleave across
+    // awaits (WS vs polling).
+    // An open partial buy must remain in BOTH pending-order stores: the
+    // executor map drives future polls and the position list survives restart.
+    // CANCELLED-with-execution is terminal even when isPartialFill is true.
+    const keepEntryTracked = fillData.isPartialFill
+      && fillData.side?.toLowerCase() === 'buy' && !isTerminalStatus(fillData);
+    // Snapshot the legacy core TP id BEFORE any await (issue #672): a
+    // concurrent fill's resetCycle() nulls positionState.activeTpOrderId, and
+    // the untracked-sell branch below must still recognise this order as the
+    // engine's own TP when deciding whether it may close the cycle.
+    const entryCoreTpOrderId = positionState.activeTpOrderId;
+    // Freeze a partially-filled sell before resizing — see cancelPartialFillOrder.
+    if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'sell') {
+      const cancellation = await cancelPartialFillOrder({ adapter, exchange, pair: productId }, fillData.orderId);
+      if (!cancellation.cancelled) {
+        throw new Error(`Partial TP ${fillData.orderId} cancellation unresolved; retry reconciliation`);
+      }
+      // The sell may have advanced or fully filled while cancellation was in flight.
+      const knownFilledSize = fillData.filledSize || 0;
+      fillData = buildPartialFillData(fillData.orderId, 'sell', cancellation.order, {
+        isPartialFill: !isFilledStatus(cancellation.order),
+        totalFees: cancellation.order.totalFees,
+        source: fillData.source,
+      });
+      // Some exchanges omit cumulative filledSize on a CANCELLED status (the
+      // executor then reports its polled high-water mark instead). Filled size
+      // only grows, so never let the frozen status undercut a size the caller
+      // already knew — the trade-level fill check below still has to match it.
+      const statusOmittedSize = !(parseFloat(cancellation.order.filledSize) > 0);
+      if (!(fillData.filledSize >= knownFilledSize)) fillData.filledSize = knownFilledSize;
+      // Require the final fill set before accounting; never synthesize a stale
+      // partial from the pre-cancel poll while the fills endpoint catches up.
+      const finalFills = await adapter.getOrderFills(fillData.orderId);
+      const finalSize = finalFills.reduce((sum, fill) => sum + Number(fill.size || 0), 0);
+      // With no size on the status, the known size may be only the executor's
+      // polled high-water mark, below the true final fill. The trade-level
+      // fills are then the best evidence — accept them when they cover at
+      // least what was known, or the size check below throws on every retry.
+      if (statusOmittedSize && Number.isFinite(finalSize) && finalSize > 0 && finalSize >= knownFilledSize - 1e-8) {
+        fillData.filledSize = finalSize;
+      }
+      if (!(fillData.filledSize > 0) || !Number.isFinite(finalSize) || Math.abs(finalSize - fillData.filledSize) > 1e-8) {
+        throw new Error(`Partial TP ${fillData.orderId} final fills incomplete; retry reconciliation`);
+      }
+      fillData.confirmedFills = finalFills;
+      // A body TP that executed its whole planned size is a completed TP,
+      // not a partial, even when the exchange reports it CANCELLED (or still
+      // OPEN with a sub-1% sliver, now frozen) and carries no
+      // completionPercentage for isFilledStatus to read. Without this, the
+      // reconcile / startup partial routes force the partial branch: the
+      // designed holdback stays an active body and is re-listed for sale
+      // (issue #744). Same classification as bookTpCancelExecution (#670).
+      if (fillData.isPartialFill) {
+        const tpBody = (positionState.celestialBodies || []).find(b => b.tpOrderId === fillData.orderId);
+        if (isFullTpExecution(tpBody, fillData.filledSize)) fillData.isPartialFill = false;
+      }
+    }
+
+    // getOrderFills now rejects (issue #679) instead of silently returning a
+    // partial/empty set when the order-detail/status lookup fails or the
+    // matched fills fall short of the exchange's own filled quantity. A
+    // throw and an empty array both mean "we could not confirm the real
+    // trade-level fills," so treat them the same: fall through to the
+    // existing empty-rawFills retry, and ultimately the order-status
+    // synthetic-fill fallback below (originally built for Coinbase's
+    // empty-array eventual-consistency case) — that fallback is the
+    // pre-existing safety net for exactly this situation, sourced from
+    // fillData (order status, from a SEPARATE already-succeeded
+    // adapter.getOrder call), never from the failed getOrderFills call.
+    let rawFills;
+    if (fillData.confirmedFills) {
+      rawFills = fillData.confirmedFills;
+    } else {
+      try {
+        rawFills = await adapter.getOrderFills(fillData.orderId);
+      } catch (err) {
+        logger.warn(
+          `⚠️ [${exchange}] getOrderFills failed for ${fillData.orderId}: ${err.message} — will retry once, then fall back to order-status data if it still fails`,
+          { orderId: fillData.orderId, side: fillData.side, error: err.message, incompleteFills: err.incompleteFills === true }
+        );
+        rawFills = [];
+      }
+    }
+
+    // If getOrderFills returned empty (either because it legitimately found no
+    // fills yet, or because it just threw above), but we have fill data from
+    // order status (polling detection), retry once after a short delay -
+    // Coinbase has eventual consistency, and Crypto.com/Gemini's own scan may
+    // need a moment longer than getOrderFills' internal retry budget.
+    if (rawFills.length === 0 && fillData.filledSize > 0) {
+      logger.info(
+        `⏳ [${exchange}] No fills yet for ${fillData.orderId}, retrying in 2s (status shows ${fillData.filledSize} filled)`,
+        { orderId: fillData.orderId, side: fillData.side, filledSize: fillData.filledSize, retryDelayMs: 2000 }
+      );
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        rawFills = await adapter.getOrderFills(fillData.orderId);
+      } catch (err) {
+        logger.warn(
+          `⚠️ [${exchange}] getOrderFills still failing for ${fillData.orderId} after the retry: ${err.message} — falling back to order-status data`,
+          { orderId: fillData.orderId, side: fillData.side, error: err.message, incompleteFills: err.incompleteFills === true }
+        );
+        rawFills = [];
+      }
+    }
+
+    const { ingestCycleId, ingestedFills, isTerminalFill, fillsToAggregate: evidenceFills } =
+      ingestOrderFillEvidence(fillData, rawFills);
+    let fillsToAggregate = evidenceFills;
 
     // Determine if buy or sell
     if (fillData.side.toLowerCase() === 'buy') {
