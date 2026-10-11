@@ -33,6 +33,24 @@ const { getRegimeConfig } = require('./config-utils');
 /** Logger used when a caller supplies none (tests, CLI paths). */
 const NOOP_LOGGER = { info: () => {}, warn: () => {}, error: () => {} };
 
+/**
+ * Canonical product key for comparing a fund's configured productId against
+ * the identity an exchange reports on a fill/order (issue #1023). Exchanges
+ * spell the same market differently (Coinbase `BTC-USDC`, Crypto.com
+ * `BTC_USDC`, Gemini `btcusd`), so each is folded to its own canonical form —
+ * but the quote currency is never dropped or merged, so USD and USDC (or EUR)
+ * markets stay distinct. Gemini is the one deliberate alias: its adapter
+ * maps a `-USDC` fund product onto the `usd` symbol.
+ */
+const canonicalProduct = (exchange, productId) => {
+  const raw = String(productId ?? '').trim();
+  if (!raw) return '';
+  if (exchange === 'gemini') return raw.toLowerCase().replace(/[-_/]/g, '').replace('usdc', 'usd');
+  return raw.toUpperCase().replace(/[-_/]/g, '-');
+};
+
+const lc = (value) => String(value).toLowerCase();
+
 const toLedgerFill = (raw, orderId, defaultSide) => ({
   tradeId: raw.tradeId,
   orderId,
@@ -199,8 +217,62 @@ const createManualTradeImporter = ({
   const ok = (extra) => ({ success: true, exchange, pair, ...extra });
   const fail = (error) => ({ success: false, error });
 
+  const expectedProduct = () => fundConfig?.productId || 'BTC-USDC';
+
   /**
-   * Fetch one order's fills, normalizing both failure modes to `{ error }`.
+   * Check that an order and its fills really are the requested role (buy/sell)
+   * of THIS fund's product (issue #1023). Runs before any ledger/store
+   * mutation or order placement. Per-fill identity is checked when present;
+   * when any fill omits side/product/order id, the authoritative order record
+   * (`metadata`, else adapter.getOrder) must supply and match it. Identity that
+   * cannot be established fails closed — it is never assumed from the request.
+   *
+   * @param {Object[]|null} fills - Adapter fills for the order (null to check metadata alone)
+   * @param {string} orderId - Requested exchange order id
+   * @param {'buy'|'sell'} role - Side the operator says this order is
+   * @param {Object} [metadata] - Already-fetched order record, if the caller has one
+   * @returns {Promise<string|null>} Error message, or null when identity is verified
+   */
+  const verifyOrderIdentity = async (fills, orderId, role, metadata) => {
+    const wantProduct = canonicalProduct(exchange, expectedProduct());
+    const wrongSide = (side) => `Order ${orderId} is a ${lc(side)} order, not a ${role}`;
+    const wrongProduct = (product) => `Order ${orderId} is for product ${product}, not this fund's ${expectedProduct()}`;
+    let needsMetadata = !fills || fills.length === 0;
+
+    for (const raw of fills || []) {
+      if (raw.orderId == null || raw.orderId === '') needsMetadata = true;
+      else if (String(raw.orderId) !== String(orderId)) {
+        return `Fill ${raw.tradeId ?? 'unknown'} belongs to order ${raw.orderId}, not requested order ${orderId}`;
+      }
+      if (!raw.side) needsMetadata = true;
+      else if (lc(raw.side) !== role) return wrongSide(raw.side);
+      if (!raw.productId) needsMetadata = true;
+      else if (canonicalProduct(exchange, raw.productId) !== wantProduct) return wrongProduct(raw.productId);
+    }
+    if (!needsMetadata) return null;
+
+    let order = metadata;
+    if (!order) {
+      try {
+        order = await adapter.getOrder(orderId);
+      } catch (err) {
+        return `Cannot verify identity of order ${orderId}: ${err.message}`;
+      }
+    }
+    if (order?.orderId && String(order.orderId) !== String(orderId)) {
+      return `Order lookup returned ${order.orderId}, not requested order ${orderId}`;
+    }
+    if (!order?.side || !order?.productId) {
+      return `Cannot verify side/product of order ${orderId}: exchange returned no identity`;
+    }
+    if (lc(order.side) !== role) return wrongSide(order.side);
+    if (canonicalProduct(exchange, order.productId) !== wantProduct) return wrongProduct(order.productId);
+    return null;
+  };
+
+  /**
+   * Fetch one order's fills and verify its identity, normalizing every failure
+   * mode to `{ error }`.
    * @returns {Promise<{ fills?: Object[], error?: string }>}
    */
   const fetchOrderFills = async (orderId, side) => {
@@ -211,6 +283,8 @@ const createManualTradeImporter = ({
       return { error: `Failed to fetch ${side} order fills: ${err.message}` };
     }
     if (!fills || fills.length === 0) return { error: `No fills found for ${side} order ${orderId}` };
+    const mismatch = await verifyOrderIdentity(fills, orderId, side);
+    if (mismatch) return { error: mismatch };
     return { fills };
   };
 
@@ -249,6 +323,12 @@ const createManualTradeImporter = ({
 
     const invalidSell = validateAdapterFills(sellFills, sellOrderId, 'sell');
     if (invalidSell) return fail(invalidSell);
+    // A linked existing buy must really be a buy of this fund's product before
+    // anything is persisted (issue #1023).
+    if (existingBuyOrderId) {
+      const invalidLink = await verifyOrderIdentity(null, existingBuyOrderId, 'buy');
+      if (invalidLink) return fail(invalidLink);
+    }
     const { tradeIds, totalSize, totalQuote } = ingestAdapterFills(fillLedger, sellFills, sellOrderId, 'sell');
     fillLedger.persist();
 
@@ -503,6 +583,8 @@ const createManualTradeImporter = ({
     if (filled && buyFills.length === 0) {
       return checkFailed(`Buy order filled but no fills found for order ${buyOrderId}`);
     }
+    const mismatch = await verifyOrderIdentity(buyFills, buyOrderId, 'buy', orderStatus);
+    if (mismatch) return checkFailed(mismatch);
     const invalidBuy = validateAdapterFills(buyFills, buyOrderId, 'buy');
     if (invalidBuy) return checkFailed(invalidBuy);
     const visibleSize = buyFills.reduce((sum, f) => sum + f.size, 0);

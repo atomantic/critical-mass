@@ -22,7 +22,7 @@ const createLedger = () => {
   delete require.cache[require.resolve('../src/fill-ledger')];
   return require('../src/fill-ledger').createFillLedger(EXCHANGE, PAIR, PAIR);
 };
-const real = (tradeId, size, price, fee = 0) => ({ tradeId, orderId: 'buy', side: 'buy', size, price, netFee: fee });
+const real = (tradeId, size, price, fee = 0) => ({ tradeId, orderId: 'buy', productId: PAIR, side: 'buy', size, price, netFee: fee });
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-7, `${actual} != ${expected}`);
 const position = () => state.loadRegimeState(EXCHANGE, PAIR).position;
 
@@ -273,7 +273,7 @@ describe('terminal buy economic reconciliation (#836)', () => {
     const store = createManualTradeStore(EXCHANGE, PAIR);
     const trade = store.addManualBuy({ buyOrderId: 'buy', buySize: 1, buyPrice: 100, buyQuoteAmount: 100 });
     store.markTpPlaced(trade.id, 'body');
-    const importer = createManualTradeImporter({ exchange: EXCHANGE, pair: PAIR, store,
+    const importer = createManualTradeImporter({ exchange: EXCHANGE, pair: PAIR, fundConfig: { productId: PAIR }, store,
       fillLedger: ledger, adapter: { getOrderFills: async () => [{ ...real('actual', 1, 110), tradeTime: new Date().toISOString() }] },
       injectBody: async () => assert.fail('must preserve owned quantity'),
       extendBody: async () => assert.fail('cost-only correction must not grow the body'),
