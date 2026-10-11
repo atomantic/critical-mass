@@ -654,6 +654,10 @@ const wireManualTradeImport = (channel, method) => {
     } catch (err) {
       return { success: false, error: err.message };
     }
+    // Heal body creations a crash or failed publication interrupted (issue
+    // #1022) before any new import work. Failures are logged by the importer
+    // and leave the intent pending for the next request.
+    await importer.recoverPendingBodyIntents();
     return importer[method](payload || {});
   });
 };
