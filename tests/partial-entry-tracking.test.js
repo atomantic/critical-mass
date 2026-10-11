@@ -38,7 +38,7 @@ adapters.getAdapter = () => ({
 });
 
 
-const { createRegimeEngine } = require('../src/regime-engine');
+const { createRegimeEngine, collectBuyBookingBatch, boundRecoveredBuyRows } = require('../src/regime-engine');
 const { createOrderExecutor } = require('../src/order-executor');
 
 const TEST_PAIR = '__testpartial__';
@@ -345,5 +345,74 @@ describe('position coverage check', () => {
     await eng._test.sweepLedgerDrift();
 
     assert.equal(eng._test.getPositionCoverage().unmodelled, 0);
+  });
+});
+
+describe('advancing buy retries book every unbooked tranche (#1021)', () => {
+  const row = (tradeId, size, extra = {}) => ({ tradeId, orderId: 'o', side: 'buy', size, quoteAmount: size * 2000, netFee: 0, ...extra });
+
+  it('unions still-unbooked ledger rows with this pass, each identity once', () => {
+    const booked = row('a', 0.01, { bodyId: 'body-1', isBodyOwned: true });
+    const retained = row('b', 0.01);
+    const fresh = row('c', 0.01);
+    const batch = collectBuyBookingBatch([booked, retained, fresh], [fresh]);
+    assert.deepEqual(batch.map(f => f.tradeId), ['b', 'c']);
+    // A synthetic-coverage allocation shares its covered row's id: an unbooked
+    // covered row is booked whole, a booked one is never re-added.
+    const covered = row('synthetic-o-0.02', 0.02);
+    const allocation = { ...covered, size: 0.01, syntheticCoverageAllocation: true };
+    assert.deepEqual(collectBuyBookingBatch([covered], [allocation]).map(f => f.size), [0.02]);
+    const sellLinked = row('legacy', 0.01, { sellOrderId: 'tp-1' });
+    const keptAllocation = { ...sellLinked, syntheticCoverageAllocation: true };
+    assert.deepEqual(collectBuyBookingBatch([sellLinked], [keptAllocation]), [keptAllocation]);
+  });
+
+  it('recovers earlier rows of an owned order only when its tranches confirm them missing', () => {
+    const body = { buyOrders: [{ orderId: 'o', assetQty: 0.01 }] };
+    const batch = [row('b', 0.01), row('c', 0.01)];
+    const consumption = (size) => ({ size, consumedQty: undefined });
+    // Ledger 0.03, tranches 0.01: 0.02 missing — B and C both book.
+    assert.equal(boundRecoveredBuyRows(batch, [batch[1]], [body], 'o', consumption(0.03)).batch.length, 2);
+    // Ledger 0.02, tranches 0.01: only C's 0.01 is missing — B is withheld.
+    const bounded = boundRecoveredBuyRows(batch, [batch[1]], [body], 'o', consumption(0.02));
+    assert.deepEqual(bounded.batch.map(f => f.tradeId), ['c']);
+    assert.equal(bounded.withheldQty, 0.01);
+    // A body referencing the order without a tranche quantity is unmeasurable.
+    const unmeasured = boundRecoveredBuyRows(batch, [batch[1]], [{ sourceOrderIds: ['o'] }], 'o', consumption(0.03));
+    assert.deepEqual(unmeasured.batch.map(f => f.tradeId), ['c']);
+    // No live owner: nothing to double-count against.
+    assert.equal(boundRecoveredBuyRows(batch, [batch[1]], [], 'o', consumption(0.03)).batch.length, 2);
+  });
+
+  it('shrinks a partially filled ladder rung by the recovered tranche too', async () => {
+    const orderId = 'ladder-advancing-retry';
+    let failCancel = false;
+    let tp = 0;
+    const eng = makeEngine({ getOrder: async () => ({ status: 'OPEN', filledSize: 0 }) }, {
+      cancelBodyTpOrder: async () => {
+        if (failCancel) { failCancel = false; throw new Error('cancel transiently failed'); }
+        return { cancelled: true };
+      },
+      placeBodyTpOrder: async () => ({ success: true, orderId: `${orderId}-tp-${++tp}` }),
+      isLadderOrder: id => id === orderId,
+    });
+    const pos = eng._getPositionState();
+    pos.pendingLadderOrders = [{ orderId, ladderIndex: 0, price: 2500, assetQty: 0.04, sizeUsdc: 100.2, placedAt: Date.now() }];
+    const fills = ['a', 'b', 'c'].map(id => buyFill(orderId, `${orderId}-${id}`, 0.01, 2500));
+    const partial = (count) => ({ orderId, side: 'buy', status: 'PARTIALLY_FILLED', isPartialFill: true,
+      filledSize: Number((count * 0.01).toFixed(8)), averageFilledPrice: 2500, confirmedFills: fills.slice(0, count) });
+
+    await eng._test.handleOrderFill(partial(1));
+    failCancel = true;
+    await assert.rejects(eng._test.handleOrderFill(partial(2)), /cancel transiently failed/);
+    await eng._test.handleOrderFill(partial(3));
+
+    const rung = pos.pendingLadderOrders.find(o => o.orderId === orderId);
+    assert.ok(Math.abs(rung.assetQty - 0.01) < 1e-8, `rung remainder ${rung.assetQty}`);
+    // Three tranches of $25 plus $0.05 commission each.
+    assert.ok(Math.abs(rung.sizeUsdc - 25.05) < 1e-8, `rung cost remainder ${rung.sizeUsdc}`);
+    const owner = pos.celestialBodies.find(b => b.buyOrders.some(bo => bo.orderId === orderId));
+    assert.ok(Math.abs(owner.assetQty - 0.03) < 1e-8, `body quantity ${owner.assetQty}`);
+    assert.equal(pos.cycleBuys, 1);
   });
 });

@@ -214,6 +214,29 @@ const isBuyAlreadyCommitted = (bodies, orderId) =>
 const isUnsettledBuyRow = (f) => f.side === 'buy' && !(f.bodyId || f.isBodyOwned || f.isSatellite || f.sellOrderId);
 
 /**
+ * The rows one buy-booking pass commits to a body (issue #1021): every
+ * still-unbooked ledger row of the order — including a row an earlier,
+ * failed attempt ingested but never booked — plus this pass's bookable rows
+ * (new executions, and synthetic-coverage allocations), each identity once.
+ * An allocation shares its covered row's tradeId; when the ledger still
+ * reports that row unbooked, the whole row is the outstanding quantity.
+ * Rows a body already booked are excluded, so a replay stays idempotent.
+ * @param {Array<Object>} ledgerRows - fillLedger.getFillsForOrder(orderId)
+ * @param {Array<Object>} ingestedRows - This pass's bookable rows
+ * @returns {Array<Object>}
+ */
+const collectBuyBookingBatch = (ledgerRows, ingestedRows) => {
+  const batch = (ledgerRows || []).filter(isUnsettledBuyRow);
+  const seen = new Set(batch.map(f => f.tradeId));
+  for (const f of (ingestedRows || [])) {
+    if (seen.has(f.tradeId)) continue;
+    seen.add(f.tradeId);
+    batch.push(f);
+  }
+  return batch;
+};
+
+/**
  * How much of a buy order the live bodies' tranches fail to account for
  * (issue #756). A body records every tranche it books from an order as a
  * `buyOrders` entry, and a sale never shrinks that entry (it advances its
@@ -265,6 +288,38 @@ const measureUnbookedOrderQty = (bodies, orderId, ledger) => {
   const consumedElsewhere = Math.max(0, (Number(ledger?.consumedQty) || 0) - trancheConsumed);
   const shortfall = (Number(ledger?.size) || 0) - trancheQty - consumedElsewhere;
   return { owned, measurable, trancheQty, trancheCost, shortfall };
+};
+
+/**
+ * Bound the earlier, still-unbooked rows an advancing buy pass recovers
+ * alongside its new executions (issue #1021) by the bodies' own accounting.
+ * For an order a live body already owns, an unannotated row is only proof
+ * of a missing tranche when the order's ledger size minus what live
+ * tranches hold and what gone bodies consumed (measureUnbookedOrderQty)
+ * covers the whole batch. Otherwise — or when the owner's share cannot be
+ * measured — the pass books only this pass's own rows, as before, and the
+ * withheld rows are left for an operator or the startup recovery (#756).
+ * An order no live body owns has no tranche to double-count against.
+ * @param {Array<Object>} batch - collectBuyBookingBatch result
+ * @param {Array<Object>} ingestedRows - This pass's bookable rows
+ * @param {Array<Object>} bodies - positionState.celestialBodies
+ * @param {string} orderId - Buy order id
+ * @param {Object|null} consumption - fillLedger.getBuyOrderConsumption(orderId)
+ * @returns {{batch: Array<Object>, withheldQty: number, shortfall?: number}}
+ */
+const boundRecoveredBuyRows = (batch, ingestedRows, bodies, orderId, consumption) => {
+  const ingestedIds = new Set((ingestedRows || []).map(f => f.tradeId));
+  const recovered = batch.filter(f => !ingestedIds.has(f.tradeId));
+  if (recovered.length === 0 || ingestedIds.size === 0) return { batch, withheldQty: 0 };
+  const measure = measureUnbookedOrderQty(bodies, orderId, consumption);
+  if (!measure.owned) return { batch, withheldQty: 0 };
+  const qty = rows => rows.reduce((sum, f) => sum + (Number(f.size) || 0), 0);
+  if (measure.measurable && qty(batch) <= measure.shortfall + 1e-8) return { batch, withheldQty: 0 };
+  return {
+    batch: batch.filter(f => ingestedIds.has(f.tradeId)),
+    withheldQty: roundAsset(qty(recovered)),
+    shortfall: measure.measurable ? roundAsset(measure.shortfall) : undefined,
+  };
 };
 
 /**
@@ -4125,8 +4180,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // downstream "advancing partial" handling ADDS summary.totalSize
       // onto the EXISTING body's assetQty, mirroring the success path
       // where ingestedFills already contains only the NEW delta —
-      // aggregating the stale rows too would double-count what they
-      // already contributed when first ingested. Also count it in
+      // aggregating the already-BOOKED rows too would double-count what
+      // they contributed when first booked. (The buy branch still adds
+      // rows that were never booked — collectBuyBookingBatch, #1021.) Also count it in
       // ingestedFills — gates shouldSkipBuyRecommit below, so an order a
       // body already owns is not treated as "nothing new" when this gap
       // fill is exactly the new thing.
@@ -4313,21 +4369,41 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Rows no body booked yet (if any) are still booked on their own. This
       // also recovers an excess row persisted before a prior body-booking
       // attempt failed, even when another tranche of the order already owns
-      // a live body.
-      const unsettledBuyFills = fillsToAggregate.filter(isUnsettledBuyRow);
-      if (ingestedFills.length === 0) {
-        if (unsettledBuyFills.length === 0
-          && !isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId)) {
-          logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} holds only tranches a retired body already settled and no new fills — nothing to book`);
-          if (!keepEntryTracked) {
-            retireTrackedEntry(fillData.orderId);
-            orderExecutor.handleOrderFill(fillData.orderId);
-          }
-          return;
-        }
-        if (unsettledBuyFills.length > 0) fillsToAggregate = unsettledBuyFills;
+      // a live body — and even when this pass ALSO brought new executions:
+      // the batch is every unbooked row plus this pass's bookable rows, never
+      // just this pass's delta, or a retry that arrives with a newer
+      // execution books only that and strands the earlier tranche (#1021).
+      // Frozen here, before any await; per-order serialization (the
+      // handleOrderFill wrapper) keeps a second pass from claiming it too.
+      const {
+        batch: bookingBatch, withheldQty, shortfall: measuredShortfall,
+      } = boundRecoveredBuyRows(
+        collectBuyBookingBatch(fillLedger.getFillsForOrder(fillData.orderId), ingestedFills),
+        ingestedFills, positionState.celestialBodies, fillData.orderId,
+        fillLedger.getBuyOrderConsumption(fillData.orderId)
+      );
+      if (withheldQty > 0) {
+        logger.warn(`⚠️ [${exchange}] Buy ${fillData.orderId}: ${withheldQty} ${baseCurrency} of earlier unannotated rows not recovered — its bodies' tranches do not confirm them missing (shortfall ${measuredShortfall ?? 'unmeasurable'}); booking only this pass's new fills`, {
+          orderId: fillData.orderId, withheldQty, shortfall: measuredShortfall,
+        });
       }
-      const hasBookableBuyFills = ingestedFills.length > 0 || unsettledBuyFills.length > 0;
+      if (bookingBatch.length === 0
+        && !isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId)) {
+        logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} holds only tranches a retired body already settled and no new fills — nothing to book`);
+        if (!keepEntryTracked) {
+          retireTrackedEntry(fillData.orderId);
+          orderExecutor.handleOrderFill(fillData.orderId);
+        }
+        return;
+      }
+      if (bookingBatch.length > 0) fillsToAggregate = bookingBatch;
+      const hasBookableBuyFills = bookingBatch.length > 0;
+      const bookedTradeIds = new Set(bookingBatch.map(f => f.tradeId));
+      // Link only rows this pass committed (plus rows a body already owns, so
+      // the order-level annotation stays uniform): a row of the order that is
+      // still unbooked and outside the batch must stay recoverable.
+      const linkBookedBuyRows = (metadata) => fillLedger.annotateFillsByOrderIds([fillData.orderId], metadata,
+        { include: f => bookedTradeIds.has(f.tradeId) || !isUnsettledBuyRow(f) });
 
       // Buy-fill dedup across WS vs polling. Without it, a buy detected by both
       // the polling path (which starts the multi-hundred-ms handleOrderFill
@@ -4433,11 +4509,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // auto-correct (folding by timestamp against activeCycleStartedAt)
         // never folds them in because they predate the cycle boundary —
         // cycleBuys silently drops by one and maxCycleBuys loosens (#774).
-        // Comparing `f.cycleId === ingestCycleId` below already matches
-        // null-tagged rows correctly when ingestCycleId is null, so only the
-        // guard needed the `ingestCycleId &&` requirement dropped.
+        // The `f.cycleId !== liveCycleId` test below moves null-tagged rows
+        // like any other row from outside the live cycle.
+        //
+        // A tranche an earlier, failed attempt ingested can carry an even
+        // older cycle than this pass's ingest (#1021); it books into the live
+        // cycle's body just the same, so it moves with the rest.
         const liveCycleId = fillLedger.getCurrentCycleId();
-        if (liveCycleId && liveCycleId !== ingestCycleId) {
+        if (liveCycleId && fillsToAggregate.some(f => f.side === 'buy' && f.cycleId !== liveCycleId)) {
           // An advancing partial of an already-owned order skipped the
           // increment above (counted in the closed cycle); if the new cycle
           // has no row of it yet, this move makes it one of that cycle's buy
@@ -4446,15 +4525,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             .some(f => f.side === 'buy' && f.orderId === fillData.orderId);
           let moved = 0;
           for (const f of fillsToAggregate) {
-            if (f.side === 'buy' && f.cycleId === ingestCycleId && f.tradeId) {
+            if (f.side === 'buy' && f.cycleId !== liveCycleId && f.tradeId) {
               fillLedger.updateFillCycleId(f.tradeId, liveCycleId);
               moved++;
             }
           }
           if (moved > 0 && orderAlreadyOwned && !liveHadOrder) positionState.cycleBuys += 1;
           if (moved > 0) {
-            logger.info(`🔀 [${exchange}] Cycle turned over while buy ${fillData.orderId} was booking — moved ${moved} fill(s) ${ingestCycleId} → ${liveCycleId}`, {
-              orderId: fillData.orderId, fromCycleId: ingestCycleId, toCycleId: liveCycleId, moved,
+            logger.info(`🔀 [${exchange}] Buy ${fillData.orderId} booked into cycle ${liveCycleId} — moved ${moved} fill(s) from an earlier cycle (ingested under ${ingestCycleId})`, {
+              orderId: fillData.orderId, ingestCycleId, toCycleId: liveCycleId, moved,
             });
           }
         }
@@ -4619,8 +4698,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const idx = positionState.celestialBodies.findIndex(b => b.id === merged.id);
         if (idx !== -1) positionState.celestialBodies[idx] = merged;
 
-        // Annotate merged buy fills with body metadata (matches new-body annotation at line ~1903)
-        fillLedger.annotateFillsByOrderId(fillData.orderId, { isBodyOwned: true, bodyId: merged.id, bodyTier: merged.tier });
+        // Annotate merged buy fills with body metadata (matches the new-body annotation below)
+        linkBookedBuyRows({ isBodyOwned: true, bodyId: merged.id, bodyTier: merged.tier });
 
         // Check for cascading promotions
         celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
@@ -4671,6 +4750,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Sync aggregate fields
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
+        // Annotate buy fills with body metadata — atomic with the body push,
+        // BEFORE the TP await, so a rejected placement cannot leave the
+        // committed batch reading as unbooked and rebook it on retry (#1021).
+        linkBookedBuyRows({ isBodyOwned: true, bodyId: body.id, bodyTier: body.tier });
+
         // Commit the buy counter NOW — atomic with the body push, BEFORE the TP
         // await below (issue #131/#132 P3). A placeBodyTp rejection after this
         // leaves the body owning the orderId so the gated guard skips the retry
@@ -4685,9 +4769,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
         const tierCfg = celestialHierarchy.getTierConfig(body.tier);
         logger.info(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy filled → created ${body.tier} body: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, body=${body.id.slice(-8)}`);
-
-        // Annotate buy fills with body metadata
-        fillLedger.annotateFillsByOrderId(fillData.orderId, { isBodyOwned: true, bodyId: body.id, bodyTier: body.tier });
 
         tradeEvents.emitTradeEvent('buy_filled', exchange, `${fillTypeLabel}${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)} [new ${body.tier}]`, {
           assetAmount: summary.totalSize,
@@ -4720,19 +4801,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // original full size there double-counts the tranche already committed to
       // a body and under-reports availableCapital until the remainder fills.
       const entryIsTerminal = !keepEntryTracked;
-      // Shrink by what this pass actually booked. `summary` covers only the new
-      // fills when `ingestedFills` is non-empty, but falls back to ALL of the
-      // order's fills otherwise — and on the synthetic-fill path that fallback
-      // is reachable for a second partial (the synthetic row is ingested for
-      // partial 1, so nothing is "new", yet no body owns the order and
-      // shouldSkipBuyRecommit does not intercept). Subtracting the cumulative
-      // size from an already-shrunk entry would double-count the first tranche.
-      const bookedSize = ingestedFills.length > 0
-        ? ingestedFills.reduce((sum, f) => sum + (f.size || 0), 0)
-        : summary.totalSize;
-      const bookedCost = ingestedFills.length > 0
-        ? ingestedFills.reduce((sum, f) => sum + (f.size || 0) * (f.price || 0) + (f.netFee || 0), 0)
-        : summary.totalValue + summary.totalFees;
+      // Shrink by exactly what this pass committed to a body: `summary` is the
+      // booking batch — unbooked rows only, so a tranche an earlier pass
+      // already shrank the entry for is never subtracted twice, and one an
+      // earlier failed attempt left unbooked is subtracted now (#1021).
+      const bookedSize = summary.totalSize;
+      const bookedCost = summary.totalValue + summary.totalFees;
       const shrinkTracked = (orders) => orders.map(o => (o.orderId !== fillData.orderId ? o : {
         ...o,
         assetQty: Math.max(0, (o.assetQty || 0) - bookedSize),
@@ -5621,15 +5695,39 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // withFillGate increments the in-flight fill count (so dust consolidation
       // will not START a merge mid-fill) and waits out an already-running merge
       // (#196). Deadlock-free because withMergeLock never consults the fill gate.
-      return await engineLocks.withFillGate(
+      return await serializeBuyBooking(fillData, () => engineLocks.withFillGate(
         () => handleOrderFillImpl(fillData, dedupRef),
         { exchange, orderId: fillData.orderId }
-      );
+      ));
     } catch (err) {
       if (dedupRef.set) dedupRef.set.delete(dedupRef.key);
       throw err;
     }
   });
+
+  /**
+   * Run buy passes for one exchange order one at a time (issue #1021). A
+   * buy pass books every still-unbooked row of its order, frozen before its
+   * first await (the merge-target TP cancel); a second pass for the same
+   * order starting inside that window would claim the same rows and book
+   * them twice. Queued behind it instead, it sees them booked and takes only
+   * what is still outstanding — including the batch of a pass that failed.
+   * Sells and other orders are not queued. A buy pass never awaits another
+   * buy pass of its own order, so the chain cannot deadlock.
+   */
+  const buyBookingQueues = new Map();
+  const serializeBuyBooking = (fillData, run) => {
+    const orderId = fillData?.orderId;
+    if (!orderId || String(fillData.side).toLowerCase() !== 'buy') return run();
+    const prior = buyBookingQueues.get(orderId) || Promise.resolve();
+    const pass = prior.then(run);
+    const settled = pass.then(() => {}, () => {});
+    buyBookingQueues.set(orderId, settled);
+    settled.then(() => {
+      if (buyBookingQueues.get(orderId) === settled) buyBookingQueues.delete(orderId);
+    });
+    return pass;
+  };
 
   /**
    * Cancel a body's TP so the caller can re-place it (operator TP edit,
@@ -9821,6 +9919,8 @@ module.exports = {
   resolveEntryBudget,
   isBuyAlreadyCommitted,
   isUnsettledBuyRow,
+  collectBuyBookingBatch,
+  boundRecoveredBuyRows,
   measureUnbookedOrderQty,
   shouldSkipBuyRecommit,
   isStrandedDustBody,
