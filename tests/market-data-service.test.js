@@ -2029,6 +2029,7 @@ describe('service.start() cold-start fill-ledger corruption', () => {
     // Restore in afterEach so a failed assertion mid-test can't leak the
     // module-level patch into later tests in this file/run.
     migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it('service.start() returns {success:false} on corrupt cold-start ledger instead of throwing', async () => {

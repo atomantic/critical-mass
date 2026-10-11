@@ -62,18 +62,23 @@ function computeTags(publishLatest) {
   const m = dockerWorkflow.match(/- name: Compute image tags[\s\S]*?run: \|\n([\s\S]*?)\n\n      - name:/);
   assert.ok(m, 'Compute image tags step exists');
   const script = m[1].replace(/^ {10}/gm, '');
-  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tags-')), 'out');
-  fs.writeFileSync(out, '');
-  execFileSync('bash', ['-c', script], {
-    env: {
-      PATH: process.env.PATH,
-      IMAGE: 'ghcr.io/o/r',
-      RELEASE_TAG: 'v1.2.3',
-      PUBLISH_LATEST: publishLatest,
-      GITHUB_OUTPUT: out,
-    },
-  });
-  return fs.readFileSync(out, 'utf8').split('\n').filter((l) => l.startsWith('ghcr.io'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tags-'));
+  try {
+    const out = path.join(dir, 'out');
+    fs.writeFileSync(out, '');
+    execFileSync('bash', ['-c', script], {
+      env: {
+        PATH: process.env.PATH,
+        IMAGE: 'ghcr.io/o/r',
+        RELEASE_TAG: 'v1.2.3',
+        PUBLISH_LATEST: publishLatest,
+        GITHUB_OUTPUT: out,
+      },
+    });
+    return fs.readFileSync(out, 'utf8').split('\n').filter((l) => l.startsWith('ghcr.io'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 test('historical recovery publishes only the versioned tag; normal release also publishes latest', () => {
