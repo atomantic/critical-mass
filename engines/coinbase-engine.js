@@ -37,7 +37,7 @@ const {
   stopMarketDataService,
   fenceMarketDataService,
 } = require('../src/market-data-service');
-const { getChartDataBuffer, getChartData, removeChartDataBuffer, shutdownAllBuffers, resumeAllBuffers } = require('../src/chart-data-buffer');
+const { getChartDataBuffer, getChartData, removeChartDataBuffer, shutdownAllBuffers, resumeAllBuffers, removeAllChartDataBuffers } = require('../src/chart-data-buffer');
 const { createFillLedger } = require('../src/fill-ledger');
 const { parseFillsQuery } = require('../src/transactions-regime-query');
 const { createManualTradeImporter } = require('../src/manual-trade-import');
@@ -47,7 +47,8 @@ const { createSocketIOProxy, forwardTradeEvents } = require('../src/ipc/socket-i
 const { saveRegimeRunningFlag, shouldAutoResumeRegime, fundKey, fundLabel, readBooleanFlag } = require('../src/shared-utils');
 const { registerEngineBackupHandlers } = require('../src/engine-backup-window');
 const { drainPendingWrites } = require('../src/pending-writes');
-const { stopAllRegimeEngines } = require('../src/engine-stop-all');
+const { createEngineStopAllHandler } = require('../src/engine-stop-all');
+const { getEngineMaintenance, setEngineRestoreQuiescing } = require('../src/engine-maintenance');
 const { registerEngineLifecycleHandlers } = require('../src/engine-lifecycle-handlers');
 const { registerEngineRecalculateHandler } = require('../src/engine-recalculate-handler');
 const { migrateExchangeToPairs, guardLegacyMigration } = require('../src/migration');
@@ -553,14 +554,13 @@ registerEngineBackupHandlers(ipcServer, {
   logger: engineLogger(EXCHANGE_NAME),
 });
 
-ipcServer.onRequest('regime:stop-all', async () => {
-  await cancelStarts({ clearDesired: true });
-  return stopAllRegimeEngines(regimeEngines, {
-    logger: engineLogger,
-    label: fundLabel,
-    setRunningFlag: saveRegimeRunningFlag,
-  });
-});
+ipcServer.onRequest('regime:stop-all', createEngineStopAllHandler({
+  regimeEngines, cancelStarts, drainPendingWrites,
+  stopMarketServices: stopAllMarketDataServices, drainMarketStarts: drainMarketDataStarts,
+  clearCaches: () => { removeAllChartDataBuffers(); standaloneLedgers.clear(); manualTradeStores.clear(); },
+  getMaintenance: getEngineMaintenance, setQuiescing: setEngineRestoreQuiescing,
+  logger: engineLogger, label: fundLabel, setRunningFlag: saveRegimeRunningFlag,
+}));
 
 // Exchange/fund info queries
 ipcServer.onRequest('exchanges:list', async () => {

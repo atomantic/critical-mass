@@ -214,6 +214,7 @@ const createIPCServer = (port, name) => {
     }
 
     if (msg.type === MSG_TYPE.CONFIG_UPDATE) {
+      if (refuseDuringMaintenance('config_update')) return;
       const handler = requestHandlers.get('config_update');
       if (handler) {
         trackPendingWrite('ipc:config_update', () => handler(msg.payload, msg.exchange, msg.pair)).catch((err) => {

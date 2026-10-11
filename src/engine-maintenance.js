@@ -60,6 +60,9 @@ let window_ = null;
 // A confirmed backup pause survives the IPC window TTL: stopped producers
 // cannot safely accept new mutations until resume finishes or the process restarts.
 let backupPaused = false;
+// Unlike the gateway window, an accepted stop-all cannot be reopened by a
+// timed-out gateway until its own drain finishes.
+let restoreQuiescing = false;
 
 /**
  * @returns {{reason: string, startedAt: number, expiresAt: number} | null} The active window, or null
@@ -100,10 +103,16 @@ const setEngineMaintenance = (payload = {}) => {
  * @returns {{success: false, code: string, error: string, heldBy: string, expiresAt: number} | null} Refusal, or null to allow
  */
 const refuseDuringMaintenance = (channel) => {
+  if (restoreQuiescing && !['engine:maintenance', 'regime:stop-all'].includes(channel)) {
+    return { success: false, code: 'maintenance-in-progress', error: 'Engine restore writers are still quiescing', heldBy: 'restore writer drain', expiresAt: 0 };
+  }
   if (backupPaused && !['engine:maintenance', 'engine:backup-pause', 'engine:backup-resume'].includes(channel)) {
     return { success: false, code: 'maintenance-in-progress', error: 'Engine backup writers are paused', heldBy: 'backup writer pause', expiresAt: 0 };
   }
   const backupWindow = getEngineMaintenance();
+  if (backupWindow?.reason.startsWith('restore ') && !['engine:maintenance', 'regime:stop-all'].includes(channel)) {
+    return { success: false, code: 'maintenance-in-progress', error: `Engine is paused for ${backupWindow.reason}`, heldBy: backupWindow.reason, expiresAt: backupWindow.expiresAt };
+  }
   if (backupWindow?.reason.startsWith('backup ') && !['engine:maintenance', 'engine:backup-pause', 'engine:backup-resume'].includes(channel)) {
     return { success: false, code: 'maintenance-in-progress', error: 'Engine is paused for a backup', heldBy: backupWindow.reason, expiresAt: backupWindow.expiresAt };
   }
@@ -135,6 +144,7 @@ const refuseDuringMaintenance = (channel) => {
 
 module.exports = {
   setEngineMaintenance,
+  setEngineRestoreQuiescing: (active) => { restoreQuiescing = Boolean(active); },
   setEngineBackupPaused: (active) => { backupPaused = Boolean(active); },
   getEngineMaintenance,
   refuseDuringMaintenance,

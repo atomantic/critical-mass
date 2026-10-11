@@ -685,7 +685,7 @@ describe('engine-side maintenance window', () => {
 
   afterEach(() => engineMaintenance.setEngineMaintenance({ active: false }));
 
-  it('refuses mutating channels and keeps reads and the stop path open', () => {
+  it('refuses reads and mutations during restore, keeping only its coordinator open', () => {
     engineMaintenance.setEngineMaintenance({ active: true, reason: 'restore backup-1.zip' });
 
     const refusal = engineMaintenance.refuseDuringMaintenance('regime:start');
@@ -693,11 +693,11 @@ describe('engine-side maintenance window', () => {
     assert.equal(refusal.code, 'maintenance-in-progress');
     assert.match(refusal.error, /restore backup-1\.zip/);
 
-    for (const channel of ['regime:stop-all', 'regime:stop', 'regime:status', 'engine:maintenance']) {
+    for (const channel of ['regime:stop-all', 'engine:maintenance']) {
       assert.equal(engineMaintenance.refuseDuringMaintenance(channel), null, `${channel} must stay available`);
     }
     // Every other mutating channel is refused by default (allowlist, not denylist).
-    for (const channel of ['regime:rebuild-ladder', 'regime:manual-trade', 'regime:reset-cycle', 'regime:convert-dca']) {
+    for (const channel of ['regime:stop', 'regime:status', 'config_update', 'regime:rebuild-ladder', 'regime:manual-trade', 'regime:reset-cycle', 'regime:convert-dca']) {
       assert.equal(engineMaintenance.refuseDuringMaintenance(channel).code, 'maintenance-in-progress');
     }
   });
@@ -774,7 +774,7 @@ describe('engine IPC server enforces the maintenance window', () => {
 
   after(() => engineMaintenance.setEngineMaintenance({ active: false }));
 
-  it('answers reads and refuses mutations while the gateway holds the window', async () => {
+  it('refuses reads and mutations while the gateway holds the restore window', async (t) => {
     // Ask the OS for a free ephemeral port instead of a fixed literal — a
     // hardcoded port collides with a sibling `npm test` run (e.g. concurrent
     // /do:next worktrees, or two terminals), causing EADDRINUSE and hanging
@@ -786,12 +786,16 @@ describe('engine IPC server enforces the maintenance window', () => {
     await new Promise((resolve) => reservation.close(resolve));
 
     const server = createIPCServer(port, 'test-engine');
-    server.start();
+    t.after(() => server.stop());
+    await server.start();
     let started = 0;
+    let updates = 0;
+    server.onRequest('config_update', async () => { updates++; });
     server.onRequest('regime:start', async () => { started++; return { success: true }; });
     server.onRequest('regime:status', async () => ({ success: true, status: 'ok' }));
 
     const client = createIPCClient(`ws://127.0.0.1:${port}`, 'test');
+    t.after(() => client.disconnect());
     client.connect();
     for (let i = 0; i < 100 && !client.isConnected(); i++) await new Promise(r => setTimeout(r, 10));
     assert.ok(client.isConnected(), 'IPC client connected');
@@ -805,12 +809,17 @@ describe('engine IPC server enforces the maintenance window', () => {
     assert.equal(refused.code, 'maintenance-in-progress');
     assert.equal(started, 0, 'the handler must never run during maintenance');
 
+    client.sendConfigUpdate({}, 'test');
     const read = await client.request('regime:status', {}, 'test', 1_000);
-    assert.equal(read.status, 'ok');
+    assert.equal(read.code, 'maintenance-in-progress');
+    assert.equal(updates, 0, 'one-way config updates obey the same restore gate');
 
     await client.request('engine:maintenance', { active: false }, 'test', 1_000);
     assert.deepEqual(await client.request('regime:start', {}, 'test', 1_000), { success: true });
     assert.equal(started, 1);
+    client.sendConfigUpdate({}, 'test');
+    await client.request('regime:status', {}, 'test', 1_000);
+    assert.equal(updates, 1, 'config updates resume after maintenance');
 
     client.disconnect();
     server.stop();
