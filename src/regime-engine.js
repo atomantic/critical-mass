@@ -59,7 +59,7 @@ const {
 } = require('./state-tracker');
 const { resolveFundDataDir } = require('./migration');
 const celestialHierarchy = require('./celestial-hierarchy');
-const { fmtCurrency: fmtPrice, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
 
@@ -1133,6 +1133,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   let isRunning = false;
   let isStarting = false; // reentrancy guard for start() (#113)
+  // Entry admission (#1009). An entry evaluation captures this generation
+  // before its balance preflight; stop() and close() bump it synchronously and
+  // a successful start opens a fresh one, so an evaluation still awaiting the
+  // exchange when the fund stops or starts draining can never submit later —
+  // not even after a restart revived isRunning.
+  let entryAdmissionGeneration = 0;
+  const invalidateEntryAdmission = () => { entryAdmissionGeneration += 1; };
+  /**
+   * Capture entry admission for one evaluation.
+   * @returns {() => boolean} true while the same generation is open on a running ACTIVE fund
+   */
+  const captureEntryAdmission = () => {
+    const generation = entryAdmissionGeneration;
+    return () => generation === entryAdmissionGeneration
+      && isRunning
+      && (!positionState.lifecycle || positionState.lifecycle === LIFECYCLE.ACTIVE);
+  };
   let wsFeed = null;
   let metricsInterval = null;
   let reconcileInterval = null;
@@ -3017,6 +3034,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       stateSaveInterval = setInterval(saveDryRunState, 60000);
     }
 
+    invalidateEntryAdmission();
     isRunning = true;
 
     // Recovered partial rows of a body's own buy order (#752) grow that body
@@ -3081,6 +3099,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Stop the regime engine
    */
   const stop = async ({ keepHeartbeat = false } = {}) => {
+    // Close entry admission before any await: an entry still in its balance
+    // preflight must not submit once stop() has been requested (#1009).
+    invalidateEntryAdmission();
     // A stop must outlive startup before releasing its resources. Failed
     // partial starts also own sockets/timers even though isRunning is false.
     if (startPromise) await startPromise.catch(() => {});
@@ -3888,120 +3909,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Handle order fill
-   * @param {Object} fillData - Fill data
+   * Ingest trade evidence and terminal coverage before booking an order fill.
+   * Keep this synchronous: the cycle snapshot and ledger rows must reach the
+   * buy/sell booking branch without introducing another scheduling boundary.
    */
-  const handleOrderFillImpl = async (fillData, dedupRef) => {
-    // dedupRef is a per-call holder: the buy/sell branches record the inner
-    // dedup key they add ({ set, key }) into it so the wrapper can clear that
-    // key if processing throws. A per-call object (not a shared closure var)
-    // keeps this correct even if two handleOrderFill calls interleave across
-    // awaits (WS vs polling).
-    // An open partial buy must remain in BOTH pending-order stores: the
-    // executor map drives future polls and the position list survives restart.
-    // CANCELLED-with-execution is terminal even when isPartialFill is true.
-    const keepEntryTracked = fillData.isPartialFill
-      && fillData.side?.toLowerCase() === 'buy' && !isTerminalStatus(fillData);
-    // Snapshot the legacy core TP id BEFORE any await (issue #672): a
-    // concurrent fill's resetCycle() nulls positionState.activeTpOrderId, and
-    // the untracked-sell branch below must still recognise this order as the
-    // engine's own TP when deciding whether it may close the cycle.
-    const entryCoreTpOrderId = positionState.activeTpOrderId;
-    // Freeze a partially-filled sell before resizing — see cancelPartialFillOrder.
-    if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'sell') {
-      const cancellation = await cancelPartialFillOrder({ adapter, exchange, pair: productId }, fillData.orderId);
-      if (!cancellation.cancelled) {
-        throw new Error(`Partial TP ${fillData.orderId} cancellation unresolved; retry reconciliation`);
-      }
-      // The sell may have advanced or fully filled while cancellation was in flight.
-      const knownFilledSize = fillData.filledSize || 0;
-      fillData = buildPartialFillData(fillData.orderId, 'sell', cancellation.order, {
-        isPartialFill: !isFilledStatus(cancellation.order),
-        totalFees: cancellation.order.totalFees,
-        source: fillData.source,
-      });
-      // Some exchanges omit cumulative filledSize on a CANCELLED status (the
-      // executor then reports its polled high-water mark instead). Filled size
-      // only grows, so never let the frozen status undercut a size the caller
-      // already knew — the trade-level fill check below still has to match it.
-      const statusOmittedSize = !(parseFloat(cancellation.order.filledSize) > 0);
-      if (!(fillData.filledSize >= knownFilledSize)) fillData.filledSize = knownFilledSize;
-      // Require the final fill set before accounting; never synthesize a stale
-      // partial from the pre-cancel poll while the fills endpoint catches up.
-      const finalFills = await adapter.getOrderFills(fillData.orderId);
-      const finalSize = finalFills.reduce((sum, fill) => sum + Number(fill.size || 0), 0);
-      // With no size on the status, the known size may be only the executor's
-      // polled high-water mark, below the true final fill. The trade-level
-      // fills are then the best evidence — accept them when they cover at
-      // least what was known, or the size check below throws on every retry.
-      if (statusOmittedSize && Number.isFinite(finalSize) && finalSize > 0 && finalSize >= knownFilledSize - 1e-8) {
-        fillData.filledSize = finalSize;
-      }
-      if (!(fillData.filledSize > 0) || !Number.isFinite(finalSize) || Math.abs(finalSize - fillData.filledSize) > 1e-8) {
-        throw new Error(`Partial TP ${fillData.orderId} final fills incomplete; retry reconciliation`);
-      }
-      fillData.confirmedFills = finalFills;
-      // A body TP that executed its whole planned size is a completed TP,
-      // not a partial, even when the exchange reports it CANCELLED (or still
-      // OPEN with a sub-1% sliver, now frozen) and carries no
-      // completionPercentage for isFilledStatus to read. Without this, the
-      // reconcile / startup partial routes force the partial branch: the
-      // designed holdback stays an active body and is re-listed for sale
-      // (issue #744). Same classification as bookTpCancelExecution (#670).
-      if (fillData.isPartialFill) {
-        const tpBody = (positionState.celestialBodies || []).find(b => b.tpOrderId === fillData.orderId);
-        if (isFullTpExecution(tpBody, fillData.filledSize)) fillData.isPartialFill = false;
-      }
-    }
-
-    // getOrderFills now rejects (issue #679) instead of silently returning a
-    // partial/empty set when the order-detail/status lookup fails or the
-    // matched fills fall short of the exchange's own filled quantity. A
-    // throw and an empty array both mean "we could not confirm the real
-    // trade-level fills," so treat them the same: fall through to the
-    // existing empty-rawFills retry, and ultimately the order-status
-    // synthetic-fill fallback below (originally built for Coinbase's
-    // empty-array eventual-consistency case) — that fallback is the
-    // pre-existing safety net for exactly this situation, sourced from
-    // fillData (order status, from a SEPARATE already-succeeded
-    // adapter.getOrder call), never from the failed getOrderFills call.
-    let rawFills;
-    if (fillData.confirmedFills) {
-      rawFills = fillData.confirmedFills;
-    } else {
-      try {
-        rawFills = await adapter.getOrderFills(fillData.orderId);
-      } catch (err) {
-        logger.warn(
-          `⚠️ [${exchange}] getOrderFills failed for ${fillData.orderId}: ${err.message} — will retry once, then fall back to order-status data if it still fails`,
-          { orderId: fillData.orderId, side: fillData.side, error: err.message, incompleteFills: err.incompleteFills === true }
-        );
-        rawFills = [];
-      }
-    }
-
-    // If getOrderFills returned empty (either because it legitimately found no
-    // fills yet, or because it just threw above), but we have fill data from
-    // order status (polling detection), retry once after a short delay -
-    // Coinbase has eventual consistency, and Crypto.com/Gemini's own scan may
-    // need a moment longer than getOrderFills' internal retry budget.
-    if (rawFills.length === 0 && fillData.filledSize > 0) {
-      logger.info(
-        `⏳ [${exchange}] No fills yet for ${fillData.orderId}, retrying in 2s (status shows ${fillData.filledSize} filled)`,
-        { orderId: fillData.orderId, side: fillData.side, filledSize: fillData.filledSize, retryDelayMs: 2000 }
-      );
-      await new Promise(r => setTimeout(r, 2000));
-      try {
-        rawFills = await adapter.getOrderFills(fillData.orderId);
-      } catch (err) {
-        logger.warn(
-          `⚠️ [${exchange}] getOrderFills still failing for ${fillData.orderId} after the retry: ${err.message} — falling back to order-status data`,
-          { orderId: fillData.orderId, side: fillData.side, error: err.message, incompleteFills: err.incompleteFills === true }
-        );
-        rawFills = [];
-      }
-    }
-
+  const ingestOrderFillEvidence = (fillData, rawFills) => {
     // Get order placement time for fill time tracking (entry orders only)
     // Use placedAt from fillData (polling callback) or fall back to order executor lookup
     const orderPlacedAt = fillData.side.toLowerCase() === 'buy'
@@ -4175,6 +4087,128 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         );
       }
     }
+
+    return { ingestCycleId, ingestedFills, fillsToAggregate, isTerminalFill };
+  };
+
+  /**
+   * Handle order fill
+   * @param {Object} fillData - Fill data
+   */
+  const handleOrderFillImpl = async (fillData, dedupRef) => {
+    // dedupRef is a per-call holder: the buy/sell branches record the inner
+    // dedup key they add ({ set, key }) into it so the wrapper can clear that
+    // key if processing throws. A per-call object (not a shared closure var)
+    // keeps this correct even if two handleOrderFill calls interleave across
+    // awaits (WS vs polling).
+    // An open partial buy must remain in BOTH pending-order stores: the
+    // executor map drives future polls and the position list survives restart.
+    // CANCELLED-with-execution is terminal even when isPartialFill is true.
+    const keepEntryTracked = fillData.isPartialFill
+      && fillData.side?.toLowerCase() === 'buy' && !isTerminalStatus(fillData);
+    // Snapshot the legacy core TP id BEFORE any await (issue #672): a
+    // concurrent fill's resetCycle() nulls positionState.activeTpOrderId, and
+    // the untracked-sell branch below must still recognise this order as the
+    // engine's own TP when deciding whether it may close the cycle.
+    const entryCoreTpOrderId = positionState.activeTpOrderId;
+    // Freeze a partially-filled sell before resizing — see cancelPartialFillOrder.
+    if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'sell') {
+      const cancellation = await cancelPartialFillOrder({ adapter, exchange, pair: productId }, fillData.orderId);
+      if (!cancellation.cancelled) {
+        throw new Error(`Partial TP ${fillData.orderId} cancellation unresolved; retry reconciliation`);
+      }
+      // The sell may have advanced or fully filled while cancellation was in flight.
+      const knownFilledSize = fillData.filledSize || 0;
+      fillData = buildPartialFillData(fillData.orderId, 'sell', cancellation.order, {
+        isPartialFill: !isFilledStatus(cancellation.order),
+        totalFees: cancellation.order.totalFees,
+        source: fillData.source,
+      });
+      // Some exchanges omit cumulative filledSize on a CANCELLED status (the
+      // executor then reports its polled high-water mark instead). Filled size
+      // only grows, so never let the frozen status undercut a size the caller
+      // already knew — the trade-level fill check below still has to match it.
+      const statusOmittedSize = !(parseFloat(cancellation.order.filledSize) > 0);
+      if (!(fillData.filledSize >= knownFilledSize)) fillData.filledSize = knownFilledSize;
+      // Require the final fill set before accounting; never synthesize a stale
+      // partial from the pre-cancel poll while the fills endpoint catches up.
+      const finalFills = await adapter.getOrderFills(fillData.orderId);
+      const finalSize = finalFills.reduce((sum, fill) => sum + Number(fill.size || 0), 0);
+      // With no size on the status, the known size may be only the executor's
+      // polled high-water mark, below the true final fill. The trade-level
+      // fills are then the best evidence — accept them when they cover at
+      // least what was known, or the size check below throws on every retry.
+      if (statusOmittedSize && Number.isFinite(finalSize) && finalSize > 0 && finalSize >= knownFilledSize - 1e-8) {
+        fillData.filledSize = finalSize;
+      }
+      if (!(fillData.filledSize > 0) || !Number.isFinite(finalSize) || Math.abs(finalSize - fillData.filledSize) > 1e-8) {
+        throw new Error(`Partial TP ${fillData.orderId} final fills incomplete; retry reconciliation`);
+      }
+      fillData.confirmedFills = finalFills;
+      // A body TP that executed its whole planned size is a completed TP,
+      // not a partial, even when the exchange reports it CANCELLED (or still
+      // OPEN with a sub-1% sliver, now frozen) and carries no
+      // completionPercentage for isFilledStatus to read. Without this, the
+      // reconcile / startup partial routes force the partial branch: the
+      // designed holdback stays an active body and is re-listed for sale
+      // (issue #744). Same classification as bookTpCancelExecution (#670).
+      if (fillData.isPartialFill) {
+        const tpBody = (positionState.celestialBodies || []).find(b => b.tpOrderId === fillData.orderId);
+        if (isFullTpExecution(tpBody, fillData.filledSize)) fillData.isPartialFill = false;
+      }
+    }
+
+    // getOrderFills now rejects (issue #679) instead of silently returning a
+    // partial/empty set when the order-detail/status lookup fails or the
+    // matched fills fall short of the exchange's own filled quantity. A
+    // throw and an empty array both mean "we could not confirm the real
+    // trade-level fills," so treat them the same: fall through to the
+    // existing empty-rawFills retry, and ultimately the order-status
+    // synthetic-fill fallback below (originally built for Coinbase's
+    // empty-array eventual-consistency case) — that fallback is the
+    // pre-existing safety net for exactly this situation, sourced from
+    // fillData (order status, from a SEPARATE already-succeeded
+    // adapter.getOrder call), never from the failed getOrderFills call.
+    let rawFills;
+    if (fillData.confirmedFills) {
+      rawFills = fillData.confirmedFills;
+    } else {
+      try {
+        rawFills = await adapter.getOrderFills(fillData.orderId);
+      } catch (err) {
+        logger.warn(
+          `⚠️ [${exchange}] getOrderFills failed for ${fillData.orderId}: ${err.message} — will retry once, then fall back to order-status data if it still fails`,
+          { orderId: fillData.orderId, side: fillData.side, error: err.message, incompleteFills: err.incompleteFills === true }
+        );
+        rawFills = [];
+      }
+    }
+
+    // If getOrderFills returned empty (either because it legitimately found no
+    // fills yet, or because it just threw above), but we have fill data from
+    // order status (polling detection), retry once after a short delay -
+    // Coinbase has eventual consistency, and Crypto.com/Gemini's own scan may
+    // need a moment longer than getOrderFills' internal retry budget.
+    if (rawFills.length === 0 && fillData.filledSize > 0) {
+      logger.info(
+        `⏳ [${exchange}] No fills yet for ${fillData.orderId}, retrying in 2s (status shows ${fillData.filledSize} filled)`,
+        { orderId: fillData.orderId, side: fillData.side, filledSize: fillData.filledSize, retryDelayMs: 2000 }
+      );
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        rawFills = await adapter.getOrderFills(fillData.orderId);
+      } catch (err) {
+        logger.warn(
+          `⚠️ [${exchange}] getOrderFills still failing for ${fillData.orderId} after the retry: ${err.message} — falling back to order-status data`,
+          { orderId: fillData.orderId, side: fillData.side, error: err.message, incompleteFills: err.incompleteFills === true }
+        );
+        rawFills = [];
+      }
+    }
+
+    const { ingestCycleId, ingestedFills, isTerminalFill, fillsToAggregate: evidenceFills } =
+      ingestOrderFillEvidence(fillData, rawFills);
+    let fillsToAggregate = evidenceFills;
 
     // Determine if buy or sell
     if (fillData.side.toLowerCase() === 'buy') {
@@ -6715,6 +6749,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Fund lifecycle guard: when draining/closed, never place new entries
     if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) return;
+    const isAdmitted = captureEntryAdmission();
 
     // Don't place a new reactive entry if there's already a pending entry OR a
     // resting ladder rung on the exchange. ladder_entry orders were previously
@@ -6754,7 +6789,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     if (volTrigger || timeTrigger) {
       await engineLocks.withEntryLock(() =>
-        executeEntry(volTrigger ? 'volatility' : 'timer')
+        executeEntry(volTrigger ? 'volatility' : 'timer', isAdmitted)
       );
     }
   };
@@ -6765,6 +6800,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const evaluateLadderEntry = async () => {
     // Fund lifecycle guard: when draining/closed, never place new entries
     if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) return;
+    const isAdmitted = captureEntryAdmission();
 
     // Skip if in insufficient funds cooldown
     if (Date.now() < insufficientFundsCooldownUntil) return;
@@ -6809,6 +6845,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
       if (!quoteBalance) {
         // Can't verify balance — skip ladder to avoid placing orders we can't fund
+        return;
+      }
+      // A stop/close that landed during the balance await closes admission (#1009).
+      if (!isAdmitted()) {
+        logger.info(`🚦 [${exchange}] Ladder skipped during the balance preflight — ${ENTRY_NOT_ADMITTED}`);
         return;
       }
       const availableQuote = parseFloat(quoteBalance.available) || 0;
@@ -6861,8 +6902,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
         // Place ladder orders
         const generationAtPlace = cycleResetGeneration;
-        const result = await orderExecutor.placeLadderOrders(ladder.levels);
+        const result = await orderExecutor.placeLadderOrders(ladder.levels, { isAdmitted });
         if (await abandonLadderPlacedAcrossReset(generationAtPlace, 'Ladder placement')) return;
+        // Admission closed before any rung went out: nothing to track. Rungs
+        // that DID go out are recorded below like any ladder, so their fills
+        // and cancels reconcile normally.
+        if (result.notAdmitted && result.orders.length === 0) {
+          logger.info(`🚦 [${exchange}] Ladder not placed — ${ENTRY_NOT_ADMITTED}`);
+          return;
+        }
 
         // Update position state
         positionState.ladderActive = true;
@@ -6892,8 +6940,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   /**
    * Execute entry
    * @param {string} triggerType - What triggered the entry
+   * @param {() => boolean} isAdmitted - Entry admission captured when the evaluation began (#1009)
    */
-  const executeEntry = async (triggerType) => {
+  const executeEntry = async (triggerType, isAdmitted) => {
     const regime = regimeDetector.getMode();
 
     // Calculate size (apply macro multiplier to sizing)
@@ -6981,6 +7030,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     lowBalancePauseLogged = false;
     sizing.sizeUsdc = budget.sizeUsdc;
 
+    // A stop/close that landed during the balance await closes admission (#1009).
+    if (!isAdmitted()) {
+      logger.info(`🚦 [${exchange}] Entry skipped during the balance preflight — ${ENTRY_NOT_ADMITTED}`);
+      return;
+    }
+
     // Calculate dynamic offset based on momentum direction
     // UP momentum: smaller offset to get fills before price rises further
     // DOWN momentum: larger offset to catch the falling price
@@ -7019,7 +7074,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     };
 
     try {
-      result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps, entryStaleMs);
+      result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps, entryStaleMs, { isAdmitted });
     } catch (err) {
       if (isInsufficientFundsMessage(err.message) || err.status === 406) {
         const cooldownMs = config.insufficientFundsCooldownMs || 60000;
@@ -7039,6 +7094,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return;
     }
 
+    if (result.notAdmitted) {
+      logger.info(`🚦 [${exchange}] Entry not placed — ${ENTRY_NOT_ADMITTED}`);
+      return;
+    }
+
+    // An accepted bid is tracked even if admission closed while its response
+    // was pending: the order is live on the exchange and must reconcile.
     if (result.success) {
       positionState.lastEntryTime = Date.now();
       positionState.anchorPrice = marketState.lastPrice;
@@ -8111,6 +8173,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: false, error: 'Fund is already draining' };
     }
     positionState.lifecycle = LIFECYCLE.DRAINING;
+    invalidateEntryAdmission();
     positionState.lifecycleChangedAt = Date.now();
     positionState.lifecycleReason = reason || null;
     if (!isDryRun) {
@@ -9123,6 +9186,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if ((config.entryMode || 'reactive') !== 'ladder') {
       return { success: false, message: 'Entry mode is not ladder' };
     }
+    // A draining/closed fund places no new buys — rebuild included (#1009).
+    if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) {
+      return { success: false, message: `Fund is ${positionState.lifecycle} — new entries are blocked` };
+    }
+    const isAdmitted = captureEntryAdmission();
     // A manual rebuild places fresh buy rungs — the drawdown pause (#693)
     // applies; the operator clears it explicitly via Resume first.
     if (riskManager.getState().isDrawdownPaused) {
@@ -9254,9 +9322,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Place ladder orders
     const generationAtPlace = cycleResetGeneration;
-    const result = await orderExecutor.placeLadderOrders(ladder.levels);
+    const result = await orderExecutor.placeLadderOrders(ladder.levels, { isAdmitted });
     if (await abandonLadderPlacedAcrossReset(generationAtPlace, 'Ladder rebuild')) {
       return { success: false, message: 'A cycle reset ran while the new ladder was being placed, so it was cancelled — rebuild again if appropriate.' };
+    }
+    if (result.notAdmitted && result.orders.length === 0) {
+      saveLiveState();
+      return { success: false, message: 'The engine stopped or the fund started draining before the new ladder was placed — the old ladder was cancelled and no new rungs went out.' };
     }
 
     // Update position state
