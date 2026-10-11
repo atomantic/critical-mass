@@ -5,11 +5,30 @@ const { startChrome } = require('./lib/perf-cdp');
 const { createCollector, verdict } = require('./lib/perf-metrics');
 const { runBrowserScenario } = require('../tests/perf-browser-scenario');
 
+function auditOutcome(checks, incomplete, idleMs) {
+  const reasons = [];
+  if (incomplete) reasons.push('incomplete transport evidence');
+  if (idleMs < 60000) reasons.push('idle window shorter than 60 seconds; smoke coverage only');
+  return { verdict: incomplete ? 'UNVERIFIED' : verdict(checks, reasons), reasons };
+}
+
 function instrument(browser, baseUrl) {
   const collector = createCollector();
   const requests = new Map();
   const tasks = new Set();
-  const metrics = { collector, pages: [], phase: 'auth', runtimeErrors: 0, incomplete: 0, flush: async () => { while (tasks.size) await Promise.all([...tasks]); } };
+  const metrics = { collector, pages: [], phase: 'auth', runtimeErrors: 0, incomplete: 0,
+    flush: async (timeoutMs = 10000) => {
+      const deadline = performance.now() + timeoutMs;
+      while ((requests.size || tasks.size) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+      for (const row of requests.values()) {
+        if (row.recorded) continue;
+        row.recorded = true;
+        metrics.incomplete++;
+        collector.recordHttp({ ...row, status: row.status || 0, end: row.start + timeoutMs, wireBytes: null });
+      }
+      if (tasks.size) metrics.incomplete++;
+    },
+  };
   browser.on('Runtime.exceptionThrown', () => metrics.runtimeErrors++);
   browser.on('Network.requestWillBeSent', msg => {
     if (!msg.request.url.startsWith(baseUrl + '/') || !['Fetch', 'XHR'].includes(msg.type)) return;
@@ -23,7 +42,7 @@ function instrument(browser, baseUrl) {
     if (!row) return;
     requests.delete(msg.requestId);
     const task = (async () => {
-      collector.recordHttp({ ...row, end: msg.timestamp * 1000, wireBytes: msg.encodedDataLength });
+      if (!row.recorded) collector.recordHttp({ ...row, end: msg.timestamp * 1000, wireBytes: msg.encodedDataLength });
       if (new URL(row.url).pathname.endsWith('/regime/fills') && new URL(row.url).searchParams.get('paged') === 'true') {
         const body = await browser.call('Network.getResponseBody', { requestId: msg.requestId });
         const parsed = JSON.parse(body.base64Encoded ? Buffer.from(body.body, 'base64').toString() : body.body);
@@ -69,9 +88,7 @@ async function main(argv = process.argv.slice(2)) {
     fixture = await startBrowserFixture();
     const metrics = instrument(browser, fixture.baseUrl);
     const result = await runBrowserScenario({ browser, fixture, metrics, idleMs });
-    if (metrics.incomplete) result.checks.push({ name: 'complete transport evidence', ok: false });
-    const reasons = idleMs < 60000 ? ['idle window shorter than 60 seconds; smoke coverage only'] : [];
-    output = { verdict: verdict(result.checks, reasons), reasons, ...result,
+    output = { ...auditOutcome(result.checks, metrics.incomplete, idleMs), ...result,
       measurement: { httpWire: 'CDP encodedDataLength includes response headers', httpDecoded: 'CDP dataLength response body', websocket: 'CDP frame payload bytes; framing/compression wire overhead unavailable', fixture: 'real gateway, operator auth, IPC transport and UI; synthetic engine reads/feed; public market/prediction startup disabled' } };
   } catch (error) {
     // Only fixed harness messages are surfaced; gateway/browser exceptions may
@@ -86,4 +103,4 @@ async function main(argv = process.argv.slice(2)) {
   return output.verdict === 'PASS' ? 0 : output.verdict === 'FAIL' ? 1 : 2;
 }
 if (require.main === module) main().then(code => { process.exitCode = code; });
-module.exports = { instrument, main };
+module.exports = { instrument, auditOutcome, main };

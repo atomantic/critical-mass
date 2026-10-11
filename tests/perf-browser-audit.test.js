@@ -1,7 +1,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { instrument, main } = require('../scripts/perf-browser-audit');
+const { instrument, auditOutcome, main } = require('../scripts/perf-browser-audit');
 const { aggregate } = require('../scripts/lib/perf-metrics');
 
 function driver() {
@@ -57,6 +57,20 @@ describe('browser audit evidence', () => {
     browser.emit('Runtime.exceptionThrown', {});
     assert.equal(metrics.incomplete, 1);
     assert.equal(metrics.runtimeErrors, 1);
+  });
+  it('bounds outstanding reads and reports incomplete evidence as UNVERIFIED', async () => {
+    const browser = driver();
+    const metrics = instrument(browser, 'http://127.0.0.1:1234');
+    browser.emit('Network.requestWillBeSent', { requestId: 'stalled', type: 'Fetch', timestamp: 1, request: { method: 'GET', url: 'http://127.0.0.1:1234/api/coinbase/config?pair=synthetic' } });
+    await metrics.flush(20);
+    assert.equal(metrics.incomplete, 1);
+    assert.equal(metrics.collector.http.length, 1);
+    assert.equal(metrics.collector.http[0].wireBytes, null);
+    assert.equal(auditOutcome([{ ok: true }], metrics.incomplete, 60000).verdict, 'UNVERIFIED');
+    assert.equal(auditOutcome([{ ok: false }], metrics.incomplete, 60000).verdict, 'UNVERIFIED');
+    assert.equal(auditOutcome([{ ok: true }], 0, 1000).verdict, 'UNVERIFIED');
+    assert.equal(auditOutcome([{ ok: true }], 0, 60000).verdict, 'PASS');
+    assert.equal(auditOutcome([{ ok: false }], 0, 60000).verdict, 'FAIL');
   });
   it('reports missing browser as UNVERIFIED, without starting a gateway', async () => {
     const old = process.env.CM_PERF_CHROME;
