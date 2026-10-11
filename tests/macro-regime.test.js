@@ -1,5 +1,5 @@
 // @ts-check
-const { describe, it, beforeEach, afterEach, mock } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
@@ -531,8 +531,12 @@ describe('createMacroRegime: start/stop', () => {
     regime?.stop();
   });
 
-  it('start() updates periodically and stop() prevents further updates', async () => {
-    mock.timers.enable({ apis: ['setInterval'] });
+  it('start() updates periodically and stop() prevents further updates', async (t) => {
+    t.after(() => {
+      regime?.stop();
+      t.mock.timers.reset();
+    });
+    t.mock.timers.enable({ apis: ['setInterval'] });
     const calls = { hourly: 0, daily: 0 };
     const adapter = {
       getCandles: async (_productId, _start, _end, granularity) => {
@@ -548,12 +552,12 @@ describe('createMacroRegime: start/stop', () => {
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(calls, { hourly: 1, daily: 1 }, 'startup should make one request per timeframe');
 
-    mock.timers.tick(50);
+    t.mock.timers.tick(50);
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(calls, { hourly: 2, daily: 2 }, 'one interval should trigger a second update');
 
     regime.stop();
-    mock.timers.tick(100);
+    t.mock.timers.tick(100);
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(calls, { hourly: 2, daily: 2 }, 'stopping should prevent subsequent updates');
   });
