@@ -35,7 +35,7 @@ const createInitialPauseState = () => ({
  * @param {string} exchange - Exchange name
  * @param {RegimeStrategyConfig} config - Configuration
  * @param {Object} [callbacks] - Event callbacks
- * @param {Function} [callbacks.onSpreadPause] - Called on spread pause
+ * @param {Function} [callbacks.onSpreadPause] - Called once on entering a spread pause with (spreadBps, maxSpreadBps)
  * @param {Function} [callbacks.onDepthPause] - Called on depth pause
  * @param {Function} [callbacks.onFlashMove] - Called on flash move
  * @param {Function} [callbacks.onRegimeTransition] - Called to trigger regime transition
@@ -100,7 +100,7 @@ const createTailEventsMonitor = (exchange, config, callbacks = {}) => {
     });
 
     if (callbacks.onSpreadPause) {
-      callbacks.onSpreadPause(spreadBps);
+      callbacks.onSpreadPause(spreadBps, config.maxSpreadBps);
     }
   };
 
