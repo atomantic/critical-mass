@@ -4,15 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Changed
-- **[issue-1013] Macro timer lifecycle test isolates periodic updates** — Replaced the real-time delay and aggregate candle count with mocked intervals, separate timeframe request counts, and assertions before and after stop.
-
 ### Added
 - **[issue-1000] React 19 admin rendering** — Upgrade the dashboard chart and 3D ecosystems together, preserve candlesticks, cloud overlays and signal markers through public Recharts coordinates, and add isolated browser rendering coverage.
 - **[issue-935] Authenticated browser performance coverage** — A disposable real gateway/IPC fixture and headless Chrome scenario measure protected Transactions load, Config idle traffic for 60 seconds, consumer cleanup and reconnect recovery. Page responses now omit ledger metadata; incomplete browser evidence and protocol-only replays report UNVERIFIED. See `docs/perf-route-audit.md`.
 
 ### Changed
 - **[dependencies] Dependency updates and vulnerability remediation** — Upgraded `express` to 5.3.0 in root. In `admin`, completed the Tailwind 4 migration (via PR #993) which remediated `postcss-selector-parser` (GHSA-rj75-hqrm-r3gf), and updated `vite` to 8.3.4, `@vitejs/plugin-react` to 6.1.2, `postcss` to 8.5.29, `react-router-dom` to 7.18.4, `socket.io-client` to 4.8.4; retained the React 19 ecosystem and type definitions delivered by PR #1001. In `docker/pm2`, added an override for `basic-ftp` (^6.2.3) remediating CVE-2026-102990 / GHSA-c475-qrg2-pj4r. Tracked unpatched upstream alert for `braces` (GHSA-vfj7-8cjw-p6xm) in issue #999 and completed the React 19 ecosystem migration in issue #1000.
+- **[issue-1013] Macro timer lifecycle test isolates periodic updates** — Replaced the real-time delay and aggregate candle count with mocked intervals, separate timeframe request counts, and assertions before and after stop.
 
 ### Fixed
 - **[issue-963] Accepted DCA buys stay recoverable when fill polling fails** — Simple DCA now records an accepted market buy as the fund's pending buy (order id, client id, requested amount, interval) and persists it before the dispatch intent is released or the fill is polled. A rejected status read or exhausted poll returns `buy_fill_pending` (HTTP 202 from both trade endpoints, with the order, interval and a recovery message) instead of a failed cycle; later cycles and restarts resume that order by id with bounded status retries and never place a second buy while it is unresolved. A real fill is booked once under its original interval (fixed or Fibonacci) with the pending record retired in the same save and booked ids remembered; a confirmed terminal zero fill releases it. A failed handoff write keeps the dispatch intent blocking (in-process and on disk, with the accepted order id). DCA-to-Regime conversion refuses while a buy is pending.
