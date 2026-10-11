@@ -134,7 +134,12 @@ const main = async () => {
 
     const adapter = getAdapter(exchange);
     const config = getExchangeConfig(exchange);
-    const quoteCurrency = exchange === 'gemini' ? 'USD' : 'USDC';
+    const baseCurrency = config?.productId
+      ? getBaseCurrency(config.productId)
+      : 'BTC';
+    const quoteCurrency = config?.productId
+      ? getQuoteCurrency(config.productId)
+      : (exchange === 'gemini' ? 'USD' : 'USDC');
 
     // Show balances
     console.log(`--- ${quoteCurrency} Balance ---`);
@@ -143,11 +148,11 @@ const main = async () => {
     console.log(`Hold: ${quoteBalance.hold.toFixed(2)}`);
     console.log(`Total: ${quoteBalance.total.toFixed(2)}`);
 
-    console.log('\n--- BTC Balance ---');
-    const btcBalance = await adapter.getAccountBalance('BTC');
-    console.log(`Available: ${btcBalance.available.toFixed(8)}`);
-    console.log(`Hold: ${btcBalance.hold.toFixed(8)}`);
-    console.log(`Total: ${btcBalance.total.toFixed(8)}`);
+    console.log(`\n--- ${baseCurrency} Balance ---`);
+    const baseBalance = await adapter.getAccountBalance(baseCurrency);
+    console.log(`Available: ${baseBalance.available.toFixed(8)}`);
+    console.log(`Hold: ${baseBalance.hold.toFixed(8)}`);
+    console.log(`Total: ${baseBalance.total.toFixed(8)}`);
 
     // Show product details
     console.log(`\n--- Product: ${config.productId} ---`);

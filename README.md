@@ -204,8 +204,8 @@ Each exchange can run either the fixed DCA strategy or the adaptive regime strat
 | `tpMinPercent` / `tpMaxPercent` | Take-profit range |
 | `holdbackRatio` | Fraction of each buy kept as reserves |
 | `maxUsdcDeployed` | Maximum capital deployed at once |
-| `maxBtcExposure` | Maximum BTC exposure |
-| `ladderSizeMode` | Ladder sizing: `fibonacci` or `fixed` |
+| `maxAssetExposure` | Maximum base asset exposure (0 = uncapped) |
+| `ladderSizeMode` | Ladder sizing: `flat`, `linear`, `sqrt`, `fibonacci` |
 
 ## Usage
 
@@ -305,7 +305,7 @@ npm test
 ## Safety Features
 
 - **Max price threshold** - Skips buys above `maxBuyPrice`
-- **Capital limits** - `maxUsdcDeployed` and `maxBtcExposure` caps
+- **Capital limits** - `maxUsdcDeployed` and `maxAssetExposure` caps
 - **Drawdown protection** - Pauses trading if drawdown exceeds threshold
 - **Flash crash detection** - Detects extreme price moves and cancels entries
 - **Spread monitoring** - Pauses if bid-ask spread is too wide
