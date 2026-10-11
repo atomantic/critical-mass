@@ -20,6 +20,7 @@
 // in after().
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('path');
 
 const { createIsolatedDataDir } = require('./test-data-dir');
 const isolatedData = createIsolatedDataDir('cm-incomplete-fill-retry-test');
@@ -690,5 +691,144 @@ describe('incompleteFills engine-level retry (issue #679 follow-up)', () => {
 
     assert.equal(calls, 3, 'must stop retrying as soon as a call succeeds');
     assert.equal(eng._test.getIncompleteFillRetryCount(orderId), 0, 'the retry counter must be cleared on success');
+  });
+});
+
+describe('advancing retry books earlier unsettled tranches (#1021)', () => {
+  const fs = require('fs');
+  const near = (actual, expected, label) => assert.ok(Math.abs(actual - expected) < 1e-8,
+    `${label}: expected ${expected}, got ${actual}`);
+  const execution = (orderId, tradeId) => ({ tradeId, orderId, side: 'buy', size: 0.01,
+    price: 2000, netFee: 0, tradeTime: new Date().toISOString() });
+  const status = (orderId, fills, terminal = false) => ({
+    orderId, side: 'buy', status: terminal ? 'FILLED' : 'PARTIALLY_FILLED', isPartialFill: !terminal,
+    filledSize: Number((fills.length * 0.01).toFixed(8)), filledValue: fills.length * 20,
+    averageFilledPrice: 2000, totalFees: 0, confirmedFills: fills,
+  });
+
+  // A: booked. B: ingested, then the pass fails before its body booking.
+  // C: a newer execution arrives before any retry (the advancing retry).
+  const setup = (pair, orderId) => {
+    let tpCount = 0;
+    let cancelFailures = 0;
+    const eng = makeEngine({ getOrder: async () => ({ status: 'OPEN', filledSize: 0 }) }, pair);
+    eng._test.setOrderExecutor(makeExecutor({
+      cancelBodyTpOrder: async () => {
+        if (cancelFailures > 0) { cancelFailures--; throw new Error('cancel transiently failed'); }
+        return { cancelled: true };
+      },
+      placeBodyTpOrder: async () => ({ success: true, orderId: `${orderId}-tp-${++tpCount}` }),
+    }));
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [{ orderId, assetQty: 0.05, sizeUsdc: 100, placedAt: Date.now() }];
+    const body = () => {
+      const owners = pos.celestialBodies.filter(b => (b.buyOrders || []).some(bo => bo.orderId === orderId));
+      assert.equal(owners.length, 1, 'one body owns the order');
+      return owners[0];
+    };
+    return { eng, pos, body, tpCount: () => tpCount, failNextCancel: () => { cancelFailures = 1; } };
+  };
+
+  const assertBooked = ({ eng, pos, body }, orderId) => {
+    const ledgerQty = eng.getFillLedger().getFillsForOrder(orderId).reduce((s, f) => s + f.size, 0);
+    near(ledgerQty, 0.03, 'ledger quantity');
+    near(body().assetQty, 0.03, 'body quantity');
+    near(body().costBasis, 60, 'body cost');
+    near(body().buyOrders.filter(bo => bo.orderId === orderId).reduce((s, bo) => s + bo.assetQty, 0), 0.03,
+      'body tranches');
+    assert.equal(pos.cycleBuys, 1, 'one buy order is one cycle buy');
+  };
+
+  it('a failed TP cancellation followed by a newer execution books the retained tranche once', async () => {
+    const orderId = 'advancing-cancel-buy';
+    const fixture = setup('__testadvancingcancel__', orderId);
+    const { eng, pos, body } = fixture;
+    const [a, b, c] = ['a', 'b', 'c'].map(id => execution(orderId, `${orderId}-${id}`));
+
+    await eng._test.handleOrderFill(status(orderId, [a]));
+    near(body().assetQty, 0.01, 'A booked');
+
+    fixture.failNextCancel();
+    await assert.rejects(eng._test.handleOrderFill(status(orderId, [a, b])), /cancel transiently failed/);
+    near(body().assetQty, 0.01, 'B not booked by the failed pass');
+
+    const tpBeforeRetry = fixture.tpCount();
+    await eng._test.handleOrderFill(status(orderId, [a, b, c]));
+    assertBooked(fixture, orderId);
+    assert.equal(fixture.tpCount(), tpBeforeRetry + 1, 'one right-sized TP for the grown body');
+    assert.ok(body().assetOnOrder > 0.02 && body().assetOnOrder <= 0.03, 'TP sized from the full 0.03 body');
+    const entry = pos.pendingEntryOrders.find(e => e.orderId === orderId);
+    near(entry.assetQty, 0.02, 'entry remainder shrinks by every booked tranche');
+    near(entry.sizeUsdc, 40, 'entry cost shrinks by every booked tranche');
+
+    // Replays — same partial, then terminal — grow nothing.
+    const tpAfterGrowth = fixture.tpCount();
+    await eng._test.handleOrderFill(status(orderId, [a, b, c]));
+    await eng._test.handleOrderFill(status(orderId, [a, b, c], true));
+    assertBooked(fixture, orderId);
+    assert.equal(fixture.tpCount(), tpAfterGrowth, 'replays place no further TP');
+    assert.equal(pos.pendingEntryOrders.some(e => e.orderId === orderId), false, 'terminal replay retires the entry');
+    for (const row of eng.getFillLedger().getFillsForOrder(orderId)) {
+      assert.equal(row.bodyId, body().id, `${row.tradeId} is linked to the body that booked it`);
+    }
+  });
+
+  it('a ledger publication failure followed by a newer execution books the retained tranche once', async () => {
+    const pair = '__testadvancingpublish__';
+    const orderId = 'advancing-publish-buy';
+    const fixture = setup(pair, orderId);
+    const { eng, body } = fixture;
+    const [a, b, c] = ['a', 'b', 'c'].map(id => execution(orderId, `${orderId}-${id}`));
+
+    await eng._test.handleOrderFill(status(orderId, [a]));
+    const ledgerPath = path.join(isolatedData.fundDir('coinbase', pair), 'fill-ledger.json');
+    const originalRename = fs.renameSync;
+    let failures = 1;
+    fs.renameSync = (from, to) => {
+      if (to === ledgerPath && failures > 0) {
+        failures--;
+        throw Object.assign(new Error('ENOSPC: ledger publication failed'), { code: 'ENOSPC' });
+      }
+      return originalRename(from, to);
+    };
+    try {
+      await assert.rejects(eng._test.handleOrderFill(status(orderId, [a, b])), /ledger publication failed/);
+    } finally {
+      fs.renameSync = originalRename;
+    }
+    near(body().assetQty, 0.01, 'B not booked by the failed pass');
+
+    await eng._test.handleOrderFill(status(orderId, [a, b, c]));
+    assertBooked(fixture, orderId);
+    await eng._test.handleOrderFill(status(orderId, [a, b, c], true));
+    assertBooked(fixture, orderId);
+  });
+
+  it('overlapping passes for one buy order do not book the same tranche twice', async () => {
+    const orderId = 'advancing-overlap-buy';
+    const fixture = setup('__testadvancingoverlap__', orderId);
+    const { eng, pos } = fixture;
+    const [a, b, c] = ['a', 'b', 'c'].map(id => execution(orderId, `${orderId}-${id}`));
+    await eng._test.handleOrderFill(status(orderId, [a]));
+
+    // Hold B's TP cancellation open while C's pass starts for the same order.
+    let releaseCancel;
+    const cancelHeld = new Promise(resolve => { releaseCancel = resolve; });
+    let held = false;
+    eng._test.setOrderExecutor(makeExecutor({
+      cancelBodyTpOrder: async () => {
+        if (!held) { held = true; await cancelHeld; }
+        return { cancelled: true };
+      },
+      placeBodyTpOrder: async () => ({ success: true, orderId: `${orderId}-tp-${Math.random()}` }),
+    }));
+    const first = eng._test.handleOrderFill(status(orderId, [a, b]));
+    await new Promise(resolve => setImmediate(resolve));
+    const second = eng._test.handleOrderFill(status(orderId, [a, b, c]));
+    await new Promise(resolve => setTimeout(resolve, 10));
+    releaseCancel();
+    await Promise.all([first, second]);
+    assertBooked(fixture, orderId);
+    assert.equal(pos.celestialBodies.length, 1);
   });
 });
