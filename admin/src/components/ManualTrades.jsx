@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
+import { Fragment, useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { formatCurrency, formatPrice, formatDateTime } from './charts/chartUtils'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { runUnaccountedFillsScan, describeScanProgress } from '../utils/unaccountedFillsScan.mjs'
@@ -6,6 +6,7 @@ import { runUnaccountedFillsScan, describeScanProgress } from '../utils/unaccoun
 const STATUS_COLORS = {
   sell_recorded: 'bg-blue-600/30 text-blue-400 border-blue-500/30',
   buy_pending: 'bg-yellow-600/30 text-yellow-400 border-yellow-500/30',
+  buy_cancelled: 'bg-red-900/40 text-red-300 border-red-500/40',
   buy_recorded: 'bg-cyan-600/30 text-cyan-400 border-cyan-500/30',
   tp_pending: 'bg-orange-600/30 text-orange-400 border-orange-500/30',
   completed: 'bg-green-600/30 text-green-400 border-green-500/30',
@@ -15,12 +16,23 @@ const STATUS_COLORS = {
 const STATUS_LABELS = {
   sell_recorded: 'Sell Recorded',
   buy_pending: 'Buy Pending',
+  buy_cancelled: 'Recovery Cancelled',
   buy_recorded: 'Buy Recorded',
   tp_pending: 'TP Pending',
   buy_filled: 'Buy Filled',
   completed: 'Completed',
   dismissed: 'Dismissed',
 }
+
+// A sell-first recovery the operator still has to see through (issue #1034):
+// its buy is live, or it left the book before covering the whole sell.
+const isOutstandingRecovery = (trade) => trade.status === 'buy_pending' || trade.status === 'buy_cancelled'
+const canContinueRecovery = (trade) =>
+  trade.tradeType === 'sell_first' && (trade.status === 'buy_cancelled' || trade.status === 'sell_recorded')
+
+/** Quantity recovered by a sell-first trade's settled attempts. */
+const recoveredSize = (trade) =>
+  (trade.recoveryAttempts || []).filter(a => a.outcome).reduce((sum, a) => sum + (a.filledSize || 0), 0)
 
 /**
  * Compute match suggestions for an order from the unaccounted list.
@@ -86,6 +98,12 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   const [importing, setImporting] = useState(false)
   const [checking, setChecking] = useState(null)
   const [dismissing, setDismissing] = useState(null)
+  const [tradesError, setTradesError] = useState(null)
+  // Per-trade outcome of the last check/retry this session: { [tradeId]: { error?, message? } }
+  const [rowNotices, setRowNotices] = useState({})
+  // Inline Retry recovery / Link replacement form: { tradeId, mode: 'retry'|'link', value } or null
+  const [recoveryForm, setRecoveryForm] = useState(null)
+  const [recovering, setRecovering] = useState(null)
 
   const pairQuery = buildPairQuery(pair)
 
@@ -131,13 +149,27 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
       const data = await res.json()
       if (data.success) {
         setManualTrades(data.trades || [])
+        setTradesError(null)
+        return data.trades || []
       }
-    } catch {
-      // silent
+      setTradesError(data.error || 'Failed to load manual trades')
+    } catch (err) {
+      setTradesError(err.message)
     } finally {
       setTradesLoading(false)
     }
+    return null
   }, [exchange, pairQuery])
+
+  // Load tracked trades with the page, not on first expand, so an outstanding
+  // recovery is visible (and expanded) after a cold reload (issue #1034).
+  useEffect(() => {
+    let active = true
+    fetchManualTrades().then((trades) => {
+      if (active && trades?.some(isOutstandingRecovery)) setExpanded(true)
+    })
+    return () => { active = false }
+  }, [fetchManualTrades])
 
   const handleExpand = () => {
     const next = !expanded
@@ -280,6 +312,8 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
     return handleImportOrphanSell()
   }
 
+  const setRowNotice = (tradeId, notice) => setRowNotices(prev => ({ ...prev, [tradeId]: notice }))
+
   const handleCheckStatus = async (tradeId) => {
     setChecking(tradeId)
     try {
@@ -287,13 +321,51 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
         method: 'POST',
       })
       const data = await res.json()
-      if (data.success) {
-        fetchManualTrades()
-      }
-    } catch {
-      // silent
+      setRowNotice(tradeId, data.success
+        ? { message: data.message || 'Status checked' }
+        : { error: data.error || 'Status check failed' })
+    } catch (err) {
+      setRowNotice(tradeId, { error: err.message })
     } finally {
       setChecking(null)
+    }
+    fetchManualTrades()
+  }
+
+  const openRecoveryForm = (trade, mode) => {
+    setRecoveryForm({ tradeId: trade.id, mode, value: '' })
+    setRowNotice(trade.id, null)
+  }
+
+  const handleContinueRecovery = async () => {
+    if (!recoveryForm) return
+    const { tradeId, mode, value } = recoveryForm
+    const body = mode === 'retry' ? { recoveryBuyPrice: parseFloat(value) } : { existingBuyOrderId: value.trim() }
+    if (mode === 'retry' && !(body.recoveryBuyPrice > 0)) {
+      setRowNotice(tradeId, { error: 'Recovery buy price must be a positive number' })
+      return
+    }
+    setRecovering(tradeId)
+    try {
+      const res = await fetch(`/api/${exchange}/regime/manual-trade/${tradeId}/retry${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setRecoveryForm(null)
+        setRowNotice(tradeId, { message: data.placed
+          ? `Placed recovery buy ${data.trade?.buyOrderId || ''}`.trim()
+          : `Linked replacement buy ${data.trade?.buyOrderId || ''}`.trim() })
+        fetchManualTrades()
+      } else {
+        setRowNotice(tradeId, { error: data.error || 'Recovery failed' })
+      }
+    } catch (err) {
+      setRowNotice(tradeId, { error: err.message })
+    } finally {
+      setRecovering(null)
     }
   }
 
@@ -350,7 +422,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
           <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>&#9654;</span>
           Manual Trades
         </button>
-        {manualTrades.filter(t => t.status === 'buy_pending' || t.status === 'tp_pending').length > 0 && (
+        {manualTrades.some(t => isOutstandingRecovery(t) || t.status === 'tp_pending') && (
           <span className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
         )}
       </h3>
@@ -721,6 +793,9 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
               </button>
             </h4>
 
+            {tradesError && (
+              <p role="alert" className="mb-2 text-xs text-red-400">{tradesError}</p>
+            )}
             {manualTrades.length === 0 ? (
               <p className="text-xs text-gray-400">No manual trades tracked yet.</p>
             ) : (
@@ -750,8 +825,14 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                         ? (trade.sellPrice - trade.buyPrice) * (trade.sellSize || trade.buySize)
                         : null
 
+                      const notice = rowNotices[trade.id] || (isOutstandingRecovery(trade) ? trade.lastCheck : null)
+                      const formOpen = recoveryForm?.tradeId === trade.id
+                      const showRecovery = trade.tradeType === 'sell_first' && (isOutstandingRecovery(trade) || formOpen)
+                      const recovered = recoveredSize(trade)
+
                       return (
-                        <tr key={trade.id} className="border-t border-gray-700/50 hover:bg-gray-700/30">
+                        <Fragment key={trade.id}>
+                        <tr className="border-t border-gray-700/50 hover:bg-gray-700/30">
                           <td className="px-2 py-1">
                             <span className={`px-1.5 py-0.5 rounded-sm text-[10px] border ${STATUS_COLORS[trade.status] || STATUS_COLORS.dismissed}`}>
                               {STATUS_LABELS[trade.status] || trade.status}
@@ -784,8 +865,77 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                                 {checking === trade.id ? 'Checking...' : 'Check Status'}
                               </button>
                             )}
+                            {canContinueRecovery(trade) && (
+                              <span className="flex gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => openRecoveryForm(trade, 'retry')}
+                                  className="px-2 py-0.5 rounded-sm text-[10px] bg-purple-600/30 text-purple-300 hover:bg-purple-600/50 border border-purple-500/30"
+                                >
+                                  Retry recovery
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openRecoveryForm(trade, 'link')}
+                                  className="px-2 py-0.5 rounded-sm text-[10px] bg-blue-600/30 text-blue-300 hover:bg-blue-600/50 border border-blue-500/30"
+                                >
+                                  Link replacement
+                                </button>
+                              </span>
+                            )}
                           </td>
                         </tr>
+                        {(showRecovery || notice) && (
+                          <tr className="bg-gray-900/30">
+                            <td colSpan={9} className="px-2 pb-2 text-[10px] text-gray-300">
+                              {showRecovery && (
+                                <div>
+                                  Recovered {recovered.toFixed(8)} of {(trade.sellSize || 0).toFixed(8)}
+                                  {trade.buyOrderId && <> &middot; buy <span className="font-mono">{truncId(trade.buyOrderId)}</span></>}
+                                  {(trade.recoveryAttempts?.length || 0) > 1 && <> &middot; {trade.recoveryAttempts.length} attempts</>}
+                                </div>
+                              )}
+                              {notice?.error && <div role="alert" className="text-red-400">{notice.error}</div>}
+                              {!notice?.error && notice?.message && <div role="status" className="text-gray-300">{notice.message}</div>}
+                              {formOpen && (
+                                <div className="mt-1 flex flex-wrap items-end gap-2">
+                                  <div>
+                                    <label htmlFor={`recovery-${trade.id}`} className="block text-gray-400 mb-0.5">
+                                      {recoveryForm.mode === 'retry' ? 'Recovery Buy Limit Price (USD)' : 'Replacement Buy Order ID'}
+                                    </label>
+                                    <input
+                                      id={`recovery-${trade.id}`}
+                                      type={recoveryForm.mode === 'retry' ? 'number' : 'text'}
+                                      value={recoveryForm.value}
+                                      onChange={(e) => setRecoveryForm(prev => ({ ...prev, value: e.target.value }))}
+                                      className="px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-xs text-gray-300 font-mono"
+                                    />
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={handleContinueRecovery}
+                                    disabled={recovering === trade.id || !recoveryForm.value.trim()}
+                                    className={`px-3 py-1 rounded text-xs font-medium ${
+                                      recovering === trade.id || !recoveryForm.value.trim()
+                                        ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                                        : 'bg-purple-600/50 text-purple-300 hover:bg-purple-600/70 border border-purple-400/50'
+                                    }`}
+                                  >
+                                    {recovering === trade.id ? 'Submitting...' : recoveryForm.mode === 'retry' ? 'Place Recovery Buy' : 'Link Buy'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setRecoveryForm(null)}
+                                    className="px-3 py-1 rounded-sm text-xs text-gray-400 hover:text-gray-300 bg-gray-700 border border-gray-600"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                        </Fragment>
                       )
                     })}
                   </tbody>

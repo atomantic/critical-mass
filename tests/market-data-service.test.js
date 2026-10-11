@@ -2757,3 +2757,176 @@ describe('startMarketDataService stop-during-start cancellation (issue #415)', (
     assert.equal(stopCount, 1, 'only one service was ever created');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Exclusive fill-ledger handover (issue #1008)
+// ---------------------------------------------------------------------------
+// The engine and this service each load their own ledger and every persist
+// replaces the whole file, so ownership must transfer without overlap. These
+// drive a real service over a real ledger in disposable storage: the fence
+// must join in-flight starts and order work before a replacement may load the
+// ledger, and a fresh service must recover fills from the handover gap.
+describe('fenceMarketDataService + handover gap recovery (issue #1008)', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const migration = require('../src/migration');
+  const MDS_PATH = require.resolve('../src/market-data-service');
+  const STUBBED = {
+    adapters: require.resolve('../src/adapters'),
+    wsFeed: require.resolve('../src/websocket-feed'),
+    stateTracker: require.resolve('../src/state-tracker'),
+    health: require.resolve('../src/health-monitor'),
+  };
+  const EXCHANGE = 'test-mds-1008';
+  const TP = 'tp-gap';
+  const originalDir = migration.getExchangeDataDir;
+
+  /** @type {Record<string, any>} */
+  let savedCache;
+  /** @type {any} */
+  let mds;
+  /** @type {any} */
+  let adapter;
+  /** @type {any} */
+  let feedConfig;
+  let root;
+
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const gate = () => {
+    /** @type {() => void} */
+    let open = () => {};
+    const promise = new Promise((resolve) => { open = /** @type {any} */ (resolve); });
+    return { promise, open };
+  };
+  const openLedger = () => require('../src/fill-ledger').createFillLedger(EXCHANGE, 'BTC-USDC', undefined, { quiet: true });
+  const tradeIdsOnDisk = () => openLedger().getAllFills().map((f) => f.tradeId).sort();
+  const filled = { orderId: TP, status: 'FILLED', filledSize: 1, averageFilledPrice: 110, totalFees: 0.1, completionPercentage: 100 };
+  const tpFill = { tradeId: 'G1', orderId: TP, side: 'sell', price: 110, size: 1, totalCommission: 0.1 };
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'mds-1008-'));
+    migration.getExchangeDataDir = (exchange) => {
+      const dir = path.join(root, exchange);
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    };
+    openLedger().ingestFill({ tradeId: 'A', orderId: 'buy-a', side: 'buy', price: 100, size: 1, totalCommission: 0.1 });
+
+    savedCache = {};
+    for (const p of [...Object.values(STUBBED), MDS_PATH]) savedCache[p] = require.cache[p];
+    feedConfig = null;
+    adapter = {
+      loadCredentials: () => ({ apiKey: 'k', apiSecret: 's' }),
+      getCandles: async () => [],
+      getOrder: async () => ({ ...filled, status: 'OPEN', filledSize: 0, completionPercentage: 0 }),
+      getOrderFills: async () => [],
+    };
+    const realAdapters = require('../src/adapters');
+    const realHealth = require('../src/health-monitor');
+    /** @param {string} p @param {any} exports */
+    const stub = (p, exports) => { require.cache[p] = /** @type {any} */ ({ id: p, filename: p, loaded: true, exports }); };
+    stub(STUBBED.adapters, { ...realAdapters, isSupported: () => true, getAdapter: () => adapter });
+    stub(STUBBED.health, { ...realHealth, instrumentAdapterForHealth: (/** @type {any} */ a) => a });
+    stub(STUBBED.wsFeed, { createWebSocketFeed: (/** @type {any} */ _exchange, /** @type {any} */ config) => {
+      feedConfig = config;
+      return { connect: () => {}, disconnect: () => {} };
+    } });
+    stub(STUBBED.stateTracker, { loadRegimeState: () => ({
+      position: { celestialBodies: [{ id: 'body-1', tpOrderId: TP, tpPrice: 110, assetOnOrder: 1 }] },
+    }) });
+    delete require.cache[MDS_PATH];
+    mds = require('../src/market-data-service');
+  });
+
+  afterEach(async () => {
+    await mds.fenceMarketDataService(EXCHANGE, undefined, 1000);
+    for (const [p, entry] of Object.entries(savedCache)) {
+      if (entry) require.cache[p] = entry;
+      else delete require.cache[p];
+    }
+    migration.getExchangeDataDir = originalDir;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('recovers a fill that executed between owners exactly once, even when the feed replays it', async () => {
+    adapter.getOrder = async () => filled;
+    adapter.getOrderFills = async () => [tpFill];
+
+    const result = await mds.startMarketDataService(EXCHANGE);
+
+    assert.equal(result.success, true);
+    assert.deepEqual(result.gapRecovery, { checked: 1, failed: [] });
+    assert.deepEqual(tradeIdsOnDisk(), ['A', 'G1'], 'gap fill booked before the transfer is reported complete');
+
+    await feedConfig.onOrderUpdate(filled);
+    assert.deepEqual(tradeIdsOnDisk(), ['A', 'G1'], 'no duplicate booking from the replay');
+  });
+
+  it('reports orders it could not confirm without failing the start', async () => {
+    adapter.getOrder = async () => { throw new Error('API 503'); };
+
+    const result = await mds.startMarketDataService(EXCHANGE);
+
+    assert.equal(result.success, true);
+    assert.deepEqual(result.gapRecovery, { checked: 0, failed: [TP] });
+  });
+
+  it('fence joins order work already in flight and leaves the ledger to the next owner', async () => {
+    assert.equal((await mds.startMarketDataService(EXCHANGE)).success, true);
+    const fetch = gate();
+    adapter.getOrderFills = async () => { await fetch.promise; return [tpFill]; };
+    const accepted = feedConfig.onOrderUpdate(filled);
+    await settle();
+
+    let fenced = false;
+    const fence = mds.fenceMarketDataService(EXCHANGE).then((r) => { fenced = true; return r; });
+    await settle();
+    assert.equal(fenced, false, 'a replacement may not load the ledger while the fetch is in flight');
+    assert.equal(mds.getMarketDataService(EXCHANGE), undefined, 'no longer reachable as the fund consumer');
+
+    fetch.open();
+    await accepted;
+    assert.deepEqual(await fence, { drained: true });
+
+    // The replacement owner writes; nothing from the fenced service follows.
+    const next = openLedger();
+    next.ingestFill({ tradeId: 'E', orderId: 'buy-e', side: 'buy', price: 100, size: 1, totalCommission: 0.1 });
+    await settle();
+    assert.deepEqual(tradeIdsOnDisk(), ['A', 'E']);
+  });
+
+  it('fence reports drained:false when the in-flight work does not settle in time', async () => {
+    assert.equal((await mds.startMarketDataService(EXCHANGE)).success, true);
+    const fetch = gate();
+    adapter.getOrderFills = async () => { await fetch.promise; return []; };
+    const accepted = feedConfig.onOrderUpdate(filled);
+    await settle();
+
+    assert.deepEqual(await mds.fenceMarketDataService(EXCHANGE, undefined, 20), { drained: false });
+
+    fetch.open();
+    await accepted;
+  });
+
+  it('fence joins a start still connecting, so it never recovers the gap or registers', async () => {
+    const candles = gate();
+    let lookups = 0;
+    adapter.getCandles = async () => { await candles.promise; return []; };
+    adapter.getOrder = async () => { lookups += 1; return filled; };
+    const started = mds.startMarketDataService(EXCHANGE);
+    await settle();
+
+    let fenced = false;
+    const fence = mds.fenceMarketDataService(EXCHANGE).then((r) => { fenced = true; return r; });
+    await settle();
+    assert.equal(fenced, false, 'the start must settle before a replacement may load');
+
+    candles.open();
+    assert.deepEqual(await started, { success: false, error: 'stopped during start' });
+    assert.deepEqual(await fence, { drained: true });
+    assert.equal(lookups, 0, 'a fenced service runs no gap recovery');
+    assert.equal(mds.getMarketDataService(EXCHANGE), undefined);
+    assert.deepEqual(tradeIdsOnDisk(), ['A']);
+  });
+});
