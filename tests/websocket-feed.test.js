@@ -85,11 +85,13 @@ const VARIANTS = [
 const openFeed = (t, variant) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
   FakeWebSocket.instances = [];
-  const events = { disconnects: 0 };
+  const events = { disconnects: 0, connects: 0, errors: 0 };
   const feed = createWebSocketFeed(variant.exchange, {
     productId: 'BTC-USD',
     publicOnly: true,
+    onConnect: () => { events.connects++; },
     onDisconnect: () => { events.disconnects++; },
+    onError: () => { events.errors++; },
   });
   feed.connect();
   const sock = FakeWebSocket.instances[0];
@@ -171,6 +173,67 @@ for (const variant of VARIANTS) {
       assert.equal(sock.terminated, true);
     });
 
+    it('ignores obsolete socket callbacks after reconnect, including liveness', (t) => {
+      const { feed, sock, events } = openFeed(t, variant);
+      sock.close();
+      sock.emit('close', 1006, Buffer.from('lost'));
+      assert.equal(feed.isActive(), false);
+      t.mock.timers.tick(1000);
+      const replacement = FakeWebSocket.instances[1];
+      replacement.emit('open');
+      t.mock.timers.tick(variant.openDelayMs);
+      assert.equal(events.connects, 2);
+      const subscriptions = replacement.sent.length;
+
+      t.mock.timers.tick(HEARTBEAT);
+      t.mock.timers.tick(HEARTBEAT);
+      sock.readyState = FakeWebSocket.OPEN; // An already queued old callback remains stale.
+      sock.emit('open');
+      sock.emit('message', Buffer.from('{}'));
+      sock.emit('pong');
+      sock.emit('error', new Error('obsolete socket'));
+      sock.emit('close', 1006, Buffer.from('late close'));
+      assert.equal(events.errors, 0);
+      assert.equal(events.disconnects, 1);
+      assert.equal(events.connects, 2);
+      assert.equal(replacement.sent.length, subscriptions);
+      assert.equal(feed.isActive(), true);
+      assert.equal(sock.pings, 0, 'closed session heartbeat is cancelled');
+      t.mock.timers.tick(HEARTBEAT);
+      assert.equal(replacement.terminated, true, 'old pong/message cannot reset replacement watchdog');
+      feed.disconnect();
+    });
+
+    it('cancels a pending reconnect on shutdown and ignores late close callbacks', (t) => {
+      const { feed, sock, events } = openFeed(t, variant);
+      sock.close();
+      sock.emit('close', 1006, Buffer.from('lost'));
+      feed.disconnect();
+      sock.emit('close', 1006, Buffer.from('duplicate'));
+      t.mock.timers.tick(HEARTBEAT * 10);
+      assert.equal(events.disconnects, 1);
+      assert.equal(FakeWebSocket.instances.length, 1);
+      assert.equal(sock.pings, 0);
+    });
+
+    it('uses capped exponential reconnect backoff and resets it on open', (t) => {
+      const { feed, sock } = openFeed(t, variant);
+      let current = sock;
+      for (const delay of [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000]) {
+        const count = FakeWebSocket.instances.length;
+        current.close();
+        current.emit('close', 1006, Buffer.from('lost'));
+        t.mock.timers.tick(delay - 1);
+        assert.equal(FakeWebSocket.instances.length, count);
+        t.mock.timers.tick(1);
+        current = FakeWebSocket.instances[count];
+      }
+      assert.equal(feed.getStatus().reconnectAttempts, 8);
+      current.emit('open');
+      assert.equal(feed.getStatus().reconnectAttempts, 0);
+      feed.disconnect();
+    });
+
     it('intentional disconnect() clears the watchdog and never reconnects', (t) => {
       const { feed, sock } = openFeed(t, variant);
 
@@ -183,3 +246,57 @@ for (const variant of VARIANTS) {
     });
   });
 }
+
+
+describe('Crypto.com delayed subscription session ownership (issue #1003)', () => {
+  for (const shutdown of ['close', 'disconnect']) {
+    it(`cancels subscription and heartbeat when ${shutdown} occurs before subscription`, (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+      const intervals = t.mock.method(global, 'setInterval');
+      FakeWebSocket.instances = [];
+      const events = [];
+      const feed = createWebSocketFeed('cryptocom', {
+        productId: 'BTC-USD',
+        onConnect: () => events.push('connect'),
+        onDisconnect: () => events.push('disconnect'),
+      });
+      feed.connect();
+      const first = FakeWebSocket.instances[0];
+      first.emit('open');
+      t.mock.timers.tick(100);
+      if (shutdown === 'close') {
+        first.close();
+        first.emit('close', 1006, Buffer.from('early close'));
+      } else feed.disconnect();
+      t.mock.timers.tick(900);
+      assert.deepEqual(events, ['disconnect']);
+      assert.equal(feed.isActive(), false);
+      assert.equal(first.sent.length, 0);
+      assert.equal(intervals.mock.callCount(), 0, 'no obsolete heartbeat is installed');
+
+      if (shutdown === 'close') {
+        t.mock.timers.tick(100);
+        assert.equal(FakeWebSocket.instances.length, 2);
+        const replacement = FakeWebSocket.instances[1];
+        replacement.emit('open');
+        replacement.emit('open'); // Duplicate open cannot schedule a second subscription.
+        t.mock.timers.tick(999);
+        assert.equal(replacement.sent.length, 0);
+        t.mock.timers.tick(1);
+        assert.equal(replacement.sent.length, 2);
+        assert.deepEqual(replacement.sent.map(JSON.parse).map(sub => sub.params.channels), [
+          ['ticker.BTC_USD'], ['trade.BTC_USD'],
+        ]);
+        assert.deepEqual(events, ['disconnect', 'connect']);
+        assert.equal(intervals.mock.callCount(), 1);
+        t.mock.timers.tick(HEARTBEAT);
+        assert.equal(replacement.pings, 1);
+      } else {
+        t.mock.timers.tick(HEARTBEAT * 10);
+        assert.equal(FakeWebSocket.instances.length, 1);
+      }
+      assert.equal(first.pings, 0);
+      feed.disconnect();
+    });
+  }
+});
