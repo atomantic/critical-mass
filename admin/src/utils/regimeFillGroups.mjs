@@ -168,3 +168,56 @@ export function searchDryRunFillGroups(history, search) {
     group.buys.some(buy => buy.orderId?.toLowerCase().includes(query)))
   return { ...history, sellGroups, ...summarizeDryRunSellGroups(sellGroups) }
 }
+
+const toEpochMs = (val) => {
+  if (typeof val === 'number') return val
+  if (typeof val === 'string') {
+    const parsed = new Date(val).getTime()
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  return 0
+}
+
+/**
+ * Derives chronological cumulative P&L points for chart display.
+ * Aligned with shared/cycle-pairing.mjs (live) and deriveDryRunFillGroups (dry run).
+ *
+ * @param {object} [params]
+ * @param {object[]} [params.fills] - raw fills from GET /regime/fills (live mode)
+ * @param {boolean} [params.isDryRun] - whether the engine is running in dry-run mode
+ * @param {object[]} [params.dryRunFilled] - simulated filledOrders from status.dryRun.filledOrders
+ * @returns {Array<{ date: Date, pnl: number, cumulative: number }>}
+ */
+export function deriveRegimeCumulativePnl({ fills = [], isDryRun = false, dryRunFilled = [] } = {}) {
+  const groups = isDryRun
+    ? deriveDryRunFillGroups(dryRunFilled)
+    : deriveRegimeFillGroups(fills)
+
+  const sellGroups = groups?.sellGroups || []
+  const sorted = [...sellGroups].sort((a, b) => {
+    const tA = toEpochMs(a.sell?.timestamp || a.sell?.filledAt || a.sell?.placedAt)
+    const tB = toEpochMs(b.sell?.timestamp || b.sell?.filledAt || b.sell?.placedAt)
+    return tA - tB
+  })
+
+  let cumulativePnL = 0
+  const points = []
+
+  for (const group of sorted) {
+    const sell = group.sell
+    if (!sell) continue
+    const pnl = typeof sell.pnl === 'number' ? sell.pnl : (sell.pnl != null ? Number(sell.pnl) : null)
+    if (pnl === null || !Number.isFinite(pnl)) continue
+
+    cumulativePnL += pnl
+    const ts = toEpochMs(sell.timestamp || sell.filledAt || sell.placedAt)
+
+    points.push({
+      date: new Date(ts),
+      pnl,
+      cumulative: cumulativePnL,
+    })
+  }
+
+  return points
+}

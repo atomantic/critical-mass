@@ -7,6 +7,7 @@ import RegimeTimeline from './charts/RegimeTimeline'
 import CumulativePnlChart from './charts/CumulativePnlChart'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { pairQuery as buildPairQuery } from '../utils/api'
+import { deriveRegimeCumulativePnl } from '../utils/regimeFillGroups.mjs'
 
 function ChartsRegime({ exchange = 'coinbase', pair }) {
   const pairQuery = buildPairQuery(pair)
@@ -124,50 +125,21 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
   }
 
   const isRunning = status?.isRunning
-  const isDryRun = status?.isDryRun
+  const isDryRun = Boolean(status?.isDryRun || config?.dryRun)
   const market = status?.market || {}
   const position = status?.position || {}
   const regime = status?.regime || {}
+  const dryRunFilled = status?.dryRun?.filledOrders || []
+  const activeFills = isDryRun ? dryRunFilled : fills
 
-  // Calculate P&L distribution from fills
-  const pnlData = (() => {
-    const sortedFills = [...fills].sort((a, b) => a.timestamp - b.timestamp)
-    let totalBtc = 0
-    let totalCost = 0
-    let cumulativePnL = 0
-    const pnlPoints = []
-
-    sortedFills.forEach(fill => {
-      if (fill.side === 'buy') {
-        totalBtc += fill.size
-        totalCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || 0)
-      } else {
-        const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
-        const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || 0)
-        const costBasis = avgCost * fill.size
-        const pnl = proceeds - costBasis
-        cumulativePnL += pnl
-
-        pnlPoints.push({
-          date: new Date(fill.timestamp),
-          pnl: pnl,
-          cumulative: cumulativePnL,
-        })
-
-        // Update position
-        const remaining = totalBtc - fill.size
-        if (remaining > 0) {
-          totalBtc = remaining
-          totalCost = avgCost * remaining
-        } else {
-          totalBtc = 0
-          totalCost = 0
-        }
-      }
+  // Calculate cumulative P&L distribution from fills aligned with cycle-pairing ruleset
+  const pnlData = useMemo(() => {
+    return deriveRegimeCumulativePnl({
+      fills,
+      isDryRun,
+      dryRunFilled,
     })
-
-    return pnlPoints
-  })()
+  }, [fills, isDryRun, dryRunFilled])
 
   return (
     <div className="space-y-6">
@@ -203,11 +175,11 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
       {/* Quick Stats */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         <div className="bg-gray-800 rounded-lg p-3 text-center">
-          <div className="text-2xl font-bold text-blue-400">{fills.filter(f => f.side === 'buy').length}</div>
+          <div className="text-2xl font-bold text-blue-400">{activeFills.filter(f => f.side === 'buy').length}</div>
           <div className="text-xs text-gray-400">Total Entries</div>
         </div>
         <div className="bg-gray-800 rounded-lg p-3 text-center">
-          <div className="text-2xl font-bold text-green-400">{fills.filter(f => f.side === 'sell').length}</div>
+          <div className="text-2xl font-bold text-green-400">{activeFills.filter(f => f.side === 'sell').length}</div>
           <div className="text-xs text-gray-400">TPs Filled</div>
         </div>
         <div className="bg-gray-800 rounded-lg p-3 text-center">
