@@ -338,9 +338,11 @@ const createManualTradeImporter = ({
    *    sourceOrderIds/buyOrders after a merge);
    *  - retired: the order's buy rows carry TP-placement linkage (placeBodyTp
    *    stamps bodyId together with sellOrderId only once the body is live) or
-   *    a per-sell consumption record. Every path that removes a body goes
-   *    through a TP sell, so this distinguishes a legitimately sold body —
-   *    which must never be recreated — from one that was never committed.
+   *    a per-sell consumption record. A bare sellOrderId is NOT evidence:
+   *    recalculateCycles stamps one onto every buy of a >=50%-sold cycle for
+   *    display. Every path that removes a body goes through a TP sell, so this
+   *    distinguishes a legitimately sold body — which must never be
+   *    recreated — from one that was never committed.
    * @param {string} buyOrderId
    * @param {string|null|undefined} bodyId - Expected id (intent or ledger)
    * @returns {{bodyId: string|null, tier?: string, live: boolean}|null}
