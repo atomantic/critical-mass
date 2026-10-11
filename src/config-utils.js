@@ -585,6 +585,8 @@ const getBaseCurrency = (productId) => {
   if (upper.endsWith('USDC')) return upper.slice(0, -4);
   if (upper.endsWith('USDT')) return upper.slice(0, -4);
   if (upper.endsWith('USD')) return upper.slice(0, -3);
+  const match = upper.match(/^(.+?)(EUR|GBP|SGD|BTC|ETH)$/);
+  if (match) return match[1];
   return upper;
 };
 
@@ -601,6 +603,8 @@ const getQuoteCurrency = (productId) => {
   if (upper.endsWith('USDC')) return 'USDC';
   if (upper.endsWith('USDT')) return 'USDT';
   if (upper.endsWith('USD')) return 'USD';
+  const match = upper.match(/^(.+?)(EUR|GBP|SGD|BTC|ETH)$/);
+  if (match) return match[2];
   return 'USD';
 };
 
