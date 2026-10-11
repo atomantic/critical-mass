@@ -83,10 +83,8 @@ const attempt = (fn) => {
  * Write a file so that a crash leaves either the previous content or the new
  * content: temp file, fsync, atomic rename, fsync of the parent directory.
  *
- * Deliberately not `state-tracker.atomicWriteSync`: that helper does not fsync
- * the data or the directory entry, and surviving a power loss is the entire
- * reason the journal exists (config-utils.js makes the same call for the same
- * reason). A failed write leaves no temp file behind.
+ * Kept local to avoid state-tracker's dependency cycle through migration.
+ * A failed write leaves no temp file behind.
  * @param {string} file - Destination path
  * @param {string|Buffer} data - Bytes to write
  * @param {number} [mode] - Permission mode for the new inode
@@ -96,11 +94,14 @@ const writeFileDurable = (file, data, mode) => {
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   const written = attempt(() => {
     const fd = fs.openSync(tmp, 'w', mode);
-    fs.writeFileSync(fd, data);
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
+    try {
+      fs.writeFileSync(fd, data);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(tmp, file);
-    fsyncDir(path.dirname(file), { ignoreAllErrors: true });
+    fsyncDir(path.dirname(file));
   });
   if (!written.ok) {
     fs.rmSync(tmp, { force: true });
@@ -127,9 +128,13 @@ const replaceFileAtomic = (src, dest) => {
     fs.copyFileSync(src, tmp);
     if (existingMode.ok && existingMode.value) fs.chmodSync(tmp, existingMode.value);
     const fd = fs.openSync(tmp, 'r+');
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(tmp, dest);
+    fsyncDir(path.dirname(dest));
   });
   // A half-written temp file left in data/ would be picked up by the next
   // backup and outlive the failure that created it.
@@ -243,14 +248,20 @@ const writeJournal = (dataDir, journal, status) => {
  * never while destinations may still be mixed-generation.
  * @param {string} dataDir - Data directory
  * @param {Object} journal - Journal object
- * @returns {void}
+ * The journal must be durably absent BEFORE any original is deleted. Otherwise
+ * a crash during cleanup can leave a rollback marker with missing originals.
+ * @returns {{ok: true, value: any} | {ok: false, error: Error}} Journal retirement outcome
  */
 const cleanupArtifacts = (dataDir, journal) => {
+  const retired = attempt(() => {
+    fs.rmSync(path.join(dataDir, JOURNAL_FILENAME), { force: true });
+    fsyncDir(dataDir);
+  });
+  if (!retired.ok) return retired;
   for (const rel of [journal.originalsDir, journal.stageDir].filter(Boolean)) {
     attempt(() => fs.rmSync(path.join(dataDir, rel), { recursive: true, force: true }));
   }
-  attempt(() => fs.rmSync(path.join(dataDir, JOURNAL_FILENAME), { force: true }));
-  fsyncDir(dataDir, { ignoreAllErrors: true });
+  return retired;
 };
 
 /**
@@ -284,14 +295,22 @@ const rollbackFromJournal = ({ dataDir, journal, logger }) => {
       continue;
     }
     // The attempt created this file; the pre-restore state had nothing here.
-    const gone = attempt(() => fs.rmSync(dest, { force: true }));
+    const gone = attempt(() => {
+      fs.rmSync(dest, { force: true });
+      if (fs.existsSync(path.dirname(dest))) fsyncDir(path.dirname(dest));
+    });
     if (gone.ok) removed++;
     else failures.push(`${entry.dest}: ${gone.error.message}`);
   }
 
   // Deepest first, so nested creations unwind cleanly.
   for (const rel of [...(journal.createdDirs || [])].sort((a, b) => b.length - a.length)) {
-    attempt(() => fs.rmdirSync(path.join(dataDir, rel)));
+    const dir = path.join(dataDir, rel);
+    const removedDir = attempt(() => fs.rmdirSync(dir));
+    if (removedDir.ok) {
+      const synced = attempt(() => fsyncDir(path.dirname(dir)));
+      if (!synced.ok) failures.push(`${rel}: ${synced.error.message}`);
+    }
   }
 
   if (failures.length > 0) {
@@ -320,9 +339,9 @@ const describeArtifacts = (journal) => ({
  * the in-flight failure path and by restart recovery so the two can never drift
  * on which artifacts survive.
  *
- * The journal transitions are best-effort — a filesystem that cannot take the
- * status update is exactly the one whose rollback is about to fail anyway, and
- * the on-disk `applying` marker already routes the next start back here.
+ * The rollback marker must land before any reversion: a failed commit flush
+ * may have left a `committed` marker visible. Reverting under that marker
+ * would let startup treat a partial rollback as a committed restore.
  *
  * @param {Object} params
  * @param {string} params.dataDir - Data directory
@@ -332,12 +351,18 @@ const describeArtifacts = (journal) => ({
  */
 const revertAndSettle = ({ dataDir, journal, logger }) => {
   const marked = writeJournal(dataDir, journal, STATUS.ROLLING_BACK);
-  const current = marked.ok ? marked.journal : journal;
+  if (!marked.ok) {
+    const failures = [`Could not persist rollback marker: ${marked.error.message}`];
+    return { ok: false, restored: 0, removed: 0, failures, recovery: { ...describeArtifacts(journal), failures } };
+  }
+  const current = marked.journal;
 
   const rolled = rollbackFromJournal({ dataDir, journal: current, logger });
   if (rolled.ok) {
-    cleanupArtifacts(dataDir, current);
-    return rolled;
+    const cleaned = cleanupArtifacts(dataDir, current);
+    if (cleaned.ok) return rolled;
+    rolled.ok = false;
+    rolled.failures.push(`Could not retire rollback journal: ${cleaned.error.message}`);
   }
 
   const incomplete = writeJournal(dataDir, current, STATUS.INCOMPLETE);
@@ -380,6 +405,7 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
   const entries = [];
   const saved = attempt(() => {
     fs.mkdirSync(originalsPath, { recursive: true, mode: 0o700 });
+    const snapshotDirs = new Set([originalsPath]);
     for (const rel of files) {
       const dest = path.join(dataDir, rel);
       const existed = fs.existsSync(dest);
@@ -387,9 +413,18 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
         const copyTo = path.join(originalsPath, rel);
         fs.mkdirSync(path.dirname(copyTo), { recursive: true });
         fs.copyFileSync(dest, copyTo);
+        const fd = fs.openSync(copyTo, 'r+');
+        try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+        for (let dir = path.dirname(copyTo); dir !== originalsPath; dir = path.dirname(dir)) {
+          snapshotDirs.add(dir);
+        }
       }
       entries.push({ dest: rel, existed });
     }
+    // Flush the entire rollback tree, children before parents, before its
+    // journal can authorize replacing even one live file.
+    for (const dir of [...snapshotDirs].sort((a, b) => b.length - a.length)) fsyncDir(dir);
+    fsyncDir(dataDir);
   });
   if (!saved.ok) {
     attempt(() => fs.rmSync(originalsPath, { recursive: true, force: true }));
@@ -400,7 +435,7 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
   }
 
   // ---- Durable marker, written BEFORE the first destination changes ------
-  const journalWrite = writeJournal(dataDir, {
+  const journalPlan = {
     journalVersion: JOURNAL_VERSION,
     restoreId,
     filename,
@@ -409,13 +444,21 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
     stageDir: path.relative(dataDir, stageDir),
     entries,
     createdDirs: dirs,
-  }, STATUS.APPLYING);
+  };
+  const journalWrite = writeJournal(dataDir, journalPlan, STATUS.APPLYING);
   if (!journalWrite.ok) {
-    attempt(() => fs.rmSync(originalsPath, { recursive: true, force: true }));
+    // The rename may have succeeded before a directory flush failed. Retire
+    // that possible marker durably before disposing of its rollback copies.
+    const cleaned = cleanupArtifacts(dataDir, journalPlan);
     logger.error(`❌ 💾 Restore refused: could not persist the rollback journal: ${journalWrite.error.message}`, {
       action: 'restore-apply', filename, error: journalWrite.error.message,
     });
-    return { success: false, code: 'journal-write-failed', error: `Could not persist the restore rollback journal: ${journalWrite.error.message}. No files were changed.`, rolledBack: true };
+    return {
+      success: false, code: 'journal-write-failed',
+      error: `Could not persist the restore rollback journal: ${journalWrite.error.message}. No destination files were changed.`,
+      rolledBack: cleaned.ok,
+      ...(!cleaned.ok ? { recovery: describeArtifacts({ ...journalPlan, status: STATUS.APPLYING }) } : {}),
+    };
   }
   const journal = journalWrite.journal;
 
@@ -425,12 +468,19 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
 
   // ---- Apply: every destination replaced atomically ----------------------
   const applied = attempt(() => {
-    for (const rel of dirs) fs.mkdirSync(path.join(dataDir, rel), { recursive: true });
+    for (const rel of dirs) {
+      const dir = path.join(dataDir, rel);
+      fs.mkdirSync(dir, { recursive: true });
+      fsyncDir(path.dirname(dir));
+    }
     for (const rel of files) replaceFileAtomic(path.join(stageDir, rel), path.join(dataDir, rel));
   });
 
-  if (!applied.ok) {
-    const message = applied.error.message;
+  // Success requires the durable commit marker too. A failed marker write is
+  // still an uncommitted transaction and must use the same rollback path.
+  const committed = applied.ok ? writeJournal(dataDir, journal, STATUS.COMMITTED) : applied;
+  if (!committed.ok) {
+    const message = committed.error.message;
     logger.error(`❌ 💾 Restore failed after ${Date.now() - startedAt}ms applying ${filename}: ${message} — rolling back ${entries.length} destination(s)`, {
       action: 'restore-apply', filename, restoreId, error: message, elapsedMs: Date.now() - startedAt,
     });
@@ -451,8 +501,7 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
   }
 
   // ---- Commit: one durable flip, then the artifacts go ------------------
-  const committed = writeJournal(dataDir, journal, STATUS.COMMITTED);
-  cleanupArtifacts(dataDir, committed.ok ? committed.journal : journal);
+  cleanupArtifacts(dataDir, committed.journal);
   logger.info(`ℹ️ 💾 Restore applied and committed in ${Date.now() - startedAt}ms: ${files.length} file(s) from ${filename}`, {
     action: 'restore-apply', filename, restoreId, filesRestored: files.length, elapsedMs: Date.now() - startedAt,
   });
