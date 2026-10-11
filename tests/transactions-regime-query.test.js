@@ -16,6 +16,15 @@ describe('regime fills paged query', () => {
     }
   });
 
+  it('keeps large exchange metadata and ownership annotations out of page responses', () => {
+    const history = fills(150).map(row => ({ ...row, rawExchangeResponse: 'x'.repeat(100000), consumedBy: [{ orderId: 'private-detail' }] }));
+    const page = createTransactionsReadView(() => history, () => 'rev').query({ paged: true });
+    assert.equal(page.fills.length, 100);
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) < 50000);
+    assert.ok(page.fills.every(row => !('rawExchangeResponse' in row) && !('consumedBy' in row)));
+    assert.equal(history[0].rawExchangeResponse.length, 100000);
+  });
+
   it('pages 30,000 rows globally with deterministic ties, and caches idle/page reads', () => {
     const history = fills(30000);
     let reads = 0;
@@ -51,7 +60,7 @@ describe('regime fills paged query', () => {
             const filtered = enriched.filter(row => (side === 'all' || row.side === side) && (cycle === 'all' || (row.cycleId || 'current') === cycle));
             const expected = sortFills(filtered, sortField, sortDir);
             const actual = view.query({ paged: true, sortField, sortDir, side, cycle });
-            assert.deepEqual(actual.fills, expected.slice(0, 100));
+            assert.deepEqual(actual.fills.map(row => [row.tradeId, row.pnl, row.holdbackAsset, row.holdbackValue, row.avgCost]), expected.slice(0, 100).map(row => [row.tradeId, row.pnl, row.holdbackAsset, row.holdbackValue, row.avgCost]));
             assert.deepEqual(actual.summary, summarizeFills(filtered));
             assert.equal(actual.pageInfo.total, expected.length);
           }

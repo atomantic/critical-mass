@@ -8,7 +8,7 @@ const ID_SEGMENT = /^(?:[0-9a-f]{8,}|\d{4,}|[A-Za-z0-9_-]{20,})$/i;
 function redactEndpoint(method, rawUrl) {
   const url = new URL(rawUrl, 'http://redacted.invalid');
   const parts = url.pathname.split('/').filter(Boolean).map((seg, i, all) => {
-    if (all[0] === 'api' && i === 1) return ':exchange';
+    if (all[0] === 'api' && i === 1 && !['auth', 'exchanges', 'presets', 'sentinel', 'updown', 'notifications', 'backups', 'health', 'providers', 'runs', 'prompts'].includes(seg)) return ':exchange';
     return ID_SEGMENT.test(seg) ? ':id' : seg;
   });
   const keys = [...new Set(url.searchParams.keys())].sort();

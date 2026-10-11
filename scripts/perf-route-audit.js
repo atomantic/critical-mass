@@ -192,7 +192,7 @@ async function main(argv = process.argv.slice(2)) {
     });
     const reasons = ['protocol-level replay: browser rendering and real engine transport are not exercised'];
     if (!fixture) reasons.push('reconnect subscription sets not inspectable on an external gateway');
-    return finish(verdict(result.checks, fixture ? [] : reasons.slice(1)), result, fixture ? [] : reasons.slice(1));
+    return finish(verdict(result.checks, reasons), result, reasons);
   } catch (err) {
     return finish('UNVERIFIED', null, [`audit could not run: ${err.message}`]);
   } finally {
