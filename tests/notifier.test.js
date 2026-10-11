@@ -21,6 +21,7 @@ const {
   formatFundSummaryLines,
   isQuietHours,
   shouldSendEvent,
+  resolveNotificationEventKey,
   computeDailySummaryDelay,
   CRITICAL_EVENTS,
 } = require('../src/notifier');
@@ -239,6 +240,45 @@ describe('shouldSendEvent (pure)', () => {
   });
 });
 
+describe('TP notification switches cover celestial body events (issue #1031)', () => {
+  const cfg = (events, quietHours = { enabled: false, start: 23, end: 7 }) => ({
+    enabled: true,
+    telegram: { botToken: 'FAKE:TOKEN', chatId: 'chat-1' },
+    events,
+    quietHours,
+  });
+  const ALIASES = [
+    ['tp_filled', 'tp_filled'], ['body_tp_filled', 'tp_filled'],
+    ['tp_placed', 'tp_placed'], ['body_tp_placed', 'tp_placed'],
+  ];
+
+  for (const [eventType, key] of ALIASES) {
+    it(`${eventType} follows events.${key} (false suppresses, true permits)`, () => {
+      assert.equal(resolveNotificationEventKey(eventType), key);
+      assert.equal(shouldSendEvent(cfg({ [key]: false }), eventType), false);
+      assert.equal(shouldSendEvent(cfg({ [key]: true }), eventType), true);
+    });
+
+    it(`${eventType} is still subject to quiet hours`, () => {
+      const quiet = { enabled: true, start: 1, end: 5 };
+      assert.equal(shouldSendEvent(cfg({ [key]: true }, quiet), eventType, new Date(2024, 0, 1, 3, 0)), false);
+    });
+  }
+
+  it('default config (tp_placed=false) suppresses both placed variants and leaves filled on', () => {
+    const events = { tp_placed: false, tp_filled: true };
+    assert.equal(shouldSendEvent(cfg(events), 'tp_placed'), false);
+    assert.equal(shouldSendEvent(cfg(events), 'body_tp_placed'), false);
+    assert.equal(shouldSendEvent(cfg(events), 'body_tp_filled'), true);
+  });
+
+  it('unrelated and unknown event types resolve to themselves', () => {
+    assert.equal(resolveNotificationEventKey('buy_filled'), 'buy_filled');
+    assert.equal(resolveNotificationEventKey('constructor'), 'constructor');
+    assert.equal(shouldSendEvent(cfg({ tp_filled: false }), 'body_buy_filled'), true);
+  });
+});
+
 describe('computeDailySummaryDelay (pure)', () => {
   it('is finite and positive for every hour 0-23, whether already passed or still ahead today', () => {
     const now = new Date(2024, 0, 1, 12, 0, 0, 0);
@@ -306,6 +346,23 @@ describe('createNotifier() integration (fs-mocked config, stubbed fetch)', () =>
       assert.ok(calls[0].body.text.includes('first'));
       assert.ok(calls[0].body.text.includes('second'));
       assert.ok(calls[0].body.text.includes('third'));
+    });
+  });
+
+  it('body_tp_placed / body_tp_filled producer events honor the TP switches end to end', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    setupFsMocks({ ...RUNNING_CONFIG, events: { tp_placed: false, tp_filled: true } });
+    const calls = stubFetch();
+    notifier = createNotifier();
+    notifier.start();
+
+    emit('body_tp_placed', 'BODY-PLACED-MARK');
+    emit('body_tp_filled', 'BODY-FILLED-MARK');
+    t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+    return flushMicrotasks().then(() => {
+      assert.equal(calls.length, 1);
+      assert.ok(!calls[0].body.text.includes('BODY-PLACED-MARK'));
+      assert.ok(calls[0].body.text.includes('BODY-FILLED-MARK'));
     });
   });
 

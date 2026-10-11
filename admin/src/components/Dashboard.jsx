@@ -1,6 +1,7 @@
 import { getIntervalMs } from '../utils/intervals.mjs'
 import { useState, useEffect, useCallback, useId } from 'react'
 import ActivityFeed from './ActivityFeed'
+import FailedSellPlacements from './FailedSellPlacements'
 import { useToast } from './Toast'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
@@ -82,21 +83,25 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const [convertPreview, setConvertPreview] = useState(null)
   const [showConvertConfirm, setShowConvertConfirm] = useState(false)
   const [converting, setConverting] = useState(false)
+  const [retryingBuyId, setRetryingBuyId] = useState(null)
   const { addToast } = useToast()
   const pairQuery = buildPairQuery(pair)
 
-  useEffect(() => {
-    const fetchLive = async () => {
-      const res = await fetch(`/api/${exchange}/status${pairQuery}`)
-      if (res.ok) {
-        const data = await res.json()
-        setLiveData(data)
-      }
+  // The live status read is the authoritative DCA state.json view: failed sell
+  // placements come from here, not from the regime-derived summary.
+  const fetchLive = useCallback(async () => {
+    const res = await fetch(`/api/${exchange}/status${pairQuery}`)
+    if (res.ok) {
+      const data = await res.json()
+      setLiveData(data)
     }
+  }, [exchange, pairQuery])
+
+  useEffect(() => {
     fetchLive()
     const interval = setInterval(fetchLive, 10000)
     return () => clearInterval(interval)
-  }, [exchange, pairQuery])
+  }, [fetchLive])
 
   // Live countdown timer
   useEffect(() => {
@@ -156,6 +161,26 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
       failureTitle: 'Order Sync Failed',
       failureMessage: 'Could not sync DCA orders',
       onSuccess: () => onRefresh?.(),
+    })
+  }
+
+  const handleRetrySell = async (buyOrderId) => {
+    await runDashboardAction({
+      setBusy: (busy) => setRetryingBuyId(busy ? buyOrderId : null),
+      request: () => fetch(`/api/${exchange}/retry-failed-sell${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ buyOrderId })
+      }),
+      addToast,
+      failureTitle: 'Sell Retry Failed',
+      failureMessage: 'Could not place the sell for this buy',
+      onSuccess: async (res) => {
+        const data = await res.json()
+        addToast({ type: 'success', title: 'Sell Placed', message: data.message || `Sell placed for buy ${buyOrderId}` })
+        onRefresh?.()
+      },
+      onSettled: () => fetchLive(),
     })
   }
 
@@ -408,6 +433,15 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
             </div>
           </div>
         </div>
+
+        {/* Failed Sell Placements — bought asset with no tracked sell (issue #1035) */}
+        <FailedSellPlacements
+          failedSells={liveData?.failedSells}
+          placementIntents={liveData?.placementIntents}
+          baseCurrency={baseCurrency}
+          retryingBuyId={retryingBuyId}
+          onRetry={handleRetrySell}
+        />
 
         {/* Pending Orders */}
         {(state.orders || []).filter(o => o.status === 'pending').length > 0 && (
