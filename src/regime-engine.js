@@ -1242,18 +1242,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     reactiveFlashEpoch += 1;
     if (flashCancelSweep) return;
     flashCancelSweep = trackPendingWrite(`engine-flash-cancel:${fundLabel}`, async () => {
+      logger.warn(`⚡ [${exchange}] Flash move — cancelling resting reactive entries (cancelEntriesOnFlash)`);
       // An entry already dispatched is not in pendingOrders until its response
       // lands; sweeping first would miss it. Wait (bounded) for the entry-lock
       // holder — the epoch bump makes any not-yet-dispatched reactive bid bail.
-      const deadline = Date.now() + flashEntryWaitMs;
-      while (engineLocks.isEntryInProgress() && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
+      // A placement that outlives the wait is swept around, and the fence
+      // stays up for another sweep once it lands. A stopped engine leaves
+      // entries resting (as stop() always does), so stop ends the loop.
+      for (;;) {
+        const deadline = Date.now() + flashEntryWaitMs;
+        while (engineLocks.isEntryInProgress() && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        const placementInFlight = engineLocks.isEntryInProgress();
+        if (placementInFlight) {
+          logger.warn(`⚠️ [${exchange}] Flash cancel: an entry placement is still in flight after ${flashEntryWaitMs / 1000}s — sweeping now and again once it lands`);
+        }
+        await orderExecutor.cancelAllEntries();
+        if (!placementInFlight || !isRunning) break;
       }
-      if (engineLocks.isEntryInProgress()) {
-        logger.warn(`⚠️ [${exchange}] Flash cancel: an entry placement is still in flight after ${flashEntryWaitMs / 1000}s — sweeping without it`);
-      }
-      logger.warn(`⚡ [${exchange}] Flash move — cancelling resting reactive entries (cancelEntriesOnFlash)`);
-      await orderExecutor.cancelAllEntries();
     }).catch((err) => logger.error(
       `❌ [${exchange}] Flash entry cancel failed: ${err.message}`, { error: err.message }
     )).finally(() => { flashCancelSweep = null; });
