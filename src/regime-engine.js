@@ -982,6 +982,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const tailEvents = createTailEventsMonitor(exchange, config, {
     onFlashMove: (delta, multiple) => {
       tradeEvents.emitTradeEvent('flash_move', exchange, `Flash move: ${multiple.toFixed(1)}x ATR`, { delta, multiple });
+      cancelReactiveEntriesOnFlash();
     },
     // Fired once per pause entry; a breach during an active pause is a no-op.
     onSpreadPause: (spreadBps, maxSpreadBps) => {
@@ -1202,6 +1203,61 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let dustMergeRetryAfter = 0;
   // Bound on stop()'s wait for in-flight fill handlers (test-overridable).
   let fillDrainMs = FILL_DRAIN_MS;
+
+  // Flash-move entry protection (#1028). With cancelEntriesOnFlash on, a flash
+  // pulls resting reactive bids. Two fences keep a new reactive bid from
+  // slipping past the sweep: bumping reactiveFlashEpoch fails admission for any
+  // reactive evaluation captured before the flash (placeEntryBid re-checks it
+  // just before dispatch), and evaluateReactiveEntry refuses to start while
+  // flashCancelSweep is set. Ladder rungs (`ladder_entry`) and TPs are exempt:
+  // cancelAllEntries only targets reactive `entry` orders, and the ladder path
+  // uses the plain admission, untouched by the epoch.
+  let reactiveFlashEpoch = 0;
+  /** @type {Promise<void>|null} The one in-flight sweep; overlapping flashes coalesce onto it. */
+  let flashCancelSweep = null;
+  // Bound on the sweep's wait for an already-dispatched entry to land (test-overridable).
+  let flashEntryWaitMs = FILL_DRAIN_MS;
+
+  /**
+   * Admission for one reactive evaluation: the shared #1009 admission plus the
+   * flash fence. Ladder evaluations keep using captureEntryAdmission directly.
+   * @returns {() => boolean}
+   */
+  const captureReactiveEntryAdmission = () => {
+    const isAdmitted = captureEntryAdmission();
+    const epoch = reactiveFlashEpoch;
+    return () => isAdmitted() && epoch === reactiveFlashEpoch;
+  };
+
+  /**
+   * Cancel resting reactive entries after a flash move (#1028). Synchronous
+   * entry point for the tail monitor's callback: the fence is raised before it
+   * returns, and the exchange work runs as a tracked pending write so stop()
+   * and the fund drain wait for it. Fill/refusal ownership stays with
+   * orderExecutor.cancelAllEntries (a refused or unverifiable cancel keeps the
+   * order tracked; discovered fills route through onFillDetected).
+   */
+  const cancelReactiveEntriesOnFlash = () => {
+    if (config.cancelEntriesOnFlash === false) return;
+    reactiveFlashEpoch += 1;
+    if (flashCancelSweep) return;
+    flashCancelSweep = trackPendingWrite(`engine-flash-cancel:${fundLabel}`, async () => {
+      // An entry already dispatched is not in pendingOrders until its response
+      // lands; sweeping first would miss it. Wait (bounded) for the entry-lock
+      // holder — the epoch bump makes any not-yet-dispatched reactive bid bail.
+      const deadline = Date.now() + flashEntryWaitMs;
+      while (engineLocks.isEntryInProgress() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      if (engineLocks.isEntryInProgress()) {
+        logger.warn(`⚠️ [${exchange}] Flash cancel: an entry placement is still in flight after ${flashEntryWaitMs / 1000}s — sweeping without it`);
+      }
+      logger.warn(`⚡ [${exchange}] Flash move — cancelling resting reactive entries (cancelEntriesOnFlash)`);
+      await orderExecutor.cancelAllEntries();
+    }).catch((err) => logger.error(
+      `❌ [${exchange}] Flash entry cancel failed: ${err.message}`, { error: err.message }
+    )).finally(() => { flashCancelSweep = null; });
+  };
   let stateSaveInterval = null;
   let fillDriftInterval = null;
   let fillDriftInFlight = false;
@@ -3176,6 +3232,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // A partial recovery is not a valid snapshot: never overwrite durable
       // state merely to dispose an attempt that failed before running.
       if (!wasRunning) return;
+      // A flash-cancel sweep (#1028) routes the fills it discovers through the
+      // fill gate, so let it settle before the gate closes. Bounded like the
+      // fill drain; the fund drain after stop() still joins its pending write.
+      if (flashCancelSweep) {
+        let timer;
+        const settled = await Promise.race([
+          flashCancelSweep.then(() => true),
+          new Promise((resolve) => { timer = setTimeout(() => resolve(false), fillDrainMs); }),
+        ]);
+        clearTimeout(timer);
+        if (!settled) {
+          logger.warn(`⚠️ [${exchange}] Shutdown: flash entry cancel still in flight after ${fillDrainMs / 1000}s — saving state anyway; startup recovery will repair`);
+        }
+      }
       // Let fill handlers already past their gate finish (TP placement,
       // cancel/replace) so the snapshot below includes their writes and the
       // process is not killed between ledger ingest and TP booking. New
@@ -6804,7 +6874,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Fund lifecycle guard: when draining/closed, never place new entries
     if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) return;
-    const isAdmitted = captureEntryAdmission();
+    // A flash-cancel sweep is pulling reactive bids (#1028): placing one now
+    // would race it. The next tick after the sweep settles re-evaluates.
+    if (flashCancelSweep) return;
+    const isAdmitted = captureReactiveEntryAdmission();
 
     // Don't place a new reactive entry if there's already a pending entry OR a
     // resting ladder rung on the exchange. ladder_entry orders were previously
@@ -9767,6 +9840,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       setFillInProgress: engineLocks._test.setFillInProgress,
       setDustMergeRetryAfter: (v) => { dustMergeRetryAfter = v; },
       setFillDrainMs: (v) => { fillDrainMs = v; },
+      setFlashEntryWaitMs: (v) => { flashEntryWaitMs = v; },
+      getFlashCancelSweep: () => flashCancelSweep,
       // Speeds up the incompleteFills engine-level retry (issue #679
       // follow-up) for tests — production keeps the 10s/5-attempt default.
       setIncompleteFillRetryTiming: (delayMs, maxRetries) => {
