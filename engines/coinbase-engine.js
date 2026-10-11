@@ -624,7 +624,7 @@ const getManualTradeStore = (exchange, pair) => {
  * src/manual-trade-import.js; this resolves the fund's live dependencies.
  * Throws on cold-start ledger corruption (via getActiveLedger) — callers
  * convert that into the structured {success:false} IPC response.
- * @returns {Object} importSell / importBuy / importPair / checkPendingBuy
+ * @returns {Object} importSell / importBuy / importPair / checkPendingBuy / retryRecovery
  */
 const getManualTradeImporter = (exchange, resolvedPair) => {
   const { getAdapter } = require('../src/adapters');
@@ -645,7 +645,7 @@ const getManualTradeImporter = (exchange, resolvedPair) => {
 /**
  * Wire an IPC manual-trade request to one importer method.
  * @param {string} channel - IPC request channel
- * @param {'importSell'|'importBuy'|'importPair'|'checkPendingBuy'} method
+ * @param {'importSell'|'importBuy'|'importPair'|'checkPendingBuy'|'retryRecovery'} method
  */
 const wireManualTradeImport = (channel, method) => {
   ipcServer.onRequest(channel, async (payload, exchange, pair) => {
@@ -714,6 +714,7 @@ ipcServer.onRequest('regime:manual-trades', async (payload, exchange, pair) => {
 // effects). These handlers only resolve the fund and delegate.
 wireManualTradeImport('regime:manual-trade', 'importSell');
 wireManualTradeImport('regime:manual-trade-check', 'checkPendingBuy');
+wireManualTradeImport('regime:manual-trade-retry', 'retryRecovery');
 wireManualTradeImport('regime:manual-trade-buy', 'importBuy');
 wireManualTradeImport('regime:manual-trade-pair', 'importPair');
 
