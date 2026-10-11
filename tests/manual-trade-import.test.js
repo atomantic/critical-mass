@@ -910,6 +910,25 @@ describe('Manual Trade Import', () => {
       assert.equal(ex.adapter.calls.placeLimitBuy.length, 1);
     });
 
+    it('keeps a cancellation pending when only its completion percentage reports executions', async () => {
+      const ex = createExchange();
+      const imported = await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });
+      const { id: tradeId, buyOrderId } = imported.trade;
+      ex.orders[buyOrderId] = { status: 'CANCELLED', completionPercentage: 40 };
+      ex.fills[buyOrderId] = [];
+
+      const checked = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      assert.equal(checked.success, false);
+      assert.match(checked.error, /40% complete, but none of its fills are visible/);
+      assert.equal(store.getById(tradeId).status, STATUS.BUY_PENDING);
+
+      // Once the executions surface, the same check settles the true remainder.
+      ex.fills[buyOrderId] = [makeFill({ tradeId: 'late-1', price: 95000, size: 0.0012 })];
+      const settled = await createImporter({ adapter: ex.adapter }).checkPendingBuy({ tradeId });
+      assert.equal(settled.cancelled, true);
+      assert.equal(settled.remainingSize, 0.0018);
+    });
+
     it('preserves the association and surfaces a failed status lookup', async () => {
       const ex = createExchange();
       const imported = await createImporter({ adapter: ex.adapter }).importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '95000' });

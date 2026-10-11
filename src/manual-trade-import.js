@@ -350,6 +350,12 @@ const createManualTradeImporter = ({
     if (reportedSize > visibleSize + SIZE_EPSILON) {
       return checkFailed(`Buy order ${buyOrderId} is ${normalizedStatus || 'FILLED'} with ${reportedSize} executed, but only ${visibleSize} is visible in its fills so far — check again before retrying`);
     }
+    // Some responses report progress only as a percentage. Executions the
+    // exchange admits to but whose quantity no fill shows yet are unverified,
+    // not zero — settling now could replace them and over-recover.
+    if (visibleSize <= SIZE_EPSILON && (Number(orderStatus?.completionPercentage) || 0) > 0) {
+      return checkFailed(`Buy order ${buyOrderId} is ${normalizedStatus || 'FILLED'} at ${orderStatus.completionPercentage}% complete, but none of its fills are visible yet — check again before retrying`);
+    }
 
     const remainingBefore = getUncoveredSize(trade);
     const { tradeIds, totalSize, totalQuote } = ingestAdapterFills(fillLedger, buyFills, buyOrderId, 'buy');
