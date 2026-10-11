@@ -34,10 +34,29 @@ const { createContextLogger } = require('./logger');
  * @property {'sell_recorded'|'buy_pending'|'buy_recorded'|'tp_pending'|'completed'|'dismissed'} status
  * @property {'sell_first'|'buy_first'|'paired'} tradeType
  * @property {string|null} bodyId
+ * @property {BodyIntent|null} bodyIntent
  * @property {string} note
  * @property {number} createdAt
  * @property {number} updatedAt
  */
+
+/**
+ * Durable record of a buy-first import's body creation (issue #1022). Written
+ * BEFORE the body is published anywhere, so a crash or a thrown publication
+ * can always be resumed with the same body identity instead of being inferred
+ * from a ledger bodyId alone.
+ * @typedef {Object} BodyIntent
+ * @property {string} bodyId - Stable id of the body this import creates
+ * @property {Object|null} body - Complete body payload; dropped once committed
+ * @property {'pending'|'committed'} phase
+ * @property {number} createdAt
+ * @property {number|null} committedAt
+ */
+
+const INTENT_PHASE = Object.freeze({
+  PENDING: 'pending',
+  COMMITTED: 'committed',
+});
 
 const STATUS = Object.freeze({
   SELL_RECORDED: 'sell_recorded',
@@ -78,7 +97,7 @@ const createManualTradeStore = (exchange, pair) => {
   };
 
   /** @type {Map<string, Promise<void>>} */
-  const sellLocks = new Map();
+  const orderLocks = new Map();
 
   const load = () => {
     const filePath = getStorePath(exchange, pair);
@@ -90,6 +109,7 @@ const createManualTradeStore = (exchange, pair) => {
         for (const t of raw.trades) {
           if (!t.tradeType) t.tradeType = 'sell_first';
           if (t.bodyId === undefined) t.bodyId = null;
+          if (t.bodyIntent === undefined) t.bodyIntent = null;
           trades.set(t.id, t);
         }
       }
@@ -153,6 +173,7 @@ const createManualTradeStore = (exchange, pair) => {
       status: STATUS.SELL_RECORDED,
       tradeType: 'sell_first',
       bodyId: null,
+      bodyIntent: null,
       note: sellData.note || '',
       createdAt: now,
       updatedAt: now,
@@ -201,6 +222,7 @@ const createManualTradeStore = (exchange, pair) => {
       status: STATUS.BUY_RECORDED,
       tradeType: 'buy_first',
       bodyId: null,
+      bodyIntent: null,
       note: buyData.note || '',
       createdAt: now,
       updatedAt: now,
@@ -278,6 +300,7 @@ const createManualTradeStore = (exchange, pair) => {
       status: STATUS.COMPLETED,
       tradeType: 'paired',
       bodyId: null,
+      bodyIntent: null,
       note: note || '',
       createdAt: now,
       updatedAt: now,
@@ -315,7 +338,56 @@ const createManualTradeStore = (exchange, pair) => {
   };
 
   /**
-   * Mark a buy-first trade as having a TP body placed
+   * Durably record the body a buy-first import is about to publish (issue
+   * #1022). Must land before the body reaches the engine or regime-state.json
+   * and before any ledger ownership is written, so every interruption after
+   * this point resumes the SAME body instead of leaving ownership that no
+   * body backs.
+   * @param {string} tradeId
+   * @param {Object} body - Complete body payload (deep-copied)
+   * @returns {ManualTrade|null}
+   */
+  const recordBodyIntent = (tradeId, body) => {
+    const trade = trades.get(tradeId);
+    if (!trade) return null;
+
+    const now = Date.now();
+    trade.bodyIntent = {
+      bodyId: body.id,
+      body: JSON.parse(JSON.stringify(body)),
+      phase: INTENT_PHASE.PENDING,
+      createdAt: now,
+      committedAt: null,
+    };
+    trade.updatedAt = now;
+
+    persist();
+    return trade;
+  };
+
+  /**
+   * Drop a pending body intent whose publication was confirmed NOT to happen
+   * (engine refused for a non-duplicate reason, no position state on disk), so
+   * the next import starts clean. Never called on a thrown publication — that
+   * outcome is unknown and must be resumed instead.
+   * @param {string} tradeId
+   * @returns {ManualTrade|null}
+   */
+  const discardBodyIntent = (tradeId) => {
+    const trade = trades.get(tradeId);
+    if (!trade) return null;
+
+    trade.bodyIntent = null;
+    trade.updatedAt = Date.now();
+
+    persist();
+    return trade;
+  };
+
+  /**
+   * Mark a buy-first trade as having a TP body placed. This is the commit
+   * point of a body intent (issue #1022): callers reach it only once the body
+   * is durable (or proven retired), so it also seals the intent as committed.
    * @param {string} tradeId
    * @param {string} bodyId
    * @returns {ManualTrade|null}
@@ -324,9 +396,17 @@ const createManualTradeStore = (exchange, pair) => {
     const trade = trades.get(tradeId);
     if (!trade) return null;
 
+    const now = Date.now();
     trade.bodyId = bodyId;
     trade.status = STATUS.TP_PENDING;
-    trade.updatedAt = Date.now();
+    trade.bodyIntent = {
+      bodyId,
+      body: null,
+      phase: INTENT_PHASE.COMMITTED,
+      createdAt: trade.bodyIntent?.createdAt ?? now,
+      committedAt: now,
+    };
+    trade.updatedAt = now;
 
     persist();
     return trade;
@@ -453,6 +533,12 @@ const createManualTradeStore = (exchange, pair) => {
   const getById = (tradeId) => trades.get(tradeId) || null;
 
   /**
+   * Trades whose body creation was interrupted before it committed (#1022).
+   * @returns {ManualTrade[]}
+   */
+  const getPendingBodyIntents = () => getAll().filter(t => t.bodyIntent?.phase === INTENT_PHASE.PENDING);
+
+  /**
    * Get pending buy order IDs (for orphan protection)
    * @returns {Set<string>}
    */
@@ -467,33 +553,53 @@ const createManualTradeStore = (exchange, pair) => {
   };
 
   /**
-   * Store-owned async serialization keyed by sellOrderId. Every importer built
-   * over this store shares the queue, so overlapping requests for one sell run
-   * one at a time (check -> placement -> association) while other sells proceed
-   * independently. The lock is released in `finally` once `fn` settles; there is
-   * deliberately no timeout, so it is never dropped while a submission is still
-   * awaiting the exchange.
+   * Store-owned async serialization keyed by order. Every importer built over
+   * this store shares the queue, so overlapping requests for one order run one
+   * at a time (check -> placement -> association) while other orders proceed
+   * independently. The lock is released in `finally` once `fn` settles; there
+   * is deliberately no timeout, so it is never dropped while a submission is
+   * still awaiting the exchange.
+   * @template T
+   * @param {string} key
+   * @param {() => Promise<T>} fn
+   * @returns {Promise<T>}
+   */
+  const withOrderLock = (key, fn) => {
+    const prev = orderLocks.get(key) || Promise.resolve();
+    const run = prev.then(fn);
+    const tail = run.then(() => {}, () => {});
+    orderLocks.set(key, tail);
+    tail.then(() => {
+      if (orderLocks.get(key) === tail) orderLocks.delete(key);
+    });
+    return run;
+  };
+
+  /**
+   * Serialize work for one sell (recovery-buy placement, issue #874).
    * @template T
    * @param {string} sellOrderId
    * @param {() => Promise<T>} fn
    * @returns {Promise<T>}
    */
-  const withSellLock = (sellOrderId, fn) => {
-    const key = String(sellOrderId);
-    const prev = sellLocks.get(key) || Promise.resolve();
-    const run = prev.then(fn);
-    const tail = run.then(() => {}, () => {});
-    sellLocks.set(key, tail);
-    tail.then(() => {
-      if (sellLocks.get(key) === tail) sellLocks.delete(key);
-    });
-    return run;
-  };
+  const withSellLock = (sellOrderId, fn) => withOrderLock(`sell:${sellOrderId}`, fn);
+
+  /**
+   * Serialize body creation/recovery for one buy (issue #1022), so concurrent
+   * imports and retries resume one stable operation instead of racing to
+   * create two bodies.
+   * @template T
+   * @param {string} buyOrderId
+   * @param {() => Promise<T>} fn
+   * @returns {Promise<T>}
+   */
+  const withBuyLock = (buyOrderId, fn) => withOrderLock(`buy:${buyOrderId}`, fn);
 
   return {
     load,
     persist,
     withSellLock,
+    withBuyLock,
     addManualSell,
     addManualBuy,
     addPairedTrade,
@@ -501,15 +607,18 @@ const createManualTradeStore = (exchange, pair) => {
     linkExistingBuy,
     markBuyFilled,
     markTpPlaced,
+    recordBodyIntent,
+    discardBodyIntent,
     refreshBuyTotals,
     dismiss,
     dismissFills,
     isFillDismissed,
     getAll,
     getPending,
+    getPendingBodyIntents,
     getById,
     getPendingBuyOrderIds,
   };
 };
 
-module.exports = { createManualTradeStore, STATUS };
+module.exports = { createManualTradeStore, STATUS, INTENT_PHASE };
