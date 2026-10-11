@@ -108,6 +108,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
     '../src/process-guard': { registerProcessGuards: () => {} },
     '../src/ipc-port-defaults': { resolveIpcPort: () => 12345 },
     '../src/stopped-fund-tp-lookup': {},
+    '../src/engine-shutdown': { createEngineShutdown: () => ({ shutdown: async () => 0, isStopping: () => false }) },
     '../package.json': { version: 'test' },
   };
   const exits = [];

@@ -58,6 +58,7 @@ const { getAdapter } = require('../src/adapters');
 const { registerProcessGuards } = require('../src/process-guard');
 const { resolveIpcPort } = require('../src/ipc-port-defaults');
 const { lookupStoppedFundTpOrder } = require('../src/stopped-fund-tp-lookup');
+const { createEngineShutdown } = require('../src/engine-shutdown');
 
 /**
  * Build a context logger for one engine operation.
@@ -869,75 +870,31 @@ startup().catch((err) => {
 
 // ============ Graceful Shutdown ============
 
-const gracefulShutdown = async (signal) => {
-  const shutdownLogger = engineLogger(EXCHANGE_NAME);
-  shutdownLogger.info(`ℹ️ Received ${signal}, shutting down...`, { signal });
-
-  await cancelStarts({ shutdown: true });
-  unaccountedFillsJobs.shutdown();
-  stopAllMarketDataServices();
-
-  const stopPromises = [];
-  for (const [key, engine] of regimeEngines) {
-    shutdownLogger.info(`ℹ️ Stopping regime engine for ${key}...`, { fundKey: key });
-    stopPromises.push(engine.stop());
-  }
-
-  // Use allSettled to capture rejections without aborting other shutdowns
-  const results = await Promise.allSettled(stopPromises);
-  for (let i = 0; i < results.length; i++) {
-    if (results[i].status === 'rejected') {
-      const keys = Array.from(regimeEngines.keys());
-      const fundKey = keys[i];
-      shutdownLogger.error(`❌ Engine stop failed for ${fundKey}: ${results[i].reason.message}`, {
-        fundKey,
-        error: results[i].reason.message
-      });
-    }
-  }
-
-  // Ensure buffers flush even if engine stop failed
-  try {
-    shutdownAllBuffers();
-  } catch (err) {
-    shutdownLogger.error(`❌ Buffer shutdown failed: ${err.message}`, { error: err.message });
-  }
-
-  // Ensure IPC server closes even if other shutdowns failed
-  try {
-    ipcServer.stop();
-  } catch (err) {
-    shutdownLogger.error(`❌ IPC server stop failed: ${err.message}`, { error: err.message });
-  }
-
-  shutdownLogger.info(`ℹ️ Shutdown complete`);
-  process.exit(0);
-};
-
 // Install signal handlers with error handling and watchdog
 // Must exceed FILL_DRAIN_MS (the bounded in-flight-fill drain in regime-engine
 // stop()) plus the state save, and stay below `kill_timeout` for the engines in
 // ecosystem.config.cjs. Kept a literal: tests/pm2-kill-timeout.test.js parses it.
 const SHUTDOWN_WATCHDOG_MS = 15000;
 
+const engineShutdown = createEngineShutdown({
+  ipcServer,
+  regimeEngines,
+  cancelStarts,
+  settleStarts,
+  unaccountedFillsJobs,
+  stopMarketServices: stopAllMarketDataServices,
+  drainMarketStarts: drainMarketDataStarts,
+  drainPendingWrites,
+  shutdownAllBuffers,
+  logger: engineLogger(EXCHANGE_NAME),
+  watchdogMs: SHUTDOWN_WATCHDOG_MS,
+});
+
+const gracefulShutdown = engineShutdown.shutdown;
+
 const setupShutdownHandlers = () => {
-  const shutdownLogger = engineLogger(EXCHANGE_NAME);
-
-  const shutdownWithWatchdog = (signal) => {
-    gracefulShutdown(signal).catch((err) => {
-      shutdownLogger.error(`❌ Shutdown failed: ${err.message}`, { error: err.message });
-      process.exit(1);
-    });
-
-    // Force-exit watchdog: if shutdown hangs, kill after SHUTDOWN_WATCHDOG_MS
-    setTimeout(() => {
-      shutdownLogger.error(`❌ Forcing exit after shutdown timeout (${SHUTDOWN_WATCHDOG_MS / 1000}s)`, { timeout: SHUTDOWN_WATCHDOG_MS });
-      process.exit(1);
-    }, SHUTDOWN_WATCHDOG_MS).unref();
-  };
-
-  process.on('SIGTERM', () => shutdownWithWatchdog('SIGTERM'));
-  process.on('SIGINT', () => shutdownWithWatchdog('SIGINT'));
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 };
 
 setupShutdownHandlers();
