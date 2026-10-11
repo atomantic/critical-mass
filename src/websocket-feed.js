@@ -14,7 +14,7 @@
  * - JWT authentication for user channel
  */
 
-const WebSocket = require('ws');
+const { createWebSocketLifecycle } = require('./websocket-lifecycle');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { preparePrivateKey } = require('./adapters/coinbase/auth');
@@ -35,10 +35,6 @@ const { createContextLogger } = require('./logger');
  */
 
 const COINBASE_WS_URL = 'wss://advanced-trade-ws.coinbase.com';
-const HEARTBEAT_INTERVAL = 30000; // 30 seconds
-const MAX_MISSED_PONGS = 2; // terminate after this many unanswered pings
-const RECONNECT_BASE_DELAY = 1000;
-const MAX_RECONNECT_DELAY = 60000;
 
 /**
  * Generate JWT for WebSocket authentication
@@ -94,74 +90,7 @@ const createWebSocketFeed = (exchange, config) => {
 
   const logger = createContextLogger({ exchange, pair: config.productId });
 
-  let ws = null;
-  let isConnected = false;
-  let shouldReconnect = true;
-  let reconnectAttempts = 0;
-  let heartbeatInterval = null;
-  let reconnectTimeout = null;
-  let missedPongs = 0;
-
-  /**
-   * Connect to WebSocket
-   */
-  const connect = () => {
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-      return;
-    }
-
-    logger.info(`🔌 [${exchange}] Connecting to WebSocket...`, { lifecycle: 'connecting' });
-
-    ws = new WebSocket(COINBASE_WS_URL);
-
-    ws.on('open', () => {
-      logger.info(`✅ [${exchange}] WebSocket connected`, { lifecycle: 'connected' });
-      isConnected = true;
-      reconnectAttempts = 0;
-
-      // Subscribe to channels
-      subscribe();
-
-      // Start heartbeat
-      startHeartbeat();
-
-      if (config.onConnect) {
-        config.onConnect();
-      }
-    });
-
-    ws.on('message', (data) => {
-      missedPongs = 0; // Any inbound data proves the connection is alive
-      handleMessage(data.toString());
-    });
-
-    ws.on('close', (code, reason) => {
-      logger.info(`🔌 [${exchange}] WebSocket closed: ${code} ${reason}`, {
-        lifecycle: 'closed',
-        code,
-        reason: reason.toString(),
-      });
-      handleDisconnect();
-    });
-
-    ws.on('error', (error) => {
-      logger.error(`❌ [${exchange}] WebSocket error: ${error.message}`, { error: error.message });
-      if (config.onError) {
-        config.onError(error);
-      }
-    });
-
-    ws.on('pong', () => {
-      missedPongs = 0; // Connection is alive
-    });
-  };
-
-  /**
-   * Subscribe to channels
-   */
-  const subscribe = () => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
+  const subscribe = (ws) => {
     const productIds = [config.productId];
 
     // Subscribe to ticker channel (public)
@@ -366,126 +295,9 @@ const createWebSocketFeed = (exchange, config) => {
     }
   };
 
-  /**
-   * Handle disconnection
-   */
-  const handleDisconnect = () => {
-    isConnected = false;
-    stopHeartbeat();
-
-    if (config.onDisconnect) {
-      config.onDisconnect();
-    }
-
-    if (shouldReconnect) {
-      scheduleReconnect();
-    }
-  };
-
-  /**
-   * Schedule reconnection with exponential backoff
-   */
-  const scheduleReconnect = () => {
-    if (reconnectTimeout) {
-      clearTimeout(reconnectTimeout);
-    }
-
-    const delay = Math.min(
-      RECONNECT_BASE_DELAY * Math.pow(2, reconnectAttempts),
-      MAX_RECONNECT_DELAY
-    );
-
-    logger.info(`🔄 [${exchange}] Reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts + 1})`, {
-      lifecycle: 'reconnecting',
-      delayMs: delay,
-      reconnectAttempt: reconnectAttempts + 1,
-    });
-
-    reconnectTimeout = setTimeout(() => {
-      reconnectAttempts++;
-      connect();
-    }, delay);
-  };
-
-  /**
-   * Start heartbeat ping with pong-timeout watchdog.
-   * If MAX_MISSED_PONGS pings go unanswered (no pong, no messages),
-   * the connection is silently dead — terminate() forces the 'close'
-   * event so the existing reconnect/backoff path runs.
-   */
-  const startHeartbeat = () => {
-    stopHeartbeat();
-    missedPongs = 0;
-
-    heartbeatInterval = setInterval(() => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-      if (missedPongs >= MAX_MISSED_PONGS) {
-        logger.error(`💀 [${exchange}] No pong after ${missedPongs} pings (${(missedPongs * HEARTBEAT_INTERVAL) / 1000}s) — terminating dead WebSocket to trigger reconnect`, {
-          missedPongs,
-          elapsedMs: missedPongs * HEARTBEAT_INTERVAL,
-        });
-        ws.terminate();
-        return;
-      }
-
-      missedPongs++;
-      ws.ping();
-    }, HEARTBEAT_INTERVAL);
-  };
-
-  /**
-   * Stop heartbeat ping
-   */
-  const stopHeartbeat = () => {
-    if (heartbeatInterval) {
-      clearInterval(heartbeatInterval);
-      heartbeatInterval = null;
-    }
-  };
-
-  /**
-   * Disconnect WebSocket
-   */
-  const disconnect = () => {
-    shouldReconnect = false;
-    stopHeartbeat();
-
-    if (reconnectTimeout) {
-      clearTimeout(reconnectTimeout);
-      reconnectTimeout = null;
-    }
-
-    if (ws) {
-      ws.close();
-      ws = null;
-    }
-
-    isConnected = false;
-    logger.info(`🔌 [${exchange}] WebSocket disconnected`, { lifecycle: 'disconnected' });
-  };
-
-  /**
-   * Check if connected
-   * @returns {boolean}
-   */
-  const isActive = () => isConnected;
-
-  /**
-   * Get connection status
-   * @returns {{connected: boolean, reconnectAttempts: number}}
-   */
-  const getStatus = () => ({
-    connected: isConnected,
-    reconnectAttempts,
+  return createWebSocketLifecycle({
+    url: COINBASE_WS_URL, exchange, logger, config, subscribe, handleMessage,
   });
-
-  return {
-    connect,
-    disconnect,
-    isActive,
-    getStatus,
-  };
 };
 
 module.exports = {
