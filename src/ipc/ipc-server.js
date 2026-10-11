@@ -37,6 +37,7 @@ const createIPCServer = (port, name) => {
   /** @type {((error: Error) => void) | null} */
   let rejectStart = null;
   let initializing = false;
+  let shuttingDown = false;
   /** @type {Set<WebSocket>} */
   const clients = new Set();
   /** @type {Set<Promise<void>>} Outbound frames awaiting their send callback. */
@@ -68,7 +69,7 @@ const createIPCServer = (port, name) => {
         host: '127.0.0.1',
         // Process IPC only: browsers always supply Origin, including opaque
         // ('null') origins. Check presence so an empty header is rejected too.
-        verifyClient: ({ req }) => !Object.prototype.hasOwnProperty.call(req.headers, 'origin'),
+        verifyClient: ({ req }) => !shuttingDown && !Object.prototype.hasOwnProperty.call(req.headers, 'origin'),
       });
     } catch (err) {
       return Promise.reject(err);
@@ -173,6 +174,20 @@ const createIPCServer = (port, name) => {
         error: 'Engine is initializing; retry after startup recovery completes.',
       };
       ws.send(serialize(createMessage(MSG_TYPE.RESPONSE, msg.channel, refusal, { id: msg.id })));
+      return;
+    }
+
+    if (shuttingDown) {
+      if (msg.type === MSG_TYPE.REQUEST) {
+        const refusal = {
+          success: false,
+          code: 'engine-shutting-down',
+          error: 'Engine is shutting down; request rejected.',
+        };
+        try {
+          ws.send(serialize(createMessage(MSG_TYPE.RESPONSE, msg.channel, refusal, { id: msg.id })));
+        } catch { /* client disconnected */ }
+      }
       return;
     }
 
@@ -300,6 +315,8 @@ const createIPCServer = (port, name) => {
     flush,
     onRequest,
     setInitializing: (value) => { initializing = Boolean(value); },
+    setShuttingDown: (value) => { shuttingDown = Boolean(value); },
+    isShuttingDown: () => shuttingDown,
     getClientCount: () => clients.size,
   };
 };
