@@ -1049,6 +1049,15 @@ const updateFundConfig = (exchange, pair, updates) => mutateFundBlock(exchange, 
       throw new Error(`productId "${updates.productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}) — a config save cannot change a fund's traded asset`);
     }
   }
+  // Full-form saves omit depth controls until production depth data exists.
+  // Retain only these legacy keys; other regime fields keep replacement semantics.
+  if (updates.regime) {
+    const regime = { ...updates.regime };
+    for (const key of ['minDepthUsdc', 'depthPauseMs']) {
+      if (!(key in regime) && block.regime && key in block.regime) regime[key] = block.regime[key];
+    }
+    return { ...block, ...updates, regime };
+  }
   return { ...block, ...updates };
 });
 

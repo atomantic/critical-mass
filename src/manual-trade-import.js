@@ -25,8 +25,8 @@
 
 const { createNewBody, syncPositionState, mergeIntoBody, computeBuyOrderShortfall } = require('./celestial-hierarchy');
 const { loadRegimeState, saveRegimeState } = require('./state-tracker');
-const { STATUS } = require('./manual-trades');
-const { FillValidationError, validateFillInput } = require('./fill-ledger');
+const { STATUS, INTENT_PHASE } = require('./manual-trades');
+const { FillValidationError, validateFillInput, LEGACY_CONSUMPTION_KEY } = require('./fill-ledger');
 const { readBooleanFlag } = require('./shared-utils');
 const { getRegimeConfig } = require('./config-utils');
 
@@ -130,7 +130,7 @@ const legTimestamp = (fills) => new Date(fills[0].tradeTime).getTime();
  *   case the persisted body on regime-state.json is extended directly
  *   instead (synchronously, and flagged `needsTpReprice` rather than
  *   touched if it already carries a live TP from before the engine stopped).
- * @returns {Object} importSell / importBuy / importPair / checkPendingBuy
+ * @returns {Object} importSell / importBuy / importPair / checkPendingBuy / recoverPendingBodyIntents
  */
 const createManualTradeImporter = ({
   exchange,
@@ -305,19 +305,72 @@ const createManualTradeImporter = ({
     });
   };
 
+  /** Whether a live/persisted body owns this buy order (by id or bookkeeping). */
+  const bodyOwnsOrder = (body, bodyId, buyOrderId) => body.id === bodyId
+    || body.sourceOrderIds?.includes(buyOrderId)
+    || body.buyOrders?.some((order) => order.orderId === buyOrderId);
+
   /**
    * Persist a freshly created body when no engine is running. The engine picks
-   * it up on next start and places its take-profit order.
-   * @returns {boolean} Whether the body reached disk
+   * it up on next start and places its take-profit order. Idempotent for a
+   * resumed intent (issue #1022): a body already on disk for this buy — same
+   * id, or a survivor that absorbed it — is returned instead of pushed again.
+   * @returns {{bodyId: string, tier: string}|null} The body on disk, or null
+   *   when there is no position state to persist into
    */
   const persistBodyToDisk = (body) => {
     const saved = loadRegimeState(exchange, pair);
-    if (!saved.position) return false;
+    if (!saved.position) return null;
     saved.position.celestialBodies = saved.position.celestialBodies || [];
+    const existing = saved.position.celestialBodies.find((b) => bodyOwnsOrder(b, body.id, body.sourceOrderIds?.[0]));
+    if (existing) return { bodyId: existing.id, tier: existing.tier };
     saved.position.celestialBodies.push(body);
     syncPositionState(saved.position, saved.position.celestialBodies);
     saveRegimeState(saved.position, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, pair);
-    return true;
+    return { bodyId: body.id, tier: body.tier };
+  };
+
+  /**
+   * Find the body that durably owns this buy (issue #1022). A ledger bodyId
+   * alone is NOT proof — the pre-#1022 importer stamped one optimistically
+   * before any body was saved. Two kinds of evidence count:
+   *  - live: a body on regime-state.json owns the order (by id, or through
+   *    sourceOrderIds/buyOrders after a merge);
+   *  - retired: a body sale demonstrably consumed THIS buy — a per-sell
+   *    `consumedBy` entry (written only when a body sale books against the
+   *    buy) naming a booked sell, or the buy's sellOrderId naming a sell
+   *    booked to this buy's own body identity (the intent's id or a bodyId
+   *    on its rows, which merges re-stamp). Linkage alone is NOT evidence:
+   *    recalculateCycles stamps a cycle's sell — possibly another body's
+   *    sale — onto every buy of a >=50%-sold cycle for display, and the
+   *    legacy closure seal derives `consumedBy.__legacy__` from that link.
+   * Every path that removes a body books a TP sale first, so this separates a
+   * legitimately sold body — which must never be recreated — from one that was
+   * never committed.
+   * @param {string} buyOrderId
+   * @param {string|null|undefined} bodyId - Expected id (intent or ledger)
+   * @returns {{bodyId: string, tier?: string, live: boolean}|null}
+   */
+  const findCommittedBody = (buyOrderId, bodyId) => {
+    const persisted = loadRegimeState(exchange, pair).position?.celestialBodies
+      ?.find((body) => bodyOwnsOrder(body, bodyId, buyOrderId));
+    if (persisted) return { bodyId: persisted.id, tier: persisted.tier, live: true };
+    const rows = fillLedger.getFillsForOrder(buyOrderId);
+    const ownBodyIds = new Set([bodyId, ...rows.map((row) => row.bodyId)].filter(Boolean));
+    const bookedSale = (sellOrderId, acceptBody) => fillLedger.getFillsForOrder(sellOrderId)
+      .find((row) => row.side === 'sell' && row.bodyId && acceptBody(row.bodyId));
+    for (const row of rows) {
+      for (const [sellOrderId, qty] of Object.entries(row.consumedBy || {})) {
+        if (sellOrderId === LEGACY_CONSUMPTION_KEY || !(Number(qty) > 0)) continue;
+        const booked = bookedSale(sellOrderId, () => true);
+        if (booked) return { bodyId: booked.bodyId, live: false };
+      }
+    }
+    for (const sellOrderId of new Set(rows.map((row) => row.sellOrderId).filter(Boolean))) {
+      const booked = bookedSale(sellOrderId, (id) => ownBodyIds.has(id));
+      if (booked) return { bodyId: booked.bodyId, live: false };
+    }
+    return null;
   };
 
   /**
@@ -387,6 +440,13 @@ const createManualTradeImporter = ({
    * already-imported trade with `alreadyImported: true` instead of creating
    * a second body and placing a second live TP sell for the same fill.
    *
+   * Recoverable end-to-end (issue #1022): body creation is a durable intent
+   * on the trade record, written before the body is published. The body is
+   * saved BEFORE the ledger is stamped with its ownership or the trade moves
+   * to TP_PENDING, and an interrupted intent is resumed — with the same body
+   * identity — on the next import of the buy or on recoverPendingBodyIntents.
+   * Creation and recovery for one buy are serialized on the shared store.
+   *
    * @param {Object} payload
    * @param {string} payload.buyOrderId
    * @param {string} [payload.note]
@@ -405,6 +465,10 @@ const createManualTradeImporter = ({
     if (createBodyFlag.error) return fail(createBodyFlag.error);
     const createBody = createBodyFlag.value;
 
+    return store.withBuyLock(buyOrderId, () => importBuyLocked({ buyOrderId, note, createBody }));
+  };
+
+  const importBuyLocked = async ({ buyOrderId, note, createBody }) => {
     const { fills: buyFills, error } = await fetchOrderFills(buyOrderId, 'buy');
     if (error) return fail(error);
 
@@ -431,6 +495,15 @@ const createManualTradeImporter = ({
       note: note || '',
     });
 
+    // An interrupted body creation resumes BEFORE anything below reads
+    // ownership (issue #1022): either its body is found/proven and linked, or
+    // it is published now under the same identity. Growth since the intent was
+    // written is then handled by the extend path below like any other retry.
+    if (trade.bodyIntent?.phase === INTENT_PHASE.PENDING) {
+      const resumed = await resumeBodyIntent(trade);
+      if (!resumed.success) return fail(resumed.error);
+    }
+
     // Retry guard (issue #691, mirrors importSell's #423 guard): addManualBuy
     // is idempotent at the STORE layer, but a retry that reaches this point
     // would still create and inject a SECOND body for the same fill, placing
@@ -444,11 +517,29 @@ const createManualTradeImporter = ({
     // store without its bodyId. The ledger normally retains the link; the
     // persisted body's order bookkeeping also recovers a missing annotation.
     const persistedBodyId = !trade.bodyId && !ledgerBodyId
-      ? loadRegimeState(exchange, pair).position?.celestialBodies?.find((body) =>
-        body.sourceOrderIds?.includes(buyOrderId) || body.buyOrders?.some((order) => order.orderId === buyOrderId))?.id
+      ? loadRegimeState(exchange, pair).position?.celestialBodies?.find((body) => bodyOwnsOrder(body, null, buyOrderId))?.id
       : null;
-    const currentBodyId = ledgerBodyId || trade.bodyId || persistedBodyId;
+    let currentBodyId = ledgerBodyId || trade.bodyId || persistedBodyId;
     if (currentBodyId || trade.status === STATUS.TP_PENDING) {
+      // A prior manual import of this buy that never committed a body intent
+      // may have left only the pre-#1022 optimistic ledger stamp (or a
+      // TP_PENDING status derived from it) with no body behind it. Prove a
+      // body was committed before reporting success; otherwise fail
+      // retryably rather than claim managed inventory and a pending TP that
+      // nothing owns (issue #1022).
+      if (existingTrade && trade.bodyIntent?.phase !== INTENT_PHASE.COMMITTED) {
+        const committed = findCommittedBody(buyOrderId, currentBodyId);
+        if (!committed) {
+          log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} claims body ${currentBodyId || '(none)'} but no committed body or retirement evidence exists — refusing to report it imported`, {
+            bodyId: currentBodyId,
+            buyOrderId,
+          });
+          return fail(`Buy ${buyOrderId} claims body ${currentBodyId || '(none)'}, but no saved body or closed-body evidence was found; the import was not completed and can be retried once ownership is repaired`);
+        }
+        // A live body on disk is the authoritative owner — a merge survivor
+        // replaces whatever stale id the ledger or trade record still names.
+        currentBodyId = committed.live ? committed.bodyId : (currentBodyId || committed.bodyId);
+      }
       // The buy order may have still been FILLING when the body above was
       // created — ingestAdapterFills already wrote any fills that arrived
       // since into the ledger (it runs unconditionally, before this guard).
@@ -473,8 +564,14 @@ const createManualTradeImporter = ({
       const fullQty = orderRows.reduce((sum, r) => sum + r.size, 0);
       const priorRecordedQty = existingTrade ? (existingTrade.buySize || 0) : 0;
 
+      const linkTrade = () => {
+        if (currentBodyId && (currentBodyId !== trade.bodyId || trade.bodyIntent?.phase !== INTENT_PHASE.COMMITTED)) {
+          store.markTpPlaced(trade.id, currentBodyId);
+        }
+      };
+
       if (fullQty <= priorRecordedQty + 0.00000001) {
-        if (currentBodyId && currentBodyId !== trade.bodyId) store.markTpPlaced(trade.id, currentBodyId);
+        linkTrade();
         // Identity/economic replacement can change cost without new inventory.
         // The ledger's durable journal already reconciled the body; refresh the
         // import record from its full totals, including unresolved coverage.
@@ -552,7 +649,7 @@ const createManualTradeImporter = ({
       // the durable gate above work on the NEXT retry.
       fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: currentBodyId, isBodyOwned: true, isSatellite: true, bodyTier: extended.tier });
       fillLedger.persist();
-      if (currentBodyId !== trade.bodyId) store.markTpPlaced(trade.id, currentBodyId);
+      linkTrade();
       store.refreshBuyTotals(trade.id, {
         buyPrice: avgBuyPrice,
         buySize: totalSize,
@@ -569,48 +666,9 @@ const createManualTradeImporter = ({
       return ok({ trade: store.getById(trade.id), alreadyImported: true, extended: true, needsTpReprice: !!extended.needsTpReprice });
     }
 
-    // Durable close-check (issue #691, codex review, refined across two
-    // rounds). The in-memory duplicate check inside injectBody
-    // (regime-engine.js) only sees bodies still in
-    // positionState.celestialBodies — a body that fully closed (its TP
-    // completely filled) is spliced out of that array, so it becomes
-    // invisible to that check. The fill ledger doesn't lose the link, but it
-    // must be read carefully:
-    //   - `bodyId` is the precise signal. It is stamped ONLY by an actual
-    //     body-creation flow — this function's own pre-injection annotation a
-    //     few lines below, and placeBodyTp's TP-placement annotation — and,
-    //     once set, is never cleared except by this function's own
-    //     clearBodyAnnotation() rollback below on a confirmed non-duplicate
-    //     failure. It survives the body's later removal from
-    //     celestialBodies, and (for the engine-stopped path) it is persisted
-    //     to the ledger BEFORE persistBodyToDisk ever runs, so it also
-    //     catches a crash between persistBodyToDisk succeeding and
-    //     store.markTpPlaced below ever running.
-    //   - `sellOrderId` alone is NOT safe to key on: recalculateCycles'
-    //     "auto-link buys to sells" step (fill-ledger.js) blanket-stamps
-    //     sellOrderId onto EVERY buy in a cycle once that cycle crosses the
-    //     50% sold heuristic (isCompletedCycle) — a display convenience for
-    //     the aggregate cycle view, not proof this SPECIFIC buy's quantity
-    //     was sold. Keying on it would false-positive and leave a genuinely
-    //     unsold, unmanaged buy silently skipped.
-    const alreadyOwningBodyId = fillLedger.getFillsForOrder(buyOrderId).find((r) => r.bodyId)?.bodyId;
-    if (alreadyOwningBodyId) {
-      // The ledger already knows about a body for this buy, but the trade
-      // record might not (this is exactly the window this check exists to
-      // cover — e.g. the first attempt's injectBody THREW rather than
-      // returning normally, which skips markTpPlaced entirely without ever
-      // reaching the confirmed-duplicate re-link above). Link the trade
-      // record now so it doesn't sit at BUY_RECORDED/bodyId=null forever —
-      // every future retry would otherwise keep re-detecting this same
-      // ledger state without ever fixing it.
-      store.markTpPlaced(trade.id, alreadyOwningBodyId);
-      log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} is already linked to body ${alreadyOwningBodyId} — refusing to create another body`, {
-        buyOrderId,
-        bodyId: alreadyOwningBodyId,
-      });
-      return ok({ trade: store.getById(trade.id), alreadyImported: true });
-    }
-
+    // The durable close-check for a body that closed between attempts lives
+    // in the guard above now: any ledger bodyId routes there, and an
+    // unconfirmed one must be proven by findCommittedBody (issue #1022).
     if (!createBody) return ok({ trade: store.getById(trade.id) });
 
     // Source cost basis from the ledger's own `quoteAmount + netFee` rows —
@@ -629,85 +687,149 @@ const createManualTradeImporter = ({
       avgPrice: avgBuyPrice,
     }, buyOrderId);
 
-    fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: body.id, isBodyOwned: true, isSatellite: true, bodyTier: body.tier });
-    fillLedger.persist();
+    // Durable intent FIRST (issue #1022): from here on every interruption —
+    // a crash, a thrown injectBody, an ENOSPC publishing regime-state.json —
+    // resumes this exact body rather than leaving ledger ownership with no
+    // body behind it.
+    const intentTrade = store.recordBodyIntent(trade.id, body);
+    const published = await publishBodyIntent(intentTrade);
+    if (!published.success) return fail(published.error);
+    return ok({ trade: store.getById(trade.id), ...(published.duplicate ? { alreadyImported: true } : {}) });
+  };
 
-    // The fill-ledger rows above are annotated optimistically, before we know
-    // whether the body actually ends up tracked anywhere. If it doesn't
-    // (engine-not-running race, no position state on disk), undo that
-    // annotation — an untracked bodyId on the ledger is worse than none,
-    // since it looks body-owned without a body anywhere to close it.
-    const clearBodyAnnotation = () => {
-      fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: null, isBodyOwned: false, isSatellite: false, bodyTier: null });
+  /**
+   * Commit a body intent once its body is durable (or proven retired): stamp
+   * the buy's ledger rows with that body's ownership, then move the trade to
+   * TP_PENDING and seal the intent. Ownership is written strictly AFTER the
+   * body exists (issue #1022), and both writes are idempotent, so a crash
+   * between them is finished by the next resume.
+   * @param {Object} trade
+   * @param {string} bodyId
+   * @param {{tier?: string, annotate?: boolean}} [opts]
+   */
+  const commitBodyIntent = (trade, bodyId, { tier, annotate = true } = {}) => {
+    if (annotate) {
+      fillLedger.annotateFillsByOrderId(trade.buyOrderId, {
+        bodyId, isBodyOwned: true, isSatellite: true, ...(tier ? { bodyTier: tier } : {}),
+      });
       fillLedger.persist();
-    };
+    }
+    store.markTpPlaced(trade.id, bodyId);
+    return { success: true, bodyId };
+  };
+
+  /**
+   * Publish a pending intent's body — into the running engine, or onto
+   * regime-state.json when none is up — and commit it.
+   * @param {Object} trade - Trade carrying a pending bodyIntent
+   * @returns {Promise<{success: boolean, bodyId?: string, duplicate?: boolean, error?: string}>}
+   */
+  const publishBodyIntent = async (trade) => {
+    const { buyOrderId } = trade;
+    // A fresh copy every attempt: the engine mutates the body it accepts, and
+    // the stored payload must stay exactly what the intent recorded.
+    const body = JSON.parse(JSON.stringify(trade.bodyIntent.body));
 
     if (injectBody) {
       const injectResult = await injectBody(body);
       // injectBody's own defense-in-depth (regime-engine.js) refuses a body
-      // whose sourceOrderIds[0]/id already exists among the live bodies. That
-      // is exactly the retry race this guard targets: an earlier call's
-      // injectBody succeeded (pushed the real body, placed its TP) but this
-      // trade never reached markTpPlaced below (e.g. a subsequent throw from
-      // saveLiveState()), so the top-of-function guard didn't fire and we
-      // just tried to inject a second, phantom body for the same fill. Never
-      // point the trade/ledger at that phantom (it was refused — it does not
-      // exist in the engine and will never get a TP) — re-point them at the
-      // real body the engine already holds instead.
+      // whose id or originating buy order already exists among the live
+      // bodies — e.g. an earlier attempt pushed it and then threw. Never
+      // point the trade/ledger at a refused phantom; link the real body the
+      // engine already holds instead.
       if (injectResult && injectResult.success === false && injectResult.bodyId) {
-        fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: injectResult.bodyId, isBodyOwned: true, isSatellite: true });
-        fillLedger.persist();
-        store.markTpPlaced(trade.id, injectResult.bodyId);
-        log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} injectBody refused a duplicate — re-linked to existing body ${injectResult.bodyId} instead of phantom ${body.id}`, {
+        log.warn(`⚠️ [${exchange}] Manual buy import: buy ${buyOrderId} injectBody refused a duplicate — linked to existing body ${injectResult.bodyId}`, {
           bodyId: injectResult.bodyId,
-          phantomBodyId: body.id,
+          intentBodyId: body.id,
           buyOrderId,
         });
-        return ok({ trade: store.getById(trade.id), alreadyImported: true });
+        return { ...commitBodyIntent(trade, injectResult.bodyId), duplicate: true };
       }
-      // Any other failure (codex review: e.g. `{success:false, error:'Engine
-      // not running'}` from a race with regime:start/stop) means the body was
-      // NEVER pushed into the engine and has no live TP. Do not call
-      // markTpPlaced here — doing so unconditionally (as before this fix)
-      // marked the trade TP_PENDING against a phantom body that manages
-      // nothing, and the new top-of-function retry guard would then
-      // permanently short-circuit every future retry on that same
-      // buyOrderId, orphaning the fill for good. Leave the trade at its
-      // current (non-TP_PENDING) status and fail the call so the caller can,
-      // and is expected to, retry.
+      // Any other refusal (e.g. 'Engine not running' from a race with
+      // regime:start/stop) means the body was NEVER pushed and has no live TP.
+      // Nothing was published, so drop the intent and fail retryably — never
+      // mark TP_PENDING against a body nothing tracks.
       if (injectResult && injectResult.success === false) {
-        clearBodyAnnotation();
+        store.discardBodyIntent(trade.id);
         log.warn(`⚠️ [${exchange}] Manual buy import: injectBody failed for buy ${buyOrderId} (${injectResult.error || 'unknown error'}) — leaving the trade retryable`, {
           buyOrderId,
           error: injectResult.error,
         });
-        return fail(`Failed to inject body: ${injectResult.error || 'unknown error'}`);
+        return { success: false, error: `Failed to inject body: ${injectResult.error || 'unknown error'}` };
       }
       log.info(`ℹ️ 📦 [${exchange}] Manual buy import: injected body ${body.id} into running engine (TP placed: ${injectResult?.tpPlaced})`, {
         bodyId: body.id,
         buyOrderId,
         tpPlaced: injectResult?.tpPlaced,
       });
-    } else if (persistBodyToDisk(body)) {
-      log.info(`ℹ️ 📦 [${exchange}] Manual buy import: saved body ${body.id} to disk (engine not running, TP will be placed on start)`, {
-        bodyId: body.id,
-        buyOrderId,
-      });
-    } else {
-      // No position state to persist into at all — the body was never saved
-      // anywhere. Same reasoning as the injectBody failure above: don't mark
-      // TP_PENDING against a body nothing is tracking, and don't trip the
-      // top-of-function retry guard on the next attempt.
-      clearBodyAnnotation();
+      return commitBodyIntent(trade, body.id, { tier: body.tier });
+    }
+
+    const persisted = persistBodyToDisk(body);
+    if (!persisted) {
+      // No position state to persist into at all — nothing was saved.
+      store.discardBodyIntent(trade.id);
       log.warn(`⚠️ [${exchange}] Manual buy import: no position state for body ${body.id} — leaving the trade retryable`, {
         bodyId: body.id,
         buyOrderId,
       });
-      return fail(`Failed to persist body: no position state for ${exchange}/${pair}`);
+      return { success: false, error: `Failed to persist body: no position state for ${exchange}/${pair}` };
     }
+    log.info(`ℹ️ 📦 [${exchange}] Manual buy import: saved body ${persisted.bodyId} to disk (engine not running, TP will be placed on start)`, {
+      bodyId: persisted.bodyId,
+      buyOrderId,
+    });
+    return commitBodyIntent(trade, persisted.bodyId, { tier: persisted.tier });
+  };
 
-    store.markTpPlaced(trade.id, body.id);
-    return ok({ trade: store.getById(trade.id) });
+  /**
+   * Resume an interrupted body intent (issue #1022). A body already durable
+   * for the buy, or proven retired by a sale, is linked as-is — never
+   * re-published, so replay cannot resurrect sold inventory. Otherwise the
+   * body never committed and is published now under its recorded identity.
+   * @param {Object} trade - Trade carrying a pending bodyIntent
+   */
+  const resumeBodyIntent = async (trade) => {
+    const committed = findCommittedBody(trade.buyOrderId, trade.bodyIntent.bodyId);
+    if (committed) {
+      log.info(`ℹ️ 📦 [${exchange}] Manual buy import: resumed intent for buy ${trade.buyOrderId} — body ${committed.bodyId} already ${committed.live ? 'saved' : 'retired'}, linking it`, {
+        bodyId: committed.bodyId,
+        buyOrderId: trade.buyOrderId,
+      });
+      return commitBodyIntent(trade, committed.bodyId, { tier: committed.tier, annotate: committed.live });
+    }
+    log.warn(`⚠️ [${exchange}] Manual buy import: resuming interrupted body creation for buy ${trade.buyOrderId} (body ${trade.bodyIntent.bodyId})`, {
+      bodyId: trade.bodyIntent.bodyId,
+      buyOrderId: trade.buyOrderId,
+    });
+    return publishBodyIntent(trade);
+  };
+
+  /**
+   * Resume every interrupted body intent for this fund (issue #1022). Run
+   * before new import work so a crashed import is healed on cold start even
+   * when the operator never retries that exact buy. Each buy resumes under
+   * its own lock; one failure never blocks the others.
+   * @returns {Promise<Array<{buyOrderId: string, success: boolean, bodyId?: string, error?: string}>>}
+   */
+  const recoverPendingBodyIntents = async () => {
+    const results = [];
+    for (const pending of store.getPendingBodyIntents()) {
+      const { buyOrderId } = pending;
+      const result = await store.withBuyLock(buyOrderId, async () => {
+        const trade = store.getById(pending.id);
+        if (trade?.bodyIntent?.phase !== INTENT_PHASE.PENDING) return { success: true, bodyId: trade?.bodyId };
+        return resumeBodyIntent(trade);
+      }).catch((err) => ({ success: false, error: err.message }));
+      if (!result.success) {
+        log.warn(`⚠️ [${exchange}] Manual buy import: recovery of buy ${buyOrderId} did not complete (${result.error}) — will retry`, {
+          buyOrderId,
+          error: result.error,
+        });
+      }
+      results.push({ buyOrderId, ...result });
+    }
+    return results;
   };
 
   /**
@@ -773,7 +895,7 @@ const createManualTradeImporter = ({
     return ok({ trade: store.getById(trade.id) });
   };
 
-  return { importSell, importBuy, importPair, checkPendingBuy };
+  return { importSell, importBuy, importPair, checkPendingBuy, recoverPendingBodyIntents };
 };
 
 module.exports = { createManualTradeImporter };

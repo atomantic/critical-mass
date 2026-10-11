@@ -34,13 +34,35 @@ describe('Mutex utility', () => {
     const mutex = createMutex();
     assert.equal(mutex.isLocked(), false);
 
+    const firstRelease = await mutex.acquire();
+    assert.equal(mutex.isLocked(), true);
+    firstRelease();
+    assert.equal(mutex.isLocked(), false);
+
     const release = await mutex.acquire();
     assert.equal(mutex.isLocked(), true);
 
+    let resolveSecondAcquired;
+    const secondAcquired = new Promise(resolve => {
+      resolveSecondAcquired = resolve;
+    });
+    const secondReleasePromise = mutex.acquire().then(secondHolderRelease => {
+      resolveSecondAcquired();
+      return secondHolderRelease;
+    });
+
     release();
-    // After release, isLocked may still be true briefly if queue resolves;
-    // the key invariant is that acquire returned and we could release
-    assert.ok(true);
+    assert.equal(mutex.isLocked(), true);
+    await secondAcquired;
+
+    const secondRelease = await secondReleasePromise;
+    assert.equal(mutex.isLocked(), true);
+    secondRelease();
+    assert.equal(mutex.isLocked(), false);
+
+    firstRelease();
+    secondRelease();
+    assert.equal(mutex.isLocked(), false);
   });
 
   it('handles multiple sequential acquires', async () => {

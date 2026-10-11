@@ -514,6 +514,77 @@ describe('injectBody duplicate refusal (issue #691, codex review follow-up)', ()
   });
 });
 
+describe('injectBody durability (issue #1022)', () => {
+  // Like the extendBody block below, these reach saveLiveState(), which writes
+  // the repo's git-ignored data/gemini/BTC-USD/regime-state.json — isolate it.
+  const stateFile = getRegimeStateFile('gemini', 'BTC-USD');
+  beforeEach(() => { fs.rmSync(stateFile, { force: true }); });
+  afterEach(() => { fs.rmSync(stateFile, { force: true }); });
+
+  const makeInjectEngine = (onPlace) => {
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    engine._test.setRunning(true);
+    engine._test.setProductDetails({ baseMinSize: '0.0001', baseIncrement: '0.00000001' });
+    engine._test.setOrderExecutor({
+      placeBodyTpOrder: async (size, price) => { onPlace(size, price); return { success: true, orderId: 'tp-injected' }; },
+      checkPendingOrderFills: async () => ({ polled: 0, filled: 0, cancelled: 0 }),
+      markSettled: () => {},
+      removeBodyTracking: () => {},
+      handleOrderFill: () => {},
+      getPendingCounts: () => ({ total: 0 }),
+      getOrderPlacedAt: () => null,
+      isLadderOrder: () => false,
+    });
+    return engine;
+  };
+
+  const makeInjectedBody = () => ({
+    id: 'body-injected',
+    tier: 'satellite',
+    assetQty: 0.01,
+    avgPrice: 90000,
+    costBasis: 901,
+    tpOrderId: null,
+    tpPrice: 0,
+    assetOnOrder: 0,
+    sourceOrderIds: ['buy-injected'],
+    buyOrders: [{ orderId: 'buy-injected', price: 90000, assetQty: 0.01, sizeUsdc: 901, consumedQty: 0 }],
+    mergeCount: 0,
+  });
+
+  it('saves the accepted body to regime-state.json before its first TP placement', async () => {
+    let bodiesOnDiskAtPlacement = null;
+    const engine = makeInjectEngine(() => {
+      const onDisk = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      bodiesOnDiskAtPlacement = onDisk.position.celestialBodies.map((b) => b.id);
+    });
+
+    const result = await engine.injectBody(makeInjectedBody());
+
+    assert.equal(result.success, true);
+    assert.equal(result.tpPlaced, true);
+    assert.deepEqual(bodiesOnDiskAtPlacement, ['body-injected'], 'the body was durable before the TP was placed');
+  });
+
+  it('takes the body back out and places no TP when that first save throws', async () => {
+    const placed = [];
+    const engine = makeInjectEngine((size, price) => placed.push([size, price]));
+    const realRename = fs.renameSync;
+    fs.renameSync = (from, to) => {
+      if (to === stateFile) throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+      return realRename(from, to);
+    };
+    try {
+      await assert.rejects(engine.injectBody(makeInjectedBody()), /ENOSPC/);
+    } finally {
+      fs.renameSync = realRename;
+    }
+
+    assert.equal(placed.length, 0, 'no TP for a body regime-state.json does not hold');
+    assert.equal(engine._getPositionState().celestialBodies.length, 0);
+  });
+});
+
 describe('extendBody (issue #726)', () => {
   // extendBody's success path calls saveLiveState(), which persists to the
   // REAL (git-ignored, not the live trading fund's) data/gemini/BTC-USD/

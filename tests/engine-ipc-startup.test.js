@@ -78,7 +78,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
       calls.push('construct');
       return { start: () => { calls.push('trade'); if (failFirst && pair === 'BTC-USD') return Promise.reject(new Error('fetch failed')); return fundStarted; }, stop: async () => { calls.push('cleanup'); }, getStatus: () => ({}), getFillPage: query => makeRunningReadView.query(query), getFills: () => pageRows, getFillStats: () => ({}) };
     } },
-    '../src/market-data-service': { stopMarketDataService: () => {}, startMarketDataService: async () => {} },
+    '../src/market-data-service': { stopMarketDataService: () => {}, fenceMarketDataService: async () => ({ drained: true }), startMarketDataService: async () => {} },
     '../src/chart-data-buffer': {},
     '../src/fill-ledger': { createFillLedger: makePageLedger },
     '../src/transactions-regime-query': require('../src/transactions-regime-query'),

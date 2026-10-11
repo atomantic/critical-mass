@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useId } from 'react'
 import ModalDialog from '../ModalDialog'
 import { createRunLifecycle, RUN_NOTICE } from '../../utils/runLifecycle.mjs'
 
-const PROVIDER_TYPES = { cli: 'CLI', api: 'API' }
+const PROVIDER_TYPES = { cli: 'CLI (unavailable)', api: 'API' }
 
 // A run record without endTime is either live or was interrupted; only the
 // per-run metadata (isActive) can tell them apart, so each is looked up.
@@ -96,7 +96,10 @@ export default function AIProviders() {
       fetch('/api/runs?limit=20').then(r => r.json()).catch(() => ({ runs: [] }))
     ])
     setProviders(providersRes.providers || [])
-    setActiveProviderId(providersRes.activeProvider)
+    const loadedProviders = providersRes.providers || []
+    setActiveProviderId(loadedProviders.some(provider => provider.id === providersRes.activeProvider && provider.type === 'api')
+      ? providersRes.activeProvider
+      : null)
     const loadedRuns = runsRes.runs || []
     setRuns(loadedRuns)
     setLoading(false)
@@ -207,11 +210,12 @@ export default function AIProviders() {
     setLoadingSamples(true)
     setShowSamples(true)
     const result = await fetch('/api/providers/samples').then(r => r.json()).catch(() => ({ providers: [] }))
-    setSampleProviders(result.providers || [])
+    setSampleProviders((result.providers || []).filter(provider => provider.type === 'api'))
     setLoadingSamples(false)
   }
 
   const handleAddSample = async (provider) => {
+    if (provider.type !== 'api') return
     if (mutationLocks.current.has('sample-all')) return
     await runMutation(`sample:${provider.id}`, () => fetch('/api/providers', {
       method: 'POST',
@@ -224,7 +228,7 @@ export default function AIProviders() {
     if ([...mutationLocks.current].some(key => key.startsWith('sample:'))) return
     let addedAny = false
     await runMutation('sample-all', async () => {
-      for (const provider of sampleProviders) {
+      for (const provider of sampleProviders.filter(sample => sample.type === 'api')) {
         const response = await fetch('/api/providers', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -288,7 +292,7 @@ export default function AIProviders() {
               className="px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white w-full sm:w-auto"
             >
               <option value="">Select Provider</option>
-              {providers.filter(p => p.enabled).map(p => (
+              {providers.filter(p => p.enabled && p.type === 'api').map(p => (
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
@@ -415,7 +419,7 @@ export default function AIProviders() {
 
       {showSamples && sampleProviders.length === 0 && !loadingSamples && (
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 text-center">
-          <p className="text-gray-400">All sample providers have already been added.</p>
+          <p className="text-gray-400">No supported API sample providers are available.</p>
           <button onClick={() => setShowSamples(false)} className="mt-2 text-sm text-indigo-400 hover:text-indigo-300">Close</button>
         </div>
       )}
@@ -441,14 +445,17 @@ export default function AIProviders() {
                   {provider.id === activeProviderId && (
                     <span className="text-xs px-2 py-0.5 rounded-sm bg-indigo-500/20 text-indigo-400">DEFAULT</span>
                   )}
-                  {!provider.enabled && (
+                  {provider.type === 'cli' && (
+                    <span className="text-xs px-2 py-0.5 rounded-sm bg-yellow-500/20 text-yellow-300">UNAVAILABLE</span>
+                  )}
+                  {provider.type === 'api' && !provider.enabled && (
                     <span className="text-xs px-2 py-0.5 rounded-sm bg-gray-500/20 text-gray-400">DISABLED</span>
                   )}
                 </div>
 
                 <div className="mt-2 text-sm text-gray-400 space-y-1">
                   {provider.type === 'cli' && (
-                    <p className="wrap-break-word">Command: <code className="text-gray-300 break-all">{provider.command} {provider.args?.join(' ')}</code></p>
+                    <p role="status">CLI providers are unsupported and cannot be tested, enabled, or used to run prompts. Edit this provider to convert it to an API configuration, or delete it.</p>
                   )}
                   {provider.type === 'api' && (
                     <p className="wrap-break-word">Endpoint: <code className="text-gray-300 break-all">{provider.endpoint}</code></p>
@@ -480,13 +487,15 @@ export default function AIProviders() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => handleTest(provider.id)}
-                  disabled={testResults[provider.id]?.testing}
-                  className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors disabled:opacity-50"
-                >
-                  {testResults[provider.id]?.testing ? 'Testing...' : 'Test'}
-                </button>
+                {provider.type === 'api' && (
+                  <button
+                    onClick={() => handleTest(provider.id)}
+                    disabled={testResults[provider.id]?.testing}
+                    className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors disabled:opacity-50"
+                  >
+                    {testResults[provider.id]?.testing ? 'Testing...' : 'Test'}
+                  </button>
+                )}
 
                 {provider.type === 'api' && (
                   <button
@@ -498,19 +507,21 @@ export default function AIProviders() {
                   </button>
                 )}
 
-                <button
-                  onClick={() => handleToggleEnabled(provider)}
-                  disabled={Boolean(mutationPending[`enabled:${provider.id}`])}
-                  className={`px-3 py-1.5 text-sm rounded transition-colors ${
-                    provider.enabled
-                      ? 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30'
-                      : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
-                  }`}
-                >
-                  {provider.enabled ? 'Disable' : 'Enable'}
-                </button>
+                {provider.type === 'api' && (
+                  <button
+                    onClick={() => handleToggleEnabled(provider)}
+                    disabled={Boolean(mutationPending[`enabled:${provider.id}`])}
+                    className={`px-3 py-1.5 text-sm rounded transition-colors ${
+                      provider.enabled
+                        ? 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30'
+                        : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                    }`}
+                  >
+                    {provider.enabled ? 'Disable' : 'Enable'}
+                  </button>
+                )}
 
-                {provider.id !== activeProviderId && provider.enabled && (
+                {provider.type === 'api' && provider.id !== activeProviderId && provider.enabled && (
                   <button
                     onClick={() => handleSetActive(provider.id)}
                     disabled={Boolean(mutationPending.active)}
@@ -634,9 +645,7 @@ function ProviderForm({ provider, onClose, onSave }) {
   const pendingLock = useRef(false)
   const [formData, setFormData] = useState({
     name: provider?.name || '',
-    type: provider?.type || 'cli',
-    command: provider?.command || '',
-    args: provider?.args?.join(' ') || '',
+    type: 'api',
     endpoint: provider?.endpoint || '',
     apiKey: provider?.apiKey || '',
     models: provider?.models || [],
@@ -678,7 +687,6 @@ function ProviderForm({ provider, onClose, onSave }) {
     const data = {
       ...formData,
       models,
-      args: formData.args ? formData.args.split(' ').filter(Boolean) : [],
       timeout: parseInt(formData.timeout)
     }
 
@@ -698,9 +706,6 @@ function ProviderForm({ provider, onClose, onSave }) {
 
   const nameInputId = useId()
   const headingId = useId()
-  const typeSelectId = useId()
-  const commandInputId = useId()
-  const argsInputId = useId()
   const endpointInputId = useId()
   const apiKeyInputId = useId()
   const availableModelsId = useId()
@@ -745,6 +750,11 @@ function ProviderForm({ provider, onClose, onSave }) {
         <h2 id={headingId} className="text-xl font-bold text-white mb-4">
           {provider ? 'Edit Provider' : 'Add Provider'}
         </h2>
+        {provider?.type === 'cli' && (
+          <p role="status" className="mb-4 text-sm text-yellow-300">
+            This legacy CLI provider is unavailable. Enter an API endpoint and save to convert it, or cancel and delete it.
+          </p>
+        )}
         <form onSubmit={handleSubmit} className="space-y-4">
           {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
           <div>
@@ -761,48 +771,11 @@ function ProviderForm({ provider, onClose, onSave }) {
           </div>
 
           <div>
-            <label htmlFor={typeSelectId} className="block text-sm text-gray-400 mb-1">Type *</label>
-            <select
-              id={typeSelectId}
-              value={formData.type}
-              onChange={(e) => setFormData(prev => ({ ...prev, type: e.target.value }))}
-              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-hidden"
-            >
-              <option value="cli">CLI</option>
-              <option value="api">API</option>
-            </select>
+            <span className="block text-sm text-gray-400 mb-1">Type</span>
+            <span className="text-sm text-white">API</span>
           </div>
 
-          {formData.type === 'cli' && (
-            <>
-              <div>
-                <label htmlFor={commandInputId} className="block text-sm text-gray-400 mb-1">Command *</label>
-                <input
-                  id={commandInputId}
-                  type="text"
-                  value={formData.command}
-                  onChange={(e) => setFormData(prev => ({ ...prev, command: e.target.value }))}
-                  placeholder="claude"
-                  required={formData.type === 'cli'}
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-hidden"
-                />
-              </div>
-              <div>
-                <label htmlFor={argsInputId} className="block text-sm text-gray-400 mb-1">Arguments (space-separated)</label>
-                <input
-                  id={argsInputId}
-                  type="text"
-                  value={formData.args}
-                  onChange={(e) => setFormData(prev => ({ ...prev, args: e.target.value }))}
-                  placeholder="--print -p"
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-hidden"
-                />
-              </div>
-            </>
-          )}
-
-          {formData.type === 'api' && (
-            <>
+          <>
               <div>
                 <label htmlFor={endpointInputId} className="block text-sm text-gray-400 mb-1">Endpoint *</label>
                 <input
@@ -825,8 +798,7 @@ function ProviderForm({ provider, onClose, onSave }) {
                   className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-hidden"
                 />
               </div>
-            </>
-          )}
+          </>
 
           <div>
             <label htmlFor={availableModelsId} className="block text-sm text-gray-400 mb-1">

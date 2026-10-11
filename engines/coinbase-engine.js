@@ -35,6 +35,7 @@ const {
   stopAllMarketDataServices,
   getMarketDataService,
   stopMarketDataService,
+  fenceMarketDataService,
 } = require('../src/market-data-service');
 const { getChartDataBuffer, getChartData, removeChartDataBuffer, shutdownAllBuffers, resumeAllBuffers } = require('../src/chart-data-buffer');
 const { createFillLedger } = require('../src/fill-ledger');
@@ -205,7 +206,8 @@ const createEngineCallbacks = (exchange, pair) => ({
 // Regime engine control — regime:start / regime:stop
 // Extracted to src/engine-lifecycle-handlers.js (issue #504) so the
 // fill-consumer handover ordering around engine stop/start can be tested
-// directly against these production callbacks.
+// directly against these production callbacks. Ledger ownership transfers
+// exclusively between the engine and the standalone service (issue #1008).
 const { startFund, autoResumeFund, getStartStatus, cancelStarts } = registerEngineLifecycleHandlers(ipcServer, {
   regimeEngines,
   resolvePair,
@@ -219,7 +221,7 @@ const { startFund, autoResumeFund, getStartStatus, cancelStarts } = registerEngi
   createRegimeEngine,
   createEngineCallbacks,
   startMarketDataService,
-  stopMarketDataService,
+  fenceMarketDataService,
   wireMarketDataCallbacks,
   invalidateStandaloneLedger,
   saveRegimeRunningFlag,
@@ -654,6 +656,10 @@ const wireManualTradeImport = (channel, method) => {
     } catch (err) {
       return { success: false, error: err.message };
     }
+    // Heal body creations a crash or failed publication interrupted (issue
+    // #1022) before any new import work. Failures are logged by the importer
+    // and leave the intent pending for the next request.
+    await importer.recoverPendingBodyIntents();
     return importer[method](payload || {});
   });
 };

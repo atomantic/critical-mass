@@ -3171,6 +3171,7 @@ const getCachedFillLedger = (exchange, productId, pair) => {
 
 module.exports = {
   createFillLedger,
+  LEGACY_CONSUMPTION_KEY,
   FillValidationError,
   validateFillInput: normalizeFillInput,
   getCachedFillLedger,
