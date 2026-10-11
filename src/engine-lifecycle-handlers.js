@@ -218,7 +218,7 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     isPaused: deps.isPaused,
     setTimer: deps.setTimer, clearTimer: deps.clearTimer,
   });
-  const { startFund, autoResumeFund } = supervisor;
+  const { startFund, autoResumeFund, resumeAfterBackup } = supervisor;
   registry.onRequest('regime:start', startFund);
 
   const stopFund = async (payload, exchange, pair) => {
@@ -269,7 +269,8 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     return { success: true, exchange, pair: resolvedPair, stopped: true };
   };
   registry.onRequest('regime:stop', supervisor.wrapStop(stopFund));
-  return { startFund, autoResumeFund, getStartStatus: supervisor.getStatus, cancelStarts: supervisor.cancelAll };
+  return { startFund, autoResumeFund, resumeAfterBackup, getStartStatus: supervisor.getStatus,
+    cancelStarts: supervisor.cancelAll, settleStarts: supervisor.settle };
 
 };
 

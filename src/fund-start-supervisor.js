@@ -67,10 +67,12 @@ const createFundStartSupervisor = ({
     }, delay);
     entry.timer?.unref?.();
   };
-  const begin = async (payload, exchange, pair, automatic) => {
+  // `internal` admits the backup-resume restart while the backup gate is still
+  // closed; any retry it schedules still waits for the gate (timer above).
+  const begin = async (payload, exchange, pair, automatic, internal = false) => {
     pair = resolvePair(exchange, pair);
     const key = fundKey(exchange, pair);
-    if (shuttingDown || stopping.has(key) || automatic && isPaused()) return Promise.resolve({ success: false, error: 'Engine lifecycle is stopping or paused' });
+    if (shuttingDown || stopping.has(key) || automatic && !internal && isPaused()) return Promise.resolve({ success: false, error: 'Engine lifecycle is stopping or paused' });
     const previous = entries.get(key);
     if (previous?.promise || regimeEngines.has(key)) return Promise.resolve({ success: false, error: 'Regime engine already running for this fund' });
     if (previous) cancel(previous);
@@ -122,7 +124,13 @@ const createFundStartSupervisor = ({
     return { state, error: entry.state === 'blocked' || entry.state === 'retrying' ? entry.error : null,
       nextRetryAt: entry.state === 'retrying' ? entry.nextRetryAt : null };
   };
+  /** Wait for in-flight attempts (boot/retry) so a backup captures settled ownership. */
+  const settle = () => Promise.allSettled([...entries.values()].map((entry) => entry.promise).filter(Boolean));
   return { startFund: (payload, exchange, pair) => begin(payload, exchange, pair, false),
-    autoResumeFund: (exchange, pair) => begin({}, exchange, pair, true), wrapStop, cancelAll, getStatus };
+    autoResumeFund: (exchange, pair) => begin({}, exchange, pair, true),
+    // Backup resume restores funds that were running before the pause, so they
+    // keep automatic desired-running supervision (transient failures retry).
+    resumeAfterBackup: (exchange, pair) => begin({}, exchange, pair, true, true),
+    wrapStop, cancelAll, getStatus, settle };
 };
 module.exports = { createFundStartSupervisor, isTransientStartError };
