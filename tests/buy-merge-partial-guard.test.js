@@ -479,10 +479,11 @@ describe('untracked sell with no bodies — only the engine\'s own TP closes the
     tradeTime: new Date().toISOString(),
   }];
   const makeCoreEngine = ({ orderId, activeTpOrderId = null, executor } = {}) => {
+    const acknowledged = [];
     const eng = makeEngine({
       bodies: [],
       adapter: { getOrderFills: async (id) => sellFills(id, 0.01, 50000) },
-      executor,
+      executor: { handleOrderFill: (id) => acknowledged.push(id), ...executor },
     });
     const pos = eng._getPositionState();
     pos.totalAsset = 0.0105;
@@ -490,14 +491,15 @@ describe('untracked sell with no bodies — only the engine\'s own TP closes the
     pos.totalCostBasis = 0.0105 * 49000;
     pos.activeTpOrderId = activeTpOrderId;
     eng._getConfig().maxUsdcDeployed = 10000;
-    return { eng, pos, fill: { orderId, side: 'sell', status: 'FILLED', filledSize: 0.01, averageFilledPrice: 50000 } };
+    return { eng, pos, acknowledged, fill: { orderId, side: 'sell', status: 'FILLED', filledSize: 0.01, averageFilledPrice: 50000 } };
   };
   const findTrade = (id) => readClosed().find(t => t.sellOrderId === id);
 
   it('a foreign (manual) sell is annotated untrackedSell and never credits capital, bumps cycles, or records a trade', async () => {
-    const { eng, pos, fill } = makeCoreEngine({ orderId: 'manual-672' });
+    const { eng, pos, acknowledged, fill } = makeCoreEngine({ orderId: 'manual-672' });
     const closedBefore = readClosed().length;
     await eng._test.handleOrderFill(fill);
+    assert.deepEqual(acknowledged, [fill.orderId], 'a completed booking acknowledges the executor once');
     assert.equal(eng._getConfig().maxUsdcDeployed, 10000, 'maxUsdcDeployed unchanged');
     assert.equal(pos.cyclesCompleted || 0, 0, 'cyclesCompleted unchanged');
     assert.equal(readClosed().length, closedBefore, 'no closed trade written');
@@ -509,8 +511,9 @@ describe('untracked sell with no bodies — only the engine\'s own TP closes the
   });
 
   it('the engine\'s own core TP (activeTpOrderId) still closes the cycle', async () => {
-    const { eng, pos, fill } = makeCoreEngine({ orderId: 'tp-core-672', activeTpOrderId: 'tp-core-672' });
+    const { eng, pos, acknowledged, fill } = makeCoreEngine({ orderId: 'tp-core-672', activeTpOrderId: 'tp-core-672' });
     await eng._test.handleOrderFill(fill);
+    assert.deepEqual(acknowledged, [fill.orderId], 'a completed booking acknowledges the executor once');
     assert.equal(pos.cyclesCompleted, 1);
     assert.ok(eng._getConfig().maxUsdcDeployed > 10000, 'capital credited with the cycle profit');
     assert.ok(findTrade('tp-core-672'), 'closed trade recorded');
@@ -518,11 +521,12 @@ describe('untracked sell with no bodies — only the engine\'s own TP closes the
   });
 
   it('an executor-tracked take_profit closes the cycle even after activeTpOrderId was cleared', async () => {
-    const { eng, pos, fill } = makeCoreEngine({
+    const { eng, pos, acknowledged, fill } = makeCoreEngine({
       orderId: 'tp-exec-672',
       executor: { isTrackedTpOrder: (id) => id === 'tp-exec-672' },
     });
     await eng._test.handleOrderFill(fill);
+    assert.deepEqual(acknowledged, [fill.orderId], 'a completed booking acknowledges the executor once');
     assert.equal(pos.cyclesCompleted, 1);
     assert.ok(findTrade('tp-exec-672'), 'closed trade recorded');
   });
@@ -531,14 +535,39 @@ describe('untracked sell with no bodies — only the engine\'s own TP closes the
     // First pass claimed the credit and resetCycle() nulled activeTpOrderId,
     // then something after it threw — the retry must still be treated as the
     // engine's own TP (not downgraded to untrackedSell) and must not re-credit.
-    const { eng, pos, fill } = makeCoreEngine({ orderId: 'tp-retry-672' });
+    const { eng, pos, acknowledged, fill } = makeCoreEngine({ orderId: 'tp-retry-672' });
     const ledger = eng.getFillLedger();
     for (const f of sellFills('tp-retry-672', 0.01, 50000)) ledger.ingestFill(f, null);
     assert.equal(ledger.claimCapitalCredit('tp-retry-672'), true);
     await eng._test.handleOrderFill(fill);
+    assert.deepEqual(acknowledged, [fill.orderId], 'a completed booking acknowledges the executor once');
     assert.equal(eng._getConfig().maxUsdcDeployed, 10000, 'capital not credited a second time');
     assert.equal(pos.cyclesCompleted || 0, 0, 'cycle counter not bumped a second time');
     assert.ok(findTrade('tp-retry-672'), 'closed trade recorded on the retry');
     assert.ok(ledger.getFillsForOrder('tp-retry-672').every(f => !f.untrackedSell), 'not mislabelled untrackedSell');
   });
+
+  for (const pendingReset of [false, true]) {
+    it(`does not acknowledge a body-TP replay${pendingReset ? ' after finishing its owed reset' : ''}`, async () => {
+      const orderId = `tp-replay-672-${pendingReset}`;
+      const { eng, pos, acknowledged, fill } = makeCoreEngine({ orderId });
+      const ledger = eng.getFillLedger();
+      for (const row of sellFills(orderId, 0.01, 50000)) ledger.ingestFill(row, null);
+      ledger.annotateFillsByOrderId(orderId, { isBodyOwned: true });
+      if (pendingReset) pos.pendingCycleResetFor = orderId;
+
+      await eng._test.handleOrderFill(fill);
+
+      assert.deepEqual(acknowledged, [], 'the replay guard skips executor acknowledgement');
+      assert.equal(eng._getConfig().maxUsdcDeployed, 10000, 'replay never credits capital');
+      assert.equal(pos.cyclesCompleted || 0, 0, 'replay never counts a second cycle');
+      assert.equal(findTrade(orderId), undefined, 'replay never creates a legacy core trade');
+      if (pendingReset) {
+        assert.equal(pos.pendingCycleResetFor, null, 'the owed reset is completed');
+        assert.equal(pos.avgCostBasis, 0, 'the old position was reset');
+      } else {
+        assert.equal(pos.avgCostBasis, 49000, 'a replay with no owed reset leaves the position untouched');
+      }
+    });
+  }
 });
