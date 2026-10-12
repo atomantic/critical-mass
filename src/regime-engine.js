@@ -5016,6 +5016,232 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Book a sell with no matching live body: reject body-TP replays and foreign
+   * sells, or finish an owned legacy core TP close. Own the final executor
+   * acknowledgement here so guard returns keep their original skip semantics.
+   * The caller returns this promise directly: no new await separates the close's
+   * mutations, persistence, and acknowledgement.
+   */
+  const handleUntrackedSellFill = async (fillData, fillsToAggregate, booking, entryCoreTpOrderId) => {
+    // UNTRACKED SELL — could be a core TP from before migration
+    const summary2 = fillLedger.aggregateFills(fillsToAggregate);
+
+    // Guard: check if fills for this order are already annotated as body TP.
+    // This catches duplicate body TP fills from cancel-and-replace races where both the
+    // old and new TP orders fill simultaneously — the first is processed correctly, the
+    // second arrives after the body is removed and would otherwise trigger a false cycle.
+    const existingFills = fillLedger.getFillsForOrder(fillData.orderId);
+    const alreadyProcessedAsBody = existingFills.some(f => f.isBodyOwned || f.isSatellite);
+    if (alreadyProcessedAsBody) {
+      // A retry of a body TP close whose cycle reset failed after the sell
+      // was booked (#766): finish the reset the first pass owed.
+      if (positionState.pendingCycleResetFor === fillData.orderId
+        && (positionState.celestialBodies || []).length === 0) {
+        logger.warn(`🔁 [${exchange}] Sell ${fillData.orderId.slice(0,8)} already booked — completing its pending cycle reset`);
+        await resetCycle();
+        positionState.pendingCycleResetFor = null;
+        saveLiveState();
+        fillLedger.persist();
+        return;
+      }
+      logger.info(`⏭️ [${exchange}] Sell ${fillData.orderId.slice(0,8)} already processed as body TP, skipping`);
+      return;
+    }
+
+    // Guard (issue #672): only the engine's OWN legacy core TP may close
+    // the cycle. The exchange user channel delivers every sell on the
+    // product — a manual sale of reserves, the DCA/manual-trades tooling,
+    // scripts — and between celestial cycles there are no bodies, so
+    // without this a foreign sell was booked as a cycle close crediting
+    // its full proceeds to maxUsdcDeployed. Ownership is proven by:
+    //  - the core TP id snapshotted before any await, or still current;
+    //  - the executor tracking it as `take_profit` (pending, active, or
+    //    recently settled — covers polling-backstop / cancel-race paths);
+    //  - a prior pass having already claimed its capital credit — a
+    //    retry of a close whose resetCycle() already nulled
+    //    activeTpOrderId must still finish closing idempotently.
+    const sellOrderId = fillData.orderId;
+    const isOwnCoreTp = !!sellOrderId && (
+      sellOrderId === entryCoreTpOrderId
+      || sellOrderId === positionState.activeTpOrderId
+      || (typeof orderExecutor.isTrackedTpOrder === 'function' && orderExecutor.isTrackedTpOrder(sellOrderId))
+      || existingFills.some(f => f.capitalCredited)
+    );
+
+    // Guard: if celestial bodies still exist, this is NOT a legitimate cycle-closing TP.
+    // It's likely a duplicate/untracked satellite sell. Log and annotate but don't complete the cycle.
+    const remainingBodies = (positionState.celestialBodies || []).length;
+    if (remainingBodies > 0 || !isOwnCoreTp) {
+      const reason = remainingBodies > 0
+        ? `${remainingBodies} celestial bodies still active`
+        : 'not the engine\'s take-profit order (manual/external sell?)';
+      logger.warn(`⚠️ [${exchange}] Untracked sell ${String(sellOrderId).slice(0,8)} (${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}) — ${reason}, skipping cycle completion`);
+      // Position model is deliberately left untouched (issue #750). Which
+      // holding a foreign sell drew down — zero-cost reserves or the
+      // managed position — is unknowable from the fill, so any
+      // attribution to totalAsset/totalCostBasis (or realizedAssetPnL)
+      // would be a guess that corrupts P&L either way. The ledger keeps
+      // the fact instead: `untrackedSell` rows lower ledgerNetAsset and
+      // are broken out as `untrackedSellQty`, so the position-coverage
+      // sweep (positionCoverage.ledger.untrackedSold) shows the gap and
+      // its cause. Resolution is an operator action.
+      if (remainingBodies === 0 && positionState.totalAsset > 0) {
+        logger.warn(
+          `⚖️ [${exchange}] Untracked sell ${String(sellOrderId).slice(0,8)} may have consumed the held position (${positionState.totalAsset} ${baseCurrency}) — position left unchanged; see positionCoverage.ledger.untrackedSold, operator review required`,
+          { pair: productId, orderId: sellOrderId, soldQty: summary2.totalSize, totalAsset: positionState.totalAsset, reserves: positionState.realizedAssetPnL || 0 }
+        );
+      }
+      fillLedger.annotateFillsByOrderId(sellOrderId, { untrackedSell: true });
+      saveLiveState();
+      fillLedger.persist();
+    } else {
+      const proceeds = summary2.totalValue - summary2.totalFees;
+      const soldCostBasis = summary2.totalSize * positionState.avgCostBasis;
+      const pnl = proceeds - soldCostBasis;
+      const holdbackAsset = roundAsset(positionState.totalAsset - summary2.totalSize);
+
+      positionState.assetOnOrder = 0;
+
+      // Idempotency guard (issue #679 follow-up, codex convergence
+      // review round 4) — scoped to ONLY the two truly non-idempotent
+      // counter bumps (cyclesCompleted++, capital credit), not the
+      // whole block. An earlier round of this fix gated resetCycle()
+      // and closedTrades.record behind this SAME claim, which
+      // stranded an in-progress cycle close forever whenever
+      // resetCycle()'s own network cancel call failed afterward: the
+      // claim was already persisted by claimCapitalCredit, so a retry
+      // never got back into the block to finish closing. Both of
+      // those retry safely on their own — closedTrades.record dedupes
+      // by sellOrderId alone (see dedupKeyFor in closed-trades.js), and
+      // resetCycle's state resets are
+      // already state-gated/idempotent (its one non-idempotent step,
+      // fillLedger.startNewCycle(), landing twice on a genuine retry
+      // only costs a spare cycle-number boundary — cosmetic, never a
+      // P&L figure) — so they stay UNGATED below and always run.
+      // Captured here (claim-gated, same reasoning as tp_filled below) and
+      // fed to the size optimizer AFTER resetCycle() runs — not inline —
+      // so the optimizer's real-balance network fetch (issue #694) never
+      // sits between the capital credit and resetCycle()'s
+      // fillLedger.startNewCycle() cycle-boundary flip. Widening that gap
+      // with an awaited round-trip would let a concurrent entry
+      // evaluation (gated only by isEntryInProgress(), not
+      // isMutatingPosition() — unlike refreshDrawdownGuard/
+      // consolidateDustBodies) land a buy fill that gets attributed to
+      // the closing cycle instead of the new one (Claude review).
+      let sizeOptimizerCycleData = null;
+      if (!fillLedger.claimCapitalCredit(fillData.orderId)) {
+        logger.info(
+          `ℹ️ [${exchange}] Untracked sell ${fillData.orderId.slice(0, 8)} capital already credited — skipping re-apply, still completing the cycle close`,
+          { orderId: fillData.orderId }
+        );
+      } else {
+        positionState.cyclesCompleted += 1;
+
+        // Capital was already claimed (fillLedger.claimCapitalCredit)
+        // above as the idempotency gate — apply it directly rather
+        // than calling creditCapitalGrowth, which would re-claim and
+        // (seeing it already claimed) skip applying pnl.
+        const prevMaxUsdc = config.maxUsdcDeployed;
+        config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
+        updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
+
+        logger.info(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+
+        // tp_filled + the optimizer recorders belong to the SAME
+        // claim-gated commit as cyclesCompleted++ / the capital credit
+        // (Claude delta review, round 6). They were previously below,
+        // ungated, alongside resetCycle()/closedTrades.record — so a
+        // retry after the claim already succeeded (capital credited,
+        // resetCycle awaiting a network cancel that then failed) would
+        // re-emit tp_filled and re-feed the optimizers on every retry,
+        // and once resetCycle() DID complete, avgCostBasis is reset to
+        // 0, so a subsequent retry's actualTpPct calc below would also
+        // be wrong. resetCycle()/closedTrades.record stay outside this
+        // gate (they retry idempotently on their own).
+        const actualTpPct = positionState.avgCostBasis > 0
+          ? ((summary2.avgPrice - positionState.avgCostBasis) / positionState.avgCostBasis) * 100
+          : 0;
+        tradeEvents.emitTradeEvent('tp_filled', exchange, `${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
+          assetAmount: summary2.totalSize,
+          price: summary2.avgPrice,
+          pnl,
+          holdbackAsset,
+          capitalGrowth: pnl,
+          newMaxUsdcDeployed: config.maxUsdcDeployed,
+        });
+        recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
+        sizeOptimizerCycleData = {
+          stepsUsed: positionState.cycleBuys,
+          capitalDeployed: soldCostBasis,
+        };
+      }
+
+      // Link current-cycle buy fills to this sell order for buy→sell display linkage (skip body-owned)
+      const cycleFills = fillLedger.getCurrentCycleFills();
+      const buyOrderIds = new Set();
+      for (const fill of cycleFills) {
+        // Timestamp-folded buys (#705) are not in the core position this TP sold.
+        if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId && fill.cycleAttribution !== 'timeframe') {
+          fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: fillData.orderId });
+          buyOrderIds.add(fill.orderId);
+        }
+      }
+
+      // Preserve the legacy audit record before resetCycle clears its
+      // cost basis. Safe to call every pass — record() accumulates only a
+      // newly-booked tranche and leaves a replay unchanged.
+      closedTrades.record({
+        sellOrderId: fillData.orderId,
+        ...sellTradeStamp(summary2),
+        recordedAt: Date.now(),
+        qtySold: summary2.totalSize,
+        sellProceeds: roundUSDC(proceeds),
+        sellFees: roundUSDC(summary2.totalFees),
+        costBasis: roundUSDC(soldCostBasis),
+        buyAvgPrice: roundUSDC(positionState.avgCostBasis),
+        pnl: roundUSDC(pnl),
+        holdbackAsset,
+        isPartial: false,
+        bodyId: null,
+        bodyTier: null,
+        buyOrderIds: [...buyOrderIds],
+        source: fillData.source || 'live',
+      }, { additive: booking.additive });
+
+      // try/finally: if resetCycle() throws (its only network call — the
+      // ladder cancel — runs before any state mutation, so a throw there
+      // means resetCycle() changed nothing), the outer dedup-clear/retry
+      // path retries this fill, but `claimCapitalCredit` will then return
+      // false and sizeOptimizerCycleData would never be set again —
+      // permanently dropping this cycle from the optimizer's stats
+      // (codex review round 1, P2). Recording it here regardless of
+      // resetCycle()'s outcome closes that gap; the underlying figures
+      // were already fixed, committed facts before resetCycle() ran.
+      // Deliberately NOT awaited: saveLiveState()/fillLedger.persist()
+      // below durably persist this already-completed cycle close before
+      // the optimizer's balance-fetch (up to a 30s exchange timeout) gets
+      // a chance to delay them — a crash during that fetch loses only
+      // this one best-effort optimizer stats sample, never the
+      // P&L-critical state (codex review round 2). Never rejects (its
+      // own body is try/caught), so no unhandled-rejection risk. Once it
+      // DOES resolve, re-save so the recorded sample/balance isn't left
+      // ONLY in memory until some unrelated future save picks it up
+      // (codex review round 3).
+      try {
+        await resetCycle();
+      } finally {
+        if (sizeOptimizerCycleData) {
+          recordCycleForSizeOptimizer(sizeOptimizerCycleData).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
+        }
+      }
+      saveLiveState();
+      fillLedger.persist();
+    }
+
+    orderExecutor.handleOrderFill(fillData.orderId);
+  };
+
+  /**
    * Handle order fill
    * @param {Object} fillData - Fill data
    */
@@ -5614,220 +5840,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (bodyIdx !== -1) {
         await handleBodyTpFill(fillData, summary, booking, bodies, bodyIdx, bookedTradeIds);
       } else {
-        // UNTRACKED SELL — could be a core TP from before migration
-        const summary2 = fillLedger.aggregateFills(fillsToAggregate);
-
-        // Guard: check if fills for this order are already annotated as body TP.
-        // This catches duplicate body TP fills from cancel-and-replace races where both the
-        // old and new TP orders fill simultaneously — the first is processed correctly, the
-        // second arrives after the body is removed and would otherwise trigger a false cycle.
-        const existingFills = fillLedger.getFillsForOrder(fillData.orderId);
-        const alreadyProcessedAsBody = existingFills.some(f => f.isBodyOwned || f.isSatellite);
-        if (alreadyProcessedAsBody) {
-          // A retry of a body TP close whose cycle reset failed after the sell
-          // was booked (#766): finish the reset the first pass owed.
-          if (positionState.pendingCycleResetFor === fillData.orderId
-            && (positionState.celestialBodies || []).length === 0) {
-            logger.warn(`🔁 [${exchange}] Sell ${fillData.orderId.slice(0,8)} already booked — completing its pending cycle reset`);
-            await resetCycle();
-            positionState.pendingCycleResetFor = null;
-            saveLiveState();
-            fillLedger.persist();
-            return;
-          }
-          logger.info(`⏭️ [${exchange}] Sell ${fillData.orderId.slice(0,8)} already processed as body TP, skipping`);
-          return;
-        }
-
-        // Guard (issue #672): only the engine's OWN legacy core TP may close
-        // the cycle. The exchange user channel delivers every sell on the
-        // product — a manual sale of reserves, the DCA/manual-trades tooling,
-        // scripts — and between celestial cycles there are no bodies, so
-        // without this a foreign sell was booked as a cycle close crediting
-        // its full proceeds to maxUsdcDeployed. Ownership is proven by:
-        //  - the core TP id snapshotted before any await, or still current;
-        //  - the executor tracking it as `take_profit` (pending, active, or
-        //    recently settled — covers polling-backstop / cancel-race paths);
-        //  - a prior pass having already claimed its capital credit — a
-        //    retry of a close whose resetCycle() already nulled
-        //    activeTpOrderId must still finish closing idempotently.
-        const sellOrderId = fillData.orderId;
-        const isOwnCoreTp = !!sellOrderId && (
-          sellOrderId === entryCoreTpOrderId
-          || sellOrderId === positionState.activeTpOrderId
-          || (typeof orderExecutor.isTrackedTpOrder === 'function' && orderExecutor.isTrackedTpOrder(sellOrderId))
-          || existingFills.some(f => f.capitalCredited)
-        );
-
-        // Guard: if celestial bodies still exist, this is NOT a legitimate cycle-closing TP.
-        // It's likely a duplicate/untracked satellite sell. Log and annotate but don't complete the cycle.
-        const remainingBodies = (positionState.celestialBodies || []).length;
-        if (remainingBodies > 0 || !isOwnCoreTp) {
-          const reason = remainingBodies > 0
-            ? `${remainingBodies} celestial bodies still active`
-            : 'not the engine\'s take-profit order (manual/external sell?)';
-          logger.warn(`⚠️ [${exchange}] Untracked sell ${String(sellOrderId).slice(0,8)} (${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}) — ${reason}, skipping cycle completion`);
-          // Position model is deliberately left untouched (issue #750). Which
-          // holding a foreign sell drew down — zero-cost reserves or the
-          // managed position — is unknowable from the fill, so any
-          // attribution to totalAsset/totalCostBasis (or realizedAssetPnL)
-          // would be a guess that corrupts P&L either way. The ledger keeps
-          // the fact instead: `untrackedSell` rows lower ledgerNetAsset and
-          // are broken out as `untrackedSellQty`, so the position-coverage
-          // sweep (positionCoverage.ledger.untrackedSold) shows the gap and
-          // its cause. Resolution is an operator action.
-          if (remainingBodies === 0 && positionState.totalAsset > 0) {
-            logger.warn(
-              `⚖️ [${exchange}] Untracked sell ${String(sellOrderId).slice(0,8)} may have consumed the held position (${positionState.totalAsset} ${baseCurrency}) — position left unchanged; see positionCoverage.ledger.untrackedSold, operator review required`,
-              { pair: productId, orderId: sellOrderId, soldQty: summary2.totalSize, totalAsset: positionState.totalAsset, reserves: positionState.realizedAssetPnL || 0 }
-            );
-          }
-          fillLedger.annotateFillsByOrderId(sellOrderId, { untrackedSell: true });
-          saveLiveState();
-          fillLedger.persist();
-        } else {
-          const proceeds = summary2.totalValue - summary2.totalFees;
-          const soldCostBasis = summary2.totalSize * positionState.avgCostBasis;
-          const pnl = proceeds - soldCostBasis;
-          const holdbackAsset = roundAsset(positionState.totalAsset - summary2.totalSize);
-
-          positionState.assetOnOrder = 0;
-
-          // Idempotency guard (issue #679 follow-up, codex convergence
-          // review round 4) — scoped to ONLY the two truly non-idempotent
-          // counter bumps (cyclesCompleted++, capital credit), not the
-          // whole block. An earlier round of this fix gated resetCycle()
-          // and closedTrades.record behind this SAME claim, which
-          // stranded an in-progress cycle close forever whenever
-          // resetCycle()'s own network cancel call failed afterward: the
-          // claim was already persisted by claimCapitalCredit, so a retry
-          // never got back into the block to finish closing. Both of
-          // those retry safely on their own — closedTrades.record dedupes
-          // by sellOrderId alone (see dedupKeyFor in closed-trades.js), and
-          // resetCycle's state resets are
-          // already state-gated/idempotent (its one non-idempotent step,
-          // fillLedger.startNewCycle(), landing twice on a genuine retry
-          // only costs a spare cycle-number boundary — cosmetic, never a
-          // P&L figure) — so they stay UNGATED below and always run.
-          // Captured here (claim-gated, same reasoning as tp_filled below) and
-          // fed to the size optimizer AFTER resetCycle() runs — not inline —
-          // so the optimizer's real-balance network fetch (issue #694) never
-          // sits between the capital credit and resetCycle()'s
-          // fillLedger.startNewCycle() cycle-boundary flip. Widening that gap
-          // with an awaited round-trip would let a concurrent entry
-          // evaluation (gated only by isEntryInProgress(), not
-          // isMutatingPosition() — unlike refreshDrawdownGuard/
-          // consolidateDustBodies) land a buy fill that gets attributed to
-          // the closing cycle instead of the new one (Claude review).
-          let sizeOptimizerCycleData = null;
-          if (!fillLedger.claimCapitalCredit(fillData.orderId)) {
-            logger.info(
-              `ℹ️ [${exchange}] Untracked sell ${fillData.orderId.slice(0, 8)} capital already credited — skipping re-apply, still completing the cycle close`,
-              { orderId: fillData.orderId }
-            );
-          } else {
-            positionState.cyclesCompleted += 1;
-
-            // Capital was already claimed (fillLedger.claimCapitalCredit)
-            // above as the idempotency gate — apply it directly rather
-            // than calling creditCapitalGrowth, which would re-claim and
-            // (seeing it already claimed) skip applying pnl.
-            const prevMaxUsdc = config.maxUsdcDeployed;
-            config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-            updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
-
-            logger.info(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
-
-            // tp_filled + the optimizer recorders belong to the SAME
-            // claim-gated commit as cyclesCompleted++ / the capital credit
-            // (Claude delta review, round 6). They were previously below,
-            // ungated, alongside resetCycle()/closedTrades.record — so a
-            // retry after the claim already succeeded (capital credited,
-            // resetCycle awaiting a network cancel that then failed) would
-            // re-emit tp_filled and re-feed the optimizers on every retry,
-            // and once resetCycle() DID complete, avgCostBasis is reset to
-            // 0, so a subsequent retry's actualTpPct calc below would also
-            // be wrong. resetCycle()/closedTrades.record stay outside this
-            // gate (they retry idempotently on their own).
-            const actualTpPct = positionState.avgCostBasis > 0
-              ? ((summary2.avgPrice - positionState.avgCostBasis) / positionState.avgCostBasis) * 100
-              : 0;
-            tradeEvents.emitTradeEvent('tp_filled', exchange, `${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
-              assetAmount: summary2.totalSize,
-              price: summary2.avgPrice,
-              pnl,
-              holdbackAsset,
-              capitalGrowth: pnl,
-              newMaxUsdcDeployed: config.maxUsdcDeployed,
-            });
-            recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
-            sizeOptimizerCycleData = {
-              stepsUsed: positionState.cycleBuys,
-              capitalDeployed: soldCostBasis,
-            };
-          }
-
-          // Link current-cycle buy fills to this sell order for buy→sell display linkage (skip body-owned)
-          const cycleFills = fillLedger.getCurrentCycleFills();
-          const buyOrderIds = new Set();
-          for (const fill of cycleFills) {
-            // Timestamp-folded buys (#705) are not in the core position this TP sold.
-            if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId && fill.cycleAttribution !== 'timeframe') {
-              fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: fillData.orderId });
-              buyOrderIds.add(fill.orderId);
-            }
-          }
-
-          // Preserve the legacy audit record before resetCycle clears its
-          // cost basis. Safe to call every pass — record() accumulates only a
-          // newly-booked tranche and leaves a replay unchanged.
-          closedTrades.record({
-            sellOrderId: fillData.orderId,
-            ...sellTradeStamp(summary2),
-            recordedAt: Date.now(),
-            qtySold: summary2.totalSize,
-            sellProceeds: roundUSDC(proceeds),
-            sellFees: roundUSDC(summary2.totalFees),
-            costBasis: roundUSDC(soldCostBasis),
-            buyAvgPrice: roundUSDC(positionState.avgCostBasis),
-            pnl: roundUSDC(pnl),
-            holdbackAsset,
-            isPartial: false,
-            bodyId: null,
-            bodyTier: null,
-            buyOrderIds: [...buyOrderIds],
-            source: fillData.source || 'live',
-          }, { additive: booking.additive });
-
-          // try/finally: if resetCycle() throws (its only network call — the
-          // ladder cancel — runs before any state mutation, so a throw there
-          // means resetCycle() changed nothing), the outer dedup-clear/retry
-          // path retries this fill, but `claimCapitalCredit` will then return
-          // false and sizeOptimizerCycleData would never be set again —
-          // permanently dropping this cycle from the optimizer's stats
-          // (codex review round 1, P2). Recording it here regardless of
-          // resetCycle()'s outcome closes that gap; the underlying figures
-          // were already fixed, committed facts before resetCycle() ran.
-          // Deliberately NOT awaited: saveLiveState()/fillLedger.persist()
-          // below durably persist this already-completed cycle close before
-          // the optimizer's balance-fetch (up to a 30s exchange timeout) gets
-          // a chance to delay them — a crash during that fetch loses only
-          // this one best-effort optimizer stats sample, never the
-          // P&L-critical state (codex review round 2). Never rejects (its
-          // own body is try/caught), so no unhandled-rejection risk. Once it
-          // DOES resolve, re-save so the recorded sample/balance isn't left
-          // ONLY in memory until some unrelated future save picks it up
-          // (codex review round 3).
-          try {
-            await resetCycle();
-          } finally {
-            if (sizeOptimizerCycleData) {
-              recordCycleForSizeOptimizer(sizeOptimizerCycleData).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
-            }
-          }
-          saveLiveState();
-          fillLedger.persist();
-        }
+        return handleUntrackedSellFill(fillData, fillsToAggregate, booking, entryCoreTpOrderId);
       }
     }
 
