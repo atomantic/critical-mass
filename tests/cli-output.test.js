@@ -18,7 +18,12 @@ const invokeCli = async (command, productId, cycleStatus = 'dry_run_success') =>
     './src/runtime-env': { loadRuntimeEnv: () => {} },
     './src/migration': { guardLegacyMigration: () => ({ blocked: false }) },
     './src/logger': { log: (level, message) => { if (level === 'ERROR') errors.push(message); } },
-    './src/adapters': { getAdapter: () => { throw new Error('Unexpected adapter access'); } },
+    './src/adapters': {
+      getAdapter: () => ({
+        getAccountBalance: async () => ({ available: 12.34, hold: 0, total: 12.34 }),
+        getProductDetails: async pid => ({ id: pid, status: 'online' }),
+      }),
+    },
     './src/config-utils': { getConfiguredExchanges: () => ['coinbase'],
       getExchangeConfig: () => config, getBaseCurrency, getQuoteCurrency },
     './src/dca-engine': {
@@ -45,7 +50,7 @@ const invokeCli = async (command, productId, cycleStatus = 'dry_run_success') =>
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(errors, []);
   assert.equal(exitCode, 0);
-  assert.deepEqual(calls, [[command, 'coinbase']]);
+  assert.deepEqual(calls, command === 'debug' ? [] : [[command, 'coinbase']]);
   return output.join('\n');
 };
 
@@ -68,5 +73,11 @@ for (const productId of ['BTC-USDC', 'ETH-USDT', 'ethusd', 'CRO_USD']) {
     assert.ok(output.includes(`Outstanding Sells: 0.45000000 ${base} (918.00 ${quote})`));
     assert.ok(output.includes(`Fund Size: 25.00 ${quote}`));
     assert.ok(output.includes('Recent Fills: 1'));
+  });
+  test(`debug prints current producer contract for ${productId}`, async () => {
+    const output = await invokeCli('debug', productId);
+    assert.ok(output.includes(`--- ${quote} Balance ---`));
+    assert.ok(output.includes(`--- ${base} Balance ---`));
+    assert.ok(output.includes(`--- Product: ${productId} ---`));
   });
 }
