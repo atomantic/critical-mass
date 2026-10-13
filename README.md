@@ -63,6 +63,7 @@ limits; see [Simulation endpoint limits](docs/simulation-limits.md).
 
 - Node.js 20.19.0 or newer
 - PM2 available on your `PATH` for the production commands below (installed separately from the project dependencies)
+- `lsof` for the native npm startup port checks
 - Exchange API key with View and Trade permissions
 
 ## Installation
@@ -219,7 +220,14 @@ file is allowed; an unreadable file stops startup without printing its values.
 Only `.env` is loaded, not variants such as `.env.local`.
 
 Restart after changing settings. For PM2, use `npm start` to recreate the
-processes with fresh values (a plain restart can retain the previous environment).
+processes with fresh values. `npm run pm2:start` and `npm run pm2:restart` use the
+same sequence: stop and confirm the gateway first while engines remain available
+for its drain, then stop the engines and development UI, recreate the processes,
+and save the PM2 list only after all five report online. Engines are launched
+before the gateway; this does not wait for fund initialization or migration, so
+follow [UPGRADE.md](UPGRADE.md) when upgrading on-disk state. A failed stop or
+port check aborts startup; inspect the error and PM2 status before retrying.
+`npm run pm2:stop` uses the same shutdown order and keeps process registrations.
 PM2 and the combined development launcher still use their configured service ports.
 
 Local environment files are ignored by Git and Docker. Compose/Umbrel deployments
