@@ -172,11 +172,17 @@ function BackupRestore() {
       const res = await fetch('/api/backups', { method: 'POST' })
       if (res.ok) {
         const data = await res.json()
-        setMessage({ type: 'success', text: `Backup created: ${data.filename} (${formatBytes(data.sizeBytes)})` })
+        const created = `Backup created: ${data.filename} (${formatBytes(data.sizeBytes)})`
+        setMessage(data.warnings?.length
+          ? { type: 'warning', text: `${created}. ${data.warnings.join('. ')}. Check engine status before resuming trading.` }
+          : { type: 'success', text: created })
         fetchData({ silent: true })
       } else {
         const data = await res.json().catch(() => ({}))
-        setMessage({ type: 'error', text: `Backup failed: ${data.error || 'Unknown error'}` })
+        const warnings = data.warnings?.length
+          ? `. ${data.warnings.join('. ')}. Check engine status before resuming trading.`
+          : ''
+        setMessage({ type: 'error', text: `Backup failed: ${data.error || 'Unknown error'}${warnings}` })
       }
     } catch (err) {
       setMessage({ type: 'error', text: err.message || 'Failed to create backup' })
@@ -472,7 +478,9 @@ function BackupRestore() {
           <div className={`mb-4 p-3 rounded-lg ${
             message.type === 'success'
               ? 'bg-green-900/50 border border-green-700 text-green-200'
-              : 'bg-red-900/50 border border-red-700 text-red-200'
+              : message.type === 'warning'
+                ? 'bg-yellow-900/50 border border-yellow-700 text-yellow-200'
+                : 'bg-red-900/50 border border-red-700 text-red-200'
           }`}>
             {message.text}
           </div>

@@ -34,10 +34,10 @@ const settingsLogger = (route) => createContextLogger({
 
 /**
  * @param {import('express').Express} app
- * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, updownService?: Object, sentinelService?: Object, candleCache?: Object}} deps
+ * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, runBackup: Function, updownService?: Object, sentinelService?: Object, candleCache?: Object}} deps
  */
 module.exports = (app, deps) => {
-  const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService, sentinelService, candleCache } = deps;
+  const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService, sentinelService, candleCache, runBackup } = deps;
 
   /**
    * Gateway services that own files inside the archive. Each is stopped before
@@ -174,14 +174,15 @@ module.exports = (app, deps) => {
     res.json({ success: true, config });
   });
 
-  app.post('/api/backups', (req, res) => {
+  app.post('/api/backups', asyncRoute(async (req, res) => {
     const logger = settingsLogger('/api/backups');
     const config = getBackupConfig();
     logger.info('ℹ️ 💾 Manual backup triggered', { action: 'create-backup' });
 
-    const result = createBackup({ includePriceCache: config.includePriceCache });
+    const result = await runBackup('manual archive', () => createBackup({ includePriceCache: config.includePriceCache }));
     if (!result.success) {
-      return res.status(500).json({ success: false, error: result.error });
+      const status = ['maintenance-in-progress', 'writers-not-quiesced'].includes(result.code) ? 409 : 500;
+      return res.status(status).json(result);
     }
 
     const sizeMB = (result.sizeBytes / 1024 / 1024).toFixed(1);
@@ -200,8 +201,8 @@ module.exports = (app, deps) => {
       });
     }
 
-    res.json({ success: true, filename: result.filename, sizeBytes: result.sizeBytes });
-  });
+    res.json(result);
+  }));
 
   // Pre-flight for the restore confirmation UI: reports whether the archive
   // carries a configuration manifest, which funds it would restore, and whether

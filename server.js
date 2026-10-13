@@ -130,7 +130,10 @@ const shutdownRoutes = gatewayShutdown.routes(app);
 const routes = Object.fromEntries(Object.entries(shutdownRoutes).map(([method, register]) => [method,
   (...args) => register(...args.flat(Infinity).map((arg) => typeof arg !== 'function' ? arg : (req, res, next) => {
     const result = arg(req, res, next);
-    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) || /\/backups\/.+\/restore\/?$/.test(req.path)) return result;
+    // Maintenance owners drain this set themselves. Tracking their own handler
+    // would make a manual backup or restore wait for itself until timeout.
+    const ownsMaintenance = req.method === 'POST' && (/^\/api\/backups\/?$/i.test(req.path) || /\/backups\/.+\/restore\/?$/.test(req.path));
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) || ownsMaintenance) return result;
     return result && typeof result.then === 'function' ? trackPendingWrite(`api:${req.method}:${req.path}`, () => result) : result;
   })),
 ]));
@@ -185,7 +188,7 @@ app.param('exchange', (req, res, next, exchange) => {
 let backupTimer = null;
 let fundStateBackupTimer = null;
 
-const runScheduledBackup = (kind, create) => performBackup({
+const runBackup = (kind, create) => performBackup({
   kind, create, exchangeIPCMap,
   configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
   drainPendingWrites,
@@ -197,7 +200,7 @@ const runScheduledBackup = (kind, create) => performBackup({
       resume: () => wasRunning ? service.start() : undefined,
     };
   }),
-  logger: createContextLogger({ module: 'backup-scheduler' }),
+  logger: createContextLogger({ module: 'backup-coordinator' }),
 });
 
 const rescheduleBackupTimer = () => {
@@ -224,7 +227,7 @@ const rescheduleBackupTimer = () => {
       if (!config.enabled) return;
 
       log('INFO', '💾 Running scheduled backup...');
-      const result = await runScheduledBackup('full archive', () => createBackup({ includePriceCache: config.includePriceCache }));
+      const result = await runBackup('full archive', () => createBackup({ includePriceCache: config.includePriceCache }));
       if (result.success) {
         const sizeMB = (result.sizeBytes / 1024 / 1024).toFixed(1);
         log('INFO', `💾 Scheduled backup created: ${result.filename} (${sizeMB} MB)`);
@@ -244,7 +247,7 @@ const rescheduleBackupTimer = () => {
       const config = getBackupConfig();
       if (!config.enabled) return;
 
-      const result = await runScheduledBackup('fund state', () => createFundStateBackup({ maxBackups: config.fundStateMaxBackups }));
+      const result = await runBackup('fund state', () => createFundStateBackup({ maxBackups: config.fundStateMaxBackups }));
       if (result.success) {
         if (result.snapshotId) {
           log('INFO', `💾 Fund-state snapshot created: ${result.snapshotId} (${result.files} files, ${result.funds.length} funds)`);
@@ -350,7 +353,7 @@ const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSO
 
 require('./src/routes/sentinel-routes')(routes, { ...sharedDeps, sentinelService, getSentinelConfig, updateSentinelConfig });
 require('./src/routes/ai-routes')(routes, sharedDeps);
-require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, candleCache });
+require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, candleCache, runBackup });
 require('./src/routes/candle-routes')(routes, { candleCache });
 require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache });
 require('./src/routes/exchange-routes')(routes, sharedDeps);
