@@ -12,7 +12,7 @@ let createRequestOwner
 before(async () => {
   ;({ createRequestOwner } = await import('../admin/src/utils/requestOwner.mjs'))
   const { rolldown } = await import(pathToFileURL(adminRequire.resolve('rolldown')).href)
-  for (const name of ['DcaPlacementRecovery', 'Dashboard']) {
+  for (const name of ['DcaPlacementRecovery', 'DcaPendingBuyRecovery', 'Dashboard']) {
     const bundle = await rolldown({
       input: path.join(__dirname, `../admin/src/components/${name}.jsx`),
       external: () => true,
@@ -35,6 +35,7 @@ const deferred = () => {
 const settle = () => new Promise(resolve => setImmediate(resolve))
 const response = (data, ok = true) => ({ ok, json: async () => data })
 const Panel = () => null
+const BuyPanel = () => null
 
 // Keep hooks across renders and drive the real component's event handlers.
 function view(name, fetchImpl, extra = {}) {
@@ -68,6 +69,7 @@ function view(name, fetchImpl, extra = {}) {
     './ActivityFeed': () => null,
     './FailedSellPlacements': () => null,
     './DcaPlacementRecovery': Panel,
+    './DcaPendingBuyRecovery': BuyPanel,
     './Toast': { useToast: () => ({ addToast() {} }) },
     './charts/chartUtils': { formatCurrency: String, formatPrice: String, formatAsset: String },
     '../App': { getBaseCurrency: () => 'ETH', getQuoteCurrency: () => 'USDC' },
@@ -222,4 +224,125 @@ describe('DCA placement recovery', () => {
     panel = elements(tree).find(n => n.type === Panel)
     assert.deepEqual(panel.props.intents, [])
   })
+})
+
+const pendingBuy = { orderId: 'accepted-buy', runId: 'daily-2000-01-01', clientOrderId: 'accepted-client', lastError: 'Status unavailable' }
+const dashboardSummary = { config: {}, state: { pendingDcaBuy: pendingBuy }, stats: {}, nextTrade: {} }
+const buyPanel = tree => elements(tree).find(n => n.type === BuyPanel)
+
+describe('DCA accepted buy recovery', () => {
+  it('is expanded on cold load and reload, with the order identity, blocked step and safe exit', () => {
+    for (let reload = 0; reload < 2; reload++) {
+      const tree = view('DcaPendingBuyRecovery', async () => {}, { pendingBuy }).render()
+      assert.match(text(tree), /accepted-buy/)
+      assert.match(text(tree), /accepted-client/)
+      assert.match(text(tree), /Further buys are withheld/)
+      assert.match(text(tree), /cannot place another buy/)
+      assert.match(text(tree), /Status unavailable/)
+      assert.equal(button(tree, 'Resume buy recovery').props.disabled, false)
+    }
+  })
+
+  it('explains disabled recovery and links the unresolved placement exit', () => {
+    const tree = view('DcaPendingBuyRecovery', async () => {}, {
+      pendingBuy, dryRun: true, placementIntents: [intent],
+    }).render()
+    assert.equal(button(tree, 'Resume buy recovery').props.disabled, true)
+    assert.match(text(tree), /Turn off Dry Run/)
+    assert.match(text(tree), /Recovery is blocked/)
+    assert.ok(elements(tree).some(n => n.type === 'a' && n.props.href === '#dca-placement-recovery'))
+  })
+
+  it('feeds the panel from persisted summary and authoritative live status above controls', async () => {
+    const v = view('Dashboard', async url => response(url.includes('/regime/status') ? {} : {
+      state: { pendingDcaBuy: pendingBuy }, config: {},
+    }), { summary: dashboardSummary })
+    assert.equal(buyPanel(v.render()).props.pendingBuy.orderId, pendingBuy.orderId)
+    const tree = await v.mount()
+    assert.equal(buyPanel(tree).props.pendingBuy.orderId, pendingBuy.orderId)
+    assert.ok(elements(tree).indexOf(buyPanel(tree)) < elements(tree).findIndex(n => n.props.label === 'Automation'))
+  })
+
+  it('posts the original id once, keeps unresolved recovery retryable, and recovers after a lost response', async () => {
+    const gate = deferred()
+    const mutations = []
+    let fail = true
+    const v = view('Dashboard', async (url, options) => {
+      if (url.includes('/regime/status')) return response({})
+      if (url.includes('/resume-pending-buy')) {
+        mutations.push({ url, body: JSON.parse(options.body) })
+        await gate.promise
+        if (fail) throw new Error('Disconnected')
+        return response({ status: 'buy_fill_pending', pendingBuy, message: 'Still awaiting fill recovery' })
+      }
+      return response({ state: { pendingDcaBuy: pendingBuy }, config: {} })
+    }, { summary: dashboardSummary })
+    let panel = buyPanel(await v.mount())
+    const first = panel.props.onResume(pendingBuy.orderId)
+    await panel.props.onResume(pendingBuy.orderId)
+    assert.equal(buyPanel(v.render()).props.busy, true)
+    assert.equal(mutations.length, 1)
+    gate.resolve()
+    await first
+    panel = buyPanel(v.render())
+    assert.equal(panel.props.pendingBuy.orderId, pendingBuy.orderId)
+    assert.match(panel.props.notice.message, /Disconnected.*same order/)
+    assert.equal(panel.props.busy, false)
+    fail = false
+    await panel.props.onResume(pendingBuy.orderId)
+    panel = buyPanel(v.render())
+    assert.match(panel.props.notice.message, /Still awaiting fill/)
+    assert.equal(panel.props.pendingBuy.orderId, pendingBuy.orderId)
+    assert.deepEqual(mutations[0], { url: '/api/coinbase/resume-pending-buy?pair=ETH-USDC', body: { orderId: pendingBuy.orderId } })
+  })
+
+  it('preserves an acknowledged recovery when its follow-up status read fails', async () => {
+    let reads = 0
+    const v = view('Dashboard', async url => {
+      if (url.includes('/regime/status')) return response({})
+      if (url.includes('/resume-pending-buy')) return response({ success: true, message: 'Buy fill recovered. No new buy was placed.' })
+      if (++reads > 1) throw new Error('Offline')
+      return response({ state: { pendingDcaBuy: pendingBuy }, config: {} })
+    }, { summary: dashboardSummary })
+    await buyPanel(await v.mount()).props.onResume(pendingBuy.orderId)
+    const panel = buyPanel(v.render())
+    assert.equal(panel.props.pendingBuy, null)
+    assert.match(panel.props.notice.message, /Buy fill recovered.*status could not refresh/)
+    assert.doesNotMatch(panel.props.notice.message, /retry recovery/)
+  })
+
+  it('reports a recorded buy separately from covering-sell failure', async () => {
+    let reads = 0
+    const v = view('Dashboard', async url => {
+      if (url.includes('/regime/status')) return response({})
+      if (url.includes('/resume-pending-buy')) return response({ status: 'sell_placement_failed', recoveredPendingBuy: true, error: 'Cover rejected' }, false)
+      return response({ state: { pendingDcaBuy: ++reads === 1 ? pendingBuy : null }, config: {} })
+    }, { summary: dashboardSummary })
+    await buyPanel(await v.mount()).props.onResume(pendingBuy.orderId)
+    const panel = buyPanel(v.render())
+    assert.equal(panel.props.pendingBuy, null)
+    assert.match(panel.props.notice.message, /Buy fill recorded.*covering sell failed.*Failed Sell Placements/)
+    assert.equal(panel.props.notice.error, true)
+    assert.doesNotMatch(panel.props.notice.message, /retry recovery/)
+  })
+})
+
+it('does not resurrect a recovered buy from a status read started before recovery', async () => {
+  const stale = deferred()
+  let reads = 0
+  const v = view('Dashboard', async url => {
+    if (url.includes('/regime/status')) return response({})
+    if (url.includes('/resume-pending-buy')) return response({ success: true, message: 'Recovered' })
+    if (++reads === 2) return stale.promise
+    return response({ state: { pendingDcaBuy: reads === 1 ? pendingBuy : null }, config: {} })
+  }, { summary: dashboardSummary })
+  let tree = await v.mount()
+  const oldRead = elements(tree).find(n => n.type === Panel).props.onResolved({ placementIntents: [] }).catch(() => {})
+  await settle()
+  await buyPanel(tree).props.onResume(pendingBuy.orderId)
+  stale.resolve(response({ state: { pendingDcaBuy: pendingBuy } }))
+  await oldRead
+  tree = v.render()
+  assert.equal(buyPanel(tree).props.pendingBuy, null)
+  assert.match(buyPanel(tree).props.notice.message, /Recovered/)
 })

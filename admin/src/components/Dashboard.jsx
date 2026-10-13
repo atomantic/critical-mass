@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useId, useRef } from 'react'
 import ActivityFeed from './ActivityFeed'
 import FailedSellPlacements from './FailedSellPlacements'
 import DcaPlacementRecovery from './DcaPlacementRecovery'
+import DcaPendingBuyRecovery from './DcaPendingBuyRecovery'
 import { useToast } from './Toast'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
@@ -86,6 +87,9 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const [showConvertConfirm, setShowConvertConfirm] = useState(false)
   const [converting, setConverting] = useState(false)
   const [retryingBuyId, setRetryingBuyId] = useState(null)
+  const [recoveringBuy, setRecoveringBuy] = useState(false)
+  const [buyRecoveryNotice, setBuyRecoveryNotice] = useState(null)
+  const buyRecoveryRef = useRef(false)
   const { addToast } = useToast()
   const pairQuery = buildPairQuery(pair)
   const liveOwnerRef = useRef(null)
@@ -94,10 +98,49 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   // The live status read is the authoritative DCA state.json view: failed sell
   // placements come from here alongside current exchange balances and price.
   const fetchLive = useCallback(async () => {
+    if (buyRecoveryRef.current) return false
     const { owned, data } = await liveOwnerRef.current.read(`/api/${exchange}/status${pairQuery}`)
     if (owned && data) setLiveData(data)
     return Boolean(owned && data)
   }, [exchange, pairQuery])
+
+  const handleResumeBuy = async (orderId) => {
+    if (buyRecoveryRef.current) return
+    buyRecoveryRef.current = true
+    const token = liveOwnerRef.current.claim()
+    setRecoveringBuy(true)
+    setBuyRecoveryNotice(null)
+    let message
+    try {
+      const res = await fetch(`/api/${exchange}/resume-pending-buy${pairQuery}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orderId }),
+      })
+      const data = await res.json()
+      if (!liveOwnerRef.current.owns(token)) return
+      const sellFailed = data.status === 'sell_placement_failed' && data.recoveredPendingBuy
+      if (!sellFailed && (!res.ok || (!data.success && data.status !== 'buy_fill_pending'))) {
+        throw new Error(data.error || data.message || 'Buy recovery could not be confirmed')
+      }
+      message = sellFailed
+        ? `Buy fill recorded, but its covering sell failed: ${data.error || 'see engine logs'}. Check Failed Sell Placements below or the engine logs before resuming automation.`
+        : data.message || 'Buy recovery checked.'
+      setBuyRecoveryNotice({ message, error: Boolean(sellFailed) })
+      setLiveData(previous => ({ ...previous, state: { ...(previous?.state || {}),
+        pendingDcaBuy: data.status === 'buy_fill_pending' ? data.pendingBuy : null } }))
+    } catch (err) {
+      if (!liveOwnerRef.current.owns(token)) return
+      setBuyRecoveryNotice({ error: true, message: `${err.message || 'Buy recovery unavailable'}. Refresh status or retry recovery for the same order.` })
+    } finally {
+      buyRecoveryRef.current = false
+      if (liveOwnerRef.current.owns(token)) setRecoveringBuy(false)
+    }
+    if (!liveOwnerRef.current.owns(token)) return
+    // A failed status read after an acknowledged recovery is a read failure,
+    // not a failed mutation. Do not invite another purchase or lose its result.
+    if (!await fetchLive() && message) {
+      setBuyRecoveryNotice({ message: `${message} Dashboard status could not refresh; reload to check the current state.` })
+    }
+  }
 
   useEffect(() => {
     fetchLive()
@@ -270,6 +313,14 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
             setLiveData(previous => ({ ...previous, placementIntents: data.placementIntents }))
             if (!await fetchLive()) throw new Error('Status unavailable')
           }}
+        />
+        <DcaPendingBuyRecovery
+          pendingBuy={liveData ? liveData.state?.pendingDcaBuy : state.pendingDcaBuy}
+          busy={recoveringBuy}
+          dryRun={liveData?.config?.dryRun ?? config.dryRun}
+          placementIntents={liveData?.placementIntents}
+          onResume={handleResumeBuy}
+          notice={buyRecoveryNotice}
         />
         {/* Live Price Banner + Controls */}
         <div className="bg-gray-800 rounded-lg p-4">
