@@ -28,7 +28,7 @@ const {
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
-const { syncOrderStatuses, runIntervalCycle, executeConsolidation, reconcilePlacementIntent, retryFailedSell } = require('../dca-engine');
+const { syncOrderStatuses, runIntervalCycle, resumePendingBuy, executeConsolidation, reconcilePlacementIntent, retryFailedSell } = require('../dca-engine');
 const { shouldAutoResumeRegime, readBooleanFlag } = require('../shared-utils');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { prepareConfigUpdate, persistConfigUpdate } = require('./config-update');
@@ -561,6 +561,24 @@ module.exports = (app, deps) => {
 
     const result = await runIntervalCycle(exchange, pair);
     res.status(tradeResultStatusCode(result)).json({ exchange, pair, ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
+  }));
+
+  // Recover an accepted buy by identity. Unlike /trade this cannot buy for a
+  // new interval when the original order settles (including zero-fill cancel).
+  app.post('/api/:exchange/resume-pending-buy', asyncRoute(async (req, res) => {
+    const { exchange } = req.params;
+    const { pair, error } = resolvePairParam(req);
+    if (error) return res.status(400).json({ success: false, error });
+    if (!getGlobalConfig().simpleDcaEnabled) {
+      return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
+    }
+    const { orderId } = req.body || {};
+    if (typeof orderId !== 'string' || !orderId.trim() || orderId.length > 200) {
+      return res.status(400).json({ success: false, error: 'A pending buy order id is required (at most 200 characters).' });
+    }
+    const result = await resumePendingBuy(exchange, pair, orderId);
+    const status = result.status === 'buy_fill_pending' ? 202 : result.success ? 200 : 409;
+    res.status(status).json({ exchange, pair, ...result });
   }));
 
   // Consolidate pending orders for an exchange/fund

@@ -411,12 +411,27 @@ const saveStateBestEffort = (state, exchange, pair, cycleLogger) => {
  * Run the interval DCA cycle for one fund
  * @param {string} [exchange] - Exchange name (default: coinbase)
  * @param {string} [pair] - Fund pair (default: the exchange's default fund)
+ * @param {{pendingBuyOrderId?: string}} [options] - Recover only this accepted buy, without purchasing again
  * @returns {Promise<CycleResult>} Result of the cycle
  */
-const runIntervalCycle = async (exchange = 'coinbase', pair) => {
+const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId } = {}) => {
   const config = loadConfig(exchange, pair);
   const cycleLogger = dcaLogger(exchange, config.productId);
   const state = stateTracker.loadState(config, exchange, pair);
+  const recoveryOnly = pendingBuyOrderId !== undefined;
+  if (recoveryOnly) {
+    if (!state.pendingDcaBuy) {
+      return { success: true, status: 'no_pending_buy', exchange, message: 'No buy is awaiting recovery. No new buy was placed.' };
+    }
+    if (state.pendingDcaBuy.orderId !== pendingBuyOrderId) {
+      return { success: false, status: 'pending_buy_changed', exchange, pendingBuy: describePendingBuy(state.pendingDcaBuy),
+        message: 'The pending buy changed. Refresh status before recovering it.' };
+    }
+    if (config.dryRun) {
+      return { success: false, status: 'recovery_blocked', exchange,
+        message: 'Turn off Dry Run to recover this accepted live buy.' };
+    }
+  }
   const intervalLabel = formatInterval(config.intervalType);
   const adapter = getAdapter(exchange);
   const isFibonacci = config.dcaStrategy === 'fibonacci';
@@ -430,7 +445,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
   tradeEvents.starting(exchange, intervalLabel);
 
   // Check if enabled
-  if (!config.enabled) {
+  if (!config.enabled && !recoveryOnly) {
     cycleLogger.info(`ℹ️ [${exchange}] Critical Mass is disabled in config`);
     tradeEvents.disabled(exchange);
     return { status: 'disabled', exchange };
@@ -445,7 +460,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
   }
 
   // Check if already ran this interval
-  if (stateTracker.checkIfRanThisInterval(state, config.intervalType)) {
+  if (!recoveryOnly && stateTracker.checkIfRanThisInterval(state, config.intervalType)) {
     cycleLogger.info(`ℹ️ [${exchange}] Already ran this ${intervalLabel} interval (${state.lastRunId})`);
     tradeEvents.skipped(exchange, `Already ran this ${intervalLabel} interval`);
     return { status: 'already_ran', lastRunId: state.lastRunId, intervalType: config.intervalType, exchange };
@@ -466,7 +481,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
 
   // Sync order statuses (check for filled sells) - for fixed strategy
   let filledOrders = [];
-  if (!isFibonacci) {
+  if (!recoveryOnly && !isFibonacci) {
     filledOrders = await syncOrderStatuses(state, exchange, pair);
 
     if (filledOrders.length > 0) {
@@ -693,6 +708,16 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
         recoveredBuy = { buyResult: resumed.fill, runId, sellOrder: covered.sellOrder, holdbackAsset: covered.holdbackAsset };
       }
     }
+  }
+
+  // This explicit recovery action must never fall through into the current
+  // interval's purchase, even for an old buy or a terminal zero-fill order.
+  // Booking/covering above already persisted the original order's outcome.
+  if (recoveryOnly) {
+    return { success: true, status: recoveredBuy ? 'buy_recovered' : 'buy_recovery_settled', exchange,
+      orderId: pendingBuyOrderId,
+      message: recoveredBuy ? 'Buy fill recovered and covering sell recorded. No new buy was placed.'
+        : 'Buy recovery settled. No new buy was placed.' };
   }
 
   /**
@@ -1384,6 +1409,13 @@ module.exports = {
     reconcilePlacementIntent(exchange, resolveFundPair(exchange, pair), intentId, action),
   runIntervalCycle: (exchange = 'coinbase', pair) =>
     runFundWrite('dca-cycle', exchange, pair, (fund) => runIntervalCycle(exchange, fund)),
+  resumePendingBuy: (exchange = 'coinbase', pair, orderId) =>
+    runFundWrite('dca-buy-recovery', exchange, pair, (fund) => {
+      if (typeof orderId !== 'string' || !orderId.trim()) {
+        return Promise.resolve({ success: false, status: 'invalid_order_id', message: 'A pending buy order id is required.' });
+      }
+      return runIntervalCycle(exchange, fund, { pendingBuyOrderId: orderId });
+    }),
   retryFailedSell: (exchange = 'coinbase', pair, buyOrderId) =>
     runFundWrite('dca-sell-retry', exchange, pair, (fund) => retryFailedSell(exchange, fund, buyOrderId)),
   checkStatus,

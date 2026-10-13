@@ -29,6 +29,7 @@ before(async () => {
       './ActivityFeed': () => null,
       './FailedSellPlacements': () => null,
       './DcaPlacementRecovery': () => null,
+      './DcaPendingBuyRecovery': () => null,
       '../utils/requestOwner.mjs': { createRequestOwner: () => ({}) },
       './Toast': { useToast: () => ({ addToast() {} }) },
       './charts/chartUtils': { formatCurrency: n => `$${n.toFixed(2)}`, formatPrice: String, formatAsset: String },

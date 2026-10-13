@@ -124,11 +124,13 @@ beforeEach(() => {
     placeSellOrderWithRetry: orderManager.placeSellOrderWithRetry,
     placeFibonacciSellOrder: orderManager.placeFibonacciSellOrder,
     checkFilledOrders: orderManager.checkFilledOrders,
+    checkFibonacciSellFill: orderManager.checkFibonacciSellFill,
     saveState: stateTracker.saveState,
     logBuy: logger.logBuy,
     logSellOrder: logger.logSellOrder,
     logFibBuy: logger.logFibBuy,
     logFibSellOrder: logger.logFibSellOrder,
+    logFibSellFilled: logger.logFibSellFilled,
     buyPoll: { ...orderManager.BUY_FILL_POLL },
     resumePoll: { ...orderManager.PENDING_BUY_RESUME_POLL },
   };
@@ -162,6 +164,7 @@ beforeEach(() => {
   logger.logSellOrder = () => {};
   logger.logFibBuy = () => {};
   logger.logFibSellOrder = () => {};
+  logger.logFibSellFilled = () => {};
 
   restartEngine();
 });
@@ -174,11 +177,13 @@ afterEach(() => {
   orderManager.placeSellOrderWithRetry = originals.placeSellOrderWithRetry;
   orderManager.placeFibonacciSellOrder = originals.placeFibonacciSellOrder;
   orderManager.checkFilledOrders = originals.checkFilledOrders;
+  orderManager.checkFibonacciSellFill = originals.checkFibonacciSellFill;
   stateTracker.saveState = originals.saveState;
   logger.logBuy = originals.logBuy;
   logger.logSellOrder = originals.logSellOrder;
   logger.logFibBuy = originals.logFibBuy;
   logger.logFibSellOrder = originals.logFibSellOrder;
+  logger.logFibSellFilled = originals.logFibSellFilled;
   Object.assign(orderManager.BUY_FILL_POLL, originals.buyPoll);
   Object.assign(orderManager.PENDING_BUY_RESUME_POLL, originals.resumePoll);
   delete require.cache[DCA_ENGINE];
@@ -483,6 +488,134 @@ describe('state-tracker pending-buy helpers (issue #963)', () => {
   });
 });
 
+describe('explicit pending buy recovery never places a new buy', () => {
+  const seedPending = (extra = {}) => seedState({
+    pendingDcaBuy: { orderId: 'old-buy', runId: 'daily-2000-01-01', requestedUsdc: 100, strategy: fundConfig.dcaStrategy },
+    ...extra,
+  });
+
+  for (const strategy of ['fixed', 'fibonacci']) {
+    it(`recovers an older ${strategy} buy while automation is paused, then safely repeats`, async () => {
+      fundConfig.dcaStrategy = strategy;
+      fundConfig.enabled = false;
+      seedPending();
+      exchange.statusMode = 'filled';
+      const result = await dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy');
+      assert.equal(result.success, true);
+      assert.equal(result.status, 'buy_recovered');
+      assert.equal(exchange.placedBuys.length, 0);
+      assert.equal(readState().pendingDcaBuy, undefined);
+      assert.equal(readState().totalAllocated, 99.5);
+      assert.equal(readState().lastRunId, 'daily-2000-01-01');
+      assert.equal(strategy === 'fixed' ? readState().orders[0].orderId : readState().fibActiveSellOrderId,
+        strategy === 'fixed' ? 'sell-for-old-buy' : 'fib-sell-1');
+      const again = await dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy');
+      assert.equal(again.status, 'no_pending_buy');
+      assert.equal(exchange.placedBuys.length, 0);
+      assert.equal(readState().totalAllocated, 99.5);
+    });
+  }
+
+  it('releases a zero-fill cancelled order without making its replacement buy', async () => {
+    seedPending();
+    exchange.statusMode = 'cancelled';
+    const result = await dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy');
+    assert.equal(result.success, true);
+    assert.equal(readState().pendingDcaBuy, undefined);
+    assert.equal(readState().totalAllocated, 0);
+    assert.equal(exchange.placedBuys.length, 0);
+  });
+
+  it('settles a filled Fibonacci sell before covering all carried and recovered buys', async () => {
+    fundConfig.dcaStrategy = 'fibonacci';
+    seedPending({
+      fibCumulativeAsset: 0.003, fibCumulativeCost: 150, fibPosition: 2,
+      fibSellOrderCoveredAsset: 0.002, fibSellOrderCoveredCost: 100, fibSellOrderCoveredPosition: 1,
+      fibActiveSellOrderId: 'filled-prior-sell', fibPendingHoldback: 0,
+    });
+    exchange.statusMode = 'filled';
+    orderManager.checkFibonacciSellFill = async id => {
+      assert.equal(id, 'filled-prior-sell');
+      return { filledSize: 0.002, fillValue: 110, netProceeds: 110 };
+    };
+    const sells = [];
+    const placeSell = orderManager.placeFibonacciSellOrder;
+    orderManager.placeFibonacciSellOrder = async (...args) => { sells.push(args); return placeSell(...args); };
+    const result = await dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy');
+    assert.equal(result.success, true);
+    assert.equal(sells.length, 1);
+    assert.equal(sells[0][1], 0.001 + 0.0019, 'carry the uncovered buy as well as the recovered fill');
+    assert.equal(sells[0][3], null, 'the completed sell was settled before replacement');
+    assert.equal(readState().fibSellOrderCoveredAsset, 0.001 + 0.0019);
+    assert.equal(readState().fibSellOrderCoveredCost, 150, 'carry 50 cost and recover 100 including fees');
+    assert.equal(exchange.placedBuys.length, 0);
+  });
+
+  it('retains an unresolved order across a restart with the same visible identity', async () => {
+    seedPending();
+    const first = await dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy');
+    restartEngine();
+    const second = await dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy');
+    assert.equal(first.status, 'buy_fill_pending');
+    assert.equal(second.pendingBuy.orderId, 'old-buy');
+    assert.equal(readState().pendingDcaBuy.statusChecks, 2);
+    assert.equal(exchange.placedBuys.length, 0);
+  });
+
+  it('rejects stale/missing identities and Dry Run before reading an exchange order', async () => {
+    seedPending();
+    for (const id of [undefined, '', 'different-buy']) {
+      const result = await dcaEngine.resumePendingBuy(EXCHANGE, PAIR, id);
+      assert.equal(result.success, false);
+      if (id) assert.equal(result.pendingBuy.orderId, 'old-buy');
+    }
+    fundConfig.dryRun = true;
+    assert.equal((await dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy')).status, 'recovery_blocked');
+    assert.equal(exchange.statusReads, 0);
+    assert.equal(exchange.placedBuys.length, 0);
+    assert.equal(readState().pendingDcaBuy.orderId, 'old-buy');
+  });
+
+  it('retains placement and interrupted-import guards', async () => {
+    seedPending();
+    const intent = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'dca_buy' });
+    stateTracker.retainPlacementIntentInProcess(intent.id);
+    const result = await dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy');
+    assert.equal(result.status, 'placement_unresolved');
+    assert.equal(result.intentId, intent.id);
+    stateTracker.resolvePlacementIntent(EXCHANGE, PAIR, intent.id);
+    fs.writeFileSync(path.join(tmpDir, EXCHANGE, PAIR, '.dca-import-journal.json'), '{}');
+    assert.equal((await dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy')).status, 'import_recovery_pending');
+    assert.equal(exchange.statusReads, 0);
+  });
+
+  it('reports booked capital separately when its covering sell fails', async () => {
+    seedPending();
+    exchange.statusMode = 'filled';
+    orderManager.placeSellOrderWithRetry = async () => { throw new Error('cover rejected'); };
+    const result = await dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy');
+    assert.equal(result.status, 'sell_placement_failed');
+    assert.equal(result.recoveredPendingBuy, true);
+    assert.equal(readState().pendingDcaBuy, undefined);
+    assert.equal(readState().orders[0].status, 'sell_failed');
+    assert.equal(readState().totalAllocated, 99.5);
+    assert.equal(exchange.placedBuys.length, 0);
+  });
+
+  it('serializes two simultaneous recovery attempts and books once', async () => {
+    seedPending();
+    exchange.statusMode = 'filled';
+    const results = await Promise.all([
+      dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy'),
+      dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy'),
+    ]);
+    assert.deepEqual(results.map(r => r.status), ['buy_recovered', 'no_pending_buy']);
+    assert.equal(readState().orders.length, 1);
+    assert.equal(readState().totalAllocated, 99.5);
+    assert.equal(exchange.placedBuys.length, 0);
+  });
+});
+
 describe('trade endpoints distinguish pending recovery from rejection (issue #963)', () => {
   const createFakeApp = () => {
     const handlers = {};
@@ -500,10 +633,10 @@ describe('trade endpoints distinguish pending recovery from rejection (issue #96
   };
 
   /** Register a route module with runIntervalCycle stubbed to `result`. */
-  const withStubbedCycle = (routesPath, result) => {
+  const withStubbedCycle = (routesPath, result, entryPoint = 'runIntervalCycle', calls = []) => {
     const engine = require('../src/dca-engine');
-    const saved = { runIntervalCycle: engine.runIntervalCycle, getGlobalConfig: configUtils.getGlobalConfig, resolveConfiguredPair: configUtils.resolveConfiguredPair };
-    engine.runIntervalCycle = async () => ({ pair: PAIR, ...result });
+    const saved = { run: engine[entryPoint], getGlobalConfig: configUtils.getGlobalConfig, resolveConfiguredPair: configUtils.resolveConfiguredPair };
+    engine[entryPoint] = async (...args) => { calls.push(args); return { pair: PAIR, ...result }; };
     configUtils.getGlobalConfig = () => ({ ...saved.getGlobalConfig(), simpleDcaEnabled: true });
     configUtils.resolveConfiguredPair = () => ({ pair: PAIR, error: null });
     delete require.cache[routesPath];
@@ -518,7 +651,7 @@ describe('trade endpoints distinguish pending recovery from rejection (issue #96
     return {
       app,
       restore: () => {
-        engine.runIntervalCycle = saved.runIntervalCycle;
+        engine[entryPoint] = saved.run;
         configUtils.getGlobalConfig = saved.getGlobalConfig;
         configUtils.resolveConfiguredPair = saved.resolveConfiguredPair;
         delete require.cache[routesPath];
@@ -532,6 +665,41 @@ describe('trade endpoints distinguish pending recovery from rejection (issue #96
     pendingBuy: { orderId: 'buy-1', runId: 'daily-x' },
     message: 'Buy order buy-1 (interval daily-x) was accepted by the exchange … awaiting fill recovery and a second buy has been withheld.',
   };
+
+  for (const [name, result, status] of [
+    ['pending', pending, 202],
+    ['settled', { success: true, status: 'buy_recovered' }, 200],
+    ['stale identity', { success: false, status: 'pending_buy_changed', pendingBuy: { orderId: 'new-buy' } }, 409],
+    ['blocked', { status: 'placement_unresolved', intentId: 'blocking-intent' }, 409],
+  ]) {
+    it(`POST resume-pending-buy forwards fund and order identity and reports ${name}`, async () => {
+      const calls = [];
+      const { app, restore } = withStubbedCycle(EXCHANGE_ROUTES, result, 'resumePendingBuy', calls);
+      try {
+        const res = await invoke(app, 'POST /api/:exchange/resume-pending-buy', {
+          params: { exchange: EXCHANGE }, query: { pair: PAIR }, body: { orderId: 'buy-1' },
+        });
+        assert.equal(res.statusCode, status);
+        assert.deepEqual(calls, [[EXCHANGE, PAIR, 'buy-1']]);
+        assert.equal(res.body.status, result.status);
+        if (result.pendingBuy) assert.deepEqual(res.body.pendingBuy, result.pendingBuy);
+      } finally { restore(); }
+    });
+  }
+
+  it('POST resume-pending-buy rejects malformed input before entering the engine', async () => {
+    const calls = [];
+    const { app, restore } = withStubbedCycle(EXCHANGE_ROUTES, {}, 'resumePendingBuy', calls);
+    try {
+      for (const orderId of [undefined, '', ' ', 123, 'x'.repeat(201)]) {
+        const res = await invoke(app, 'POST /api/:exchange/resume-pending-buy', {
+          params: { exchange: EXCHANGE }, body: { orderId },
+        });
+        assert.equal(res.statusCode, 400);
+      }
+      assert.equal(calls.length, 0);
+    } finally { restore(); }
+  });
 
   for (const [label, routesPath, key, req] of [
     ['POST /api/:exchange/trade', EXCHANGE_ROUTES, 'POST /api/:exchange/trade', { params: { exchange: EXCHANGE } }],
