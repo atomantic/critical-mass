@@ -6,7 +6,7 @@
  *   - connectivity  (is the engine process reachable over IPC?)
  *   - intent        (STOPPED / PAUSED are operator choices, not outages)
  *   - operational health (SAFE, AUTH_DENIED, unreadable state, malformed
- *     reply, timeouts, stale UpDown prices)
+ *     reply, unfinished/failed fund startup, timeouts, stale UpDown prices)
  *
  * Fund statuses (per exchange/pair probe):
  *   ok | paused | stopped        -> not a failure
@@ -35,15 +35,20 @@ const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 
 /**
  * Interpret a raw `regime:status` IPC reply (envelope
- * `{ success, running, status, error }`) for one fund.
+ * `{ success, running, status, error, startup }`) for one fund.
  * @param {*} reply
- * @returns {{status: string, mode: string|null, reason: string|null, isRunning: boolean, uptime: number|null}}
+ * @returns {{status: string, mode: string|null, reason: string|null, isRunning: boolean, uptime: number|null, startup: object|null}}
  */
 const interpretFundReply = (reply) => {
-  const bad = (reason, extra = {}) => ({ status: 'error', mode: null, reason, isRunning: false, uptime: null, ...extra });
+  const bad = (reason, extra = {}) => ({ status: 'error', mode: null, reason, isRunning: false, uptime: null, startup: null, ...extra });
   if (!isObject(reply)) return bad('malformed reply');
+  const startup = isObject(reply.startup) ? {
+    state: reply.startup.state,
+    error: typeof reply.startup.error === 'string' ? reply.startup.error : null,
+    nextRetryAt: Number.isFinite(reply.startup.nextRetryAt) ? reply.startup.nextRetryAt : null,
+  } : null;
   if (reply.success !== true) {
-    return bad(typeof reply.error === 'string' && reply.error ? reply.error : 'engine reported failure');
+    return bad(typeof reply.error === 'string' && reply.error ? reply.error : 'engine reported failure', { startup });
   }
   const status = reply.status;
   if (!isObject(status)) return bad('reply missing status');
@@ -51,12 +56,18 @@ const interpretFundReply = (reply) => {
   if (typeof mode !== 'string' || !(mode in MODE_TO_STATUS)) return bad(`unrecognized health mode: ${String(mode)}`);
   const isRunning = typeof reply.running === 'boolean' ? reply.running : status.isRunning === true;
   const reasonRaw = status.health?.reason ?? status.health?.safeModeReason ?? status.health?.lastError ?? null;
+  // The engine can synthesize STOPPED while auto-resume retries or remains
+  // blocked; during start it can also expose an ACTIVE but not-yet-ready
+  // engine object. Neither is an intentional stop or a healthy trading fund.
+  const startupPending = ['starting', 'retrying', 'blocked'].includes(startup?.state);
   return {
-    status: MODE_TO_STATUS[mode],
+    status: startupPending ? 'error' : MODE_TO_STATUS[mode],
     mode,
-    reason: typeof reasonRaw === 'string' ? reasonRaw : null,
-    isRunning,
+    reason: startupPending ? `Fund startup ${startup.state}${startup.error ? `: ${startup.error}` : ''}`
+      : typeof reasonRaw === 'string' ? reasonRaw : null,
+    isRunning: startupPending ? false : isRunning,
     uptime: typeof status.uptime === 'number' ? status.uptime : null,
+    startup,
   };
 };
 
@@ -170,6 +181,7 @@ const buildRuntimeHealth = async ({
       funds[name][r.pair] = {
         exchange: name, pair: r.pair, status: r.status, mode: r.mode, reason: r.reason,
         isRunning: r.isRunning, uptime: r.uptime, enabled: fundRequired,
+        startup: r.startup ?? null,
       };
       if (fundRequired && FAILURE_STATUSES.has(r.status)) requiredFailure = true;
     }
@@ -184,6 +196,7 @@ const buildRuntimeHealth = async ({
       isRunning: results.some((r) => r.isRunning),
       mode: summary.mode,
       reason: summary.reason,
+      startup: summary.startup ?? null,
       uptime: summary.uptime,
       funds: results.length,
       required,

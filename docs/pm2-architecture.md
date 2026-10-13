@@ -66,10 +66,12 @@ Aggregation lives in `src/runtime-health.js`. The gateway enumerates `getConfigu
 | `ok` | mode `ACTIVE` | healthy |
 | `paused` / `stopped` | mode `PAUSED` / `STOPPED` | visible, **not** an outage |
 | `safe` / `auth_denied` | mode `SAFE` / `AUTH_DENIED` | `degraded` |
-| `error` | `success:false`, missing `status`, malformed reply, unknown mode, IPC rejection | `degraded` |
+| `error` | `success:false`, missing `status`, malformed reply, unknown mode, IPC rejection, startup `starting` / `retrying` / `blocked` | `degraded` |
 | `timeout` / `unreachable` | probe timeout / IPC not connected | `degraded` |
 
 An exchange summary shows its worst enabled fund (failure > paused > ok > stopped). Failures of disabled funds, exchanges with no configured funds (`unconfigured`) and exchanges with no enabled fund do not degrade the roll-up. UpDown is `ok` when running with a fresh price, `degraded` when running with `priceFresh:false` (`priceAgeMs` is exposed), `stopped` otherwise (optional). Sentinel is `degraded` on `unavailable`/`degraded` feeds. Overall `status` is `degraded` if any required service fails and `critical` when every required service is down or stopped and at least one failed.
+
+Fund health and the selected exchange summary retain `startup` (`state`, `error`, `nextRetryAt`), or `null` when supervision is unavailable. A pending or failed start reports `error` with a startup reason and `isRunning:false`, even when the engine synthesizes `STOPPED` health or exposes an `ACTIVE` object before initialization finishes. This keeps auto-resume failures visible until a successful retry or an intentional stop; normal supervised `running` / `stopped` states still follow the engine's health mode.
 
 ## PM2 Config
 
