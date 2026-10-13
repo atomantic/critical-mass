@@ -2,6 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { buildRuntimeHealth, interpretFundReply } = require('../src/runtime-health');
+const { createFundStartSupervisor } = require('../src/fund-start-supervisor');
 
 const envelope = (mode, extra = {}, running = true) => ({
   success: true, exchange: 'coinbase', pair: 'BTC-USDC', running,
@@ -49,6 +50,13 @@ describe('interpretFundReply', () => {
     assert.equal(interpretFundReply('x').status, 'error');
     assert.equal(interpretFundReply({ success: true, status: { health: {} } }).status, 'error');
     assert.equal(interpretFundReply({ success: true, status: { health: { mode: 'WAT' } } }).status, 'error');
+  });
+  it('keeps startup diagnostics when the engine reports a state-read failure', () => {
+    const startup = { state: 'blocked', error: 'Repair state', nextRetryAt: null };
+    const result = interpretFundReply({ success: false, status: null, error: 'Unreadable state', startup });
+    assert.equal(result.status, 'error');
+    assert.equal(result.reason, 'Unreadable state');
+    assert.deepEqual(result.startup, startup);
   });
 });
 
@@ -109,7 +117,77 @@ describe('buildRuntimeHealth', () => {
     assert.equal(h.status, 'ok');
     assert.equal(h.engines.coinbase.status, 'stopped');
     assert.equal(h.engines.coinbase.isRunning, false);
+    h = await run({ coinbase: makeIPC(() => ({ ...envelope('STOPPED', {}, false),
+      startup: { state: 'stopped', error: null, nextRetryAt: null } })) });
+    assert.equal(h.status, 'ok', 'a supervised intentional stop is still healthy');
   });
+
+  it('reports unfinished startup even when an engine object exposes ACTIVE health', async () => {
+    const reply = { ...envelope('ACTIVE', {}, false), startup: { state: 'starting', error: null, nextRetryAt: null } };
+    const h = await run({ coinbase: makeIPC(() => reply) });
+    assert.equal(h.status, 'degraded');
+    assert.equal(h.engines.coinbase.status, 'error');
+    assert.equal(h.engines.coinbase.isRunning, false);
+    assert.match(h.engines.coinbase.reason, /starting/);
+    assert.deepEqual(h.funds.coinbase['BTC-USDC'].startup, reply.startup);
+  });
+
+  for (const retryable of [true, false]) {
+    it(`surfaces real supervisor ${retryable ? 'retrying' : 'blocked'} state and recovers`, async () => {
+      const exchange = 'coinbase';
+      const pair = 'ETH-USDC';
+      const key = `${exchange}/${pair}`;
+      const engines = new Map();
+      let succeed = false;
+      let retry;
+      const supervisor = createFundStartSupervisor({
+        startAttempt: async () => {
+          if (!succeed) return { success: false, error: 'Dependency unavailable', retryable, needsOperator: !retryable };
+          engines.set(key, {});
+          return { success: true };
+        },
+        fundKey: (e, p) => `${e}/${p}`, resolvePair: (_e, p) => p,
+        regimeEngines: engines, saveRegimeRunningFlag: () => {},
+        logger: () => ({ error() {} }), isPaused: () => false,
+        setTimer: (callback) => { retry = callback; return { unref() {} }; }, clearTimer: () => {},
+      });
+      await supervisor.autoResumeFund(exchange, pair);
+      // Same envelope as the engine's regime:status handler: no engine
+      // synthesizes STOPPED, while startup supervision travels separately.
+      const ipc = makeIPC((_c, _p, _e, requestedPair) => requestedPair === pair ? {
+        ...envelope(engines.has(key) ? 'ACTIVE' : 'STOPPED', {}, engines.has(key)),
+        startup: supervisor.getStatus(exchange, pair),
+      } : envelope('ACTIVE'));
+      const funds = [{ exchange, pair: 'BTC-USDC' }, { exchange, pair }];
+      let h = await run({ coinbase: ipc }, { funds });
+      const failed = h.funds[exchange][pair];
+      assert.equal(h.status, 'degraded');
+      assert.equal(h.engines[exchange].status, 'error');
+      assert.equal(failed.status, 'error');
+      assert.equal(failed.isRunning, false);
+      assert.match(failed.reason, /Dependency unavailable/);
+      assert.equal(failed.startup.state, retryable ? 'retrying' : 'blocked');
+      assert.equal(h.engines[exchange].startup.state, failed.startup.state);
+      if (retryable) assert.ok(failed.startup.nextRetryAt > Date.now());
+      else assert.equal(failed.startup.nextRetryAt, null);
+
+      const down = await run({ coinbase: ipc }, { funds: [funds[1]], updown: { running: false }, sentinel: { running: false } });
+      assert.equal(down.status, 'critical', 'no ready service remains');
+
+      h = await run({ coinbase: ipc }, { funds, enabled: [funds[0]] });
+      assert.equal(h.status, 'ok', 'disabled fund cannot degrade enabled funds');
+      assert.equal(h.funds[exchange][pair].status, 'error', 'disabled failure remains visible');
+
+      succeed = true;
+      if (retryable) { retry(); await supervisor.settle(); }
+      else await supervisor.startFund({}, exchange, pair);
+      h = await run({ coinbase: ipc }, { funds });
+      assert.equal(h.status, 'ok');
+      assert.equal(h.funds[exchange][pair].status, 'ok');
+      assert.equal(h.funds[exchange][pair].startup.state, 'running');
+      assert.equal(h.funds[exchange][pair].startup.error, null);
+    });
+  }
 
   it('unconfigured exchange and disabled-fund failures are not outages', async () => {
     const gemini = makeIPC(() => { throw new Error('should not probe'); }, false);
