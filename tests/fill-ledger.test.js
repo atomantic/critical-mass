@@ -2821,7 +2821,7 @@ describe('Fill Ledger', () => {
       // The body-excluding count (used by the non-celestial core path) drops the
       // two body-owned buys — the exact bug that zeroed cycleBuys on restart.
       assert.equal(ledger.getCurrentCycleBuysCount(), 1, 'body-excluding count sees only the core buy');
-      // The all-buys count matches the live commitBuyCounter (one per unique buy order).
+      // The all-buys count matches the live commitBuyAccounting (one per unique buy order).
       assert.equal(ledger.getCurrentCycleAllBuysCount(), 3, 'all-buys count survives celestial mode');
     });
 

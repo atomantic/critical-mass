@@ -3024,7 +3024,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * Count unique buy ORDERS in the current cycle regardless of body ownership.
    * In celestial mode every engine buy is body-owned, so getCurrentCycleBuysCount
    * (which excludes body-owned buys) returns 0 and silently zeroes the restored
-   * cycleBuys counter. This matches the live commitBuyCounter, which increments
+   * cycleBuys counter. This matches the live commitBuyAccounting, which increments
    * once per unique buy order (body-owned or core) in the cycle (issue #210-A).
    * @returns {number} Unique buy order count (all ownership)
    */
