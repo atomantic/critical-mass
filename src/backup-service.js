@@ -18,6 +18,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { jsonReadError } = require('./json-diagnostics');
+const { fsyncDir } = require('./fsync-dir');
 const { spawnSync } = require('child_process');
 const { DATA_DIR, BACKUP_DIR } = require('./paths');
 const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME } = require('./restore-apply');
@@ -50,6 +51,12 @@ const FUND_STATE_MANIFEST_VERSION = 1;
 const FUND_STATE_SNAPSHOT_FILENAMES = ['fill-ledger.json', 'regime-state.json', 'closed-trades.json', 'state.json', 'dry-run-state.json'];
 
 const SPAWN_TIMEOUT_MS = 60000;
+
+/** Flush copied backup bytes before publication can authorize retention. */
+const flushBackupFile = (file) => {
+  const fd = fs.openSync(file, 'r');
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+};
 
 /** Root-level credential files that must remain machine-local. */
 const ROOT_CREDENTIAL_FILES = [
@@ -475,10 +482,17 @@ const createBackup = ({ includePriceCache = false, paths: pathOverrides } = {}) 
     return { success: false, error: `Backup validation failed: ${validation.error}` };
   }
 
+  const publishedPath = path.join(paths.backupsDir, filename);
+  let published = false;
   try {
-    fs.renameSync(zipPath, path.join(paths.backupsDir, filename));
+    flushBackupFile(zipPath);
+    fs.renameSync(zipPath, publishedPath);
+    published = true;
+    fsyncDir(paths.backupsDir);
+    // backups/ may have been created by this call.
+    fsyncDir(paths.dataDir);
   } catch (error) {
-    fs.rmSync(zipPath, { force: true });
+    fs.rmSync(published ? publishedPath : zipPath, { force: true });
     return { success: false, error: `Failed to publish backup archive: ${error.message}` };
   }
 
@@ -681,6 +695,9 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
 
   const stageDir = fs.mkdtempSync(path.join(paths.backupsDir, '.fund-state-stage-'));
   const funds = [];
+  const snapshotDirs = new Set([stageDir]);
+  const publishedPath = path.join(paths.fundStateBackupsDir, snapshotId);
+  let published = false;
   let files = 0;
   try {
     for (const { exchange, pair } of identities) {
@@ -694,6 +711,8 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
         const target = path.join(stageDir, exchange, pair, name);
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.copyFileSync(source, target);
+        flushBackupFile(target);
+        for (let dir = path.dirname(target); dir !== stageDir; dir = path.dirname(dir)) snapshotDirs.add(dir);
         copied.push(name);
         files++;
       }
@@ -711,10 +730,18 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
       createdAt,
       funds,
     }, null, 2), { mode: 0o600 });
+    flushBackupFile(path.join(stageDir, FUND_STATE_MANIFEST_FILENAME));
+    // Persist the whole staged tree, children before parents, before exposing it.
+    for (const dir of [...snapshotDirs].sort((a, b) => b.length - a.length)) fsyncDir(dir);
     fs.mkdirSync(paths.fundStateBackupsDir, { recursive: true });
-    fs.renameSync(stageDir, path.join(paths.fundStateBackupsDir, snapshotId));
+    fs.renameSync(stageDir, publishedPath);
+    published = true;
+    // Rename crosses directories; persist both parents and any new ancestors.
+    fsyncDir(paths.fundStateBackupsDir);
+    fsyncDir(paths.backupsDir);
+    fsyncDir(paths.dataDir);
   } catch (error) {
-    fs.rmSync(stageDir, { recursive: true, force: true });
+    fs.rmSync(published ? publishedPath : stageDir, { recursive: true, force: true });
     return { success: false, error: `Fund-state snapshot failed: ${error.message}` };
   }
 
