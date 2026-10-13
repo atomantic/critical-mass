@@ -470,6 +470,17 @@ module.exports = (app, deps) => {
     res.json(result);
   });
 
+  // Resume the selected durable body intent, without re-importing fills or
+  // starting recovery work for any other manual trade.
+  app.post('/api/:exchange/regime/manual-trade/:tradeId/resume', async (req, res) => {
+    const { exchange, tradeId } = req.params;
+    if (typeof tradeId !== 'string' || !tradeId.trim()) return res.status(400).json({ success: false, error: 'tradeId must be a non-blank string' });
+    const pair = getFundPair(req);
+    const result = await getIPC(exchange).request('regime:manual-trade-resume', { tradeId }, exchange, pair).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
   // Continue a sell-first recovery whose buy is confirmed terminal (issue
   // #1034): place a buy for the uncovered remainder, or link a replacement.
   app.post('/api/:exchange/regime/manual-trade/:tradeId/retry', async (req, res) => {

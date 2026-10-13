@@ -199,7 +199,7 @@ const recoveryRefusal = (trade) => {
  *   touched if it already carries a live TP from before the engine stopped).
  * @param {number[]} [deps.recoveryLookupRetryDelaysMs] - Backoff between
  *   client-id lookups after an ambiguous recovery-buy placement (tests pass [])
- * @returns {Object} importSell / importBuy / importPair / checkPendingBuy / retryRecovery / recoverPendingBodyIntents / recoverPendingRecoveryIntents
+ * @returns {Object} importSell / importBuy / importPair / checkPendingBuy / retryRecovery / resumeBodyImport / recoverPendingBodyIntents / recoverPendingRecoveryIntents
  */
 const createManualTradeImporter = ({
   exchange,
@@ -1186,10 +1186,9 @@ const createManualTradeImporter = ({
       }
       // Any other refusal (e.g. 'Engine not running' from a race with
       // regime:start/stop) means the body was NEVER pushed and has no live TP.
-      // Nothing was published, so drop the intent and fail retryably — never
-      // mark TP_PENDING against a body nothing tracks.
+      // Keep the durable intent so the row remains actionable after reload.
+      // Never mark TP_PENDING against a body nothing tracks.
       if (injectResult && injectResult.success === false) {
-        store.discardBodyIntent(trade.id);
         log.warn(`⚠️ [${exchange}] Manual buy import: injectBody failed for buy ${buyOrderId} (${injectResult.error || 'unknown error'}) — leaving the trade retryable`, {
           buyOrderId,
           error: injectResult.error,
@@ -1206,8 +1205,8 @@ const createManualTradeImporter = ({
 
     const persisted = persistBodyToDisk(body);
     if (!persisted) {
-      // No position state to persist into at all — nothing was saved.
-      store.discardBodyIntent(trade.id);
+      // Nothing was saved. Keep the authorized import pending for retry once
+      // its position state is available, including after a page reload.
       log.warn(`⚠️ [${exchange}] Manual buy import: no position state for body ${body.id} — leaving the trade retryable`, {
         bodyId: body.id,
         buyOrderId,
@@ -1241,7 +1240,41 @@ const createManualTradeImporter = ({
       bodyId: trade.bodyIntent.bodyId,
       buyOrderId: trade.buyOrderId,
     });
+    // The persisted intent is the page's recovery handle. A repeated refusal
+    // must not erase it and strand this already-imported buy after reload.
     return publishBodyIntent(trade);
+  };
+
+  /**
+   * Finish exactly one interrupted buy import from its durable body payload.
+   * Unlike importing the exchange order again, this requires no fill lookup
+   * and cannot report a completed publication as failed because that read is
+   * unavailable. A stale retry of a committed intent is a no-op.
+   * @param {{tradeId?: string}} [payload]
+   */
+  const resumeBodyImport = async (payload = {}) => {
+    const tradeId = payload?.tradeId;
+    if (typeof tradeId !== 'string' || !tradeId.trim()) return fail('tradeId must be a non-blank string');
+    const trade = store.getById(tradeId);
+    if (!trade) return fail(`Manual trade ${tradeId} not found`);
+    if (trade.tradeType !== 'buy_first' || !trade.buyOrderId) return fail(`Manual trade ${tradeId} is not a buy import`);
+
+    return store.withBuyLock(trade.buyOrderId, async () => {
+      const current = store.getById(tradeId);
+      if (current?.bodyIntent?.phase === INTENT_PHASE.COMMITTED) {
+        return ok({ trade: current, alreadyImported: true });
+      }
+      if (current?.bodyIntent?.phase !== INTENT_PHASE.PENDING) {
+        return fail(`Manual trade ${tradeId} has no interrupted body import to resume`);
+      }
+      try {
+        const result = await resumeBodyIntent(current);
+        if (!result.success) return fail(result.error);
+        return ok({ trade: store.getById(tradeId) });
+      } catch (err) {
+        return fail(`Could not resume body import: ${err.message}`);
+      }
+    });
   };
 
   /**
@@ -1334,7 +1367,7 @@ const createManualTradeImporter = ({
     return ok({ trade: store.getById(trade.id) });
   };
 
-  return { importSell, importBuy, importPair, checkPendingBuy, retryRecovery, recoverPendingBodyIntents, recoverPendingRecoveryIntents };
+  return { importSell, importBuy, importPair, checkPendingBuy, retryRecovery, resumeBodyImport, recoverPendingBodyIntents, recoverPendingRecoveryIntents };
 };
 
 module.exports = { createManualTradeImporter };

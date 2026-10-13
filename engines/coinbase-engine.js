@@ -626,7 +626,7 @@ const getManualTradeStore = (exchange, pair) => {
  * src/manual-trade-import.js; this resolves the fund's live dependencies.
  * Throws on cold-start ledger corruption (via getActiveLedger) — callers
  * convert that into the structured {success:false} IPC response.
- * @returns {Object} importSell / importBuy / importPair / checkPendingBuy / retryRecovery
+ * @returns {Object} importSell / importBuy / importPair / checkPendingBuy / retryRecovery / resumeBodyImport
  */
 const getManualTradeImporter = (exchange, resolvedPair) => {
   const { getAdapter } = require('../src/adapters');
@@ -647,7 +647,7 @@ const getManualTradeImporter = (exchange, resolvedPair) => {
 /**
  * Wire an IPC manual-trade request to one importer method.
  * @param {string} channel - IPC request channel
- * @param {'importSell'|'importBuy'|'importPair'|'checkPendingBuy'|'retryRecovery'} method
+ * @param {'importSell'|'importBuy'|'importPair'|'checkPendingBuy'|'retryRecovery'|'resumeBodyImport'} method
  */
 const wireManualTradeImport = (channel, method) => {
   ipcServer.onRequest(channel, async (payload, exchange, pair) => {
@@ -658,6 +658,9 @@ const wireManualTradeImport = (channel, method) => {
     } catch (err) {
       return { success: false, error: err.message };
     }
+    // A row's Resume action owns only that intent. Do not sweep unrelated
+    // imports or require an exchange lookup before returning its outcome.
+    if (method === 'resumeBodyImport') return importer.resumeBodyImport(payload || {});
     // Heal body creations a crash or failed publication interrupted (issue
     // #1022) before any new import work. Failures are logged by the importer
     // and leave the intent pending for the next request.
@@ -722,6 +725,7 @@ ipcServer.onRequest('regime:manual-trades', async (payload, exchange, pair) => {
 wireManualTradeImport('regime:manual-trade', 'importSell');
 wireManualTradeImport('regime:manual-trade-check', 'checkPendingBuy');
 wireManualTradeImport('regime:manual-trade-retry', 'retryRecovery');
+wireManualTradeImport('regime:manual-trade-resume', 'resumeBodyImport');
 wireManualTradeImport('regime:manual-trade-buy', 'importBuy');
 wireManualTradeImport('regime:manual-trade-pair', 'importPair');
 

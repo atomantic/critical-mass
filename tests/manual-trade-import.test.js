@@ -2151,21 +2151,24 @@ describe('Manual Trade Import', () => {
       assert.equal(afterFirst.length, 1);
       assert.equal(afterFirst[0].bodyId, null, 'a failed injection must never be linked to the trade');
       assert.notEqual(afterFirst[0].status, STATUS.TP_PENDING, 'the trade must stay retryable, not TP_PENDING');
-      // Ownership is only stamped once a body is durable (issue #1022), so a
-      // refused injection leaves the ledger rows unowned and no intent behind.
+      // Ownership is only stamped once a body is durable. The initial
+      // refusal keeps its durable intent so a reloaded page can offer Resume.
       const rowAfterFirst = fillLedger.getFillsForOrder('buy-1')[0];
       assert.ok(!rowAfterFirst.bodyId);
       assert.ok(!rowAfterFirst.isBodyOwned);
-      assert.equal(afterFirst[0].bodyIntent, null, 'a confirmed non-publication drops the intent');
+      assert.equal(afterFirst[0].bodyIntent.phase, 'pending');
+      const intentBodyId = afterFirst[0].bodyIntent.bodyId;
+      assert.equal(readManualTradesFile().trades[0].bodyIntent.bodyId, intentBodyId);
 
       // A retry (e.g. once the engine finishes starting) must actually try
       // again — the top-of-function guard must not silently treat this as
       // already imported.
-      const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
+      const second = await importer.resumeBodyImport({ tradeId: afterFirst[0].id });
       assert.equal(second.success, true);
       assert.equal(calls, 2, 'the retry must call injectBody again, not skip it');
       assert.equal(second.trade.status, STATUS.TP_PENDING);
       assert.ok(second.trade.bodyId);
+      assert.equal(second.trade.bodyId, intentBodyId, 'resume keeps the original publication identity');
       assert.equal(fillLedger.getFillsForOrder('buy-1')[0].bodyId, second.trade.bodyId);
     });
 
@@ -2368,6 +2371,147 @@ describe('Manual Trade Import', () => {
           },
         };
       };
+
+      const leaveInterruptedImport = async (buyOrderId = 'buy-1') => {
+        const adapter = createFakeAdapter({ fillsByOrder: { [buyOrderId]: singleFill.map((fill) => ({ ...fill, tradeId: `${buyOrderId}-fill` })) } });
+        await assert.rejects(createImporter({
+          adapter,
+          injectBody: async () => { throw new Error('interrupted publication'); },
+        }).importBuy({ buyOrderId, createBody: true }), /interrupted publication/);
+        return store.getAll().find((trade) => trade.buyOrderId === buyOrderId);
+      };
+
+      it('resumes only the selected import after reload without fetching exchange fills', async () => {
+        const pending = await leaveInterruptedImport();
+        const other = await leaveInterruptedImport('buy-2');
+        const expectedBodyId = pending.bodyIntent.bodyId;
+        coldReload();
+        const adapter = createFakeAdapter();
+        adapter.getOrderFills = async () => assert.fail('resuming must not depend on exchange history');
+        const importer = createImporter({ adapter });
+
+        const result = await importer.resumeBodyImport({ tradeId: pending.id });
+
+        assert.equal(result.success, true);
+        assert.equal(result.trade.id, pending.id);
+        assert.equal(result.trade.status, STATUS.TP_PENDING);
+        assert.equal(result.trade.bodyId, expectedBodyId);
+        assert.equal(result.trade.bodyIntent.phase, 'committed');
+        assert.equal(savedBodies().length, 1);
+        assert.equal(savedBodies()[0].id, expectedBodyId);
+        assert.equal(store.getById(other.id).bodyIntent.phase, 'pending', 'another import must stay untouched');
+        assert.deepEqual(adapter.calls, { getOrderFills: [], placeLimitBuy: [], getOrder: [] });
+
+        const again = await importer.resumeBodyImport({ tradeId: pending.id });
+        assert.equal(again.success, true);
+        assert.equal(again.alreadyImported, true);
+        assert.equal(savedBodies().length, 1);
+      });
+
+      it('keeps the durable resume handle after a repeated engine refusal', async () => {
+        const pending = await leaveInterruptedImport();
+        const bodyId = pending.bodyIntent.bodyId;
+        coldReload();
+        const refused = await createImporter({
+          adapter: {}, injectBody: async () => ({ success: false, error: 'Engine not running' }),
+        }).resumeBodyImport({ tradeId: pending.id });
+
+        assert.equal(refused.success, false);
+        assert.match(refused.error, /Engine not running/);
+        coldReload();
+        assert.equal(store.getById(pending.id).bodyIntent.phase, 'pending');
+        assert.equal(store.getById(pending.id).bodyIntent.bodyId, bodyId);
+        assert.equal(savedBodies().length, 0);
+        const recovered = await createImporter({ adapter: {} }).resumeBodyImport({ tradeId: pending.id });
+        assert.equal(recovered.success, true);
+        assert.equal(recovered.trade.bodyId, bodyId);
+      });
+
+      it('keeps the durable resume handle when position state cannot be read', async () => {
+        const pending = await leaveInterruptedImport();
+        const stateFile = path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
+        fs.writeFileSync(stateFile, '{invalid json');
+        const refused = await createImporter({ adapter: {} }).resumeBodyImport({ tradeId: pending.id });
+
+        assert.equal(refused.success, false);
+        assert.match(refused.error, /corrupted or unreadable/);
+        coldReload();
+        assert.equal(store.getById(pending.id).bodyIntent.phase, 'pending');
+        assert.equal(store.getById(pending.id).status, STATUS.BUY_RECORDED);
+      });
+
+      it('reports a failed resume write and remains resumable after reload', async () => {
+        const pending = await leaveInterruptedImport();
+        const refused = await withRegimeStateEnospc(() =>
+          createImporter({ adapter: {} }).resumeBodyImport({ tradeId: pending.id }));
+        assert.equal(refused.success, false);
+        assert.match(refused.error, /ENOSPC/);
+        coldReload();
+        assert.equal(store.getById(pending.id).bodyIntent.phase, 'pending');
+        assert.equal(savedBodies().length, 0);
+        assert.equal((await createImporter({ adapter: {} }).resumeBodyImport({ tradeId: pending.id })).success, true);
+      });
+
+      it('serializes concurrent resume actions without injecting a second body', async () => {
+        const pending = await leaveInterruptedImport();
+        const engine = createFakeEngine();
+        let release;
+        let entered;
+        const blocked = new Promise((resolve) => { release = resolve; });
+        const started = new Promise((resolve) => { entered = resolve; });
+        const injectBody = async (body) => { entered(); await blocked; return engine.injectBody(body); };
+        const first = createImporter({ adapter: {}, injectBody }).resumeBodyImport({ tradeId: pending.id });
+        await started;
+        const second = createImporter({ adapter: {}, injectBody }).resumeBodyImport({ tradeId: pending.id });
+        release();
+        const [a, b] = await Promise.all([first, second]);
+
+        assert.equal(a.success, true);
+        assert.equal(b.success, true);
+        assert.equal(b.alreadyImported, true);
+        assert.equal(engine.injected.length, 1);
+        assert.equal(a.trade.bodyId, b.trade.bodyId);
+      });
+
+      it('resumes a retired body by linking its record and never republishes sold inventory', async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        store.markTpPlaced = () => { throw new Error('interrupted linkage'); };
+        await assert.rejects(createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true }));
+        const [savedBody] = savedBodies();
+        coldReload();
+        const [pending] = store.getAll();
+        bookBodySale('buy-1', 'tp-1', savedBody.id);
+        dropSavedBodies();
+        const importer = createImporter({ adapter: {}, injectBody: async () => assert.fail('sold body must not be recreated') });
+
+        const result = await importer.resumeBodyImport({ tradeId: pending.id });
+        assert.equal(result.success, true);
+        assert.equal(result.trade.bodyId, savedBody.id);
+        assert.equal(result.trade.bodyIntent.phase, 'committed');
+        assert.equal(savedBodies().length, 0);
+        coldReload();
+        const again = await createImporter({ adapter: {}, injectBody: async () => assert.fail('committed retry must be a no-op') })
+          .resumeBodyImport({ tradeId: pending.id });
+        assert.equal(again.success, true);
+        assert.equal(again.alreadyImported, true);
+        assert.equal(savedBodies().length, 0);
+      });
+
+      it('rejects invalid ids, wrong trade types and ledger-only imports without publishing', async () => {
+        const importer = createImporter({ adapter: {}, injectBody: async () => assert.fail('invalid resume must not publish') });
+        for (const tradeId of [undefined, null, '', ' ', 1, {}, []]) {
+          const result = await importer.resumeBodyImport({ tradeId });
+          assert.equal(result.success, false);
+          assert.match(result.error, /non-blank string/);
+        }
+        assert.match((await importer.resumeBodyImport({ tradeId: 'unknown' })).error, /not found/);
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });
+        const recorded = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: false });
+        assert.match((await importer.resumeBodyImport({ tradeId: recorded.trade.id })).error, /no interrupted body import/);
+        recorded.trade.tradeType = 'sell_first';
+        assert.match((await importer.resumeBodyImport({ tradeId: recorded.trade.id })).error, /not a buy import/);
+        assert.equal(savedBodies().length, 0);
+      });
 
       it('cold retry after an ENOSPC publishing regime-state.json saves exactly one body (engine stopped)', async () => {
         const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': singleFill } });

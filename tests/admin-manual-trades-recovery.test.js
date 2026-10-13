@@ -211,3 +211,121 @@ describe('Manual Trades recovery row (#1034)', () => {
     assert.equal(elements(tree).some((n) => n.type === 'button' && text(n).trim() === 'Retry recovery'), false)
   })
 })
+
+const pendingImport = (overrides = {}) => ({
+  id: 'import-1', tradeType: 'buy_first', status: 'buy_recorded',
+  buyOrderId: 'imported-buy-1', buyPrice: 50000, buySize: 0.002,
+  bodyIntent: { phase: 'pending', bodyId: 'imported-body-1' },
+  ...overrides,
+})
+const completedImport = () => pendingImport({
+  status: 'tp_pending', bodyId: 'imported-body-1',
+  bodyIntent: { phase: 'committed', bodyId: 'imported-body-1' },
+})
+
+describe('interrupted manual body import recovery', () => {
+  it('expands a cold-loaded pending import with its full identities and resume action', async () => {
+    const view = createView(() => ({ success: true, trades: [pendingImport()] }))
+    const tree = await view.mount()
+    assert.ok(elements(tree).some(n => n.props?.id === 'manual-trades-content'))
+    assert.match(text(tree), /Import unfinished/)
+    assert.match(text(tree), /Buy imported-buy-1.*body imported-body-1/)
+    assert.match(text(tree), /may place its take-profit sell/)
+    button(tree, 'Resume import')
+  })
+
+  it('does not treat an intentional ledger-only buy as an interrupted import', async () => {
+    const view = createView(() => ({ success: true, trades: [pendingImport({ bodyIntent: null })] }))
+    const tree = await view.mount()
+    assert.equal(elements(tree).some(n => n.props?.id === 'manual-trades-content'), false)
+  })
+
+  it('keeps failed recovery visible after a reload and retries the same trade', async () => {
+    let trade = pendingImport()
+    let refuse = true
+    const respond = (url) => {
+      if (url.includes('/resume')) {
+        if (refuse) return { success: false, error: 'Body publication unavailable' }
+        trade = completedImport()
+        return { success: true, trade }
+      }
+      return { success: true, trades: [trade] }
+    }
+    const first = createView(respond)
+    await button(await first.mount(), 'Resume import').props.onClick()
+    assert.match(text(first.render()), /Body publication unavailable/)
+    button(first.render(), 'Resume import')
+
+    const reloaded = createView(respond)
+    const tree = await reloaded.mount()
+    refuse = false
+    await button(tree, 'Resume import').props.onClick()
+    assert.deepEqual(reloaded.writes, [{
+      url: '/api/coinbase/regime/manual-trade/import-1/resume?pair=BTC-USDC', body: null,
+    }])
+    assert.match(text(reloaded.render()), /Import completed/)
+    assert.equal(elements(reloaded.render()).some(n => n.type === 'button' && text(n) === 'Resume import'), false)
+  })
+
+  it('prevents duplicate submissions while the server is finishing the import', async () => {
+    let finish
+    let trade = pendingImport()
+    const pending = new Promise(resolve => { finish = resolve })
+    const view = createView(url => url.includes('/resume') ? pending : { success: true, trades: [trade] })
+    const action = button(await view.mount(), 'Resume import').props.onClick
+    const request = action()
+    await action()
+    assert.equal(view.writes.length, 1)
+    assert.equal(button(view.render(), 'Resuming import...').props.disabled, true)
+    trade = completedImport()
+    finish({ success: true, trade })
+    await request
+  })
+
+  it('preserves successful completion when the follow-up read fails', async () => {
+    let resumed = false
+    const view = createView(url => {
+      if (url.includes('/resume')) {
+        resumed = true
+        return { success: true, trade: completedImport() }
+      }
+      if (resumed) throw new Error('Status unavailable')
+      return { success: true, trades: [pendingImport()] }
+    })
+    await button(await view.mount(), 'Resume import').props.onClick()
+    const tree = view.render()
+    assert.match(text(tree), /Import completed, but status could not refresh/)
+    assert.doesNotMatch(text(tree), /Import recovery failed/)
+    assert.equal(elements(tree).some(n => n.type === 'button' && text(n) === 'Resume import'), false)
+  })
+
+  it('cannot resurrect a pending intent from a read started before resume', async () => {
+    let reads = 0
+    let finishOldRead
+    let trade = pendingImport()
+    const oldRead = new Promise(resolve => { finishOldRead = resolve })
+    const view = createView(url => {
+      if (url.includes('/resume')) {
+        trade = completedImport()
+        return { success: true, trade }
+      }
+      reads += 1
+      return reads === 2 ? oldRead : { success: true, trades: [trade] }
+    })
+    const tree = await view.mount()
+    const reading = button(tree, 'Refresh').props.onClick()
+    await view.settle()
+    await button(tree, 'Resume import').props.onClick()
+    finishOldRead({ success: true, trades: [pendingImport()] })
+    await reading
+    assert.doesNotMatch(text(view.render()), /Import unfinished/)
+    assert.match(text(view.render()), /TP Pending/)
+  })
+
+  it('makes an unavailable cold-load status visible with a refresh exit', async () => {
+    const view = createView(() => ({ success: false, error: 'Engine disconnected' }))
+    const tree = await view.mount()
+    assert.match(text(tree), /Engine disconnected/)
+    button(tree, 'Refresh')
+  })
+})
