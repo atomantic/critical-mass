@@ -5328,6 +5328,60 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Capture one buy pass's booking inputs and return its synchronous, once-only
+   * commit of entry tracking and live-cycle attribution after the body exists.
+   * The order ownership and rows belong to this pass; the cycle is read when
+   * committing. Do not await between body ownership and this commit (#131).
+   *
+   * @param {Object} booking
+   * @param {Object} booking.fillData - Exchange order being booked
+   * @param {Object} booking.entrySummary - Economics of this pass's booking rows
+   * @param {Object[]} booking.bookingRows - Only the rows this pass books
+   * @param {boolean} booking.orderWasOwned - Body ownership before merge awaits
+   * @param {string|null} booking.ingestCycleId - Cycle at ingestion, for diagnostics
+   * @returns {() => void} Idempotent within this pass; retry guards live in the caller
+   */
+  const createBuyAccountingCommit = ({ fillData, entrySummary, bookingRows, orderWasOwned, ingestCycleId }) => {
+    let accountingCommitted = false;
+    return () => {
+      if (accountingCommitted) return;
+      accountingCommitted = true;
+      // Only a genuinely new buy order advances the cycle-buy count; an
+      // advancing partial of an already-owned order refreshes entry tracking
+      // without re-counting the order.
+      if (!orderWasOwned) positionState.cycleBuys += 1;
+      positionState.lastEntryPrice = entrySummary.avgPrice;
+      positionState.lastEntryTime = Date.now();
+      // Read the cycle at COMMIT, after any merge-cancel await: a concurrent
+      // reset may have advanced it since ingestion (#711). Move every booked
+      // row from outside that cycle, including null-tagged first-cycle rows
+      // (#774) and rows recovered from an older failed attempt (#1021).
+      const liveCycleId = fillLedger.getCurrentCycleId();
+      if (liveCycleId && bookingRows.some(f => f.side === 'buy' && f.cycleId !== liveCycleId)) {
+        // An advancing partial of an already-owned order skipped the
+        // increment above (counted in the closed cycle); if the new cycle
+        // has no row of it yet, this move makes it one of that cycle's buy
+        // orders, so count it there too or the ledger and counter disagree.
+        const liveHadOrder = fillLedger.getCurrentCycleFills()
+          .some(f => f.side === 'buy' && f.orderId === fillData.orderId);
+        let moved = 0;
+        for (const f of bookingRows) {
+          if (f.side === 'buy' && f.cycleId !== liveCycleId && f.tradeId) {
+            fillLedger.updateFillCycleId(f.tradeId, liveCycleId);
+            moved++;
+          }
+        }
+        if (moved > 0 && orderWasOwned && !liveHadOrder) positionState.cycleBuys += 1;
+        if (moved > 0) {
+          logger.info(`🔀 [${exchange}] Buy ${fillData.orderId} booked into cycle ${liveCycleId} — moved ${moved} fill(s) from an earlier cycle (ingested under ${ingestCycleId})`, {
+            orderId: fillData.orderId, ingestCycleId, toCycleId: liveCycleId, moved,
+          });
+        }
+      }
+    };
+  };
+
+  /**
    * Handle order fill
    * @param {Object} fillData - Fill data
    */
@@ -5518,63 +5572,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // order increments; an advancing partial only refreshes entry tracking.
       const orderAlreadyOwned = isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId);
 
-      // Commit the cycleBuys/lastEntry counter exactly once, at the point the
-      // body that owns this orderId is committed (issue #131). Idempotent within
-      // a single handleOrderFill call via committedBuyCounter; the gated guard
-      // above prevents a separate retry from re-entering after a body exists.
-      let committedBuyCounter = false;
-      const commitBuyCounter = () => {
-        if (committedBuyCounter) return;
-        committedBuyCounter = true;
-        // Only a genuinely new buy order advances the cycle-buy count; an
-        // advancing partial of an already-owned order refreshes entry tracking
-        // without re-counting the order (codex P2).
-        if (!orderAlreadyOwned) positionState.cycleBuys += 1;
-        positionState.lastEntryPrice = summary.avgPrice;
-        positionState.lastEntryTime = Date.now();
-        // A resetCycle can start a new cycle while this pass awaits between
-        // ingest and commit (a TP close racing a ladder-cancel booking, or any
-        // concurrent fill). The body — and the step counted above — land in
-        // the NEW cycle, so the rows it books must too; left under the closed
-        // cycle, a restart's ledger auto-correct would undo the step and the
-        // buy would sit in a cycle whose sell never consumed it (#711).
-        //
-        // A null ingestCycleId (a fresh ledger, no live cycle yet at ingest
-        // time — the fund's first-ever cycle close) is a turnover too: the
-        // truthy check below used to require BOTH ids, so this pass fell
-        // through, the rows stayed stamped null, and a restart's ledger
-        // auto-correct (folding by timestamp against activeCycleStartedAt)
-        // never folds them in because they predate the cycle boundary —
-        // cycleBuys silently drops by one and maxCycleBuys loosens (#774).
-        // The `f.cycleId !== liveCycleId` test below moves null-tagged rows
-        // like any other row from outside the live cycle.
-        //
-        // A tranche an earlier, failed attempt ingested can carry an even
-        // older cycle than this pass's ingest (#1021); it books into the live
-        // cycle's body just the same, so it moves with the rest.
-        const liveCycleId = fillLedger.getCurrentCycleId();
-        if (liveCycleId && fillsToAggregate.some(f => f.side === 'buy' && f.cycleId !== liveCycleId)) {
-          // An advancing partial of an already-owned order skipped the
-          // increment above (counted in the closed cycle); if the new cycle
-          // has no row of it yet, this move makes it one of that cycle's buy
-          // orders, so count it there too or the ledger and counter disagree.
-          const liveHadOrder = fillLedger.getCurrentCycleFills()
-            .some(f => f.side === 'buy' && f.orderId === fillData.orderId);
-          let moved = 0;
-          for (const f of fillsToAggregate) {
-            if (f.side === 'buy' && f.cycleId !== liveCycleId && f.tradeId) {
-              fillLedger.updateFillCycleId(f.tradeId, liveCycleId);
-              moved++;
-            }
-          }
-          if (moved > 0 && orderAlreadyOwned && !liveHadOrder) positionState.cycleBuys += 1;
-          if (moved > 0) {
-            logger.info(`🔀 [${exchange}] Buy ${fillData.orderId} booked into cycle ${liveCycleId} — moved ${moved} fill(s) from an earlier cycle (ingested under ${ingestCycleId})`, {
-              orderId: fillData.orderId, ingestCycleId, toCycleId: liveCycleId, moved,
-            });
-          }
-        }
-      };
+      // Prepare before merge awaits; commit only once the body owns the buy.
+      const commitBuyAccounting = createBuyAccountingCommit({
+        fillData,
+        entrySummary: summary,
+        bookingRows: fillsToAggregate,
+        orderWasOwned: orderAlreadyOwned,
+        ingestCycleId,
+      });
 
       // Celestial hierarchy: create new buy descriptor
       const newBuy = {
@@ -5676,12 +5681,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Sync aggregate fields for backward compatibility
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
-        // Commit the buy counter NOW — atomic with the body merge, BEFORE the TP
-        // await below (issue #131/#132 P3). If placeBodyTpWithRetry rejects after
-        // this, the body already owns the orderId so the gated guard skips the
-        // retry; the increment is preserved (not stranded). ingestedFills>0 here
-        // means this is a real new tranche, not a retry.
-        commitBuyCounter();
+        // Commit accounting with body ownership before TP placement can reject;
+        // a retry then sees the committed body and skips re-counting (#131/#132).
+        commitBuyAccounting();
 
         await placeBodyTpWithRetry(merged, 'Merge');
 
@@ -5724,11 +5726,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // committed batch reading as unbooked and rebook it on retry (#1021).
         linkBookedBuyRows({ isBodyOwned: true, bodyId: body.id, bodyTier: body.tier });
 
-        // Commit the buy counter NOW — atomic with the body push, BEFORE the TP
-        // await below (issue #131/#132 P3). A placeBodyTp rejection after this
-        // leaves the body owning the orderId so the gated guard skips the retry
-        // and the increment is preserved.
-        commitBuyCounter();
+        // Commit accounting with body ownership before TP placement can reject;
+        // a retry then sees the committed body and skips re-counting (#131/#132).
+        commitBuyAccounting();
 
         const bodyTpPlaced = await placeBodyTp(body);
 
@@ -5748,11 +5748,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         });
       }
 
-      // Safety net: commitBuyCounter is normally called inside the merge/new-body
-      // branch (atomic with the body commit). This call is a no-op if already
-      // committed; it only fires if some future path reached here without
-      // committing a body — keeping cycleBuys consistent.
-      commitBuyCounter();
+      // Both body paths commit before TP placement; repeating the once-only
+      // accounting commit here preserves the post-branch safety net.
+      commitBuyAccounting();
 
       // Remove filled entry from persisted pending orders — but ONLY once the
       // order is terminal. A PARTIAL buy fill leaves the order live on the book
