@@ -27,6 +27,8 @@ const STATUS_LABELS = {
 // A sell-first recovery the operator still has to see through (issue #1034):
 // its buy is live, or it left the book before covering the whole sell.
 const isOutstandingRecovery = (trade) => trade.status === 'buy_pending' || trade.status === 'buy_cancelled'
+const isPendingBodyImport = (trade) => trade.tradeType === 'buy_first' && trade.bodyIntent?.phase === 'pending'
+const needsAttention = (trade) => isOutstandingRecovery(trade) || isPendingBodyImport(trade)
 const canContinueRecovery = (trade) =>
   trade.tradeType === 'sell_first' && (trade.status === 'buy_cancelled' || trade.status === 'sell_recorded')
 
@@ -104,6 +106,9 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   // Inline Retry recovery / Link replacement form: { tradeId, mode: 'retry'|'link', value } or null
   const [recoveryForm, setRecoveryForm] = useState(null)
   const [recovering, setRecovering] = useState(null)
+  const [resumingImport, setResumingImport] = useState(null)
+  const resumeImportRef = useRef(null)
+  const tradesGeneration = useRef(0)
 
   const pairQuery = buildPairQuery(pair)
 
@@ -143,20 +148,24 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   }, [exchange, pairQuery, startDate])
 
   const fetchManualTrades = useCallback(async () => {
+    if (resumeImportRef.current) return null
+    const generation = ++tradesGeneration.current
+    const current = () => generation === tradesGeneration.current
     setTradesLoading(true)
     try {
       const res = await fetch(`/api/${exchange}/regime/manual-trades${pairQuery}`)
       const data = await res.json()
-      if (data.success) {
-        setManualTrades(data.trades || [])
+      if (!current()) return null
+      if (res.ok && data.success && Array.isArray(data.trades)) {
+        setManualTrades(data.trades)
         setTradesError(null)
-        return data.trades || []
+        return data.trades
       }
       setTradesError(data.error || 'Failed to load manual trades')
     } catch (err) {
-      setTradesError(err.message)
+      if (current()) setTradesError(err.message)
     } finally {
-      setTradesLoading(false)
+      if (current()) setTradesLoading(false)
     }
     return null
   }, [exchange, pairQuery])
@@ -166,9 +175,9 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   useEffect(() => {
     let active = true
     fetchManualTrades().then((trades) => {
-      if (active && trades?.some(isOutstandingRecovery)) setExpanded(true)
+      if (active && (!trades || trades.some(needsAttention))) setExpanded(true)
     })
-    return () => { active = false }
+    return () => { active = false; tradesGeneration.current += 1 }
   }, [fetchManualTrades])
 
   const handleExpand = () => {
@@ -314,6 +323,38 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
 
   const setRowNotice = (tradeId, notice) => setRowNotices(prev => ({ ...prev, [tradeId]: notice }))
 
+  const handleResumeImport = async (tradeId) => {
+    if (resumeImportRef.current) return
+    resumeImportRef.current = tradeId
+    tradesGeneration.current += 1 // An older read must not resurrect a completed intent.
+    setTradesLoading(false)
+    setResumingImport(tradeId)
+    setRowNotice(tradeId, null)
+    let completed = false
+    try {
+      const res = await fetch(`/api/${exchange}/regime/manual-trade/${encodeURIComponent(tradeId)}/resume${pairQuery}`, {
+        method: 'POST',
+      })
+      const data = await res.json()
+      if (!res.ok || !data.success || data.trade?.id !== tradeId) {
+        throw new Error(data.error || 'Import recovery could not be confirmed')
+      }
+      setManualTrades(prev => prev.map(trade => trade.id === tradeId ? data.trade : trade))
+      setRowNotice(tradeId, { message: 'Import completed. The recorded buy is linked to its body.' })
+      completed = true
+    } catch (err) {
+      setRowNotice(tradeId, { error: `${err.message || 'Import recovery failed'}. Refresh status or retry this import.` })
+    } finally {
+      resumeImportRef.current = null
+      setResumingImport(null)
+    }
+    // A status-read failure cannot turn an acknowledged import into a failed mutation.
+    const trades = await fetchManualTrades()
+    if (completed && !trades) {
+      setRowNotice(tradeId, { message: 'Import completed, but status could not refresh. Reload to check the current state.' })
+    }
+  }
+
   const handleCheckStatus = async (tradeId) => {
     setChecking(tradeId)
     try {
@@ -422,7 +463,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
           <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>&#9654;</span>
           Manual Trades
         </button>
-        {manualTrades.some(t => isOutstandingRecovery(t) || t.status === 'tp_pending') && (
+        {manualTrades.some(t => needsAttention(t) || t.status === 'tp_pending') && (
           <span className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
         )}
       </h3>
@@ -828,6 +869,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                       const notice = rowNotices[trade.id] || (isOutstandingRecovery(trade) ? trade.lastCheck : null)
                       const formOpen = recoveryForm?.tradeId === trade.id
                       const showRecovery = trade.tradeType === 'sell_first' && (isOutstandingRecovery(trade) || formOpen)
+                      const pendingImport = isPendingBodyImport(trade)
                       const recovered = recoveredSize(trade)
 
                       return (
@@ -835,7 +877,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                         <tr className="border-t border-gray-700/50 hover:bg-gray-700/30">
                           <td className="px-2 py-1">
                             <span className={`px-1.5 py-0.5 rounded-sm text-[10px] border ${STATUS_COLORS[trade.status] || STATUS_COLORS.dismissed}`}>
-                              {STATUS_LABELS[trade.status] || trade.status}
+                              {pendingImport ? 'Import unfinished' : STATUS_LABELS[trade.status] || trade.status}
                             </span>
                           </td>
                           <td className="px-2 py-1 text-[10px] text-gray-400">
@@ -856,6 +898,14 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                             {trade.note || '-'}
                           </td>
                           <td className="px-2 py-1">
+                            {pendingImport && (
+                              <button type="button" onClick={() => handleResumeImport(trade.id)}
+                                disabled={Boolean(resumingImport)}
+                                title={resumingImport && resumingImport !== trade.id ? 'Another import is being resumed' : 'Finish creating the body for this recorded buy'}
+                                className="min-h-11 px-3 py-2 rounded-sm text-xs bg-purple-600/50 text-purple-200 hover:bg-purple-600/70 disabled:opacity-50">
+                                {resumingImport === trade.id ? 'Resuming import...' : 'Resume import'}
+                              </button>
+                            )}
                             {(trade.status === 'buy_pending' || trade.status === 'tp_pending') && (
                               <button
                                 onClick={() => handleCheckStatus(trade.id)}
@@ -885,9 +935,13 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                             )}
                           </td>
                         </tr>
-                        {(showRecovery || notice) && (
+                        {(showRecovery || pendingImport || notice) && (
                           <tr className="bg-gray-900/30">
                             <td colSpan={9} className="px-2 pb-2 text-[10px] text-gray-300">
+                              {pendingImport && <p className="text-amber-300 break-all">
+                                This buy was recorded, but its body import did not finish. Resume the existing import to finish linking or creating the body; this may place its take-profit sell.
+                                {' '}Buy {trade.buyOrderId} &middot; body {trade.bodyIntent.bodyId}
+                              </p>}
                               {showRecovery && (
                                 <div>
                                   Recovered {recovered.toFixed(8)} of {(trade.sellSize || 0).toFixed(8)}

@@ -16,6 +16,7 @@ const { describe, it, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const vm = require('node:vm');
 
 const configUtils = require('../src/config-utils');
 const regimeStatusModule = require('../src/regime-status');
@@ -520,6 +521,64 @@ describe('POST /api/:exchange/regime/manual-trade-buy', () => {
 
     assert.equal(res.statusCode, 200);
     assert.equal(seen.createBody, false);
+  });
+});
+
+describe('POST /api/:exchange/regime/manual-trade/:tradeId/resume', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('resumes only the route trade id in the selected fund and returns its authoritative record', async () => {
+    let seen;
+    const result = { success: true, trade: { id: 't-1', bodyIntent: { phase: 'committed' } } };
+    const app = setupApp((op, payload, exchange, pair) => {
+      seen = { op, payload, exchange, pair };
+      return Promise.resolve(result);
+    });
+    const req = reqFor({ tradeId: 'other-trade', buyOrderId: 'ignored', createBody: true });
+    const res = await invoke(app, 'POST /api/:exchange/regime/manual-trade/:tradeId/resume', { ...req, params: { ...req.params, tradeId: 't-1' } });
+
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.body, result);
+    assert.deepEqual(seen, { op: 'regime:manual-trade-resume', payload: { tradeId: 't-1' }, exchange: 'cryptocom', pair: 'CRO_USD' });
+  });
+
+  it('rejects an invalid id before IPC and preserves recovery refusal messages', async () => {
+    let calls = 0;
+    const app = setupApp(() => { calls++; return Promise.resolve({ success: false, error: 'No position state; retry after repair' }); });
+    const req = reqFor({});
+    for (const tradeId of [undefined, '', ' ', 42]) {
+      const res = await invoke(app, 'POST /api/:exchange/regime/manual-trade/:tradeId/resume', { ...req, params: { ...req.params, tradeId } });
+      assert.equal(res.statusCode, 400);
+      assert.match(res.body.error, /non-blank string/);
+    }
+    assert.equal(calls, 0);
+    const res = await invoke(app, 'POST /api/:exchange/regime/manual-trade/:tradeId/resume', { ...req, params: { ...req.params, tradeId: 't-1' } });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body.error, /retry after repair/);
+  });
+
+  it('the production IPC handler resumes the selected trade without sweeping other recovery work', async () => {
+    // Execute only the production registration helper, avoiding engine boot,
+    // exchange connections and the module's other require-time effects.
+    const source = fs.readFileSync(path.join(__dirname, '..', 'engines', 'coinbase-engine.js'), 'utf8');
+    const helper = source.slice(source.indexOf('const wireManualTradeImport ='), source.indexOf('// Manual Trades history reads'));
+    const registration = source.match(/^wireManualTradeImport\('regime:manual-trade-resume'.*$/m)?.[0];
+    assert.ok(registration, 'the resume channel must be registered in production');
+    const handlers = new Map();
+    const result = { success: true, trade: { id: 't-1' } };
+    let seen;
+    vm.runInNewContext(`${helper}\n${registration}`, {
+      ipcServer: { onRequest: (channel, handler) => handlers.set(channel, handler) },
+      resolvePair: (exchange, pair) => pair,
+      getManualTradeImporter: (exchange, pair) => ({
+        resumeBodyImport: async (payload) => { seen = { exchange, pair, tradeId: payload.tradeId }; return result; },
+        recoverPendingBodyIntents: async () => assert.fail('must not resume another body import'),
+        recoverPendingRecoveryIntents: async () => assert.fail('must not reconcile unrelated buys'),
+      }),
+    });
+    const response = await handlers.get('regime:manual-trade-resume')({ tradeId: 't-1' }, 'cryptocom', 'CRO_USD');
+    assert.deepEqual(response, result);
+    assert.deepEqual(seen, { exchange: 'cryptocom', pair: 'CRO_USD', tradeId: 't-1' });
   });
 });
 
