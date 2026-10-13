@@ -77,6 +77,15 @@ Fund health and the selected exchange summary retain `startup` (`state`, `error`
 
 Defined in `ecosystem.config.cjs` with 5 processes: `critical-mass` (gateway), `critical-mass-coinbase`, `critical-mass-gemini`, `critical-mass-cryptocom`, `critical-mass-ui`.
 
+Native npm lifecycle commands use `scripts/pm2-stack.js`. They wait for the
+gateway stop command and verify its stopped state before stopping any engine.
+Start/restart recreates the stack to refresh environment settings, submits engine
+starts before the gateway/UI, and saves only when all five report online. This
+PM2 status check is not a fund-readiness or migration check; upgrades still use
+the explicit procedure in [UPGRADE.md](../UPGRADE.md). Stop failures abort the
+sequence, and unrelated PM2 processes are left untouched. Docker continues to
+use `pm2-runtime` directly and is outside this native command sequence.
+
 ## Development topology
 
 `npm run dev` (`scripts/dev.js`) supervises only two children: the gateway (`server.js`) and the Vite UI. The engines are separate PM2 processes that the gateway connects to as IPC clients; with none running, regime commands return HTTP 503 (`Engine unavailable: IPC not connected`). Start them first with `pm2 start ecosystem.config.cjs --only critical-mass-coinbase,critical-mass-gemini,critical-mass-cryptocom` and remove them with `pm2 delete` on the same names. Do not run the production `critical-mass`/`critical-mass-ui` processes at the same time (port conflict). Engines auto-resume configured funds, so use a separate development configuration with disabled or dry-run funds.
