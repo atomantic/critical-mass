@@ -2849,6 +2849,68 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Reconcile the recovered position with durable cycle boundaries and TP
+   * tracking, then restore the entry-limit counter from the live ledger.
+   * @param {import('./types').RegimePositionState} position
+   * @param {boolean} hasSavedState
+   */
+  const reconcileStartupPosition = (position, hasSavedState) => {
+    // Merge recovered position with any saved state
+    // IMPORTANT: If saved state shows totalAsset=0 with cyclesCompleted>0, this means
+    // a cycle was properly completed and reset. The recovery from fills will show
+    // the "holdback" BTC as position (sum of buys minus sells), but this is NOT
+    // an active position - it's accumulated BTC reserves from completed cycles.
+    // Trust the saved state in this case.
+    const savedTpOrderId = positionState.activeTpOrderId;
+    const savedTpPrice = positionState.lastTpPrice;
+    const savedTotalBTC = positionState.totalAsset;
+    const savedCyclesCompleted = positionState.cyclesCompleted;
+    // Cross-validate: if fill ledger has buys in the current cycle, the cycle is NOT completed
+    // (saved state may have been corrupted by a previous buggy restart). In celestial mode
+    // every engine buy is body-owned, so count ALL buys — getCurrentCycleBuysCount excludes
+    // body-owned buys and would wrongly report an active cycle as completed (issue #210-A).
+    const celestialMode = config.celestialEnabled !== false;
+    const fillLedgerHasBuys = celestialMode
+      ? fillLedger.getCurrentCycleAllBuysCount() > 0
+      : fillLedger.getCurrentCycleBuysCount() > 0;
+    const cycleWasCompleted = hasSavedState && savedTotalBTC === 0 && savedCyclesCompleted > 0
+      && !fillLedgerHasBuys;
+
+    if (cycleWasCompleted) {
+      logger.info(`ℹ️ [${exchange}] Saved state shows completed cycle (${savedCyclesCompleted} cycles, 0 ${baseCurrency} position) - trusting saved state over recovery`);
+    }
+
+    positionState = {
+      ...createInitialPositionState(),
+      ...positionState, // Keep saved fields (realizedPnL, cyclesCompleted, celestialBodies, etc.)
+      // Only override position fields that come from fill-ledger rebuild
+      // (NOT realizedPnL, cyclesCompleted, celestialBodies, celestialState, etc.)
+      totalAsset: cycleWasCompleted ? 0 : position.totalAsset,
+      totalCostBasis: cycleWasCompleted ? 0 : position.totalCostBasis,
+      avgCostBasis: cycleWasCompleted ? 0 : position.avgCostBasis,
+      cycleBuys: cycleWasCompleted ? 0 : position.cycleBuys,
+      lastEntryPrice: position.lastEntryPrice || positionState.lastEntryPrice,
+      lastEntryTime: position.lastEntryTime || positionState.lastEntryTime,
+      anchorPrice: position.anchorPrice || positionState.anchorPrice,
+      activeTpOrderId: savedTpOrderId, // Restore TP tracking (not in fills)
+      lastTpPrice: savedTpPrice,
+    };
+
+    // Auto-correct cycleBuys from fill ledger (source of truth). In celestial
+    // mode all engine buys are body-owned, so count ALL current-cycle buys —
+    // getCurrentCycleBuysCount excludes them and would zero the restored
+    // counter, letting a mid-cycle restart double the per-cycle step exposure
+    // (issue #210-A).
+    const actualCycleBuys = celestialMode
+      ? fillLedger.getCurrentCycleAllBuysCount()
+      : fillLedger.getCurrentCycleBuysCount();
+    if (positionState.cycleBuys !== actualCycleBuys) {
+      logger.info(`🔧 [${exchange}] Auto-correcting cycleBuys: ${positionState.cycleBuys} -> ${actualCycleBuys} (from fill ledger)`);
+      positionState.cycleBuys = actualCycleBuys;
+    }
+  };
+
+  /**
    * Start the regime engine
    * @returns {Promise<{success: boolean, error?: string}>}
    */
@@ -2906,59 +2968,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Then recover/validate from exchange (source of truth)
       const { position } = await recoveryModule.recoverState(fillLedger, orderExecutor);
 
-      // Merge recovered position with any saved state
-      // IMPORTANT: If saved state shows totalAsset=0 with cyclesCompleted>0, this means
-      // a cycle was properly completed and reset. The recovery from fills will show
-      // the "holdback" BTC as position (sum of buys minus sells), but this is NOT
-      // an active position - it's accumulated BTC reserves from completed cycles.
-      // Trust the saved state in this case.
-      const savedTpOrderId = positionState.activeTpOrderId;
-      const savedTpPrice = positionState.lastTpPrice;
-      const savedTotalBTC = positionState.totalAsset;
-      const savedCyclesCompleted = positionState.cyclesCompleted;
-      // Cross-validate: if fill ledger has buys in the current cycle, the cycle is NOT completed
-      // (saved state may have been corrupted by a previous buggy restart). In celestial mode
-      // every engine buy is body-owned, so count ALL buys — getCurrentCycleBuysCount excludes
-      // body-owned buys and would wrongly report an active cycle as completed (issue #210-A).
-      const celestialMode = config.celestialEnabled !== false;
-      const fillLedgerHasBuys = celestialMode
-        ? fillLedger.getCurrentCycleAllBuysCount() > 0
-        : fillLedger.getCurrentCycleBuysCount() > 0;
-      const cycleWasCompleted = hasSavedState && savedTotalBTC === 0 && savedCyclesCompleted > 0
-        && !fillLedgerHasBuys;
-
-      if (cycleWasCompleted) {
-        logger.info(`ℹ️ [${exchange}] Saved state shows completed cycle (${savedCyclesCompleted} cycles, 0 ${baseCurrency} position) - trusting saved state over recovery`);
-      }
-
-      positionState = {
-        ...createInitialPositionState(),
-        ...positionState, // Keep saved fields (realizedPnL, cyclesCompleted, celestialBodies, etc.)
-        // Only override position fields that come from fill-ledger rebuild
-        // (NOT realizedPnL, cyclesCompleted, celestialBodies, celestialState, etc.)
-        totalAsset: cycleWasCompleted ? 0 : position.totalAsset,
-        totalCostBasis: cycleWasCompleted ? 0 : position.totalCostBasis,
-        avgCostBasis: cycleWasCompleted ? 0 : position.avgCostBasis,
-        cycleBuys: cycleWasCompleted ? 0 : position.cycleBuys,
-        lastEntryPrice: position.lastEntryPrice || positionState.lastEntryPrice,
-        lastEntryTime: position.lastEntryTime || positionState.lastEntryTime,
-        anchorPrice: position.anchorPrice || positionState.anchorPrice,
-        activeTpOrderId: savedTpOrderId, // Restore TP tracking (not in fills)
-        lastTpPrice: savedTpPrice,
-      };
-
-      // Auto-correct cycleBuys from fill ledger (source of truth). In celestial
-      // mode all engine buys are body-owned, so count ALL current-cycle buys —
-      // getCurrentCycleBuysCount excludes them and would zero the restored
-      // counter, letting a mid-cycle restart double the per-cycle step exposure
-      // (issue #210-A).
-      const actualCycleBuys = celestialMode
-        ? fillLedger.getCurrentCycleAllBuysCount()
-        : fillLedger.getCurrentCycleBuysCount();
-      if (positionState.cycleBuys !== actualCycleBuys) {
-        logger.info(`🔧 [${exchange}] Auto-correcting cycleBuys: ${positionState.cycleBuys} -> ${actualCycleBuys} (from fill ledger)`);
-        positionState.cycleBuys = actualCycleBuys;
-      }
+      reconcileStartupPosition(position, hasSavedState);
 
       // Book entry tranches the ledger holds but no owning body records
       // (issue #756) first, so the seal counts them as open.
