@@ -55,8 +55,9 @@ const makeAdapter = (over = {}) => ({
   ...over,
 });
 
-const makeEngine = (pair, adapter, executor = {}) => {
+const makeEngine = (pair, adapter, executor = {}, config = {}) => {
   const eng = createRegimeEngine('coinbase', pair, { dryRun: false, productId: pair }, {});
+  Object.assign(eng._getConfig(), config);
   eng._test.setAdapter(makeAdapter(adapter));
   eng._test.setOrderExecutor({
     setPriceIncrement: () => {},
@@ -252,4 +253,65 @@ describe('startup recovery step boundaries (#1006)', () => {
       assert.ok(Math.abs(position.celestialBodies[0].assetQty - 0.004) < 1e-9);
     }
   });
+});
+
+// Pin the saved-state/exchange handoff through start(), before later startup
+// phases reprice or place orders. A failed price read stops at that public
+// dependency boundary and must leave the durable saved position untouched.
+describe('startup recovered position reconciliation', () => {
+  const { saveRegimeState } = require('../src/state-tracker');
+  for (const scenario of [
+    { name: 'completed cycle keeps reserves outside the active position', buys: false, owned: false, celestial: true, active: false },
+    { name: 'legacy current-cycle buys override a stale completed snapshot', buys: true, owned: false, celestial: false, active: true },
+    { name: 'celestial body-owned buys restore the per-cycle entry limit', buys: true, owned: true, celestial: true, active: true },
+    { name: 'legacy mode excludes body-owned buys from its active cycle', buys: true, owned: true, celestial: false, active: false },
+  ]) {
+    it(scenario.name, async () => {
+      const pair = `__startup_position_${scenario.owned}_${scenario.celestial}_${scenario.buys}__`;
+      const priceFailure = new Error('price read unavailable after recovery');
+      const eng = makeEngine(pair, {
+        getCurrentPrice: async () => { throw priceFailure; },
+      }, {}, { celestialEnabled: scenario.celestial });
+      const ledger = eng.getFillLedger();
+      ledger.startNewCycle();
+      if (scenario.buys) {
+        // Two execution rows are still ONE buy for the per-cycle limit.
+        for (const tradeId of ['partial-1', 'partial-2']) {
+          ledger.ingestFill({ tradeId, orderId: 'entry', side: 'buy',
+            price: '2000', size: '0.005', tradeTime: new Date().toISOString() });
+        }
+        if (scenario.owned) ledger.annotateFillsByOrderId('entry', { isBodyOwned: true, bodyId: 'saved-body' });
+      }
+      const saved = { ...eng._getPositionState(), totalAsset: 0, cyclesCompleted: 3,
+        cycleBuys: 99, activeCycleId: ledger.getCurrentCycleId(),
+        activeTpOrderId: 'saved-tp', lastTpPrice: 2050,
+        lastEntryPrice: 1900, lastEntryTime: 1234, anchorPrice: 1800,
+        originalCapital: 1000 };
+      saveRegimeState(saved, null, 'coinbase', null, null, pair);
+      const statePath = path.join(isolatedData.fundDir('coinbase', pair), 'regime-state.json');
+      const durableBefore = fs.readFileSync(statePath, 'utf8');
+      eng._test.setRecoveryModule({
+        recoverState: async () => {
+          assert.equal(ledger.getCurrentCycleId(), saved.activeCycleId, 'durable boundary restored before recovery');
+          return { position: { totalAsset: 0.01, totalCostBasis: 20, avgCostBasis: 2000,
+            cycleBuys: 7, lastEntryPrice: 0, lastEntryTime: 5678, anchorPrice: 0 } };
+        },
+      });
+      await assert.rejects(eng.start(), err => err === priceFailure);
+      const position = eng._getPositionState();
+      assert.equal(position.totalAsset, scenario.active ? 0.01 : 0);
+      assert.equal(position.totalCostBasis, scenario.active ? 20 : 0);
+      assert.equal(position.avgCostBasis, scenario.active ? 2000 : 0);
+      assert.equal(position.cycleBuys, scenario.active ? 1 : 0, 'ledger count overrides both saved and recovered counters');
+      assert.equal(position.cyclesCompleted, 3);
+      assert.equal(position.activeTpOrderId, 'saved-tp');
+      assert.equal(position.lastTpPrice, 2050);
+      assert.equal(position.lastEntryPrice, 1900, 'zero recovered price preserves saved price');
+      assert.equal(position.lastEntryTime, 5678, 'nonzero recovered time supersedes saved time');
+      assert.equal(position.anchorPrice, 1800);
+      assert.equal(position.originalCapital, 1000);
+      await eng.stop();
+      assert.equal(fs.readFileSync(statePath, 'utf8'), durableBefore, 'failed startup must not persist a partial recovery');
+    });
+  }
 });
