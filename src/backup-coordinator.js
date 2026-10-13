@@ -2,7 +2,7 @@
 const { beginMaintenance, endMaintenance } = require('./restore-maintenance');
 const { ENGINE_MAINTENANCE_TTL_MS, DEFAULT_STOP_TIMEOUT_MS, DEFAULT_DRAIN_TIMEOUT_MS } = require('./restore-coordinator');
 
-/** Both scheduled backup types share the restore lock and fail closed. */
+/** Manual and scheduled backups share the restore lock and fail closed. */
 const performBackup = async ({
   kind, create, exchangeIPCMap = {}, configuredExchanges = [], gatewayWriters = [],
   drainPendingWrites, logger, timeoutMs = DEFAULT_STOP_TIMEOUT_MS, drainTimeoutMs = DEFAULT_DRAIN_TIMEOUT_MS,
@@ -43,7 +43,7 @@ const performBackup = async ({
     if (result?.success !== true) result = { success: false, code: 'backup-failed', error: result?.error || 'Backup returned no success acknowledgement' };
   } catch (err) {
     result = { success: false, code: copying ? 'backup-failed' : 'writers-not-quiesced', error: err.message };
-    logger.error(`Backup ${kind} failed: ${err.message}`, { action: 'scheduled-backup', kind });
+    logger.error(`Backup ${kind} failed: ${err.message}`, { action: 'create-backup', kind });
   } finally {
     for (const exchange of paused.reverse()) {
       const ack = await request(exchange, 'engine:backup-resume').catch((err) => ({ success: false, error: err.message }));

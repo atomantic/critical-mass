@@ -191,6 +191,35 @@ describe('notification reconciliation and token ownership', () => {
 })
 
 describe('backup list refreshes', () => {
+  it('keeps backup success and writer restart warnings visible together', async () => {
+    const view = createView('BackupRestore')
+    await view.mount()
+    view.queue('/api/backups', 'POST', response({
+      success: true, filename: 'fixture.zip', sizeBytes: 10,
+      warnings: ['Engine coinbase failed to resume after backup'],
+    }))
+    await button(view.render(), 'Create Backup Now').props.onClick()
+    await flush()
+    const message = find(view.render(), node => node.type === 'div' && node.props.className?.includes('bg-yellow-900/50') && text(node).includes('Backup created:'))
+    assert.ok(text(message).includes('Engine coinbase failed to resume after backup'))
+    assert.ok(text(message).includes('Check engine status'))
+    assert.equal(button(view.render(), 'Create Backup Now').props.disabled, false)
+  })
+
+  it('shows writer restart warnings when backup creation also fails', async () => {
+    const view = createView('BackupRestore')
+    await view.mount()
+    view.queue('/api/backups', 'POST', response({
+      success: false, error: 'Synthetic archive failure',
+      warnings: ['Engine coinbase failed to resume after backup'],
+    }, 500))
+    await button(view.render(), 'Create Backup Now').props.onClick()
+    const message = text(view.render())
+    assert.ok(message.includes('Backup failed: Synthetic archive failure'))
+    assert.ok(message.includes('Engine coinbase failed to resume after backup'))
+    assert.ok(message.includes('Check engine status'))
+  })
+
   it('keeps a dirty settings draft when creating a backup updates the list', async () => {
     const view = createView('BackupRestore')
     await view.mount()
