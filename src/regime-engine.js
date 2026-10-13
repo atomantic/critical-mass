@@ -5242,6 +5242,92 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Record a buy-merge TP cancellation before any further asynchronous work.
+   * A clean cancellation keeps the target; other outcomes route the buy to a
+   * new body. Execution-bearing cancellations also tell the caller what still
+   * needs booking or re-arming. Keep those awaits in handleOrderFillImpl so a
+   * clean cancel and its body/counter commitment remain one synchronous step.
+   */
+  const recordBuyMergeCancellation = (mergeTarget, cancelResult) => {
+    const cancellationOutcome = classifyBodyTpCancellation(cancelResult);
+    if (cancellationOutcome === 'filled' || cancellationOutcome === 'unresolved') {
+      if (mergeTarget.tpOrderId) pendingMergeTpOrders.delete(mergeTarget.tpOrderId);
+      logger.warn(`⚠️ [${exchange}] Body ${mergeTarget.id.slice(-8)} TP ${cancellationOutcome === 'filled' ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
+      return { mergeTarget: null };
+    }
+
+    if (cancellationOutcome === 'cancelled_with_execution') {
+      // Partial-during-cancel race (issue #227): the buy-fill pre-check saw the
+      // target TP clean, but it partially filled WHILE we were cancelling.
+      // safeCancelOrder now surfaces the sold quantity via filledSize, so we
+      // react to it directly instead of folding the buy onto the target's
+      // now-stale assetQty/costBasis (which still include the just-sold
+      // tranche). Mirror the pre-check: route the buy to its own body and
+      // clear the cancelled TP. The Race-3 snapshot below carries the sold
+      // tranche to the merge-snapshot sell handler, which deducts it from the
+      // target and re-places a correctly-sized TP.
+      logger.warn(`⚠️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP filled ${cancelResult.filledSize} ${baseCurrency} during cancel — routing buy to its own body (issue #227)`);
+      const soldTp = mergeTarget.tpOrderId;
+      // A WS/poll fill for soldTp that landed while this cancel was in
+      // flight is handled by the merge-snapshot branch, which consumes the
+      // pending snapshot and deducts the tranche from mergeTarget (issue
+      // #770). Everything that handler ingested for soldTp is booked, so
+      // the immediate booking below must only run for execution beyond
+      // it: re-booking the same cumulative size against a fresh snapshot
+      // of the already-deducted body double-counts the sale whenever the
+      // two deliveries' dedup keys differ (a terminal event keys on the
+      // bare orderId, this booking on orderId:size).
+      // "Booked" means the handler committed its booking: the per-order
+      // bodyBookedSize marker (issue #777), written synchronously with
+      // the body mutation — not merely that the snapshot left the map (a
+      // handler that threw after consuming it booked nothing) nor that
+      // the order carries a bodyPnl from some other booking. Execution
+      // beyond the marker is booked below, and adds to it.
+      const snapshotConsumed = !!soldTp && !pendingMergeTpOrders.has(soldTp);
+      const committedBooking = snapshotConsumed ? fillLedger.getSellBooking(soldTp) : null;
+      const alreadyBookedSize = committedBooking && committedBooking.hasMarker ? committedBooking.bookedSize : 0;
+      const skipImmediateBooking = snapshotConsumed
+        && !((cancelResult.filledSize || 0) > alreadyBookedSize + 1e-9);
+      if (skipImmediateBooking) {
+        logger.info(
+          `ℹ️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP ${soldTp.slice(0, 8)} execution (${cancelResult.filledSize} ${baseCurrency}) was already booked by its in-flight fill — not re-booking (#770)`,
+          { orderId: soldTp, filledSize: cancelResult.filledSize, alreadyBookedSize }
+        );
+      }
+      if (soldTp && !skipImmediateBooking) {
+        pendingMergeTpOrders.delete(soldTp);
+        completedMergeTpOrders.set(soldTp, snapshotBody(mergeTarget));
+        const t = setTimeout(() => { completedMergeTpOrders.delete(soldTp); ttlTimers.delete(t); }, 300000);
+        ttlTimers.add(t);
+      }
+      // Clear the cancelled TP so no body references a dead order; the
+      // merge-snapshot handler re-places a right-sized TP after deducting.
+      mergeTarget.tpOrderId = null;
+      mergeTarget.tpPrice = 0;
+      mergeTarget.assetOnOrder = 0;
+      saveLiveState();
+      return { mergeTarget: null, execution: { soldTp, skipImmediateBooking } };
+    }
+
+    // Cancel succeeded — move to completed with TTL
+    if (mergeTarget.tpOrderId) {
+      pendingMergeTpOrders.delete(mergeTarget.tpOrderId);
+      completedMergeTpOrders.set(mergeTarget.tpOrderId, snapshotBody(mergeTarget));
+      const t = setTimeout(() => { completedMergeTpOrders.delete(mergeTarget.tpOrderId); ttlTimers.delete(t); }, 300000);
+      ttlTimers.add(t);
+    }
+    // Clear body TP fields so placeBodyTp can re-place after merge
+    // (cancelBodyTpOrder only removes executor tracking, not body state)
+    mergeTarget.tpOrderId = null;
+    mergeTarget.tpPrice = 0;
+    mergeTarget.assetOnOrder = 0;
+    // Persist before re-place: a crash between cancel and new TP would
+    // otherwise resurrect the orphaned tpOrderId on restart.
+    saveLiveState();
+    return { mergeTarget };
+  };
+
+  /**
    * Handle order fill
    * @param {Object} fillData - Fill data
    */
@@ -5539,61 +5625,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           pendingMergeTpOrders.set(mergeTarget.tpOrderId, snapshotBody(mergeTarget));
         }
         const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id, mergeTarget.tpOrderId);
-        const cancellationOutcome = classifyBodyTpCancellation(cancelResult);
-        if (cancellationOutcome === 'filled' || cancellationOutcome === 'unresolved') {
-          if (mergeTarget.tpOrderId) pendingMergeTpOrders.delete(mergeTarget.tpOrderId);
-          logger.warn(`⚠️ [${exchange}] Body ${mergeTarget.id.slice(-8)} TP ${cancellationOutcome === 'filled' ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
-          mergeTarget = null;
-        } else if (cancellationOutcome === 'cancelled_with_execution') {
-          // Partial-during-cancel race (issue #227): the pre-check above saw the
-          // target TP clean, but it partially filled WHILE we were cancelling.
-          // safeCancelOrder now surfaces the sold quantity via filledSize, so we
-          // react to it directly instead of folding the buy onto the target's
-          // now-stale assetQty/costBasis (which still include the just-sold
-          // tranche). Mirror the pre-check: route the buy to its own body and
-          // clear the cancelled TP. The Race-3 snapshot below carries the sold
-          // tranche to the merge-snapshot sell handler, which deducts it from the
-          // target and re-places a correctly-sized TP.
-          logger.warn(`⚠️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP filled ${cancelResult.filledSize} ${baseCurrency} during cancel — routing buy to its own body (issue #227)`);
-          const soldTp = mergeTarget.tpOrderId;
-          // A WS/poll fill for soldTp that landed while this cancel was in
-          // flight is handled by the merge-snapshot branch, which consumes the
-          // pending snapshot and deducts the tranche from mergeTarget (issue
-          // #770). Everything that handler ingested for soldTp is booked, so
-          // the immediate booking below must only run for execution beyond
-          // it: re-booking the same cumulative size against a fresh snapshot
-          // of the already-deducted body double-counts the sale whenever the
-          // two deliveries' dedup keys differ (a terminal event keys on the
-          // bare orderId, this booking on orderId:size).
-          // "Booked" means the handler committed its booking: the per-order
-          // bodyBookedSize marker (issue #777), written synchronously with
-          // the body mutation — not merely that the snapshot left the map (a
-          // handler that threw after consuming it booked nothing) nor that
-          // the order carries a bodyPnl from some other booking. Execution
-          // beyond the marker is booked below, and adds to it.
-          const snapshotConsumed = !!soldTp && !pendingMergeTpOrders.has(soldTp);
-          const committedBooking = snapshotConsumed ? fillLedger.getSellBooking(soldTp) : null;
-          const alreadyBookedSize = committedBooking && committedBooking.hasMarker ? committedBooking.bookedSize : 0;
-          const skipImmediateBooking = snapshotConsumed
-            && !((cancelResult.filledSize || 0) > alreadyBookedSize + 1e-9);
-          if (skipImmediateBooking) {
-            logger.info(
-              `ℹ️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP ${soldTp.slice(0, 8)} execution (${cancelResult.filledSize} ${baseCurrency}) was already booked by its in-flight fill — not re-booking (#770)`,
-              { orderId: soldTp, filledSize: cancelResult.filledSize, alreadyBookedSize }
-            );
-          }
-          if (soldTp && !skipImmediateBooking) {
-            pendingMergeTpOrders.delete(soldTp);
-            completedMergeTpOrders.set(soldTp, snapshotBody(mergeTarget));
-            const t = setTimeout(() => { completedMergeTpOrders.delete(soldTp); ttlTimers.delete(t); }, 300000);
-            ttlTimers.add(t);
-          }
-          // Clear the cancelled TP so no body references a dead order; the
-          // merge-snapshot handler re-places a right-sized TP after deducting.
-          mergeTarget.tpOrderId = null;
-          mergeTarget.tpPrice = 0;
-          mergeTarget.assetOnOrder = 0;
-          saveLiveState();
+        const cancellation = recordBuyMergeCancellation(mergeTarget, cancelResult);
+        if (cancellation.execution) {
+          const { soldTp, skipImmediateBooking } = cancellation.execution;
           // cancelBodyTpOrder has just removed this order from ALL executor
           // tracking (pendingOrders included) — a future poll can no longer find
           // it to discover the fill, and if this WS connection happens to also
@@ -5622,24 +5656,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             // soldTp), and no booking will run to re-arm the deducted body.
             await placeBodyTp(mergeTarget);
           }
-          mergeTarget = null;
-        } else {
-          // Cancel succeeded — move to completed with TTL
-          if (mergeTarget.tpOrderId) {
-            pendingMergeTpOrders.delete(mergeTarget.tpOrderId);
-            completedMergeTpOrders.set(mergeTarget.tpOrderId, snapshotBody(mergeTarget));
-            const t = setTimeout(() => { completedMergeTpOrders.delete(mergeTarget.tpOrderId); ttlTimers.delete(t); }, 300000);
-            ttlTimers.add(t);
-          }
-          // Clear body TP fields so placeBodyTp can re-place after merge
-          // (cancelBodyTpOrder only removes executor tracking, not body state)
-          mergeTarget.tpOrderId = null;
-          mergeTarget.tpPrice = 0;
-          mergeTarget.assetOnOrder = 0;
-          // Persist before re-place: a crash between cancel and new TP would
-          // otherwise resurrect the orphaned tpOrderId on restart.
-          saveLiveState();
         }
+        mergeTarget = cancellation.mergeTarget;
       }
 
       if (mergeTarget) {

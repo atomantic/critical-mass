@@ -423,6 +423,7 @@ describe('buy-merge cancellation outcomes — characterization (#331)', () => {
           getOrder: async (id) => { calls.push(`status:${id}`); return { filledSize: 0, status: 'OPEN' }; },
         },
         executor: {
+          handleOrderFill: (id) => { calls.push(`ack:${id}`); },
           cancelBodyTpOrder: async (bodyId, id) => {
             calls.push(`cancel:${id}`);
             assert.equal(bodyId, 'target');
@@ -450,7 +451,7 @@ describe('buy-merge cancellation outcomes — characterization (#331)', () => {
       const fill = { orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 };
       if (!result) await assert.rejects(eng._test.handleOrderFill(fill), /cancel rejected/);
       else await eng._test.handleOrderFill(fill);
-      assert.deepEqual(calls, ['fills:buy-new', 'status:tp-target', 'cancel:tp-target', ...(result ? ['place'] : [])]);
+      assert.deepEqual(calls, ['fills:buy-new', 'status:tp-target', 'cancel:tp-target', ...(result ? ['place', 'ack:buy-new'] : [])]);
       const bodies = eng._getPositionState().celestialBodies;
       assert.equal(bodies.length, merges || !result ? 1 : 2);
       if (merges) {
