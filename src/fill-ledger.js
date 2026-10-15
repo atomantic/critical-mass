@@ -1275,6 +1275,107 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     return { mode: 'replace', replacements, coveredSize: fill.size, newSize: 0 };
   };
 
+  const recordPreservedCoverage = (fill, reconciliation, tradeId) => {
+    for (const allocation of reconciliation.allocations) {
+      const prior = allocation.row.syntheticCoverage || {};
+      if (fill.buyEconomicCorrection || fill.sellEconomicCorrection) {
+        const originalEconomics = prior.originalEconomics || {
+          quoteAmount: allocation.row.quoteAmount, fee: allocation.row.fee,
+          netFee: allocation.row.netFee, rebate: allocation.row.rebate || 0,
+        };
+        prior.originalEconomics = originalEconomics;
+        for (const key of ['quoteAmount', 'fee', 'netFee', 'rebate']) {
+          allocation.row[key] += allocation[key] - allocation.priorEconomics[key];
+        }
+        allocation.row.price = allocation.row.quoteAmount / allocation.row.size;
+      }
+      const reconciledTrades = Array.isArray(prior.reconciledTrades)
+        ? prior.reconciledTrades : [];
+      allocation.row.syntheticCoverage = {
+        ...prior,
+        reconciledTrades: [...reconciledTrades, {
+          tradeId,
+          size: allocation.size,
+          quoteAmount: allocation.quoteAmount,
+          fee: allocation.fee,
+          netFee: allocation.netFee,
+          rebate: allocation.rebate,
+        }],
+      };
+      fills.set(allocation.row.tradeId, allocation.row);
+    }
+    reconciledTradeIds.add(tradeId);
+  };
+
+  const journalBuyEconomicCorrection = (fill, reconciliation) => {
+    const correction = fill.buyEconomicCorrection;
+    // Identity-only preserve mode has no real quantity row; its journal
+    // belongs to the coverage row that durably records the real identity.
+    const journalRow = fill.size > 1e-9 ? fill : reconciliation.allocations[0].row;
+    journalRow.buyEconomicCorrections = [...(journalRow.buyEconomicCorrections || []), correction];
+    for (const sell of correction.sells) {
+      for (const row of fills.values()) {
+        if (row.side !== 'sell' || row.orderId !== sell.sellOrderId) continue;
+        row.bodyCostBasis += sell.costDelta;
+        row.bodyPnl -= sell.costDelta;
+        if (row.bodyBtcQty > 0) row.bodyAvgPrice = row.bodyCostBasis / row.bodyBtcQty;
+      }
+    }
+    delete fill.buyEconomicCorrection;
+  };
+
+  const journalSellEconomicCorrection = (fill, reconciliation) => {
+    const correction = fill.sellEconomicCorrection;
+    // Identity-only preserve mode has no real quantity row; its journal
+    // belongs to the synthetic row that durably records the real identity.
+    const journalRow = fill.size > 1e-9 ? fill : reconciliation.allocations[0].row;
+    journalRow.sellEconomicCorrections = [...(journalRow.sellEconomicCorrections || []), correction];
+    const applyPnlDelta = (field, delta) => {
+      if (Math.abs(delta) <= 1e-12) return;
+      for (const row of fills.values()) {
+        if (row.side !== 'sell' || row.orderId !== correction.orderId || row[field] == null) continue;
+        const exact = Number(row[field]) + delta + Number(row.sellCorrectionPnlRemainder || 0);
+        row[field] = roundUSDC(exact);
+        row.sellCorrectionPnlRemainder = exact - row[field];
+      }
+    };
+    // These are order-level annotations: update each copy by the portion
+    // that was already booked, while leaving quantities, cost, holdback,
+    // consumption, and the capital-credit watermark untouched.
+    applyPnlDelta('bodyPnl', correction.bodyPnlDelta);
+    applyPnlDelta('satellitePnl', correction.satellitePnlDelta);
+    delete fill.sellEconomicCorrection;
+  };
+
+  const getBookableReconciliationFills = (fill, reconciliation) => {
+    let bookableFills = [fill];
+    if (reconciliation?.mode === 'replace') {
+      bookableFills = [];
+    } else if (reconciliation?.mode === 'preserve') {
+      bookableFills = [];
+      for (const allocation of reconciliation.allocations) {
+        const coveredFill = allocation.row;
+        const alreadyAccounted = fill.side === 'buy'
+          ? Boolean(coveredFill.isBodyOwned || coveredFill.isSatellite || coveredFill.bodyId)
+          : Boolean(coveredFill.bodyBooked || (coveredFill.bodyBooked == null && coveredFill.bodyPnl != null));
+        if (!alreadyAccounted) {
+          bookableFills.push({
+            ...coveredFill,
+            size: allocation.size,
+            quoteAmount: allocation.quoteAmount,
+            fee: allocation.fee,
+            netFee: allocation.netFee,
+            rebate: allocation.rebate,
+            price: allocation.size > 0 ? allocation.quoteAmount / allocation.size : coveredFill.price,
+            syntheticCoverageAllocation: true,
+          });
+        }
+      }
+      if (fill.size > 1e-9) bookableFills.push(fill);
+    }
+    return bookableFills;
+  };
+
   /**
    * Ingest a fill (idempotent)
    * @param {Object} fillData - Raw fill data from exchange
@@ -1354,35 +1455,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     const hadSyntheticCoverage = syntheticOrders.has(fill.orderId);
     const hadReconciledTrade = reconciledTradeIds.has(tradeId);
     if (reconciliation?.mode === 'preserve') {
-      for (const allocation of reconciliation.allocations) {
-        const prior = allocation.row.syntheticCoverage || {};
-        if (fill.buyEconomicCorrection || fill.sellEconomicCorrection) {
-          const originalEconomics = prior.originalEconomics || {
-            quoteAmount: allocation.row.quoteAmount, fee: allocation.row.fee,
-            netFee: allocation.row.netFee, rebate: allocation.row.rebate || 0,
-          };
-          prior.originalEconomics = originalEconomics;
-          for (const key of ['quoteAmount', 'fee', 'netFee', 'rebate']) {
-            allocation.row[key] += allocation[key] - allocation.priorEconomics[key];
-          }
-          allocation.row.price = allocation.row.quoteAmount / allocation.row.size;
-        }
-        const reconciledTrades = Array.isArray(prior.reconciledTrades)
-          ? prior.reconciledTrades : [];
-        allocation.row.syntheticCoverage = {
-          ...prior,
-          reconciledTrades: [...reconciledTrades, {
-            tradeId,
-            size: allocation.size,
-            quoteAmount: allocation.quoteAmount,
-            fee: allocation.fee,
-            netFee: allocation.netFee,
-            rebate: allocation.rebate,
-          }],
-        };
-        fills.set(allocation.row.tradeId, allocation.row);
-      }
-      reconciledTradeIds.add(tradeId);
+      recordPreservedCoverage(fill, reconciliation, tradeId);
     }
     for (const { old, residual } of replacements) {
       if (residual) fills.set(old.tradeId, residual);
@@ -1412,42 +1485,10 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       orderSizeIndex.set(fill.orderId, roundAsset(next));
     }
     if (fill.buyEconomicCorrection) {
-      const correction = fill.buyEconomicCorrection;
-      // Identity-only preserve mode has no real quantity row; its journal
-      // belongs to the coverage row that durably records the real identity.
-      const journalRow = fill.size > 1e-9 ? fill : reconciliation.allocations[0].row;
-      journalRow.buyEconomicCorrections = [...(journalRow.buyEconomicCorrections || []), correction];
-      for (const sell of correction.sells) {
-        for (const row of fills.values()) {
-          if (row.side !== 'sell' || row.orderId !== sell.sellOrderId) continue;
-          row.bodyCostBasis += sell.costDelta;
-          row.bodyPnl -= sell.costDelta;
-          if (row.bodyBtcQty > 0) row.bodyAvgPrice = row.bodyCostBasis / row.bodyBtcQty;
-        }
-      }
-      delete fill.buyEconomicCorrection;
+      journalBuyEconomicCorrection(fill, reconciliation);
     }
     if (fill.sellEconomicCorrection) {
-      const correction = fill.sellEconomicCorrection;
-      // Identity-only preserve mode has no real quantity row; its journal
-      // belongs to the synthetic row that durably records the real identity.
-      const journalRow = fill.size > 1e-9 ? fill : reconciliation.allocations[0].row;
-      journalRow.sellEconomicCorrections = [...(journalRow.sellEconomicCorrections || []), correction];
-      const applyPnlDelta = (field, delta) => {
-        if (Math.abs(delta) <= 1e-12) return;
-        for (const row of fills.values()) {
-          if (row.side !== 'sell' || row.orderId !== correction.orderId || row[field] == null) continue;
-          const exact = Number(row[field]) + delta + Number(row.sellCorrectionPnlRemainder || 0);
-          row[field] = roundUSDC(exact);
-          row.sellCorrectionPnlRemainder = exact - row[field];
-        }
-      };
-      // These are order-level annotations: update each copy by the portion
-      // that was already booked, while leaving quantities, cost, holdback,
-      // consumption, and the capital-credit watermark untouched.
-      applyPnlDelta('bodyPnl', correction.bodyPnlDelta);
-      applyPnlDelta('satellitePnl', correction.satellitePnlDelta);
-      delete fill.sellEconomicCorrection;
+      journalSellEconomicCorrection(fill, reconciliation);
     }
     dirtySinceLastPersist = true;
     bumpLedgerVersion();
@@ -1494,31 +1535,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       fillTimeMs,
     });
 
-    let bookableFills = [fill];
-    if (reconciliation?.mode === 'replace') {
-      bookableFills = [];
-    } else if (reconciliation?.mode === 'preserve') {
-      bookableFills = [];
-      for (const allocation of reconciliation.allocations) {
-        const coveredFill = allocation.row;
-        const alreadyAccounted = fill.side === 'buy'
-          ? Boolean(coveredFill.isBodyOwned || coveredFill.isSatellite || coveredFill.bodyId)
-          : Boolean(coveredFill.bodyBooked || (coveredFill.bodyBooked == null && coveredFill.bodyPnl != null));
-        if (!alreadyAccounted) {
-          bookableFills.push({
-            ...coveredFill,
-            size: allocation.size,
-            quoteAmount: allocation.quoteAmount,
-            fee: allocation.fee,
-            netFee: allocation.netFee,
-            rebate: allocation.rebate,
-            price: allocation.size > 0 ? allocation.quoteAmount / allocation.size : coveredFill.price,
-            syntheticCoverageAllocation: true,
-          });
-        }
-      }
-      if (fill.size > 1e-9) bookableFills.push(fill);
-    }
+    const bookableFills = getBookableReconciliationFills(fill, reconciliation);
     const newQuantity = reconciliation
       ? (reconciliation.mode === 'preserve' ? reconciliation.newSize : 0)
       : fill.size;
