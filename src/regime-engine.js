@@ -2910,6 +2910,61 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
   };
 
+  const cancelStaleStartupOrders = async () => {
+    for (const staleOrderId of [...positionState._cancelOnStartup]) {
+      const cancelResult = await adapter.cancelOrder(staleOrderId).catch(() => ({ success: false }));
+      if (cancelResult.success) {
+        logger.info(`🗑️ [${exchange}] Cancelled stale order from _cancelOnStartup: ${staleOrderId}`);
+      } else {
+        const status = await adapter.getOrder(staleOrderId).catch(() => null);
+        if (status && (status.status === 'FILLED' || status.status === 'CANCELLED')) {
+          logger.info(`ℹ️ [${exchange}] Stale order ${staleOrderId} already ${status.status}`);
+        } else {
+          logger.warn(`⚠️ [${exchange}] Failed to cancel stale order ${staleOrderId}`);
+          continue; // Keep failed IDs for next startup
+        }
+      }
+      positionState._cancelOnStartup = positionState._cancelOnStartup.filter(id => id !== staleOrderId);
+    }
+    if (positionState._cancelOnStartup.length === 0) {
+      delete positionState._cancelOnStartup;
+    }
+  };
+
+  const restoreStartupCycleAccounting = (sealedLegacy) => {
+    // Recalculate cycles from fill ledger for cycle counting and per-cycle details.
+    const recalcResult = fillLedger.recalculateCycles();
+    // Orphan recovery may renumber cycles. Re-point the durable boundary
+    // (#606) at the ledger's live cycle and persist it now, or the next
+    // restart restores a stale ID that names a different cycle (#675).
+    // Folding null-cycle fills into the live cycle (#705) changes its
+    // membership, so the counters restored above must be re-derived too.
+    const cycleIdChanged = syncActiveCycleIdAfterRecalc(recalcResult);
+    if (resyncLiveCycleCountersAfterRecalc(recalcResult) || cycleIdChanged) saveLiveState();
+    if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0 || sealedLegacy > 0) {
+      positionState.cyclesCompleted = recalcResult.cyclesCompleted;
+      refreshRealizedFromCyclePairs();
+      logger.info(`📋 [${exchange}] Cycle-pair realized: $${positionState.realizedPnL.toFixed(2)} USD, ${positionState.realizedAssetPnL.toFixed(6)} ${baseCurrency} reserves (${recalcResult.cyclesCompleted} cycles)`);
+    }
+
+    // Backfill APY tracking start time from earliest fill in ledger
+    const allFills = fillLedger.getAllFills();
+    if (allFills.length > 0) {
+      const earliestFillTime = allFills.reduce((earliest, fill) => {
+        return fill.timestamp < earliest ? fill.timestamp : earliest;
+      }, Infinity);
+      if (earliestFillTime !== Infinity && (!positionState.engineStartTime || positionState.engineStartTime > earliestFillTime)) {
+        positionState.engineStartTime = earliestFillTime;
+        positionState.initialCapital = config.maxUsdcDeployed || 10000;
+        // Only set originalCapital if not already set (preserve true starting value)
+        if (!positionState.originalCapital) {
+          positionState.originalCapital = positionState.initialCapital;
+        }
+        logger.info(`📊 [${exchange}] APY tracking backfilled to first fill: ${new Date(earliestFillTime).toISOString()}, original=$${positionState.originalCapital}`);
+      }
+    }
+  };
+
   /**
    * Start the regime engine
    * @returns {Promise<{success: boolean, error?: string}>}
@@ -3015,24 +3070,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       // Cancel stale orders flagged for cleanup (e.g. partially-filled TPs from prior crashes)
       if (positionState._cancelOnStartup?.length > 0) {
-        for (const staleOrderId of [...positionState._cancelOnStartup]) {
-          const cancelResult = await adapter.cancelOrder(staleOrderId).catch(() => ({ success: false }));
-          if (cancelResult.success) {
-            logger.info(`🗑️ [${exchange}] Cancelled stale order from _cancelOnStartup: ${staleOrderId}`);
-          } else {
-            const status = await adapter.getOrder(staleOrderId).catch(() => null);
-            if (status && (status.status === 'FILLED' || status.status === 'CANCELLED')) {
-              logger.info(`ℹ️ [${exchange}] Stale order ${staleOrderId} already ${status.status}`);
-            } else {
-              logger.warn(`⚠️ [${exchange}] Failed to cancel stale order ${staleOrderId}`);
-              continue; // Keep failed IDs for next startup
-            }
-          }
-          positionState._cancelOnStartup = positionState._cancelOnStartup.filter(id => id !== staleOrderId);
-        }
-        if (positionState._cancelOnStartup.length === 0) {
-          delete positionState._cancelOnStartup;
-        }
+        await cancelStaleStartupOrders();
       }
 
       await restoreStartupBodyTakeProfits();
@@ -3075,37 +3113,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       closedTrades.load();
       closedTrades.migrateFromFills(fillLedger);
 
-      // Recalculate cycles from fill ledger for cycle counting and per-cycle details.
-      const recalcResult = fillLedger.recalculateCycles();
-      // Orphan recovery may renumber cycles. Re-point the durable boundary
-      // (#606) at the ledger's live cycle and persist it now, or the next
-      // restart restores a stale ID that names a different cycle (#675).
-      // Folding null-cycle fills into the live cycle (#705) changes its
-      // membership, so the counters restored above must be re-derived too.
-      const cycleIdChanged = syncActiveCycleIdAfterRecalc(recalcResult);
-      if (resyncLiveCycleCountersAfterRecalc(recalcResult) || cycleIdChanged) saveLiveState();
-      if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0 || sealedLegacy > 0) {
-        positionState.cyclesCompleted = recalcResult.cyclesCompleted;
-        refreshRealizedFromCyclePairs();
-        logger.info(`📋 [${exchange}] Cycle-pair realized: $${positionState.realizedPnL.toFixed(2)} USD, ${positionState.realizedAssetPnL.toFixed(6)} ${baseCurrency} reserves (${recalcResult.cyclesCompleted} cycles)`);
-      }
-
-      // Backfill APY tracking start time from earliest fill in ledger
-      const allFills = fillLedger.getAllFills();
-      if (allFills.length > 0) {
-        const earliestFillTime = allFills.reduce((earliest, fill) => {
-          return fill.timestamp < earliest ? fill.timestamp : earliest;
-        }, Infinity);
-        if (earliestFillTime !== Infinity && (!positionState.engineStartTime || positionState.engineStartTime > earliestFillTime)) {
-          positionState.engineStartTime = earliestFillTime;
-          positionState.initialCapital = config.maxUsdcDeployed || 10000;
-          // Only set originalCapital if not already set (preserve true starting value)
-          if (!positionState.originalCapital) {
-            positionState.originalCapital = positionState.initialCapital;
-          }
-          logger.info(`📊 [${exchange}] APY tracking backfilled to first fill: ${new Date(earliestFillTime).toISOString()}, original=$${positionState.originalCapital}`);
-        }
-      }
+      restoreStartupCycleAccounting(sealedLegacy);
 
       // Restore pending entry orders from saved state (instead of canceling them)
       const savedPendingEntries = positionState.pendingEntryOrders || [];
