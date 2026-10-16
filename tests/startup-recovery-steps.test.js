@@ -315,3 +315,58 @@ describe('startup recovered position reconciliation', () => {
     });
   }
 });
+
+describe('startup stale orders and cycle accounting', () => {
+  for (const retainUnknown of [true, false]) {
+    it(`cleans stale orders sequentially and ${retainUnknown ? 'retains unresolved IDs' : 'removes an exhausted retry list'}`, async () => {
+      const pair = `__startup_stale_${retainUnknown}__`;
+      const calls = [];
+      const eng = makeEngine(pair, {
+        cancelOrder: async id => {
+          calls.push(`cancel:${id}`);
+          if (id === 'cancelled-now') return { success: true };
+          throw new Error('cancellation unavailable');
+        },
+        getOrder: async id => {
+          calls.push(`status:${id}`);
+          return id === 'unknown' ? null : { status: id === 'still-open' ? 'OPEN' : id.toUpperCase() };
+        },
+      });
+      eng._getPositionState()._cancelOnStartup = ['cancelled-now', 'filled', 'cancelled',
+        ...(retainUnknown ? ['still-open', 'unknown'] : [])];
+
+      assert.equal((await eng.start()).success, true);
+      assert.deepEqual(calls, ['cancel:cancelled-now', 'cancel:filled', 'status:filled',
+        'cancel:cancelled', 'status:cancelled',
+        ...(retainUnknown ? ['cancel:still-open', 'status:still-open', 'cancel:unknown', 'status:unknown'] : [])]);
+      for (const position of [eng._getPositionState(), persistedPosition(pair)]) {
+        if (retainUnknown) assert.deepEqual(position._cancelOnStartup, ['still-open', 'unknown']);
+        else assert.equal(Object.hasOwn(position, '_cancelOnStartup'), false);
+      }
+    });
+  }
+
+  for (const originalCapital of [500, 0]) {
+    it(`restores completed cycles and the earliest APY date with original capital ${originalCapital}`, async () => {
+      const pair = `__startup_accounting_${originalCapital}__`;
+      const eng = makeEngine(pair, {}, {}, { maxUsdcDeployed: 2500 });
+      const ledger = eng.getFillLedger();
+      const earliest = Date.UTC(2025, 0, 1);
+      ledger.startNewCycle();
+      ledger.ingestFill({ tradeId: 'accounting-buy', orderId: 'accounting-entry', side: 'buy',
+        price: '2000', size: '0.01', tradeTime: new Date(earliest).toISOString() });
+      ledger.ingestFill({ tradeId: 'accounting-sell', orderId: 'accounting-tp', side: 'sell',
+        price: '2100', size: '0.009', tradeTime: new Date(earliest + 60000).toISOString() });
+      ledger.startNewCycle();
+      Object.assign(eng._getPositionState(), { engineStartTime: earliest + 120000, originalCapital });
+
+      assert.equal((await eng.start()).success, true);
+      for (const position of [eng._getPositionState(), persistedPosition(pair)]) {
+        assert.equal(position.cyclesCompleted, 1);
+        assert.equal(position.engineStartTime, earliest);
+        assert.equal(position.initialCapital, 2500);
+        assert.equal(position.originalCapital, originalCapital || 2500);
+      }
+    });
+  }
+});

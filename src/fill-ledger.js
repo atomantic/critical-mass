@@ -1275,6 +1275,107 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     return { mode: 'replace', replacements, coveredSize: fill.size, newSize: 0 };
   };
 
+  const recordPreservedCoverage = (fill, reconciliation, tradeId) => {
+    for (const allocation of reconciliation.allocations) {
+      const prior = allocation.row.syntheticCoverage || {};
+      if (fill.buyEconomicCorrection || fill.sellEconomicCorrection) {
+        const originalEconomics = prior.originalEconomics || {
+          quoteAmount: allocation.row.quoteAmount, fee: allocation.row.fee,
+          netFee: allocation.row.netFee, rebate: allocation.row.rebate || 0,
+        };
+        prior.originalEconomics = originalEconomics;
+        for (const key of ['quoteAmount', 'fee', 'netFee', 'rebate']) {
+          allocation.row[key] += allocation[key] - allocation.priorEconomics[key];
+        }
+        allocation.row.price = allocation.row.quoteAmount / allocation.row.size;
+      }
+      const reconciledTrades = Array.isArray(prior.reconciledTrades)
+        ? prior.reconciledTrades : [];
+      allocation.row.syntheticCoverage = {
+        ...prior,
+        reconciledTrades: [...reconciledTrades, {
+          tradeId,
+          size: allocation.size,
+          quoteAmount: allocation.quoteAmount,
+          fee: allocation.fee,
+          netFee: allocation.netFee,
+          rebate: allocation.rebate,
+        }],
+      };
+      fills.set(allocation.row.tradeId, allocation.row);
+    }
+    reconciledTradeIds.add(tradeId);
+  };
+
+  const journalBuyEconomicCorrection = (fill, reconciliation) => {
+    const correction = fill.buyEconomicCorrection;
+    // Identity-only preserve mode has no real quantity row; its journal
+    // belongs to the coverage row that durably records the real identity.
+    const journalRow = fill.size > 1e-9 ? fill : reconciliation.allocations[0].row;
+    journalRow.buyEconomicCorrections = [...(journalRow.buyEconomicCorrections || []), correction];
+    for (const sell of correction.sells) {
+      for (const row of fills.values()) {
+        if (row.side !== 'sell' || row.orderId !== sell.sellOrderId) continue;
+        row.bodyCostBasis += sell.costDelta;
+        row.bodyPnl -= sell.costDelta;
+        if (row.bodyBtcQty > 0) row.bodyAvgPrice = row.bodyCostBasis / row.bodyBtcQty;
+      }
+    }
+    delete fill.buyEconomicCorrection;
+  };
+
+  const journalSellEconomicCorrection = (fill, reconciliation) => {
+    const correction = fill.sellEconomicCorrection;
+    // Identity-only preserve mode has no real quantity row; its journal
+    // belongs to the synthetic row that durably records the real identity.
+    const journalRow = fill.size > 1e-9 ? fill : reconciliation.allocations[0].row;
+    journalRow.sellEconomicCorrections = [...(journalRow.sellEconomicCorrections || []), correction];
+    const applyPnlDelta = (field, delta) => {
+      if (Math.abs(delta) <= 1e-12) return;
+      for (const row of fills.values()) {
+        if (row.side !== 'sell' || row.orderId !== correction.orderId || row[field] == null) continue;
+        const exact = Number(row[field]) + delta + Number(row.sellCorrectionPnlRemainder || 0);
+        row[field] = roundUSDC(exact);
+        row.sellCorrectionPnlRemainder = exact - row[field];
+      }
+    };
+    // These are order-level annotations: update each copy by the portion
+    // that was already booked, while leaving quantities, cost, holdback,
+    // consumption, and the capital-credit watermark untouched.
+    applyPnlDelta('bodyPnl', correction.bodyPnlDelta);
+    applyPnlDelta('satellitePnl', correction.satellitePnlDelta);
+    delete fill.sellEconomicCorrection;
+  };
+
+  const getBookableReconciliationFills = (fill, reconciliation) => {
+    let bookableFills = [fill];
+    if (reconciliation?.mode === 'replace') {
+      bookableFills = [];
+    } else if (reconciliation?.mode === 'preserve') {
+      bookableFills = [];
+      for (const allocation of reconciliation.allocations) {
+        const coveredFill = allocation.row;
+        const alreadyAccounted = fill.side === 'buy'
+          ? Boolean(coveredFill.isBodyOwned || coveredFill.isSatellite || coveredFill.bodyId)
+          : Boolean(coveredFill.bodyBooked || (coveredFill.bodyBooked == null && coveredFill.bodyPnl != null));
+        if (!alreadyAccounted) {
+          bookableFills.push({
+            ...coveredFill,
+            size: allocation.size,
+            quoteAmount: allocation.quoteAmount,
+            fee: allocation.fee,
+            netFee: allocation.netFee,
+            rebate: allocation.rebate,
+            price: allocation.size > 0 ? allocation.quoteAmount / allocation.size : coveredFill.price,
+            syntheticCoverageAllocation: true,
+          });
+        }
+      }
+      if (fill.size > 1e-9) bookableFills.push(fill);
+    }
+    return bookableFills;
+  };
+
   /**
    * Ingest a fill (idempotent)
    * @param {Object} fillData - Raw fill data from exchange
@@ -1354,35 +1455,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     const hadSyntheticCoverage = syntheticOrders.has(fill.orderId);
     const hadReconciledTrade = reconciledTradeIds.has(tradeId);
     if (reconciliation?.mode === 'preserve') {
-      for (const allocation of reconciliation.allocations) {
-        const prior = allocation.row.syntheticCoverage || {};
-        if (fill.buyEconomicCorrection || fill.sellEconomicCorrection) {
-          const originalEconomics = prior.originalEconomics || {
-            quoteAmount: allocation.row.quoteAmount, fee: allocation.row.fee,
-            netFee: allocation.row.netFee, rebate: allocation.row.rebate || 0,
-          };
-          prior.originalEconomics = originalEconomics;
-          for (const key of ['quoteAmount', 'fee', 'netFee', 'rebate']) {
-            allocation.row[key] += allocation[key] - allocation.priorEconomics[key];
-          }
-          allocation.row.price = allocation.row.quoteAmount / allocation.row.size;
-        }
-        const reconciledTrades = Array.isArray(prior.reconciledTrades)
-          ? prior.reconciledTrades : [];
-        allocation.row.syntheticCoverage = {
-          ...prior,
-          reconciledTrades: [...reconciledTrades, {
-            tradeId,
-            size: allocation.size,
-            quoteAmount: allocation.quoteAmount,
-            fee: allocation.fee,
-            netFee: allocation.netFee,
-            rebate: allocation.rebate,
-          }],
-        };
-        fills.set(allocation.row.tradeId, allocation.row);
-      }
-      reconciledTradeIds.add(tradeId);
+      recordPreservedCoverage(fill, reconciliation, tradeId);
     }
     for (const { old, residual } of replacements) {
       if (residual) fills.set(old.tradeId, residual);
@@ -1412,42 +1485,10 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       orderSizeIndex.set(fill.orderId, roundAsset(next));
     }
     if (fill.buyEconomicCorrection) {
-      const correction = fill.buyEconomicCorrection;
-      // Identity-only preserve mode has no real quantity row; its journal
-      // belongs to the coverage row that durably records the real identity.
-      const journalRow = fill.size > 1e-9 ? fill : reconciliation.allocations[0].row;
-      journalRow.buyEconomicCorrections = [...(journalRow.buyEconomicCorrections || []), correction];
-      for (const sell of correction.sells) {
-        for (const row of fills.values()) {
-          if (row.side !== 'sell' || row.orderId !== sell.sellOrderId) continue;
-          row.bodyCostBasis += sell.costDelta;
-          row.bodyPnl -= sell.costDelta;
-          if (row.bodyBtcQty > 0) row.bodyAvgPrice = row.bodyCostBasis / row.bodyBtcQty;
-        }
-      }
-      delete fill.buyEconomicCorrection;
+      journalBuyEconomicCorrection(fill, reconciliation);
     }
     if (fill.sellEconomicCorrection) {
-      const correction = fill.sellEconomicCorrection;
-      // Identity-only preserve mode has no real quantity row; its journal
-      // belongs to the synthetic row that durably records the real identity.
-      const journalRow = fill.size > 1e-9 ? fill : reconciliation.allocations[0].row;
-      journalRow.sellEconomicCorrections = [...(journalRow.sellEconomicCorrections || []), correction];
-      const applyPnlDelta = (field, delta) => {
-        if (Math.abs(delta) <= 1e-12) return;
-        for (const row of fills.values()) {
-          if (row.side !== 'sell' || row.orderId !== correction.orderId || row[field] == null) continue;
-          const exact = Number(row[field]) + delta + Number(row.sellCorrectionPnlRemainder || 0);
-          row[field] = roundUSDC(exact);
-          row.sellCorrectionPnlRemainder = exact - row[field];
-        }
-      };
-      // These are order-level annotations: update each copy by the portion
-      // that was already booked, while leaving quantities, cost, holdback,
-      // consumption, and the capital-credit watermark untouched.
-      applyPnlDelta('bodyPnl', correction.bodyPnlDelta);
-      applyPnlDelta('satellitePnl', correction.satellitePnlDelta);
-      delete fill.sellEconomicCorrection;
+      journalSellEconomicCorrection(fill, reconciliation);
     }
     dirtySinceLastPersist = true;
     bumpLedgerVersion();
@@ -1494,31 +1535,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       fillTimeMs,
     });
 
-    let bookableFills = [fill];
-    if (reconciliation?.mode === 'replace') {
-      bookableFills = [];
-    } else if (reconciliation?.mode === 'preserve') {
-      bookableFills = [];
-      for (const allocation of reconciliation.allocations) {
-        const coveredFill = allocation.row;
-        const alreadyAccounted = fill.side === 'buy'
-          ? Boolean(coveredFill.isBodyOwned || coveredFill.isSatellite || coveredFill.bodyId)
-          : Boolean(coveredFill.bodyBooked || (coveredFill.bodyBooked == null && coveredFill.bodyPnl != null));
-        if (!alreadyAccounted) {
-          bookableFills.push({
-            ...coveredFill,
-            size: allocation.size,
-            quoteAmount: allocation.quoteAmount,
-            fee: allocation.fee,
-            netFee: allocation.netFee,
-            rebate: allocation.rebate,
-            price: allocation.size > 0 ? allocation.quoteAmount / allocation.size : coveredFill.price,
-            syntheticCoverageAllocation: true,
-          });
-        }
-      }
-      if (fill.size > 1e-9) bookableFills.push(fill);
-    }
+    const bookableFills = getBookableReconciliationFills(fill, reconciliation);
     const newQuantity = reconciliation
       ? (reconciliation.mode === 'preserve' ? reconciliation.newSize : 0)
       : fill.size;
@@ -2038,6 +2055,79 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     return { ...result, patches: deriveAttributedAnnotations([...result.attributed, ...earlier], cycleMap) };
   };
 
+  const linkLegacyCycleBuys = (cycleDetails) => {
+    // Auto-link buys to sells within completed cycles only (fixes orphaned buys display).
+    // Skip active cycles to avoid linking unsold buys to early partial sells.
+    //
+    // This is legacy-core-only (#677): body/satellite buy linkage is owned by
+    // TP placement (regime-engine.js) and boot annotation, not this heuristic.
+    // In celestial mode a cycle can hold many bodies and is marked "completed"
+    // once the sell ratio crosses CYCLE_COMPLETE_SELL_RATIO while other bodies
+    // in the SAME cycle are still open with no TP placed yet (their buy has no
+    // sellOrderId for a legitimate reason, not a crash to repair). Stamping
+    // those open buys with an unrelated body's sell falsely closes them and
+    // zeroes their heldOpenBuyCostBasis. Also never auto-link inside the
+    // ledger's current (still-live) cycle — a body there may not even have
+    // attempted its TP placement yet.
+    let linkedCount = 0;
+    const completedCycleIds = new Set(cycleDetails.map(d => d.cycleId));
+    const cycleSellIds = new Map(); // cycleId -> first LEGACY (non-body/satellite) sell orderId
+    // A sell recalc attributed into a cycle (#705) is a re-imported row. It
+    // may serve as the cycle's legacy close only when core buys — and no
+    // body/satellite buy — link to it: then it is provably the core TP. A
+    // sell nothing links to, or one linked from body buys it could not
+    // inherit a single owner from, would stamp unrelated core buys with
+    // another order's sell (#752).
+    const sellLinkOwnership = new Map(); // sell orderId -> { core, owned }
+    for (const fill of fills.values()) {
+      if (fill.side !== 'buy') continue;
+      const linkedSellIds = new Set();
+      if (fill.sellOrderId) linkedSellIds.add(fill.sellOrderId);
+      if (fill.consumedBy && typeof fill.consumedBy === 'object') {
+        for (const id of Object.keys(fill.consumedBy)) linkedSellIds.add(id);
+      }
+      const owned = Boolean(fill.isBodyOwned || fill.isSatellite || fill.bodyId);
+      for (const id of linkedSellIds) {
+        const entry = sellLinkOwnership.get(id) || { core: false, owned: false };
+        if (owned) entry.owned = true; else entry.core = true;
+        sellLinkOwnership.set(id, entry);
+      }
+    }
+    for (const fill of fills.values()) {
+      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+      if (fill.side === 'sell' && fill.cycleAttribution) {
+        const links = sellLinkOwnership.get(fill.orderId);
+        if (!links || !links.core || links.owned) continue;
+      }
+      if (fill.side === 'sell' && fill.cycleId && completedCycleIds.has(fill.cycleId) && !cycleSellIds.has(fill.cycleId)) {
+        cycleSellIds.set(fill.cycleId, fill.orderId);
+      }
+    }
+    for (const fill of fills.values()) {
+      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+      if (fill.cycleId && fill.cycleId === currentCycleId) continue;
+      // A buy folded in by timestamp alone (#705) was never part of the core
+      // position the cycle's TP sold — stamping it would book its cost as
+      // consumed by that sell (realized P&L / reserves / closed-trades).
+      if (fill.cycleAttribution === 'timeframe') continue;
+      if (fill.side === 'buy' && fill.cycleId && !fill.sellOrderId && completedCycleIds.has(fill.cycleId)) {
+        const sellId = cycleSellIds.get(fill.cycleId);
+        if (sellId) {
+          fill.sellOrderId = sellId;
+          linkedCount++;
+          dirtySinceLastPersist = true;
+          bumpLedgerVersion();
+        }
+      }
+    }
+    if (linkedCount > 0) {
+      logger.info(`🔗 [${exchange}] Linked ${linkedCount} buys to their cycle sells`, {
+        linkedCount,
+      });
+    }
+    return linkedCount;
+  };
+
   /**
    * Recalculate cycles from fill history
    * - Identifies completed cycles (cycles with sells)
@@ -2243,75 +2333,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       nextCycleNumber = cycleNum;
     }
 
-    // Auto-link buys to sells within completed cycles only (fixes orphaned buys display).
-    // Skip active cycles to avoid linking unsold buys to early partial sells.
-    //
-    // This is legacy-core-only (#677): body/satellite buy linkage is owned by
-    // TP placement (regime-engine.js) and boot annotation, not this heuristic.
-    // In celestial mode a cycle can hold many bodies and is marked "completed"
-    // once the sell ratio crosses CYCLE_COMPLETE_SELL_RATIO while other bodies
-    // in the SAME cycle are still open with no TP placed yet (their buy has no
-    // sellOrderId for a legitimate reason, not a crash to repair). Stamping
-    // those open buys with an unrelated body's sell falsely closes them and
-    // zeroes their heldOpenBuyCostBasis. Also never auto-link inside the
-    // ledger's current (still-live) cycle — a body there may not even have
-    // attempted its TP placement yet.
-    let linkedCount = 0;
-    const completedCycleIds = new Set(cycleDetails.map(d => d.cycleId));
-    const cycleSellIds = new Map(); // cycleId -> first LEGACY (non-body/satellite) sell orderId
-    // A sell recalc attributed into a cycle (#705) is a re-imported row. It
-    // may serve as the cycle's legacy close only when core buys — and no
-    // body/satellite buy — link to it: then it is provably the core TP. A
-    // sell nothing links to, or one linked from body buys it could not
-    // inherit a single owner from, would stamp unrelated core buys with
-    // another order's sell (#752).
-    const sellLinkOwnership = new Map(); // sell orderId -> { core, owned }
-    for (const fill of fills.values()) {
-      if (fill.side !== 'buy') continue;
-      const linkedSellIds = new Set();
-      if (fill.sellOrderId) linkedSellIds.add(fill.sellOrderId);
-      if (fill.consumedBy && typeof fill.consumedBy === 'object') {
-        for (const id of Object.keys(fill.consumedBy)) linkedSellIds.add(id);
-      }
-      const owned = Boolean(fill.isBodyOwned || fill.isSatellite || fill.bodyId);
-      for (const id of linkedSellIds) {
-        const entry = sellLinkOwnership.get(id) || { core: false, owned: false };
-        if (owned) entry.owned = true; else entry.core = true;
-        sellLinkOwnership.set(id, entry);
-      }
-    }
-    for (const fill of fills.values()) {
-      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
-      if (fill.side === 'sell' && fill.cycleAttribution) {
-        const links = sellLinkOwnership.get(fill.orderId);
-        if (!links || !links.core || links.owned) continue;
-      }
-      if (fill.side === 'sell' && fill.cycleId && completedCycleIds.has(fill.cycleId) && !cycleSellIds.has(fill.cycleId)) {
-        cycleSellIds.set(fill.cycleId, fill.orderId);
-      }
-    }
-    for (const fill of fills.values()) {
-      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
-      if (fill.cycleId && fill.cycleId === currentCycleId) continue;
-      // A buy folded in by timestamp alone (#705) was never part of the core
-      // position the cycle's TP sold — stamping it would book its cost as
-      // consumed by that sell (realized P&L / reserves / closed-trades).
-      if (fill.cycleAttribution === 'timeframe') continue;
-      if (fill.side === 'buy' && fill.cycleId && !fill.sellOrderId && completedCycleIds.has(fill.cycleId)) {
-        const sellId = cycleSellIds.get(fill.cycleId);
-        if (sellId) {
-          fill.sellOrderId = sellId;
-          linkedCount++;
-          dirtySinceLastPersist = true;
-          bumpLedgerVersion();
-        }
-      }
-    }
-    if (linkedCount > 0) {
-      logger.info(`🔗 [${exchange}] Linked ${linkedCount} buys to their cycle sells`, {
-        linkedCount,
-      });
-    }
+    const linkedCount = linkLegacyCycleBuys(cycleDetails);
 
     if (orphansFixed > 0 || linkedCount > 0 || annotationsInherited > 0) {
       persist();
