@@ -2055,6 +2055,79 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     return { ...result, patches: deriveAttributedAnnotations([...result.attributed, ...earlier], cycleMap) };
   };
 
+  const linkLegacyCycleBuys = (cycleDetails) => {
+    // Auto-link buys to sells within completed cycles only (fixes orphaned buys display).
+    // Skip active cycles to avoid linking unsold buys to early partial sells.
+    //
+    // This is legacy-core-only (#677): body/satellite buy linkage is owned by
+    // TP placement (regime-engine.js) and boot annotation, not this heuristic.
+    // In celestial mode a cycle can hold many bodies and is marked "completed"
+    // once the sell ratio crosses CYCLE_COMPLETE_SELL_RATIO while other bodies
+    // in the SAME cycle are still open with no TP placed yet (their buy has no
+    // sellOrderId for a legitimate reason, not a crash to repair). Stamping
+    // those open buys with an unrelated body's sell falsely closes them and
+    // zeroes their heldOpenBuyCostBasis. Also never auto-link inside the
+    // ledger's current (still-live) cycle — a body there may not even have
+    // attempted its TP placement yet.
+    let linkedCount = 0;
+    const completedCycleIds = new Set(cycleDetails.map(d => d.cycleId));
+    const cycleSellIds = new Map(); // cycleId -> first LEGACY (non-body/satellite) sell orderId
+    // A sell recalc attributed into a cycle (#705) is a re-imported row. It
+    // may serve as the cycle's legacy close only when core buys — and no
+    // body/satellite buy — link to it: then it is provably the core TP. A
+    // sell nothing links to, or one linked from body buys it could not
+    // inherit a single owner from, would stamp unrelated core buys with
+    // another order's sell (#752).
+    const sellLinkOwnership = new Map(); // sell orderId -> { core, owned }
+    for (const fill of fills.values()) {
+      if (fill.side !== 'buy') continue;
+      const linkedSellIds = new Set();
+      if (fill.sellOrderId) linkedSellIds.add(fill.sellOrderId);
+      if (fill.consumedBy && typeof fill.consumedBy === 'object') {
+        for (const id of Object.keys(fill.consumedBy)) linkedSellIds.add(id);
+      }
+      const owned = Boolean(fill.isBodyOwned || fill.isSatellite || fill.bodyId);
+      for (const id of linkedSellIds) {
+        const entry = sellLinkOwnership.get(id) || { core: false, owned: false };
+        if (owned) entry.owned = true; else entry.core = true;
+        sellLinkOwnership.set(id, entry);
+      }
+    }
+    for (const fill of fills.values()) {
+      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+      if (fill.side === 'sell' && fill.cycleAttribution) {
+        const links = sellLinkOwnership.get(fill.orderId);
+        if (!links || !links.core || links.owned) continue;
+      }
+      if (fill.side === 'sell' && fill.cycleId && completedCycleIds.has(fill.cycleId) && !cycleSellIds.has(fill.cycleId)) {
+        cycleSellIds.set(fill.cycleId, fill.orderId);
+      }
+    }
+    for (const fill of fills.values()) {
+      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+      if (fill.cycleId && fill.cycleId === currentCycleId) continue;
+      // A buy folded in by timestamp alone (#705) was never part of the core
+      // position the cycle's TP sold — stamping it would book its cost as
+      // consumed by that sell (realized P&L / reserves / closed-trades).
+      if (fill.cycleAttribution === 'timeframe') continue;
+      if (fill.side === 'buy' && fill.cycleId && !fill.sellOrderId && completedCycleIds.has(fill.cycleId)) {
+        const sellId = cycleSellIds.get(fill.cycleId);
+        if (sellId) {
+          fill.sellOrderId = sellId;
+          linkedCount++;
+          dirtySinceLastPersist = true;
+          bumpLedgerVersion();
+        }
+      }
+    }
+    if (linkedCount > 0) {
+      logger.info(`🔗 [${exchange}] Linked ${linkedCount} buys to their cycle sells`, {
+        linkedCount,
+      });
+    }
+    return linkedCount;
+  };
+
   /**
    * Recalculate cycles from fill history
    * - Identifies completed cycles (cycles with sells)
@@ -2260,75 +2333,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       nextCycleNumber = cycleNum;
     }
 
-    // Auto-link buys to sells within completed cycles only (fixes orphaned buys display).
-    // Skip active cycles to avoid linking unsold buys to early partial sells.
-    //
-    // This is legacy-core-only (#677): body/satellite buy linkage is owned by
-    // TP placement (regime-engine.js) and boot annotation, not this heuristic.
-    // In celestial mode a cycle can hold many bodies and is marked "completed"
-    // once the sell ratio crosses CYCLE_COMPLETE_SELL_RATIO while other bodies
-    // in the SAME cycle are still open with no TP placed yet (their buy has no
-    // sellOrderId for a legitimate reason, not a crash to repair). Stamping
-    // those open buys with an unrelated body's sell falsely closes them and
-    // zeroes their heldOpenBuyCostBasis. Also never auto-link inside the
-    // ledger's current (still-live) cycle — a body there may not even have
-    // attempted its TP placement yet.
-    let linkedCount = 0;
-    const completedCycleIds = new Set(cycleDetails.map(d => d.cycleId));
-    const cycleSellIds = new Map(); // cycleId -> first LEGACY (non-body/satellite) sell orderId
-    // A sell recalc attributed into a cycle (#705) is a re-imported row. It
-    // may serve as the cycle's legacy close only when core buys — and no
-    // body/satellite buy — link to it: then it is provably the core TP. A
-    // sell nothing links to, or one linked from body buys it could not
-    // inherit a single owner from, would stamp unrelated core buys with
-    // another order's sell (#752).
-    const sellLinkOwnership = new Map(); // sell orderId -> { core, owned }
-    for (const fill of fills.values()) {
-      if (fill.side !== 'buy') continue;
-      const linkedSellIds = new Set();
-      if (fill.sellOrderId) linkedSellIds.add(fill.sellOrderId);
-      if (fill.consumedBy && typeof fill.consumedBy === 'object') {
-        for (const id of Object.keys(fill.consumedBy)) linkedSellIds.add(id);
-      }
-      const owned = Boolean(fill.isBodyOwned || fill.isSatellite || fill.bodyId);
-      for (const id of linkedSellIds) {
-        const entry = sellLinkOwnership.get(id) || { core: false, owned: false };
-        if (owned) entry.owned = true; else entry.core = true;
-        sellLinkOwnership.set(id, entry);
-      }
-    }
-    for (const fill of fills.values()) {
-      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
-      if (fill.side === 'sell' && fill.cycleAttribution) {
-        const links = sellLinkOwnership.get(fill.orderId);
-        if (!links || !links.core || links.owned) continue;
-      }
-      if (fill.side === 'sell' && fill.cycleId && completedCycleIds.has(fill.cycleId) && !cycleSellIds.has(fill.cycleId)) {
-        cycleSellIds.set(fill.cycleId, fill.orderId);
-      }
-    }
-    for (const fill of fills.values()) {
-      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
-      if (fill.cycleId && fill.cycleId === currentCycleId) continue;
-      // A buy folded in by timestamp alone (#705) was never part of the core
-      // position the cycle's TP sold — stamping it would book its cost as
-      // consumed by that sell (realized P&L / reserves / closed-trades).
-      if (fill.cycleAttribution === 'timeframe') continue;
-      if (fill.side === 'buy' && fill.cycleId && !fill.sellOrderId && completedCycleIds.has(fill.cycleId)) {
-        const sellId = cycleSellIds.get(fill.cycleId);
-        if (sellId) {
-          fill.sellOrderId = sellId;
-          linkedCount++;
-          dirtySinceLastPersist = true;
-          bumpLedgerVersion();
-        }
-      }
-    }
-    if (linkedCount > 0) {
-      logger.info(`🔗 [${exchange}] Linked ${linkedCount} buys to their cycle sells`, {
-        linkedCount,
-      });
-    }
+    const linkedCount = linkLegacyCycleBuys(cycleDetails);
 
     if (orphansFixed > 0 || linkedCount > 0 || annotationsInherited > 0) {
       persist();
