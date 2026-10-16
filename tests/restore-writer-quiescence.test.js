@@ -709,14 +709,17 @@ describe('engine-side maintenance window', () => {
     assert.equal(engineMaintenance.getEngineMaintenance(), null);
   });
 
-  it('expires on its own so a gateway that dies mid-restore cannot brick the engine', () => {
+  it('expires on its own so a gateway that dies mid-restore cannot brick the engine', (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 });
+    t.after(() => t.mock.timers.reset());
     engineMaintenance.setEngineMaintenance({ active: true, reason: 'restore', ttlMs: 1 });
-    const { expiresAt } = engineMaintenance.getEngineMaintenance();
-    assert.ok(expiresAt <= Date.now() + 1);
-    mock.timers.enable({ apis: ['Date'], now: Date.now() + 5 });
+    const { startedAt, expiresAt } = engineMaintenance.getEngineMaintenance();
+    assert.equal(startedAt, 1_000_000);
+    assert.equal(expiresAt, startedAt + 1);
+    assert.equal(engineMaintenance.refuseDuringMaintenance('regime:start').code, 'maintenance-in-progress');
+    t.mock.timers.tick(1);
     assert.equal(engineMaintenance.getEngineMaintenance(), null);
     assert.equal(engineMaintenance.refuseDuringMaintenance('regime:start'), null);
-    mock.timers.reset();
   });
 
   it('clamps an absurd TTL instead of trusting the payload', () => {
