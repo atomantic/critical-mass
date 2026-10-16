@@ -20,6 +20,7 @@ const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createIsolatedDataDir } = require('./test-data-dir');
+const { installFallbackClock } = require('./helpers/fallback-clock');
 const isolatedData = createIsolatedDataDir('cm-startup-terminal-catchup-test');
 
 // The size optimizer persists per-pair into the SHARED data/config.json, so a
@@ -39,19 +40,40 @@ websocketFeedModule.createWebSocketFeed = () => ({ connect: () => {}, disconnect
 const { createRegimeEngine } = require('../src/regime-engine');
 
 const engines = [];
-after(async () => {
-  // start() schedules production setInterval timers (state save, metrics,
-  // reconcile) that _test.clearTimers() does not touch (it only clears the
-  // ttlTimers dedup set) — only stop() clears those, in its finally block.
-  // Without this the process never goes idle and the run hangs.
-  for (const eng of engines) {
-    await eng.stop().catch(() => {});
-    eng._test.clearTimers();
-  }
+const STOP_GRACE_MS = 2000;
+// start() schedules production setInterval timers (state save, metrics,
+// reconcile) that _test.clearTimers() does not touch (it only clears the
+// ttlTimers dedup set) — only stop() clears those, in its finally block.
+// Without it the process never goes idle and the run hangs, so every test
+// stops its engine even after a setup or assertion failure. Only setTimeout is
+// mocked: setInterval stays real and is cleaned up by stop().
+const clock = installFallbackClock({
+  cleanup: async () => {
+    const started = engines.splice(0);
+    for (const eng of started) eng._test.clearTimers();
+    // stop() runs on real timers so a hung drain cannot wait on a virtual
+    // clock. A start() abandoned by a failed assertion is still blocked on its
+    // lost virtual timer, so bound the wait instead of hanging the file.
+    clock.restore();
+    for (const eng of started) {
+      await Promise.race([
+        eng.stop().catch(() => {}),
+        new Promise(resolve => setTimeout(resolve, STOP_GRACE_MS).unref()),
+      ]);
+    }
+  },
+});
+after(() => {
   configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
   websocketFeedModule.createWebSocketFeed = originalCreateWebSocketFeed;
   isolatedData.cleanup();
 });
+
+// Count trade-level fill reads per engine so each case can prove the fallback
+// re-read does not happen before its virtual 2,000ms deadline, only at it.
+const fillReads = new WeakMap();
+const startEngine = (eng, waits = [2000]) =>
+  clock.run(() => eng.start(), { waits, observe: () => fillReads.get(eng)() });
 
 /**
  * Minimal adapter covering everything a clean (no position, no open orders)
@@ -71,9 +93,13 @@ const makeAdapter = (over = {}) => ({
   ...over,
 });
 
-const makeEngine = (pair, adapter) => {
+const makeEngine = (pair, adapterOverrides) => {
+  const adapter = makeAdapter(adapterOverrides);
+  let reads = 0;
+  const readFills = adapter.getOrderFills;
+  adapter.getOrderFills = (...args) => { reads++; return readFills(...args); };
   const eng = createRegimeEngine('coinbase', pair, { dryRun: false, productId: pair }, {});
-  eng._test.setAdapter(makeAdapter(adapter));
+  eng._test.setAdapter(adapter);
   eng._test.setOrderExecutor({
     setPriceIncrement: () => {},
     getPendingCounts: () => ({ total: 0 }),
@@ -102,6 +128,7 @@ const makeEngine = (pair, adapter) => {
     }),
   });
   engines.push(eng);
+  fillReads.set(eng, () => reads);
   return eng;
 };
 
@@ -148,7 +175,7 @@ describe('startup catch-up for saved entries that went terminal offline (issue #
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [{ orderId: RESTORED_ORDER_ID, price: 2000, assetQty: 0.01, sizeUsdc: 20, placedAt: Date.now() - 60000 }];
 
-    const result = await eng.start();
+    const result = await startEngine(eng, []);
     assert.equal(result.success, true, `start() must still succeed: ${result.error}`);
 
     const finalPos = eng._getPositionState();
@@ -179,7 +206,7 @@ describe('startup catch-up for saved entries that went terminal offline (issue #
       orderId: RESTORED_ORDER_ID, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() - 60000, knownFilledSize: 0.4,
     }];
 
-    const result = await eng.start();
+    const result = await startEngine(eng);
     assert.equal(result.success, true, `start() must still succeed: ${result.error}`);
 
     const finalPos = eng._getPositionState();
@@ -208,7 +235,7 @@ describe('startup catch-up for saved entries that went terminal offline (issue #
       orderId: RUNG_ID, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() - 60000, ladderIndex: 0, knownFilledSize: 0.4,
     }];
 
-    const result = await eng.start();
+    const result = await startEngine(eng);
     assert.equal(result.success, true, `start() must still succeed: ${result.error}`);
 
     const finalPos = eng._getPositionState();
@@ -255,7 +282,7 @@ describe('startup catch-up for saved entries that went terminal offline (issue #
       orderId: RUNG_ID, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() - 60000, ladderIndex: 0,
     }];
 
-    const result = await eng.start();
+    const result = await startEngine(eng);
     assert.equal(result.success, true, `start() must still succeed: ${result.error}`);
 
     const finalPos = eng._getPositionState();
@@ -284,7 +311,7 @@ describe('startup catch-up for saved entries that went terminal offline (issue #
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [{ orderId: RESTORED_ORDER_ID, price: 2000, assetQty: 0.01, sizeUsdc: 20, placedAt: Date.now() - 60000 }];
 
-    const result = await eng.start();
+    const result = await startEngine(eng, []);
     assert.equal(result.success, true, `start() must still succeed: ${result.error}`);
 
     const finalPos = eng._getPositionState();

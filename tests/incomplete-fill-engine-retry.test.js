@@ -18,11 +18,12 @@
 //
 // Disk safety: throwaway pair lives under a disposable temp root, removed
 // in after().
-const { describe, it, beforeEach, afterEach, after, mock } = require('node:test');
+const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
 
 const { createIsolatedDataDir } = require('./test-data-dir');
+const { installFallbackClock } = require('./helpers/fallback-clock');
 const isolatedData = createIsolatedDataDir('cm-incomplete-fill-retry-test');
 
 // The size optimizer persists per-pair into the SHARED data/config.json, so a
@@ -37,51 +38,22 @@ const { createRegimeEngine, buildPartialFillData } = require('../src/regime-engi
 const TEST_PAIR = '__testincompletefillretry__';
 
 const engines = [];
-// setImmediate stays real: it drains the fill pass's promise continuations
-// without advancing fallback, engine retry, or deduplication TTL deadlines.
-const drainPromises = () => new Promise(resolve => setImmediate(resolve));
-const advanceClock = async (ms) => {
-  mock.timers.tick(ms);
-  await drainPromises();
-};
-
-beforeEach(() => mock.timers.enable({ apis: ['setTimeout'] }));
-afterEach(async () => {
-  try {
-    await drainPromises();
-  } finally {
+const clock = installFallbackClock({
+  cleanup: () => {
     for (const eng of engines.splice(0)) {
       eng._test.setRunning(false);
       eng._test.clearTimers();
     }
-    mock.timers.reset();
-  }
+  },
 });
+const { drain: drainPromises, advance: advanceClock } = clock;
 
 // A pass that has not settled after its stubbed I/O drains is waiting for
-// the engine's one 2,000ms fallback. Advance only that deadline, never runAll:
-// expiring the 60s/5min dedup timers would weaken the replay assertions.
-const runFillPass = async (operation, beforeRetry = () => {}) => {
-  let settled = false;
-  // Attach rejection handling immediately; assertions may run before the
-  // caller's assert.rejects gets the eventual rejection.
-  const result = operation().then(
-    value => { settled = true; return { value }; },
-    error => { settled = true; return { error }; },
-  );
-  await drainPromises();
-  if (!settled) {
-    beforeRetry();
-    await advanceClock(1999);
-    assert.equal(settled, false, 'the fallback must still be pending before 2,000ms');
-    beforeRetry();
-    await advanceClock(1);
-    assert.equal(settled, true, 'the fill pass must finish at its fallback deadline');
-  }
-  const outcome = await result;
-  if ('error' in outcome) throw outcome.error;
-  return outcome.value;
-};
+// the engine's one 2,000ms fallback. The helper advances only that deadline,
+// never runAll: expiring the 60s/5min dedup timers would weaken the replay
+// assertions.
+const runFillPass = (operation, beforeRetry = () => {}) =>
+  clock.run(operation, { optional: true, beforeAdvance: beforeRetry });
 const handleFill = (eng, status) => runFillPass(() => eng._test.handleOrderFill(status));
 const handlePolledFill = (eng, orderId, status) =>
   runFillPass(() => eng._test.handlePolledFill(orderId, status));
