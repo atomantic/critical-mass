@@ -1070,3 +1070,124 @@ describe('#770 a stale TP that sells the whole body is never booked as a partial
       `ledgerNetAsset ${derived.ledgerNetAsset} == held ${derived.heldOpenAssetQty} + reserves ${derived.realizedAssetPnL}`);
   });
 });
+
+const { tradeEvents } = require('../src/trade-events');
+
+describe('#1123 merge-snapshot sell settlement is complete before stale-TP recovery awaits', () => {
+  it('has deducted the live body, consumed the buy, credited capital and committed the booking when the stale cancel begins', async () => {
+    const pair = '__test1123settle__';
+    const staleCancel = { cancelled: true, filled: false, filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 };
+    let cancelCalls = 0;
+    let engRef;
+    let atStaleCancel = null;
+    const { eng } = makeEngine({
+      pair,
+      cancelResult: null,
+      adapter: {
+        getOrder: async (orderId) => (orderId === 'tp-old'
+          ? { status: 'OPEN', filledSize: 0 }
+          : { status: 'CANCELLED', filledSize: staleCancel.filledSize, filledValue: staleCancel.filledValue, averageFilledPrice: 50500, totalFees: staleCancel.totalFees }),
+        getOrderFills: async (orderId) => {
+          if (orderId === 'buy-new') return buyFill(orderId);
+          if (orderId === 'tp-old') return sellFill(orderId, '0.002');
+          return sellFill(orderId, String(staleCancel.filledSize));
+        },
+      },
+      executor: {
+        cancelBodyTpOrder: async () => {
+          if (++cancelCalls === 1) return { cancelled: true, filled: false, filledSize: 0 };
+          // The merge-snapshot branch's stale-TP cancel: everything the
+          // snapshot sale settles must already be visible here.
+          const live = engRef._getPositionState().celestialBodies.find(b => b.id === 'b1');
+          const ledger = engRef.getFillLedger();
+          atStaleCancel = {
+            assetQty: live.assetQty,
+            costBasis: live.costBasis,
+            staleTpOrderId: live.tpOrderId,
+            consumption: ledger.getBuyOrderConsumption('seed-b1'),
+            maxUsdcDeployed: engRef._getConfig().maxUsdcDeployed,
+            booking: ledger.getSellBooking('tp-old'),
+          };
+          return staleCancel;
+        },
+        getPendingCounts: () => ({ total: 1_000_000 }),
+      },
+    });
+    engRef = eng;
+    seedBuy(eng);
+    eng._getConfig().maxUsdcDeployed = 1000;
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+    assert.ok(eng._test.getMergeTpSnapshots().completed.has('tp-old'), 'the cancelled TP left a Race-3 snapshot');
+    await eng._test.handleOrderFill({ orderId: 'tp-old', side: 'sell', status: 'CANCELLED', filledSize: 0.002, filledValue: 101, averageFilledPrice: 50500 });
+
+    assert.ok(atStaleCancel, 'the merge-snapshot stale-TP cancel ran');
+    assert.equal(atStaleCancel.staleTpOrderId, 'tp-new-1', 'the live body still carried the stale TP when its cancel began');
+    // 0.02 merged − the 0.002 snapshot tranche; 1000.05 merged cost − its 100 prorated cost.
+    assert.ok(Math.abs(atStaleCancel.assetQty - 0.018) < 1e-9, `snapshot tranche already deducted, got ${atStaleCancel.assetQty}`);
+    assert.ok(Math.abs(atStaleCancel.costBasis - 900.05) < 1e-6, `prorated cost already deducted, got ${atStaleCancel.costBasis}`);
+    assert.ok(atStaleCancel.consumption?.consumedBy?.['tp-old'], 'the source buy already records the snapshot sale as consumer');
+    assert.ok(atStaleCancel.booking?.hasMarker, 'the booking-commit marker is already written');
+    assert.ok(Math.abs(atStaleCancel.booking.bookedSize - 0.002) < 1e-12, `marker covers the snapshot sale, got ${atStaleCancel.booking.bookedSize}`);
+    assert.ok(Math.abs(atStaleCancel.maxUsdcDeployed - (1000 + atStaleCancel.booking.bodyPnl)) < 1e-6,
+      `capital already credited with the snapshot pnl, got ${atStaleCancel.maxUsdcDeployed}`);
+  });
+
+  it('emits the fill event, then persists the ledger, then acknowledges the executor when no stale TP needs repair', async () => {
+    // The fill lands while the merge cancel of that same order is in flight,
+    // so the live body still points at it: the handler settles and finishes
+    // without cancelling or re-placing anything.
+    const pair = '__test1123noop__';
+    const orderStatus = { status: 'FILLED', filledSize: 0.005, filledValue: 0.005 * 50500, averageFilledPrice: 50500 };
+    const log = [];
+    let cancelCalls = 0;
+    let eng;
+    ({ eng } = makeEngine({
+      pair,
+      cancelResult: null,
+      adapter: {
+        getOrder: async (orderId) => (orderId === 'tp-old' && cancelCalls === 0 ? { status: 'OPEN', filledSize: 0 } : orderStatus),
+        getOrderFills: async (orderId) => (orderId === 'buy-new' ? buyFill(orderId) : sellFill(orderId, '0.005')),
+      },
+      executor: {
+        cancelBodyTpOrder: async () => {
+          cancelCalls += 1;
+          if (cancelCalls === 1) {
+            await eng._test.handleOrderFill({ orderId: 'tp-old', side: 'sell', ...orderStatus });
+            return { cancelled: false, filled: true, filledSize: 0.005 };
+          }
+          return { cancelled: false, filled: true, filledSize: 0.005 };
+        },
+        getPendingCounts: () => ({ total: 1_000_000 }),
+        handleOrderFill: (orderId) => log.push(`ack:${orderId}`),
+      },
+    }));
+    seedBuy(eng);
+
+    const ledger = eng.getFillLedger();
+    const originalPersist = ledger.persist;
+    ledger.persist = (...args) => { log.push('persist'); return originalPersist.apply(ledger, args); };
+    const originalEmit = tradeEvents.emitTradeEvent;
+    tradeEvents.emitTradeEvent = function (type, exchange, message, data) {
+      if (type === 'body_tp_filled' && data?.mergeSnapshot) {
+        log.push(`event:${ledger.getSellBooking('tp-old')?.hasMarker ? 'booked' : 'unbooked'}`);
+      }
+      return originalEmit.apply(this, arguments);
+    };
+    try {
+      await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+    } finally {
+      tradeEvents.emitTradeEvent = originalEmit;
+      ledger.persist = originalPersist;
+    }
+
+    const eventIdx = log.indexOf('event:booked');
+    assert.ok(eventIdx !== -1, `the merge-snapshot fill event fired after the booking committed, log=${log}`);
+    assert.equal(log.includes('event:unbooked'), false, 'no event precedes the booking commit');
+    const persistIdx = log.indexOf('persist', eventIdx);
+    const ackIdx = log.indexOf('ack:tp-old', persistIdx);
+    assert.ok(persistIdx !== -1, `the ledger persists after the event, log=${log}`);
+    assert.ok(ackIdx !== -1, `the executor is acknowledged after the persist, log=${log}`);
+    assert.equal(cancelCalls, 1, 'no stale-TP cancel: the in-flight merge cancel owns the order');
+  });
+});
