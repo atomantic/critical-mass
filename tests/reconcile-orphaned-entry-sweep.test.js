@@ -25,6 +25,7 @@ const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createIsolatedDataDir } = require('./test-data-dir');
+const { installFallbackClock } = require('./helpers/fallback-clock');
 const isolatedData = createIsolatedDataDir('cm-orphaned-entry-sweep-test');
 
 // The size optimizer persists per-pair into the SHARED data/config.json, so a
@@ -39,11 +40,26 @@ const { createRegimeEngine } = require('../src/regime-engine');
 const TEST_PAIR = '__testorphanedentrysweep__';
 
 const engines = [];
+// Every empty/throwing getOrderFills read makes the engine wait 2,000ms before
+// its one re-read. The clock advances that deadline virtually, never runAll:
+// that would also expire the 60s/5min dedup TTLs and the #679 retry timer.
+const clock = installFallbackClock({
+  cleanup: () => { for (const eng of engines.splice(0)) eng._test.clearTimers(); },
+});
 after(() => {
-  for (const eng of engines) eng._test.clearTimers();
   configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
   isolatedData.cleanup();
 });
+
+// Count trade-level fill reads per engine so each case can prove the fallback
+// re-read does not happen before its virtual deadline, only at it.
+const fillReads = new WeakMap();
+const readCount = (eng) => fillReads.get(eng)();
+const pollFill = (eng, orderId, status) =>
+  clock.run(() => eng._test.handlePolledFill(orderId, status), { observe: () => readCount(eng) });
+const sweep = (eng) => clock.run(() => eng._test.reconcileTick(), { observe: () => readCount(eng) });
+// A pass that must finish without any fallback wait (no trade-level read).
+const sweepWithoutFallback = (eng) => clock.run(() => eng._test.reconcileTick(), { waits: [] });
 
 const PRODUCT_DETAILS = { baseMinSize: '0.0001', baseIncrement: '0.00000001' };
 
@@ -70,6 +86,9 @@ const makeExecutor = (over = {}) => ({
 });
 
 const makeEngine = (adapter, executorOverrides = {}) => {
+  let reads = 0;
+  const readFills = adapter.getOrderFills;
+  adapter.getOrderFills = (...args) => { reads++; return readFills(...args); };
   const eng = createRegimeEngine('coinbase', TEST_PAIR, { dryRun: false, productId: TEST_PAIR }, {});
   eng._test.setRunning(true);
   eng._test.setProductDetails(PRODUCT_DETAILS);
@@ -81,6 +100,7 @@ const makeEngine = (adapter, executorOverrides = {}) => {
   // without waiting through extra 2s getOrderFills retries per attempt.
   eng._test.setIncompleteFillRetryTiming(5, 0);
   engines.push(eng);
+  fillReads.set(eng, () => reads);
   return eng;
 };
 
@@ -137,7 +157,7 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
 
     // 1. Drive the callback path directly, mirroring order-executor's
     //    checkPendingOrderFills invoking onFillDetected fire-and-forget.
-    await eng._test.handlePolledFill(orderId, unbookableStatus);
+    await pollFill(eng, orderId, unbookableStatus);
 
     // Confirm the engine-level retry truly gave up (not still pending) and
     // that the failure left the order an orphan: gone from executor
@@ -148,7 +168,7 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
 
     // 2. One reconcile pass must now detect the orphan (missing from
     //    orderExecutor.getPendingOrdersList()) and catch it up.
-    await eng._test.reconcileTick();
+    await sweep(eng);
 
     assert.equal(pos.pendingEntryOrders.length, 0, 'the orphaned entry must be cleared from positionState once caught up');
     const bodies = pos.celestialBodies.filter(b => (b.sourceOrderIds || []).includes(orderId));
@@ -167,7 +187,7 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [{ orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() }];
 
-    await eng._test.reconcileTick();
+    await sweepWithoutFallback(eng);
 
     assert.equal(pos.pendingEntryOrders.length, 1, 'a still-open order stays in positionState untouched');
     assert.equal(pos.celestialBodies.length, 0, 'nothing should be booked for a still-resting order');
@@ -206,7 +226,7 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
       orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now(), knownFilledSize: 0.4,
     }];
 
-    await eng._test.reconcileTick();
+    await sweep(eng);
 
     assert.equal(pos.pendingEntryOrders.length, 0, 'the row must be cleared once the known partial is caught up');
     const bodies = pos.celestialBodies.filter(b => (b.sourceOrderIds || []).includes(orderId));
@@ -232,7 +252,7 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
     eng._test.handleEntryCancelled(orderId, { filledSize: 0.4 });
     assert.equal(pos.pendingLadderOrders[0].knownFilledSize, 0.4, 'the ladder rung row must carry the resolved partial as knownFilledSize');
 
-    await eng._test.reconcileTick();
+    await sweep(eng);
 
     assert.equal(pos.pendingLadderOrders.length, 0, 'the rung must be cleared once its known partial is caught up');
     const bodies = pos.celestialBodies.filter(b => (b.sourceOrderIds || []).includes(orderId));
@@ -261,7 +281,7 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [{ orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() }];
 
-    await eng._test.reconcileTick();
+    await sweep(eng);
 
     assert.deepEqual(restoreCalls.map(c => c.id), [orderId], 'the failed catch-up must re-arm executor tracking');
     assert.equal(pos.celestialBodies.length, 0, 'nothing was bookable on the first attempt');
@@ -273,7 +293,7 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
     eng._test.handleEntryCancelled(orderId, { filledSize: 0 });
     assert.equal(pos.pendingEntryOrders.length, 1, 'a row with a known partial must not be purged by an empty-looking re-cancel');
 
-    await eng._test.reconcileTick();
+    await sweep(eng);
 
     assert.equal(pos.pendingEntryOrders.length, 0, 'the row must be cleared once the known partial is booked');
     const bodies = pos.celestialBodies.filter(b => (b.sourceOrderIds || []).includes(orderId));
@@ -319,7 +339,7 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [{ orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() }];
 
-    await eng._test.reconcileTick();
+    await sweepWithoutFallback(eng);
 
     assert.equal(pos.pendingEntryOrders.length, 0, 'a genuinely empty cancel must be purged, not left stranded');
     assert.equal(pos.celestialBodies.length, 0, 'no body should be created for an empty cancel');
@@ -342,7 +362,7 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
     const pos = eng._getPositionState();
     pos.pendingEntryOrders = [{ orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now() }];
 
-    await eng._test.reconcileTick();
+    await sweep(eng);
 
     assert.equal(pos.pendingEntryOrders.length, 0, 'the terminal cancel-with-partial must be cleared from positionState once caught up');
     const bodies = pos.celestialBodies.filter(b => (b.sourceOrderIds || []).includes(orderId));
@@ -373,14 +393,14 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
     // averageFilledPrice: 0 so this attempt is unbookable and fails, exactly
     // like the first test, scheduling an engine-level retry instead of
     // giving up outright.
-    await eng._test.handlePolledFill(orderId, {
+    await pollFill(eng, orderId, {
       orderId, side: 'BUY', status: 'FILLED', filledSize: 1.5, filledValue: 0, averageFilledPrice: 0, totalFees: 0,
     });
 
     assert.equal(eng._test.getIncompleteFillRetryCount(orderId), 1, 'a retry must be scheduled (not yet exhausted) for this test to be meaningful');
     assert.equal(pos.pendingEntryOrders.length, 1, 'still orphaned going into the reconcile pass');
 
-    await eng._test.reconcileTick();
+    await sweepWithoutFallback(eng);
 
     assert.equal(getOrderCalls, 0, 'the sweep must not call adapter.getOrder while a callback-path retry is pending for this orderId');
     assert.equal(pos.pendingEntryOrders.length, 1, 'the sweep must leave the order alone while a retry is pending');
