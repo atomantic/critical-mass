@@ -4,8 +4,11 @@ require('../src/runtime-env').loadRuntimeEnv();
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const path = require('node:path');
+const { stopProcessGroup } = require('./lib/process-group');
 
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+// Allow the gateway's 30-second drain before forcing its watch group to stop.
+const KILL_GRACE_MS = 40000;
 
 function developmentChildren(root = path.resolve(__dirname, '..'), env = process.env) {
   const admin = path.join(root, 'admin');
@@ -29,26 +32,35 @@ function developmentChildren(root = path.resolve(__dirname, '..'), env = process
 }
 
 /** Inject fixture child specs and an event emitter to test without application state. */
-function launch(children, { signals = process, stdout = process.stdout, stderr = process.stderr } = {}) {
+function launch(children, { signals = process, stdout = process.stdout, stderr = process.stderr, killGraceMs = KILL_GRACE_MS } = {}) {
   const running = new Set();
+  const killTimers = new Map();
   let shutdownSignal;
   let failed = false;
+
+  function signalChild(child, signal) {
+    try {
+      // Include node --watch's application child in the POSIX process group.
+      if (process.platform === 'win32') child.kill(signal);
+      else if (child.pid) process.kill(-child.pid, signal);
+    } catch (error) {
+      if (error.code !== 'ESRCH') {
+        failed = true;
+        stderr.write('[dev] Signal forwarding failed: ' + error.message + '\n');
+      }
+    }
+  }
 
   function shutdown(signal) {
     if (shutdownSignal) return;
     shutdownSignal = signal;
     for (const child of running) {
-      try {
-        // A separate POSIX process group includes node --watch's application
-        // child. It also prevents terminal Ctrl-C from being delivered twice.
-        if (process.platform === 'win32') child.kill(signal);
-        else if (child.pid) process.kill(-child.pid, signal);
-      } catch (error) {
-        if (error.code !== 'ESRCH') {
-          failed = true;
-          stderr.write('[dev] Signal forwarding failed: ' + error.message + '\n');
-        }
-      }
+      signalChild(child, signal);
+      killTimers.set(child, setTimeout(() => {
+        failed = true;
+        stderr.write('[dev] Child did not stop within the shutdown grace period; sending SIGKILL\n');
+        signalChild(child, 'SIGKILL');
+      }, killGraceMs));
     }
   }
 
@@ -85,8 +97,17 @@ function launch(children, { signals = process, stdout = process.stdout, stderr =
     }
     child.on('error', reportError);
     // close, rather than exit, guarantees that final partial lines are drained.
-    child.once('close', code => {
+    child.once('close', async code => {
+      // Cleanup owns this group now; shutdown must not add another kill timer.
       running.delete(child);
+      clearTimeout(killTimers.get(child));
+      killTimers.delete(child);
+      try {
+        if (process.platform !== 'win32') await stopProcessGroup(child.pid);
+      } catch (error) {
+        failed = true;
+        stderr.write('[' + spec.name + '] Cleanup failed: ' + error.message + '\n');
+      }
       resolve(!spawnFailed && (shutdownSignal === 'SIGINT' || code === 0));
     });
   }));

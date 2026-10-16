@@ -18,6 +18,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { stopProcessGroup } = require('./lib/process-group');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const ROOT_PREFIX = 'cm-test-';
@@ -34,8 +35,8 @@ function defaultChildArgs(extraArgs) {
   return [
     '--require', './tests/quiet-console.js',
     '--test', '--test-concurrency=1',
-    ...files,
     ...extraArgs,
+    ...files,
   ];
 }
 
@@ -57,14 +58,21 @@ function runOwned(options = {}) {
       env: { ...process.env, TMPDIR: root, TMP: root, TEMP: root },
     });
 
-    let signalled = null;
     let killTimer = null;
+    let finishing = false;
     const killGroup = (signal) => {
-      try { process.kill(-child.pid, signal); } catch { /* group already gone */ }
+      if (!child.pid) return false;
+      try {
+        process.kill(-child.pid, signal);
+        return true;
+      } catch (error) {
+        if (error.code === 'ESRCH') return false;
+        throw error;
+      }
     };
     const handlers = FORWARDED_SIGNALS.map((signal) => {
       const handler = () => {
-        signalled = signalled || signal;
+        if (finishing) return;
         killGroup(signal);
         if (!killTimer) {
           killTimer = setTimeout(() => killGroup('SIGKILL'), killGraceMs);
@@ -74,12 +82,20 @@ function runOwned(options = {}) {
       return [signal, handler];
     });
 
-    const finish = (code) => {
+    const finish = async (code) => {
+      if (finishing) return;
+      finishing = true;
       clearTimeout(killTimer);
+      try {
+        // A successful direct child can still leave stdio-detached descendants.
+        // Stop the owned group on EVERY exit, before deleting its fixtures.
+        await stopProcessGroup(child.pid);
+        fs.rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      } catch (error) {
+        console.error(`test runner: cleanup failed; retaining its temporary root: ${error.message}`);
+        code = 1;
+      }
       for (const [signal, handler] of handlers) process.off(signal, handler);
-      // Reap stragglers left in the group before removing their fixtures.
-      if (signalled) killGroup('SIGKILL');
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
       resolve(code);
     };
 

@@ -18,7 +18,7 @@ const fixtureEnv = [
 function fixture(t, contents = fixtureEnv) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-env-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  for (const file of ['src/runtime-env.js', 'ecosystem.config.cjs', 'server.js', 'index.js', 'scripts/dev.js']) {
+  for (const file of ['src/runtime-env.js', 'ecosystem.config.cjs', 'server.js', 'index.js', 'scripts/dev.js', 'scripts/lib/process-group.js']) {
     fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
     fs.copyFileSync(path.join(repo, file), path.join(root, file));
   }
