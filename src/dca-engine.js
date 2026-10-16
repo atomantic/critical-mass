@@ -408,6 +408,179 @@ const saveStateBestEffort = (state, exchange, pair, cycleLogger) => {
 };
 
 /**
+ * Gate an explicit recovery-only request (`pendingBuyOrderId` given) before any
+ * exchange call. Every rejection leaves the fund untouched and places no buy.
+ * @param {BotState} state - Fund state
+ * @param {ExchangeConfig} config - Fund configuration
+ * @param {string} exchange - Exchange name
+ * @param {string|undefined} pendingBuyOrderId - Order the operator asked to recover; undefined for an ordinary cycle
+ * @returns {CycleResult|null} Rejection result, or null when the cycle may proceed
+ */
+const rejectRecoveryRequest = (state, config, exchange, pendingBuyOrderId) => {
+  if (pendingBuyOrderId === undefined) return null;
+  if (!state.pendingDcaBuy) {
+    return { success: true, status: 'no_pending_buy', exchange, message: 'No buy is awaiting recovery. No new buy was placed.' };
+  }
+  if (state.pendingDcaBuy.orderId !== pendingBuyOrderId) {
+    return { success: false, status: 'pending_buy_changed', exchange, pendingBuy: describePendingBuy(state.pendingDcaBuy),
+      message: 'The pending buy changed. Refresh status before recovering it.' };
+  }
+  if (config.dryRun) {
+    return { success: false, status: 'recovery_blocked', exchange,
+      message: 'Turn off Dry Run to recover this accepted live buy.' };
+  }
+  return null;
+};
+
+/**
+ * Final result of an explicit recovery-only run, which never purchases.
+ * @param {Object|null} recoveredBuy - The booked recovered buy, if one was booked
+ * @param {string} exchange - Exchange name
+ * @param {string} orderId - Recovered order id
+ * @returns {CycleResult} Recovery outcome
+ */
+const recoveryOnlyResult = (recoveredBuy, exchange, orderId) => ({
+  success: true,
+  status: recoveredBuy ? 'buy_recovered' : 'buy_recovery_settled',
+  exchange,
+  orderId,
+  message: recoveredBuy ? 'Buy fill recovered and covering sell recorded. No new buy was placed.'
+    : 'Buy recovery settled. No new buy was placed.',
+});
+
+/**
+ * Resume this fund's accepted-but-unconfirmed buy by order id, BEFORE any new
+ * buy is considered (issue #963). It stays pending — across restarts — until
+ * the exchange reports a real fill (booked once, under its original interval)
+ * or a confirmed zero-fill terminal status (released). Nothing here reads the
+ * current interval's price or allocation.
+ * @param {{state: BotState, config: ExchangeConfig, adapter: Object, exchange: string, pair: string|undefined, cycleLogger: Object}} ctx - Cycle context
+ * @param {Function} bookAndCoverBuy - The cycle's single booking/covering owner
+ * @param {string} currentRunId - Interval of this cycle (fallback for a pending record without a runId)
+ * @returns {Promise<{terminal: CycleResult} | {recoveredBuy: {buyResult: import('./types').BuyResult, runId: string, sellOrder: Object, holdbackAsset: number}|null}>}
+ *   `terminal` is the cycle's final response; otherwise the cycle proceeds, with the recovered buy if one was booked
+ */
+const resumePendingDcaBuy = async ({ state, config, adapter, exchange, pair, cycleLogger }, bookAndCoverBuy, currentRunId) => {
+  const pending = state.pendingDcaBuy;
+  if (!pending?.orderId) return { recoveredBuy: null };
+
+  const resumed = await orderManager.awaitBuyOutcome(pending.orderId, adapter, orderManager.PENDING_BUY_RESUME_POLL);
+
+  if (resumed.outcome === 'unresolved') {
+    stateTracker.notePendingDcaBuyCheck(state, pending.orderId, resumed.reason);
+    saveStateBestEffort(state, exchange, pair, cycleLogger);
+    cycleLogger.warn(`⏸️ [${exchange}] Buy ${pending.orderId} (interval ${pending.runId}) still awaiting fill recovery: ${resumed.reason} — no new buy placed`, {
+      orderId: pending.orderId,
+      runId: pending.runId,
+      reason: resumed.reason,
+    });
+    tradeEvents.skipped(exchange, `Buy ${pending.orderId} awaiting fill recovery`);
+    return { terminal: pendingBuyResult(pending, config, exchange, resumed.reason) };
+  }
+
+  if (resumed.outcome === 'unfilled') {
+    // Confirmed by the exchange: terminal, nothing executed, no money moved.
+    stateTracker.retirePendingDcaBuy(state, pending.orderId);
+    stateTracker.saveState(state, exchange, pair);
+    cycleLogger.warn(`⚠️ [${exchange}] Pending buy ${pending.orderId} ended ${resumed.status} with no fill — released`, {
+      orderId: pending.orderId,
+      runId: pending.runId,
+      status: resumed.status,
+    });
+    return { recoveredBuy: null };
+  }
+
+  const runId = pending.runId ?? currentRunId;
+  cycleLogger.info(`ℹ️ 🔧 [${exchange}] Recovered fill for pending buy ${pending.orderId} (interval ${runId}): ${resumed.fill.assetAmount} @ ${resumed.fill.price}`, {
+    orderId: pending.orderId,
+    runId,
+    assetAmount: resumed.fill.assetAmount,
+    price: resumed.fill.price,
+  });
+  tradeEvents.buyFilled(exchange, resumed.fill.assetAmount, resumed.fill.price, resumed.fill.fees || resumed.fill.netFees || 0);
+  const covered = await bookAndCoverBuy(resumed.fill, runId);
+  if ('failure' in covered) return { terminal: { ...covered.failure, recoveredPendingBuy: true } };
+  if ('alreadyBooked' in covered) return { recoveredBuy: null };
+  return { recoveredBuy: { buyResult: resumed.fill, runId, sellOrder: covered.sellOrder, holdbackAsset: covered.holdbackAsset } };
+};
+
+/**
+ * Place one real interval buy and book/cover it. The accepted order is recorded
+ * as this fund's pending buy (durably) before its dispatch intent is released
+ * and before its fill is polled, so a status outage cannot orphan it (issue #963).
+ * @param {{state: BotState, config: ExchangeConfig, adapter: Object, exchange: string, pair: string|undefined, cycleLogger: Object}} ctx - Cycle context
+ * @param {Function} bookAndCoverBuy - The cycle's single booking/covering owner
+ * @param {{amount: number, runId: string}} buy - Quote amount to spend and the interval it belongs to
+ * @returns {Promise<{terminal: CycleResult} | {failure: CycleResult} | {buyResult: import('./types').BuyResult, sellOrder: Object, holdbackAsset: number}>}
+ *   `terminal`: no booked purchase (fill pending, or accepted-handoff failed); `failure`: booked but its covering sell failed
+ */
+const executeRecoverableDcaBuy = async ({ state, config, adapter, exchange, pair, cycleLogger }, bookAndCoverBuy, { amount, runId }) => {
+  let buyResult;
+  try {
+    buyResult = await orderManager.executeDailyBuy(config, amount, adapter, { exchange, pair }, {
+      onAccepted: (accepted) => {
+        stateTracker.recordPendingDcaBuy(state, {
+          orderId: accepted.orderId,
+          clientOrderId: accepted.clientOrderId ?? null,
+          requestedUsdc: amount,
+          runId,
+          intervalType: config.intervalType,
+          strategy: config.dcaStrategy === 'fibonacci' ? 'fibonacci' : 'fixed',
+          productId: config.productId,
+        });
+        try {
+          stateTracker.saveState(state, exchange, pair);
+        } catch (err) {
+          stateTracker.retirePendingDcaBuy(state, accepted.orderId);
+          throw err;
+        }
+      },
+    });
+  } catch (err) {
+    const pending = state.pendingDcaBuy;
+    if (err.buyFillPending && pending && pending.orderId === err.orderId) {
+      stateTracker.notePendingDcaBuyCheck(state, pending.orderId, err.reason ?? err.message);
+      saveStateBestEffort(state, exchange, pair, cycleLogger);
+      cycleLogger.error(`⏸️ [${exchange}] Buy ${pending.orderId} accepted but its fill is unconfirmed (${err.reason ?? err.message}) — retained for recovery; no further buy will be placed until it resolves`, {
+        orderId: pending.orderId,
+        runId: pending.runId,
+        reason: err.reason ?? err.message,
+      });
+      tradeEvents.error(exchange, `Buy ${pending.orderId} awaiting fill recovery`, { buyOrderId: pending.orderId });
+      return { terminal: pendingBuyResult(pending, config, exchange, err.reason ?? err.message) };
+    }
+    if (err.buyUnfilled && pending && pending.orderId === err.orderId) {
+      // Confirmed terminal zero fill: a definitive non-purchase. Release it.
+      stateTracker.retirePendingDcaBuy(state, pending.orderId);
+      stateTracker.saveState(state, exchange, pair);
+    }
+    if (err.handoffFailed) {
+      tradeEvents.error(exchange, err.message, { buyOrderId: err.orderId ?? null });
+      return {
+        terminal: {
+          status: 'placement_unresolved',
+          exchange,
+          intentId: err.intentId ?? null,
+          orderId: err.orderId ?? null,
+          error: err.message,
+          message: `Buy order ${err.orderId} was accepted by the exchange, but recording it for fill recovery failed. `
+            + 'Its placement intent stays blocking, so no further buy will be placed; reconcile the intent (adopt, then import the fill) once state can be written.',
+        },
+      };
+    }
+    throw err;
+  }
+  tradeEvents.buyFilled(exchange, buyResult.assetAmount, buyResult.price, buyResult.fees || buyResult.netFees || 0);
+
+  const covered = await bookAndCoverBuy(buyResult, runId);
+  if ('failure' in covered) return { failure: covered.failure };
+  if ('alreadyBooked' in covered) {
+    throw new Error(`Buy ${buyResult.orderId} was already booked; refusing to report it as a new purchase`);
+  }
+  return { buyResult, sellOrder: covered.sellOrder, holdbackAsset: covered.holdbackAsset };
+};
+
+/**
  * Run the interval DCA cycle for one fund
  * @param {string} [exchange] - Exchange name (default: coinbase)
  * @param {string} [pair] - Fund pair (default: the exchange's default fund)
@@ -419,19 +592,8 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
   const cycleLogger = dcaLogger(exchange, config.productId);
   const state = stateTracker.loadState(config, exchange, pair);
   const recoveryOnly = pendingBuyOrderId !== undefined;
-  if (recoveryOnly) {
-    if (!state.pendingDcaBuy) {
-      return { success: true, status: 'no_pending_buy', exchange, message: 'No buy is awaiting recovery. No new buy was placed.' };
-    }
-    if (state.pendingDcaBuy.orderId !== pendingBuyOrderId) {
-      return { success: false, status: 'pending_buy_changed', exchange, pendingBuy: describePendingBuy(state.pendingDcaBuy),
-        message: 'The pending buy changed. Refresh status before recovering it.' };
-    }
-    if (config.dryRun) {
-      return { success: false, status: 'recovery_blocked', exchange,
-        message: 'Turn off Dry Run to recover this accepted live buy.' };
-    }
-  }
+  const rejectedRecovery = rejectRecoveryRequest(state, config, exchange, pendingBuyOrderId);
+  if (rejectedRecovery) return rejectedRecovery;
   const intervalLabel = formatInterval(config.intervalType);
   const adapter = getAdapter(exchange);
   const isFibonacci = config.dcaStrategy === 'fibonacci';
@@ -525,6 +687,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
   }
 
   const currentRunId = getRunIdentifier(config.intervalType);
+  const cycleContext = { state, config, adapter, exchange, pair, cycleLogger };
 
   /**
    * Book a filled real buy (exactly once, retiring its pending record in the
@@ -661,63 +824,18 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
     return { sellOrder, holdbackAsset };
   };
 
-  // An accepted buy whose fill was never confirmed (status outage, exhausted
-  // poll, crash) is still this fund's order. Resume it by order id BEFORE any
-  // new buy is considered (issue #963): it stays pending — across restarts —
-  // until the exchange reports a real fill (booked once, under its original
-  // interval) or a confirmed zero-fill terminal status (released).
-  /** @type {{buyResult: import('./types').BuyResult, runId: string, sellOrder?: Object, holdbackAsset?: number}|null} */
-  let recoveredBuy = null;
-  if (state.pendingDcaBuy?.orderId) {
-    const pending = state.pendingDcaBuy;
-    const resumed = await orderManager.awaitBuyOutcome(pending.orderId, adapter, orderManager.PENDING_BUY_RESUME_POLL);
-
-    if (resumed.outcome === 'unresolved') {
-      stateTracker.notePendingDcaBuyCheck(state, pending.orderId, resumed.reason);
-      saveStateBestEffort(state, exchange, pair, cycleLogger);
-      cycleLogger.warn(`⏸️ [${exchange}] Buy ${pending.orderId} (interval ${pending.runId}) still awaiting fill recovery: ${resumed.reason} — no new buy placed`, {
-        orderId: pending.orderId,
-        runId: pending.runId,
-        reason: resumed.reason,
-      });
-      tradeEvents.skipped(exchange, `Buy ${pending.orderId} awaiting fill recovery`);
-      return pendingBuyResult(pending, config, exchange, resumed.reason);
-    }
-
-    if (resumed.outcome === 'unfilled') {
-      // Confirmed by the exchange: terminal, nothing executed, no money moved.
-      stateTracker.retirePendingDcaBuy(state, pending.orderId);
-      stateTracker.saveState(state, exchange, pair);
-      cycleLogger.warn(`⚠️ [${exchange}] Pending buy ${pending.orderId} ended ${resumed.status} with no fill — released`, {
-        orderId: pending.orderId,
-        runId: pending.runId,
-        status: resumed.status,
-      });
-    } else {
-      const runId = pending.runId ?? currentRunId;
-      cycleLogger.info(`ℹ️ 🔧 [${exchange}] Recovered fill for pending buy ${pending.orderId} (interval ${runId}): ${resumed.fill.assetAmount} @ ${resumed.fill.price}`, {
-        orderId: pending.orderId,
-        runId,
-        assetAmount: resumed.fill.assetAmount,
-        price: resumed.fill.price,
-      });
-      tradeEvents.buyFilled(exchange, resumed.fill.assetAmount, resumed.fill.price, resumed.fill.fees || resumed.fill.netFees || 0);
-      const covered = await bookAndCoverBuy(resumed.fill, runId);
-      if ('failure' in covered) return { ...covered.failure, recoveredPendingBuy: true };
-      if (!('alreadyBooked' in covered)) {
-        recoveredBuy = { buyResult: resumed.fill, runId, sellOrder: covered.sellOrder, holdbackAsset: covered.holdbackAsset };
-      }
-    }
-  }
+  // An accepted buy whose fill was never confirmed is resumed before any new
+  // buy is considered; it either ends the cycle (still unresolved, or its
+  // covering sell failed) or lets this interval proceed (issue #963).
+  const resumedPending = await resumePendingDcaBuy(cycleContext, bookAndCoverBuy, currentRunId);
+  if (resumedPending.terminal) return resumedPending.terminal;
+  const { recoveredBuy } = resumedPending;
 
   // This explicit recovery action must never fall through into the current
   // interval's purchase, even for an old buy or a terminal zero-fill order.
   // Booking/covering above already persisted the original order's outcome.
   if (recoveryOnly) {
-    return { success: true, status: recoveredBuy ? 'buy_recovered' : 'buy_recovery_settled', exchange,
-      orderId: pendingBuyOrderId,
-      message: recoveredBuy ? 'Buy fill recovered and covering sell recorded. No new buy was placed.'
-        : 'Buy recovery settled. No new buy was placed.' };
+    return recoveryOnlyResult(recoveredBuy, exchange, pendingBuyOrderId);
   }
 
   /**
@@ -1020,69 +1138,11 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
     cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}Simulated sell order: ${sellOrder.baseSize.toFixed(8)} ${assetCcy} at ${sellOrder.limitPrice.toFixed(2)}`);
     tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
   } else {
-    // Execute real trades. The accepted order is recorded as this fund's
-    // pending buy (durably) before its dispatch intent is released and before
-    // its fill is polled, so a status outage cannot orphan it (issue #963).
-    try {
-      buyResult = await orderManager.executeDailyBuy(config, actualBuyAmount, adapter, { exchange, pair }, {
-        onAccepted: (accepted) => {
-          stateTracker.recordPendingDcaBuy(state, {
-            orderId: accepted.orderId,
-            clientOrderId: accepted.clientOrderId ?? null,
-            requestedUsdc: actualBuyAmount,
-            runId: currentRunId,
-            intervalType: config.intervalType,
-            strategy: isFibonacci ? 'fibonacci' : 'fixed',
-            productId: config.productId,
-          });
-          try {
-            stateTracker.saveState(state, exchange, pair);
-          } catch (err) {
-            stateTracker.retirePendingDcaBuy(state, accepted.orderId);
-            throw err;
-          }
-        },
-      });
-    } catch (err) {
-      const pending = state.pendingDcaBuy;
-      if (err.buyFillPending && pending && pending.orderId === err.orderId) {
-        stateTracker.notePendingDcaBuyCheck(state, pending.orderId, err.reason ?? err.message);
-        saveStateBestEffort(state, exchange, pair, cycleLogger);
-        cycleLogger.error(`⏸️ [${exchange}] Buy ${pending.orderId} accepted but its fill is unconfirmed (${err.reason ?? err.message}) — retained for recovery; no further buy will be placed until it resolves`, {
-          orderId: pending.orderId,
-          runId: pending.runId,
-          reason: err.reason ?? err.message,
-        });
-        tradeEvents.error(exchange, `Buy ${pending.orderId} awaiting fill recovery`, { buyOrderId: pending.orderId });
-        return pendingBuyResult(pending, config, exchange, err.reason ?? err.message);
-      }
-      if (err.buyUnfilled && pending && pending.orderId === err.orderId) {
-        // Confirmed terminal zero fill: a definitive non-purchase. Release it.
-        stateTracker.retirePendingDcaBuy(state, pending.orderId);
-        stateTracker.saveState(state, exchange, pair);
-      }
-      if (err.handoffFailed) {
-        tradeEvents.error(exchange, err.message, { buyOrderId: err.orderId ?? null });
-        return {
-          status: 'placement_unresolved',
-          exchange,
-          intentId: err.intentId ?? null,
-          orderId: err.orderId ?? null,
-          error: err.message,
-          message: `Buy order ${err.orderId} was accepted by the exchange, but recording it for fill recovery failed. `
-            + 'Its placement intent stays blocking, so no further buy will be placed; reconcile the intent (adopt, then import the fill) once state can be written.',
-        };
-      }
-      throw err;
-    }
-    tradeEvents.buyFilled(exchange, buyResult.assetAmount, buyResult.price, buyResult.fees || buyResult.netFees || 0);
-
-    const covered = await bookAndCoverBuy(buyResult, currentRunId);
-    if ('failure' in covered) return { ...covered.failure, ...recoveredSummary };
-    if ('alreadyBooked' in covered) {
-      throw new Error(`Buy ${buyResult.orderId} was already booked; refusing to report it as a new purchase`);
-    }
-    ({ sellOrder, holdbackAsset } = covered);
+    // Execute real trades.
+    const live = await executeRecoverableDcaBuy(cycleContext, bookAndCoverBuy, { amount: actualBuyAmount, runId: currentRunId });
+    if (live.terminal) return live.terminal;
+    if (live.failure) return { ...live.failure, ...recoveredSummary };
+    ({ buyResult, sellOrder, holdbackAsset } = live);
   }
 
   return completeCycle({ buyResult, sellOrder, holdbackAsset, isDryRun, extra: recoveredSummary });
