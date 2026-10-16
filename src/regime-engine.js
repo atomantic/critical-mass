@@ -4439,20 +4439,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Process a TP fill against a merge snapshot (body was removed/merged while its TP was in flight).
-   * Deducts the sold tranche from the live merged body if present, commits the sell booking,
-   * handles stale TP cancellation/replacement on the surviving body, and records events.
+   * Synchronous financial settlement of a TP fill against a merge snapshot:
+   * classifies the sale, deducts the sold tranche from the live merged body,
+   * credits capital, records the per-buy consumption and commits the sell
+   * booking. Adds no await: the in-memory booking marker it writes must be
+   * visible before the caller's stale-TP cancel / re-place awaits (issue #777).
    * @param {Object} fillData - Fill data
    * @param {Object} summary - Aggregated fill summary
    * @param {Object} booking - Planned sell booking
    * @param {Object} mergeSnapshot - Snapshot of the body before merge/cancel
    * @param {Array<string>} bookedTradeIds - Trade IDs of booked fills
+   * @returns {{tierCfg: Object, pnl: number, holdbackAsset: number, reservesSoldAsset: number, liveOwnsRemainder: boolean, liveMerged: Object|undefined, snapshotClosed: boolean, prevMaxUsdc: number}}
    */
-  const handleMergedSnapshotTpFill = async (fillData, summary, booking, mergeSnapshot, bookedTradeIds) => {
-    // Process fill using snapshot data — body was already merged/removed
-    pendingMergeTpOrders.delete(fillData.orderId);
-    completedMergeTpOrders.delete(fillData.orderId);
-
+  const commitMergedSnapshotSell = (fillData, summary, booking, mergeSnapshot, bookedTradeIds) => {
     const tierCfg = celestialHierarchy.getTierConfig(mergeSnapshot.tier);
     const proceeds = summary.totalValue - summary.totalFees;
     // Prorate cost basis when sell doesn't cover full body (stale TP / partial fill)
@@ -4638,6 +4637,28 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       mergeSnapshot: true,
       ...(liveOwnsRemainder && { partialFill: true }),
     }, { additive: booking.additive, soldSize: summary.totalSize, bookedTradeIds });
+
+    return { tierCfg, pnl, holdbackAsset, reservesSoldAsset, liveOwnsRemainder, liveMerged, snapshotClosed, prevMaxUsdc };
+  };
+
+  /**
+   * Process a TP fill against a merge snapshot (body was removed/merged while its TP was in flight).
+   * Deducts the sold tranche from the live merged body if present, commits the sell booking,
+   * handles stale TP cancellation/replacement on the surviving body, and records events.
+   * @param {Object} fillData - Fill data
+   * @param {Object} summary - Aggregated fill summary
+   * @param {Object} booking - Planned sell booking
+   * @param {Object} mergeSnapshot - Snapshot of the body before merge/cancel
+   * @param {Array<string>} bookedTradeIds - Trade IDs of booked fills
+   */
+  const handleMergedSnapshotTpFill = async (fillData, summary, booking, mergeSnapshot, bookedTradeIds) => {
+    // Process fill using snapshot data — body was already merged/removed
+    pendingMergeTpOrders.delete(fillData.orderId);
+    completedMergeTpOrders.delete(fillData.orderId);
+
+    const {
+      tierCfg, pnl, holdbackAsset, reservesSoldAsset, liveOwnsRemainder, liveMerged, snapshotClosed, prevMaxUsdc,
+    } = commitMergedSnapshotSell(fillData, summary, booking, mergeSnapshot, bookedTradeIds);
 
     if (liveMerged) {
       if (liveMerged.tpOrderId && liveMerged.tpOrderId === fillData.orderId) {
