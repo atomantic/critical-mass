@@ -22,6 +22,7 @@ const REPO_ROOT = path.join(__dirname, '..');
 //   graceful - announce READY; on SIGINT/SIGTERM wait 400ms (still running),
 //              record whether TMPDIR still exists, then exit 0
 //   stubborn - announce READY and ignore SIGINT/SIGTERM
+//   descendant[-fail] - exit with an unref'ed listener still in the owned group
 const FIXTURE = `
 const fs = require('fs');
 const path = require('path');
@@ -54,6 +55,21 @@ if (mode === 'leak' || mode === 'fail') {
   process.on('SIGTERM', () => {});
   setInterval(() => {}, 1000);
   ready();
+} else if (mode === 'descendant' || mode === 'descendant-fail') {
+  const child = require('child_process').spawn(process.execPath, [__filename, 'listener', control], { stdio: 'ignore' });
+  child.unref();
+  setInterval(() => {
+    if (fs.existsSync(path.join(control, 'descendant.json'))) process.exit(mode === 'descendant-fail' ? 3 : 0);
+  }, 10);
+} else if (mode === 'listener') {
+  const server = require('net').createServer();
+  server.listen(0, '127.0.0.1', () => {
+    fs.writeFileSync(path.join(control, 'descendant.json'), JSON.stringify({ pid: process.pid, port: server.address().port, root: tmp }));
+  });
+  setInterval(() => {
+    fs.mkdirSync(tmp, { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'still-writing'), 'x');
+  }, 10);
 }
 `;
 
@@ -83,6 +99,10 @@ describe('scripts/test.js runner lifecycle', () => {
       try { proc.kill('SIGKILL'); } catch { /* gone */ }
     }
     spawned.clear();
+    const descendant = path.join(control, 'descendant.json');
+    if (fs.existsSync(descendant)) {
+      try { process.kill(JSON.parse(fs.readFileSync(descendant, 'utf8')).pid, 'SIGKILL'); } catch { /* gone */ }
+    }
     fs.rmSync(parent, { recursive: true, force: true });
     fs.rmSync(control, { recursive: true, force: true });
   });
@@ -122,6 +142,19 @@ describe('scripts/test.js runner lifecycle', () => {
     assert.deepEqual(await run.exit, { code: 3, signal: null });
     assert.deepEqual(ownedRoots(), []);
   });
+
+  for (const [mode, code] of [['descendant', 0], ['descendant-fail', 3]]) {
+    it(`${mode}: stops a surviving listener before removing its root`, { timeout: 10000 }, async () => {
+      const run = start(mode);
+      assert.deepEqual(await run.exit, { code, signal: null });
+      const child = JSON.parse(fs.readFileSync(path.join(control, 'descendant.json'), 'utf8'));
+      assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' }, 'owned descendant must already be stopped');
+      assert.equal(fs.existsSync(child.root), false, 'descendant cannot recreate its deleted fixture root');
+      assert.deepEqual(ownedRoots(), []);
+      const socket = require('net').connect(child.port, '127.0.0.1');
+      await assert.rejects(require('events').once(socket, 'connect'), { code: 'ECONNREFUSED' });
+    });
+  }
 
   for (const signal of ['SIGINT', 'SIGTERM']) {
     it(`${signal}: waits for the owned child to stop before removing its root`, async () => {
@@ -191,9 +224,39 @@ describe('scripts/test.js runner lifecycle', () => {
     assert.deepEqual(args.slice(0, 4), ['--require', './tests/quiet-console.js', '--test', '--test-concurrency=1']);
     assert.ok(args.includes(path.join('tests', 'test-runner.test.js')));
     assert.ok(args.filter((a) => a.endsWith('.test.js')).every((a) => a.startsWith('tests' + path.sep)));
-    assert.equal(args[args.length - 1], '--test-name-pattern=foo');
+    assert.equal(args[4], '--test-name-pattern=foo', 'Node options must precede test file paths');
     const onDisk = fs.readdirSync(path.join(REPO_ROOT, 'tests')).filter((n) => n.endsWith('.test.js'));
     assert.equal(args.filter((a) => a.endsWith('.test.js')).length, onDisk.length);
     assert.equal(JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).scripts.test, 'node scripts/test.js');
+  });
+
+  it('the actual CLI accepts forwarded selection and reporter options', { timeout: 10000 }, async () => {
+    const repo = path.join(control, 'option-repo');
+    fs.mkdirSync(path.join(repo, 'scripts/lib'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'tests'));
+    fs.copyFileSync(path.join(REPO_ROOT, 'scripts/test.js'), path.join(repo, 'scripts/test.js'));
+    fs.copyFileSync(path.join(REPO_ROOT, 'scripts/lib/process-group.js'), path.join(repo, 'scripts/lib/process-group.js'));
+    fs.writeFileSync(path.join(repo, 'tests/quiet-console.js'), '');
+    fs.writeFileSync(path.join(repo, 'tests/selection.test.js'), `
+      const { test } = require('node:test');
+      test('chosen', () => {});
+      test('unselected', () => { throw new Error('filter was ignored'); });
+    `);
+    const env = { ...process.env, TMPDIR: parent, TMP: parent, TEMP: parent };
+    // This fixture represents a shell invocation, not a nested test worker.
+    delete env.NODE_TEST_CONTEXT;
+    const proc = spawn(process.execPath, [path.join(repo, 'scripts/test.js'), '--test-name-pattern=chosen', '--test-reporter=tap'], {
+      cwd: repo,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    spawned.add(proc);
+    let output = '';
+    for (const stream of [proc.stdout, proc.stderr]) stream.on('data', chunk => { output += chunk; });
+    const [code] = await require('events').once(proc, 'close');
+    assert.equal(code, 0, output);
+    assert.match(output, /ok 1 - chosen/);
+    assert.match(output, /unselected.*SKIP/);
+    assert.deepEqual(ownedRoots(), []);
   });
 });

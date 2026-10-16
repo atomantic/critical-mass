@@ -98,6 +98,100 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   });
 }
 
+test('shutdown escalates for a stubborn child and stops its watch descendant', {
+  skip: process.platform === 'win32',
+  timeout: 10000,
+}, async t => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'dev-stubborn-'));
+  const script = path.join(dir, 'watch.cjs');
+  writeFileSync(script, "process.on('SIGTERM', () => {}); console.log('pid=' + process.pid); setInterval(() => {}, 1000);");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const io = capture();
+  const pids = [];
+  // Ignore the signal in both the watch supervisor and its application child.
+  const source = "process.on('SIGTERM', () => {}); const { spawn } = require('node:child_process'); spawn(process.execPath, ['--watch', " + JSON.stringify(script) + "], { stdio: 'inherit' }); console.log('pid=' + process.pid); setInterval(() => {}, 1000);";
+  t.after(() => {
+    for (const pid of pids) { try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ } }
+  });
+  io.stdout.write = text => {
+    const match = text.match(/pid=(\d+)/);
+    if (match) pids.push(Number(match[1]));
+    if (pids.length === 2) io.signals.emit('SIGTERM');
+  };
+  assert.equal(await launch([fixture('stubborn', source)], { ...io, killGraceMs: 100 }), 1);
+  assert.match(io.errors(), /shutdown grace period; sending SIGKILL/);
+  assert.equal(pids.length, 2);
+  for (const pid of pids) {
+    // Reaping a force-killed orphan can lag its closed stdout briefly.
+    for (let tries = 0; tries < 100; tries++) {
+      try { process.kill(pid, 0); } catch (error) { if (error.code === 'ESRCH') break; throw error; }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+  }
+  assert.deepEqual(io.signals.eventNames(), []);
+});
+
+for (const mode of [0, 7, 'signal']) {
+  test(`direct child exit ${mode} stops an ignored-stdio descendant`, {
+    skip: process.platform === 'win32',
+    timeout: 10000,
+  }, async t => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'dev-descendant-'));
+    const witness = path.join(dir, 'listener.json');
+    const fs = require('node:fs');
+    t.after(() => {
+      if (fs.existsSync(witness)) {
+        try { process.kill(JSON.parse(fs.readFileSync(witness, 'utf8')).pid, 'SIGKILL'); } catch { /* gone */ }
+      }
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const descendant = `
+      process.on('SIGTERM', () => {});
+      const server = require('net').createServer();
+      server.listen(0, '127.0.0.1', () => require('fs').writeFileSync(${JSON.stringify(witness)}, JSON.stringify({ pid: process.pid, port: server.address().port })));
+    `;
+    const source = `
+      const child = require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: 'ignore' });
+      child.unref();
+      process.on('SIGTERM', () => process.exit(0));
+      const timer = setInterval(() => {
+        if (require('fs').existsSync(${JSON.stringify(witness)})) {
+          clearInterval(timer);
+          ${mode === 'signal' ? "setInterval(() => {}, 1000); console.log('ready');" : `process.exit(${mode});`}
+        }
+      }, 10);
+    `;
+    const io = capture();
+    io.stdout.write = text => { if (text.includes('ready')) io.signals.emit('SIGTERM'); };
+    let signalDuringClose = false;
+    if (mode === 0) {
+      const realKill = process.kill;
+      t.after(() => { process.kill = realKill; });
+      // Deliver a shutdown request when real group cleanup starts. Keep real
+      // signal outcomes: this checks the closing -> closed ownership boundary.
+      process.kill = function(pid, signal) {
+        if (signal === 'SIGKILL' && !signalDuringClose) {
+          signalDuringClose = true;
+          io.signals.emit('SIGTERM');
+        }
+        return realKill.call(process, pid, signal);
+      };
+    }
+    assert.equal(await launch([fixture('parent', source)], { ...io, killGraceMs: 100 }), mode === 7 ? 1 : 0);
+    const child = JSON.parse(fs.readFileSync(witness, 'utf8'));
+    assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
+    const socket = require('net').connect(child.port, '127.0.0.1');
+    await assert.rejects(require('events').once(socket, 'connect'), { code: 'ECONNREFUSED' });
+    assert.deepEqual(io.signals.eventNames(), []);
+    if (mode === 0) {
+      assert.equal(signalDuringClose, true);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      assert.equal(io.errors(), '', 'no escalation timer may survive close');
+    }
+  });
+}
+
 test('development specs preserve script cwd, node executable and port environment', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'dev-specs-'));
   const { mkdirSync } = require('node:fs');
