@@ -176,6 +176,84 @@ describe('AI toolkit security boundary', () => {
     assert.equal(variables.next, true);
   });
 
+  it('guards mixed-case routes accepted by the real toolkit routers without changing identifiers', async (t) => {
+    const express = require('express');
+    const { createPromptsRoutes, createPromptsService, createProvidersRoutes } = await import('portos-ai-toolkit/server');
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-route-guards-'));
+    t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+    fs.mkdirSync(path.join(temp, 'prompts'));
+    const prompts = createPromptsService({ dataDir: temp });
+    await prompts.init();
+    const configured = {
+      cli: providers.cli,
+      MiXeD: { ...providers.api, id: 'MiXeD' },
+      unapproved: { id: 'unapproved', type: 'api', endpoint: 'https://unapproved.example/v1' },
+    };
+    const calls = [];
+    const service = {
+      getProviderById: async (id) => configured[id] || null,
+      getSampleProviders: async () => Object.values(configured),
+      testProvider: async (id) => { calls.push(['test', id]); return { success: true }; },
+      refreshProviderModels: async (id) => { calls.push(['refresh', id]); return configured[id]; },
+      setActiveProvider: async (id) => { calls.push(['active', id]); return configured[id]; },
+    };
+    const scopedSecurity = createAiSecurity({
+      providerService: service, workspaceRoots: [temp],
+      allowedOrigins: new Set(['https://api.example.com']),
+    });
+    const app = express();
+    app.use(express.json());
+    app.use('/api/prompts', scopedSecurity.guardPrompts, createPromptsRoutes(prompts));
+    app.use('/api/providers', scopedSecurity.filterProviderSamples, scopedSecurity.redactJsonResponses,
+      scopedSecurity.guardProviderMutation, scopedSecurity.guardProviderExecution, createProvidersRoutes(service));
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise((resolve) => server.once('listening', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+    for (const spelling of ['stages', 'StAgEs', 'STAGES']) {
+      const response = await fetch(`${baseUrl}/api/prompts/${spelling}/..%2f..%2foutside`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template: 'must stay inside stages' }),
+      });
+      assert.equal(response.status, 400, spelling);
+      await response.arrayBuffer();
+      assert.equal(fs.existsSync(path.join(temp, 'outside.md')), false);
+    }
+    for (const id of ['cli', 'unapproved']) {
+      for (const suffix of ['test', 'TeSt', 'TEST/', 'refresh-models', 'ReFrEsH-MoDeLs/']) {
+        const response = await fetch(`${baseUrl}/api/providers/${id}/${suffix}`, { method: 'POST' });
+        assert.equal(response.status, 400, `${id}/${suffix}`);
+        await response.arrayBuffer();
+      }
+    }
+    assert.deepEqual(calls, [], 'blocked CLI requests must never reach execution');
+    for (const spelling of ['samples', 'SaMpLeS/']) {
+      const response = await fetch(`${baseUrl}/api/providers/${spelling}`);
+      assert.equal(response.status, 200);
+      assert.deepEqual((await response.json()).providers.map((provider) => provider.id), ['MiXeD']);
+    }
+
+    const stage = await fetch(`${baseUrl}/api/prompts/StAgEs/MiXeD`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: { description: 'case-preserved stage' }, template: 'allowed template' }),
+    });
+    assert.equal(stage.status, 200);
+    assert.equal((await stage.json()).template, 'allowed template');
+    assert.equal(fs.readFileSync(path.join(temp, 'prompts', 'stages', 'MiXeD.md'), 'utf8'), 'allowed template');
+    for (const suffix of ['TeSt', 'ReFrEsH-MoDeLs/']) {
+      const response = await fetch(`${baseUrl}/api/providers/MiXeD/${suffix}`, { method: 'POST' });
+      assert.equal(response.status, 200);
+      await response.arrayBuffer();
+    }
+    const active = await fetch(`${baseUrl}/api/providers/AcTiVe/`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'MiXeD' }),
+    });
+    assert.equal(active.status, 200);
+    assert.equal((await active.json()).apiKey, REDACTED);
+    assert.deepEqual(calls, [['test', 'MiXeD'], ['refresh', 'MiXeD'], ['active', 'MiXeD']]);
+  });
+
   it('confines HTTP run screenshots before any downstream file reads', async (t) => {
     const express = require('express');
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-screenshots-'));
