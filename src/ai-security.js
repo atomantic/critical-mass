@@ -226,4 +226,4 @@ const createAiSecurity = ({
   return { constrainOutboundRequests, filterProviderSamples, guardProviderExecution, guardProviderMutation, guardPrompts, guardRun, redactJsonResponses, validateProvider };
 };
 
-module.exports = { REDACTED, createAiSecurity, redactSecrets, resolveWorkspace, restoreRedactedValues };
+module.exports = { REDACTED, createAiSecurity, parseAllowedOrigins, redactSecrets, resolveWorkspace, restoreRedactedValues };

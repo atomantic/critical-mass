@@ -12,6 +12,7 @@ const path = require('path');
 const { createContextLogger } = require('../logger');
 const { SENTINEL_DEFAULTS } = require('../config-utils');
 const { validateEndpointUrl, safeFetch } = require('../url-validator');
+const { parseAllowedOrigins } = require('../ai-security');
 
 /** Classification is provider-scoped; the provider travels per call. */
 const classifierLogger = createContextLogger({ module: 'sentinel-classifier' });
@@ -128,6 +129,8 @@ const classifyByAI = async (item, aiConfig) => {
     const providers = providersData.providers || {};
     const activeProvider = Object.values(providers).find(p => p.enabled && p.type === 'api');
     if (!activeProvider) return null;
+    const allowedOrigins = parseAllowedOrigins();
+    if (!URL.canParse(activeProvider.endpoint) || !allowedOrigins.has(new URL(activeProvider.endpoint).origin)) return null;
 
     // Feed content (title/description) is untrusted external input — delimited and
     // explicitly flagged as data-only so embedded instructions in a malicious/compromised
@@ -174,6 +177,7 @@ Return:
     // validated the pre-redirect URL (issue #215-A class of bug).
     const requestOptions = {
       method: 'POST',
+      allowedOrigins,
       headers,
       body: JSON.stringify({
         model: activeProvider.defaultModel,

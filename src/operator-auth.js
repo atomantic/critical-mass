@@ -35,11 +35,23 @@ const timingSafeEqual = (left, right) => {
   return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
 };
 
+const requestOriginMatches = (req) => {
+  const origin = (typeof req?.get === 'function' ? req.get('origin') : req?.headers?.origin) || '';
+  if (!origin) return true;
+  const hostHeader = (typeof req?.get === 'function'
+    ? (req.get('x-forwarded-host') || req.get('host'))
+    : (req?.headers?.['x-forwarded-host'] || req?.headers?.host)) || '';
+  const expectedHost = hostHeader.split(',')[0].trim();
+  return URL.canParse(origin) && new URL(origin).host === expectedHost;
+};
+
 const isLoopbackRequest = (req) => {
-  if (!isLoopbackHost(req.socket?.remoteAddress)) return false;
+  if (!requestOriginMatches(req)) return false;
+  if (!isLoopbackHost(req?.socket?.remoteAddress)) return false;
   // A loopback proxy may preserve the original client. Forwarding headers can
   // only downgrade trust: every reported hop must also be loopback.
-  const forwarded = (req.get('x-forwarded-for') || '')
+  const forwardedHeader = (typeof req?.get === 'function' ? req.get('x-forwarded-for') : req?.headers?.['x-forwarded-for']) || '';
+  const forwarded = forwardedHeader
     .split(',')
     .map((address) => address.trim())
     .filter(Boolean);
@@ -48,18 +60,11 @@ const isLoopbackRequest = (req) => {
   // A direct browser connection has a loopback Host. A reverse proxy that
   // erases X-Forwarded-For must not become a trusted bootstrap channel merely
   // because its backend connection originates on loopback.
-  const host = (req.get('host') || '').trim();
+  const host = ((typeof req?.get === 'function' ? req.get('host') : req?.headers?.host) || '').trim();
   const hostname = host.startsWith('[')
     ? host.slice(1, host.indexOf(']'))
     : host.split(':')[0];
   return isLoopbackHost(hostname);
-};
-
-const requestOriginMatches = (req) => {
-  const origin = req.get('origin');
-  if (!origin) return true;
-  const expectedHost = (req.get('x-forwarded-host') || req.get('host') || '').split(',')[0].trim();
-  return URL.canParse(origin) && new URL(origin).host === expectedHost;
 };
 
 const submittedSecret = (body = {}) => {
@@ -223,7 +228,7 @@ const createOperatorAuth = ({
   };
 
   const canBootstrap = (req) => (
-    isTrustedBootstrapRequest(req) || bootstrapSecretMatches(req)
+    (isTrustedBootstrapRequest(req) && requestOriginMatches(req)) || bootstrapSecretMatches(req)
   );
 
   const persist = (next) => {

@@ -11,8 +11,8 @@
  *    stripped on cross-origin redirects, method/body are downgraded per
  *    fetch semantics on 301/302/303, and the response body is capped.
  *
- * http.request/https.request are mocked throughout — no real sockets or
- * network calls are made.
+ * http.request/https.request are mocked here; the real connection contract is
+ * covered separately in url-validator-transport.test.js.
  */
 const { describe, it, before, after, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
@@ -89,6 +89,42 @@ describe('createSafeLookup — connect-time TOCTOU re-check', () => {
         resolve();
       });
     });
+  });
+
+  for (const privateAddress of [
+    { address: '127.0.0.1', family: 4 },
+    { address: '::1', family: 6 },
+  ]) {
+    it(`rejects private IPv${privateAddress.family} in an all-address lookup, even after a public address`, async () => {
+      stubDnsLookup((_hostname, options, callback) => {
+        assert.equal(options.all, true);
+        callback(null, [{ address: '104.21.0.1', family: 4 }, privateAddress]);
+      });
+      await assert.rejects(() => new Promise((resolve, reject) => {
+        createSafeLookup()('rebound.example.com', { all: true }, (error, addresses) => {
+          if (error) return reject(error);
+          resolve(addresses);
+        });
+      }), /Blocked private\/reserved IPv[46]/);
+    });
+  }
+
+  it('preserves every public address and its order for family autoselection', async () => {
+    const addresses = [
+      { address: '2606:4700:4700::1111', family: 6 },
+      { address: '104.21.0.1', family: 4 },
+    ];
+    stubDnsLookup((_hostname, options, callback) => {
+      assert.equal(options.all, true);
+      callback(null, addresses);
+    });
+    const result = await new Promise((resolve, reject) => {
+      createSafeLookup()('public.example.com', { all: true }, (error, resolved) => {
+        if (error) return reject(error);
+        resolve(resolved);
+      });
+    });
+    assert.equal(result, addresses);
   });
 
   it('propagates the underlying DNS error', () => {

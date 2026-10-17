@@ -18,6 +18,7 @@ const {
   SESSION_TTL_SECONDS,
 } = require('../src/operator-auth');
 const { readJSON, writeJSON } = require('../src/shared-utils');
+const { createCorsMiddleware } = require('../src/gateway-listen');
 
 const PASSWORD = 'gateway-password-1';
 const NEW_PASSWORD = 'gateway-password-2';
@@ -46,8 +47,9 @@ after(() => {
   }
 });
 
-const withServer = async (authOpts, run) => {
+const withServer = async (authOpts, run, { corsMiddleware = null } = {}) => {
   const app = express();
+  if (corsMiddleware) app.use(corsMiddleware);
   const auth = createOperatorAuth(authOpts);
   const reached = { providers: 0, runs: 0 };
   app.use(express.json());
@@ -128,6 +130,13 @@ describe('operator authentication bootstrap', () => {
     assert.equal(isLoopbackRequest(request('127.0.0.1', '100.83.147.46')), false);
     assert.equal(isLoopbackRequest(request('100.83.147.46', '127.0.0.1')), false);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '', 'critical-mass.example')), false);
+
+    const requestWithOrigin = (remoteAddress, host, origin) => ({
+      socket: { remoteAddress },
+      get: (name) => name === 'host' ? host : name === 'origin' ? origin : '',
+    });
+    assert.equal(isLoopbackRequest(requestWithOrigin('127.0.0.1', 'localhost:5570', 'http://localhost:5570')), true);
+    assert.equal(isLoopbackRequest(requestWithOrigin('127.0.0.1', 'localhost:5570', 'https://foreign.ts.net')), false);
   });
 
   it('rejects short remote bootstrap secrets at startup', () => {
@@ -204,6 +213,71 @@ describe('operator authentication bootstrap', () => {
       assert.equal(reused.status, 403);
       assert.match(readJSON(authFile, null).bootstrapConsumedHash, /^[a-f0-9]{64}$/);
     });
+  });
+
+  it('rejects cross-origin bootstrap enrollment without bootstrap secret, even when CORS preflight is allowed', async () => {
+    const authFile = tmpAuthFile();
+    const foreignOrigin = 'https://void.taile8179.ts.net';
+    const corsMiddleware = createCorsMiddleware(['http://localhost:5570', 'http://localhost:5571']);
+
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl, reached }) => {
+      // 1. CORS preflight succeeds for allowed .ts.net origin
+      const preflight = await fetch(`${baseUrl}/api/auth/password`, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: foreignOrigin,
+          'Access-Control-Request-Method': 'PUT',
+          'Access-Control-Request-Headers': 'Content-Type',
+        },
+      });
+      assert.equal(preflight.status, 204);
+      assert.equal(preflight.headers.get('access-control-allow-origin'), foreignOrigin);
+
+      // 2. Session check from foreign origin reports bootstrapSecretRequired
+      const session = await fetch(`${baseUrl}/api/auth/session`, {
+        headers: { Origin: foreignOrigin },
+      }).then((r) => r.json());
+      assert.equal(session.bootstrapRequired, true);
+      assert.equal(session.bootstrapSecretRequired, true);
+
+      // 3. Attempt to enroll password from foreign origin without bootstrap secret fails with 403
+      const enroll = await fetch(`${baseUrl}/api/auth/password`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: foreignOrigin,
+        },
+        body: JSON.stringify({ password: NEW_PASSWORD }),
+      });
+      assert.equal(enroll.status, 403);
+      assert.equal(fs.existsSync(authFile), false, 'password file was not created');
+
+      // 4. Rejected password cannot authorize protected endpoints
+      const protectedRes = await fetch(`${baseUrl}/api/providers`, {
+        headers: { Authorization: `Bearer ${NEW_PASSWORD}` },
+      });
+      assert.equal(protectedRes.status, 401);
+      assert.equal(reached.providers, 0);
+
+      // 5. Same-origin local enrollment still works
+      const sameOriginEnroll = await fetch(`${baseUrl}/api/auth/password`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: baseUrl,
+        },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      assert.equal(sameOriginEnroll.status, 200);
+      assert.equal(fs.existsSync(authFile), true);
+
+      // 6. Authorized with enrolled password
+      const authorizedRes = await fetch(`${baseUrl}/api/providers`, {
+        headers: { Authorization: `Bearer ${PASSWORD}` },
+      });
+      assert.equal(authorizedRes.status, 200);
+      assert.equal(reached.providers, 1);
+    }, { corsMiddleware });
   });
 });
 

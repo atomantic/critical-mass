@@ -6,6 +6,7 @@ const {
   tailscaleIpv4s,
   resolveListenHosts,
   isGatewayOrigin,
+  createCorsMiddleware,
 } = require('../src/gateway-listen')
 
 describe('isTailscaleIpv4', () => {
@@ -79,3 +80,39 @@ describe('tailscaleIpv4s', () => {
     }), ['100.83.147.46'])
   })
 })
+
+describe('createCorsMiddleware', () => {
+  const listed = ['http://localhost:5570', 'http://localhost:5571']
+  const middleware = createCorsMiddleware(listed)
+
+  it('answers OPTIONS preflight for allowed origin', () => {
+    const headers = {}
+    let status = null
+    let nextCalled = false
+    const req = { method: 'OPTIONS', headers: { origin: 'https://void.taile8179.ts.net' } }
+    const res = {
+      header: (k, v) => { headers[k] = v },
+      sendStatus: (s) => { status = s },
+    }
+    middleware(req, res, () => { nextCalled = true })
+    assert.equal(status, 204)
+    assert.equal(headers['Access-Control-Allow-Origin'], 'https://void.taile8179.ts.net')
+    assert.equal(nextCalled, false)
+  })
+
+  it('passes through OPTIONS for disallowed origin without CORS headers', () => {
+    const headers = {}
+    let status = null
+    let nextCalled = false
+    const req = { method: 'OPTIONS', headers: { origin: 'http://evil.example' } }
+    const res = {
+      header: (k, v) => { headers[k] = v },
+      sendStatus: (s) => { status = s },
+    }
+    middleware(req, res, () => { nextCalled = true })
+    assert.equal(status, null)
+    assert.equal(headers['Access-Control-Allow-Origin'], undefined)
+    assert.equal(nextCalled, true)
+  })
+})
+
