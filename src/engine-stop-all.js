@@ -86,7 +86,7 @@ const createEngineStopAllHandler = ({
   let pending;
   return () => {
     if (pending) return pending;
-    if (!getMaintenance()?.reason.startsWith('restore ')) {
+    if (getMaintenance()?.kind !== 'restore') {
       return Promise.resolve({ success: false, stopped: [], failed: [], error: 'Restore maintenance window is required' });
     }
     setQuiescing(true);

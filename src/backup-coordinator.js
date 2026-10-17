@@ -26,8 +26,8 @@ const performBackup = async ({
       // Include even timed-out opens/pauses in cleanup: the engine may still
       // execute a request after the caller lost its acknowledgement.
       opened.push(exchange);
-      const ack = await request(exchange, 'engine:maintenance', { active: true, reason, ttlMs: ENGINE_MAINTENANCE_TTL_MS });
-      if (ack?.success !== true || !ack.maintenance || ack.maintenance.reason !== reason) throw new Error(`Engine ${exchange} did not confirm its maintenance window`);
+      const ack = await request(exchange, 'engine:maintenance', { active: true, kind: 'backup', reason, ttlMs: ENGINE_MAINTENANCE_TTL_MS });
+      if (ack?.success !== true || !ack.maintenance || ack.maintenance.reason !== reason || (ack.maintenance.kind !== undefined && ack.maintenance.kind !== 'backup')) throw new Error(`Engine ${exchange} did not confirm its maintenance window`);
       paused.push(exchange);
       const quiet = await request(exchange, 'engine:backup-pause');
       if (quiet?.success !== true || quiet.quiesced !== true) throw new Error(`Engine ${exchange} did not confirm quiescence`);
