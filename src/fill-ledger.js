@@ -2129,6 +2129,103 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   };
 
   /**
+   * Assign the remaining orphan fills to recovered cycles (split by buy-sell
+   * pattern). Stamps cycle IDs on the fills, computes stats for completed
+   * groups, and adopts the latest incomplete group as the live cycle when none
+   * exists. Mutates currentCycleId / currentCycleStartedAt / persist flags.
+   */
+  const assignRecoveredOrphanCycles = (orphanCycles, orphanFillCount, hadCurrentCycle) => {
+    logger.info(`🔧 [${exchange}] Split ${orphanFillCount} orphan fills into ${orphanCycles.length} cycles`, {
+      orphanFillCount,
+      orphanCycleCount: orphanCycles.length,
+    });
+    const details = [];
+    const completed = [];
+    let pnl = 0;
+    let holdbackAsset = 0;
+    let orphansFixed = 0;
+    for (const { cycleId, fills: cycleFills } of orphanCycles) {
+      // Assign cycle ID to all fills in this cycle
+      if (!cycleIndex.has(cycleId)) cycleIndex.set(cycleId, new Set());
+      for (const fill of cycleFills) {
+        fill.cycleId = cycleId;
+        fills.set(fill.tradeId, fill);
+        cycleIndex.get(cycleId).add(fill.tradeId);
+        orphansFixed++;
+        dirtySinceLastPersist = true;
+        bumpLedgerVersion();
+      }
+
+      // Check if this is a completed cycle. An incomplete orphan group stays
+      // in its own recovered cycle — sync-fills / manual-trade-import
+      // null-stamp historical fills on purpose (#108) — and must NEVER
+      // displace the engine's live cycle (#675).
+      if (isCompletedCycle(cycleFills, cycleCompletionRatio)) {
+        const stats = computeCycleStats(cycleId, cycleFills);
+        details.push(stats.cycleDetail);
+        pnl += stats.pnl;
+        holdbackAsset += stats.holdbackAsset;
+        completed.push({ cycleId, fills: cycleFills });
+      } else if (!hadCurrentCycle) {
+        // No live cycle to preserve — adopt the latest incomplete orphan group.
+        currentCycleId = cycleId;
+        currentCycleStartedAt = null;
+      }
+    }
+
+    const completedCycleCount = orphanCycles.filter(c => c.fills.some(f => f.side === 'sell')).length;
+    logger.info(`🔧 [${exchange}] Assigned ${orphanFillCount} orphan fills to recovered cycles, found ${completedCycleCount} completed cycles`, {
+      orphansFixed,
+      completedCycleCount,
+    });
+    return { details, completed, pnl, holdbackAsset, orphansFixed };
+  };
+
+  /**
+   * Renumber cycles after orphan recovery created new IDs. Rewrites fill
+   * cycleIds, cycleDetails and currentCycleId, sets nextCycleNumber, and
+   * returns the old -> new map of renamed IDs.
+   */
+  const renumberRecoveredCycles = (cycleMap, orphanCycles, cycleDetails) => {
+    const cycleIdMap = {};
+    const cycleTimestamps = collectCycleTimestamps(cycleMap, orphanCycles);
+    const completedIds = new Set(cycleDetails.map(d => d.cycleId));
+    const { idMap, nextCycleNumber: cycleNum, renumbered } = buildCycleRenumberingMap(cycleTimestamps, completedIds, currentCycleId);
+    for (const [oldId, newId] of idMap) {
+      if (oldId !== newId) cycleIdMap[oldId] = newId;
+    }
+
+    if (renumbered > 0) {
+      cycleIndex.clear();
+      for (const fill of Array.from(fills.values())) {
+        if (fill.cycleId && idMap.has(fill.cycleId)) {
+          fill.cycleId = idMap.get(fill.cycleId);
+          fills.set(fill.tradeId, fill);
+          dirtySinceLastPersist = true;
+          bumpLedgerVersion();
+        }
+        if (fill.cycleId) {
+          if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
+          cycleIndex.get(fill.cycleId).add(fill.tradeId);
+        }
+      }
+      for (const detail of cycleDetails) {
+        if (idMap.has(detail.cycleId)) detail.cycleId = idMap.get(detail.cycleId);
+      }
+      if (currentCycleId && idMap.has(currentCycleId)) {
+        currentCycleId = idMap.get(currentCycleId);
+      }
+      logger.info(`🔢 [${exchange}] Renumbered ${renumbered} cycles to sequential IDs (cycle-1 through cycle-${cycleNum - 1})`, {
+        renumbered,
+        firstCycleId: 'cycle-1',
+        lastCycleId: `cycle-${cycleNum - 1}`,
+      });
+    }
+    nextCycleNumber = cycleNum;
+    return cycleIdMap;
+  };
+
+  /**
    * Recalculate cycles from fill history
    * - Identifies completed cycles (cycles with sells)
    * - Attributes orphan fills (cycleId: null) to existing cycles by order
@@ -2208,36 +2305,6 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     let totalRealizedPnL = 0;
     let totalRealizedAssetPnL = 0;
 
-    // Global realized P&L via FIFO cost basis replay. This is the gold standard:
-    // replay all buys and sells chronologically, track cost lots, compute realized
-    // P&L on each sell. Independent of annotations and buy-sell linkage.
-    let globalRealizedPnL = 0;
-    let globalRealizedAssetPnL = 0;
-    const costLots = []; // [{qty, unitCost}]
-    for (const fill of allFills) {
-      if (fill.side === 'buy') {
-        const cost = fill.quoteAmount + fill.netFee;
-        costLots.push({ qty: fill.size, unitCost: fill.size > 0 ? cost / fill.size : 0 });
-      } else if (fill.side === 'sell') {
-        const proceeds = fill.quoteAmount - fill.netFee;
-        let remain = fill.size;
-        let costBasis = 0;
-        while (remain > 1e-12 && costLots.length > 0) {
-          const lot = costLots[0];
-          const use = Math.min(remain, lot.qty);
-          costBasis += use * lot.unitCost;
-          lot.qty -= use;
-          remain -= use;
-          if (lot.qty <= 1e-12) costLots.shift();
-        }
-        globalRealizedPnL += proceeds - costBasis;
-      }
-    }
-    // Remaining lots = unsold position (holdback reserves + active position)
-    globalRealizedAssetPnL = roundAsset(costLots.reduce((s, l) => s + l.qty, 0));
-    globalRealizedPnL = roundUSDC(globalRealizedPnL);
-    globalRealizedAssetPnL = roundAsset(globalRealizedAssetPnL);
-
     for (const { cycleId, fills: cycleFills } of completedCycles) {
       const { cycleDetail, pnl, holdbackAsset } = computeCycleStats(cycleId, cycleFills);
       cycleDetails.push(cycleDetail);
@@ -2250,88 +2317,20 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     const hadCurrentCycle = Boolean(currentCycleId);
     const orphanCycles = splitOrphansIntoCycles(orphanFills);
     if (orphanCycles.length > 0) {
-      logger.info(`🔧 [${exchange}] Split ${orphanFills.length} orphan fills into ${orphanCycles.length} cycles`, {
-        orphanFillCount: orphanFills.length,
-        orphanCycleCount: orphanCycles.length,
-      });
-
-      // Assign cycle IDs and calculate P&L for completed orphan cycles
-      for (const { cycleId, fills: cycleFills } of orphanCycles) {
-        // Assign cycle ID to all fills in this cycle
-        if (!cycleIndex.has(cycleId)) cycleIndex.set(cycleId, new Set());
-        for (const fill of cycleFills) {
-          fill.cycleId = cycleId;
-          fills.set(fill.tradeId, fill);
-          cycleIndex.get(cycleId).add(fill.tradeId);
-          orphansFixed++;
-          dirtySinceLastPersist = true;
-          bumpLedgerVersion();
-        }
-
-        // Check if this is a completed cycle. An incomplete orphan group stays
-        // in its own recovered cycle — sync-fills / manual-trade-import
-        // null-stamp historical fills on purpose (#108) — and must NEVER
-        // displace the engine's live cycle (#675).
-        if (isCompletedCycle(cycleFills, cycleCompletionRatio)) {
-          const { cycleDetail, pnl, holdbackAsset } = computeCycleStats(cycleId, cycleFills);
-          cycleDetails.push(cycleDetail);
-          totalRealizedPnL += pnl;
-          totalRealizedAssetPnL += holdbackAsset;
-          completedCycles.push({ cycleId, fills: cycleFills });
-        } else if (!hadCurrentCycle) {
-          // No live cycle to preserve — adopt the latest incomplete orphan group.
-          currentCycleId = cycleId;
-          currentCycleStartedAt = null;
-        }
-      }
-
-      const completedCycleCount = orphanCycles.filter(c => c.fills.some(f => f.side === 'sell')).length;
-      logger.info(`🔧 [${exchange}] Assigned ${orphanFills.length} orphan fills to recovered cycles, found ${completedCycleCount} completed cycles`, {
-        orphansFixed,
-        completedCycleCount,
-      });
+      const assigned = assignRecoveredOrphanCycles(orphanCycles, orphanFills.length, hadCurrentCycle);
+      cycleDetails.push(...assigned.details);
+      totalRealizedPnL += assigned.pnl;
+      totalRealizedAssetPnL += assigned.holdbackAsset;
+      orphansFixed += assigned.orphansFixed;
+      completedCycles.push(...assigned.completed);
     }
 
     // Renumber cycles only when orphan fills created new (recovered) cycle
     // IDs that need sequential numbering. Attributing orphans into existing
     // cycles creates no new IDs, so it keeps IDs stable.
-    const cycleIdMap = {};
-    if (orphanCycles.length > 0) {
-      const cycleTimestamps = collectCycleTimestamps(cycleMap, orphanCycles);
-      const completedIds = new Set(cycleDetails.map(d => d.cycleId));
-      const { idMap, nextCycleNumber: cycleNum, renumbered } = buildCycleRenumberingMap(cycleTimestamps, completedIds, currentCycleId);
-      for (const [oldId, newId] of idMap) {
-        if (oldId !== newId) cycleIdMap[oldId] = newId;
-      }
-
-      if (renumbered > 0) {
-        cycleIndex.clear();
-        for (const fill of Array.from(fills.values())) {
-          if (fill.cycleId && idMap.has(fill.cycleId)) {
-            fill.cycleId = idMap.get(fill.cycleId);
-            fills.set(fill.tradeId, fill);
-            dirtySinceLastPersist = true;
-            bumpLedgerVersion();
-          }
-          if (fill.cycleId) {
-            if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
-            cycleIndex.get(fill.cycleId).add(fill.tradeId);
-          }
-        }
-        for (const detail of cycleDetails) {
-          if (idMap.has(detail.cycleId)) detail.cycleId = idMap.get(detail.cycleId);
-        }
-        if (currentCycleId && idMap.has(currentCycleId)) {
-          currentCycleId = idMap.get(currentCycleId);
-        }
-        logger.info(`🔢 [${exchange}] Renumbered ${renumbered} cycles to sequential IDs (cycle-1 through cycle-${cycleNum - 1})`, {
-          renumbered,
-          firstCycleId: 'cycle-1',
-          lastCycleId: `cycle-${cycleNum - 1}`,
-        });
-      }
-      nextCycleNumber = cycleNum;
-    }
+    const cycleIdMap = orphanCycles.length > 0
+      ? renumberRecoveredCycles(cycleMap, orphanCycles, cycleDetails)
+      : {};
 
     const linkedCount = linkLegacyCycleBuys(cycleDetails);
 
@@ -2343,8 +2342,6 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       cyclesCompleted: cycleDetails.length,
       realizedPnL: roundUSDC(totalRealizedPnL),
       realizedAssetPnL: roundAsset(totalRealizedAssetPnL),
-      globalRealizedPnL: roundUSDC(globalRealizedPnL),
-      globalRealizedAssetPnL: roundAsset(globalRealizedAssetPnL),
       cycleDetails,
       orphansFixed,
       // Orphans placed into existing cycles / into the live cycle (#705).
