@@ -262,11 +262,17 @@ function createSafeLookup() {
     }
     dns.lookup(hostname, options, (err, address, family) => {
       if (err) return callback(err);
-      if (family === 4 && isBlockedIPv4(address)) {
-        return callback(new Error(`Blocked private/reserved IPv4 address for ${hostname}: ${address}`));
-      }
-      if (family === 6 && isBlockedIPv6(address)) {
-        return callback(new Error(`Blocked private/reserved IPv6 address for ${hostname}: ${address}`));
+      // Node's family autoselection requests all addresses and changes the
+      // callback to (err, addresses). Validate the entire set before Node can
+      // try any of them, including a private fallback after a public address.
+      const addresses = Array.isArray(address) ? address : [{ address, family }];
+      for (const resolved of addresses) {
+        if (resolved.family === 4 && isBlockedIPv4(resolved.address)) {
+          return callback(new Error(`Blocked private/reserved IPv4 address for ${hostname}: ${resolved.address}`));
+        }
+        if (resolved.family === 6 && isBlockedIPv6(resolved.address)) {
+          return callback(new Error(`Blocked private/reserved IPv6 address for ${hostname}: ${resolved.address}`));
+        }
       }
       callback(null, address, family);
     });
@@ -308,13 +314,15 @@ function stripAuthHeaders(headers) {
  *     TOCTOU — see `createSafeLookup`).
  *  5. Caps the response body size to avoid unbounded memory growth from
  *     a malicious or misbehaving remote endpoint.
+ *  6. When allowedOrigins is supplied, enforces that grant before every
+ *     request, including redirects. Feed callers omit the AI-specific grant.
  *
  * Method/body handling on redirect mirrors the WHATWG fetch spec: a 303
  * always downgrades to GET with no body; a 301/302 downgrades POST to
  * GET with no body; 307/308 preserve the original method and body.
  *
  * @param {string} url
- * @param {{ method?: string, headers?: Record<string,string>, body?: string, signal?: AbortSignal, maxRedirects?: number, maxResponseBytes?: number }} [options]
+ * @param {{ method?: string, headers?: Record<string,string>, body?: string, signal?: AbortSignal, maxRedirects?: number, maxResponseBytes?: number, allowedOrigins?: Set<string> }} [options]
  * @returns {Promise<{ ok: boolean, status: number, headers: { get: (name: string) => string | undefined }, text: () => Promise<string>, json: () => Promise<any> }>}
  */
 async function safeFetch(url, options = {}) {
@@ -325,6 +333,7 @@ async function safeFetch(url, options = {}) {
     signal,
     maxRedirects = DEFAULT_MAX_REDIRECTS,
     maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
+    allowedOrigins,
   } = options;
 
   const originalOrigin = new URL(url).origin;
@@ -334,12 +343,15 @@ async function safeFetch(url, options = {}) {
   let currentBody = body;
 
   for (let attempt = 0; attempt <= maxRedirects; attempt++) {
+    const parsed = new URL(currentUrl);
+    if (allowedOrigins && !allowedOrigins.has(parsed.origin)) {
+      throw new Error(`Blocked endpoint: AI provider origin is not allowlisted: ${parsed.origin}`);
+    }
     const validation = await validateEndpointUrl(currentUrl);
     if (!validation.valid) {
       throw new Error(`Blocked endpoint: ${validation.error}`);
     }
 
-    const parsed = new URL(currentUrl);
     if (parsed.origin !== originalOrigin) {
       currentHeaders = stripAuthHeaders(currentHeaders);
     }

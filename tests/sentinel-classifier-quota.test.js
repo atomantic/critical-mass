@@ -26,12 +26,14 @@ const loadClassifier = (options = {}) => {
     module,
     __dirname: path.dirname(sourcePath),
     Date: { now: () => now },
+    URL,
     AbortSignal: { timeout: () => undefined },
     require: (name) => {
       if (name === 'path') return path;
       if (name === 'fs/promises') return { readFile: async () => JSON.stringify({ providers }) };
       if (name === '../logger') return { createContextLogger: () => ({ warn: () => {} }) };
       if (name === '../config-utils') return { SENTINEL_DEFAULTS: { keywords } };
+      if (name === '../ai-security') return { parseAllowedOrigins: () => new Set(['https://provider.example']) };
       if (name === '../url-validator') return {
         validateEndpointUrl: options.validate || (async () => ({ valid: true })),
         safeFetch: async () => {

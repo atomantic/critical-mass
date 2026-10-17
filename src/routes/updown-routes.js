@@ -14,6 +14,7 @@ const { readFileSync, readdirSync } = fs;
 const { createContextLogger } = require('../logger');
 const { UPDOWN_DATA_DIR } = require('../paths');
 const { validateEndpointUrl, safeFetch } = require('../url-validator');
+const { parseAllowedOrigins } = require('../ai-security');
 const {
   buildScorecardAnalysis,
   buildIndicatorTimeframeHeatmap,
@@ -186,7 +187,7 @@ const parseExpiryToMs = (value) => {
 
 /**
  * @param {import('express').Express} app
- * @param {{updownService: Object, readJSON: Function, DATA_DIR: string, validateEndpointUrl?: Function, safeFetch?: Function}} deps
+ * @param {{updownService: Object, readJSON: Function, DATA_DIR: string, validateEndpointUrl?: Function, safeFetch?: Function, allowedAiOrigins?: Set<string>}} deps
  */
 module.exports = (app, deps) => {
   const {
@@ -197,6 +198,7 @@ module.exports = (app, deps) => {
     DATA_DIR,
     validateEndpointUrl: validateEndpointUrlFn = validateEndpointUrl,
     safeFetch: safeFetchFn = safeFetch,
+    allowedAiOrigins = parseAllowedOrigins(),
   } = deps;
   const PROVIDERS_PATH = path.join(DATA_DIR, 'providers.json');
 
@@ -249,6 +251,9 @@ module.exports = (app, deps) => {
     if (!provider) return res.status(400).json({ success: false, error: `Provider "${providerId}" not found` });
     if (provider.type !== 'api') return res.status(400).json({ success: false, error: `Provider "${providerId}" is type "${provider.type}", need "api"` });
     if (!provider.enabled) return res.status(400).json({ success: false, error: `Provider "${providerId}" is disabled` });
+    if (!URL.canParse(provider.endpoint) || !allowedAiOrigins.has(new URL(provider.endpoint).origin)) {
+      return res.status(400).json({ success: false, error: 'Provider endpoint origin is not allowlisted in AI_ALLOWED_ENDPOINTS' });
+    }
 
     const selectedModel = model || provider.defaultModel;
     if (!selectedModel) return res.status(400).json({ success: false, error: `No model specified and provider has no defaultModel` });
@@ -299,6 +304,7 @@ module.exports = (app, deps) => {
       // that a bare fetch() would leave open — issue #207).
       const response = await safeFetchFn(`${provider.endpoint}/chat/completions`, {
         method: 'POST',
+        allowedOrigins: allowedAiOrigins,
         headers,
         signal: controller.signal,
         body: JSON.stringify(body)

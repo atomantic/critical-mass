@@ -78,6 +78,8 @@ Docker Compose and Umbrel must bind the container interface for their local prox
 
 AI toolkit execution is fail-closed: CLI providers are disabled while the bundled toolkit uses shell execution, workspaces must stay under `AI_WORKSPACE_ROOTS` (comma-separated, defaults to the Critical Mass directory), and API provider origins must be listed in `AI_ALLOWED_ENDPOINTS` (comma-separated exact origins such as `https://api.openai.com`).
 
+The same origin grant applies to UpDown screenshot analysis and Sentinel AI classification, including redirects. RSS feeds use public-address validation independently of the AI origin grant.
+
 ```bash
 git clone https://github.com/atomantic/critical-mass.git
 cd critical-mass

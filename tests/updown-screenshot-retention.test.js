@@ -50,6 +50,7 @@ const registerRoute = (dataDir, overrides = {}) => {
     DATA_DIR: dataDir,
     validateEndpointUrl: async () => ({ valid: true }),
     safeFetch: async () => responseWithContent('{"screenType":"select","direction":"Up"}'),
+    allowedAiOrigins: new Set(['https://vision.example.test']),
     ...overrides,
   });
   return app.handlers['POST /api/updown/screenshot'];
