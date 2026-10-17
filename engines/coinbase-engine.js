@@ -54,7 +54,7 @@ const { registerEngineRecalculateHandler } = require('../src/engine-recalculate-
 const { migrateExchangeToPairs, guardLegacyMigration } = require('../src/migration');
 const { guardIncompleteRestore } = require('../src/restore-apply');
 const { recoverDcaImport } = require('../src/dca-conversion-transaction');
-const { LIFECYCLE, loadRegimeState, loadRegimeStateSafe, saveRegimeState } = require('../src/state-tracker');
+const { LIFECYCLE, closeDrainedEmptyPosition, loadRegimeState, loadRegimeStateSafe, saveRegimeState } = require('../src/state-tracker');
 const { getAdapter } = require('../src/adapters');
 const { registerProcessGuards } = require('../src/process-guard');
 const { resolveIpcPort } = require('../src/ipc-port-defaults');
@@ -232,6 +232,17 @@ const { autoResumeFund, resumeAfterBackup, getStartStatus, cancelStarts, settleS
     entry => entry.label.startsWith('engine-') && entry.label.endsWith(`:${fundLabel(exchange, pair)}`)),
 });
 
+// The only write in the regime:status path: the engine process owns
+// regime-state.json (the gateway must not write it), so a stopped draining
+// fund with an empty position is closed here, before status is synthesized.
+const autoCloseDrainedFundWhileStopped = (exchange, pair, savedState) => {
+  const position = savedState?.position;
+  if (!closeDrainedEmptyPosition(position)) return;
+  saveRegimeState(position, savedState.regime, exchange, savedState.tpOptimizer, savedState.sizeOptimizer, pair);
+  saveRegimeRunningFlag(exchange, pair, false);
+  engineLogger(exchange, pair).info(`ℹ️ 🛑 [${fundLabel(exchange, pair)}] Draining fund has empty position — auto-closed`);
+};
+
 ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
   const key = fundKey(exchange, resolvedPair);
@@ -250,25 +261,10 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
       );
       return { success: false, exchange, pair: resolvedPair, running: false, status: null, error: stateError, startup };
     }
-    const position = savedState?.position || null;
     const marketService = getMarketDataService(exchange, resolvedPair);
     const serviceStatus = marketService ? marketService.getStatus() : null;
 
-    // Auto-close: if fund is draining but position is fully empty, transition to closed.
-    // This is an engine-owned state mutation (not status synthesis), so it stays
-    // here and runs before buildStoppedRegimeStatus re-loads state from disk.
-    if (position && position.lifecycle === LIFECYCLE.DRAINING) {
-      const bodies = position.celestialBodies || [];
-      const hasPosition = (position.totalAsset || 0) > 0 || bodies.length > 0;
-      if (!hasPosition) {
-        position.lifecycle = LIFECYCLE.CLOSED;
-        position.lifecycleChangedAt = Date.now();
-        position.lifecycleClosedCycle = position.cyclesCompleted || 0;
-        saveRegimeState(position, savedState.regime, exchange, savedState.tpOptimizer, savedState.sizeOptimizer, resolvedPair);
-        saveRegimeRunningFlag(exchange, resolvedPair, false);
-        engineLogger(exchange, resolvedPair).info(`ℹ️ 🛑 [${fundLabel(exchange, resolvedPair)}] Draining fund has empty position — auto-closed`);
-      }
-    }
+    autoCloseDrainedFundWhileStopped(exchange, resolvedPair, savedState);
 
     // Delegate to the shared stopped/offline status synthesizer (issue #357)
     // so enrichment (P&L re-derivation, APY, pendingOrders, celestial) stays

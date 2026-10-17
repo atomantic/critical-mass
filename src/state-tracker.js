@@ -46,6 +46,24 @@ const LIFECYCLE = Object.freeze({
 });
 
 /**
+ * Single definition of the DRAINING -> CLOSED auto-close rule: a draining
+ * fund with no asset and no celestial bodies is closed. Mutates `position`
+ * (lifecycle, lifecycleChangedAt, lifecycleClosedCycle); callers persist.
+ * @param {object|null} position
+ * @param {number} [now]
+ * @returns {boolean} true if the position was transitioned to CLOSED
+ */
+const closeDrainedEmptyPosition = (position, now = Date.now()) => {
+  if (!position || position.lifecycle !== LIFECYCLE.DRAINING) return false;
+  const hasPosition = (position.totalAsset || 0) > 0 || (position.celestialBodies || []).length > 0;
+  if (hasPosition) return false;
+  position.lifecycle = LIFECYCLE.CLOSED;
+  position.lifecycleChangedAt = now;
+  position.lifecycleClosedCycle = position.cyclesCompleted || 0;
+  return true;
+};
+
+/**
  * Atomic durable write: fsync the temporary file before rename, then fsync
  * the parent directory so a power loss cannot discard the new directory entry.
  * @param {string} filePath - Target file path
@@ -1560,6 +1578,7 @@ const buildPlacementIntentHint = (intent) => {
 
 module.exports = {
   LIFECYCLE,
+  closeDrainedEmptyPosition,
   loadState,
   saveState,
   createInitialState,

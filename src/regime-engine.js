@@ -57,6 +57,7 @@ const {
   describePlacementIntents,
   isBlockingPlacementIntent,
   resolvePlacementIntent,
+  closeDrainedEmptyPosition,
 } = require('./state-tracker');
 const { resolveFundDataDir } = require('./migration');
 const celestialHierarchy = require('./celestial-hierarchy');
@@ -3185,18 +3186,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Auto-close: if fund is draining but position is fully empty after recovery,
     // transition to closed immediately instead of running an empty engine.
-    if (positionState.lifecycle === LIFECYCLE.DRAINING) {
-      const bodies = positionState.celestialBodies || [];
-      const hasPosition = (positionState.totalAsset || 0) > 0 || bodies.length > 0;
-      if (!hasPosition) {
-        positionState.lifecycle = LIFECYCLE.CLOSED;
-        positionState.lifecycleChangedAt = Date.now();
-        positionState.lifecycleClosedCycle = positionState.cyclesCompleted || 0;
-        logger.info(`🛑 [${exchange}] Draining fund has empty position — auto-closing`);
-        if (!isDryRun) saveLiveState();
-        scheduleLifecycleClosed();
-        return { success: true, autoClosed: true };
-      }
+    if (closeDrainedEmptyPosition(positionState)) {
+      logger.info(`🛑 [${exchange}] Draining fund has empty position — auto-closing`);
+      if (!isDryRun) saveLiveState();
+      scheduleLifecycleClosed();
+      return { success: true, autoClosed: true };
     }
 
     // Start WebSocket feed
