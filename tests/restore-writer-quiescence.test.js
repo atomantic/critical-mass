@@ -702,8 +702,42 @@ describe('engine-side maintenance window', () => {
     }
   });
 
+  const ALL_CHANNELS = [...engineMaintenance.MAINTENANCE_SAFE_CHANNELS, 'regime:start', 'config_update', 'regime:rebuild-ladder', 'regime:manual-trade'];
+  const allowedFor = (kind) => ({
+    restore: ['engine:maintenance', 'regime:stop-all'],
+    backup: ['engine:maintenance', 'engine:backup-pause', 'engine:backup-resume'],
+    generic: [...engineMaintenance.MAINTENANCE_SAFE_CHANNELS],
+  })[kind];
+
+  for (const kind of ['restore', 'backup', 'generic']) {
+    // Reasons deliberately carry NO legacy prefix: only `kind` may drive policy.
+    for (const reason of ['Operator maintenance', 'Restore from backup-1.zip', 'backup ' + kind, 'restore x']) {
+      it(`kind "${kind}" gates channels independent of reason text (${reason})`, () => {
+        engineMaintenance.setEngineMaintenance({ active: true, kind, reason });
+        assert.equal(engineMaintenance.getEngineMaintenance().kind, kind);
+        const allowed = new Set(allowedFor(kind));
+        for (const channel of ALL_CHANNELS) {
+          assert.equal(engineMaintenance.refuseDuringMaintenance(channel) === null, allowed.has(channel), `${kind}/${channel}`);
+        }
+      });
+    }
+  }
+
+  it('derives kind from the legacy reason prefix when a caller omits it', () => {
+    const cases = [['restore backup-1.zip', 'restore'], ['backup manual', 'backup'], ['FIFO backfill', 'generic'], ['restore', 'generic']];
+    for (const [reason, kind] of cases) {
+      engineMaintenance.setEngineMaintenance({ active: true, reason });
+      assert.equal(engineMaintenance.getEngineMaintenance().kind, kind, reason);
+    }
+  });
+
+  it('ignores an unknown kind and falls back to legacy derivation', () => {
+    engineMaintenance.setEngineMaintenance({ active: true, kind: 'bogus', reason: 'restore a.zip' });
+    assert.equal(engineMaintenance.getEngineMaintenance().kind, 'restore');
+  });
+
   it('allows everything again once the window is closed', () => {
-    engineMaintenance.setEngineMaintenance({ active: true, reason: 'restore' });
+    engineMaintenance.setEngineMaintenance({ active: true, kind: 'generic', reason: 'restore' });
     engineMaintenance.setEngineMaintenance({ active: false });
     assert.equal(engineMaintenance.refuseDuringMaintenance('regime:start'), null);
     assert.equal(engineMaintenance.getEngineMaintenance(), null);
@@ -712,7 +746,7 @@ describe('engine-side maintenance window', () => {
   it('expires on its own so a gateway that dies mid-restore cannot brick the engine', (t) => {
     t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 });
     t.after(() => t.mock.timers.reset());
-    engineMaintenance.setEngineMaintenance({ active: true, reason: 'restore', ttlMs: 1 });
+    engineMaintenance.setEngineMaintenance({ active: true, kind: 'generic', reason: 'restore', ttlMs: 1 });
     const { startedAt, expiresAt } = engineMaintenance.getEngineMaintenance();
     assert.equal(startedAt, 1_000_000);
     assert.equal(expiresAt, startedAt + 1);
@@ -803,7 +837,7 @@ describe('engine IPC server enforces the maintenance window', () => {
     for (let i = 0; i < 100 && !client.isConnected(); i++) await new Promise(r => setTimeout(r, 10));
     assert.ok(client.isConnected(), 'IPC client connected');
 
-    assert.deepEqual(await client.request('engine:maintenance', { active: true, reason: 'restore backup-1.zip' }, 'test', 1_000), {
+    assert.deepEqual(await client.request('engine:maintenance', { active: true, kind: 'restore', reason: 'restore backup-1.zip' }, 'test', 1_000), {
       success: true,
       maintenance: engineMaintenance.getEngineMaintenance(),
     });

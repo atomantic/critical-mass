@@ -55,7 +55,30 @@ const MAINTENANCE_SAFE_CHANNELS = new Set([
   'regime:dry-run-state',
 ]);
 
-/** @type {{reason: string, startedAt: number, expiresAt: number} | null} */
+/** @typedef {'backup' | 'restore' | 'generic'} MaintenanceKind */
+const MAINTENANCE_KINDS = ['backup', 'restore', 'generic'];
+
+/** @typedef {{kind: MaintenanceKind, reason: string, startedAt: number, expiresAt: number}} MaintenanceWindow */
+
+let legacyKindLogged = false;
+
+/**
+ * Compatibility for one release: an older gateway sends only a `reason` whose
+ * prefix encoded the kind. New callers send `kind`; `reason` is display text.
+ *
+ * @param {string} reason - Human-readable reason
+ * @returns {MaintenanceKind} Derived kind
+ */
+const deriveLegacyKind = (reason) => {
+  if (!legacyKindLogged) {
+    legacyKindLogged = true;
+    console.warn('[engine-maintenance] maintenance request omitted "kind"; deriving it from the legacy reason prefix (deprecated)');
+  }
+  const prefix = /^(restore|backup) /.exec(reason)?.[1];
+  return prefix === 'restore' || prefix === 'backup' ? prefix : 'generic';
+};
+
+/** @type {MaintenanceWindow | null} */
 let window_ = null;
 // A confirmed backup pause survives the IPC window TTL: stopped producers
 // cannot safely accept new mutations until resume finishes or the process restarts.
@@ -65,7 +88,7 @@ let backupPaused = false;
 let restoreQuiescing = false;
 
 /**
- * @returns {{reason: string, startedAt: number, expiresAt: number} | null} The active window, or null
+ * @returns {MaintenanceWindow | null} The active window, or null
  */
 const getEngineMaintenance = () => {
   if (window_ && Date.now() >= window_.expiresAt) window_ = null;
@@ -75,8 +98,8 @@ const getEngineMaintenance = () => {
 /**
  * Open or close the maintenance window.
  *
- * @param {{active?: boolean, reason?: string, ttlMs?: number}} [payload] - Control payload from the gateway
- * @returns {{success: true, maintenance: {reason: string, startedAt: number, expiresAt: number} | null}} Acknowledgement
+ * @param {{active?: boolean, kind?: MaintenanceKind, reason?: string, ttlMs?: number}} [payload] - Control payload from the gateway
+ * @returns {{success: true, maintenance: MaintenanceWindow | null}} Acknowledgement
  */
 const setEngineMaintenance = (payload = {}) => {
   if (payload?.active !== true) {
@@ -88,8 +111,10 @@ const setEngineMaintenance = (payload = {}) => {
     ? Math.min(requested, MAX_MAINTENANCE_TTL_MS)
     : DEFAULT_MAINTENANCE_TTL_MS;
   const startedAt = Date.now();
+  const reason = typeof payload.reason === 'string' && payload.reason ? payload.reason : 'gateway maintenance';
   window_ = {
-    reason: typeof payload.reason === 'string' && payload.reason ? payload.reason : 'gateway maintenance',
+    kind: MAINTENANCE_KINDS.includes(payload.kind) ? payload.kind : deriveLegacyKind(reason),
+    reason,
     startedAt,
     expiresAt: startedAt + ttlMs,
   };
@@ -110,10 +135,10 @@ const refuseDuringMaintenance = (channel) => {
     return { success: false, code: 'maintenance-in-progress', error: 'Engine backup writers are paused', heldBy: 'backup writer pause', expiresAt: 0 };
   }
   const backupWindow = getEngineMaintenance();
-  if (backupWindow?.reason.startsWith('restore ') && !['engine:maintenance', 'regime:stop-all'].includes(channel)) {
+  if (backupWindow?.kind === 'restore' && !['engine:maintenance', 'regime:stop-all'].includes(channel)) {
     return { success: false, code: 'maintenance-in-progress', error: `Engine is paused for ${backupWindow.reason}`, heldBy: backupWindow.reason, expiresAt: backupWindow.expiresAt };
   }
-  if (backupWindow?.reason.startsWith('backup ') && !['engine:maintenance', 'engine:backup-pause', 'engine:backup-resume'].includes(channel)) {
+  if (backupWindow?.kind === 'backup' && !['engine:maintenance', 'engine:backup-pause', 'engine:backup-resume'].includes(channel)) {
     return { success: false, code: 'maintenance-in-progress', error: 'Engine is paused for a backup', heldBy: backupWindow.reason, expiresAt: backupWindow.expiresAt };
   }
   if (MAINTENANCE_SAFE_CHANNELS.has(channel)) return null;
@@ -149,6 +174,7 @@ module.exports = {
   getEngineMaintenance,
   refuseDuringMaintenance,
   MAINTENANCE_SAFE_CHANNELS,
+  MAINTENANCE_KINDS,
   DEFAULT_MAINTENANCE_TTL_MS,
   MAX_MAINTENANCE_TTL_MS,
 };

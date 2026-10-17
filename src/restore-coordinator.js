@@ -129,7 +129,7 @@ const setEngineMaintenanceWindows = async ({ exchangeIPCMap, configuredExchanges
     // stop gate below is what decides whether that engine blocks the restore.
     if (typeof ipc.isConnected === 'function' && !ipc.isConnected()) return null;
     const failure = await ipc
-      .request('engine:maintenance', { active, reason, ttlMs: ENGINE_MAINTENANCE_TTL_MS }, exchange, timeoutMs)
+      .request('engine:maintenance', { active, kind: 'restore', reason, ttlMs: ENGINE_MAINTENANCE_TTL_MS }, exchange, timeoutMs)
       .then(() => null, (err) => err);
     if (failure) {
       logger.warn(`⚠️ 💾 Engine "${exchange}" did not acknowledge the maintenance window (${active ? 'open' : 'close'}): ${failure.message}`, {

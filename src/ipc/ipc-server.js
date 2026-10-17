@@ -55,7 +55,7 @@ const createIPCServer = (port, name) => {
       ack.maintenance
         ? `ℹ️ 🔗 [${name}] Maintenance window OPEN (${ack.maintenance.reason}), mutating requests blocked until ${new Date(ack.maintenance.expiresAt).toISOString()}`
         : `ℹ️ 🔗 [${name}] Maintenance window closed, mutating requests accepted again`,
-      { channel: 'engine:maintenance', active: Boolean(ack.maintenance), reason: ack.maintenance?.reason },
+      { channel: 'engine:maintenance', active: Boolean(ack.maintenance), kind: ack.maintenance?.kind, reason: ack.maintenance?.reason },
     );
     return ack;
   });
