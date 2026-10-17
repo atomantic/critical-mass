@@ -81,10 +81,27 @@ const isGatewayOrigin = (origin, allowlist = []) => {
   return isTailscaleIpv4(hostname)
 }
 
+/**
+ * Express CORS middleware honoring isGatewayOrigin.
+ * @param {string[]} [allowlist]
+ */
+const createCorsMiddleware = (allowlist = []) => (req, res, next) => {
+  const origin = req.headers?.origin;
+  if (isGatewayOrigin(origin, allowlist)) {
+    if (origin) res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Operator-Bootstrap');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+  }
+  next();
+};
+
 module.exports = {
   isTailscaleIpv4,
   isLoopbackHost,
   tailscaleIpv4s,
   resolveListenHosts,
   isGatewayOrigin,
+  createCorsMiddleware,
 }
+

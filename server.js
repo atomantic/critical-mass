@@ -54,7 +54,7 @@ const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
 const { buildRuntimeHealth } = require('./src/runtime-health');
 const { createOperatorAuth } = require('./src/operator-auth');
-const { resolveListenHosts, isGatewayOrigin } = require('./src/gateway-listen');
+const { resolveListenHosts, isGatewayOrigin, createCorsMiddleware } = require('./src/gateway-listen');
 const { registerProcessGuards } = require('./src/process-guard');
 const { resolveIpcPort } = require('./src/ipc-port-defaults');
 const { PORTS } = require('./ecosystem.config.cjs');
@@ -142,16 +142,7 @@ const routes = Object.fromEntries(Object.entries(shutdownRoutes).map(([method, r
 
 app.use(gatewayShutdown.middleware);
 
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (isGatewayOrigin(origin, CORS_ORIGINS)) {
-    if (origin) res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Operator-Bootstrap');
-    if (req.method === 'OPTIONS') return res.sendStatus(204);
-  }
-  next();
-});
+app.use(createCorsMiddleware(CORS_ORIGINS));
 
 app.use(express.json());
 
