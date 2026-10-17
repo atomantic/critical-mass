@@ -131,5 +131,22 @@ describe('transactionsRegimePnl.computeFillsWithPnL', () => {
       assert.ok(Math.abs(f.holdbackAsset - (-0.01)) < 1e-12, `each partial shows its share of the drawdown, got ${f.holdbackAsset}`);
     }
   });
+
+  it('uses netFee (not the gross fee) when a rebate zeroes the fee, matching the Position card (#1137)', async () => {
+    const { computeFillsWithPnL } = await import(modulePath);
+
+    // Coinbase reports a rebate as netFee 0 with a positive gross fee. The
+    // cycle-pairing rule (netFee ?? fee) charges nothing; the gross fee must
+    // not be deducted from proceeds.
+    const fills = [
+      { orderId: 'buy-r', side: 'buy', size: 1, price: 100, quoteAmount: 100, netFee: 0, fee: 0, timestamp: 4000 },
+      { orderId: 'sell-r', side: 'sell', size: 1, price: 120, quoteAmount: 120, netFee: 0, fee: 0.5, timestamp: 4001 },
+    ];
+
+    const enriched = computeFillsWithPnL(fills);
+    const sell = enriched.find(f => f.side === 'sell');
+    // proceeds (120, rebated fee) - running-avg cost (100) = 20
+    assert.ok(Math.abs(sell.pnl - 20) < 1e-9, `expected rebated pnl ~20, got ${sell.pnl}`);
+  });
 });
 

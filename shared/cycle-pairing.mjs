@@ -50,14 +50,14 @@ export const buyPairKey = (fill) => fill.orderId || `__noorder__:${fill.tradeId}
  * @param {{quoteAmount?: number, size?: number, price?: number}} fill
  * @returns {number}
  */
-const quoteOf = (fill) => fill.quoteAmount || (fill.size || 0) * (fill.price || 0);
+export const quoteOf = (fill) => fill.quoteAmount || (fill.size || 0) * (fill.price || 0);
 
 /**
  * Fee of a fill: netFee (net of rebates), else the gross fee.
  * @param {{netFee?: number, fee?: number}} fill
  * @returns {number}
  */
-const feeOf = (fill) => fill.netFee ?? fill.fee ?? 0;
+export const feeOf = (fill) => fill.netFee ?? fill.fee ?? 0;
 
 /**
  * Cost of a buy fill (quote + fee).

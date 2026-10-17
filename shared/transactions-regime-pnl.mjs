@@ -1,3 +1,5 @@
+import { buyFillCost, feeOf, quoteOf } from './cycle-pairing.mjs';
+
 // Pure P&L aggregation for the Transactions (Regime) view.
 //
 // The engine writes server-annotated bodyPnl/satellitePnl/bodyHoldbackAsset/
@@ -16,6 +18,8 @@
 //
 // Exported as a standalone pure function (no React) so it can be unit
 // tested directly.
+const isBodyFill = (f) => Boolean(f.isBodyOwned || f.isSatellite || f.bodyId);
+
 export function computeFillsWithPnL(fills) {
   // Use ALL fills for P&L calculation (not just the currently-filtered
   // subset) so the running-avg fallback and orderId aggregation are correct.
@@ -37,7 +41,7 @@ export function computeFillsWithPnL(fills) {
   const sellTotalsByOrderId = new Map()
   for (const fill of chronological) {
     if (fill.side !== 'sell') continue
-    const fillValue = fill.quoteAmount || fill.size * fill.price
+    const fillValue = quoteOf(fill)
     const annotatedPnl = fill.bodyPnl ?? fill.satellitePnl
     const annotatedHoldback = fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset
     const annotatedReservesSold = Number(fill.bodyReservesSoldAsset) > 0 ? Number(fill.bodyReservesSoldAsset) : 0
@@ -45,7 +49,7 @@ export function computeFillsWithPnL(fills) {
     const prev = sellTotalsByOrderId.get(fill.orderId)
     if (prev) {
       prev.totalQuote += fillValue
-      prev.totalFee += fill.netFee || fill.fee || 0
+      prev.totalFee += feeOf(fill)
       if (prev.annotatedPnl == null && annotatedPnl != null) prev.annotatedPnl = annotatedPnl
       if (prev.annotatedHoldback == null && annotatedHoldback != null) prev.annotatedHoldback = annotatedHoldback
       if (!(prev.annotatedReservesSold > 0) && annotatedReservesSold > 0) prev.annotatedReservesSold = annotatedReservesSold
@@ -53,7 +57,7 @@ export function computeFillsWithPnL(fills) {
     } else {
       sellTotalsByOrderId.set(fill.orderId, {
         totalQuote: fillValue,
-        totalFee: fill.netFee || fill.fee || 0,
+        totalFee: feeOf(fill),
         annotatedPnl: annotatedPnl ?? null,
         annotatedHoldback: annotatedHoldback ?? null,
         annotatedReservesSold,
@@ -69,18 +73,18 @@ export function computeFillsWithPnL(fills) {
   for (let i = 0; i < chronological.length; i++) {
     const fill = chronological[i]
     if (fill.side === 'buy') {
-      const isBody = fill.isBodyOwned || fill.isSatellite || fill.bodyId
+      const isBody = isBodyFill(fill)
       if (!isBody) {
         totalBtc += fill.size
-        totalCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
+        totalCost += buyFillCost(fill)
       }
       pnlMap.set(i, { pnl: null, holdbackAsset: null, holdbackValue: null, avgCost: totalBtc > 0 ? totalCost / totalBtc : 0 })
       continue
     }
     // Sell fill
-    const isBody = fill.isBodyOwned || fill.isSatellite || fill.bodyId
+    const isBody = isBodyFill(fill)
     const orderTotals = sellTotalsByOrderId.get(fill.orderId)
-    const fillValue = fill.quoteAmount || fill.size * fill.price
+    const fillValue = quoteOf(fill)
     // This partial fill's share of its order's total sell value. Used to
     // prorate once-per-orderId annotations across partial rows so the
     // per-row values sum back to the single annotated total (not N× it).
@@ -95,7 +99,7 @@ export function computeFillsWithPnL(fills) {
       // 2. Try buy-sell linkage via sellOrderId
       const linkedBuys = buysBySellId.get(fill.orderId)
       if (linkedBuys && linkedBuys.length > 0) {
-        const buyCost = linkedBuys.reduce((s, b) => s + (b.quoteAmount || b.size * b.price) + (b.netFee || b.fee || 0), 0)
+        const buyCost = linkedBuys.reduce((s, b) => s + buyFillCost(b), 0)
         const totalSellProceeds = orderTotals.totalQuote - orderTotals.totalFee
         const totalPnl = totalSellProceeds - buyCost
         // Distribute proportionally for multi-fill orders
@@ -105,11 +109,11 @@ export function computeFillsWithPnL(fills) {
         // The cost basis is also annotated once per orderId, so prorate it
         // across partials before subtracting from this row's own proceeds.
         const proratedCostBasis = orderTotals.annotatedCostBasis * fillShare
-        pnl = (fillValue - (fill.netFee || fill.fee || 0)) - proratedCostBasis
+        pnl = (fillValue - feeOf(fill)) - proratedCostBasis
       } else {
         // 4. Fallback: running avg for truly unlinked core sells
         const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
-        const proceeds = fillValue - (fill.netFee || fill.fee || 0)
+        const proceeds = fillValue - feeOf(fill)
         pnl = proceeds - avgCost * fill.size
       }
     }
