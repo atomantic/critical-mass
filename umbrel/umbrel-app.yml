@@ -4,7 +4,7 @@ name: Critical Mass
 tagline: Multi-exchange BTC accumulation engine
 icon: https://raw.githubusercontent.com/atomantic/critical-mass/main/admin/public/icon-512.png
 category: bitcoin
-version: "2.19.2"
+version: "2.26.1"
 port: 5570
 description: >-
   Critical Mass is a multi-exchange BTC accumulation engine with celestial
@@ -21,7 +21,10 @@ gallery:
   - https://raw.githubusercontent.com/atomantic/critical-mass/main/umbrel/gallery/screenshot-2.png
   - https://raw.githubusercontent.com/atomantic/critical-mass/main/umbrel/gallery/screenshot-3.png
 releaseNotes: >-
-  Initial Umbrel release.
+  Moves the Umbrel package to release v2.26.1 so the image listens on the
+  gateway port (5570) that the Umbrel proxy targets, and includes operator
+  sign-in with the one-time bootstrap secret written to the app data
+  directory on first start.
 dependencies: []
 path: ""
 defaultUsername: ""
