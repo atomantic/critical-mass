@@ -15,7 +15,7 @@
  */
 
 const { createWebSocketLifecycle } = require('./websocket-lifecycle');
-const jwt = require('jsonwebtoken');
+const { signJwt } = require('./jwt');
 const crypto = require('crypto');
 const { preparePrivateKey } = require('./adapters/coinbase/auth');
 const { createContextLogger } = require('./logger');
@@ -45,7 +45,7 @@ const COINBASE_WS_URL = 'wss://advanced-trade-ws.coinbase.com';
 const generateWsJWT = (apiKey, apiSecret) => {
   const pemKey = preparePrivateKey(apiSecret);
 
-  return jwt.sign(
+  return signJwt(
     {
       iss: 'cdp',
       nbf: Math.floor(Date.now() / 1000),
