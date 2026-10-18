@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const fs = require('fs');
-const jwt = require('jsonwebtoken');
+const { signJwt, verifyHs256Jwt } = require('./jwt');
 const { isLoopbackHost } = require('./gateway-listen');
 const { log } = require('./logger');
 
@@ -196,24 +196,15 @@ const createOperatorAuth = ({
     .update(`critical-mass-session:${record?.hash || 'bootstrap'}`)
     .digest('hex');
 
-  const createSession = () => jwt.sign(
+  const createSession = () => signJwt(
     { sub: 'operator', role: 'operator' },
     sessionSecret(),
     { algorithm: 'HS256', audience: 'critical-mass', issuer: 'critical-mass', expiresIn: SESSION_TTL_SECONDS }
   );
 
-  const verifySession = (token) => {
-    if (!token) return false;
-    try {
-      return Boolean(jwt.verify(token, sessionSecret(), {
-        algorithms: ['HS256'],
-        audience: 'critical-mass',
-        issuer: 'critical-mass',
-      }));
-    } catch {
-      return false;
-    }
-  };
+  const verifySession = (token) => Boolean(
+    verifyHs256Jwt(token, sessionSecret(), { audience: 'critical-mass', issuer: 'critical-mass' })
+  );
 
   const passwordMatches = async (password) => {
     if (!password || !record?.salt || !record?.hash) return false;

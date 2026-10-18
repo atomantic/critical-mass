@@ -1,5 +1,5 @@
-const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const { signJwt } = require('../../jwt');
 
 /**
  * Prepare private key for JWT signing
@@ -51,7 +51,7 @@ const generateJWT = (apiKey, apiSecret, requestMethod, requestPath) => {
   // Prepare the key
   const pemKey = preparePrivateKey(apiSecret);
 
-  const token = jwt.sign(
+  const token = signJwt(
     {
       iss: 'cdp',
       nbf: Math.floor(Date.now() / 1000),
