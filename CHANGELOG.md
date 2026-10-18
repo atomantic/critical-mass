@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - **[issue-1136] Placement adoption dispatches by intent action** — Extract synchronous adopters and automatic lookup classification while preserving ownership checks, durable tracking and exactly-once reconciliation.
+- **[issue-1139] Body merge cancellation shares one path** — Unify source/target TP cancellation and snapshot completion while preserving execution booking, source TP restoration and late-fill retention.
 - **[issue-1135] Buy-fill booking shares one body commit step** — Separate row/dedup resolution and booking preparation from orchestration; preserve each arm's annotation, aggregate sync, counter, TP repair and notification order, and pin new-body TP rejection/replay at the public fill boundary. The runner lifecycle fixture now publishes its descendant witness atomically before signaling readiness, preventing shutdown from truncating validation evidence.
 - **[issue-1134] Startup recovery has named steps** — Extract sell warnings, take-profit restoration, entry recovery, dry-run restoration, drained-fund closure, drift scheduling and signal setup without changing startup order or effects; characterize the drift-sweep interval floor.
 - **[issue-1133] Source comments state contracts without reviewer-round history** — Remove review-process attribution from production comments while retaining technical rationale, issue references, and executable code.
