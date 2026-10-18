@@ -27,17 +27,20 @@ const deferred = () => {
 };
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-const runStartBlock = ({ stopping = false } = {}) => {
+const runStartBlock = ({ stopping = false, host, allowRemote = true } = {}) => {
   const bind = deferred();
   const started = [];
   const logs = [];
   const exits = [];
   const bindArgs = [];
+  const watchArgs = [];
   const recorder = (name) => () => { started.push(name); };
   const context = vm.createContext({
     require: (name) => (name === './package.json' ? { version: '0.0.0-test' } : assert.fail(`unexpected require ${name}`)),
     setInterval: (fn, ms) => { started.push(`interval:${ms}`); return { fn }; },
-    process: { exit: (code) => exits.push(code) },
+    process: { exit: (code) => exits.push(code), env: { HOST: host } },
+    ALLOW_REMOTE_LISTEN: allowRemote,
+    watchTailscaleListeners: (args) => { watchArgs.push(args); return { stop: () => {} }; },
     log: (level, message) => logs.push(`${level} ${message}`),
     gatewayShutdown: { isStopping: () => stopping, track: (p) => p },
     bindGatewayListeners: (args) => { bindArgs.push(args); return bind.promise; },
@@ -56,8 +59,8 @@ const runStartBlock = ({ stopping = false } = {}) => {
     getGlobalConfig: () => ({ schedulerInterval: 30000 }),
     checkAndRunIntervalTrade: recorder('checkAndRunIntervalTrade'),
   });
-  vm.runInContext(`let exchangeRefreshTimer = null; let schedulerTimer = null;\n${startBlock}`, context);
-  return { bind, started, logs, exits, bindArgs, context };
+  vm.runInContext(`let exchangeRefreshTimer = null; let schedulerTimer = null; let tailscaleWatcher = null;\n${startBlock}`, context);
+  return { bind, started, logs, exits, bindArgs, watchArgs, context };
 };
 
 describe('gateway startup order', () => {
@@ -112,5 +115,27 @@ describe('gateway startup order', () => {
     bindArgs[0].onExtra(extra);
     assert.deepEqual(started, ['io.attach']);
     assert.deepEqual(context.socketEngines, [{ name: 'engine' }]);
+  });
+
+  describe('late Tailscale address watcher', () => {
+    it('starts only after the bind resolves, with the bound hosts and the shutdown check', async () => {
+      const { bind, watchArgs } = runStartBlock();
+      await settle();
+      assert.deepEqual(watchArgs, []);
+      bind.resolve([]);
+      await settle();
+      assert.equal(watchArgs.length, 1);
+      assert.deepEqual(watchArgs[0].bound, ['127.0.0.1']);
+      assert.equal(watchArgs[0].port, 5570);
+    });
+
+    it('never starts for an explicit HOST or the loopback-only bootstrap mode', async () => {
+      for (const opts of [{ host: '127.0.0.1,100.64.0.9' }, { host: '0.0.0.0' }, { allowRemote: false }]) {
+        const { bind, watchArgs } = runStartBlock(opts);
+        bind.resolve([]);
+        await settle();
+        assert.deepEqual(watchArgs, [], JSON.stringify(opts));
+      }
+    });
   });
 });

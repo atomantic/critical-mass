@@ -54,7 +54,7 @@ const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
 const { buildRuntimeHealth } = require('./src/runtime-health');
 const { createOperatorAuth } = require('./src/operator-auth');
-const { resolveListenHosts, isGatewayOrigin, createCorsMiddleware, bindGatewayListeners } = require('./src/gateway-listen');
+const { resolveListenHosts, isGatewayOrigin, createCorsMiddleware, bindGatewayListeners, watchTailscaleListeners } = require('./src/gateway-listen');
 const { registerProcessGuards } = require('./src/process-guard');
 const { resolveIpcPort } = require('./src/ipc-port-defaults');
 const { PORTS } = require('./ecosystem.config.cjs');
@@ -88,9 +88,8 @@ const operatorAuth = createOperatorAuth({
     setTimeout(() => gracefulShutdown('operator password removal'), 100).unref();
   },
 });
-const LISTEN_HOSTS = resolveListenHosts(process.env.HOST, undefined, {
-  allowRemote: operatorAuth.hasPassword() || operatorAuth.hasRemoteBootstrap(),
-});
+const ALLOW_REMOTE_LISTEN = operatorAuth.hasPassword() || operatorAuth.hasRemoteBootstrap();
+const LISTEN_HOSTS = resolveListenHosts(process.env.HOST, undefined, { allowRemote: ALLOW_REMOTE_LISTEN });
 
 // CORS allowlist -- local dev, plus Tailscale 100.x / *.ts.net (see isGatewayOrigin)
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || `http://localhost:${PORT},http://localhost:5571`).split(',').map(s => s.trim());
@@ -107,10 +106,12 @@ const notifier = createNotifier();
 
 // Callbacks resolve their owners only when shutdown is requested, after startup.
 let schedulerTimer = null;
+let tailscaleWatcher = null;
 const gatewayShutdown = createGatewayShutdown({
   cancelSchedules: () => {
     for (const timer of [schedulerTimer, exchangeRefreshTimer, backupTimer, fundStateBackupTimer]) clearInterval(timer);
     schedulerTimer = backupTimer = fundStateBackupTimer = null;
+    tailscaleWatcher?.stop();
   },
   stopProducers: () => {
     updownService.stop();
@@ -507,6 +508,26 @@ const checkAndRunIntervalTrade = () => {
 // bind resolves.
 
 const extraServers = [];
+const attachExtraServer = (s) => {
+  io.attach(s);
+  socketEngines.push(io.engine);
+  extraServers.push(s);
+};
+
+// Default (HOST unset) mode only: a Tailscale address that comes up after the
+// gateway (tailscaled starts slower than PM2 after a reboot) is bound without
+// a restart. Explicit HOST values and loopback-only bootstrap never gain listeners.
+const watchLateTailscale = () => {
+  if (process.env.HOST?.trim() || !ALLOW_REMOTE_LISTEN) return;
+  tailscaleWatcher = watchTailscaleListeners({
+    bound: LISTEN_HOSTS,
+    port: PORT,
+    createServer: () => http.createServer(app),
+    onExtra: attachExtraServer,
+    isStopping: gatewayShutdown.isStopping,
+    log,
+  });
+};
 
 const startGatewayServices = () => {
   if (gatewayShutdown.isStopping()) return;
@@ -516,6 +537,7 @@ const startGatewayServices = () => {
   const { version } = require('./package.json');
   log('INFO', `\n⚛  Critical Mass v${version}\n·  ·  · ◉ ·  ·  ·\nBTC Accumulation Engine\n`);
   log('INFO', `Critical Mass running on ${LISTEN_HOSTS.map((h) => `http://${h}:${PORT}`).join(' ')}`);
+  watchLateTailscale();
   log('INFO', `Configured exchanges: ${getConfiguredExchanges().join(', ')}`);
   log('INFO', `Enabled exchanges: ${enabledExchanges.length > 0 ? enabledExchanges.join(', ') : 'none'}`);
 
@@ -557,11 +579,7 @@ bindGatewayListeners({
   port: PORT,
   server,
   createServer: () => http.createServer(app),
-  onExtra: (s) => {
-    io.attach(s);
-    socketEngines.push(io.engine);
-    extraServers.push(s);
-  },
+  onExtra: attachExtraServer,
   log,
 }).then(startGatewayServices, (err) => {
   // A shutdown that began mid-bind closes these servers itself; its own exit
