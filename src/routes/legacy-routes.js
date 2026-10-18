@@ -5,7 +5,7 @@
 
 const stateTracker = require('../state-tracker');
 const { getExchangeConfig, getDefaultPair, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun, getRegimeConfig, getGlobalConfig } = require('../config-utils');
-const { syncOrderStatuses, runIntervalCycle } = require('../dca-engine');
+const { syncFundOrders, runIntervalCycle } = require('../dca-engine');
 const { createContextLogger, getLogFile } = require('../logger');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { asyncRoute, tradeResultStatusCode } = require('./route-utils');
@@ -176,10 +176,7 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
     }
     const pair = legacyPair();
-    const config = getExchangeConfig('coinbase');
-    const state = stateTracker.loadState(config, 'coinbase', pair);
-    const filledOrders = await syncOrderStatuses(state, 'coinbase');
-    if (filledOrders.length > 0) stateTracker.saveState(state, 'coinbase', pair);
+    const { filledOrders } = await syncFundOrders('coinbase', pair);
     res.json({ success: true, filledOrders: filledOrders.length, lastSyncTime: new Date().toISOString() });
   }));
 

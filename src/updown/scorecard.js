@@ -112,10 +112,12 @@ let predictionCounter = 0
  * inflate UP precision with longs we never published. High-vol BUY uses a
  * lowered threshold (12), so the published type is the source of truth, not
  * getDirection's fixed 15.
- * @param {{score?: number, type?: string, trendGate?: {open?: boolean}}|null} result
+ * @param {{score?: number, type?: string, source?: string, trendGate?: {open?: boolean}}|null} result
  * @returns {'up' | 'down' | 'neutral'}
  */
 const scorecardDirection = (result) => {
+  // Flush reversals deliberately publish BUY through a closed composite gate.
+  if (result?.source === 'flush-setup' && result.type === 'BUY') return 'up'
   if (result?.trendGate?.open === false) {
     return getDirection(result?.score) === 'down' ? 'down' : 'neutral'
   }

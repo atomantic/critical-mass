@@ -28,7 +28,7 @@ const {
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
-const { syncOrderStatuses, runIntervalCycle, resumePendingBuy, executeConsolidation, reconcilePlacementIntent, retryFailedSell } = require('../dca-engine');
+const { syncFundOrders, runIntervalCycle, resumePendingBuy, executeConsolidation, reconcilePlacementIntent, retryFailedSell } = require('../dca-engine');
 const { shouldAutoResumeRegime, readBooleanFlag } = require('../shared-utils');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { prepareConfigUpdate, persistConfigUpdate } = require('./config-update');
@@ -530,13 +530,7 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
     }
 
-    const config = getFundConfig(exchange, pair);
-    const state = stateTracker.loadState(config, exchange, pair);
-
-    const filledOrders = await syncOrderStatuses(state, exchange, pair);
-    if (filledOrders.length > 0) {
-      stateTracker.saveState(state, exchange, pair);
-    }
+    const { filledOrders } = await syncFundOrders(exchange, pair);
 
     res.json({
       success: true,

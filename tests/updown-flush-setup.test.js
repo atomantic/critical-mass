@@ -9,6 +9,8 @@ const {
   replayFlushSetup,
 } = require('../src/updown/flush-setup')
 const { createSignalEngine } = require('../src/updown/signal-engine')
+const { createScorecard } = require('../src/updown/scorecard')
+const { drainPendingWrites } = require('../src/pending-writes')
 
 const MIN = 60_000
 const DAY = 86_400_000
@@ -153,6 +155,31 @@ describe('flush-reversal live tracker', () => {
 })
 
 describe('signal engine publishes the flush setup', () => {
+  it('scores a published flush BUY as an UP prediction while its composite gate is closed', async () => {
+    const series = buildSeries()
+    const { enteredAt } = replayFlushSetup(series).entries[0]
+    let now = D0 + 25 * 60 * MIN - 90 * MIN
+    const view = { getCandles: tf => liveView(series, now).getCandles(tf) }
+    const engine = createSignalEngine(view, { now: () => now })
+    let atEntry
+    for (; now <= enteredAt; now += MIN) atEntry = engine.computeSignals(null, null)
+    assert.equal(atEntry.type, 'BUY')
+    assert.equal(atEntry.source, 'flush-setup')
+    assert.equal(atEntry.trendGate.open, false)
+
+    const records = []
+    const scorecard = createScorecard({
+      io: { to: () => ({ emit() {} }) },
+      lastPriceFn: () => atEntry.flushSetup.entryPrice,
+      journalWriter: async record => records.push(record),
+    })
+    scorecard.recordPrediction(atEntry, 'signal_change')
+    await drainPendingWrites(1000)
+    assert.equal(scorecard.getMetrics().totalPredictions, 1)
+    assert.equal(scorecard.getMetrics().totalSkipped, 0)
+    assert.equal(records[0].compositeDirection, 'up')
+  })
+
   it('prints BUY for an active setup the composite would not, then closes on its exit', () => {
     const series = buildSeries()
     const { enteredAt, exit } = replayFlushSetup(series).entries[0]

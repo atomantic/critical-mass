@@ -1,3 +1,5 @@
+import { feeOf } from './cycle-pairing.mjs'
+
 // Pure helpers for the regime Transactions table: sort, whole-history summary
 // and fixed-size pagination (issue #852). Kept out of the component so the
 // page-slice / clamp / summary-parity behavior is unit-testable.
@@ -29,7 +31,7 @@ export function summarizeFills(fills) {
       totalSells++
       totalBtcSold += f.size
     }
-    totalFees += f.netFee || f.fee || 0
+    totalFees += feeOf(f)
     if (f.pnl !== null) totalPnL += f.pnl
     if (f.holdbackAsset !== null) totalHoldbackBtc += f.holdbackAsset
     if (f.holdbackValue !== null) totalHoldbackValue += f.holdbackValue

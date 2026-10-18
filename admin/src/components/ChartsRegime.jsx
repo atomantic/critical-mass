@@ -116,14 +116,6 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
     fetchData()
   }, [fetchData])
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-gray-400">Loading regime charts...</div>
-      </div>
-    )
-  }
-
   const isRunning = status?.isRunning
   const isDryRun = Boolean(status?.isDryRun || config?.dryRun)
   const market = status?.market || {}
@@ -140,6 +132,14 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
       dryRunFilled,
     })
   }, [fills, isDryRun, dryRunFilled])
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-gray-400">Loading regime charts...</div>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">

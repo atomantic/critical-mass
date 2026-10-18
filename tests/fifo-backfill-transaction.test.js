@@ -133,6 +133,66 @@ test('writer gate accepts only confirmed maintenance plus shutdown, or stopped P
   }), 43);
 });
 
+test('writer gate quiesces the real engine stop-all handler before staging', async (t) => {
+  const maintenance = require('../src/engine-maintenance');
+  const { createEngineStopAllHandler } = require('../src/engine-stop-all');
+  const { trackPendingWrite, drainPendingWrites } = require('../src/pending-writes');
+  const events = [];
+  let running = true;
+  let releaseWriter;
+  const writer = trackPendingWrite('engine-booking:backfill-test', () => new Promise(resolve => { releaseWriter = resolve; }));
+  t.after(async () => {
+    releaseWriter();
+    await writer;
+    maintenance.setEngineMaintenance({ active: false });
+    maintenance.setEngineRestoreQuiescing(false);
+  });
+  const engines = new Map([['coinbase::AAA-USD', {
+    getStatus: () => ({ isRunning: running }),
+    stop: async () => { running = false; events.push('stop-engine'); },
+    flushForBackup: () => events.push('flush-engine'),
+  }]]);
+  const handler = createEngineStopAllHandler({
+    regimeEngines: engines,
+    cancelStarts: async () => events.push('cancel-starts'),
+    drainPendingWrites,
+    stopMarketServices: () => events.push('stop-market'),
+    drainMarketStarts: async () => events.push('join-market'),
+    clearCaches: () => events.push('clear-caches'),
+    getMaintenance: maintenance.getEngineMaintenance,
+    setQuiescing: maintenance.setEngineRestoreQuiescing,
+    logger: () => ({ info() {}, error() {} }),
+    label: (exchange, pair) => `${exchange}/${pair}`,
+    setRunningFlag: () => events.push('clear-running-flag'),
+  });
+  const client = {
+    connect() {}, disconnect() {}, isConnected: () => true,
+    request: async (channel, payload) => channel === 'engine:maintenance'
+      ? maintenance.setEngineMaintenance(payload) : handler(),
+  };
+  const repair = withStoppedWriters(assertStopped => {
+    assertStopped();
+    events.push('stage');
+    return 42;
+  }, {
+    processes: [stopped('critical-mass')], configuredExchanges: ['coinbase'], createClient: () => client,
+  });
+  // Observe a refusal immediately so the intentionally failing pre-fix run has
+  // no unhandled rejection while the drain assertion runs below.
+  repair.catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(events, ['cancel-starts', 'stop-market', 'join-market', 'stop-engine']);
+  assert.equal(engines.size, 1, 'owner remains registered while its writer drains');
+  assert.equal(maintenance.refuseDuringMaintenance('regime:start').code, 'maintenance-in-progress');
+  releaseWriter();
+  await writer;
+  assert.equal(await repair, 42);
+  assert.deepEqual(events, ['cancel-starts', 'stop-market', 'join-market', 'stop-engine',
+    'flush-engine', 'clear-running-flag', 'clear-caches', 'stage']);
+  assert.equal(engines.size, 0);
+  assert.equal(maintenance.getEngineMaintenance(), null, 'repair releases its window');
+});
+
 test('startup refuses a pending cohort before any restore recovery or trading state load', (t) => {
   const { dataDir, funds, stage } = fixture(t);
   assert.throws(() => runBackfill({ dataDir, stage, write: interruptSecondFund(funds[1].file) }));

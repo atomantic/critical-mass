@@ -1067,6 +1067,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const tradeWindow = createTradeWindow(3 * 60 * 1000);
   Object.defineProperty(marketState, 'trades', { enumerable: true, get: tradeWindow.getTrades });
   let positionState = createInitialPositionState();
+  // Listener ownership is runtime state; persisted position projections must
+  // remain cloneable during buy/sell economic correction transactions.
+  let stateReloadSignalInstalled = false;
   let priceIncrement = 0.01; // Updated from product details in start()
   let productDetails = null; // Cached from start() for min-order-size checks
 
@@ -3076,10 +3079,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   const installStateReloadSignal = () => {
     // SIGUSR1: reload state from disk (for applying manual state fixes without restart)
-    if (!isDryRun) {
+    if (!isDryRun && !stateReloadSignalInstalled) {
       process.on('SIGUSR1', reloadStateFromDisk);
-      // Store for cleanup
-      positionState._sigusr1Handler = reloadStateFromDisk;
+      stateReloadSignalInstalled = true;
     }
   };
 
@@ -3433,9 +3435,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         logger.info(`💾 [${exchange}] Saved live state and fill ledger`);
       }
     } finally {
-      if (positionState._sigusr1Handler) {
-        process.removeListener('SIGUSR1', positionState._sigusr1Handler);
-        delete positionState._sigusr1Handler;
+      if (stateReloadSignalInstalled) {
+        process.removeListener('SIGUSR1', reloadStateFromDisk);
+        stateReloadSignalInstalled = false;
       }
       // Deregister this fund from the shared heartbeat (the adapter only
       // clears the timer when no other fund still needs it). Mirrors the
@@ -4333,12 +4335,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // doing so (as an earlier round of this fix did, falling back to the
       // raw un-ingested syntheticFill object) let the body absorb the gap
       // every such pass while the ledger only ever recorded it once. When it
-      // DOES ingest, this
-      // becomes fillsToAggregate's ONLY entry (never old-rows-plus-gap):
+      // DOES ingest, combine it with this pass's newly ingested rows:
       // downstream "advancing partial" handling ADDS summary.totalSize
       // onto the EXISTING body's assetQty, mirroring the success path
       // where ingestedFills already contains only the NEW delta —
-      // aggregating the already-BOOKED rows too would double-count what
+      // aggregating previously BOOKED rows too would double-count what
       // they contributed when first booked. (The buy branch still adds
       // rows that were never booked — collectBuyBookingBatch, #1021.) Also count it in
       // ingestedFills — gates shouldSkipBuyRecommit below, so an order a
@@ -4347,8 +4348,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const result = fillLedger.ingestFill(syntheticFill, orderPlacedAt);
       if (result.fill) {
         const bookable = Array.isArray(result.bookableFills) ? result.bookableFills : [result.fill];
-        fillsToAggregate = bookable;
         ingestedFills.push(...bookable);
+        fillsToAggregate = ingestedFills;
       } else {
         logger.info(
           `ℹ️ [${exchange}] Gap fill for ${fillData.orderId} already ingested — nothing new to aggregate this pass`,
