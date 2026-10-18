@@ -1170,15 +1170,11 @@ const loadRegimeState = (exchange = 'coinbase', pair) => {
   };
 };
 
-/**
- * Save regime state to file
- * @param {RegimePositionState} position - Position state
- * @param {RegimeState} regime - Regime state
- * @param {string} exchange - Exchange name
- * @param {Object} [tpOptimizer] - Optional TP optimizer state
- * @param {Object} [sizeOptimizer] - Optional Size optimizer state
- * @param {string} [pair] - Pair name; defaults to the exchange's default pair
- */
+const loadFundRegimeState = (exchange, pair) => {
+  if (!pair) throw new Error('loadFundRegimeState requires an explicit pair');
+  return loadRegimeState(exchange, pair);
+};
+
 /**
  * Protected fields that should be preserved from external edits
  * when an optimistic version conflict is detected.
@@ -1208,6 +1204,16 @@ const loadRegimeStateSafe = (exchange, pair) => {
   }
 };
 
+/**
+ * Save regime state to file
+ * @param {RegimePositionState} position - Position state
+ * @param {RegimeState} regime - Regime state
+ * @param {string} exchange - Exchange name
+ * @param {Object} [tpOptimizer] - Optional TP optimizer state
+ * @param {Object} [sizeOptimizer] - Optional Size optimizer state
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
+ * @deprecated Use saveFundRegimeState(exchange, pair, state) for fund-scoped writes.
+ */
 const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = null, sizeOptimizer = null, pair) => {
   const stateFile = getRegimeStateFile(exchange, pair);
   const dir = path.dirname(stateFile);
@@ -1283,6 +1289,17 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
   // a later external edit at nextVersion look stale and lose protected fields.
   position._saveVersion = nextVersion;
   saveVersions.set(stateFile, nextVersion);
+};
+
+/**
+ * Save the named state bundle for one explicitly identified fund.
+ * @param {string} exchange - Exchange name
+ * @param {string} pair - Required pair name
+ * @param {{position: Object, regime: Object, tpOptimizer?: Object|null, sizeOptimizer?: Object|null}} state - Fund state bundle
+ */
+const saveFundRegimeState = (exchange, pair, { position, regime, tpOptimizer = null, sizeOptimizer = null }) => {
+  if (!pair) throw new Error('saveFundRegimeState requires an explicit pair');
+  return saveRegimeState(position, regime, exchange, tpOptimizer, sizeOptimizer, pair);
 };
 
 // ============================================================================
@@ -1617,8 +1634,10 @@ module.exports = {
   createInitialRegimePositionState,
   createInitialRegimeState,
   loadRegimeState,
+  loadFundRegimeState,
   loadRegimeStateSafe,
   saveRegimeState,
+  saveFundRegimeState,
   // Atomic write utility (exposed for fill-ledger and testing)
   getPlacementIntentsFile,
   PLACEMENT_INTENT_STATUS,

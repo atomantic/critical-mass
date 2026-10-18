@@ -18,7 +18,7 @@ const { applyMarketMetrics } = require('./volatility-utils');
 const { getAdapter, isSupported } = require('./adapters');
 const { createHealthMonitor, instrumentAdapterForHealth } = require('./health-monitor');
 const { getRegimeConfig, getFundConfig, getDefaultPair, getBaseCurrency } = require('./config-utils');
-const { loadRegimeState } = require('./state-tracker');
+const { loadFundRegimeState } = require('./state-tracker');
 const { createFillLedger, FillValidationError } = require('./fill-ledger');
 const { fundKey } = require('./shared-utils');
 const { buildStoppedRegimeStatus } = require('./regime-status');
@@ -907,7 +907,7 @@ const createMarketDataService = (exchange, pair) => {
     regimeDetector = createRegimeDetector(exchange, config, {}, resolvedPair || productId);
 
     // Load any tracked orders from saved regime state.
-    const savedState = loadRegimeState(exchange, resolvedPair);
+    const savedState = loadFundRegimeState(exchange, resolvedPair);
     trackPersistedOrders(savedState.position);
     const bodyTpCount = (savedState.position?.celestialBodies || []).filter(b => b.tpOrderId).length;
     if (bodyTpCount > 0) {
@@ -1024,7 +1024,7 @@ const createMarketDataService = (exchange, pair) => {
     // edit, or another process closing the fund) aren't held stale for up
     // to REGIME_STATE_CACHE_MS.
     if (!cachedRegimeState || now - cachedRegimeStateTime > REGIME_STATE_CACHE_MS) {
-      cachedRegimeState = loadRegimeState(exchange, resolvedPair);
+      cachedRegimeState = loadFundRegimeState(exchange, resolvedPair);
       cachedRegimeStateTime = now;
       trackPersistedOrders(cachedRegimeState?.position);
     }

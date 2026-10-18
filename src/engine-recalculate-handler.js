@@ -29,8 +29,8 @@
  * @property {(exchange: string, pair: string) => string} resolvePair - Resolves an IPC pair to its configured fund pair; throws on an invalid pair
  * @property {(exchange: string, pair: string) => string} fundKey - Composes the `${exchange}::${pair}` registry key
  * @property {(payload: Object, field: string, defaultValue: boolean) => {value?: boolean, error?: string}} readBooleanFlag - Strict boolean flag parser (rejects non-boolean values, e.g. the string "false")
- * @property {(exchange: string, pair: string) => {position?: Object, regime?: Object, tpOptimizer?: Object, sizeOptimizer?: Object}} loadRegimeState - Loads on-disk regime state for a fund
- * @property {(position: Object, regime: Object, exchange: string, tpOptimizer: Object, sizeOptimizer: Object, pair: string) => void} saveRegimeState - Persists regime state to disk
+ * @property {(exchange: string, pair: string) => {position?: Object, regime?: Object, tpOptimizer?: Object, sizeOptimizer?: Object}} loadFundRegimeState - Loads on-disk regime state for a fund
+ * @property {(exchange: string, pair: string, state: Object) => void} saveFundRegimeState - Persists one named fund state bundle
  * @property {(exchange: string, pair: string) => void} invalidateStandaloneLedger - Drops the cached standalone fill ledger for a fund
  * @property {(exchange: string, pair: string) => Object} getStandaloneLedger - Loads (or returns the cached) standalone fill ledger for a fund; throws on cold-start ledger corruption
  */
@@ -68,8 +68,8 @@ const registerEngineRecalculateHandler = (registry, deps) => {
     resolvePair,
     fundKey,
     readBooleanFlag,
-    loadRegimeState,
-    saveRegimeState,
+    loadFundRegimeState,
+    saveFundRegimeState,
     invalidateStandaloneLedger,
     getStandaloneLedger,
   } = deps;
@@ -83,7 +83,7 @@ const registerEngineRecalculateHandler = (registry, deps) => {
     if (applyFlag.error) return { success: false, error: applyFlag.error };
     const apply = applyFlag.value;
 
-    const currentState = loadRegimeState(exchange, resolvedPair);
+    const currentState = loadFundRegimeState(exchange, resolvedPair);
     const before = {
       cyclesCompleted: currentState.position?.cyclesCompleted || 0,
       realizedPnL: currentState.position?.realizedPnL || 0,
@@ -191,7 +191,7 @@ const registerEngineRecalculateHandler = (registry, deps) => {
             bodiesRealizedAssetPnL: derived.realizedAssetPnL,
           };
         }
-        saveRegimeState(position, currentState.regime, exchange, currentState.tpOptimizer, currentState.sizeOptimizer, resolvedPair);
+        saveFundRegimeState(exchange, resolvedPair, { ...currentState, position });
         fillLedger.persist();
       }
     }

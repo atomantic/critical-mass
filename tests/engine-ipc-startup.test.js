@@ -104,7 +104,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
     },
     '../src/restore-apply': { guardIncompleteRestore: () => { calls.push('restore'); } },
     '../src/dca-conversion-transaction': { recoverDcaImport: () => ({ recovered: false }) },
-    '../src/state-tracker': { LIFECYCLE: { CLOSED: 'closed' }, loadRegimeState: () => { calls.push('state'); return {}; }, loadRegimeStateSafe: () => { calls.push('state'); return {}; } },
+    '../src/state-tracker': { LIFECYCLE: { CLOSED: 'closed' }, loadFundRegimeState: () => { calls.push('state'); return {}; }, loadRegimeStateSafe: () => { calls.push('state'); return {}; } },
     '../src/adapters': { getAdapter: () => { calls.push('adapter'); return { hasValidKeys: () => true }; } },
     '../src/process-guard': { registerProcessGuards: () => {} },
     '../src/ipc-port-defaults': { resolveIpcPort: () => 12345 },

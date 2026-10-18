@@ -95,7 +95,7 @@ module.exports = (app, deps) => {
       const hasRegimeConfig = !!(config.regime && Object.keys(config.regime).length > 0);
       // Surface fund lifecycle from saved regime state so the UI can render
       // Draining/Closed badges without an extra round-trip.
-      const regimeState = stateTracker.loadRegimeState(exchange, pair);
+      const regimeState = stateTracker.loadFundRegimeState(exchange, pair);
       const lifecycle = regimeState?.position?.lifecycle || 'active';
       return {
         name: exchange,
@@ -129,7 +129,7 @@ module.exports = (app, deps) => {
       defaultPair: getDefaultPair(exchange),
       funds: funds.map((pair) => {
         const config = getFundConfig(exchange, pair);
-        const regimeState = stateTracker.loadRegimeState(exchange, pair);
+        const regimeState = stateTracker.loadFundRegimeState(exchange, pair);
         return {
           pair,
           productId: config.productId,
@@ -260,7 +260,7 @@ module.exports = (app, deps) => {
   // operator must remove data/<exchange>/<pair>/ manually if desired.
   app.delete('/api/:exchange/funds/:pair', (req, res) => {
     const { exchange, pair } = req.params;
-    const regimeState = stateTracker.loadRegimeState(exchange, pair);
+    const regimeState = stateTracker.loadFundRegimeState(exchange, pair);
     const lifecycle = regimeState?.position?.lifecycle || 'active';
     if (lifecycle !== 'closed') {
       return res.status(400).json({

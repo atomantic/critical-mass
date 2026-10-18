@@ -54,7 +54,7 @@ const { registerEngineRecalculateHandler } = require('../src/engine-recalculate-
 const { migrateExchangeToPairs, guardLegacyMigration } = require('../src/migration');
 const { guardIncompleteRestore } = require('../src/restore-apply');
 const { recoverDcaImport } = require('../src/dca-conversion-transaction');
-const { LIFECYCLE, closeDrainedEmptyPosition, loadRegimeState, loadRegimeStateSafe, saveRegimeState } = require('../src/state-tracker');
+const { LIFECYCLE, closeDrainedEmptyPosition, loadFundRegimeState, loadRegimeStateSafe, saveFundRegimeState } = require('../src/state-tracker');
 const { getAdapter } = require('../src/adapters');
 const { registerProcessGuards } = require('../src/process-guard');
 const { resolveIpcPort } = require('../src/ipc-port-defaults');
@@ -218,7 +218,7 @@ const { autoResumeFund, resumeAfterBackup, getStartStatus, cancelStarts, settleS
   logger: engineLogger,
   getFundConfig,
   getAdapter,
-  loadRegimeState,
+  loadFundRegimeState,
   LIFECYCLE,
   createRegimeEngine,
   createEngineCallbacks,
@@ -238,7 +238,7 @@ const { autoResumeFund, resumeAfterBackup, getStartStatus, cancelStarts, settleS
 const autoCloseDrainedFundWhileStopped = (exchange, pair, savedState) => {
   const position = savedState?.position;
   if (!closeDrainedEmptyPosition(position)) return;
-  saveRegimeState(position, savedState.regime, exchange, savedState.tpOptimizer, savedState.sizeOptimizer, pair);
+  saveFundRegimeState(exchange, pair, { ...savedState, position });
   saveRegimeRunningFlag(exchange, pair, false);
   engineLogger(exchange, pair).info(`ℹ️ 🛑 [${fundLabel(exchange, pair)}] Draining fund has empty position — auto-closed`);
 };
@@ -317,8 +317,8 @@ ipcServer.onRequest('regime:reopen', async (payload, exchange, pair) => {
   if (regimeEngines.has(fundKey(exchange, resolvedPair))) {
     return { success: false, error: 'Engine is running — close it first or wait for it to drain' };
   }
-  const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
-  const saved = loadRegimeState(exchange, resolvedPair);
+  const { loadFundRegimeState, saveFundRegimeState } = require('../src/state-tracker');
+  const saved = loadFundRegimeState(exchange, resolvedPair);
   if (!saved?.position) {
     return { success: false, error: 'No saved regime state found' };
   }
@@ -328,7 +328,7 @@ ipcServer.onRequest('regime:reopen', async (payload, exchange, pair) => {
   saved.position.lifecycle = LIFECYCLE.ACTIVE;
   saved.position.lifecycleChangedAt = Date.now();
   saved.position.lifecycleReason = null;
-  saveRegimeState(saved.position, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, resolvedPair);
+  saveFundRegimeState(exchange, resolvedPair, saved);
   engineLogger(exchange, resolvedPair).info(`ℹ️ 🔓 [${fundLabel(exchange, resolvedPair)}] Fund reopened — lifecycle=active`);
   ioProxy.emit('regime:reopened', { exchange, pair: resolvedPair });
   return { success: true, exchange, pair: resolvedPair, lifecycle: LIFECYCLE.ACTIVE };
@@ -593,8 +593,8 @@ registerEngineRecalculateHandler(ipcServer, {
   resolvePair,
   fundKey,
   readBooleanFlag,
-  loadRegimeState,
-  saveRegimeState,
+  loadFundRegimeState,
+  saveFundRegimeState,
   invalidateStandaloneLedger,
   getStandaloneLedger,
 });

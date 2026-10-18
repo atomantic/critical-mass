@@ -6,7 +6,7 @@
  */
 
 const { getFundConfig } = require('./config-utils');
-const { loadState, loadRegimeState } = require('./state-tracker');
+const { loadState, loadFundRegimeState } = require('./state-tracker');
 const { getCachedFillLedger } = require('./fill-ledger');
 const { getLogFile } = require('./logger');
 const { parseTSV, calculateCostBasis, getNextTradeInfo } = require('./shared-utils');
@@ -84,7 +84,7 @@ function buildDcaFundSummary(exchange, pair, config) {
 function buildFundSummary(exchange, pair, opts = {}) {
   // Load dependencies if not provided
   const config = opts.config || getFundConfig(exchange, pair);
-  const regimeState = opts.regimeState || loadRegimeState(exchange, pair);
+  const regimeState = opts.regimeState || loadFundRegimeState(exchange, pair);
   const fillLedger = opts.fillLedger || getCachedFillLedger(exchange, config.productId, pair);
 
   const position = regimeState.position || {};

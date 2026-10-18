@@ -100,9 +100,9 @@ const applySellCorrectionCapital = (exchange, pair, correction) => {
 
 /** Persisted fallback used by manual/sync ingestion when no engine is live. */
 const applyPersistedSellCorrection = (exchange, pair, correction, derived) => {
-  const { loadRegimeState, saveRegimeState } = require('./state-tracker');
+  const { loadFundRegimeState, saveFundRegimeState } = require('./state-tracker');
   const { createClosedTrades } = require('./closed-trades');
-  const saved = loadRegimeState(exchange, pair);
+  const saved = loadFundRegimeState(exchange, pair);
   const next = structuredClone(saved.position || {});
   next.appliedSellCorrections = [...new Set([...(next.appliedSellCorrections || []), correction.id])];
   next.realizedPnL = derived.realizedPnL;
@@ -112,7 +112,7 @@ const applyPersistedSellCorrection = (exchange, pair, correction, derived) => {
     next.celestialState.bodiesRealizedPnL = derived.realizedPnL;
     next.celestialState.bodiesRealizedAssetPnL = derived.realizedAssetPnL;
   }
-  saveRegimeState(next, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, pair);
+  saveFundRegimeState(exchange, pair, { ...saved, position: next });
   applySellCorrectionCapital(exchange, pair, correction);
   const closed = createClosedTrades(exchange, pair);
   closed.load();

@@ -24,7 +24,7 @@
  */
 
 const { createNewBody, syncPositionState, mergeIntoBody, computeBuyOrderShortfall } = require('./celestial-hierarchy');
-const { loadRegimeState, saveRegimeState } = require('./state-tracker');
+const { loadFundRegimeState, saveFundRegimeState } = require('./state-tracker');
 const { STATUS, INTENT_PHASE, SIZE_EPSILON, getUncoveredSize } = require('./manual-trades');
 const { FillValidationError, validateFillInput, LEGACY_CONSUMPTION_KEY } = require('./fill-ledger');
 const { readBooleanFlag, isFilledStatus, isCancelledStatus } = require('./shared-utils');
@@ -758,14 +758,14 @@ const createManualTradeImporter = ({
    *   when there is no position state to persist into
    */
   const persistBodyToDisk = (body) => {
-    const saved = loadRegimeState(exchange, pair);
+    const saved = loadFundRegimeState(exchange, pair);
     if (!saved.position) return null;
     saved.position.celestialBodies = saved.position.celestialBodies || [];
     const existing = saved.position.celestialBodies.find((b) => bodyOwnsOrder(b, body.id, body.sourceOrderIds?.[0]));
     if (existing) return { bodyId: existing.id, tier: existing.tier };
     saved.position.celestialBodies.push(body);
     syncPositionState(saved.position, saved.position.celestialBodies);
-    saveRegimeState(saved.position, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, pair);
+    saveFundRegimeState(exchange, pair, saved);
     return { bodyId: body.id, tier: body.tier };
   };
 
@@ -791,7 +791,7 @@ const createManualTradeImporter = ({
    * @returns {{bodyId: string, tier?: string, live: boolean}|null}
    */
   const findCommittedBody = (buyOrderId, bodyId) => {
-    const persisted = loadRegimeState(exchange, pair).position?.celestialBodies
+    const persisted = loadFundRegimeState(exchange, pair).position?.celestialBodies
       ?.find((body) => bodyOwnsOrder(body, bodyId, buyOrderId));
     if (persisted) return { bodyId: persisted.id, tier: persisted.tier, live: true };
     const rows = fillLedger.getFillsForOrder(buyOrderId);
@@ -848,7 +848,7 @@ const createManualTradeImporter = ({
    * @returns {{success: boolean, bodyId?: string, tier?: string, error?: string, alreadyApplied?: boolean, needsTpReprice?: boolean}}
    */
   const extendPersistedBody = (bodyId, totals, buyOrderId) => {
-    const saved = loadRegimeState(exchange, pair);
+    const saved = loadFundRegimeState(exchange, pair);
     if (!saved.position) return { success: false, error: 'No position state on disk' };
     const body = (saved.position.celestialBodies || []).find((b) => b.id === bodyId);
     if (!body) return { success: false, error: 'Body not found' };
@@ -866,7 +866,7 @@ const createManualTradeImporter = ({
     const hadTp = !!body.tpOrderId;
     if (hadTp) body.needsTpReprice = true;
     syncPositionState(saved.position, saved.position.celestialBodies);
-    saveRegimeState(saved.position, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, pair);
+    saveFundRegimeState(exchange, pair, saved);
     return { success: true, bodyId: body.id, tier: body.tier, needsTpReprice: hadTp };
   };
 
@@ -956,7 +956,7 @@ const createManualTradeImporter = ({
     // store without its bodyId. The ledger normally retains the link; the
     // persisted body's order bookkeeping also recovers a missing annotation.
     const persistedBodyId = !trade.bodyId && !ledgerBodyId
-      ? loadRegimeState(exchange, pair).position?.celestialBodies?.find((body) => bodyOwnsOrder(body, null, buyOrderId))?.id
+      ? loadFundRegimeState(exchange, pair).position?.celestialBodies?.find((body) => bodyOwnsOrder(body, null, buyOrderId))?.id
       : null;
     let currentBodyId = ledgerBodyId || trade.bodyId || persistedBodyId;
     if (currentBodyId || trade.status === STATUS.TP_PENDING) {

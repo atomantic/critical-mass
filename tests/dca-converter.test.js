@@ -608,17 +608,17 @@ describe('dca-converter fund routing (issue #414)', () => {
       seedFund(DEFAULT_PAIR, { orders: [] });
       reseedOrders(DEFAULT_PAIR, mergeOrders()); // one filled + one pending, no persisted boundary yet
 
-      // Stub state-tracker's saveRegimeState to record every call's
+      // Stub state-tracker's saveFundRegimeState to record every call's
       // activeCycleId, then force dca-converter to be re-required so its
       // own destructured reference binds to the stub (mirrors this file's
       // own "destructured at require time" re-require pattern above).
       delete require.cache[STATE_TRACKER];
       const stateTracker = require('../src/state-tracker');
-      const originalSaveRegimeState = stateTracker.saveRegimeState;
+      const originalSaveFundRegimeState = stateTracker.saveFundRegimeState;
       const calls = [];
-      stateTracker.saveRegimeState = (position, ...rest) => {
-        calls.push(position.activeCycleId);
-        return originalSaveRegimeState(position, ...rest);
+      stateTracker.saveFundRegimeState = (exchange, pair, state) => {
+        calls.push(state.position.activeCycleId);
+        return originalSaveFundRegimeState(exchange, pair, state);
       };
 
       let freshConverter;
@@ -630,7 +630,7 @@ describe('dca-converter fund routing (issue #414)', () => {
         const result = freshConverter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
         assert.equal(result.success, true);
       } finally {
-        stateTracker.saveRegimeState = originalSaveRegimeState;
+        stateTracker.saveFundRegimeState = originalSaveFundRegimeState;
       }
 
       // At least two saves: the immediate boundary-correction save, and the

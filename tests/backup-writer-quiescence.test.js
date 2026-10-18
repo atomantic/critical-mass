@@ -400,7 +400,7 @@ describe('backup resume keeps automatic fund supervision', () => {
     const lifecycle = registerEngineLifecycleHandlers(registry, {
       regimeEngines, resolvePair: (_, pair) => pair, fundKey, fundLabel, logger: () => logger,
       getFundConfig: (exchange, pair) => ({ exchange, pair }), getAdapter: () => ({ hasValidKeys: () => true }),
-      loadRegimeState: () => ({ position: { lifecycle: LIFECYCLE.ACTIVE } }), LIFECYCLE,
+      loadFundRegimeState: () => ({ position: { lifecycle: LIFECYCLE.ACTIVE } }), LIFECYCLE,
       createRegimeEngine, createEngineCallbacks: () => ({}),
       startMarketDataService: async () => ({ success: true }), fenceMarketDataService: async () => ({ drained: true }),
       wireMarketDataCallbacks: () => {}, invalidateStandaloneLedger: () => {},

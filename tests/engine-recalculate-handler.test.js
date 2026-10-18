@@ -118,14 +118,15 @@ const createHarness = () => {
     return pair || DEFAULT_PAIR;
   };
 
-  const loadRegimeState = (exchange, pair) => {
-    calls.push({ op: 'loadRegimeState', pair });
+  const loadFundRegimeState = (exchange, pair) => {
+    calls.push({ op: 'loadFundRegimeState', pair });
     const key = fundKey(exchange, pair);
     return regimeStateByFund.get(key) || { position: {}, regime: { mode: 'HARVEST' }, tpOptimizer: null, sizeOptimizer: null };
   };
 
-  const saveRegimeState = (position, regime, exchange, tpOptimizer, sizeOptimizer, pair) => {
-    calls.push({ op: 'saveRegimeState', pair, position, regime, tpOptimizer, sizeOptimizer });
+  const saveFundRegimeState = (exchange, pair, state) => {
+    const { position, regime, tpOptimizer, sizeOptimizer } = state;
+    calls.push({ op: 'saveFundRegimeState', pair, position, regime, tpOptimizer, sizeOptimizer });
     const key = fundKey(exchange, pair);
     const prior = regimeStateByFund.get(key) || {};
     regimeStateByFund.set(key, { ...prior, position });
@@ -150,8 +151,8 @@ const createHarness = () => {
     resolvePair,
     fundKey,
     readBooleanFlag,
-    loadRegimeState,
-    saveRegimeState,
+    loadFundRegimeState,
+    saveFundRegimeState,
     invalidateStandaloneLedger,
     getStandaloneLedger,
   };
@@ -198,7 +199,7 @@ describe('engine-recalculate-handler', () => {
       assert.equal(firstIndex(mine, 'engine.recalculateAndRefresh'), -1, 'must never call live apply during a preview');
       assert.equal(firstIndex(mine, 'persist'), -1, 'must never persist during a preview');
       assert.equal(firstIndex(h.calls, 'getStandaloneLedger'), -1, 'must never create a standalone ledger while the engine is running');
-      assert.equal(firstIndex(h.calls, 'saveRegimeState'), -1, 'must never persist regime state during a preview');
+      assert.equal(firstIndex(h.calls, 'saveFundRegimeState'), -1, 'must never persist regime state during a preview');
     });
 
     it('explicit apply:false behaves identically to omitted apply', async () => {
@@ -234,7 +235,7 @@ describe('engine-recalculate-handler', () => {
       const mine = callsFor(h.calls, PAIR_A);
       assert.ok(mine.some((c) => c.op === 'engine.recalculateAndRefresh'), 'must delegate to the running engine\'s own recalculateAndRefresh');
       assert.equal(firstIndex(h.calls, 'getStandaloneLedger'), -1, 'live apply must never open a second ledger writer on the same file');
-      assert.equal(firstIndex(h.calls, 'saveRegimeState'), -1, 'live apply must never save a standalone position — recalculateAndRefresh owns persistence on the live engine');
+      assert.equal(firstIndex(h.calls, 'saveFundRegimeState'), -1, 'live apply must never save a standalone position — recalculateAndRefresh owns persistence on the live engine');
 
       // The stale disk fixture (live TP/body tracking) is untouched — proves
       // a live apply cannot overwrite it via this handler.
@@ -244,7 +245,7 @@ describe('engine-recalculate-handler', () => {
   });
 
   describe('stopped fund — preview (issue #132)', () => {
-    it('never persists (no saveRegimeState, no ledger persist)', async () => {
+    it('never persists (no saveFundRegimeState, no ledger persist)', async () => {
       const h = createHarness();
       const staleFixture = makeStaleFixture();
       h.regimeStateByFund.set(fundKey(EXCHANGE, PAIR_A), { position: staleFixture, regime: { mode: 'HARVEST' } });
@@ -252,7 +253,7 @@ describe('engine-recalculate-handler', () => {
       const result = await h.recalculate({ apply: false }, EXCHANGE, PAIR_A);
 
       assert.equal(result.applied, false);
-      assert.equal(firstIndex(callsFor(h.calls, PAIR_A), 'saveRegimeState'), -1, 'stopped preview must never persist regime state');
+      assert.equal(firstIndex(callsFor(h.calls, PAIR_A), 'saveFundRegimeState'), -1, 'stopped preview must never persist regime state');
       assert.equal(firstIndex(callsFor(h.calls, PAIR_A), 'persist'), -1, 'stopped preview must never persist the ledger');
     });
   });
@@ -269,7 +270,7 @@ describe('engine-recalculate-handler', () => {
       assert.equal(firstIndex(callsFor(h.calls, PAIR_A), 'recalculateCycles') >= 0, true);
       assert.equal(firstIndex(callsFor(h.calls, PAIR_A), 'persist') >= 0, true, 'stopped apply must persist the ledger');
 
-      const saveCall = h.calls.find((c) => c.op === 'saveRegimeState' && c.pair === PAIR_A);
+      const saveCall = h.calls.find((c) => c.op === 'saveFundRegimeState' && c.pair === PAIR_A);
       assert.ok(saveCall, 'stopped apply must persist regime state');
       const saved = saveCall.position;
 
@@ -301,7 +302,7 @@ describe('engine-recalculate-handler', () => {
 
       await h.recalculate({ apply: true }, EXCHANGE, PAIR_A);
 
-      const saveCall = h.calls.find((c) => c.op === 'saveRegimeState' && c.pair === PAIR_A);
+      const saveCall = h.calls.find((c) => c.op === 'saveFundRegimeState' && c.pair === PAIR_A);
       assert.equal(saveCall.position.celestialState.bodiesRealizedPnL, 42);
       assert.equal(saveCall.position.celestialState.bodiesRealizedAssetPnL, 0.002);
       assert.equal(saveCall.position.celestialState.bodiesCompleted, 7, 'unrelated celestialState fields preserved');
@@ -317,7 +318,7 @@ describe('engine-recalculate-handler', () => {
 
       await h.recalculate({ apply: true }, EXCHANGE, PAIR_A);
 
-      const saveCall = h.calls.find((c) => c.op === 'saveRegimeState' && c.pair === PAIR_A);
+      const saveCall = h.calls.find((c) => c.op === 'saveFundRegimeState' && c.pair === PAIR_A);
       assert.equal(saveCall.position.celestialState, undefined, 'legacy state without celestialState must not have one synthesized');
     });
   });
@@ -339,7 +340,7 @@ describe('engine-recalculate-handler', () => {
       assert.ok(anchor >= 0 && anchor < firstIndex(mine, 'recalculateCycles'), 'boundary restored before recalc');
       assert.equal(mine[anchor].id, 'cycle-2');
       assert.equal(mine[anchor].startedAt, 1234, 'the persisted start time bounds live-cycle attribution (#705)');
-      const saved = h.calls.find((c) => c.op === 'saveRegimeState').position;
+      const saved = h.calls.find((c) => c.op === 'saveFundRegimeState').position;
       assert.equal(saved.activeCycleId, 'cycle-3', 'marker follows the rename');
     });
 
@@ -354,7 +355,7 @@ describe('engine-recalculate-handler', () => {
 
       await h.recalculate({ apply: true }, EXCHANGE, PAIR_A);
 
-      const saved = h.calls.find((c) => c.op === 'saveRegimeState').position;
+      const saved = h.calls.find((c) => c.op === 'saveFundRegimeState').position;
       assert.equal(saved.cycleBuys, 2);
       assert.equal(saved.activeCycleId, 'cycle-2');
     });
@@ -389,7 +390,7 @@ describe('engine-recalculate-handler', () => {
       const result = await h.recalculate({ apply: 'false' }, EXCHANGE, PAIR_A);
 
       assert.deepEqual(result, { success: false, error: 'apply must be a boolean' });
-      assert.equal(h.calls.length, 0, 'malformed apply must reject before touching loadRegimeState/ledger/resolvePair-dependent state');
+      assert.equal(h.calls.length, 0, 'malformed apply must reject before touching loadFundRegimeState/ledger/resolvePair-dependent state');
     });
 
     for (const badApply of ['true', 0, 1, [], {}, null]) {
@@ -410,7 +411,7 @@ describe('engine-recalculate-handler', () => {
 
       assert.equal(result.success, false);
       assert.equal(result.error, 'Fill ledger init failed for coinbase/BTC-USD — see engine logs for details');
-      assert.equal(firstIndex(h.calls, 'saveRegimeState'), -1, 'cold-start failure must not save');
+      assert.equal(firstIndex(h.calls, 'saveFundRegimeState'), -1, 'cold-start failure must not save');
       assert.equal(firstIndex(h.calls, 'persist'), -1, 'cold-start failure must not persist the ledger');
     });
 
