@@ -5497,9 +5497,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
   };
 
-  // This step retains each early return's executor acknowledgement behavior.
-  const handleBuyOrderFill = async (fillData, dedupRef, keepEntryTracked, {
-    ingestCycleId, ingestedFills, isTerminalFill, fillsToAggregate,
+  // Resolve bookable rows and register dedup before any body mutation or await.
+  const resolveBuyBookingBatch = (fillData, {
+    ingestedFills, isTerminalFill, keepEntryTracked, dedupRef, fillsToAggregate,
   }) => {
     // Nothing to book this pass — no new fills were ingested, nothing was
     // already in the ledger for this orderId to fall back on, AND gap
@@ -5532,7 +5532,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         `⏳ [${exchange}] No fills to aggregate yet for still-live buy ${fillData.orderId} (status shows ${fillData.filledSize} filled) — leaving retryable for the next poll/reconcile`,
         { orderId: fillData.orderId, filledSize: fillData.filledSize }
       );
-      return;
+      return { skip: 'no-fills' };
     }
 
     // Every row we hold for this order was already booked by a body that is
@@ -5567,21 +5567,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (bookingBatch.length === 0
       && !isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId)) {
       logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} holds only tranches a retired body already settled and no new fills — nothing to book`);
-      if (!keepEntryTracked) {
-        retireTrackedEntry(fillData.orderId);
-        orderExecutor.handleOrderFill(fillData.orderId);
-      }
-      return;
+      return { skip: 'settled' };
     }
     if (bookingBatch.length > 0) fillsToAggregate = bookingBatch;
     const hasBookableBuyFills = bookingBatch.length > 0;
     const bookedTradeIds = new Set(bookingBatch.map(f => f.tradeId));
-    // Link only rows this pass committed (plus rows a body already owns, so
-    // the order-level annotation stays uniform): a row of the order that is
-    // still unbooked and outside the batch must stay recoverable.
-    const linkBookedBuyRows = (metadata) => fillLedger.annotateFillsByOrderIds([fillData.orderId], metadata,
-      { include: f => bookedTradeIds.has(f.tradeId) || !isUnsettledBuyRow(f) });
-
     // Buy-fill dedup across WS vs polling. Without it, a buy detected by both
     // the polling path (which starts the multi-hundred-ms handleOrderFill
     // chain, incl. a possible 2s retry) and a late WS FILLED event for the
@@ -5603,7 +5593,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       : makeFillDedupKey(fillData.orderId, keepEntryTracked, fillData.filledSize);
     if (recentlyProcessedBuyFills.has(buyDedupKey)) {
       logger.info(`⏭️ [${exchange}] Buy fill already processed, skipping: ${buyDedupKey}`);
-      return;
+      return { skip: 'duplicate' };
     }
     recentlyProcessedBuyFills.add(buyDedupKey);
     if (dedupRef) { dedupRef.set = recentlyProcessedBuyFills; dedupRef.key = buyDedupKey; }
@@ -5635,13 +5625,85 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // row the exchange had exposed, and returning outright would strand the
       // persisted pending-entry (and its share of deployedInPosition) until a
       // restart, even though the executor has already dropped the order.
-      if (!keepEntryTracked) {
-        retireTrackedEntry(fillData.orderId);
-        orderExecutor.handleOrderFill(fillData.orderId);
-      }
-      return;
+      return { skip: 'recommit' };
     }
 
+    return { batch: fillsToAggregate, bookedTradeIds, hasBookableBuyFills };
+  };
+
+  // The two arms have distinct synchronous prefixes: merges annotate before
+  // promotion/sync; new bodies sync before annotation. Both commit accounting
+  // before the first TP await, and merge size repair precedes notification.
+  const commitBuyIntoBody = async ({
+    newBuy, orderId, mergeTarget, summary, fillTypeLabel, isLadderFill,
+    linkBookedBuyRows, commitBuyAccounting, finishBooking,
+  }) => {
+    const isMerge = Boolean(mergeTarget);
+    let body;
+    if (isMerge) {
+      body = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.maxUsdcDeployed, undefined, logger);
+      const idx = positionState.celestialBodies.findIndex(b => b.id === body.id);
+      if (idx !== -1) positionState.celestialBodies[idx] = body;
+    } else {
+      body = celestialHierarchy.createNewBody(newBuy, orderId);
+      positionState.celestialBodies = positionState.celestialBodies || [];
+      positionState.celestialBodies.push(body);
+    }
+    const annotate = () => linkBookedBuyRows({ isBodyOwned: true, bodyId: body.id, bodyTier: body.tier });
+    if (isMerge) {
+      annotate();
+      celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
+      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+    } else {
+      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+      annotate();
+    }
+    commitBuyAccounting();
+
+    if (isMerge) {
+      await placeBodyTpWithRetry(body, 'Merge');
+      // Defense-in-depth: verify TP covers updated body size after merge
+      if (body.tpOrderId && body.assetOnOrder > 0 && body.tpPrice > 0) {
+        const tierCfgCheck = celestialHierarchy.getTierConfig(body.tier);
+        const { sellQty } = positionSizer.calculateTakeProfitSize(
+          body.assetQty, body.avgPrice, body.tpPrice, tierCfgCheck.holdbackScale
+        );
+        if (Math.abs(sellQty - body.assetOnOrder) > 0.00000001) {
+          logger.warn(`⚠️ [${exchange}] Stale TP detected for body ${body.id.slice(-8)}: onOrder=${body.assetOnOrder}, expected=${sellQty} — cancelling for re-place`);
+          if (await cancelBodyTpForReplace(body, 'Post-merge stale-size') === 'cancelled') {
+            await placeBodyTp(body);
+          }
+        }
+      }
+    } else {
+      const bodyTpPlaced = await placeBodyTp(body);
+      if (!bodyTpPlaced) {
+        logger.warn(`⚠️ [${exchange}] Body TP placement failed for ${body.id.slice(-8)}, body persists without TP`);
+      }
+    }
+
+    const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+    if (isMerge) {
+      logger.info(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy merged into ${body.tier}: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, body=${body.id.slice(-8)} (${body.assetQty.toFixed(6)} ${baseCurrency}, avg=${fmtPrice(body.avgPrice)})`);
+    } else {
+      logger.info(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy filled → created ${body.tier} body: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, body=${body.id.slice(-8)}`);
+    }
+    const bodyLabel = isMerge ? `merged→${body.tier}` : `new ${body.tier}`;
+    tradeEvents.emitTradeEvent('buy_filled', exchange, `${fillTypeLabel}${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)} [${bodyLabel}]`, {
+      assetAmount: summary.totalSize,
+      price: summary.avgPrice,
+      bodyId: body.id,
+      bodyTier: body.tier,
+      ...(isMerge ? { isMerge: true } : {}),
+      isLadderFill,
+    });
+    // Finish tracking and persistence in this continuation, before resolving
+    // the helper promise can yield to another order's booking/reset cycle.
+    finishBooking();
+  };
+
+  // Prepare the booking inputs before any merge cancellation awaits.
+  const prepareBuyBodyBooking = (fillData, fillsToAggregate, ingestCycleId) => {
     // Check if this is a ladder order fill (use positionState since polling may delete from pendingOrders before callback)
     const isLadderFill =
       (positionState.pendingLadderOrders &&
@@ -5680,11 +5742,41 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Find merge target among existing celestial bodies
     const bodies = positionState.celestialBodies || [];
-    let mergeTarget = celestialHierarchy.findMergeTarget(
+    const mergeTarget = celestialHierarchy.findMergeTarget(
       bodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
       config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders,
       config.mergeProximityScale ?? 1.0
     );
+
+    return { summary, newBuy, mergeTarget, commitBuyAccounting, isLadderFill,
+      fillTypeLabel: isLadderFill ? '[LADDER] ' : '' };
+  };
+
+  // This step retains each early return's executor acknowledgement behavior.
+  const handleBuyOrderFill = async (fillData, dedupRef, keepEntryTracked, {
+    ingestCycleId, ingestedFills, isTerminalFill, fillsToAggregate,
+  }) => {
+    const booking = resolveBuyBookingBatch(fillData, {
+      ingestedFills, isTerminalFill, keepEntryTracked, dedupRef, fillsToAggregate,
+    });
+    if (booking.skip) {
+      if (!keepEntryTracked && ['settled', 'recommit'].includes(booking.skip)) {
+        retireTrackedEntry(fillData.orderId);
+        orderExecutor.handleOrderFill(fillData.orderId);
+      }
+      return;
+    }
+    fillsToAggregate = booking.batch;
+    const { bookedTradeIds } = booking;
+    // Link only rows this pass committed (plus rows a body already owns, so
+    // the order-level annotation stays uniform): a row of the order that is
+    // still unbooked and outside the batch must stay recoverable.
+    const linkBookedBuyRows = (metadata) => fillLedger.annotateFillsByOrderIds([fillData.orderId], metadata,
+      { include: f => bookedTradeIds.has(f.tradeId) || !isUnsettledBuyRow(f) });
+
+    const { summary, newBuy, commitBuyAccounting, isLadderFill, fillTypeLabel,
+      mergeTarget: initialMergeTarget } = prepareBuyBodyBooking(fillData, fillsToAggregate, ingestCycleId);
+    let mergeTarget = initialMergeTarget;
 
     // NOTE: cycleBuys / lastEntry* are committed AFTER the body is created or
     // merged below (issue #131). Incrementing here — before the merge-cancel
@@ -5693,8 +5785,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // buyAlreadyCommitted guard above could not detect on retry, so the next
     // reconcile re-incremented. Deferring the counter to post-commit keeps the
     // increment and the body atomic with respect to a retry.
-
-    const fillTypeLabel = isLadderFill ? '[LADDER] ' : '';
 
     // Partial-fill pre-check (mirror _mergeBodyImpl's guard, issue #201). If the
     // merge target's TP has ALREADY partially filled, merging would fold the new
@@ -5751,103 +5841,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       mergeTarget = cancellation.mergeTarget;
     }
 
-    if (mergeTarget) {
-      // MERGE: merge into existing body, possibly promote, re-place TP
-      const merged = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.maxUsdcDeployed, undefined, logger);
-      // Replace old body with merged body in array
-      const idx = positionState.celestialBodies.findIndex(b => b.id === merged.id);
-      if (idx !== -1) positionState.celestialBodies[idx] = merged;
+    return commitBuyIntoBody({ newBuy, orderId: fillData.orderId, mergeTarget,
+      summary, fillTypeLabel, isLadderFill, linkBookedBuyRows, commitBuyAccounting,
+      finishBooking: () => {
+        // Both body paths commit before TP placement; repeating the once-only
+        // accounting commit here preserves the post-branch safety net.
+        commitBuyAccounting();
 
-      // Annotate merged buy fills with body metadata (matches the new-body annotation below)
-      linkBookedBuyRows({ isBodyOwned: true, bodyId: merged.id, bodyTier: merged.tier });
+        updatePendingBuyTracking(fillData, summary, keepEntryTracked, isLadderFill);
 
-      // Check for cascading promotions
-      celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
+        // Ladder orders stay in place on individual fills (no reprice).
+        // Rebuild happens only after cycle reset.
 
-      // Sync aggregate fields for backward compatibility
-      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+        // Persist state immediately after buy fill to prevent loss on crash
+        saveLiveState();
+        fillLedger.persist();
 
-      // Commit accounting with body ownership before TP placement can reject;
-      // a retry then sees the committed body and skips re-counting (#131/#132).
-      commitBuyAccounting();
-
-      await placeBodyTpWithRetry(merged, 'Merge');
-
-      // Defense-in-depth: verify TP covers updated body size after merge
-      if (merged.tpOrderId && merged.assetOnOrder > 0 && merged.tpPrice > 0) {
-        const tierCfgCheck = celestialHierarchy.getTierConfig(merged.tier);
-        const { sellQty } = positionSizer.calculateTakeProfitSize(
-          merged.assetQty, merged.avgPrice, merged.tpPrice, tierCfgCheck.holdbackScale
-        );
-        if (Math.abs(sellQty - merged.assetOnOrder) > 0.00000001) {
-          logger.warn(`⚠️ [${exchange}] Stale TP detected for body ${merged.id.slice(-8)}: onOrder=${merged.assetOnOrder}, expected=${sellQty} — cancelling for re-place`);
-          if (await cancelBodyTpForReplace(merged, 'Post-merge stale-size') === 'cancelled') {
-            await placeBodyTp(merged);
-          }
-        }
-      }
-
-      const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
-      logger.info(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy merged into ${merged.tier}: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, body=${merged.id.slice(-8)} (${merged.assetQty.toFixed(6)} ${baseCurrency}, avg=${fmtPrice(merged.avgPrice)})`);
-
-      tradeEvents.emitTradeEvent('buy_filled', exchange, `${fillTypeLabel}${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)} [merged→${merged.tier}]`, {
-        assetAmount: summary.totalSize,
-        price: summary.avgPrice,
-        bodyId: merged.id,
-        bodyTier: merged.tier,
-        isMerge: true,
-        isLadderFill,
-      });
-    } else {
-      // NEW BODY: Create new celestial body with its own TP
-      const body = celestialHierarchy.createNewBody(newBuy, fillData.orderId);
-      positionState.celestialBodies = positionState.celestialBodies || [];
-      positionState.celestialBodies.push(body);
-
-      // Sync aggregate fields
-      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
-
-      // Annotate buy fills with body metadata — atomic with the body push,
-      // BEFORE the TP await, so a rejected placement cannot leave the
-      // committed batch reading as unbooked and rebook it on retry (#1021).
-      linkBookedBuyRows({ isBodyOwned: true, bodyId: body.id, bodyTier: body.tier });
-
-      // Commit accounting with body ownership before TP placement can reject;
-      // a retry then sees the committed body and skips re-counting (#131/#132).
-      commitBuyAccounting();
-
-      const bodyTpPlaced = await placeBodyTp(body);
-
-      if (!bodyTpPlaced) {
-        logger.warn(`⚠️ [${exchange}] Body TP placement failed for ${body.id.slice(-8)}, body persists without TP`);
-      }
-
-      const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-      logger.info(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy filled → created ${body.tier} body: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, body=${body.id.slice(-8)}`);
-
-      tradeEvents.emitTradeEvent('buy_filled', exchange, `${fillTypeLabel}${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)} [new ${body.tier}]`, {
-        assetAmount: summary.totalSize,
-        price: summary.avgPrice,
-        bodyId: body.id,
-        bodyTier: body.tier,
-        isLadderFill,
-      });
-    }
-
-    // Both body paths commit before TP placement; repeating the once-only
-    // accounting commit here preserves the post-branch safety net.
-    commitBuyAccounting();
-
-    updatePendingBuyTracking(fillData, summary, keepEntryTracked, isLadderFill);
-
-    // Ladder orders stay in place on individual fills (no reprice).
-    // Rebuild happens only after cycle reset.
-
-    // Persist state immediately after buy fill to prevent loss on crash
-    saveLiveState();
-    fillLedger.persist();
-
-    if (!keepEntryTracked) orderExecutor.handleOrderFill(fillData.orderId);
+        if (!keepEntryTracked) orderExecutor.handleOrderFill(fillData.orderId);
+      },
+    });
   };
 
   /**
