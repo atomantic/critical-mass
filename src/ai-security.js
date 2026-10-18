@@ -151,7 +151,8 @@ const createAiSecurity = ({
   const constrainOutboundRequests = (req, res, next) => outboundPolicy.run({ allowedOrigins }, next);
 
   const filterProviderSamples = (req, res, next) => {
-    if (req.method !== 'GET' || req.path !== '/samples') return next();
+    const segments = req.path.split('/').filter(Boolean);
+    if (req.method !== 'GET' || segments.length !== 1 || segments[0].toLowerCase() !== 'samples') return next();
     const json = res.json.bind(res);
     res.json = (body) => json({
       ...body,
@@ -165,7 +166,7 @@ const createAiSecurity = ({
   const guardProviderMutation = (req, res, next) => {
     const segments = req.path.split('/').filter(Boolean);
     const createsProvider = req.method === 'POST' && segments.length === 0;
-    const updatesProvider = ['PUT', 'PATCH'].includes(req.method) && segments.length === 1 && segments[0] !== 'active';
+    const updatesProvider = ['PUT', 'PATCH'].includes(req.method) && segments.length === 1 && segments[0].toLowerCase() !== 'active';
     if (!createsProvider && !updatesProvider) return next();
     const providerId = updatesProvider ? segments[0] : null;
     const existingPromise = providerId ? providerService.getProviderById(providerId) : Promise.resolve(null);
@@ -180,7 +181,9 @@ const createAiSecurity = ({
 
   const guardProviderExecution = (req, res, next) => {
     const segments = req.path.split('/').filter(Boolean);
-    if (req.method !== 'POST' || segments.length !== 2 || !['test', 'refresh-models'].includes(segments[1])) return next();
+    // Express toolkit routes are case-insensitive and allow a trailing slash.
+    // Match their static segments, while preserving case in provider/stage IDs.
+    if (req.method !== 'POST' || segments.length !== 2 || !['test', 'refresh-models'].includes(segments[1].toLowerCase())) return next();
     providerService.getProviderById(segments[0]).then((provider) => {
       const error = validateProvider(provider);
       if (error) return res.status(400).json({ error });
@@ -190,7 +193,7 @@ const createAiSecurity = ({
 
   const guardPrompts = (req, res, next) => {
     const segments = req.path.split('/').filter(Boolean);
-    if (segments[0] !== 'stages') return next();
+    if (segments[0]?.toLowerCase() !== 'stages') return next();
     const stageName = segments.length >= 2 ? segments[1] : req.body?.name;
     if (stageName === undefined) return next();
     if (typeof stageName !== 'string' || !STAGE_NAME_PATTERN.test(stageName)) {
