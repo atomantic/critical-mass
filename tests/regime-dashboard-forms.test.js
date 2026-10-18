@@ -9,23 +9,21 @@ const adminRequire = createRequire(path.join(__dirname, '..', 'admin', 'package.
 const React = adminRequire('react')
 let dashboardCode
 let computeCapitalAdjustment
-// The only function components this harness actually invokes (see
-// `elements()` below) — the three forms #760 pulled out of
-// RegimeDashboard.jsx. Every other inline helper component keeps the
-// pre-#760 "never invoked, just walk its children prop" behavior.
-const EXTRACTED_COMPONENT_NAMES = new Set(['PositionCard', 'LadderPanel', 'CapitalAdjust', 'AggressivenessControl'])
+// Invoke the operational forms and their configuration-summary wrapper.
+// Data/action hooks are bundled so this harness still exercises the dashboard
+// through its public props after the #1141 extraction.
+const EXTRACTED_COMPONENT_NAMES = new Set(['PositionCard', 'LadderPanel', 'CapitalAdjust', 'AggressivenessControl', 'ConfigurationSummary'])
 
 before(async () => {
   // Use the admin build's JSX compiler, with dependencies left external so no
   // sockets, charts, or trading services are started by this render harness.
-  // PositionCard/LadderPanel/CapitalAdjust (#760) are bundled IN (not left
-  // external) so their JSX actually renders through this harness's fake
-  // hooks, instead of resolving to the `() => null` stub every other
-  // relative import gets — see the "componentInstances" render loop below.
+  // Bundle the forms, their configuration wrapper and dashboard hooks so
+  // moved implementations use this harness's fake hooks. Charts, sockets,
+  // help popups and unrelated panels remain external stubs.
   const { rolldown } = await import(pathToFileURL(adminRequire.resolve('rolldown')).href)
   const bundle = await rolldown({
     input: path.join(__dirname, '..', 'admin', 'src', 'components', 'RegimeDashboard.jsx'),
-    external: id => !/\/(PositionCard|LadderPanel|CapitalAdjust)(\.jsx)?$/.test(id),
+    external: id => !/\/(PositionCard|LadderPanel|CapitalAdjust|AggressivenessControl|ConfigurationSummary|aggressiveness|deriveDashboardStatus|useRegimeDashboardData|useDcaConversion|useRegimeDashboardActions)(\.jsx?)?$/.test(id),
     transform: { jsx: 'react' },
   })
   try {
@@ -139,6 +137,7 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
     '../hooks/useChartDataBuffer': {
       useChartDataBuffer: () => ({ priceHistory: [], atrHistory: [], regimeHistory: [], initializeFromCache() {} }),
     },
+    './regime/RegimeHelp': { CONFIG_TOOLTIPS: {}, ConfigTooltip: () => null },
     './Toast': { useToast: () => ({ addToast: toast => toasts.push(toast) }) },
     '../App': { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' },
     '../utils/api': { pairQuery: pair => `?pair=${encodeURIComponent(pair)}` },

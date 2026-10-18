@@ -148,7 +148,7 @@ const TEXT_GRAY_ALLOWLIST = new Set([
   // icon-only elements: color sets an SVG stroke/fill via currentColor, not a text node
   'admin/src/components/ChartsRegime.jsx::<svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">',
   'admin/src/components/Overview.jsx::<ExternalLink className="w-3.5 h-3.5 text-gray-500" />',
-  'admin/src/components/RegimeDashboard.jsx::<svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">',
+  'admin/src/components/regime/EmptyRegimeState.jsx::<svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">',
   'admin/src/components/updown/TimeWarningBanner.jsx::<Clock size={16} className="text-gray-500" />',
   'admin/src/components/updown/TimeframeGrid.jsx::<ChevronsDown size={10} className="text-gray-500 shrink-0" title="Fading" />',
   'admin/src/components/updown/TradeHistory.jsx::<button disabled={busy} onClick={() => handleEdit(t)} className="text-gray-500 hover:text-blue-400 transition-colors" title="Edit">',

@@ -39,5 +39,8 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Run admin render tests
+        run: npm test --prefix admin
+
       - name: Build admin UI
         run: npm run build
