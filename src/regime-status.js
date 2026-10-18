@@ -14,7 +14,7 @@
  * here.
  */
 
-const { loadRegimeState, LIFECYCLE, describePlacementIntents } = require('./state-tracker');
+const { loadFundRegimeState, LIFECYCLE, describePlacementIntents } = require('./state-tracker');
 const { getCachedFillLedger, createFillLedger } = require('./fill-ledger');
 const { calculateApyMetrics } = require('./apy-calculator');
 const celestialHierarchy = require('./celestial-hierarchy');
@@ -63,7 +63,7 @@ const lastPriceFromLedger = (ledger) => {
  * @param {boolean} [options.cachedLedger=true] - Use the read-only cached ledger (issue #183 — cheap for the HTTP/socket poll paths that call this repeatedly) instead of constructing a fresh instance. Ignored when `options.fillLedger` is provided.
  * @param {boolean} [options.requireExistingState=false] - Return `null` instead of a synthesized default when no regime-state.json exists yet, or it fails to load — lets a genuine IPC outage on a first-time fund surface as an error rather than a fake "stopped" status
  * @param {Object} [options.config] - Pre-loaded regime config (skips `getRegimeConfig`) — mainly for tests
- * @param {Object} [options.regimeState] - Pre-loaded `{position, regime, isDryRun}` state (skips `loadRegimeState`) — mainly for tests
+ * @param {Object} [options.regimeState] - Pre-loaded `{position, regime, isDryRun}` state (skips `loadFundRegimeState`) — mainly for tests
  * @param {Object} [options.fillLedger] - Pre-loaded fill ledger instance (skips `getCachedFillLedger`/`createFillLedger`) — mainly for tests
  * @returns {Object|null} Status payload shape-compatible with a running engine's `getStatus()`, or `null` when `requireExistingState` is set and there's nothing on disk to report
  */
@@ -79,7 +79,7 @@ const buildStoppedRegimeStatus = (exchange, pair, options = {}) => {
 
   const logger = statusLogger(exchange, pair);
 
-  // loadRegimeState synthesizes an initial empty state when no file exists,
+  // loadFundRegimeState synthesizes an initial empty state when no file exists,
   // so a caller that must distinguish "no fund data yet" from "cleanly
   // stopped with real data" (the HTTP offline fallback — it wants a true IPC
   // outage on a first-time fund to surface as a 503, not a fake stopped
@@ -94,7 +94,7 @@ const buildStoppedRegimeStatus = (exchange, pair, options = {}) => {
 
   let savedState;
   try {
-    savedState = options.regimeState || loadRegimeState(exchange, pair);
+    savedState = options.regimeState || loadFundRegimeState(exchange, pair);
   } catch (err) {
     if (requireExistingState) return null;
     throw err;

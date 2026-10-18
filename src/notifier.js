@@ -8,7 +8,7 @@
 
 const { tradeEvents } = require('./trade-events');
 const { getNotificationConfig, getConfiguredFunds, getFundConfig, getBaseCurrency } = require('./config-utils');
-const { loadRegimeState } = require('./state-tracker');
+const { loadFundRegimeState } = require('./state-tracker');
 const { createContextLogger } = require('./logger');
 
 /**
@@ -115,7 +115,7 @@ const resolveNotificationEventKey = (eventType) =>
  * unit-testable without mocking the whole config/state layer.
  * @param {string} exchange
  * @param {string} pair
- * @param {Object} state - `loadRegimeState(exchange, pair)` result
+ * @param {Object} state - `loadFundRegimeState(exchange, pair)` result
  * @param {Object} fundConfig - `getFundConfig(exchange, pair)` result
  * @returns {string[]}
  */
@@ -420,7 +420,7 @@ const createNotifier = () => {
     // productId lives on the fund config block, not the regime config.
     const funds = getConfiguredFunds();
     for (const { exchange, pair } of funds) {
-      const state = loadRegimeState(exchange, pair);
+      const state = loadFundRegimeState(exchange, pair);
       const fundConfig = getFundConfig(exchange, pair);
       lines.push(...formatFundSummaryLines(exchange, pair, state, fundConfig));
     }

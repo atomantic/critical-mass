@@ -49,8 +49,8 @@ const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initi
 const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
 const {
-  loadRegimeState,
-  saveRegimeState,
+  loadFundRegimeState,
+  saveFundRegimeState,
   LIFECYCLE,
   createInitialRegimePositionState,
   getBlockingPlacementIntents,
@@ -1802,14 +1802,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const regimeState = regimeDetector.getState();
     const tpOptimizerState = tpOptimizer.exportState();
     const sizeOptimizerState = sizeOptimizer.exportState();
-    saveRegimeState(positionState, regimeState, exchange, tpOptimizerState, sizeOptimizerState, pair);
+    saveFundRegimeState(exchange, pair, { position: positionState, regime: regimeState, tpOptimizer: tpOptimizerState, sizeOptimizer: sizeOptimizerState });
   };
 
   /**
    * Persist live state from a BACKGROUND caller — the 5-minute save timer and
    * the SIGUSR1 reload — where a synchronous throw is an uncaughtException that
    * terminates a live trading process with resting orders on the exchange
-   * (issue #532). `saveRegimeState`'s terminal `atomicWriteSync` rethrows on
+   * (issue #532). `saveFundRegimeState`'s terminal `atomicWriteSync` rethrows on
    * ENOSPC/EACCES/EROFS, so a full disk alone is enough to trigger it.
    *
    * A persistence fault is treated as a health condition: log it, notify the
@@ -1851,7 +1851,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    *
    * Guarded because a throw from a signal listener is an uncaughtException, and
    * the exact workflow this exists for — hand-editing regime-state.json — is
-   * also the one that produces a malformed file. `loadRegimeState` throws by
+   * also the one that produces a malformed file. `loadFundRegimeState` throws by
    * design on unreadable/non-object JSON, so a typo used to kill a live trading
    * process (issue #532). It throws BEFORE anything is mutated, which is what
    * makes the reload all-or-nothing: a failed reload leaves in-memory state
@@ -1862,7 +1862,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const startedAt = Date.now();
     logger.info(`🔄 [${exchange}] SIGUSR1 received — reloading state from disk`);
     try {
-      const savedState = loadRegimeState(exchange, pair);
+      const savedState = loadFundRegimeState(exchange, pair);
       const diskPos = savedState?.position;
       if (!diskPos) {
         logger.warn(`⚠️ [${exchange}] No position in disk state, skipping reload`);
@@ -1908,7 +1908,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const loadLiveState = () => {
     if (isDryRun) return false;
 
-    const savedState = loadRegimeState(exchange, pair);
+    const savedState = loadFundRegimeState(exchange, pair);
     const pos = savedState.position;
     // Check if state has any meaningful data (not just default initial state)
     // Even with totalAsset=0, there may be satellites, TP orders, or historical data to restore
@@ -9980,8 +9980,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     next.realizedPnL = derived.realizedPnL;
     next.realizedAssetPnL = derived.realizedAssetPnL;
     next.heldAssetCostBasis = derived.heldOpenBuyCostBasis;
-    saveRegimeState(next, regimeDetector.getState(), exchange,
-      tpOptimizer.exportState(), sizeOptimizer.exportState(), pair);
+    saveFundRegimeState(exchange, pair, { position: next, regime: regimeDetector.getState(),
+      tpOptimizer: tpOptimizer.exportState(), sizeOptimizer: sizeOptimizer.exportState() });
     // Keep existing body references alive for any suspended fill/cancel path.
     for (const body of positionState.celestialBodies || []) {
       const projected = next.celestialBodies?.find(row => row.id === body.id);
@@ -10005,8 +10005,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       next.celestialState.bodiesRealizedPnL = derived.realizedPnL;
       next.celestialState.bodiesRealizedAssetPnL = derived.realizedAssetPnL;
     }
-    saveRegimeState(next, regimeDetector.getState(), exchange,
-      tpOptimizer.exportState(), sizeOptimizer.exportState(), pair);
+    saveFundRegimeState(exchange, pair, { position: next, regime: regimeDetector.getState(),
+      tpOptimizer: tpOptimizer.exportState(), sizeOptimizer: sizeOptimizer.exportState() });
     const bodies = positionState.celestialBodies;
     Object.assign(positionState, next, { celestialBodies: bodies });
     config.maxUsdcDeployed = applySellCorrectionCapital(exchange, pair, correction);

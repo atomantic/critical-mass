@@ -9,10 +9,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { loadState, saveState, loadRegimeState, saveRegimeState } = require('./state-tracker');
+const { loadState, saveState, loadFundRegimeState, saveFundRegimeState } = require('./state-tracker');
 const { createFillLedger, isCompletedCycle } = require('./fill-ledger');
 const { createNewBody, classifyTier, syncPositionState } = require('./celestial-hierarchy');
-const { setFundEnabled: setConfigFundEnabled, setExchangeEnabled, getRegimeConfig, getFundConfig } = require('./config-utils');
+const { setFundEnabled: setConfigFundEnabled, setExchangeEnabled, getDefaultPair, getRegimeConfig, getFundConfig } = require('./config-utils');
 const { resolveFundDataDir } = require('./migration');
 const { runDcaImportTransaction, recoverDcaImport, hasPendingDcaImport } = require('./dca-conversion-transaction');
 const { log } = require('./logger');
@@ -40,6 +40,13 @@ const fundLabel = (exchange, pair) => (pair ? `${exchange}/${pair}` : exchange);
 const setFundEnabled = (exchange, pair, enabled) => (
   pair ? setConfigFundEnabled(exchange, pair, enabled) : setExchangeEnabled(exchange, enabled)
 );
+
+/** Resolve the legacy omitted-pair form before using fund-scoped persistence. */
+const resolveFundPair = (exchange, pair) => {
+  const resolvedPair = pair || getDefaultPair(exchange);
+  if (!resolvedPair) throw new Error(`No configured fund pair for ${exchange}`);
+  return resolvedPair;
+};
 
 /**
  * Back up the state files involved in a DCA conversion.
@@ -123,6 +130,7 @@ const categorizeOrders = (orders) => {
  * @returns {{ pending: number, filled: number, skipped: number, totalBaseQty: number, totalCostBasis: number, pendingBaseQty: number, pendingCostBasis: number, sellOrderIds: string[], productId: string, assetReserves: number }}
  */
 const previewConversion = (exchange, pair) => {
+  pair = resolveFundPair(exchange, pair);
   const state = loadState(null, exchange, pair);
   const exchangeConfig = getFundConfig(exchange, pair);
   const orders = state.orders || [];
@@ -134,7 +142,7 @@ const previewConversion = (exchange, pair) => {
   const pendingCostBasis = pending.reduce((sum, o) => sum + (o.buyCostBasis || o.buyUSDC || 0), 0);
 
   // Check if existing regime state has celestial bodies (merge mode)
-  const existingRegime = loadRegimeState(exchange, pair);
+  const existingRegime = loadFundRegimeState(exchange, pair);
   const existingBodies = existingRegime?.position?.celestialBodies?.length || 0;
   const existingAsset = existingRegime?.position?.totalAsset || 0;
   const existingCostBasis = existingRegime?.position?.totalCostBasis || 0;
@@ -496,6 +504,7 @@ const sourceIdentities = (orders) => orders.map((o) => ({ orderId: o.orderId, bu
  * @returns {{ success: boolean, backupDir: string|null, summary: Object }}
  */
 const executeConversion = (exchange, pair) => {
+  pair = resolveFundPair(exchange, pair);
   recoverBeforeImport(exchange, pair);
 
   // Nothing importable (e.g. the conversion already completed): a no-op. A
@@ -656,18 +665,18 @@ const stageConversion = (exchange, pair, importId) => {
     lastVolatilityCheck: null,
   };
 
-  // Read the prior regime state first so saveRegimeState's optimistic
+  // Read the prior regime state first so saveFundRegimeState's optimistic
   // version check sees this as an in-process save, not an external edit:
   // otherwise a prior file's _saveVersion makes it restore the OLD protected
   // fields (celestialBodies, celestialState, realized P&L) over the freshly
   // built position. An unreadable prior file is simply replaced.
   try {
-    loadRegimeState(exchange, pair);
+    loadFundRegimeState(exchange, pair);
   } catch (_) {
-    // saveRegimeState quarantines an unreadable file; the staged-file check
+    // saveFundRegimeState quarantines an unreadable file; the staged-file check
     // then aborts the import rather than publishing past it.
   }
-  saveRegimeState(position, regime, exchange, null, null, pair);
+  saveFundRegimeState(exchange, pair, { position, regime });
   log('INFO', `🚀 [${fundLabel(exchange, pair)}] Regime state created: ${celestialBodies.length} celestial bodies, ${recalcResult.cyclesCompleted} completed cycles`);
 
   // 6. Consume the converted orders in the same staged generation.
@@ -727,11 +736,12 @@ const findAlreadyImportedBuys = (position, fillLedger, pending) => {
  * @returns {{ success: boolean, backupDir: string|null, summary: Object }}
  */
 const mergeToRegime = (exchange, pair) => {
+  pair = resolveFundPair(exchange, pair);
   recoverBeforeImport(exchange, pair);
 
   const eligible = loadEligibleOrders(exchange, pair);
   if (eligible.pending.length + eligible.filled.length === 0) {
-    const position = loadRegimeState(exchange, pair)?.position || {};
+    const position = loadFundRegimeState(exchange, pair)?.position || {};
     log('INFO', `ℹ️ [${fundLabel(exchange, pair)}] DCA merge: no importable DCA orders — nothing to do`);
     return noopImportResult({
       totalBodies: (position.celestialBodies || []).length,
@@ -766,7 +776,7 @@ const mergeToRegime = (exchange, pair) => {
  */
 const stageMerge = (exchange, pair, importId) => {
   // 2. Load existing regime state and DCA state
-  const existingState = loadRegimeState(exchange, pair);
+  const existingState = loadFundRegimeState(exchange, pair);
   const position = existingState.position;
   const state = loadState(null, exchange, pair);
   const orders = state.orders || [];
@@ -832,7 +842,7 @@ const stageMerge = (exchange, pair, importId) => {
     // Save the corrected boundary alongside the ledger write. This lands in
     // the staged generation; the import transaction publishes ledger and
     // regime state together, so no reader ever sees one without the other.
-    saveRegimeState(position, existingState.regime, exchange, existingState.tpOptimizer, existingState.sizeOptimizer, pair);
+    saveFundRegimeState(exchange, pair, { ...existingState, position });
   }
 
   fillLedger.persist();
@@ -909,7 +919,7 @@ const stageMerge = (exchange, pair, importId) => {
   position.dcaImportedAllocation = Math.max(alreadyAttributed, allocation);
 
   // 10. Save regime state (preserving existing regime, tpOptimizer, sizeOptimizer)
-  saveRegimeState(position, existingState.regime, exchange, existingState.tpOptimizer, existingState.sizeOptimizer, pair);
+  saveFundRegimeState(exchange, pair, { ...existingState, position });
   log('INFO', `🔗 [${fundLabel(exchange, pair)}] Regime state merged: +${newBodies.length} celestial bodies (total: ${position.celestialBodies.length})`);
 
   // 11. Consume the imported orders in the same staged generation.

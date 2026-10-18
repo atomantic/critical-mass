@@ -7,7 +7,8 @@
  */
 
 const { getAdapter } = require('./adapters');
-const { loadRegimeState } = require('./state-tracker');
+const { loadFundRegimeState } = require('./state-tracker');
+const { getDefaultPair } = require('./config-utils');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { log } = require('./logger');
 
@@ -37,7 +38,8 @@ const indexFillsByTradeId = (fills) => new Map(fills.map(fill => [fill.tradeId, 
 const syncFills = async (exchange, fillLedger, options = {}) => {
   const { dryRun = false, pair, signal, onProgress } = options;
   const adapter = getAdapter(exchange);
-  const state = loadRegimeState(exchange, pair);
+  const statePair = pair || getDefaultPair(exchange) || 'default';
+  const state = loadFundRegimeState(exchange, statePair);
   const engineStart = state.position?.engineStartTime;
 
   if (!engineStart) {

@@ -87,7 +87,7 @@ const createHarness = (overrides = {}) => {
     hasValidKeys: () => !invalidKeysExchanges.has(exchange),
   });
 
-  const loadRegimeState = (exchange, pair) => ({
+  const loadFundRegimeState = (exchange, pair) => ({
     position: { lifecycle: lifecycleByKey.get(fundKey(exchange, pair)) || LIFECYCLE.ACTIVE },
   });
 
@@ -136,7 +136,7 @@ const createHarness = (overrides = {}) => {
     logger: silentLogger,
     getFundConfig,
     getAdapter,
-    loadRegimeState,
+    loadFundRegimeState,
     LIFECYCLE,
     createRegimeEngine,
     createEngineCallbacks,

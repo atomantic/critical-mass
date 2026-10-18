@@ -156,6 +156,51 @@ describe('state-tracker hardening (issue #108)', () => {
     );
   });
 
+  it('fund regime state wrappers require an explicit pair', () => {
+    const st = freshModule();
+    assert.throws(() => st.loadFundRegimeState('cb'), /requires an explicit pair/);
+    assert.throws(() => st.loadFundRegimeState('cb', ''), /requires an explicit pair/);
+    assert.throws(() => st.saveFundRegimeState('cb', undefined, {
+      position: {}, regime: {},
+    }), /requires an explicit pair/);
+    assert.throws(() => st.saveFundRegimeState('cb', '', {
+      position: {}, regime: {},
+    }), /requires an explicit pair/);
+  });
+
+  it('fund regime state wrappers round-trip named bundles without crossing pairs', () => {
+    const st = freshModule();
+    const btcState = {
+      position: { ...st.createInitialRegimePositionState(), activeCycleId: 'cycle-1' },
+      regime: { mode: 'HARVEST' },
+      tpOptimizer: { target: 0.01 },
+      sizeOptimizer: { scale: 2 },
+    };
+    const ethState = {
+      position: { ...st.createInitialRegimePositionState(), activeCycleId: 'cycle-7' },
+      regime: { mode: 'TREND' },
+      tpOptimizer: { target: 0.02 },
+      sizeOptimizer: { scale: 4 },
+    };
+
+    st.saveFundRegimeState('cb', 'BTC-USD', btcState);
+    st.saveFundRegimeState('cb', 'ETH-USD', ethState);
+
+    assert.equal(st.loadFundRegimeState('cb', 'BTC-USD').position.activeCycleId, 'cycle-1');
+    assert.deepEqual(st.loadFundRegimeState('cb', 'BTC-USD').tpOptimizer, btcState.tpOptimizer);
+    assert.deepEqual(st.loadFundRegimeState('cb', 'ETH-USD').tpOptimizer, ethState.tpOptimizer);
+
+    const updatedBtcState = { ...btcState, position: { ...btcState.position, activeCycleId: 'cycle-2' } };
+    st.saveFundRegimeState('cb', 'BTC-USD', updatedBtcState);
+    assert.equal(st.loadFundRegimeState('cb', 'ETH-USD').position.activeCycleId, 'cycle-7');
+    assert.deepEqual(st.loadFundRegimeState('cb', 'ETH-USD').sizeOptimizer, ethState.sizeOptimizer);
+
+    assert.equal(typeof st.loadRegimeState, 'function');
+    assert.equal(typeof st.saveRegimeState, 'function');
+    st.saveRegimeState({ activeCycleId: 'legacy-cycle' }, { mode: 'HARVEST' }, 'cb', null, null, 'DOGE-USD');
+    assert.equal(st.loadRegimeState('cb', 'DOGE-USD').position.activeCycleId, 'legacy-cycle');
+  });
+
   it('saveRegimeState stamps a version greater than a higher on-disk version (no regression)', () => {
     const st = freshModule();
     const file = st.getRegimeStateFile('cb', 'BTC-USD');

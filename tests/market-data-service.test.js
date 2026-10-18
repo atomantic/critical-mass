@@ -2898,7 +2898,7 @@ describe('startMarketDataService stop-during-start cancellation (issue #415)', (
     });
     // Keep the race off the real data directory entirely.
     stub(STUBBED.fillLedger, { createFillLedger: () => ({ persist: () => {}, ingestFill: () => {} }) });
-    stub(STUBBED.stateTracker, { loadRegimeState: () => ({ position: { celestialBodies: [] } }) });
+    stub(STUBBED.stateTracker, { loadFundRegimeState: () => ({ position: { celestialBodies: [] } }) });
 
     delete require.cache[MDS_PATH];
     mds = require('../src/market-data-service');
@@ -3085,7 +3085,7 @@ describe('fenceMarketDataService + handover gap recovery (issue #1008)', () => {
       feedConfig = config;
       return { connect: () => {}, disconnect: () => {} };
     } });
-    stub(STUBBED.stateTracker, { loadRegimeState: () => ({
+    stub(STUBBED.stateTracker, { loadFundRegimeState: () => ({
       position: { celestialBodies: [{ id: 'body-1', tpOrderId: TP, tpPrice: 110, assetOnOrder: 1 }] },
     }) });
     delete require.cache[MDS_PATH];

@@ -31,7 +31,7 @@ const { createFundStartSupervisor, isTransientStartError } = require('./fund-sta
  * @property {(exchange: string, pair: string) => {info: Function, warn: Function, error: Function}} logger - Context logger factory
  * @property {(exchange: string, pair: string) => Object} getFundConfig - Loads merged fund configuration
  * @property {(exchange: string) => {hasValidKeys?: () => boolean}} getAdapter - Exchange adapter factory
- * @property {(exchange: string, pair: string) => {position?: {lifecycle?: string}}} loadRegimeState - Loads on-disk regime state for a fund
+ * @property {(exchange: string, pair: string) => {position?: {lifecycle?: string}}} loadFundRegimeState - Loads on-disk regime state for a fund
  * @property {{CLOSED: string}} LIFECYCLE - Fund lifecycle constants
  * @property {(exchange: string, pair: string, fundConfig: Object, callbacks: Object) => Object} createRegimeEngine - Regime engine factory
  * @property {(exchange: string, pair: string) => Object} createEngineCallbacks - Builds the callbacks handed to a new regime engine
@@ -64,7 +64,7 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     logger,
     getFundConfig,
     getAdapter,
-    loadRegimeState,
+    loadFundRegimeState,
     LIFECYCLE,
     createRegimeEngine,
     createEngineCallbacks,
@@ -119,7 +119,7 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     }
 
     // Refuse to start a closed fund — operator must reopen it first.
-    const savedState = loadRegimeState(exchange, resolvedPair);
+    const savedState = loadFundRegimeState(exchange, resolvedPair);
     if (savedState?.position?.lifecycle === LIFECYCLE.CLOSED) {
       saveRegimeRunningFlag(exchange, resolvedPair, false);
       return { success: false, error: 'Fund is closed — call regime:reopen before starting', needsOperator: true };
