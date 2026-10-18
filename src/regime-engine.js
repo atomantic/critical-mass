@@ -8678,6 +8678,104 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     return blocking;
   };
 
+  // Null lookups may reflect bounded history rather than an absent order.
+  const classifyAutomaticLookup = (found) => {
+    if (!found) return 'absent';
+    if (found.orderId && ['CANCELLED', 'EXPIRED', 'FAILED', 'REJECTED'].includes(found.status)
+      && found.filledSize === 0) return 'clear-unfilled-terminal';
+    if (!['OPEN', 'PARTIALLY_FILLED', 'FILLED', 'CANCELLED', 'EXPIRED', 'FAILED', 'REJECTED'].includes(found.status)) return 'status-unknown';
+    return 'adoptable';
+  };
+
+  const adoptEntryPlacement = (intent, found) => {
+    const adopted = orderExecutor.adoptPlacement(found, intent);
+    if (!positionState.pendingEntryOrders) positionState.pendingEntryOrders = [];
+    if (!positionState.pendingEntryOrders.some(e => e.orderId === found.orderId)) {
+      positionState.pendingEntryOrders.push({
+        orderId: found.orderId,
+        price: intent.price ?? 0,
+        assetQty: intent.size ?? 0,
+        sizeUsdc: intent.sizeUsdc ?? 0,
+        placedAt: intent.createdAt ?? Date.now(),
+      });
+    }
+    return adopted;
+  };
+
+  const adoptLadderPlacement = (intent, found) => {
+    const adopted = orderExecutor.adoptPlacement(found, intent);
+    positionState.pendingLadderOrders ||= [];
+    if (!positionState.pendingLadderOrders.some(o => o.orderId === found.orderId)) {
+      positionState.pendingLadderOrders.push({
+        orderId: found.orderId, ladderIndex: intent.ladderIndex,
+        price: intent.price ?? 0, assetQty: intent.size ?? 0,
+        sizeUsdc: intent.sizeUsdc ?? 0, placedAt: intent.createdAt ?? Date.now(),
+      });
+    }
+    positionState.ladderActive = true;
+    positionState.ladderPlacedAt ||= intent.createdAt ?? Date.now();
+    return adopted;
+  };
+
+  const placementBodySourceIds = (body) => {
+    const sourceIds = new Set(body.sourceOrderIds || []);
+    for (const buy of (body.buyOrders || [])) {
+      if (buy.orderId && buy.orderId !== 'core-migration') sourceIds.add(buy.orderId);
+    }
+    return sourceIds;
+  };
+
+  const adoptBodyTpPlacement = (intent, found) => {
+    const body = (positionState.celestialBodies || []).find(b => b.id === intent.bodyId);
+    if (!body) return { success: false, error: 'No position owner exists for this placement; the intent remains unresolved' };
+    if (body.tpOrderId && body.tpOrderId !== found.orderId) return { success: false, error: 'The position already owns another TP; reconcile the exchange orders before adopting this placement' };
+    const adopted = orderExecutor.adoptPlacement(found, intent);
+    body.tpOrderId = found.orderId;
+    body.tpPrice = intent.price ?? 0;
+    body.assetOnOrder = intent.size ?? 0;
+    celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+    const sourceIds = placementBodySourceIds(body);
+    fillLedger.annotateFillsByOrderIds(sourceIds, {
+      sellOrderId: found.orderId, bodyId: body.id, bodyTier: body.tier,
+    });
+    return adopted;
+  };
+
+  const adoptLegacyTpPlacement = (intent, found) => {
+    if (positionState.activeTpOrderId && positionState.activeTpOrderId !== found.orderId) return { success: false, error: 'The position already owns another TP; reconcile the exchange orders before adopting this placement' };
+    const adopted = orderExecutor.adoptPlacement(found, intent);
+    positionState.activeTpOrderId = found.orderId;
+    positionState.lastTpPrice = intent.price ?? 0;
+    positionState.assetOnOrder = intent.size ?? 0;
+    const sourceIds = new Set(fillLedger.getCurrentCycleFills()
+      .filter(f => f.side === 'buy' && !f.isBodyOwned && !f.isSatellite && !f.bodyId && f.cycleAttribution !== 'timeframe')
+      .map(f => f.orderId));
+    fillLedger.annotateFillsByOrderIds(sourceIds, { sellOrderId: found.orderId });
+    return adopted;
+  };
+
+  const placementAdopters = new Map([
+    ['entry_bid', adoptEntryPlacement],
+    ['entry_replacement', adoptEntryPlacement],
+    ['ladder_entry', adoptLadderPlacement],
+    ['body_tp', adoptBodyTpPlacement],
+    ['take_profit', adoptLegacyTpPlacement],
+    ['take_profit_taker', adoptLegacyTpPlacement],
+    ['take_profit_replacement', adoptLegacyTpPlacement],
+  ]);
+
+  const discardPlacementIntent = (intentId, intent) => {
+    const removed = resolvePlacementIntent(exchange, pair, intentId);
+    if (!removed) return { success: false, error: `Placement intent ${intentId} was already resolved` };
+    logger.warn(`🧹 [${exchange}] Operator discarded placement intent ${intentId} (${intent.action ?? 'order'}) — placements resume`, {
+      intentId,
+      action: intent.action ?? null,
+      clientOrderId: intent.clientOrderId ?? null,
+    });
+    placementIntentCache = { at: 0, intents: [] };
+    return { success: true, message: `Discarded ${intent.action ?? 'placement'} intent — placements resume for this fund` };
+  };
+
   /**
    * Operator reconcile of one unresolved placement intent.
    *
@@ -8702,17 +8800,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: false, error: `No unresolved placement intent ${intentId} on this fund (an in-flight dispatch is not reconcilable)` };
     }
 
-    if (action === 'discard') {
-      const removed = resolvePlacementIntent(exchange, pair, intentId);
-      if (!removed) return { success: false, error: `Placement intent ${intentId} was already resolved` };
-      logger.warn(`🧹 [${exchange}] Operator discarded placement intent ${intentId} (${intent.action ?? 'order'}) — placements resume`, {
-        intentId,
-        action: intent.action ?? null,
-        clientOrderId: intent.clientOrderId ?? null,
-      });
-      placementIntentCache = { at: 0, intents: [] };
-      return { success: true, message: `Discarded ${intent.action ?? 'placement'} intent — placements resume for this fund` };
-    }
+    if (action === 'discard') return discardPlacementIntent(intentId, intent);
 
     if (!intent.clientOrderId) {
       return { success: false, error: 'This intent carries no client order id (the process died before the response), so it cannot be looked up. Check the exchange manually, cancel any duplicate, then discard it.' };
@@ -8725,18 +8813,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (found?.__lookupError) {
       return { success: false, error: `Lookup failed (${found.__lookupError.message}) — the intent stays pending; we must not assume the order is absent` };
     }
-    // Some adapters search bounded history, so null alone cannot safely release
-    // an old intent. A positively identified terminal order with no fills can.
-    if (automatic && found?.orderId && ['CANCELLED', 'EXPIRED', 'FAILED', 'REJECTED'].includes(found.status)
-      && found.filledSize === 0) {
-      const removed = resolvePlacementIntent(exchange, pair, intentId);
-      placementIntentCache = { at: 0, intents: [] };
-      return { success: removed, message: 'Exchange confirmed an unfilled terminal order; placements may resume' };
+    if (automatic) {
+      const classification = classifyAutomaticLookup(found);
+      if (classification === 'clear-unfilled-terminal') {
+        const removed = resolvePlacementIntent(exchange, pair, intentId);
+        placementIntentCache = { at: 0, intents: [] };
+        return { success: removed, message: 'Exchange confirmed an unfilled terminal order; placements may resume' };
+      }
+      const retryErrors = {
+        'status-unknown': 'Exchange order status remains unknown; retrying automatically',
+        absent: 'No matching order found; retaining the intent and retrying automatically',
+      };
+      if (retryErrors[classification]) return { success: false, error: retryErrors[classification] };
     }
-    if (automatic && found && !['OPEN', 'PARTIALLY_FILLED', 'FILLED', 'CANCELLED', 'EXPIRED', 'FAILED', 'REJECTED'].includes(found.status)) {
-      return { success: false, error: 'Exchange order status remains unknown; retrying automatically' };
-    }
-    if (automatic && !found) return { success: false, error: 'No matching order found; retaining the intent and retrying automatically' };
     if (!found) {
       return { success: false, error: `The exchange reports no order for client id ${intent.clientOrderId}. If you have confirmed that, discard the intent instead — an empty lookup is never auto-cleared.` };
     }
@@ -8753,71 +8842,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: false, error: 'This executor cannot adopt orders; the placement intent remains unresolved' };
     }
     if (!found.orderId) return { success: false, error: 'Exchange lookup returned no order id; the placement intent remains unresolved' };
-    const entry = intent.action === 'entry_bid' || intent.action === 'entry_replacement';
-    const ladder = intent.action === 'ladder_entry';
-    const legacyTp = ['take_profit', 'take_profit_taker', 'take_profit_replacement'].includes(intent.action);
-    const body = intent.action === 'body_tp'
-      ? (positionState.celestialBodies || []).find(b => b.id === intent.bodyId)
-      : null;
-    if (!entry && !ladder && !legacyTp && !body) {
-      return { success: false, error: 'No position owner exists for this placement; the intent remains unresolved' };
-    }
-    const existingTp = body?.tpOrderId || (legacyTp ? positionState.activeTpOrderId : null);
-    if (existingTp && existingTp !== found.orderId) {
-      return { success: false, error: 'The position already owns another TP; reconcile the exchange orders before adopting this placement' };
-    }
-    const adopted = orderExecutor.adoptPlacement(found, intent);
-
-    // Mirror what a normal entry placement persists, so restart recovery and
-    // the cancel/fill bookkeeping see the adopted order too. Deduped by order
-    // id, since this path is reachable only once per intent but the list is
-    // also rebuilt from disk on restart.
-    if (entry) {
-      if (!positionState.pendingEntryOrders) positionState.pendingEntryOrders = [];
-      if (!positionState.pendingEntryOrders.some(e => e.orderId === found.orderId)) {
-        positionState.pendingEntryOrders.push({
-          orderId: found.orderId,
-          price: intent.price ?? 0,
-          assetQty: intent.size ?? 0,
-          sizeUsdc: intent.sizeUsdc ?? 0,
-          placedAt: intent.createdAt ?? Date.now(),
-        });
-      }
-    }
-    if (ladder) {
-      positionState.pendingLadderOrders ||= [];
-      if (!positionState.pendingLadderOrders.some(o => o.orderId === found.orderId)) {
-        positionState.pendingLadderOrders.push({
-          orderId: found.orderId, ladderIndex: intent.ladderIndex,
-          price: intent.price ?? 0, assetQty: intent.size ?? 0,
-          sizeUsdc: intent.sizeUsdc ?? 0, placedAt: intent.createdAt ?? Date.now(),
-        });
-      }
-      positionState.ladderActive = true;
-      positionState.ladderPlacedAt ||= intent.createdAt ?? Date.now();
-    }
-    if (body) {
-      body.tpOrderId = found.orderId;
-      body.tpPrice = intent.price ?? 0;
-      body.assetOnOrder = intent.size ?? 0;
-      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
-      const sourceIds = new Set(body.sourceOrderIds || []);
-      for (const buy of (body.buyOrders || [])) {
-        if (buy.orderId && buy.orderId !== 'core-migration') sourceIds.add(buy.orderId);
-      }
-      fillLedger.annotateFillsByOrderIds(sourceIds, {
-        sellOrderId: found.orderId, bodyId: body.id, bodyTier: body.tier,
-      });
-    }
-    if (legacyTp) {
-      positionState.activeTpOrderId = found.orderId;
-      positionState.lastTpPrice = intent.price ?? 0;
-      positionState.assetOnOrder = intent.size ?? 0;
-      const sourceIds = new Set(fillLedger.getCurrentCycleFills()
-        .filter(f => f.side === 'buy' && !f.isBodyOwned && !f.isSatellite && !f.bodyId && f.cycleAttribution !== 'timeframe')
-        .map(f => f.orderId));
-      fillLedger.annotateFillsByOrderIds(sourceIds, { sellOrderId: found.orderId });
-    }
+    const adopt = placementAdopters.get(intent.action);
+    if (!adopt) return { success: false, error: 'No position owner exists for this placement; the intent remains unresolved' };
+    const adopted = adopt(intent, found);
+    if (adopted.success === false) return adopted;
     if (!isDryRun) {
       saveLiveState();
       fillLedger.persist();
