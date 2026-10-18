@@ -4,7 +4,7 @@
  * overwrote the ledger. Fetches fill from Coinbase API, adds to ledger,
  * and updates realizedPnL + maxUsdcDeployed for the round-trip profit.
  *
- * Usage: node scripts/add-recovery-fill.js [--dry-run]
+ * Usage: node scripts/add-recovery-fill.js --pair BTC-USDC [--apply]   (dry run by default)
  */
 
 const fs = require('fs');
@@ -14,12 +14,13 @@ const { getAuthHeaders } = require('../src/adapters/coinbase/auth');
 const { updateExchangeRegimeConfig } = require('../src/config-utils');
 
 const { DATA_DIR } = require('../src/paths');
-const COINBASE_DIR = path.join(DATA_DIR, 'coinbase');
-const LEDGER_PATH = path.join(COINBASE_DIR, 'fill-ledger.json');
-const STATE_PATH = path.join(COINBASE_DIR, 'regime-state.json');
-const DRY_RUN = process.argv.includes('--dry-run');
 const API_URL = 'https://api.coinbase.com';
-const PRODUCT_ID = 'BTC-USDC';
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+
+const { pair: PRODUCT_ID, apply: APPLY, ledgerPath: LEDGER_PATH, statePath: STATE_PATH } =
+  parseFundCli(process.argv, { exchange: 'coinbase', usage: 'node scripts/add-recovery-fill.js' });
+const DRY_RUN = !APPLY;
 
 const RECOVERY_ORDER_ID = 'ba399979-6972-4fcb-a715-d2bf21e4d641';
 const EC8B_SELL_ORDER_ID = 'ec8b7bcb-325a-4bad-a38e-3f76762e3494';
@@ -166,13 +167,13 @@ async function main() {
     const backupLedger = LEDGER_PATH + '.backup-addfill-' + Date.now();
     fs.copyFileSync(LEDGER_PATH, backupLedger);
     console.log(`\n💾 Backup: ${path.basename(backupLedger)}`);
-    fs.writeFileSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
+    atomicWriteSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
     console.log('✅ fill-ledger.json saved');
 
     // Save state
     const backupState = STATE_PATH + '.backup-addfill-' + Date.now();
     fs.copyFileSync(STATE_PATH, backupState);
-    fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+    atomicWriteSync(STATE_PATH, JSON.stringify(state, null, 2));
     console.log('✅ regime-state.json saved');
 
     // Update config

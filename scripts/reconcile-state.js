@@ -11,7 +11,7 @@
  *
  * Idempotent — safe to re-run. Creates backups before mutating.
  *
- * Usage: node scripts/reconcile-state.js [--dry-run]
+ * Usage: node scripts/reconcile-state.js --pair BTC-USDC [--apply]   (dry run by default)
  */
 
 const fs = require('fs');
@@ -23,13 +23,14 @@ const { getAuthHeaders } = require('../src/adapters/coinbase/auth');
 
 // ── Paths ──────────────────────────────────────────────────────
 const { DATA_DIR } = require('../src/paths');
-const COINBASE_DIR = path.join(DATA_DIR, 'coinbase');
-const LEDGER_PATH = path.join(COINBASE_DIR, 'fill-ledger.json');
-const STATE_PATH = path.join(COINBASE_DIR, 'regime-state.json');
 const USER_CONFIG_PATH = path.join(DATA_DIR, 'config.json');
-const DRY_RUN = process.argv.includes('--dry-run');
 const API_URL = 'https://api.coinbase.com';
-const PRODUCT_ID = 'BTC-USDC';
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+
+const { pair: PRODUCT_ID, apply: APPLY, ledgerPath: LEDGER_PATH, statePath: STATE_PATH } =
+  parseFundCli(process.argv, { exchange: 'coinbase', usage: 'node scripts/reconcile-state.js' });
+const DRY_RUN = !APPLY;
 
 // ── Constants ──────────────────────────────────────────────────
 const BOGUS_SELL_ORDER_ID = 'ec8b7bcb-325a-4bad-a38e-3f76762e3494';
@@ -102,7 +103,7 @@ const writeJSON = (filePath, data) => {
     console.log(`  [DRY RUN] Would write ${path.basename(filePath)}`);
     return;
   }
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+  atomicWriteSync(filePath, JSON.stringify(data, null, 2));
 };
 
 // ── MAIN ───────────────────────────────────────────────────────

@@ -11,7 +11,11 @@ const { getAuthHeaders } = require('../src/adapters/coinbase/auth');
 const { DATA_DIR } = require('../src/paths');
 
 const API_URL = 'https://api.coinbase.com';
-const productId = 'BTC-USDC';
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+
+const { pair: productId, apply: APPLY, ledgerPath: fillLedgerPath, statePath } =
+  parseFundCli(process.argv, { exchange: 'coinbase', usage: 'node scripts/restore-state.js' });
 
 const keysRaw = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'coinbase-keys.json'), 'utf8'));
 const keys = { apiKey: keysRaw.name, apiSecret: keysRaw.privateKey };
@@ -108,7 +112,6 @@ async function main() {
   console.log('Sell: ' + sellBtc + ' BTC, Holdback: ' + holdbackBtc + ' BTC');
 
   // Update state file
-  const statePath = path.join(DATA_DIR, 'coinbase/regime-state.json');
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
 
   state.position = {
@@ -133,12 +136,15 @@ async function main() {
     initialCapital: regimeConfig.maxUsdcDeployed || 10000,
   };
 
-  fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+  if (!APPLY) {
+    console.log('\n(dry run) No files written. Re-run with --apply to write state and ledger.');
+    return;
+  }
+  atomicWriteSync(statePath, JSON.stringify(state, null, 2));
   console.log('\n✅ State file updated');
 
   // Update fill ledger
-  const fillLedgerPath = path.join(DATA_DIR, 'coinbase/fill-ledger.json');
-  fs.writeFileSync(fillLedgerPath, JSON.stringify(fills, null, 2));
+  atomicWriteSync(fillLedgerPath, JSON.stringify(fills, null, 2));
   console.log('✅ Fill ledger updated with ' + fills.length + ' fills');
 
   console.log('\n✅ Done! Restart the engine now.');

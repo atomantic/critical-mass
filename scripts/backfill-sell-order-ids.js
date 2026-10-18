@@ -6,18 +6,20 @@
  * can group buys under their sell orders without fragile chronological walks.
  *
  * Usage:
- *   node scripts/backfill-sell-order-ids.js                              # dry-run (prints summary)
- *   node scripts/backfill-sell-order-ids.js --apply                      # persist changes
- *   node scripts/backfill-sell-order-ids.js --tp-order-id=<id> --apply   # explicit core TP for active cycle
+ *   node scripts/backfill-sell-order-ids.js --pair BTC-USDC                # dry-run (prints summary)
+ *   node scripts/backfill-sell-order-ids.js --pair BTC-USDC --apply        # persist changes
+ *   node scripts/backfill-sell-order-ids.js --pair BTC-USDC --tp-order-id=<id> --apply # explicit core TP for active cycle
  */
 
 const fs = require('fs');
 const path = require('path');
 
-const FILL_LEDGER_PATH = path.join(__dirname, '..', 'data', 'coinbase', 'fill-ledger.json');
-const REGIME_STATE_PATH = path.join(__dirname, '..', 'data', 'coinbase', 'regime-state.json');
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
 
-const apply = process.argv.includes('--apply');
+const { apply, ledgerPath: FILL_LEDGER_PATH, statePath: REGIME_STATE_PATH } =
+  parseFundCli(process.argv, { exchange: 'coinbase', usage: 'node scripts/backfill-sell-order-ids.js' });
+
 const tpOrderIdArg = process.argv.find(a => a.startsWith('--tp-order-id='));
 const explicitTpOrderId = tpOrderIdArg ? tpOrderIdArg.split('=')[1] : null;
 
@@ -182,7 +184,7 @@ console.log(`Active cycle: ${activeCycleId || 'none'}`);
 console.log(`Mode: ${apply ? 'APPLY (persisting)' : 'DRY-RUN (no changes written)'}`);
 
 if (apply) {
-  fs.writeFileSync(FILL_LEDGER_PATH, JSON.stringify(fills, null, 2));
+  atomicWriteSync(FILL_LEDGER_PATH, JSON.stringify(fills, null, 2));
   console.log(`\nWrote updated fill-ledger.json (${fills.length} fills)`);
 } else {
   console.log('\nRun with --apply to persist changes.');

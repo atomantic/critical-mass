@@ -7,7 +7,7 @@
  *   - Annotates the buy fill in ledger with sellOrderId → ec8b7bcb
  *   - Annotates ec8b7bcb sell fill with correct body metadata
  *
- * Usage: node scripts/recover-btc.js [--dry-run]
+ * Usage: node scripts/recover-btc.js --pair BTC-USDC [--apply]   (dry run places no order)
  */
 
 const fs = require('fs');
@@ -18,12 +18,13 @@ const { getAuthHeaders } = require('../src/adapters/coinbase/auth');
 
 // ── Paths ──────────────────────────────────────────────────────
 const { DATA_DIR } = require('../src/paths');
-const COINBASE_DIR = path.join(DATA_DIR, 'coinbase');
-const LEDGER_PATH = path.join(COINBASE_DIR, 'fill-ledger.json');
-const STATE_PATH = path.join(COINBASE_DIR, 'regime-state.json');
-const DRY_RUN = process.argv.includes('--dry-run');
 const API_URL = 'https://api.coinbase.com';
-const PRODUCT_ID = 'BTC-USDC';
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+
+const { pair: PRODUCT_ID, apply: APPLY, ledgerPath: LEDGER_PATH, statePath: STATE_PATH } =
+  parseFundCli(process.argv, { exchange: 'coinbase', usage: 'node scripts/recover-btc.js' });
+const DRY_RUN = !APPLY;
 
 const RECOVERY_BTC = 0.017023;
 const EC8B_SELL_ORDER_ID = 'ec8b7bcb-325a-4bad-a38e-3f76762e3494';
@@ -182,7 +183,7 @@ async function main() {
   const backupPath = LEDGER_PATH + '.backup-recovery-' + Date.now();
   fs.copyFileSync(LEDGER_PATH, backupPath);
   console.log(`💾 Backup: ${path.basename(backupPath)}`);
-  fs.writeFileSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
+  atomicWriteSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
   console.log('✅ fill-ledger.json updated');
 
   console.log('\n═══════════════════════════════════════════════════');

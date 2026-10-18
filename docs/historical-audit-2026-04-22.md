@@ -63,8 +63,8 @@ Summary: 82 findings across 45+ files. 2 shared utilities to extract.
 | `scripts/add-recovery-fill.js` | dry | CRITICAL duplicated auth + undeclared axios |
 | `scripts/recover-btc.js` | dry | CRITICAL duplicated auth + undeclared axios |
 | `scripts/reconcile-state.js` | dry | CRITICAL duplicated auth + undeclared axios |
-| `scripts/correct-state.js` | dry | CRITICAL duplicated auth + undeclared axios |
-| `scripts/recover-duplicate-tp-btc.js` | dry | CRITICAL duplicated auth + undeclared axios |
+| `correct-state.js` (removed, #1157) | dry | CRITICAL duplicated auth + undeclared axios |
+| `recover-duplicate-tp-btc.js` (removed, #1157) | dry | CRITICAL duplicated auth + undeclared axios |
 | `scripts/audit-gemini-fills.js` | dry | HIGH duplicated fetchAllTrades |
 | `src/routes/route-utils.js` | dry | NEW — extract shared route helpers |
 | `src/websocket-feed.js` | deps | MEDIUM jsonwebtoken replacement |
@@ -108,7 +108,7 @@ Summary: 82 findings across 45+ files. 2 shared utilities to extract.
 - [ ] **[MEDIUM]** `src/shared-utils.js:308` — `DATA_DIR` dual-exported from both `paths.js` and `shared-utils.js`. Fix: remove from shared-utils. Complexity: Simple
 - [ ] **[MEDIUM]** `src/adapters/gemini/api.js:266-375` + `src/adapters/cryptocom/api.js:353-461` — `placeLimitSell`/`placeLimitBuy` duplication. Fix: parameterize by side. Complexity: Simple
 - [ ] **[MEDIUM]** `src/adapters/gemini/api.js:456` — `getOrderFills` hardcoded `symbol: 'btcusd'`. Fix: resolve from order. Complexity: Medium
-- [ ] **[LOW]** `scripts/place-corrective-buy-2cb8f4c2.js`, `scripts/repair-orphan-buy-mm0nf5pn.js` — Deprecated one-off scripts
+- [ ] **[LOW]** `place-corrective-buy-2cb8f4c2.js`, `repair-orphan-buy-mm0nf5pn.js` — Deprecated one-off scripts (`repair-orphan-buy-mm0nf5pn.js` removed in #1157)
 - [ ] **[LOW]** `src/adapters/cryptocom/api.js` — console.log vs project logger
 
 ### Architecture & SOLID
