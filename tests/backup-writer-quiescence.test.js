@@ -20,8 +20,10 @@ afterEach(() => { maintenance.endMaintenance(); setEngineMaintenance({ active: f
 
 // Bridge the coordinator's IPC surface to the real engine handlers. Lifecycle
 // spies reload flushed files and replace registry owners, without live adapters.
-const backupWorkflow = (t, { restart = async () => ({ success: true }) } = {}) => {
+const backupWorkflow = (t, { restart = async () => ({ success: true }), shuttingDown = () => false } = {}) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-backup-resume-'));
+  const disconnects = [];
+  const timers = [];
   const paths = { dataDir: path.join(root, 'data'), baseConfigFile: path.join(root, 'config.json') };
   const handlers = new Map();
   const events = [];
@@ -71,6 +73,10 @@ const backupWorkflow = (t, { restart = async () => ({ success: true }) } = {}) =
     pauseBuffers: () => events.push('pause-buffers'),
     resumeBuffers: () => events.push('resume-buffers'),
     logger: workflowLogger,
+    onGatewayDisconnect: (listener) => disconnects.push(listener),
+    isShuttingDown: shuttingDown,
+    setTimer: (fn, delay) => { const timer = { fn, delay, cleared: false }; timers.push(timer); return timer; },
+    clearTimer: (timer) => { timer.cleared = true; },
   });
   const client = ipc({ request: async (channel, payload) => {
     events.push(`${channel}:${payload?.active ?? ''}`);
@@ -100,6 +106,10 @@ const backupWorkflow = (t, { restart = async () => ({ success: true }) } = {}) =
       },
     }),
     resume: () => client.request('engine:backup-resume'),
+    request: (channel, payload) => client.request(channel, payload),
+    disconnect: () => disconnects.forEach((listener) => listener()),
+    timers,
+    liveTimers: () => timers.filter((timer) => !timer.cleared),
     deferWriter: (pair) => {
       const gate = deferred();
       gates.push(gate);
@@ -540,5 +550,136 @@ describe('backup resume keeps automatic fund supervision', () => {
     assert.equal(w.getStartStatus('coinbase', 'BTC-USDC').state, 'running');
     assert.equal(w.regimeEngines.has('coinbase::BTC-USDC'), true);
     assert.equal(w.timers.size, 0);
+  });
+});
+
+describe('abandoned backup pause recovery', () => {
+  const { ABANDON_GRACE_MS, RECOVERY_RETRY_MS } = require('../src/engine-backup-window');
+  // The harness drains with a 0ms deadline, so recovery can hinge on one timer tick.
+  const settle = async () => { await new Promise((r) => setTimeout(r, 20)); for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r)); };
+  const openAndPause = async (workflow, ttlMs = 60_000) => {
+    const window = await workflow.request('engine:maintenance', { active: true, kind: 'backup', reason: 'backup test', ttlMs });
+    assert.equal(window.success, true);
+    assert.deepEqual(await workflow.request('engine:backup-pause'), { success: true, quiesced: true });
+    assert.equal(refuseDuringMaintenance('regime:start').code, 'maintenance-in-progress');
+    return window.maintenance;
+  };
+  const fire = (timer) => { timer.cleared = true; timer.fn(); };
+  const assertResumedOnce = (workflow, generations = {}) => {
+    for (const pair of ['BTC-USDC', 'ETH-USDC']) {
+      assert.deepEqual(workflow.registry.get(`coinbase::${pair}`), { generation: generations[pair] ?? 0, replacement: true });
+      assert.equal(workflow.events.filter((event) => event === `start:${pair}`).length, 1);
+    }
+    assert.equal(workflow.events.filter((event) => event === 'start-market:SOL-USDC').length, 1);
+    assert.equal(workflow.events.filter((event) => event === 'resume-buffers').length, 1);
+    assert.equal(refuseDuringMaintenance('regime:start'), null, 'starts are accepted again without a process restart');
+    assert.equal(getEngineMaintenance(), null, 'the dead owner window is closed with it');
+    assert.equal(workflow.liveTimers().length, 0);
+  };
+
+  it('restarts captured funds when the gateway disconnects before sending backup-resume', async (t) => {
+    const workflow = backupWorkflow(t);
+    await openAndPause(workflow);
+    workflow.disconnect();
+    await settle();
+    assertResumedOnce(workflow);
+    // A gateway that restarted and finishes its own sequence sees an idempotent resume.
+    assert.deepEqual(await workflow.resume(), { success: true });
+    assert.deepEqual(await workflow.request('engine:maintenance', { active: false }), { success: true, maintenance: null });
+    assertResumedOnce(workflow);
+  });
+
+  it('restarts captured funds when the maintenance window expires without a resume', async (t) => {
+    const workflow = backupWorkflow(t);
+    const window = await openAndPause(workflow, 2_000);
+    const [timer] = workflow.liveTimers();
+    assert.ok(timer, 'the pause arms a recovery deadline');
+    assert.ok(Math.abs(timer.delay - (window.expiresAt - Date.now() + ABANDON_GRACE_MS)) < 500, `deadline follows the window: ${timer.delay}`);
+    assert.equal(workflow.events.some((event) => event.startsWith('start:')), false, 'nothing resumes before the deadline');
+    fire(timer);
+    await settle();
+    assertResumedOnce(workflow);
+  });
+
+  it('keeps retrying an abandoned resume while writers are still draining', async (t) => {
+    const workflow = backupWorkflow(t);
+    const writer = workflow.deferWriter('BTC-USDC');
+    await workflow.request('engine:maintenance', { active: true, kind: 'backup', reason: 'backup test' });
+    const pause = await workflow.request('engine:backup-pause');
+    assert.equal(pause.success, false, 'the deferred writer blocks quiescence');
+    workflow.disconnect();
+    await settle();
+    assert.equal(workflow.events.some((event) => event.startsWith('start:')), false, 'owners are retained while the writer runs');
+    assert.equal(refuseDuringMaintenance('regime:start').code, 'maintenance-in-progress');
+    const [retry] = workflow.liveTimers();
+    assert.equal(retry?.delay, RECOVERY_RETRY_MS, 'recovery is rescheduled rather than abandoned');
+    await writer.settle();
+    fire(retry);
+    await settle();
+    assertResumedOnce(workflow, { 'BTC-USDC': 1 });
+  });
+
+  it('releases the pause gate when an abandoned pause captured no owner', async (t) => {
+    const workflow = backupWorkflow(t);
+    const gate = deferred();
+    const accepted = trackPendingWrite('ipc:regime:rebuild-ladder', () => gate.promise);
+    await workflow.request('engine:maintenance', { active: true, kind: 'backup', reason: 'backup test' });
+    assert.deepEqual(await workflow.request('engine:backup-pause'), { success: false, error: 'Accepted engine requests are still running' });
+    assert.equal(refuseDuringMaintenance('regime:start').code, 'maintenance-in-progress');
+    workflow.disconnect();
+    await settle();
+    assert.equal(refuseDuringMaintenance('regime:start'), null);
+    assert.equal(getEngineMaintenance(), null);
+    for (const [key, original] of workflow.originals) assert.equal(workflow.registry.get(key), original, 'nothing was stopped, so nothing restarts');
+    assert.equal(workflow.events.some((event) => event.startsWith('stop') || event.startsWith('start')), false);
+    gate.resolve();
+    await accepted;
+  });
+
+  it('leaves a disconnect alone during process shutdown and after a completed backup', async (t) => {
+    const stopping = backupWorkflow(t, { shuttingDown: () => true });
+    await openAndPause(stopping);
+    stopping.disconnect();
+    await settle();
+    for (const [key, original] of stopping.originals) assert.equal(stopping.registry.get(key), original, 'shutdown owns the stopped engines');
+    assert.equal(stopping.events.some((event) => event.startsWith('start')), false);
+
+    const finished = backupWorkflow(t);
+    assert.equal((await finished.backup()).success, true);
+    finished.disconnect();
+    await settle();
+    assert.equal(finished.events.filter((event) => event.startsWith('start:')).length, 2, 'a completed backup has nothing to recover');
+    assert.equal(finished.liveTimers().length, 0);
+  });
+
+  it('makes a new gateway wait for an in-flight self-resume before capturing the registry', async () => {
+    const handlers = new Map();
+    const events = [];
+    const disconnects = [];
+    const restartGate = deferred();
+    const owner = (pair) => ({ stop: async () => { events.push(`stop:${pair}`); }, flushForBackup: () => events.push(`flush:${pair}`) });
+    const registry = new Map([['coinbase::BTC-USDC', owner('BTC-USDC')]]);
+    registerEngineBackupHandlers({ onRequest: (name, handler) => handlers.set(name, handler) }, {
+      regimeEngines: registry, getMarketFunds: () => [], stopMarketServices: () => {}, drainMarketStarts: async () => {}, drainPendingWrites,
+      resumeFund: async (exchange, pair) => { events.push(`start:${pair}`); await restartGate.promise; registry.set(`${exchange}::${pair}`, owner(pair)); return { success: true }; },
+      startMarketService: async () => ({ success: true }), logger,
+      onGatewayDisconnect: (listener) => disconnects.push(listener), setTimer: () => ({}), clearTimer: () => {},
+    });
+    setEngineMaintenance({ active: true, kind: 'backup', reason: 'first gateway' });
+    assert.deepEqual(await handlers.get('engine:backup-pause')(), { success: true, quiesced: true });
+    disconnects.forEach((listener) => listener());
+    await settle();
+    assert.deepEqual(events, ['stop:BTC-USDC', 'flush:BTC-USDC', 'flush:BTC-USDC', 'start:BTC-USDC'], 'self-resume is mid-restart');
+    setEngineMaintenance({ active: true, kind: 'backup', reason: 'second gateway' });
+    let secondPause = null;
+    const pending = handlers.get('engine:backup-pause')().then((result) => { secondPause = result; });
+    await settle();
+    assert.equal(secondPause, null, 'the second pause waits for the restart to settle');
+    restartGate.resolve();
+    await pending;
+    assert.deepEqual(secondPause, { success: true, quiesced: true });
+    assert.deepEqual(events.slice(4), ['stop:BTC-USDC', 'flush:BTC-USDC'], 'the second pause stops the replacement owner, not the stale one');
+    assert.equal(getEngineMaintenance()?.reason, 'second gateway', 'a newer gateway\'s window survives the dead owner\'s cleanup');
+    assert.deepEqual(await handlers.get('engine:backup-resume')(), { success: true, failures: [] });
   });
 });

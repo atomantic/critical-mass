@@ -10,6 +10,7 @@ const path = require('path');
 const { resolveFundDataDir } = require('./migration');
 const { createContextLogger } = require('./logger');
 const { fundKey } = require('./shared-utils');
+const { atomicWriteSync } = require('./state-tracker');
 
 const chartDataLogger = createContextLogger();
 
@@ -82,7 +83,9 @@ const createChartDataBuffer = (exchange, pair) => {
         regimeHistory: trimOldData(regimeHistory),
         savedAt: Date.now(),
       };
-      fs.writeFileSync(filePath, JSON.stringify(data));
+      // Rename-in-place: a crash or SIGKILL mid-write must not leave a torn
+      // file that loadFromDisk discards (losing the whole chart history).
+      atomicWriteSync(filePath, JSON.stringify(data));
       dirty = false;
     } catch (err) {
       logger.warn(`⚠️ chart buffer save failed for ${exchange}: ${err.message}`, {

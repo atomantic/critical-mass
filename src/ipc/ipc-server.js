@@ -44,6 +44,8 @@ const createIPCServer = (port, name) => {
   const pendingBroadcasts = new Set();
   /** @type {Map<string, (payload: any, exchange: string|null, pair: string|null) => Promise<any>>} */
   const requestHandlers = new Map();
+  /** @type {Set<(remaining: number) => void>} Observers of a gateway socket closing. */
+  const disconnectListeners = new Set();
 
   // Built-in, registered for every engine: the gateway opens a maintenance
   // window here before a backup restore so this process stops mutating the
@@ -128,6 +130,13 @@ const createIPCServer = (port, name) => {
           event: 'close',
           clients: clients.size,
         });
+        for (const listener of disconnectListeners) {
+          try {
+            listener(clients.size);
+          } catch (err) {
+            logger.error(`❌ 🔗 [${name}] IPC disconnect listener failed: ${err.message}`, { event: 'close', error: err.message });
+          }
+        }
       });
 
       ws.on('error', (err) => {
@@ -294,6 +303,15 @@ const createIPCServer = (port, name) => {
     requestHandlers.set(channel, handler);
   };
 
+  /**
+   * Observe gateway sockets closing. The engine owns state the gateway opened
+   * (a backup pause); when its only client is gone, that state has no owner.
+   * @param {(remaining: number) => void} listener - Receives the connected client count
+   */
+  const onClientDisconnect = (listener) => {
+    disconnectListeners.add(listener);
+  };
+
   const stop = () => {
     if (rejectStart) rejectStart(new Error('IPC server stopped before listening'));
     startPromise = null;
@@ -314,6 +332,7 @@ const createIPCServer = (port, name) => {
     broadcast,
     flush,
     onRequest,
+    onClientDisconnect,
     setInitializing: (value) => { initializing = Boolean(value); },
     setShuttingDown: (value) => { shuttingDown = Boolean(value); },
     isShuttingDown: () => shuttingDown,
