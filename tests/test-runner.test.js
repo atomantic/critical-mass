@@ -64,7 +64,11 @@ if (mode === 'leak' || mode === 'fail') {
 } else if (mode === 'listener') {
   const server = require('net').createServer();
   server.listen(0, '127.0.0.1', () => {
-    fs.writeFileSync(path.join(control, 'descendant.json'), JSON.stringify({ pid: process.pid, port: server.address().port, root: tmp }));
+    // File existence is the parent's readiness signal: publish complete JSON
+    // atomically so runner shutdown cannot interrupt the witness write.
+    const witness = path.join(control, 'descendant.json');
+    fs.writeFileSync(witness + '.tmp', JSON.stringify({ pid: process.pid, port: server.address().port, root: tmp }));
+    fs.renameSync(witness + '.tmp', witness);
   });
   setInterval(() => {
     fs.mkdirSync(tmp, { recursive: true });
