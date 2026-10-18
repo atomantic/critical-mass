@@ -96,6 +96,49 @@ const createCorsMiddleware = (allowlist = []) => (req, res, next) => {
   next();
 };
 
+/**
+ * Bind one HTTP listener per host on `port` and resolve only once EVERY one
+ * is listening. The first host uses `server`; each later host gets a fresh
+ * `createServer()` handed to `onExtra` (Socket.IO attach) before it listens.
+ *
+ * The first bind failure rejects with the error carrying `host`/`port`, after
+ * closing every listener that did bind, so a caller that exits on rejection
+ * leaves no half-bound gateway behind. Callers start writers only after the
+ * resolution: a port already owned by another gateway must stop this one
+ * before it touches any state (see server.js).
+ *
+ * @param {{hosts: string[], port: number|string, server: import('http').Server, createServer: () => import('http').Server, onExtra?: (server: import('http').Server) => void, log?: (level: string, message: string) => void}} options
+ * @returns {Promise<import('http').Server[]>} the extra servers (hosts after the first), in host order
+ */
+const bindGatewayListeners = ({ hosts, port, server, createServer, onExtra = () => {}, log = () => {} }) => {
+  const listeners = hosts.map((host, i) => {
+    const s = i === 0 ? server : createServer()
+    if (i > 0) onExtra(s)
+    return { host, server: s }
+  })
+  const bound = listeners.map(({ host, server: s }) => new Promise((resolve, reject) => {
+    const onError = (err) => {
+      s.removeListener('listening', onListening)
+      reject(Object.assign(err, { host, port }))
+    }
+    const onListening = () => {
+      s.removeListener('error', onError)
+      log('INFO', `Critical Mass listening on http://${host}:${port}`)
+      resolve(s)
+    }
+    s.once('error', onError)
+    s.once('listening', onListening)
+    s.listen(port, host)
+  }))
+  return Promise.all(bound).then(
+    () => listeners.slice(1).map(({ server: s }) => s),
+    async (err) => {
+      await Promise.allSettled(listeners.map(({ server: s }) => new Promise((resolve) => s.close(() => resolve()))))
+      throw err
+    },
+  )
+}
+
 module.exports = {
   isTailscaleIpv4,
   isLoopbackHost,
@@ -103,5 +146,6 @@ module.exports = {
   resolveListenHosts,
   isGatewayOrigin,
   createCorsMiddleware,
+  bindGatewayListeners,
 }
 

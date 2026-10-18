@@ -116,3 +116,63 @@ describe('createCorsMiddleware', () => {
   })
 })
 
+
+describe('bindGatewayListeners', () => {
+  const http = require('node:http')
+  const { bindGatewayListeners } = require('../src/gateway-listen')
+  const closeAll = (servers) => Promise.all(servers.map((s) => new Promise((resolve) => s.close(() => resolve()))))
+
+  it('resolves only once every host is listening and returns the extra servers', async () => {
+    const primary = http.createServer()
+    const extras = []
+    const logs = []
+    const result = await bindGatewayListeners({
+      hosts: ['127.0.0.1'], port: 0, server: primary,
+      createServer: () => assert.fail('single host needs no extra server'),
+      onExtra: (s) => extras.push(s),
+      log: (level, message) => logs.push(`${level} ${message}`),
+    })
+    assert.deepEqual(result, [])
+    assert.deepEqual(extras, [])
+    assert.equal(primary.listening, true)
+    assert.ok(primary.address().port > 0)
+    assert.deepEqual(logs, ['INFO Critical Mass listening on http://127.0.0.1:0'])
+    await closeAll([primary])
+  })
+
+  it('rejects with the occupied host and port and leaves nothing bound', async () => {
+    const owner = http.createServer()
+    await new Promise((resolve) => owner.listen(0, '127.0.0.1', resolve))
+    const port = owner.address().port
+    const primary = http.createServer()
+    let extra
+    await assert.rejects(
+      bindGatewayListeners({
+        hosts: ['127.0.0.1', '127.0.0.1'], port, server: primary,
+        createServer: () => { extra = http.createServer(); return extra },
+        onExtra: (s) => assert.equal(s, extra),
+      }),
+      (err) => err.code === 'EADDRINUSE' && err.host === '127.0.0.1' && err.port === port,
+    )
+    assert.equal(primary.listening, false)
+    assert.equal(extra.listening, false)
+    assert.equal(owner.listening, true, 'the existing owner keeps the port')
+    await closeAll([owner])
+  })
+
+  it('closes a host that did bind when a later host fails', async () => {
+    const primary = http.createServer()
+    await new Promise((resolve) => primary.listen(0, '127.0.0.1', resolve))
+    const port = primary.address().port
+    await closeAll([primary])
+    // Same loopback address twice: the first bind succeeds, the second collides with it.
+    const first = http.createServer()
+    const second = http.createServer()
+    await assert.rejects(
+      bindGatewayListeners({ hosts: ['127.0.0.1', '127.0.0.1'], port, server: first, createServer: () => second }),
+      (err) => err.code === 'EADDRINUSE',
+    )
+    assert.equal(first.listening, false, 'the successful bind is released on failure')
+    assert.equal(second.listening, false)
+  })
+})

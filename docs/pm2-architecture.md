@@ -90,6 +90,19 @@ use `pm2-runtime` directly and is outside this native command sequence.
 
 `npm run dev` (`scripts/dev.js`) supervises only two children: the gateway (`server.js`) and the Vite UI. The engines are separate PM2 processes that the gateway connects to as IPC clients; with none running, regime commands return HTTP 503 (`Engine unavailable: IPC not connected`). Start them first with `pm2 start ecosystem.config.cjs --only critical-mass-coinbase,critical-mass-gemini,critical-mass-cryptocom` and remove them with `pm2 delete` on the same names. Do not run the production `critical-mass`/`critical-mass-ui` processes at the same time (port conflict). Engines auto-resume configured funds, so use a separate development configuration with disabled or dry-run funds.
 
+## Gateway startup order
+
+The gateway binds every HTTP listener (`bindGatewayListeners` in
+`src/gateway-listen.js`) before it starts anything with side effects: engine
+IPC connections, the UpDown and Sentinel writers, the notifier, the backup and
+DCA schedulers and the immediate DCA check. A port another gateway already owns
+therefore exits with code 1 and a single `failed to bind` log line, with no
+state file rewritten, no engine attached, no scheduled buy and no notification
+sent — the gateway-side counterpart of the engines' IPC-bind-first rule
+(issue #816). Routes and services are constructed before the bind so a request
+admitted immediately afterwards finds them. `tests/gateway-startup-order.test.js`
+runs the production start block against that contract.
+
 ## Gateway shutdown grace period
 
 The gateway handles SIGTERM and SIGINT through one drain coordinator. It stops
