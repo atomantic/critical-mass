@@ -77,10 +77,10 @@ const transferArchive = (from, to, filename) => {
 };
 
 /** Build an archive whose per-fund files sit at the EXCHANGE level. */
-const makeLegacyLayoutArchive = (sourceConfig, files) => {
+const makeLegacyLayoutArchive = async (sourceConfig, files) => {
   const source = makeInstall(`source-${roots.length}-${Object.keys(files).join('-').length}`, sourceConfig);
   for (const [rel, text] of Object.entries(files)) write(path.join(source.dataDir, rel), text);
-  const created = createBackup({ paths: source.paths });
+  const created = await createBackup({ paths: source.paths });
   assert.equal(created.success, true, created.error);
   return { source, filename: /** @type {string} */ (created.filename) };
 };
@@ -96,7 +96,7 @@ afterEach(() => {
 });
 
 describe('normalizeExchangeTreeToPairs (issue #541)', () => {
-  it('moves exchange-level per-fund files into the pair subdirectory', () => {
+  it('moves exchange-level per-fund files into the pair subdirectory', async () => {
     write(path.join(root, 'coinbase', 'state.json'), '{"legacy":true}');
     write(path.join(root, 'coinbase', 'fill-ledger.json'), 'ledger');
     write(path.join(root, 'coinbase', 'btc-usdc-price-cache-1min.json'), 'cache');
@@ -116,7 +116,7 @@ describe('normalizeExchangeTreeToPairs (issue #541)', () => {
     assert.equal(read(path.join(root, 'coinbase', 'state.json')), null);
   });
 
-  it('is a no-op on a tree already in per-fund layout and creates no pair directory', () => {
+  it('is a no-op on a tree already in per-fund layout and creates no pair directory', async () => {
     write(path.join(root, 'coinbase', 'BTC-USDC', 'state.json'), 'current');
 
     const result = normalizeExchangeTreeToPairs({ root, exchange: 'coinbase', pair: 'ETH-USDC' });
@@ -125,7 +125,7 @@ describe('normalizeExchangeTreeToPairs (issue #541)', () => {
     assert.deepEqual(fs.readdirSync(path.join(root, 'coinbase')), ['BTC-USDC']);
   });
 
-  it('skips rather than overwrites a file already at the target', () => {
+  it('skips rather than overwrites a file already at the target', async () => {
     write(path.join(root, 'coinbase', 'state.json'), 'legacy');
     write(path.join(root, 'coinbase', 'BTC-USDC', 'state.json'), 'newer');
 
@@ -136,7 +136,7 @@ describe('normalizeExchangeTreeToPairs (issue #541)', () => {
     assert.equal(read(path.join(root, 'coinbase', 'state.json')), 'legacy');
   });
 
-  it('refuses a pair that would escape the exchange directory', () => {
+  it('refuses a pair that would escape the exchange directory', async () => {
     write(path.join(root, 'coinbase', 'state.json'), 'legacy');
     assert.throws(
       () => normalizeExchangeTreeToPairs({ root, exchange: 'coinbase', pair: '../../escape' }),
@@ -146,8 +146,8 @@ describe('normalizeExchangeTreeToPairs (issue #541)', () => {
 });
 
 describe('restoreBackup translates a pre-multi-pair archive (issue #541)', () => {
-  it('relocates exchange-level files onto a destination that already holds per-fund files', () => {
-    const { source, filename } = makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
+  it('relocates exchange-level files onto a destination that already holds per-fund files', async () => {
+    const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
       'coinbase/state.json': '{"generation":"archived"}',
       'coinbase/fill-ledger.json': 'archived-ledger',
       'coinbase/regime-state.json': '{"regime":"archived"}',
@@ -172,8 +172,8 @@ describe('restoreBackup translates a pre-multi-pair archive (issue #541)', () =>
     assert.deepEqual(fs.readdirSync(dest.dataDir).filter((n) => n.startsWith('.restore-')), []);
   });
 
-  it('takes the pair from the archive snapshot, not the destination default', () => {
-    const { source, filename } = makeLegacyLayoutArchive(configWith({ coinbase: 'ETH-USDC' }), {
+  it('takes the pair from the archive snapshot, not the destination default', async () => {
+    const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'ETH-USDC' }), {
       'coinbase/state.json': '{"fund":"ETH-USDC"}',
     });
 
@@ -189,8 +189,8 @@ describe('restoreBackup translates a pre-multi-pair archive (issue #541)', () =>
     assert.equal(read(path.join(dest.dataDir, 'coinbase', 'BTC-USDC', 'state.json')), '{"fund":"BTC-USDC"}');
   });
 
-  it('falls back to the destination default for a manifest-less data-only restore', () => {
-    const { source, filename } = makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
+  it('falls back to the destination default for a manifest-less data-only restore', async () => {
+    const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
       'coinbase/state.json': '{"generation":"archived"}',
     });
     // Strip the manifest to reproduce a pre-v2.24.1 archive.
@@ -207,8 +207,8 @@ describe('restoreBackup translates a pre-multi-pair archive (issue #541)', () =>
     assert.equal(read(path.join(dest.dataDir, 'coinbase', 'BTC-USDC', 'state.json')), '{"generation":"archived"}');
   });
 
-  it('aborts before any destination write when no pair can be resolved', () => {
-    const { source, filename } = makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
+  it('aborts before any destination write when no pair can be resolved', async () => {
+    const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
       'kraken/state.json': '{"orphan":true}',
       'coinbase/BTC-USDC/state.json': '{"generation":"archived"}',
     });
@@ -228,8 +228,8 @@ describe('restoreBackup translates a pre-multi-pair archive (issue #541)', () =>
     assert.deepEqual(fs.readdirSync(dest.dataDir).filter((n) => n.startsWith('.restore-')), []);
   });
 
-  it('leaves an archive already in per-fund layout untouched', () => {
-    const { source, filename } = makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
+  it('leaves an archive already in per-fund layout untouched', async () => {
+    const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
       'coinbase/BTC-USDC/state.json': '{"generation":"archived"}',
       'coinbase/long-term-candles-btc-usdc.json': 'candles',
     });
@@ -245,8 +245,8 @@ describe('restoreBackup translates a pre-multi-pair archive (issue #541)', () =>
     assert.deepEqual(fs.readdirSync(path.join(dest.dataDir, 'coinbase')).sort(), ['BTC-USDC', 'long-term-candles-btc-usdc.json']);
   });
 
-  it('rolls the translated destinations back when the application fails mid-apply', () => {
-    const { source, filename } = makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
+  it('rolls the translated destinations back when the application fails mid-apply', async () => {
+    const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
       'coinbase/state.json': '{"generation":"archived"}',
       'coinbase/fill-ledger.json': 'archived-ledger',
     });
@@ -280,8 +280,8 @@ describe('restoreBackup translates a pre-multi-pair archive (issue #541)', () =>
 });
 
 describe('inspectBackup discloses the layout translation (issue #541)', () => {
-  it('reports legacyLayout and the exchange → pair mapping for a manifest-carrying archive', () => {
-    const { source, filename } = makeLegacyLayoutArchive(configWith({ coinbase: 'ETH-USDC' }), {
+  it('reports legacyLayout and the exchange → pair mapping for a manifest-carrying archive', async () => {
+    const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'ETH-USDC' }), {
       'coinbase/state.json': '{"generation":"archived"}',
     });
 
@@ -295,8 +295,8 @@ describe('inspectBackup discloses the layout translation (issue #541)', () => {
     assert.deepEqual(report.unresolvableLayoutExchanges, []);
   });
 
-  it('reports an exchange whose pair cannot be resolved', () => {
-    const { source, filename } = makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
+  it('reports an exchange whose pair cannot be resolved', async () => {
+    const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
       'kraken/regime-state.json': '{"orphan":true}',
     });
 
@@ -309,8 +309,8 @@ describe('inspectBackup discloses the layout translation (issue #541)', () => {
     assert.deepEqual(report.unresolvableLayoutExchanges, ['kraken']);
   });
 
-  it('reports no translation for an archive already in per-fund layout', () => {
-    const { source, filename } = makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
+  it('reports no translation for an archive already in per-fund layout', async () => {
+    const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
       'coinbase/BTC-USDC/state.json': '{"generation":"archived"}',
     });
 

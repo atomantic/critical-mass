@@ -60,16 +60,16 @@ describe('backup configuration JSON diagnostics', () => {
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
   for (const corruptFile of ['base', 'user']) {
     for (const malformed of ['SECRET820', '{"token":"SECRET820","bad":SECRET820}']) {
-      it(`rejects malformed ${corruptFile} config without credential excerpts (${malformed.length})`, () => {
+      it(`rejects malformed ${corruptFile} config without credential excerpts (${malformed.length})`, async () => {
         const dataDir = path.join(root, 'data');
         const baseConfigFile = path.join(root, 'base.json');
         fs.mkdirSync(dataDir, { recursive: true });
         fs.writeFileSync(baseConfigFile, '{}');
         const paths = { dataDir, baseConfigFile };
-        const archive = createBackup({ paths });
+        const archive = await createBackup({ paths });
         assert.equal(archive.success, true);
         fs.writeFileSync(corruptFile === 'base' ? baseConfigFile : path.join(dataDir, 'config.json'), malformed);
-        for (const result of [createBackup({ paths }), inspectBackup(archive.filename, { paths })]) {
+        for (const result of [await createBackup({ paths }), inspectBackup(archive.filename, { paths })]) {
           assert.equal(result.success, false);
           assert.ok(result.error.includes('ERR_INVALID_JSON'));
           assert.ok(!JSON.stringify(result).includes('SECRET820'));
@@ -77,9 +77,9 @@ describe('backup configuration JSON diagnostics', () => {
       });
     }
   }
-  it('distinguishes I/O errors from invalid JSON without forwarding native messages', () => {
+  it('distinguishes I/O errors from invalid JSON without forwarding native messages', async () => {
     fs.mkdirSync(path.join(root, 'base.json'), { recursive: true });
-    const result = createBackup({ paths: { dataDir: path.join(root, 'data'), baseConfigFile: path.join(root, 'base.json') } });
+    const result = await createBackup({ paths: { dataDir: path.join(root, 'data'), baseConfigFile: path.join(root, 'base.json') } });
     assert.equal(result.success, false);
     assert.ok(result.error.includes('unable to read JSON'));
     assert.ok(!result.error.includes('ERR_INVALID_JSON'));
@@ -102,8 +102,8 @@ describe('backup-service — createBackup/restoreBackup', () => {
     }
   });
 
-  it('creates a real archive and lists it', () => {
-    const result = createBackup();
+  it('creates a real archive and lists it', async () => {
+    const result = await createBackup();
     assert.equal(result.success, true);
     assert.ok(result.filename);
     assert.ok(result.sizeBytes > 0);
@@ -128,7 +128,7 @@ describe('backup-service — createBackup/restoreBackup', () => {
     return archive;
   };
 
-  it('lists valid pre-manifest legacy archives and restores them after explicit acknowledgement', () => {
+  it('lists valid pre-manifest legacy archives and restores them after explicit acknowledgement', async () => {
     const filename = 'backup-legacy-list-regression.zip';
     const archive = createArchiveFixture(filename, {
       '__backup_service_test__.json': JSON.stringify({ marker: 'legacy-recovery' }),
@@ -147,7 +147,7 @@ describe('backup-service — createBackup/restoreBackup', () => {
     assert.deepEqual(JSON.parse(fs.readFileSync(TEST_FILE, 'utf8')), { marker: 'legacy-recovery' });
   });
 
-  it('excludes integrity-valid archives with malformed or duplicate manifests', () => {
+  it('excludes integrity-valid archives with malformed or duplicate manifests', async () => {
     const malformed = 'backup-malformed-manifest-list.zip';
     const duplicate = 'backup-duplicate-manifest-list.zip';
     createArchiveFixture(malformed, { 'backup-manifest.json': '{not valid json' });
@@ -178,9 +178,9 @@ describe('backup-service — createBackup/restoreBackup', () => {
     assert.ok(!listed.includes(duplicate));
   });
 
-  it('publishes same-second backups under distinct names with one valid manifest each', () => {
-    const first = createBackup();
-    const second = createBackup();
+  it('publishes same-second backups under distinct names with one valid manifest each', async () => {
+    const first = await createBackup();
+    const second = await createBackup();
     assert.equal(first.success, true);
     assert.equal(second.success, true);
     assert.notEqual(first.filename, second.filename);
@@ -193,9 +193,28 @@ describe('backup-service — createBackup/restoreBackup', () => {
     assert.deepEqual(fs.readdirSync(BACKUP_DIR).filter(name => name.startsWith('.backup-')), []);
   });
 
-  it('returns the real spawnSync error (not "Unknown zip error") when the zip binary is missing', () => {
+  it('keeps the event loop responsive while zip is running (issue #1158)', async () => {
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-fake-zip-'));
+    const realZip = spawnSync('which', ['zip']).stdout.toString().trim();
+    fs.writeFileSync(path.join(fakeBin, 'zip'), `#!/bin/sh\nsleep 1\nexec ${realZip} "$@"\n`, { mode: 0o755 });
+    process.env.PATH = `${fakeBin}${path.delimiter}${originalPath}`;
+    let ticks = 0;
+    const timer = setInterval(() => { ticks += 1; }, 20);
+    try {
+      const result = await createBackup();
+      assert.equal(result.success, true, result.error);
+    } finally {
+      clearInterval(timer);
+      process.env.PATH = originalPath;
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+    // A blocking spawnSync would starve the interval for the full second.
+    assert.ok(ticks >= 10, `expected timer ticks during zip, got ${ticks}`);
+  });
+
+  it('returns the real spawnSync error (not "Unknown zip error") when the zip binary is missing', async () => {
     process.env.PATH = '';
-    const result = createBackup();
+    const result = await createBackup();
     process.env.PATH = originalPath;
 
     assert.equal(result.success, false);
@@ -203,8 +222,8 @@ describe('backup-service — createBackup/restoreBackup', () => {
     assert.notEqual(result.error, 'Unknown zip error');
   });
 
-  it('returns the real spawnSync error (not "Unknown unzip error") when the unzip binary is missing', () => {
-    const created = createBackup();
+  it('returns the real spawnSync error (not "Unknown unzip error") when the unzip binary is missing', async () => {
+    const created = await createBackup();
     assert.equal(created.success, true);
     createdBackups.push(created.filename);
 
@@ -217,8 +236,8 @@ describe('backup-service — createBackup/restoreBackup', () => {
     assert.notEqual(result.error, 'Unknown unzip error');
   });
 
-  it('restores files from a real archive and cleans up the temp dir via fs.rmSync', () => {
-    const created = createBackup();
+  it('restores files from a real archive and cleans up the temp dir via fs.rmSync', async () => {
+    const created = await createBackup();
     assert.equal(created.success, true);
     createdBackups.push(created.filename);
 
@@ -259,8 +278,8 @@ describe('backup-service — dry-run state round-trips (#531)', () => {
     }
   });
 
-  it('archives the per-fund state file and restores the simulated position', () => {
-    const created = createBackup();
+  it('archives the per-fund state file and restores the simulated position', async () => {
+    const created = await createBackup();
     assert.equal(created.success, true);
     createdBackups.push(created.filename);
 
@@ -313,8 +332,8 @@ describe('backup-service — credential exclusion', () => {
     }
   });
 
-  it('omits top-level and nested *-keys.json files from the archive', () => {
-    const result = createBackup();
+  it('omits top-level and nested *-keys.json files from the archive', async () => {
+    const result = await createBackup();
     assert.equal(result.success, true);
     createdBackups.push(result.filename);
 
@@ -326,8 +345,8 @@ describe('backup-service — credential exclusion', () => {
     assert.ok(entries.some(e => e.endsWith('__backup_service_test_gemini__/state.json')));
   });
 
-  it('omits operator and provider credentials plus live config from the archive', () => {
-    const result = createBackup();
+  it('omits operator and provider credentials plus live config from the archive', async () => {
+    const result = await createBackup();
     assert.equal(result.success, true);
     createdBackups.push(result.filename);
 
@@ -342,8 +361,8 @@ describe('backup-service — credential exclusion', () => {
     assert.ok(entries.includes('backup-manifest.json'), 'archive should still carry portable manifest data');
   });
 
-  it('omits the backups directory itself from the archive', () => {
-    const result = createBackup();
+  it('omits the backups directory itself from the archive', async () => {
+    const result = await createBackup();
     assert.equal(result.success, true);
     createdBackups.push(result.filename);
 
@@ -395,7 +414,7 @@ describe('backup-service — restoreBackup preserves existing credentials', () =
     removeAll([liveKeys, restoreState, sourceDir, path.join(BACKUP_DIR, craftedFilename), ...Object.values(liveCredentials)]);
   });
 
-  it('leaves on-disk credential files untouched while restoring non-credential files', () => {
+  it('leaves on-disk credential files untouched while restoring non-credential files', async () => {
     // The crafted archive has no #430 configuration manifest, so it is a
     // legacy archive: accept it data-only, which is what this test is about.
     const result = restoreBackup(craftedFilename, { acceptLegacyWithoutBase: true });
@@ -425,37 +444,37 @@ describe('backup-service — deleteBackup guards', () => {
     }
   });
 
-  it('rejects filenames containing ".."', () => {
+  it('rejects filenames containing ".."', async () => {
     const result = deleteBackup('../backup-evil.zip');
     assert.deepEqual(result, { success: false, error: 'Invalid filename' });
   });
 
-  it('rejects filenames containing a path separator', () => {
+  it('rejects filenames containing a path separator', async () => {
     const result = deleteBackup('sub/backup-evil.zip');
     assert.deepEqual(result, { success: false, error: 'Invalid filename' });
   });
 
-  it('rejects absolute paths', () => {
+  it('rejects absolute paths', async () => {
     const result = deleteBackup('/etc/passwd');
     assert.deepEqual(result, { success: false, error: 'Invalid filename' });
   });
 
-  it('rejects filenames containing a backslash', () => {
+  it('rejects filenames containing a backslash', async () => {
     const result = deleteBackup('backup-evil\\..\\secrets.zip');
     assert.deepEqual(result, { success: false, error: 'Invalid filename' });
   });
 
-  it('rejects filenames that do not match the backup-*.zip format', () => {
+  it('rejects filenames that do not match the backup-*.zip format', async () => {
     assert.deepEqual(deleteBackup('notabackup.zip'), { success: false, error: 'Invalid backup filename format' });
     assert.deepEqual(deleteBackup('backup-2026-01-01.tar'), { success: false, error: 'Invalid backup filename format' });
   });
 
-  it('returns not-found for a well-formed filename that does not exist', () => {
+  it('returns not-found for a well-formed filename that does not exist', async () => {
     const result = deleteBackup('backup-does-not-exist.zip');
     assert.deepEqual(result, { success: false, error: 'Backup not found' });
   });
 
-  it('rejects symlinks instead of deleting through them', () => {
+  it('rejects symlinks instead of deleting through them', async () => {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const targetOutsideBackups = path.join(DATA_DIR, '__backup_service_test_symlink_target.json');
     fs.writeFileSync(targetOutsideBackups, JSON.stringify({ marker: 'must-not-be-deleted' }));
@@ -474,26 +493,26 @@ describe('backup-service — deleteBackup guards', () => {
 });
 
 describe('backup-service — restoreBackup guards', () => {
-  it('rejects filenames containing ".."', () => {
+  it('rejects filenames containing ".."', async () => {
     const result = restoreBackup('../backup-evil.zip');
     assert.deepEqual(result, { success: false, error: 'Invalid filename' });
   });
 
-  it('rejects filenames containing a path separator', () => {
+  it('rejects filenames containing a path separator', async () => {
     const result = restoreBackup('sub/backup-evil.zip');
     assert.deepEqual(result, { success: false, error: 'Invalid filename' });
   });
 
-  it('rejects filenames that do not match the backup-*.zip format', () => {
+  it('rejects filenames that do not match the backup-*.zip format', async () => {
     assert.deepEqual(restoreBackup('notabackup.zip'), { success: false, error: 'Invalid backup filename format' });
   });
 
-  it('returns not-found for a well-formed filename that does not exist', () => {
+  it('returns not-found for a well-formed filename that does not exist', async () => {
     const result = restoreBackup('backup-does-not-exist.zip');
     assert.deepEqual(result, { success: false, error: 'Backup not found' });
   });
 
-  it('rejects symlinks instead of extracting through them', () => {
+  it('rejects symlinks instead of extracting through them', async () => {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const targetOutsideBackups = path.join(DATA_DIR, '__backup_service_test_restore_symlink_target.json');
     fs.writeFileSync(targetOutsideBackups, JSON.stringify({ marker: 'irrelevant' }));
@@ -549,7 +568,7 @@ describe('backup-service — pruneBackups retention', () => {
     }
   });
 
-  it('deletes only the oldest archives beyond maxBackups, keeping the newest', () => {
+  it('deletes only the oldest archives beyond maxBackups, keeping the newest', async () => {
     assert.equal(listBackups().length, 5);
 
     const result = pruneBackups(2);
@@ -563,7 +582,7 @@ describe('backup-service — pruneBackups retention', () => {
     assert.deepEqual(survivorNames, [`backup-${prefix}-3.zip`, `backup-${prefix}-4.zip`].sort());
   });
 
-  it('prunes nothing when the backup count is within the retention limit', () => {
+  it('prunes nothing when the backup count is within the retention limit', async () => {
     const totalBackups = listBackups().length;
     assert.equal(totalBackups, 5);
 
@@ -573,7 +592,7 @@ describe('backup-service — pruneBackups retention', () => {
     assert.equal(listBackups().length, 5);
   });
 
-  it('ignores corrupt matching archives when listing and pruning', () => {
+  it('ignores corrupt matching archives when listing and pruning', async () => {
     const corrupt = path.join(BACKUP_DIR, `backup-${prefix}-corrupt.zip`);
     fs.writeFileSync(corrupt, 'partial archive');
     created.push(corrupt);
@@ -596,7 +615,7 @@ describe('backup-service — pruneBackups retention', () => {
   ];
 
   for (const { label, value } of invalidMaxBackupsCases) {
-    it(`falls back to the default retain count instead of deleting everything when maxBackups is ${label}`, () => {
+    it(`falls back to the default retain count instead of deleting everything when maxBackups is ${label}`, async () => {
       assert.equal(listBackups().length, 5);
 
       // Fixture has 5 backups, well under the default retain count (7), so a

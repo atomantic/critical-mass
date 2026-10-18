@@ -144,7 +144,7 @@ describe('restore-apply — transactional application (#431)', () => {
     for (const dir of roots.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('applies the whole set, commits once and leaves no journal or originals behind', () => {
+  it('applies the whole set, commits once and leaves no journal or originals behind', async () => {
     const result = applyStagedFiles({ dataDir, stageDir, filename: 'backup-ok.zip', logger: silentLogger });
 
     assert.equal(result.success, true);
@@ -157,7 +157,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.deepEqual(artifactNames(), [], 'staging, originals and journal are all cleaned on commit');
   });
 
-  it('never overwrites a destination in place: every replacement is a same-directory temp + rename', () => {
+  it('never overwrites a destination in place: every replacement is a same-directory temp + rename', async () => {
     const renames = [];
     mock.method(fs, 'renameSync', (from, to) => {
       renames.push({ from: String(from), to: String(to) });
@@ -174,7 +174,7 @@ describe('restore-apply — transactional application (#431)', () => {
     }
   });
 
-  it('rolls every destination back to its pre-restore bytes when a replacement fails', () => {
+  it('rolls every destination back to its pre-restore bytes when a replacement fails', async () => {
     const before = preRestoreState();
     breakRenameFor({ [path.join(dataDir, 'beta.json')]: [1] });
 
@@ -190,13 +190,13 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.deepEqual(walkAll(dataDir).filter((f) => f.endsWith('.tmp')), [], 'a failed replacement leaves no temp file for the next backup to archive');
   });
 
-  it('removes the directories it created for the attempt when it rolls back', () => {
+  it('removes the directories it created for the attempt when it rolls back', async () => {
     breakRenameFor({ [path.join(dataDir, 'beta.json')]: [1] });
     applyStagedFiles({ dataDir, stageDir, filename: 'backup-bad.zip', logger: silentLogger });
     assert.equal(fs.existsSync(path.join(dataDir, 'sub')), false);
   });
 
-  it('rolls back instead of reporting success when the commit marker cannot be published', () => {
+  it('rolls back instead of reporting success when the commit marker cannot be published', async () => {
     const before = preRestoreState();
     mock.method(fs, 'renameSync', (from, to) => {
       if (to === path.join(dataDir, JOURNAL_FILENAME)
@@ -214,7 +214,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.deepEqual(artifactNames(), []);
   });
 
-  it('flushes rollback copies before publication, destinations before commit, and journal retirement before cleanup', () => {
+  it('flushes rollback copies before publication, destinations before commit, and journal retirement before cleanup', async () => {
     const nested = path.join('existing', 'nested', 'state.json');
     write(path.join(dataDir, nested), 'current');
     write(path.join(stageDir, nested), 'archive');
@@ -239,7 +239,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.ok(retired < discarded && events.slice(retired + 1, discarded).some((e) => e.type === 'sync' && e.file === dataDir), 'journal removal must be durable before discarding rollback files');
   });
 
-  it('leaves all destinations unchanged when a rollback-copy flush fails', () => {
+  it('leaves all destinations unchanged when a rollback-copy flush fails', async () => {
     const before = preRestoreState();
     const { descriptors } = traceStorage();
     const sync = fs.fsyncSync;
@@ -257,7 +257,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.equal(fs.existsSync(path.join(dataDir, JOURNAL_FILENAME)), false);
   });
 
-  it('rolls back a replacement whose directory flush fails instead of committing it', () => {
+  it('rolls back a replacement whose directory flush fails instead of committing it', async () => {
     const before = preRestoreState();
     const { descriptors } = traceStorage();
     const sync = fs.fsyncSync;
@@ -279,7 +279,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.deepEqual(artifactNames(), []);
   });
 
-  it('retains originals and blocks resumption if the rollback journal cannot be retired', () => {
+  it('retains originals and blocks resumption if the rollback journal cannot be retired', async () => {
     const before = preRestoreState();
     breakRenameFor({ [path.join(dataDir, 'beta.json')]: [1] });
     const remove = fs.rmSync;
@@ -299,7 +299,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.deepEqual(artifactNames(), []);
   });
 
-  it('does not start rollback until its marker is durable after a failed commit', () => {
+  it('does not start rollback until its marker is durable after a failed commit', async () => {
     const before = preRestoreState();
     mock.method(fs, 'renameSync', (from, to) => {
       if (to === path.join(dataDir, JOURNAL_FILENAME)
@@ -320,7 +320,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.deepEqual(preRestoreState(), before);
   });
 
-  it('reverts a commit whose rename landed but whose journal directory flush failed', () => {
+  it('reverts a commit whose rename landed but whose journal directory flush failed', async () => {
     const before = preRestoreState();
     const { descriptors } = traceStorage();
     const sync = fs.fsyncSync;
@@ -344,7 +344,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.deepEqual(artifactNames(), []);
   });
 
-  it('refuses the whole archive before any write when a staged entry is not a regular file', () => {
+  it('refuses the whole archive before any write when a staged entry is not a regular file', async () => {
     const before = preRestoreState();
     fs.symlinkSync(path.join(root, 'outside.json'), path.join(stageDir, 'evil.json'));
 
@@ -357,7 +357,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.deepEqual(artifactNames().filter((n) => n !== '.restore-temp-fixture'), []);
   });
 
-  it('honours the caller\'s skip rules (keys, backups dir, archive metadata)', () => {
+  it('honours the caller\'s skip rules (keys, backups dir, archive metadata)', async () => {
     write(path.join(stageDir, 'coinbase-keys.json'), '{"key":"from-archive"}');
     write(path.join(dataDir, 'coinbase-keys.json'), '{"key":"live"}');
     write(path.join(stageDir, 'backups', 'backup-old.zip'), 'zip');
@@ -374,7 +374,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.equal(read(path.join(dataDir, 'coinbase-keys.json')), '{"key":"live"}');
   });
 
-  it('reports incomplete recovery and RETAINS the journal and originals when the rollback fails', () => {
+  it('reports incomplete recovery and RETAINS the journal and originals when the rollback fails', async () => {
     const alpha = path.join(dataDir, 'alpha.json');
     // Let the apply of alpha land, then break its rollback: the data directory
     // is genuinely left as a mix of archive-era and current-era files.
@@ -394,7 +394,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.equal(fs.existsSync(path.join(dataDir, journal.originalsDir, 'alpha.json')), true, 'originals are kept for the retry');
   });
 
-  it('finishes the rollback on the next start, so nothing loads a mixed generation', () => {
+  it('finishes the rollback on the next start, so nothing loads a mixed generation', async () => {
     const alpha = path.join(dataDir, 'alpha.json');
     breakRenameFor({ [alpha]: [2], [path.join(dataDir, 'beta.json')]: [1] });
     applyStagedFiles({ dataDir, stageDir, filename: 'backup-torn.zip', logger: silentLogger });
@@ -411,12 +411,12 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.deepEqual(artifactNames(), [], 'recovery cleans the journal, the originals and the staging dir');
   });
 
-  it('is a no-op for a data directory with no journal', () => {
+  it('is a no-op for a data directory with no journal', async () => {
     assert.deepEqual(recoverIncompleteRestore({ dataDir, logger: silentLogger }), { pending: false, recovered: false, blocked: false });
     assert.deepEqual(preRestoreState().alpha, '{"gen":"current-alpha"}');
   });
 
-  it('cleans up without rolling back when the crash happened after the commit point', () => {
+  it('cleans up without rolling back when the crash happened after the commit point', async () => {
     applyStagedFiles({ dataDir, stageDir, filename: 'backup-ok.zip', logger: silentLogger });
     // Re-create the artifacts a crash between "committed" and "cleaned" leaves.
     const originals = path.join(dataDir, '.restore-originals-committed');
@@ -438,7 +438,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.deepEqual(artifactNames(), []);
   });
 
-  it('blocks startup when an interrupted restore cannot be rolled back', () => {
+  it('blocks startup when an interrupted restore cannot be rolled back', async () => {
     write(path.join(dataDir, JOURNAL_FILENAME), JSON.stringify({
       journalVersion: JOURNAL_VERSION,
       restoreId: 'torn',
@@ -458,7 +458,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.ok(fs.existsSync(path.join(dataDir, JOURNAL_FILENAME)), 'the marker survives so the next start retries');
   });
 
-  it('blocks startup on an unreadable journal rather than guessing', () => {
+  it('blocks startup on an unreadable journal rather than guessing', async () => {
     write(path.join(dataDir, JOURNAL_FILENAME), 'not json at all');
     const exits = [];
     const result = guardIncompleteRestore({ processLabel: 'coinbase engine', logger: silentLogger, dataDir, exit: (code) => exits.push(code) });
@@ -466,7 +466,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.equal(result.blocked, true);
   });
 
-  it('lets a clean start through untouched', () => {
+  it('lets a clean start through untouched', async () => {
     const exits = [];
     const result = guardIncompleteRestore({ processLabel: 'gateway', logger: silentLogger, dataDir, exit: (code) => exits.push(code) });
     assert.deepEqual(exits, []);
@@ -483,7 +483,7 @@ describe('backup-service — restore failure leaves the install coherent (#431)'
   const stateFile = () => path.join(install.dataDir, 'coinbase', 'BTC-USDC', 'regime-state.json');
   const ledgerFile = () => path.join(install.dataDir, 'coinbase', 'BTC-USDC', 'fill-ledger.json');
 
-  beforeEach(() => {
+  beforeEach(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-restore-e2e-'));
     roots.push(root);
     install = { dataDir: path.join(root, 'data'), baseConfigFile: path.join(root, 'config.json') };
@@ -496,7 +496,7 @@ describe('backup-service — restore failure leaves the install coherent (#431)'
     write(stateFile(), JSON.stringify({ generation: 'archive', realizedPnL: 11 }));
     write(ledgerFile(), JSON.stringify({ generation: 'archive', fills: [1, 2] }));
 
-    const created = createBackup({ paths: install });
+    const created = await createBackup({ paths: install });
     assert.equal(created.success, true, created.error);
     filename = created.filename;
 
@@ -510,7 +510,7 @@ describe('backup-service — restore failure leaves the install coherent (#431)'
     for (const dir of roots.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('restores every file on the happy path', () => {
+  it('restores every file on the happy path', async () => {
     const result = restoreBackup(filename, { paths: install });
     assert.equal(result.success, true, result.error);
     assert.equal(JSON.parse(read(stateFile())).generation, 'archive');
@@ -518,7 +518,7 @@ describe('backup-service — restore failure leaves the install coherent (#431)'
     assert.deepEqual(fs.readdirSync(install.dataDir).filter((n) => n.startsWith('.restore-')), []);
   });
 
-  it('leaves state, ledger and config on ONE generation when the application fails', () => {
+  it('leaves state, ledger and config on ONE generation when the application fails', async () => {
     breakRenameFor({ [ledgerFile()]: [1] });
 
     const result = restoreBackup(filename, { paths: install });
@@ -532,10 +532,10 @@ describe('backup-service — restore failure leaves the install coherent (#431)'
     assert.deepEqual(fs.readdirSync(install.dataDir).filter((n) => n.startsWith('.restore-')), [], 'no artifacts leak after a clean rollback');
   });
 
-  it('never archives its own restore bookkeeping', () => {
+  it('never archives its own restore bookkeeping', async () => {
     write(path.join(install.dataDir, JOURNAL_FILENAME), '{"journalVersion":1,"entries":[]}');
     write(path.join(install.dataDir, '.restore-originals-stale', 'alpha.json'), '{}');
-    const created = createBackup({ paths: install });
+    const created = await createBackup({ paths: install });
     assert.equal(created.success, true, created.error);
 
     const { spawnSync } = require('child_process');
