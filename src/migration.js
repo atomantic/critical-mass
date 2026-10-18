@@ -143,7 +143,7 @@ const migrateKeys = () => {
 
 /**
  * Retire a root `keys.json` that is still sitting next to an already-copied
- * `data/coinbase-keys.json` (codex review finding on issue #688).
+ * `data/coinbase-keys.json` (issue #688).
  *
  * `needsKeysMigration()` treats `newKeysFile` EXISTING as proof the root
  * copy is retired — true for a migration `migrateKeys()` itself performed
@@ -238,7 +238,7 @@ const runMigrationIfNeeded = () => {
 
   if (needsKeysMigration()) {
     console.log('\n[Migration] Migrating API keys to new location...');
-    // Reflect migrateKeys()'s real outcome (issue #688, codex review finding)
+    // Reflect migrateKeys()'s real outcome (issue #688)
     // — it can now return false on a caught filesystem error mid-sequence,
     // and a caller told keysMigrated: true when no key was actually copied
     // would wrongly believe the credential is in place.
@@ -246,7 +246,7 @@ const runMigrationIfNeeded = () => {
   }
 
   // Independent of the gate above — reconciles an install already migrated
-  // by a pre-#688 build (issue #688, finding 3 and the codex P1 finding).
+  // by a pre-#688 build (issue #688, finding 3).
   // Retire runs first: it's what makes needsKeysMigration() permanently
   // false going forward for such an install, closing the resurrection
   // window before the backfill (or anything else) runs.

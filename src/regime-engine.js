@@ -422,7 +422,7 @@ const isStrandedDustBody = (body, baseMinSize, baseIncrement, economics = null) 
   // floorToIncrement (epsilon-safe), NOT a naive Math.floor(qty/inc)*inc: for a
   // decimal increment like 0.01, float error under-floors exact multiples (0.29
   // → 0.28), which would misclassify a body sitting exactly at baseMinSize as
-  // dust and wrongly merge a sellable body (codex review #195).
+  // dust and wrongly merge a sellable body (issue #195).
   const roundedFullQty = floorToIncrement(roundAsset(body.assetQty), inc);
   return roundedFullQty < baseMinSize;
 };
@@ -1099,7 +1099,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   /**
    * Raise a saved pending entry/ladder row's knownFilledSize high-water mark
-   * (issue #673 codex round 3, #764). Searches BOTH saved lists: the executor
+   * (issues #673 and #764). Searches BOTH saved lists: the executor
    * fires onEntryCancelled for 'entry' and 'ladder_entry' orders alike, and a
    * ladder rung that loses its partial size is exposed to the same
    * under-reporting re-poll as a plain entry.
@@ -1147,7 +1147,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const filledSize = info?.filledSize || 0;
     if (filledSize > 0) {
       // Stamp the resolved high-water mark onto the saved row itself
-      // (issue #673 codex round 3): handleCancelledOrder resolved this
+      // (issue #673): handleCancelledOrder resolved this
       // value via order-executor's own partialFillTracker fallback,
       // which it then deletes. A LATER independent re-poll of this
       // same (already-cancelled) order — the reconcile sweep, or startImpl's
@@ -1510,20 +1510,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // each fund's optimizer would otherwise see the WHOLE shared wallet and
     // could independently ratchet its OWN maxUsdcDeployed up toward ~90% of
     // that shared total — over-committing capital across sibling funds
-    // (codex review, issue #694). Skip the fetch in that case, the same way
+    // (issue #694). Skip the fetch in that case, the same way
     // checkPositionCoverage skips its check, rather than act on unsound data.
     //
     // A fund's configured identity `pair` and its actual traded `productId`
     // can differ by quote currency (a documented, supported override — see
     // productIdMatchesPair in config-utils.js), so comparing raw `f.pair`
-    // quote currencies can UNDER-count true sharing (codex review round 2).
+    // quote currencies can UNDER-count true sharing.
     // Resolve each candidate's EFFECTIVE traded quote from its RAW per-pair
     // config block, not getFundConfig()/getRegimeConfig() (both DEFAULTS/
     // regime-merged results, so `.productId` is NEVER falsy there — it
     // silently reads back DEFAULTS.productId = 'BTC-USDC' for any fund with
     // no explicit override, making `|| f.pair` dead code and misclassifying
-    // every such fund as quoting USDC; claude review round 3 caught this
-    // exact trap, already worked around the same way in
+    // every such fund as quoting USDC; this exact trap was already
+    // worked around the same way in
     // config-snapshot.js:117 — `fundBlock?.productId ?? pair`, read from the
     // raw block).
     const quoteCurrency = getQuoteCurrency(productId);
@@ -1540,8 +1540,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // sizeOptimizer's cached lastKnownBalance back to unset — a fund that
     // used to be the sole holder of this quote currency (balance previously
     // recorded) but now shares it with a newly-added sibling must not keep
-    // evaluating against that now-unscoped stale value forever (codex review
-    // round 2). A plain fetch failure/missing method is NOT forced this way
+    // evaluating against that now-unscoped stale value forever. A plain
+    // fetch failure/missing method is NOT forced this way
     // — sizeOptimizer.recordCycle() already treats availableBalance<=0 there
     // as "no fresh reading" and correctly keeps the last verified balance,
     // since a transient failure is expected to recover on its own.
@@ -1551,13 +1551,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       : null;
     const availableBalance = quoteBalance ? (parseFloat(quoteBalance.available) || 0) : 0;
 
-    // This now runs AFTER resetCycle() at every call site (issue #694 review
-    // round 1/2) — every caller awaits resetCycle() but then invokes this
+    // This now runs AFTER resetCycle() at every call site (issue #694) —
+    // every caller awaits resetCycle() but then invokes this
     // function WITHOUT awaiting it (fire-and-forget, .catch()'d at the call
     // site) so its own network round-trip (adapter.getAccountBalance, up to
     // a 30s exchange timeout) never delays the caller's own
     // saveLiveState()/fillLedger.persist()/saveDryRunState() from durably
-    // persisting the already-completed cycle close (codex review round 2). A
+    // persisting the already-completed cycle close. A
     // crash during this call loses only this one best-effort optimizer stats
     // sample, never P&L-critical state. Any throw here (sizeOptimizer.
     // recordCycle()'s own bookkeeping, or handleSizeAdjustment()'s
@@ -1584,14 +1584,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   /**
    * Re-save after recordCycleForSizeOptimizer's detached (fire-and-forget)
-   * call resolves, so its result isn't left only in memory (issue #694
-   * review round 3). Guarded: this runs inside a `.finally()` on a promise
+   * call resolves, so its result isn't left only in memory (issue #694).
+   * Guarded: this runs inside a `.finally()` on a promise
    * chain nobody awaits, so an unguarded throw (e.g. a disk fault —
    * ENOSPC/EACCES/EROFS — surfacing from saveLiveState()/fillLedger.persist())
    * would be a genuinely unhandled promise rejection, which can crash a live
    * trading process with resting orders on the exchange — precisely the
    * hazard saveLiveStateGuarded exists to prevent for every other background
-   * caller in this file (claude review round 3).
+   * caller in this file.
    */
   const resaveAfterSizeOptimizerLive = () => {
     try {
@@ -2110,8 +2110,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // savedBodies reprice pass (issue #726) would skip this body
           // entirely on THIS startup (its guard requires a tpOrderId), and a
           // future restart would needlessly cancel+replace the
-          // freshly-placed, already-correctly-sized TP (codex delta review,
-          // round 5).
+          // freshly-placed, already-correctly-sized TP.
           if (body.needsTpReprice) body.needsTpReprice = false;
           continue;
         }
@@ -2717,7 +2716,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // (~line 5452), so a manual-TP body extended while the engine was
       // stopped must still go through this cancel+replace — skipping it
       // here left its TP undersized forever and the flag never cleared
-      // (codex delta review, round 5).
       const overpriced = body.manualTpPct == null && currentTpPct > bEffectiveMax * 1.01;
       if (overpriced || body.needsTpReprice) {
         const reason = overpriced
@@ -2837,7 +2835,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // assetQty. Nothing left for the reprice pass to cancel, so
           // clear the flag here too; otherwise a needless cancel+re-place
           // of the freshly-placed, already-correctly-sized TP would fire
-          // on the NEXT restart (codex delta review, round 5).
+          // on the NEXT restart.
           if (body.needsTpReprice) body.needsTpReprice = false;
         }
       }
@@ -4196,14 +4194,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // eventual-consistency case this fallback was built for) AND an order a
     // body already partially owns from an earlier partial fill, whose
     // TERMINAL rescan then failed (ledgerTotal=the earlier partial only,
-    // gap=the newly-filled remainder) — issue #679 follow-up, codex
-    // convergence review: previously a failed terminal rescan fell back to
+    // gap=the newly-filled remainder) — issue #679 follow-up: previously a
+    // failed terminal rescan fell back to
     // the stale ledger-only total, and shouldSkipBuyRecommit (below) then
     // retired the order as "already owned, nothing new" without ever
     // booking the remainder — the exchange's larger filledSize never
     // reached the position model.
-    // Gate gap synthesis to TERMINAL fills only (Claude convergence review,
-    // round 4): a still-live partial (keepEntryTracked) must stay
+    // Synthesize gaps only for TERMINAL fills. A still-live partial
+    // (keepEntryTracked) must stay
     // retryable, never synthesized. Without this gate, an advancing
     // partial whose getOrderFills failed would synthesize uncertain execution.
     // Terminal coverage is provisional too: the ledger replaces equivalent
@@ -4253,10 +4251,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // getOrder() reports the running total, not a per-poll delta) — the
       // fee owed on JUST this gap is that cumulative figure minus whatever
       // fee prior fills for this order already booked, never the whole
-      // cumulative figure again (codex convergence review, round 5: the
-      // prior version zeroed the fee whenever ledgerTotalForOrder > 0,
+      // cumulative figure again. The prior version zeroed the fee whenever
+      // ledgerTotalForOrder > 0,
       // silently dropping the new tranche's fee to $0 instead of crediting
-      // the unbooked delta). When there is no prior partial, this
+      // the unbooked delta. When there is no prior partial, this
       // collapses to the full cumulative fee, matching the original
       // no-prior-fills case.
       const alreadyBookedFees = existingFillsForOrder.reduce((sum, f) => sum + Number(f.netFee || 0), 0);
@@ -4291,8 +4289,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // fillsToAggregate/ingestedFills must NOT be credited with it either:
       // doing so (as an earlier round of this fix did, falling back to the
       // raw un-ingested syntheticFill object) let the body absorb the gap
-      // every such pass while the ledger only ever recorded it once —
-      // codex convergence review, round 4. When it DOES ingest, this
+      // every such pass while the ledger only ever recorded it once. When it
+      // DOES ingest, this
       // becomes fillsToAggregate's ONLY entry (never old-rows-plus-gap):
       // downstream "advancing partial" handling ADDS summary.totalSize
       // onto the EXISTING body's assetQty, mirroring the success path
@@ -4997,7 +4995,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // — not before it — so the network round-trip never widens the
       // window where a concurrent entry evaluation (gated only by
       // isEntryInProgress(), not isMutatingPosition()) could land a buy
-      // fill still attributed to the closing cycle (Claude review).
+      // fill still attributed to the closing cycle.
       const cycleBuysAtClose = positionState.cycleBuys;
       // try/finally: resetCycle()'s only network call (ladder cancel)
       // runs before any state mutation, so a throw there means nothing
@@ -5006,20 +5004,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // of whether the ladder cleanup succeeds. Recording them in
       // `finally` means a resetCycle() failure (the sell itself is
       // already booked and persisted above, so it is never re-booked)
-      // can never permanently drop this cycle from the optimizer's stats
-      // (codex review round 1). A reset that reports it was stale skips
+      // can never permanently drop this cycle from the optimizer's stats.
+      // A reset that reports it was stale skips
       // those samples below because another close already counted it.
       // Deliberately NOT awaited: the caller's own saveLiveState()/
       // fillLedger.persist() (below) durably persist this already-
       // completed sell/cycle-close before the optimizer's balance-fetch
       // (up to a 30s exchange timeout) gets a chance to delay them — a
       // crash during that fetch loses only this one best-effort
-      // optimizer stats sample, never the P&L-critical state (codex
-      // review round 2). recordCycleForSizeOptimizer never rejects (its
+      // optimizer stats sample, never the P&L-critical state.
+      // recordCycleForSizeOptimizer never rejects (its
       // own body is try/caught), so no unhandled-rejection risk. Once
       // it DOES resolve, re-save so the recorded sample/balance isn't
       // left ONLY in memory until some unrelated future save happens to
-      // pick it up (codex review round 3) — cheap and idempotent, same
+      // pick it up — cheap and idempotent, the same
       // as the periodic save timer already does.
       let resetResult;
       try {
@@ -5135,8 +5133,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       positionState.assetOnOrder = 0;
 
-      // Idempotency guard (issue #679 follow-up, codex convergence
-      // review round 4) — scoped to ONLY the two truly non-idempotent
+      // Idempotency guard (issue #679 follow-up) — scoped to ONLY the two truly non-idempotent
       // counter bumps (cyclesCompleted++, capital credit), not the
       // whole block. An earlier round of this fix gated resetCycle()
       // and closedTrades.record behind this SAME claim, which
@@ -5160,7 +5157,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // evaluation (gated only by isEntryInProgress(), not
       // isMutatingPosition() — unlike refreshDrawdownGuard/
       // consolidateDustBodies) land a buy fill that gets attributed to
-      // the closing cycle instead of the new one (Claude review).
+      // the closing cycle instead of the new one.
       let sizeOptimizerCycleData = null;
       if (!fillLedger.claimCapitalCredit(fillData.orderId)) {
         logger.info(
@@ -5181,8 +5178,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         logger.info(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
         // tp_filled + the optimizer recorders belong to the SAME
-        // claim-gated commit as cyclesCompleted++ / the capital credit
-        // (Claude delta review, round 6). They were previously below,
+        // claim-gated commit as cyclesCompleted++ / the capital credit.
+        // They were previously below,
         // ungated, alongside resetCycle()/closedTrades.record — so a
         // retry after the claim already succeeded (capital credited,
         // resetCycle awaiting a network cancel that then failed) would
@@ -5246,8 +5243,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // means resetCycle() changed nothing), the outer dedup-clear/retry
       // path retries this fill, but `claimCapitalCredit` will then return
       // false and sizeOptimizerCycleData would never be set again —
-      // permanently dropping this cycle from the optimizer's stats
-      // (codex review round 1, P2). Recording it here regardless of
+      // permanently dropping this cycle from the optimizer's stats.
+      // Recording it here regardless of
       // resetCycle()'s outcome closes that gap; the underlying figures
       // were already fixed, committed facts before resetCycle() ran.
       // Deliberately NOT awaited: saveLiveState()/fillLedger.persist()
@@ -5255,11 +5252,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // the optimizer's balance-fetch (up to a 30s exchange timeout) gets
       // a chance to delay them — a crash during that fetch loses only
       // this one best-effort optimizer stats sample, never the
-      // P&L-critical state (codex review round 2). Never rejects (its
+      // P&L-critical state. Never rejects (its
       // own body is try/caught), so no unhandled-rejection risk. Once it
       // DOES resolve, re-save so the recorded sample/balance isn't left
-      // ONLY in memory until some unrelated future save picks it up
-      // (codex review round 3).
+      // ONLY in memory until some unrelated future save picks it up.
       try {
         await resetCycle();
       } finally {
@@ -5469,8 +5465,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // ZERO-value summary and still commit a body off it below: assetQty/
     // costBasis 0, cycleBuys incremented, lastEntryPrice set to 0,
     // buy_filled emitted, and findMergeTarget free to cancel/re-place a
-    // REAL body's TP against a phantom candidate price of 0 (Claude delta
-    // review, round 6). fillsToAggregate falls back to
+    // REAL body's TP against a phantom candidate price of 0. fillsToAggregate falls back to
     // getFillsForOrder(orderId) whenever nothing new was ingested, so an
     // empty result here also guarantees ledgerTotalForOrder was 0 —
     // i.e. this orderId owns no body yet, so bailing out cannot strand an
@@ -5616,7 +5611,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // An advancing partial (orderId already owned, new fills this pass) must
     // process its new tranche but must NOT consume a second cycleBuys step —
     // cycleBuys counts buy ORDERS filled in the cycle, and one order that
-    // fills across multiple events is a single buy (codex P2). A brand-new
+    // fills across multiple events is a single buy. A brand-new
     // order increments; an advancing partial only refreshes entry tracking.
     const orderAlreadyOwned = isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId);
 
@@ -6621,8 +6616,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // cancelled — the same adapter quirk handleCancelledOrder's own fallback
     // exists for. onEntryCancelled stamps that resolved value onto the saved
     // row as knownFilledSize before this function ever sees it; never trust a
-    // fresh read that's SMALLER than what's already confirmed known (codex
-    // review, issue #673 round 3).
+    // fresh read that's SMALLER than what's already confirmed known (issue #673).
     const partialSize = Math.max(parseFloat(orderStatus.filledSize || 0), savedEntry.knownFilledSize || 0);
     if (!isFullFilled && partialSize <= 0) {
       return { outcome: 'empty' }; // truly empty cancel — safe for the caller to purge, no fill to record
@@ -6744,7 +6738,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // in the same pass would waste a redundant getOrder/handleOrderFill
           // round trip and, on a failure, let the second restorePendingOrder
           // call silently overwrite the first with the wrong type/ladderIndex
-          // (claude review, issue #673).
+          // (issue #673).
           const orphanMap = new Map();
           for (const savedEntry of positionState.pendingEntryOrders || []) {
             if (!orphanMap.has(savedEntry.orderId)) orphanMap.set(savedEntry.orderId, { savedEntry, entryType: 'entry' });
@@ -6789,7 +6783,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               // out of tracking while still resting would only ever be
               // re-checked by THIS sweep's own terminal-only gate, silently
               // missing any intermediate partial fill until it eventually
-              // reaches a terminal state (codex review, issue #673 round 2).
+              // reaches a terminal state (issue #673).
               orderExecutor.restorePendingOrder(savedEntry.orderId, buildRestoreSpec(savedEntry, entryType));
               continue;
             }
@@ -8267,12 +8261,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const cycleBuysAtClose = positionState.cycleBuys;
           // try/finally: see the live-mode call site's comment — a
           // resetCycle() failure must not permanently drop this cycle from
-          // the optimizer's stats on retry (codex review round 1, P2).
-          // Deliberately NOT awaited — see the live-mode call site's comment
-          // on why (codex review round 2: don't delay saveDryRunState() below
-          // on the optimizer's balance-fetch). Once it DOES resolve, re-save
+          // the optimizer's stats on retry.
+          // Deliberately NOT awaited — the optimizer's balance fetch must not
+          // delay saveDryRunState() below. Once it DOES resolve, re-save
           // so the recorded sample/balance isn't left only in memory until
-          // some unrelated future save picks it up (codex review round 3).
+          // some unrelated future save picks it up.
           try {
             await resetCycle();
           } finally {
@@ -8308,12 +8301,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const totalCostBasisAtClose = positionState.totalCostBasis;
         // try/finally: see the live-mode call site's comment — a resetCycle()
         // failure must not permanently drop this cycle from the optimizer's
-        // stats on retry (codex review round 1, P2).
-        // Deliberately NOT awaited — see the live-mode call site's comment
-        // (codex review round 2: don't delay saveDryRunState() below on the
-        // optimizer's balance-fetch). Once it DOES resolve, re-save so the
+        // stats on retry.
+        // Deliberately NOT awaited — the optimizer's balance fetch cannot
+        // delay saveDryRunState() below. Once it resolves, re-save so the
         // recorded sample/balance isn't left only in memory until some
-        // unrelated future save picks it up (codex review round 3).
+        // unrelated future save picks it up.
         try {
           await resetCycle();
         } finally {
@@ -8388,7 +8380,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // incompleteFills/lookup-failure case, but ANY other throw for a
       // terminal fill has the identical "will never be revisited" problem
       // (a rethrown lookup failure carries no incompleteFills flag, for
-      // instance — issue #679 follow-up, codex + coordinator review). A
+      // instance — issue #679 follow-up). A
       // still-PARTIALLY_FILLED order legitimately stays tracked and IS
       // re-detected by the next reconcile poll, so it keeps the original
       // "log and wait" behavior below.
@@ -9827,7 +9819,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // for the same fill, eating into other bodies' inventory/holdback. Refuse
     // a body whose id already exists, or whose originating buy order is
     // already committed to a live body — checking the FULL sourceOrderIds/
-    // buyOrders collections (codex review), not just index [0]: mergeIntoBody
+    // buyOrders collections, not just index [0]: mergeIntoBody
     // (celestial-hierarchy.js) concatenates a merged-away body's
     // sourceOrderIds onto the survivor's, so a since-merged buy order can sit
     // anywhere in that array, not only at the front. Same predicate as
@@ -9890,12 +9882,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * unsold remainder grows, so the new fill's real cost basis is never
    * charged to `bodyPnl` and the fill's whole value leaks into
    * `bodyHoldbackAsset` as fabricated zero-cost profit — inflating Total
-   * P&L (codex delta review).
+   * P&L.
    *
    * Idempotent across a crash between this call succeeding (saveLiveState
    * below) and the caller's own fill-ledger linkage write, AND across
    * compounding retries where more of the order fills again before the
-   * ledger link ever lands (codex review, round 3 — the naive "compare a
+   * ledger link ever lands (the naive "compare a
    * caller-computed delta's total against already-recorded" version of this
    * check still double-counted: if extend #1 applies d1 but crashes before
    * the ledger link, and MORE fills (d2) arrive before the retry, the
