@@ -139,13 +139,6 @@ const isNeverExecuted = (order) => (isCancelledStatus(order) || String(order.sta
   && !(Number(order.filledSize) > 0);
 
 /**
- * Exchange-agnostic product identity: Coinbase `BTC-USDC`, Crypto.com
- * `CRO_USD` and Gemini `btcusd` (which quotes USDC funds in USD) all compare
- * on base asset + USD quote.
- */
-const productKey = (productId) => String(productId || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/usdc$/, 'usd');
-
-/**
  * Key for the store's per-sell lock. Every operation that can place, link or
  * settle a recovery buy for one sell shares it, so they run one at a time.
  */
@@ -717,7 +710,7 @@ const createManualTradeImporter = ({
     const side = String(order.side || '').toUpperCase();
     if (side !== 'BUY') return fail(`Order ${buyOrderId} is ${side ? `a ${side} order` : 'not verifiably a buy'}; only a buy can recover this sell`);
     const productId = fundConfig?.productId || 'BTC-USDC';
-    if (productKey(order.productId) !== productKey(productId)) {
+    if (canonicalProduct(exchange, order.productId) !== canonicalProduct(exchange, productId)) {
       return fail(`Order ${buyOrderId} is for ${order.productId || 'an unreported product'}, not this fund's ${productId}`);
     }
     const executed = Number(order.filledSize) || 0;

@@ -365,8 +365,8 @@ const appendManifest = (zipPath, manifest) => {
   return { success: true };
 };
 
-/** Validate a completed archive before it becomes a published recovery point. */
-const validateBackupArchive = (zipPath) => {
+/** Validate an archive; only listing may admit the supported pre-manifest format. */
+const validateBackupArchive = (zipPath, { allowLegacy = false } = {}) => {
   const integrity = spawnSync('unzip', ['-tq', zipPath], { timeout: SPAWN_TIMEOUT_MS });
   if (integrity.error || integrity.status !== 0) {
     const detail = integrity.error ? integrity.error.message : (integrity.stderr?.toString().trim() || 'Archive integrity check failed');
@@ -378,6 +378,7 @@ const validateBackupArchive = (zipPath) => {
     return { ok: false, error: detail };
   }
   const manifests = entries.stdout.toString().split('\n').filter((entry) => entry === MANIFEST_FILENAME);
+  if (manifests.length === 0 && allowLegacy) return { ok: true };
   if (manifests.length !== 1) return { ok: false, error: `Archive must contain exactly one ${MANIFEST_FILENAME}` };
   const read = readArchiveManifest(zipPath);
   if (read.error || !read.present) return { ok: false, error: read.error || `Missing ${MANIFEST_FILENAME}` };
@@ -513,7 +514,7 @@ const listBackups = () => {
       const filePath = path.join(BACKUPS_DIR, filename);
       try {
         if (!fs.lstatSync(filePath).isFile()) return false;
-        return validateBackupArchive(filePath).ok;
+        return validateBackupArchive(filePath, { allowLegacy: true }).ok;
       } catch (_error) {
         return false;
       }

@@ -113,6 +113,71 @@ describe('backup-service — createBackup/restoreBackup', () => {
     assert.ok(listed.some(b => b.filename === result.filename));
   });
 
+  const createArchiveFixture = (filename, entries) => {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-backup-list-fixture-'));
+    const archive = path.join(BACKUP_DIR, filename);
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    createdBackups.push(filename);
+    try {
+      for (const [name, contents] of Object.entries(entries)) fs.writeFileSync(path.join(source, name), contents);
+      const zipped = spawnSync('zip', ['-q', archive, ...Object.keys(entries)], { cwd: source });
+      assert.equal(zipped.status, 0, zipped.stderr.toString());
+    } finally {
+      fs.rmSync(source, { recursive: true, force: true });
+    }
+    return archive;
+  };
+
+  it('lists valid pre-manifest legacy archives and restores them after explicit acknowledgement', () => {
+    const filename = 'backup-legacy-list-regression.zip';
+    const archive = createArchiveFixture(filename, {
+      '__backup_service_test__.json': JSON.stringify({ marker: 'legacy-recovery' }),
+    });
+    assert.equal(spawnSync('unzip', ['-tq', archive]).status, 0);
+    assert.ok(listBackups().some(backup => backup.filename === filename));
+
+    const inspected = inspectBackup(filename);
+    assert.equal(inspected.legacy, true);
+    assert.equal(inspected.code, 'legacy-archive-missing-base');
+    assert.equal(restoreBackup(filename).success, false);
+    assert.deepEqual(JSON.parse(fs.readFileSync(TEST_FILE, 'utf8')), { marker: 'backup-service-test' });
+    cleanupTestFile();
+    const restored = restoreBackup(filename, { acceptLegacyWithoutBase: true });
+    assert.equal(restored.success, true, restored.error);
+    assert.deepEqual(JSON.parse(fs.readFileSync(TEST_FILE, 'utf8')), { marker: 'legacy-recovery' });
+  });
+
+  it('excludes integrity-valid archives with malformed or duplicate manifests', () => {
+    const malformed = 'backup-malformed-manifest-list.zip';
+    const duplicate = 'backup-duplicate-manifest-list.zip';
+    createArchiveFixture(malformed, { 'backup-manifest.json': '{not valid json' });
+    const manifest = JSON.stringify({ manifestVersion: 1, createdAt: new Date().toISOString(), config: {} });
+    const archive = createArchiveFixture(duplicate, {
+      'backup-manifest.json': manifest,
+      'backup-manifesz.json': manifest,
+    });
+    // ZIP filenames do not participate in the entry CRC. Rename both local and
+    // central-directory copies of the second equal-length name to retain real
+    // integrity-valid bytes with two entries bearing the manifest's exact name.
+    const bytes = fs.readFileSync(archive);
+    const from = Buffer.from('backup-manifesz.json');
+    const to = Buffer.from('backup-manifest.json');
+    let renamed = 0;
+    for (let offset = bytes.indexOf(from); offset !== -1; offset = bytes.indexOf(from, offset + to.length)) {
+      to.copy(bytes, offset);
+      renamed++;
+    }
+    assert.equal(renamed, 2);
+    fs.writeFileSync(archive, bytes);
+    for (const filename of [malformed, duplicate]) {
+      assert.equal(spawnSync('unzip', ['-tq', path.join(BACKUP_DIR, filename)]).status, 0);
+    }
+    assert.equal(listZipEntries(archive).filter(name => name === 'backup-manifest.json').length, 2);
+    const listed = listBackups().map(backup => backup.filename);
+    assert.ok(!listed.includes(malformed));
+    assert.ok(!listed.includes(duplicate));
+  });
+
   it('publishes same-second backups under distinct names with one valid manifest each', () => {
     const first = createBackup();
     const second = createBackup();

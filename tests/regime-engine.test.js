@@ -1,7 +1,19 @@
 // @ts-check
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+
+const { createIsolatedDataDir } = require('./test-data-dir');
+const isolatedData = createIsolatedDataDir('cm-regime-engine-test');
+// Engine construction can publish size-optimizer settings. Keep every fixture
+// away from the operator's shared configuration as well as its fund data.
+const configUtils = require('../src/config-utils');
+const originalUpdateRegimeConfig = configUtils.updateRegimeConfig;
+configUtils.updateRegimeConfig = () => {};
+after(() => {
+  configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
+  isolatedData.cleanup();
+});
 
 const { createRegimeEngine, cancelPartialFillOrder, resolveEntryBudget, makeFillDedupKey, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody } = require('../src/regime-engine');
 const { instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/health-monitor');
@@ -515,8 +527,7 @@ describe('injectBody duplicate refusal (issue #691, codex review follow-up)', ()
 });
 
 describe('injectBody durability (issue #1022)', () => {
-  // Like the extendBody block below, these reach saveLiveState(), which writes
-  // the repo's git-ignored data/gemini/BTC-USD/regime-state.json — isolate it.
+  // Every state write and cleanup stays inside this file's disposable root.
   const stateFile = getRegimeStateFile('gemini', 'BTC-USD');
   beforeEach(() => { fs.rmSync(stateFile, { force: true }); });
   afterEach(() => { fs.rmSync(stateFile, { force: true }); });
@@ -586,17 +597,12 @@ describe('injectBody durability (issue #1022)', () => {
 });
 
 describe('extendBody (issue #726)', () => {
-  // extendBody's success path calls saveLiveState(), which persists to the
-  // REAL (git-ignored, not the live trading fund's) data/gemini/BTC-USD/
-  // regime-state.json in this repo checkout — every other test in this
-  // file that reaches createRegimeEngine('gemini', 'BTC-USD', ...) never
-  // exercises a path that saves, so this is the first that needs isolation.
   // saveRegimeState's optimistic version-locking merges PROTECTED_FIELDS
   // (including celestialBodies) from whatever's already on disk whenever
   // its version is ahead of this process's in-memory count — a leftover
   // file from a prior test run would silently clobber the body state these
-  // tests just computed. Delete it before and after every test here so each
-  // one starts and ends from a clean slate.
+  // tests just computed. Clear the disposable fund file before and after
+  // every test so each one starts and ends from a clean slate.
   const stateFile = getRegimeStateFile('gemini', 'BTC-USD');
   beforeEach(() => { fs.rmSync(stateFile, { force: true }); });
   afterEach(() => { fs.rmSync(stateFile, { force: true }); });

@@ -115,7 +115,6 @@ All notable changes to this project will be documented in this file.
 - **[issue-746] Removed the size optimizer's unused balance-poll re-evaluation path** — `src/size-optimizer.js` exported `updateBalance()`/`evaluateForBalance()`, a reactive path meant to re-evaluate sizing on a live balance swing between cycle completions, but no engine code ever called it — `src/regime-engine.js` only ever drives sizing through the cycle-completion path (`recordCycle()`), and #694 deliberately left it unwired when it fixed that path's balance-feed bug. Rather than build a new polling trigger for a feature nothing asked for, it and its now-dead `BALANCE_CHANGE_THRESHOLD` constant are deleted; sizing re-evaluation is cycle-based only. `tests/size-optimizer.test.js` no longer exercises it, and its `adjustmentHistory`-cap regression coverage now drives the cap through `recordCycle()` instead.
 
 ### Changed
-- **[issue-1131] Drained-fund auto-close has one definition** — `closeDrainedEmptyPosition` in `state-tracker.js` owns the DRAINING→CLOSED predicate and field writes; the engine start path and the stopped `regime:status` path (now a named `autoCloseDrainedFundWhileStopped` helper) share it. Behaviour is unchanged.
 - **[issue-845] IPC command contract is now regression-tested end to end** — `tests/ipc-command-contract.test.js` joins the real client, server dispatcher and `regime:stop` callback to cover fund targeting, reverse-order correlation, custom deadlines, late replies, handler errors and disconnect/reconnect without replay. Tests only; no production change.
 - **Widened the `maxCelestialBodies` and `maxDrawdownPercent` config limits** — The regime config validator rejected any fund with more than 15 celestial bodies or a drawdown limit outside 10–30%, which blocked every save in the Config tab. `maxCelestialBodies` now accepts any integer from 1 to 1000; the effective concurrency is still capped by `maxOpenOrders`. `maxDrawdownPercent` now accepts values above 0 and up to 100, where 100 effectively disables the drawdown pause. Invalid values (999, strings, NaN, Infinity) are still rejected on every save path.
 - **[issue-787] Paced and bounded Crypto.com trade scans** — private trade-history pages now start at least 200ms apart and stop after 64 pages per call with `incompleteFills` instead of risking an unbounded burst or accepting partial fills. Crypto.com and Gemini now report short-fill retry sleeps through REST wait timing, so health latency excludes client-side waiting.
@@ -282,7 +281,6 @@ All notable changes to this project will be documented in this file.
 - **[issue-403] Risk manager unit test suite** — Add `tests/risk-manager.test.js` covering asset/USDC caps, cycle-buys limit enforcement and time-based auto-reset, drawdown peak tracking, pause activation, 50% recovery resumption, drawdown auto-reset, `canPlaceEntry`/`checkAllCaps` reason aggregation, and `forceResume`, using mocked `Date.now()` for deterministic time-based behavior.
 
 ### Changed
-- **[issue-1131] Drained-fund auto-close has one definition** — `closeDrainedEmptyPosition` in `state-tracker.js` owns the DRAINING→CLOSED predicate and field writes; the engine start path and the stopped `regime:status` path (now a named `autoCloseDrainedFundWhileStopped` helper) share it. Behaviour is unchanged.
 - **[issue-450] Remove superseded weak TP serialization test** — Deleted the `mutex serializes concurrent TP updates` case from `tests/race-conditions.test.js`, which asserted only `r1.success || r2.success` and `sellCallCount >= 1`, allowing two overlapping successful placements to pass. The stronger `concurrent placeTakeProfitOrder under a slow cancel leaves exactly one live TP (issue #209 B)` case maintains distinct live exchange order IDs and asserts exactly one live TP with matching executor tracking, verified by mutation probe: disabling the production mutex in an isolated copy causes the retained case to fail with two live orders while the deleted case always passed, confirming the deleted case provided no regression protection. No production code changed.
 - **[issue-449] Remove disconnected merge-snapshot simulation tests** — Deleted four test cases from the "Race 3" describe block in `tests/race-conditions.test.js` (`pendingMergeTpOrders stores snapshots correctly`, `snapshot-based fill processing calculates correct P&L`, `completedMergeTpOrders deduplicates same order ID`, `TTL expiry removes entries from completedMergeTpOrders`) that exercised test-local Map behavior and arithmetic but never called the production handler in `src/regime-engine.js` (~line 2730). The actual production merge-snapshot fill handling is properly tested by `tests/merge-fill-concurrency.test.js`, verified by mutation probe: disabling the production handler's merge-snapshot lookup causes those integration tests to fail, while the deleted simulations never touched the real code path. No production code changed.
 - **[issue-409] Route pair validation and safe IPC lookup unified in route-utils** — Removed the duplicated `validatePairParam` in `exchange-routes.js` (now `route-utils.resolvePairParam`) and the duplicated try/catch `getIPC` fallback wrapper in `exchange-routes.js`/`regime-routes.js` (now the shared non-throwing `route-utils.getSafeIPC`); renamed the local `req.fundPair` readers in `regime-routes.js`/`backtest-routes.js` from `getPair` to `getFundPair` so they no longer shadow `route-utils`'s (semantically different) pair resolver, reducing drift risk without changing any route behavior.
@@ -351,7 +349,6 @@ All notable changes to this project will be documented in this file.
 - **[issue-285] Bounded simulation requests and active jobs** — Backtest and optimizer APIs now validate every caller-provided limit, cap grid-search work, serialize jobs per fund, and return actionable busy or retry responses before expensive market-data work starts.
 
 ### Changed
-- **[issue-1131] Drained-fund auto-close has one definition** — `closeDrainedEmptyPosition` in `state-tracker.js` owns the DRAINING→CLOSED predicate and field writes; the engine start path and the stopped `regime:status` path (now a named `autoCloseDrainedFundWhileStopped` helper) share it. Behaviour is unchanged.
 - **[issue-314] Routes, UpDown, Sentinel, IPC, caches, and the notifier now log through the canonical structured logger** — The remaining non-core modules route every line through `createContextLogger` instead of the bare `log(level, message)` helper. Operator-visible message text is unchanged; each event now also carries `module` plus the context that scope genuinely has — `route` and `action` for API handlers, `exchange`/`pair` for fund-scoped endpoints, and `peer`/`channel` for IPC — so a centralized sink can filter without parsing message prefixes.
 - **[issue-253] Core trading modules now log through the canonical structured logger** — Order placement and reconciliation, the DCA cycle, and the exchange engine's connectivity, safety-pause, and auto-resume paths route every line through `createContextLogger` instead of the bare `log(level, message)` helper. Operator-visible message text is unchanged; each event now also carries `module`, `exchange`, `pair`, and — on failures — the order id and error, so a centralized sink can filter by fund without parsing message prefixes.
 - **[issue-289] Dashboard pages now load on demand** — The admin console keeps route-only charts, backtesting, optimization, and fund pages out of the initial download, then shows one consistent loading state while each destination opens.
@@ -383,7 +380,6 @@ All notable changes to this project will be documented in this file.
 - **UpDown hysteresis survives process restart** - published BUY/SELL state is persisted with the rest of updown-state.json, so a PM2 bounce no longer dumps a live clip to HOLD.
 
 ### Changed
-- **[issue-1131] Drained-fund auto-close has one definition** — `closeDrainedEmptyPosition` in `state-tracker.js` owns the DRAINING→CLOSED predicate and field writes; the engine start path and the stopped `regime:status` path (now a named `autoCloseDrainedFundWhileStopped` helper) share it. Behaviour is unchanged.
 - **Operator sign-in is off until you set a password** — `OPERATOR_TOKEN` is gone. Missing env no longer crashes the gateway. Set or clear a password on the Gateway page; the hash is stored in `data/operator-auth.json`, never as an environment variable.
 - **UpDown prints Open / Add / Hold / Close for BTC perp longs** — BUY while flat is OPEN, BUY while already long is ADD, any non-BUY while long is CLOSE (NEUTRAL included — a faded BUY clip flattens so the next BUY is a new OPEN). Flat + SELL is HOLD (never a short). Paper book buys one 0.01 BTC contract on each Open or Add and flattens on Close.
 - **Critical trading alerts now carry structured context** — Order failures, WebSocket faults, safety pauses, and recovery/reconciliation events retain their familiar operator messages while adding exchange, pair, order, and error metadata through the centralized logger (#253)
@@ -433,7 +429,6 @@ All notable changes to this project will be documented in this file.
 - **Remove express-rate-limit from admin server** - Single-user local dashboard doesn't need request rate limiting; was causing 429 errors on page load
 
 ### Changed
-- **[issue-1131] Drained-fund auto-close has one definition** — `closeDrainedEmptyPosition` in `state-tracker.js` owns the DRAINING→CLOSED predicate and field writes; the engine start path and the stopped `regime:status` path (now a named `autoCloseDrainedFundWhileStopped` helper) share it. Behaviour is unchanged.
 - **Extract shared `isFilledStatus(order)` predicate** - The `status === 'FILLED' || completionPercentage >= 100` fill-detection check was duplicated ~13 times across `regime-engine.js`, `order-executor.js`, and `order-manager.js`. It now lives once in `shared-utils.js` (null-safe, case-insensitive status) with direct unit coverage, replacing every inline occurrence. The `completionPercentage >= 100` arm guards the Coinbase completion-before-status window the reconcile/offline backstops rely on (#107, #155) (#174)
 - **Remove baseSizeUsdc from aggressiveness presets** - Base size is now a platform/fund config only, no longer overridden when switching aggressiveness levels
 
@@ -441,7 +436,6 @@ All notable changes to this project will be documented in this file.
 - **Sync test files with btc→asset rename** - Updated 7 test files to match the source code's multi-asset field renames (roundBTC→roundAsset, btcQty→assetQty, totalBTC→totalAsset, etc.), fixing 83 test failures
 
 ### Changed
-- **[issue-1131] Drained-fund auto-close has one definition** — `closeDrainedEmptyPosition` in `state-tracker.js` owns the DRAINING→CLOSED predicate and field writes; the engine start path and the stopped `regime:status` path (now a named `autoCloseDrainedFundWhileStopped` helper) share it. Behaviour is unchanged.
 - **Divergence-based liquidity scaling** - Position sizer now scales entry size based on price divergence from average cost basis instead of buy count
   - Old: `1 + (cycleBuys * 0.1)` (scaled with order count, disconnected from market)
   - New: `1 + (divergencePct / divergenceScalePct) * (cap - 1)` (scales when price drops below avg entry)
@@ -457,7 +451,6 @@ All notable changes to this project will be documented in this file.
 ## [2.4.12] - 2026-02-04
 
 ### Changed
-- **[issue-1131] Drained-fund auto-close has one definition** — `closeDrainedEmptyPosition` in `state-tracker.js` owns the DRAINING→CLOSED predicate and field writes; the engine start path and the stopped `regime:status` path (now a named `autoCloseDrainedFundWhileStopped` helper) share it. Behaviour is unchanged.
 - **Extended chart windows to 1 hour** - Regime dashboard now shows more history
   - Regime Timeline expanded from 15 minutes to 1 hour
   - Price & ATR Triggers chart expanded from 15 minutes to 1 hour
@@ -501,7 +494,6 @@ All notable changes to this project will be documented in this file.
 ## [2.4.4] - 2026-02-04
 
 ### Changed
-- **[issue-1131] Drained-fund auto-close has one definition** — `closeDrainedEmptyPosition` in `state-tracker.js` owns the DRAINING→CLOSED predicate and field writes; the engine start path and the stopped `regime:status` path (now a named `autoCloseDrainedFundWhileStopped` helper) share it. Behaviour is unchanged.
 - **Regime Dashboard layout reorganization** - Improved UI layout for better information hierarchy
   - Configuration Summary moved into 3rd column under Price & ATR chart
   - Orders section changed from side-by-side to vertically stacked layout
@@ -647,7 +639,6 @@ All notable changes to this project will be documented in this file.
   - Logs now show `momentum=up/down/neutral offset=Xbps` for debugging
 
 ### Changed
-- **[issue-1131] Drained-fund auto-close has one definition** — `closeDrainedEmptyPosition` in `state-tracker.js` owns the DRAINING→CLOSED predicate and field writes; the engine start path and the stopped `regime:status` path (now a named `autoCloseDrainedFundWhileStopped` helper) share it. Behaviour is unchanged.
 - Removed redundant `dryRun` field from regime config defaults (now inherited from exchange config)
 
 ## [2.3.20] - 2026-02-01
@@ -675,7 +666,6 @@ All notable changes to this project will be documented in this file.
   - Config UI with enable toggle and all adjustment parameters
 
 ### Changed
-- **[issue-1131] Drained-fund auto-close has one definition** — `closeDrainedEmptyPosition` in `state-tracker.js` owns the DRAINING→CLOSED predicate and field writes; the engine start path and the stopped `regime:status` path (now a named `autoCloseDrainedFundWhileStopped` helper) share it. Behaviour is unchanged.
 - Performance Metrics UI redesigned to show USDC, BTC, and total liquid value separately
 - Est. Daily Return now labeled "(Live Value)" to indicate it's based on combined liquid value
 - BTC values now displayed with 8 decimal places for precision
@@ -712,7 +702,6 @@ All notable changes to this project will be documented in this file.
 - `getPendingEntries()` method to both order-executor and dry-run-executor for tracking pending entry orders
 
 ### Changed
-- **[issue-1131] Drained-fund auto-close has one definition** — `closeDrainedEmptyPosition` in `state-tracker.js` owns the DRAINING→CLOSED predicate and field writes; the engine start path and the stopped `regime:status` path (now a named `autoCloseDrainedFundWhileStopped` helper) share it. Behaviour is unchanged.
 - Live mode startup now: loads saved state → recovers from exchange → checks offline fills → re-evaluates position
 - Periodic state saves every 5 minutes for live mode (dry-run unchanged at 60 seconds)
 
@@ -750,7 +739,6 @@ All notable changes to this project will be documented in this file.
 - Transactions UI now displays full datetime (YYYY-MM-DD HH:MM:SS) when timestamp data is available
 
 ### Changed
-- **[issue-1131] Drained-fund auto-close has one definition** — `closeDrainedEmptyPosition` in `state-tracker.js` owns the DRAINING→CLOSED predicate and field writes; the engine start path and the stopped `regime:status` path (now a named `autoCloseDrainedFundWhileStopped` helper) share it. Behaviour is unchanged.
 - Force IPv4-first DNS resolution (`--dns-result-order=ipv4first`) for API stability
 - TSV parser preserves Timestamp column as string alongside Date
 

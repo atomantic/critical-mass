@@ -8,6 +8,14 @@ const { sortFills, summarizeFills } = require('../shared/transactions-regime-pag
 const fills = count => Array.from({ length: count }, (_, i) => ({ tradeId: `trade-${String(i).padStart(5, '0')}`, orderId: `order-${i}`, timestamp: 1000 + Math.floor(i / 2), side: i % 3 ? 'buy' : 'sell', cycleId: `cycle-${i % 4}`, size: 0.01, price: 100 + i % 50, quoteAmount: 1 + (i % 50) / 100, netFee: 0.01, fee: 0.01 }));
 
 describe('regime fills paged query', () => {
+  it('reports net fees including full rebates in the whole-history summary', () => {
+    const history = fills(3).map((row, i) => ({ ...row,
+      fee: 2, netFee: [0, -0.5, undefined][i],
+    }));
+    const page = createTransactionsReadView(() => history, () => 'rebated').query({ paged: true });
+    assert.equal(page.summary.totalFees, 1.5);
+  });
+
   it('validates paging and cannot bypass the 100-row cap', () => {
     assert.deepEqual(parseFillsQuery({}), { paged: false });
     assert.equal(parseFillsQuery({ paged: true, pageSize: 10000 }).pageSize, 100);

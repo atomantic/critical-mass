@@ -183,7 +183,7 @@ const withStoppedWriters = async (operation, {
       const deadline = Date.now() + timeoutMs;
       while (!ipc.isConnected() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
       if (!ipc.isConnected()) throw new Error(`Cannot confirm ${exchange} engine shutdown`);
-      const ack = await ipc.request('engine:maintenance', { active: true, kind: 'generic', reason: 'FIFO backfill', ttlMs: 60 * 60_000 }, exchange, timeoutMs);
+      const ack = await ipc.request('engine:maintenance', { active: true, kind: 'restore', reason: 'FIFO backfill', ttlMs: 60 * 60_000 }, exchange, timeoutMs);
       if (ack?.success !== true || !ack.maintenance || !Number.isFinite(ack.maintenance.expiresAt) || ack.maintenance.expiresAt <= Date.now() + timeoutMs + 60_000) throw new Error(`No maintenance acknowledgement from ${exchange}`);
       const stopped = await requestEngineStop(exchange, ipc, timeoutMs);
       if (!stopped.confirmed) throw new Error(`Cannot confirm ${exchange} engine shutdown (${stopped.reason})`);

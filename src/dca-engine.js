@@ -160,6 +160,21 @@ const syncOrderStatuses = async (state, exchange = 'coinbase', pair) => {
 };
 
 /**
+ * Reconcile one fund's durable state under its public entry point's write lock.
+ * Internal cycle callers keep using syncOrderStatuses on their owned snapshot.
+ * @param {string} exchange - Exchange name
+ * @param {string|undefined} pair - Resolved fund pair
+ * @returns {Promise<{filledOrders: FilledSellOrder[]}>} Reconciled fills
+ */
+const syncFundOrders = async (exchange, pair) => {
+  const config = loadConfig(exchange, pair);
+  const state = stateTracker.loadState(config, exchange, pair);
+  const filledOrders = await syncOrderStatuses(state, exchange, pair);
+  if (filledOrders.length > 0) stateTracker.saveState(state, exchange, pair);
+  return { filledOrders };
+};
+
+/**
  * Execute order consolidation for one fund
  * @param {string} [exchange] - Exchange name (default: coinbase)
  * @param {string} [pair] - Fund pair (default: the exchange's default fund)
@@ -1155,8 +1170,8 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
  * @returns {Promise<StatusResult>} Current status
  */
 const checkStatus = async (exchange = 'coinbase', pair) => {
-  // Read-only, but still fund-scoped: resolve once so the config, the state
-  // file and the reported intents all describe the same fund.
+  // Reconciliation writes fills, so the public entry point holds the fund lock
+  // across this load/await/save and registers it with the maintenance drain.
   const fund = resolveFundPair(exchange, pair);
   const config = loadConfig(exchange, fund);
   const state = stateTracker.loadState(config, exchange, fund);
@@ -1478,7 +1493,10 @@ module.exports = {
     }),
   retryFailedSell: (exchange = 'coinbase', pair, buyOrderId) =>
     runFundWrite('dca-sell-retry', exchange, pair, (fund) => retryFailedSell(exchange, fund, buyOrderId)),
-  checkStatus,
+  checkStatus: (exchange = 'coinbase', pair) =>
+    runFundWrite('dca-status', exchange, pair, (fund) => checkStatus(exchange, fund)),
+  syncFundOrders: (exchange = 'coinbase', pair) =>
+    runFundWrite('dca-sync', exchange, pair, (fund) => syncFundOrders(exchange, fund)),
   syncOrderStatuses,
   reconcileAwaitingSells,
   loadConfig,

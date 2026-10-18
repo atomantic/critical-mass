@@ -1352,12 +1352,30 @@ describe('Manual Trade Import', () => {
 
       // Gemini reports a USDC fund's order on its USD symbol.
       ex.orders['manual-buy'] = buy({ productId: 'btcusd' });
-      const linked = await retry('manual-buy');
+      const linked = await createImporter({ exchange: 'gemini', adapter: ex.adapter }).retryRecovery({ tradeId, existingBuyOrderId: 'manual-buy' });
       assert.equal(linked.success, true);
       assert.equal(linked.linked, true);
       assert.equal(linked.trade.status, STATUS.BUY_PENDING);
       assert.equal(linked.trade.buyOrderId, 'manual-buy');
       assert.equal(ex.adapter.calls.placeLimitBuy.length, 1, 'linking never places an order');
+    });
+
+    it('rejects a Coinbase replacement with a different quote before recording a pending link', async () => {
+      const ex = createExchange();
+      const { tradeId } = await seedCancelled(ex);
+      ex.orders['usd-buy'] = { side: 'BUY', productId: 'BTC-USD', status: 'OPEN', filledSize: 0 };
+      const beforeTrade = structuredClone(store.getById(tradeId));
+      const beforeDisk = readManualTradesFile();
+      const beforeFills = structuredClone(fillLedger.getAllFills());
+
+      const result = await createImporter({ exchange: 'coinbase', adapter: ex.adapter }).retryRecovery({ tradeId, existingBuyOrderId: 'usd-buy' });
+
+      assert.equal(result.success, false);
+      assert.match(result.error, /for BTC-USD, not this fund's BTC-USDC/);
+      assert.deepEqual(store.getById(tradeId), beforeTrade, 'the invalid order never becomes the pending recovery');
+      assert.deepEqual(readManualTradesFile(), beforeDisk, 'the rejected link does not write recovery state');
+      assert.deepEqual(fillLedger.getAllFills(), beforeFills);
+      assert.equal(ex.adapter.calls.placeLimitBuy.length, 1, 'only the seed recovery was placed');
     });
 
     it('refuses to link an order another manual trade already owns', async () => {
