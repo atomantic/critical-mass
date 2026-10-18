@@ -3277,6 +3277,33 @@ describe('Fill Ledger', () => {
       assert.equal(ledger.getCurrentCycleFills().length, 1);
       assert.equal(JSON.stringify(createTestLedger().getAllFills()), before);
       assert.equal(ledger.ingestFill(real('retry-after-failure', 0.02)).identityReplacement, true);
+
+      // A preserve-mode reconciliation mutates the covered rows and processed-ID
+      // index before publication; a failed write must restore those along with
+      // the synthetic-coverage marker so the same execution can be retried.
+      const preserveLedger = createTestLedger('preserve-test');
+      preserveLedger.startNewCycle();
+      preserveLedger.ingestFill({ ...synthetic(), tradeId: 'synthetic-covered-0.01', size: 0.01 });
+      preserveLedger.startNewCycle();
+      preserveLedger.ingestFill({ ...synthetic(), tradeId: 'synthetic-covered-0.02', size: 0.01 });
+      const preserveBefore = JSON.stringify(preserveLedger.getAllFills());
+      const currentCycleBefore = JSON.stringify(preserveLedger.getCurrentCycleFills());
+      fs.renameSync = () => { throw new Error('simulated write failure'); };
+      try {
+        assert.throws(() => preserveLedger.ingestFill(real('preserve-retry-after-failure', 0.015)),
+          /simulated write failure/);
+      } finally {
+        fs.renameSync = rename;
+      }
+      assert.equal(JSON.stringify(preserveLedger.getAllFills()), preserveBefore, 'fills restored');
+      assert.equal(JSON.stringify(preserveLedger.getCurrentCycleFills()), currentCycleBefore, 'cycle index restored');
+      assert.equal(preserveLedger.getRecordedSizeForOrder('covered'), 0.02, 'order size index restored');
+      assert.equal(preserveLedger.hasProcessedTrade('preserve-retry-after-failure'), false,
+        'reconciled trade index restored');
+      assert.equal(JSON.stringify(createTestLedger('preserve-test').getAllFills()), preserveBefore, 'persisted rows unchanged');
+      assert.equal(preserveLedger.ingestFill(real('preserve-retry-after-failure', 0.015)).identityReplacement, true,
+        'synthetic coverage index restored for retry');
+      assert.equal(preserveLedger.hasProcessedTrade('preserve-retry-after-failure'), true);
     });
     for (const side of ['buy', 'sell']) {
       it(`persists batched ${side} replacement before a later correction rejects (#834)`, () => {
