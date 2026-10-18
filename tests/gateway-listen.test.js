@@ -176,3 +176,109 @@ describe('bindGatewayListeners', () => {
     assert.equal(second.listening, false)
   })
 })
+
+describe('watchTailscaleListeners', () => {
+  const { EventEmitter } = require('node:events')
+  const { watchTailscaleListeners } = require('../src/gateway-listen')
+  const { closeGatewayListeners } = require('../src/gateway-shutdown')
+
+  // No real sockets or interfaces: a fake server that "listens" on the next tick.
+  const fakeServer = (failWith) => Object.assign(new EventEmitter(), {
+    listening: false,
+    host: null,
+    listen(_port, host) {
+      this.host = host
+      process.nextTick(() => {
+        if (failWith) return this.emit('error', Object.assign(new Error('bind failed'), { code: failWith }))
+        this.listening = true
+        this.emit('listening')
+      })
+    },
+    close(cb) { this.listening = false; cb() },
+    closeIdleConnections() {},
+  })
+  const netsWith = (...addresses) => ({
+    lo0: [{ family: 'IPv4', internal: true, address: '127.0.0.1' }],
+    utun4: addresses.map((address) => ({ family: 'IPv4', internal: false, address })),
+  })
+
+  it('binds an address that appears after the first scan once, and shutdown closes it', async () => {
+    let nets = netsWith()
+    const extras = []
+    const servers = []
+    const logs = []
+    const watcher = watchTailscaleListeners({
+      bound: ['127.0.0.1'], port: 5570,
+      createServer: () => { const s = fakeServer(); servers.push(s); return s },
+      onExtra: (s) => extras.push(s),
+      scan: () => tailscaleIpv4s(nets),
+      log: (level, message) => logs.push(`${level} ${message}`),
+    })
+    try {
+      assert.deepEqual(await watcher.scan(), [])
+      assert.equal(servers.length, 0)
+
+      nets = netsWith('100.83.147.46')
+      assert.deepEqual(await watcher.scan(), ['100.83.147.46'])
+      assert.deepEqual(await watcher.scan(), [], 'a bound address is not bound twice')
+      assert.equal(servers.length, 1)
+      assert.deepEqual(extras, servers)
+      assert.equal(servers[0].listening, true)
+      assert.equal(servers[0].host, '100.83.147.46')
+      assert.deepEqual(logs, ['INFO Critical Mass listening on http://100.83.147.46:5570'])
+
+      const io = { close: (cb) => cb() }
+      await closeGatewayListeners(io, extras, [])
+      assert.equal(servers[0].listening, false)
+    } finally {
+      watcher.stop()
+    }
+  })
+
+  it('does not rebind an address from the initial bind', async () => {
+    const watcher = watchTailscaleListeners({
+      bound: ['127.0.0.1', '100.83.147.46'], port: 5570,
+      createServer: () => assert.fail('nothing new to bind'),
+      scan: () => ['100.83.147.46'],
+    })
+    try {
+      assert.deepEqual(await watcher.scan(), [])
+    } finally {
+      watcher.stop()
+    }
+  })
+
+  it('binds nothing once shutdown has begun', async () => {
+    const watcher = watchTailscaleListeners({
+      bound: [], port: 5570,
+      createServer: () => assert.fail('stopping'),
+      isStopping: () => true,
+      scan: () => ['100.83.147.46'],
+    })
+    try {
+      assert.deepEqual(await watcher.scan(), [])
+    } finally {
+      watcher.stop()
+    }
+  })
+
+  it('retries a failed bind on the next scan and warns only once', async () => {
+    let failWith = 'EADDRNOTAVAIL'
+    const logs = []
+    const watcher = watchTailscaleListeners({
+      bound: [], port: 5570,
+      createServer: () => fakeServer(failWith),
+      scan: () => ['100.83.147.46'],
+      log: (level, message) => logs.push(`${level} ${message}`),
+    })
+    try {
+      assert.deepEqual(await watcher.scan(), [])
+      assert.deepEqual(await watcher.scan(), [])
+      assert.equal(logs.filter((l) => l.startsWith('WARN')).length, 1)
+      failWith = undefined
+      assert.deepEqual(await watcher.scan(), ['100.83.147.46'])
+    } finally {
+      watcher.stop()
+    }
+  })
+})

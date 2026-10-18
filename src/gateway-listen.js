@@ -139,6 +139,56 @@ const bindGatewayListeners = ({ hosts, port, server, createServer, onExtra = () 
   )
 }
 
+/**
+ * Bind Tailscale addresses that appear after startup (tailscaled finishing its
+ * handshake after the process manager started the gateway, or a re-key). The
+ * initial resolveListenHosts() enumeration happens once; this re-scans on an
+ * unref'd interval and binds any address not yet listened on, one listener per
+ * address with the same `onExtra` bookkeeping as the initial bind so the
+ * shutdown path closes it. Addresses that disappear are not unbound (the OS
+ * closes those sockets). A failed bind is retried on the next scan.
+ *
+ * @param {{bound: string[], port: number|string, createServer: () => import('http').Server, onExtra?: (server: import('http').Server) => void, isStopping?: () => boolean, scan?: () => string[], intervalMs?: number, log?: (level: string, message: string) => void}} options
+ * @returns {{scan: () => Promise<string[]>, stop: () => void}} `scan` runs one pass and resolves the newly bound addresses
+ */
+const watchTailscaleListeners = ({
+  bound, port, createServer, onExtra = () => {}, isStopping = () => false,
+  scan = tailscaleIpv4s, intervalMs = 30_000, log = () => {},
+}) => {
+  const claimed = new Set(bound)
+  const warned = new Set()
+  let scanning = false
+  const bindOne = async (host) => {
+    const server = createServer()
+    onExtra(server)
+    claimed.add(host)
+    await bindGatewayListeners({ hosts: [host], port, server, createServer, log })
+    return host
+  }
+  const scanOnce = async () => {
+    if (scanning || isStopping()) return []
+    scanning = true
+    try {
+      const fresh = [...new Set(scan())].filter((host) => !claimed.has(host))
+      const results = await Promise.allSettled(fresh.map(bindOne))
+      return results.flatMap((r, i) => {
+        if (r.status === 'fulfilled') return [r.value]
+        claimed.delete(fresh[i])
+        if (!isStopping() && !warned.has(fresh[i])) {
+          warned.add(fresh[i])
+          log('WARN', `Late Tailscale bind http://${fresh[i]}:${port} failed (${r.reason?.code || r.reason?.message}); retrying every ${intervalMs / 1000}s`)
+        }
+        return []
+      })
+    } finally {
+      scanning = false
+    }
+  }
+  const timer = setInterval(() => { scanOnce().catch(() => {}) }, intervalMs)
+  timer.unref()
+  return { scan: scanOnce, stop: () => clearInterval(timer) }
+}
+
 module.exports = {
   isTailscaleIpv4,
   isLoopbackHost,
@@ -147,5 +197,6 @@ module.exports = {
   isGatewayOrigin,
   createCorsMiddleware,
   bindGatewayListeners,
+  watchTailscaleListeners,
 }
 
