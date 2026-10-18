@@ -5,6 +5,7 @@ const { getIntervalConfig } = require('./interval-utils');
 const { getAuthHeaders } = require('./auth');
 const { getExchangeDataDir } = require('./migration');
 const { getAdapter } = require('./adapters');
+const { atomicWriteSync } = require('./state-tracker');
 const { getFibonacciBuyAmount, getAverageCostBasis, getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
 
 const BASE_URL = 'https://api.coinbase.com';
@@ -296,6 +297,12 @@ const readPriceCache = (file) => {
 
 /**
  * Write a price cache file in the canonical `{prices}` envelope.
+ *
+ * The write is atomic (temp file + fsync + rename). The cache is the only
+ * copy of candle history older than the exchange's retention window and the
+ * default backup excludes it, so a crash or full disk mid-write must leave
+ * the previous file intact rather than a truncated one that `readPriceCache`
+ * reads back as "no cache" and a full refetch then cannot rebuild.
  * @param {string} file - Cache file path
  * @param {Object} params
  * @param {string} params.intervalType - Interval type
@@ -308,7 +315,7 @@ const writePriceCache = (file, { intervalType, exchange, productId, prices }) =>
   if (!fs.existsSync(cacheDir)) {
     fs.mkdirSync(cacheDir, { recursive: true });
   }
-  fs.writeFileSync(file, JSON.stringify({
+  atomicWriteSync(file, JSON.stringify({
     lastFetch: new Date().toISOString(),
     intervalType,
     exchange,
@@ -419,8 +426,15 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
         console.log(`Refreshed ${intervalType} cache for ${effectiveProductId} on ${exchange}: ${formatted.length} bucket(s) upserted, ${cachedPrices.length} total`);
       }
     } else {
-      // Full fetch - pass exchange and productId to fetchPriceData
-      cachedPrices = await fetchPriceData(intervals, intervalType, exchange, effectiveProductId);
+      // Full fetch. MERGE into the existing cache instead of replacing it:
+      // fetchPriceData returns only what the exchange still serves (Gemini and
+      // Crypto.com stop at their retention window; any exchange returns a gap
+      // for a batch whose request failed), so a longer-range request on a
+      // cache that had accumulated deeper history incrementally would
+      // otherwise overwrite that history with the shorter result and it could
+      // never be refetched.
+      const fetched = await fetchPriceData(intervals, intervalType, exchange, effectiveProductId);
+      cachedPrices = upsertCandles(cachedPrices, fetched);
     }
 
     // Save updated cache (always in the canonical {prices} envelope)
