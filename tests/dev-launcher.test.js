@@ -149,7 +149,11 @@ for (const mode of [0, 7, 'signal']) {
     const descendant = `
       process.on('SIGTERM', () => {});
       const server = require('net').createServer();
-      server.listen(0, '127.0.0.1', () => require('fs').writeFileSync(${JSON.stringify(witness)}, JSON.stringify({ pid: process.pid, port: server.address().port })));
+      server.listen(0, '127.0.0.1', () => {
+        const fs = require('fs');
+        fs.writeFileSync(${JSON.stringify(witness + '.tmp')}, JSON.stringify({ pid: process.pid, port: server.address().port }));
+        fs.renameSync(${JSON.stringify(witness + '.tmp')}, ${JSON.stringify(witness)});
+      });
     `;
     const source = `
       const child = require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: 'ignore' });

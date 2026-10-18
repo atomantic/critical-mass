@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 
 // ---------------------------------------------------------------------------
 // Module-level setup: patch getExchangeDataDir so fill-ledger writes to tmpdir
@@ -3023,6 +3024,66 @@ describe('Fill Ledger', () => {
     const real = (tradeId, size = 0.01, side = 'buy') => ({
       tradeId, orderId: 'covered', side, price: 2000, size,
       fee: size * 2, netFee: size * 2,
+    });
+    it('plans both reconciliation modes without changing a frozen reported execution', () => {
+      const plans = [];
+      for (const [mode, size] of [['replace', 0.02], ['preserve', 0.03]]) {
+        const ledger = createTestLedger(mode);
+        ledger.ingestFill({ ...synthetic(), orderId: 'covered', tradeId: 'synthetic-covered-0.02',
+          syntheticCoverage: { orderId: 'covered' } });
+        const reported = Object.freeze({
+          tradeId: `real-${mode}`, orderId: 'covered', side: 'buy',
+          price: 2000, size, quoteAmount: size * 2000,
+          fee: size * 2, netFee: size * 2, rebate: 0,
+        });
+        const before = JSON.stringify(ledger.getAllFills());
+        const plan = ledger._test.reconcileSyntheticCoverage(reported);
+        assert.equal(plan.mode, mode);
+        assert.strictEqual(plan.reportedExecution, reported);
+        assert.notStrictEqual(plan.ledgerExecution, reported);
+        assert.equal(JSON.stringify(reported), JSON.stringify({
+          tradeId: `real-${mode}`, orderId: 'covered', side: 'buy',
+          price: 2000, size, quoteAmount: size * 2000,
+          fee: size * 2, netFee: size * 2, rebate: 0,
+        }));
+        assert.equal(JSON.stringify(ledger.getAllFills()), before);
+        plans.push(plan);
+      }
+      assert.deepEqual(Object.keys(plans[0]).sort(), Object.keys(plans[1]).sort());
+      assert.deepEqual(plans[0].allocations, []);
+      assert.deepEqual(plans[1].replacements, []);
+    });
+
+    it('keeps persisted ordinary, replacement and excess rows byte-identical to the old ledger', () => {
+      // Hashes were captured from the pre-refactor main implementation with
+      // these fixed fixtures; hashing the on-disk bytes also detects field order.
+      const expected = {
+        ordinary: '4808e329c0251957f696e5d4eb18c24c32198979126052d0a0e071a2538ce2ef',
+        replace: 'aaa8eeab3a198c0e771664bee30e6e3787be32493f9c9bb921d57365656b742a',
+        preserve: '8371b5dd25b893ecac26bbeba947a052a057a83a982abf399b20179ec226c751',
+      };
+      const originalNow = Date.now;
+      Date.now = () => 1792195200000;
+      try {
+        for (const mode of Object.keys(expected)) {
+          const ledger = createTestLedger(mode);
+          const tradeTime = '2026-10-17T00:00:00.000Z';
+          if (mode !== 'ordinary') ledger.ingestFill({
+            tradeId: `synthetic-${mode}`, orderId: mode, side: 'buy',
+            price: 2000, size: 0.02, fee: 0.04, netFee: 0.04, tradeTime,
+            syntheticCoverage: { orderId: mode, cumulativeQuantity: 0.02,
+              cumulativeQuote: 40, cumulativeFees: 0.04 },
+          });
+          const size = mode === 'preserve' ? 0.03 : 0.02;
+          ledger.ingestFill({ tradeId: `real-${mode}`, orderId: mode, side: 'buy',
+            price: 2000, size, fee: size * 2, netFee: size * 2, tradeTime });
+          const file = freshFillLedgerModule().getFillLedgerPath(mode);
+          const digest = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          assert.equal(digest, expected[mode], `${mode} persisted rows changed`);
+        }
+      } finally {
+        Date.now = originalNow;
+      }
     });
     it('retains only unresolved coverage across real IDs, reloads and replay', () => {
       let ledger = createTestLedger();
