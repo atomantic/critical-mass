@@ -31,6 +31,7 @@ All notable changes to this project will be documented in this file.
 - **[issue-1029] Hide unavailable depth protection** — Remove depth safety edits and the Depth Pause alert toggle until the engine receives market depth, while preserving legacy stored values and spread/flash controls.
 - **[issue-1013] Macro timer lifecycle test isolates periodic updates** — Replaced the real-time delay and aggregate candle count with mocked intervals, separate timeframe request counts, and assertions before and after stop.
 - **[issue-1019] Ledger fixture setup batches durable writes** — Fix the body-link fixture's `skipPersist` options and construct the cache benchmark's normalized metadata in memory before one setup flush, preserving its fill rows and cache assertions.
+- **[issue-1140] Fill ingestion groups rollback, coverage and index steps** — Name the reconciliation rollback snapshot and restore, synthetic coverage replacement, and fill index updates while preserving persistence and mutation order.
 
 ### Fixed
 - **Fund startup failures degrade gateway health** — `/api/health` now reports enabled funds that are starting, retrying or blocked as unavailable instead of treating their synthesized STOPPED status as an intentional stop. Fund and exchange summaries retain the startup state, error and retry deadline, and return to healthy after a successful start. Disabled-fund failures remain visible without degrading enabled funds.

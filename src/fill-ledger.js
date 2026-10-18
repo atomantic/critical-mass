@@ -1389,6 +1389,57 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     return bookableFills;
   };
 
+  const captureIngestRollback = (fill, tradeId, reconciliation) => {
+    if (!reconciliation) return null;
+    return {
+      fills: new Map(Array.from(fills, ([id, row]) => [id, structuredClone(row)])),
+      cycleIndex: new Map(Array.from(cycleIndex, ([id, ids]) => [id, new Set(ids)])),
+      orderSize: orderSizeIndex.get(fill.orderId),
+      dirty: dirtySinceLastPersist,
+      hadSyntheticCoverage: syntheticOrders.has(fill.orderId),
+      hadReconciledTrade: reconciledTradeIds.has(tradeId),
+    };
+  };
+
+  const restoreIngestRollback = (snapshot, fill, tradeId) => {
+    fills.clear();
+    for (const [id, row] of snapshot.fills) fills.set(id, row);
+    cycleIndex.clear();
+    for (const [id, ids] of snapshot.cycleIndex) cycleIndex.set(id, ids);
+    if (snapshot.orderSize === undefined) orderSizeIndex.delete(fill.orderId);
+    else orderSizeIndex.set(fill.orderId, snapshot.orderSize);
+    if (snapshot.hadSyntheticCoverage) syntheticOrders.add(fill.orderId);
+    else syntheticOrders.delete(fill.orderId);
+    if (snapshot.hadReconciledTrade) reconciledTradeIds.add(tradeId);
+    else reconciledTradeIds.delete(tradeId);
+    dirtySinceLastPersist = snapshot.dirty;
+  };
+
+  const applyCoverageReplacements = (replacements) => {
+    for (const { old, residual } of replacements) {
+      if (residual) fills.set(old.tradeId, residual);
+      else {
+        fills.delete(old.tradeId);
+        if (old.cycleId) cycleIndex.get(old.cycleId)?.delete(old.tradeId);
+      }
+    }
+  };
+
+  const indexIngestedFill = (fill, tradeId, replacements) => {
+    if (fill.cycleId && fill.size > 1e-9) {
+      if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
+      cycleIndex.get(fill.cycleId).add(tradeId);
+    }
+    // Maintain per-order size index for O(1) watermark lookups in retry loops.
+    // Round to asset precision so accumulated float error can't keep the
+    // retry chain running on a fully-recorded order (see load() for context).
+    if (fill.orderId) {
+      const replacedSize = replacements.reduce((sum, item) => sum + item.old.size - (item.residual?.size || 0), 0);
+      const next = (orderSizeIndex.get(fill.orderId) || 0) + (fill.size || 0) - replacedSize;
+      orderSizeIndex.set(fill.orderId, roundAsset(next));
+    }
+  };
+
   /**
    * Ingest a fill (idempotent)
    * @param {Object} fillData - Raw fill data from exchange
@@ -1461,23 +1512,11 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     const reconciliation = reconcileSyntheticCoverage(reported);
     const row = reconciliation ? reconciliation.ledgerExecution : reported;
     const replacements = reconciliation?.replacements || [];
-    const priorFills = reconciliation ? new Map(Array.from(fills, ([id, row]) => [id, structuredClone(row)])) : null;
-    const priorCycleIndex = reconciliation
-      ? new Map(Array.from(cycleIndex, ([id, ids]) => [id, new Set(ids)])) : null;
-    const priorOrderSize = orderSizeIndex.get(row.orderId);
-    const priorDirty = dirtySinceLastPersist;
-    const hadSyntheticCoverage = syntheticOrders.has(row.orderId);
-    const hadReconciledTrade = reconciledTradeIds.has(tradeId);
+    const rollback = captureIngestRollback(row, tradeId, reconciliation);
     if (reconciliation?.mode === 'preserve') {
       recordPreservedCoverage(row, reconciliation, tradeId);
     }
-    for (const { old, residual } of replacements) {
-      if (residual) fills.set(old.tradeId, residual);
-      else {
-        fills.delete(old.tradeId);
-        if (old.cycleId) cycleIndex.get(old.cycleId)?.delete(old.tradeId);
-      }
-    }
+    applyCoverageReplacements(replacements);
     // Identity-only executions are represented by their real ID in the
     // synthetic rows' reconciliation metadata. Avoid persisting a zero-size
     // row that could enter cycle reconstruction or ordinary fill aggregates.
@@ -1485,19 +1524,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     if (isUnresolvedSyntheticCoverage(row)) syntheticOrders.add(row.orderId);
     else if (reconciliation && !Array.from(fills.values()).some(stored =>
       stored.orderId === row.orderId && isUnresolvedSyntheticCoverage(stored))) syntheticOrders.delete(row.orderId);
-    // Maintain cycle index
-    if (row.cycleId && row.size > 1e-9) {
-      if (!cycleIndex.has(row.cycleId)) cycleIndex.set(row.cycleId, new Set());
-      cycleIndex.get(row.cycleId).add(tradeId);
-    }
-    // Maintain per-order size index for O(1) watermark lookups in retry loops.
-    // Round to asset precision so accumulated float error can't keep the
-    // retry chain running on a fully-recorded order (see load() for context).
-    if (row.orderId) {
-      const replacedSize = replacements.reduce((sum, item) => sum + item.old.size - (item.residual?.size || 0), 0);
-      const next = (orderSizeIndex.get(row.orderId) || 0) + (row.size || 0) - replacedSize;
-      orderSizeIndex.set(row.orderId, roundAsset(next));
-    }
+    indexIngestedFill(row, tradeId, replacements);
     if (row.buyEconomicCorrection) {
       journalBuyEconomicCorrection(row, reconciliation);
     }
@@ -1517,18 +1544,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         // Atomic file publication kept the old disk state. Keep the matching
         // memory/index state too, so retry cannot mistake a failed replacement
         // for a durable duplicate.
-        if (priorFills && priorCycleIndex) {
-          fills.clear();
-          for (const [id, row] of priorFills) fills.set(id, row);
-          cycleIndex.clear();
-          for (const [id, ids] of priorCycleIndex) cycleIndex.set(id, ids);
-          if (priorOrderSize === undefined) orderSizeIndex.delete(row.orderId);
-          else orderSizeIndex.set(row.orderId, priorOrderSize);
-          if (hadSyntheticCoverage) syntheticOrders.add(row.orderId);
-          else syntheticOrders.delete(row.orderId);
-          if (hadReconciledTrade) reconciledTradeIds.add(tradeId);
-          else reconciledTradeIds.delete(tradeId);
-          dirtySinceLastPersist = priorDirty;
+        if (rollback) {
+          restoreIngestRollback(rollback, row, tradeId);
           bumpLedgerVersion();
         }
         throw err;
