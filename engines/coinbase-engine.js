@@ -548,6 +548,10 @@ registerEngineBackupHandlers(ipcServer, {
   drainPendingWrites, startMarketService: startMarketDataService,
   resumeFund: resumeAfterBackup, getStartStatus, drainStarts: settleStarts,
   pauseBuffers: shutdownAllBuffers, resumeBuffers: resumeAllBuffers,
+  // A gateway that dies mid-backup can never send backup-resume; the window
+  // restarts the captured funds itself once its only client is gone.
+  onGatewayDisconnect: (listener) => ipcServer.onClientDisconnect((remaining) => { if (remaining === 0) listener(); }),
+  isShuttingDown: ipcServer.isShuttingDown,
   logger: engineLogger(EXCHANGE_NAME),
 });
 
