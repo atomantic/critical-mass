@@ -9116,6 +9116,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     };
   };
 
+  const annotateMergedSourceBuys = (source, merged) => {
+  for (const srcId of (source.sourceOrderIds || [])) {
+    fillLedger.annotateFillsByOrderId(srcId, { bodyId: merged.id, bodyTier: merged.tier });
+  }
+  for (const buyOrder of (source.buyOrders || [])) {
+    if (buyOrder.orderId && buyOrder.orderId !== 'core-migration') {
+      fillLedger.annotateFillsByOrderId(buyOrder.orderId, { bodyId: merged.id, bodyTier: merged.tier });
+    }
+  }
+  };
+
+  const completeMergeSnapshot = (snapshot) => {
+    const orderId = snapshot.tpOrderId;
+    if (!orderId) return;
+    pendingMergeTpOrders.delete(orderId);
+    completedMergeTpOrders.set(orderId, snapshot);
+    const timer = setTimeout(() => {
+      completedMergeTpOrders.delete(orderId);
+      ttlTimers.delete(timer);
+    }, 300000);
+    ttlTimers.add(timer);
+  };
+
   /**
    * Manually merge a body into the next-highest body by TP price.
    * Cancels both TPs, combines all buys, re-places a single merged TP.
@@ -9200,10 +9223,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // would self-stall for its full 15s wait window every time.
     const bookExecutionDuringCancel = async (body, snapshot, cancelResult) => {
       const soldTp = snapshot.tpOrderId;
-      pendingMergeTpOrders.delete(soldTp);
-      completedMergeTpOrders.set(soldTp, snapshot);
-      const t = setTimeout(() => { completedMergeTpOrders.delete(soldTp); ttlTimers.delete(t); }, 300000);
-      ttlTimers.add(t);
+      completeMergeSnapshot(snapshot);
       body.tpOrderId = null;
       body.tpPrice = 0;
       body.assetOnOrder = 0;
@@ -9222,62 +9242,55 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return soldTp;
     };
 
-    // Cancel source TP
-    const srcCancel = await orderExecutor.cancelBodyTpOrder(source.id, source.tpOrderId);
-    const srcOutcome = classifyBodyTpCancellation(srcCancel);
-    if (srcOutcome === 'filled' || srcOutcome === 'unresolved') {
-      // Clean up snapshots
-      if (source.tpOrderId) pendingMergeTpOrders.delete(source.tpOrderId);
-      if (target.tpOrderId) pendingMergeTpOrders.delete(target.tpOrderId);
-      const reason = srcOutcome === 'filled' ? 'already filled' : 'cancel failed';
-      logger.warn(`⚠️ [${exchange}] Source body ${source.id.slice(-8)} TP ${reason}, aborting roll-up`);
-      return { success: false, message: `Source TP ${reason}` };
-    }
-    if (srcOutcome === 'cancelled_with_execution') {
-      // Target's TP was never touched (we cancel source first) — just drop its
-      // snapshot and abort; booking deducts the sold qty/cost from the
-      // still-live source body and re-arms a right-sized TP on it directly, so
-      // there's nothing left needing this roll-up attempt.
-      if (target.tpOrderId) pendingMergeTpOrders.delete(target.tpOrderId);
-      const soldTp = await bookExecutionDuringCancel(source, sourceSnapshot, srcCancel);
-      logger.warn(`⚠️ [${exchange}] Source body ${source.id.slice(-8)} TP filled ${srcCancel.filledSize} ${baseCurrency} during cancel — booked ${soldTp.slice(-8)}, aborting roll-up (#368)`);
-      return { success: false, message: `Source TP filled during cancel (${srcCancel.filledSize} ${baseCurrency}) — booked, roll-up aborted` };
-    }
-    // Clean cancel — clear source body TP fields
-    source.tpOrderId = null;
-    source.tpPrice = 0;
-    source.assetOnOrder = 0;
+    // Snapshot holders are read after cancellation: the source's live TP ID
+    // is cleared before the target leg, so that leg uses sourceSnapshot.
+    const cancelMergeLeg = async ({ leg, body, snapshot, dropSnapshots, restoreSource }) => {
+      const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id, body.tpOrderId);
+      const outcome = classifyBodyTpCancellation(cancelResult);
+      if (outcome === 'filled' || outcome === 'unresolved') {
+        for (const pending of dropSnapshots) {
+          if (pending.tpOrderId) pendingMergeTpOrders.delete(pending.tpOrderId);
+        }
+        const reason = outcome === 'filled' ? 'already filled' : 'cancel failed';
+        const action = restoreSource ? 'restoring source TP' : 'aborting roll-up';
+        logger.warn(`⚠️ [${exchange}] ${leg} body ${body.id.slice(-8)} TP ${reason}, ${action}`);
+        if (restoreSource) {
+          await placeBodyTp(source);
+          saveLiveState();
+        }
+        return { abort: { success: false, message: `${leg} TP ${reason}${restoreSource ? ', source restored' : ''}` } };
+      }
+      if (outcome === 'cancelled_with_execution') {
+        // Keep the executed body's snapshot until booking moves it to completed;
+        // the other leg has either not been touched or needs its TP restored.
+        for (const pending of dropSnapshots) {
+          if (pending !== body && pending.tpOrderId) pendingMergeTpOrders.delete(pending.tpOrderId);
+        }
+        const soldTp = await bookExecutionDuringCancel(body, snapshot, cancelResult);
+        logger.warn(`⚠️ [${exchange}] ${leg} body ${body.id.slice(-8)} TP filled ${cancelResult.filledSize} ${baseCurrency} during cancel — booked ${soldTp.slice(-8)}, ${restoreSource ? 'restoring source TP, ' : ''}aborting roll-up (#368)`);
+        if (restoreSource) {
+          await placeBodyTp(source);
+          saveLiveState();
+        }
+        return { abort: { success: false, message: `${leg} TP filled during cancel (${cancelResult.filledSize} ${baseCurrency}) — booked, ${restoreSource ? 'source restored, ' : ''}roll-up aborted` } };
+      }
+      body.tpOrderId = null;
+      body.tpPrice = 0;
+      body.assetOnOrder = 0;
+      return { outcome };
+    };
 
-    // Cancel target TP
-    const tgtCancel = await orderExecutor.cancelBodyTpOrder(target.id, target.tpOrderId);
-    const tgtOutcome = classifyBodyTpCancellation(tgtCancel);
-    if (tgtOutcome === 'filled' || tgtOutcome === 'unresolved') {
-      // Clean up snapshots
-      if (sourceSnapshot.tpOrderId) pendingMergeTpOrders.delete(sourceSnapshot.tpOrderId);
-      if (target.tpOrderId) pendingMergeTpOrders.delete(target.tpOrderId);
-      // Restore source TP to avoid leaving it dangling
-      const reason = tgtOutcome === 'filled' ? 'already filled' : 'cancel failed';
-      logger.warn(`⚠️ [${exchange}] Target body ${target.id.slice(-8)} TP ${reason}, restoring source TP`);
-      await placeBodyTp(source);
-      saveLiveState();
-      return { success: false, message: `Target TP ${reason}, source restored` };
-    }
-    if (tgtOutcome === 'cancelled_with_execution') {
-      // Source's TP was already cleanly cancelled above, so it needs restoring
-      // before we abort (mirrors the failed-cancel branch above). Booking
-      // deducts the sold qty/cost from the still-live target body and re-arms
-      // a right-sized TP on it directly.
-      if (sourceSnapshot.tpOrderId) pendingMergeTpOrders.delete(sourceSnapshot.tpOrderId);
-      const soldTp = await bookExecutionDuringCancel(target, targetSnapshot, tgtCancel);
-      logger.warn(`⚠️ [${exchange}] Target body ${target.id.slice(-8)} TP filled ${tgtCancel.filledSize} ${baseCurrency} during cancel — booked ${soldTp.slice(-8)}, restoring source TP, aborting roll-up (#368)`);
-      await placeBodyTp(source);
-      saveLiveState();
-      return { success: false, message: `Target TP filled during cancel (${tgtCancel.filledSize} ${baseCurrency}) — booked, source restored, roll-up aborted` };
-    }
-    // Clean cancel — clear target body TP fields
-    target.tpOrderId = null;
-    target.tpPrice = 0;
-    target.assetOnOrder = 0;
+    const sourceCancel = await cancelMergeLeg({
+      leg: 'Source', body: source, snapshot: sourceSnapshot,
+      dropSnapshots: [source, target], restoreSource: false,
+    });
+    if (sourceCancel.abort) return sourceCancel.abort;
+
+    const targetCancel = await cancelMergeLeg({
+      leg: 'Target', body: target, snapshot: targetSnapshot,
+      dropSnapshots: [sourceSnapshot, target], restoreSource: true,
+    });
+    if (targetCancel.abort) return targetCancel.abort;
 
     // Merge bodies (pure data)
     const merged = celestialHierarchy.mergeBodies(target, source, config.maxUsdcDeployed, logger);
@@ -9285,33 +9298,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Remove source from celestialBodies
     positionState.celestialBodies = positionState.celestialBodies.filter(b => b.id !== source.id);
 
-    // Move snapshots from pending → completed (5min TTL for late-arriving fills)
-    if (sourceSnapshot.tpOrderId) {
-      pendingMergeTpOrders.delete(sourceSnapshot.tpOrderId);
-      completedMergeTpOrders.set(sourceSnapshot.tpOrderId, sourceSnapshot);
-      const t3 = setTimeout(() => { completedMergeTpOrders.delete(sourceSnapshot.tpOrderId); ttlTimers.delete(t3); }, 300000);
-      ttlTimers.add(t3);
-    }
-    if (targetSnapshot.tpOrderId) {
-      pendingMergeTpOrders.delete(targetSnapshot.tpOrderId);
-      completedMergeTpOrders.set(targetSnapshot.tpOrderId, targetSnapshot);
-      const t4 = setTimeout(() => { completedMergeTpOrders.delete(targetSnapshot.tpOrderId); ttlTimers.delete(t4); }, 300000);
-      ttlTimers.add(t4);
-    }
+    // Retain both snapshots for late-arriving fills (5-minute TTL).
+    completeMergeSnapshot(sourceSnapshot);
+    completeMergeSnapshot(targetSnapshot);
 
     // Check cascading promotions and sync aggregates
     celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
     celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
     // Re-annotate source body's fills with merged body's ID
-    for (const srcId of (source.sourceOrderIds || [])) {
-      fillLedger.annotateFillsByOrderId(srcId, { bodyId: merged.id, bodyTier: merged.tier });
-    }
-    for (const buyOrder of (source.buyOrders || [])) {
-      if (buyOrder.orderId && buyOrder.orderId !== 'core-migration') {
-        fillLedger.annotateFillsByOrderId(buyOrder.orderId, { bodyId: merged.id, bodyTier: merged.tier });
-      }
-    }
+    annotateMergedSourceBuys(source, merged);
 
     // Place new combined TP (handles holdback, annotation for ALL source buy fills).
     // Cap TP% at the pre-merge target level so the sell price can only go down after merge.
