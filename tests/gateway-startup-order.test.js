@@ -97,6 +97,15 @@ describe('gateway startup order', () => {
     assert.deepEqual(exits, []);
   });
 
+  it('leaves the exit to the shutdown coordinator when it closed the servers mid-bind', async () => {
+    const { bind, started, exits, logs } = runStartBlock({ stopping: true });
+    bind.reject(Object.assign(new Error('Server is not running'), { code: 'ERR_SERVER_NOT_RUNNING', host: '127.0.0.1', port: 5570 }));
+    await settle();
+    assert.deepEqual(started, []);
+    assert.deepEqual(exits, [], 'the coordinator owns the exit code');
+    assert.deepEqual(logs, []);
+  });
+
   it('attaches Socket.IO to every extra host listener before it binds', () => {
     const { bindArgs, context, started } = runStartBlock();
     const extra = bindArgs[0].createServer();

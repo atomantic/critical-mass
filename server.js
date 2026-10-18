@@ -564,6 +564,9 @@ bindGatewayListeners({
   },
   log,
 }).then(startGatewayServices, (err) => {
+  // A shutdown that began mid-bind closes these servers itself; its own exit
+  // path owns the outcome.
+  if (gatewayShutdown.isStopping()) return;
   log('ERROR', `Gateway failed to bind http://${err.host}:${err.port} (${err.code || err.message}) — is another gateway running? No writer, scheduler or engine connection was started`);
   process.exit(1);
 });
