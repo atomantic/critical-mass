@@ -3,7 +3,7 @@
  * Backup Service
  *
  * Handles scheduled and manual backups of trading data files.
- * Uses spawnSync for zip/unzip operations.
+ * Archive creation uses async spawn for zip/unzip; restore and listing use spawnSync.
  * Excludes credentials, live configuration, and the backup directory from archives.
  *
  * Archives also carry a versioned manifest (`backup-manifest.json`) holding a
@@ -19,7 +19,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { jsonReadError } = require('./json-diagnostics');
 const { fsyncDir } = require('./fsync-dir');
-const { spawnSync } = require('child_process');
+const { spawnSync, spawn } = require('child_process');
 const { DATA_DIR, BACKUP_DIR } = require('./paths');
 const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME } = require('./restore-apply');
 const { LOCK_FILENAME: LEGACY_MIGRATION_LOCK } = require('./legacy-namespace-migration');
@@ -50,7 +50,35 @@ const FUND_STATE_MANIFEST_FILENAME = 'fund-state-manifest.json';
 const FUND_STATE_MANIFEST_VERSION = 1;
 const FUND_STATE_SNAPSHOT_FILENAMES = ['fill-ledger.json', 'regime-state.json', 'closed-trades.json', 'state.json', 'dry-run-state.json'];
 
+// Bounds each zip/unzip child. The archive-creation path uses async spawn, so a
+// slow archive no longer blocks the gateway event loop or its shutdown drain;
+// the sync callers (restore, listing) still block for up to this long.
 const SPAWN_TIMEOUT_MS = 60000;
+
+/**
+ * Promise-wrapped spawn with spawnSync's result shape ({status, error, stdout,
+ * stderr}), so callers keep the same exit-code and error handling.
+ */
+const spawnAsync = (command, args, { cwd, timeout = SPAWN_TIMEOUT_MS } = {}) => new Promise((resolve) => {
+  const out = [];
+  const err = [];
+  let settled = false;
+  const finish = (result) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    resolve({ stdout: Buffer.concat(out), stderr: Buffer.concat(err), ...result });
+  };
+  const child = spawn(command, args, { cwd });
+  const timer = setTimeout(() => {
+    child.kill('SIGKILL');
+    finish({ status: null, error: new Error(`${command} timed out after ${timeout}ms`) });
+  }, timeout);
+  child.stdout.on('data', (chunk) => out.push(chunk));
+  child.stderr.on('data', (chunk) => err.push(chunk));
+  child.on('error', (error) => finish({ status: null, error }));
+  child.on('close', (status) => finish({ status, error: undefined }));
+});
 
 /** Flush copied backup bytes before publication can authorize retention. */
 const flushBackupFile = (file) => {
@@ -346,15 +374,12 @@ const describeLayoutTranslation = ({ zipPath, snapshot, destinationConfig }) => 
  * stray file behind (or races a concurrent reader of data/).
  * @param {string} zipPath
  * @param {Object} manifest
- * @returns {{success: boolean, error?: string}}
+ * @returns {Promise<{success: boolean, error?: string}>}
  */
-const appendManifest = (zipPath, manifest) => {
+const appendManifest = async (zipPath, manifest) => {
   const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-backup-manifest-'));
   fs.writeFileSync(path.join(stagingDir, MANIFEST_FILENAME), JSON.stringify(manifest, null, 2));
-  const result = spawnSync('zip', ['-q', '-g', zipPath, MANIFEST_FILENAME], {
-    cwd: stagingDir,
-    timeout: SPAWN_TIMEOUT_MS,
-  });
+  const result = await spawnAsync('zip', ['-q', '-g', zipPath, MANIFEST_FILENAME], { cwd: stagingDir });
   fs.rmSync(stagingDir, { recursive: true, force: true });
   if (result.error || result.status !== 0) {
     const error = result.error
@@ -365,22 +390,17 @@ const appendManifest = (zipPath, manifest) => {
   return { success: true };
 };
 
-/** Validate an archive; only listing may admit the supported pre-manifest format. */
-const validateBackupArchive = (zipPath, { allowLegacy = false } = {}) => {
-  const integrity = spawnSync('unzip', ['-tq', zipPath], { timeout: SPAWN_TIMEOUT_MS });
-  if (integrity.error || integrity.status !== 0) {
-    const detail = integrity.error ? integrity.error.message : (integrity.stderr?.toString().trim() || 'Archive integrity check failed');
-    return { ok: false, error: detail };
-  }
-  const entries = spawnSync('unzip', ['-Z1', zipPath], { timeout: SPAWN_TIMEOUT_MS });
-  if (entries.error || entries.status !== 0) {
-    const detail = entries.error ? entries.error.message : (entries.stderr?.toString().trim() || 'Unable to read archive entries');
-    return { ok: false, error: detail };
-  }
+const checkTailFailure = (result, fallback) => {
+  if (!result.error && result.status === 0) return null;
+  return { ok: false, error: result.error ? result.error.message : (result.stderr?.toString().trim() || fallback) };
+};
+
+/** Shared decision logic once an archive's integrity, listing and manifest reads are in hand. */
+const evaluateArchive = ({ entries, readManifest, allowLegacy }) => {
   const manifests = entries.stdout.toString().split('\n').filter((entry) => entry === MANIFEST_FILENAME);
   if (manifests.length === 0 && allowLegacy) return { ok: true };
   if (manifests.length !== 1) return { ok: false, error: `Archive must contain exactly one ${MANIFEST_FILENAME}` };
-  const read = readArchiveManifest(zipPath);
+  const read = readManifest();
   if (read.error || !read.present) return { ok: false, error: read.error || `Missing ${MANIFEST_FILENAME}` };
   const validated = readManifestSnapshot(read.manifest);
   if (!validated.ok) return { ok: false, error: validated.error };
@@ -393,14 +413,37 @@ const validateBackupArchive = (zipPath, { allowLegacy = false } = {}) => {
   return { ok: true };
 };
 
+/** Validate an archive; only listing may admit the supported pre-manifest format. */
+const validateBackupArchive = (zipPath, { allowLegacy = false } = {}) => {
+  const integrity = spawnSync('unzip', ['-tq', zipPath], { timeout: SPAWN_TIMEOUT_MS });
+  const integrityFailure = checkTailFailure(integrity, 'Archive integrity check failed');
+  if (integrityFailure) return integrityFailure;
+  const entries = spawnSync('unzip', ['-Z1', zipPath], { timeout: SPAWN_TIMEOUT_MS });
+  const entriesFailure = checkTailFailure(entries, 'Unable to read archive entries');
+  if (entriesFailure) return entriesFailure;
+  return evaluateArchive({ entries, allowLegacy, readManifest: () => readArchiveManifest(zipPath) });
+};
+
+/** Non-blocking validateBackupArchive for the backup-creation path. */
+const validateBackupArchiveAsync = async (zipPath, { allowLegacy = false } = {}) => {
+  const integrity = await spawnAsync('unzip', ['-tq', zipPath]);
+  const integrityFailure = checkTailFailure(integrity, 'Archive integrity check failed');
+  if (integrityFailure) return integrityFailure;
+  const entries = await spawnAsync('unzip', ['-Z1', zipPath]);
+  const entriesFailure = checkTailFailure(entries, 'Unable to read archive entries');
+  if (entriesFailure) return entriesFailure;
+  const manifestRead = await spawnAsync('unzip', ['-p', zipPath, MANIFEST_FILENAME]);
+  return evaluateArchive({ entries, allowLegacy, readManifest: () => parseManifestRead(manifestRead) });
+};
+
 /**
  * Create a backup of all data files
  * @param {Object} options
  * @param {boolean} [options.includePriceCache=false] - Include price cache files (~45MB per exchange)
  * @param {{dataDir?: string, baseConfigFile?: string}} [options.paths] - Path overrides (tests)
- * @returns {{ success: boolean, filename?: string, sizeBytes?: number, error?: string }}
+ * @returns {Promise<{ success: boolean, filename?: string, sizeBytes?: number, error?: string }>}
  */
-const createBackup = ({ includePriceCache = false, paths: pathOverrides } = {}) => {
+const createBackup = async ({ includePriceCache = false, paths: pathOverrides } = {}) => {
   const paths = resolvePaths(pathOverrides);
   ensureBackupsDir(paths.backupsDir);
 
@@ -447,16 +490,13 @@ const createBackup = ({ includePriceCache = false, paths: pathOverrides } = {}) 
   const excludeArgs = excludes.flatMap(pattern => ['-x', pattern]);
 
   // Create zip from data directory
-  const result = spawnSync('zip', [
+  const result = await spawnAsync('zip', [
     '-r',               // Recursive
     '-q',               // Quiet
     zipPath,
     '.',                // Current directory (data/)
     ...excludeArgs,
-  ], {
-    cwd: paths.dataDir,
-    timeout: SPAWN_TIMEOUT_MS,
-  });
+  ], { cwd: paths.dataDir });
 
   // zip exits 12 when the live data directory contains no entries after the
   // exclusions. That is a valid backup: appendManifest creates the archive
@@ -470,14 +510,14 @@ const createBackup = ({ includePriceCache = false, paths: pathOverrides } = {}) 
     return { success: false, error };
   }
 
-  const appended = appendManifest(zipPath, manifest);
+  const appended = await appendManifest(zipPath, manifest);
   if (!appended.success) {
     // A manifest-less archive is exactly the bug #430 fixes — don't keep one.
     fs.rmSync(zipPath, { force: true });
     return { success: false, error: appended.error };
   }
 
-  const validation = validateBackupArchive(zipPath);
+  const validation = await validateBackupArchiveAsync(zipPath);
   if (!validation.ok) {
     fs.rmSync(zipPath, { force: true });
     return { success: false, error: `Backup validation failed: ${validation.error}` };
@@ -816,8 +856,10 @@ const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrid
  * @param {string} zipPath
  * @returns {{present: boolean, manifest?: Object, error?: string}}
  */
-const readArchiveManifest = (zipPath) => {
-  const result = spawnSync('unzip', ['-p', zipPath, MANIFEST_FILENAME], { timeout: SPAWN_TIMEOUT_MS });
+const readArchiveManifest = (zipPath) =>
+  parseManifestRead(spawnSync('unzip', ['-p', zipPath, MANIFEST_FILENAME], { timeout: SPAWN_TIMEOUT_MS }));
+
+function parseManifestRead(result) {
   if (result.error) return { present: false, error: result.error.message };
   const raw = result.stdout ? result.stdout.toString().trim() : '';
   // `unzip -p` exits non-zero (11) when the entry is absent — a legacy archive.
@@ -827,7 +869,7 @@ const readArchiveManifest = (zipPath) => {
   } catch (err) {
     return { present: true, error: jsonReadError(err, MANIFEST_FILENAME).message };
   }
-};
+}
 
 /**
  * Validate a manifest envelope and hand back its configuration snapshot.

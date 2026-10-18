@@ -54,14 +54,14 @@ const observePublication = (fail = () => false) => {
 
 describe('durable full archive publication', () => {
   for (const point of ['archive bytes', 'backups directory', 'data directory']) {
-    it(`does not publish success when flushing ${point} fails`, () => {
-      const previous = createBackup({ paths });
+    it(`does not publish success when flushing ${point} fails`, async () => {
+      const previous = await createBackup({ paths });
       assert.equal(previous.success, true, previous.error);
       const original = fs.readFileSync(path.join(backupsDir, previous.filename));
       const matches = (file) => point === 'archive bytes' ? file.endsWith('.tmp.zip')
         : file === (point === 'backups directory' ? backupsDir : paths.dataDir);
       const events = observePublication(matches);
-      const result = createBackup({ paths });
+      const result = await createBackup({ paths });
       assert.equal(result.success, false, 'failure must prevent callers from pruning prior backups');
       assert.match(result.error, /Synthetic backup flush failure/);
       assert.ok(events.some(({ kind, file }) => kind === 'sync' && matches(file)));
@@ -70,9 +70,9 @@ describe('durable full archive publication', () => {
     });
   }
 
-  it('flushes the validated archive before rename and its ancestors before returning success', () => {
+  it('flushes the validated archive before rename and its ancestors before returning success', async () => {
     const events = observePublication();
-    const result = createBackup({ paths });
+    const result = await createBackup({ paths });
     assert.equal(result.success, true, result.error);
     const publication = events.findIndex(({ kind, to }) => kind === 'rename' && to === path.join(backupsDir, result.filename));
     assert.ok(publication > 0);
@@ -89,7 +89,7 @@ describe('durable full archive publication', () => {
 describe('durable fund-state snapshot publication before retention', () => {
   const points = [...stateFiles, 'fund-state-manifest.json', 'fund directory', 'exchange directory', 'staging directory', 'snapshot parent', 'backups directory', 'data directory'];
   for (const point of points) {
-    it(`preserves the last recovery point when flushing ${point} fails`, () => {
+    it(`preserves the last recovery point when flushing ${point} fails`, async () => {
       const previous = createFundStateBackup({ paths, now: new Date('2026-10-01'), maxBackups: 1 });
       assert.equal(previous.success, true, previous.error);
       const matches = (file) => {
@@ -115,7 +115,7 @@ describe('durable fund-state snapshot publication before retention', () => {
     });
   }
 
-  it('flushes every copied file, manifest and nested directory before exposing the snapshot', () => {
+  it('flushes every copied file, manifest and nested directory before exposing the snapshot', async () => {
     const events = observePublication();
     const result = createFundStateBackup({ paths });
     assert.equal(result.success, true, result.error);

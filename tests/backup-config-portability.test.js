@@ -132,11 +132,11 @@ afterEach(() => {
 });
 
 describe('backup config portability — manifest round-trip (#430)', () => {
-  it('restores a v2.24.1 manifest that predates additive regime defaults', () => {
+  it('restores a v2.24.1 manifest that predates additive regime defaults', async () => {
     const source = makeInstall('source', SOURCE_BASE);
     const state = { position: { cycleBuys: 3, totalAsset: 2, totalCostBasis: 1234 } };
     writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'regime-state.json'), state);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     assert.equal(created.success, true, created.error);
 
     // v2.24.1 materialized every field then known, but neither of these
@@ -165,13 +165,13 @@ describe('backup config portability — manifest round-trip (#430)', () => {
     assert.equal(fund.regime.fillDriftSweepMs, REGIME_DEFAULTS.fillDriftSweepMs);
   });
 
-  it('restores the source fund onto a destination whose base defaults differ', () => {
+  it('restores the source fund onto a destination whose base defaults differ', async () => {
     const source = makeInstall('source', SOURCE_BASE);
     // Fund state lives under the pair-scoped path; it is meaningless if the
     // destination ends up configured for a different pair.
     writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'regime-state.json'), { cycleBuys: 3 });
 
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     assert.equal(created.success, true, created.error);
 
     const dest = makeInstall('dest', DEST_BASE);
@@ -195,7 +195,7 @@ describe('backup config portability — manifest round-trip (#430)', () => {
     );
   });
 
-  it('round-trips a nested multi-pair config without losing enabled/dryRun/capital/strategy', () => {
+  it('round-trips a nested multi-pair config without losing enabled/dryRun/capital/strategy', async () => {
     const multiBase = {
       exchanges: {
         coinbase: {
@@ -208,7 +208,7 @@ describe('backup config portability — manifest round-trip (#430)', () => {
       },
     };
     const source = makeInstall('source', multiBase);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     assert.equal(created.success, true, created.error);
 
     const dest = makeInstall('dest', DEST_BASE);
@@ -231,7 +231,7 @@ describe('backup config portability — manifest round-trip (#430)', () => {
     );
   });
 
-  it('round-trips a legacy single-pair (flat) base config', () => {
+  it('round-trips a legacy single-pair (flat) base config', async () => {
     const flatBase = {
       exchanges: {
         coinbase: {
@@ -245,7 +245,7 @@ describe('backup config portability — manifest round-trip (#430)', () => {
       },
     };
     const source = makeInstall('source', flatBase);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     assert.equal(created.success, true, created.error);
 
     // Destination is ALSO flat, and names a different pair — the worst case.
@@ -261,9 +261,9 @@ describe('backup config portability — manifest round-trip (#430)', () => {
     assert.equal(fund.regime.baseSizeUsdc, 88);
   });
 
-  it('keeps data/config.json a minimal diff when the destination base already matches', () => {
+  it('keeps data/config.json a minimal diff when the destination base already matches', async () => {
     const source = makeInstall('source', SOURCE_BASE);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     const dest = makeInstall('dest', SOURCE_BASE);
     transferArchive(source, dest, created.filename);
     assert.equal(restoreBackup(created.filename, { paths: dest.paths }).success, true);
@@ -275,9 +275,9 @@ describe('backup config portability — manifest round-trip (#430)', () => {
     assert.deepEqual(fundIdentities(dest), ['coinbase/ETH-USDC']);
   });
 
-  it('drops a destination-only fund the source never had, once the removal is acknowledged', () => {
+  it('drops a destination-only fund the source never had, once the removal is acknowledged', async () => {
     const source = makeInstall('source', SOURCE_BASE);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     const dest = makeInstall('dest', {
       exchanges: {
         coinbase: { pairs: { 'BTC-USDC': { productId: 'BTC-USDC', totalAllocation: 10000 } } },
@@ -291,7 +291,7 @@ describe('backup config portability — manifest round-trip (#430)', () => {
 });
 
 describe('backup config portability — secrets (#430)', () => {
-  it('excludes secret material from the manifest and preserves destination credentials', () => {
+  it('excludes secret material from the manifest and preserves destination credentials', async () => {
     const source = makeInstall('source', {
       ...SOURCE_BASE,
       global: {
@@ -300,7 +300,7 @@ describe('backup config portability — secrets (#430)', () => {
         sentinel: { enabled: true, aiClassification: { apiKey: 'SOURCE-AI-KEY' } },
       },
     });
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     assert.equal(created.success, true, created.error);
 
     const archived = spawnSync('unzip', ['-p', path.join(source.dataDir, 'backups', created.filename), MANIFEST_FILENAME]).stdout.toString();
@@ -345,7 +345,7 @@ describe('backup config portability — rejected archives (#430)', () => {
     return out;
   };
 
-  it('refuses a legacy archive with no source base, before touching the destination', () => {
+  it('refuses a legacy archive with no source base, before touching the destination', async () => {
     const source = makeInstall('source', SOURCE_BASE);
     writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'regime-state.json'), { cycleBuys: 3 });
     const filename = makeLegacyArchive(source, 'backup-legacy-0001.zip');
@@ -361,7 +361,7 @@ describe('backup config portability — rejected archives (#430)', () => {
     assert.deepEqual(fingerprint(dest.dataDir), before, 'destination must be untouched');
   });
 
-  it('restores a legacy archive when the source base config is supplied', () => {
+  it('restores a legacy archive when the source base config is supplied', async () => {
     const source = makeInstall('source', SOURCE_BASE);
     const filename = makeLegacyArchive(source, 'backup-legacy-0002.zip');
 
@@ -377,7 +377,7 @@ describe('backup config portability — rejected archives (#430)', () => {
     assert.deepEqual(fundIdentities(dest), ['coinbase/ETH-USDC']);
   });
 
-  it('restores legacy data while preserving the destination override byte-for-byte', () => {
+  it('restores legacy data while preserving the destination override byte-for-byte', async () => {
     const source = makeInstall('source', SOURCE_BASE, { global: { schedulerInterval: 11111 } });
     writeJson(path.join(source.dataDir, 'legacy-state.json'), { restored: true });
     const filename = makeLegacyArchive(source, 'backup-legacy-0003.zip');
@@ -398,9 +398,9 @@ describe('backup config portability — rejected archives (#430)', () => {
     assert.deepEqual(fundIdentities(dest), ['coinbase/BTC-USDC']);
   });
 
-  it('rejects a future manifest version before touching the destination', () => {
+  it('rejects a future manifest version before touching the destination', async () => {
     const source = makeInstall('source', SOURCE_BASE);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     replaceManifest(source, created.filename, JSON.stringify({ manifestVersion: 99, config: { version: 99, exchanges: {} } }));
 
     const dest = makeInstall('dest', DEST_BASE);
@@ -414,9 +414,9 @@ describe('backup config portability — rejected archives (#430)', () => {
     assert.deepEqual(fingerprint(dest.dataDir), before);
   });
 
-  it('rejects a malformed manifest before touching the destination', () => {
+  it('rejects a malformed manifest before touching the destination', async () => {
     const source = makeInstall('source', SOURCE_BASE);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     replaceManifest(source, created.filename, '{ not json');
 
     const dest = makeInstall('dest', DEST_BASE);
@@ -429,9 +429,9 @@ describe('backup config portability — rejected archives (#430)', () => {
     assert.deepEqual(fingerprint(dest.dataDir), before);
   });
 
-  it('rejects a snapshot carrying an unexpected (potentially secret) field', () => {
+  it('rejects a snapshot carrying an unexpected (potentially secret) field', async () => {
     const source = makeInstall('source', SOURCE_BASE);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     replaceManifest(source, created.filename, JSON.stringify({
       manifestVersion: 1,
       config: { version: 1, exchanges: {}, global: { notifications: { telegram: { botToken: 'INJECTED' } } } },
@@ -450,9 +450,9 @@ describe('backup config portability — rejected archives (#430)', () => {
 });
 
 describe('backup config portability — inspectBackup pre-flight (#430)', () => {
-  it('reports the archived funds and compatibility for a manifest archive', () => {
+  it('reports the archived funds and compatibility for a manifest archive', async () => {
     const source = makeInstall('source', SOURCE_BASE);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     const dest = makeInstall('dest', DEST_BASE);
     transferArchive(source, dest, created.filename);
 
@@ -473,7 +473,7 @@ describe('backup config portability — inspectBackup pre-flight (#430)', () => 
     assert.deepEqual(fundIdentities(dest), ['coinbase/BTC-USDC']);
   });
 
-  it('flags a legacy archive as incompatible with an actionable message', () => {
+  it('flags a legacy archive as incompatible with an actionable message', async () => {
     const source = makeInstall('source', SOURCE_BASE);
     const filename = makeLegacyArchive(source, 'backup-legacy-0004.zip');
     const dest = makeInstall('dest', DEST_BASE);
@@ -487,7 +487,7 @@ describe('backup config portability — inspectBackup pre-flight (#430)', () => 
     assert.match(report.error, /predates configuration manifests/);
   });
 
-  it('rejects an invalid filename', () => {
+  it('rejects an invalid filename', async () => {
     assert.deepEqual(inspectBackup('../evil.zip'), { success: false, error: 'Invalid filename' });
     assert.deepEqual(inspectBackup('notabackup.zip'), { success: false, error: 'Invalid backup filename format' });
   });
@@ -509,9 +509,9 @@ describe('backup config portability — disclosing and gating removed funds (#53
     return out;
   };
 
-  it('reports both a base-defined and an override-defined destination-only fund in removedFunds', () => {
+  it('reports both a base-defined and an override-defined destination-only fund in removedFunds', async () => {
     const source = makeInstall('source', SOURCE_BASE);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
 
     // BTC-USDC comes from the destination's base config; CRO_USD exists only
     // in its override (data/config.json) — both must be disclosed, since a
@@ -534,9 +534,9 @@ describe('backup config portability — disclosing and gating removed funds (#53
     );
   });
 
-  it('refuses restoreBackup with fund-removal-unacknowledged and leaves data/config.json byte-identical', () => {
+  it('refuses restoreBackup with fund-removal-unacknowledged and leaves data/config.json byte-identical', async () => {
     const source = makeInstall('source', SOURCE_BASE);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     const dest = makeInstall('dest', DEST_BASE);
     transferArchive(source, dest, created.filename);
     const before = fingerprint(dest.dataDir);
@@ -550,9 +550,9 @@ describe('backup config portability — disclosing and gating removed funds (#53
     assert.deepEqual(fundIdentities(dest), ['coinbase/BTC-USDC']);
   });
 
-  it('succeeds and drops the fund once acceptFundRemoval is set', () => {
+  it('succeeds and drops the fund once acceptFundRemoval is set', async () => {
     const source = makeInstall('source', SOURCE_BASE);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     const dest = makeInstall('dest', DEST_BASE);
     transferArchive(source, dest, created.filename);
 
@@ -591,7 +591,7 @@ describe('backup config portability — newer-build archives (#567)', () => {
   /** The destination's override file, verbatim. */
   const overrideText = (install) => fs.readFileSync(path.join(install.dataDir, 'config.json'), 'utf8');
 
-  it('emits both markers and keeps the field revision in step with the allowlists', () => {
+  it('emits both markers and keeps the field revision in step with the allowlists', async () => {
     // The literal constant must track the lists it describes, so adding a key
     // to REGIME_DEFAULTS without bumping the revision fails CI right here.
     assert.equal(
@@ -603,9 +603,9 @@ describe('backup config portability — newer-build archives (#567)', () => {
     assert.equal(snapshot.fieldRevision, CONFIG_SNAPSHOT_FIELD_REVISION);
   });
 
-  it('restores a higher-revision archive, dropping and reporting the fields it does not know', () => {
+  it('restores a higher-revision archive, dropping and reporting the fields it does not know', async () => {
     const source = makeInstall('source', SOURCE_BASE);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     newerBuildArchive(source, created.filename);
 
     const dest = makeInstall('dest', DEST_BASE);
@@ -631,10 +631,10 @@ describe('backup config portability — newer-build archives (#567)', () => {
     assert.equal(JSON.parse(overrideText(dest)).exchanges.coinbase.pairs['ETH-USDC'].totalAllocation, 1234);
   });
 
-  it('still rejects the same unknown keys at the current or an older field revision', () => {
+  it('still rejects the same unknown keys at the current or an older field revision', async () => {
     for (const revision of [CONFIG_SNAPSHOT_FIELD_REVISION, CONFIG_SNAPSHOT_FIELD_REVISION - 1]) {
       const source = makeInstall(`source-${revision}`, SOURCE_BASE);
-      const created = createBackup({ paths: source.paths });
+      const created = await createBackup({ paths: source.paths });
       newerBuildArchive(source, created.filename, revision);
 
       const dest = makeInstall(`dest-${revision}`, DEST_BASE);
@@ -649,9 +649,9 @@ describe('backup config portability — newer-build archives (#567)', () => {
     }
   });
 
-  it('never persists a credential-bearing global key a newer-build archive carries', () => {
+  it('never persists a credential-bearing global key a newer-build archive carries', async () => {
     const source = makeInstall('source', SOURCE_BASE);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     remanifest(source, created.filename, (config) => {
       config.fieldRevision = CONFIG_SNAPSHOT_FIELD_REVISION + 1;
       // `notifications` holds the Telegram bot token and is deliberately outside
@@ -669,9 +669,9 @@ describe('backup config portability — newer-build archives (#567)', () => {
     assert.doesNotMatch(overrideText(dest), /INJECTED|notifications/);
   });
 
-  it('inspectBackup reports a higher-revision archive as compatible with a warning', () => {
+  it('inspectBackup reports a higher-revision archive as compatible with a warning', async () => {
     const source = makeInstall('source', SOURCE_BASE);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     newerBuildArchive(source, created.filename);
 
     const dest = makeInstall('dest', DEST_BASE);
@@ -690,9 +690,9 @@ describe('backup config portability — newer-build archives (#567)', () => {
     assert.deepEqual(report.funds.map(f => `${f.exchange}/${f.pair}`), ['coinbase/ETH-USDC']);
   });
 
-  it('reports no dropped fields for an ordinary same-build archive', () => {
+  it('reports no dropped fields for an ordinary same-build archive', async () => {
     const source = makeInstall('source', SOURCE_BASE);
-    const created = createBackup({ paths: source.paths });
+    const created = await createBackup({ paths: source.paths });
     const dest = makeInstall('dest', DEST_BASE);
     transferArchive(source, dest, created.filename);
 
