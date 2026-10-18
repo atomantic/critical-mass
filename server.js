@@ -54,7 +54,7 @@ const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
 const { buildRuntimeHealth } = require('./src/runtime-health');
 const { createOperatorAuth } = require('./src/operator-auth');
-const { resolveListenHosts, isGatewayOrigin, createCorsMiddleware } = require('./src/gateway-listen');
+const { resolveListenHosts, isGatewayOrigin, createCorsMiddleware, bindGatewayListeners } = require('./src/gateway-listen');
 const { registerProcessGuards } = require('./src/process-guard');
 const { resolveIpcPort } = require('./src/ipc-port-defaults');
 const { PORTS } = require('./ecosystem.config.cjs');
@@ -162,7 +162,7 @@ log('INFO', operatorAuth.hasPassword()
 
 // Exchange param validation middleware
 const KNOWN_EXCHANGES = new Set(getConfiguredExchanges());
-const exchangeRefreshTimer = setInterval(() => { for (const e of getConfiguredExchanges()) KNOWN_EXCHANGES.add(e); }, 60_000);
+let exchangeRefreshTimer = null;
 
 app.param('exchange', (req, res, next, exchange) => {
   if (!/^[a-z0-9_-]+$/.test(exchange)) {
@@ -275,7 +275,6 @@ const createExchangeIPC = (port, name) => {
     onConnect: () => log('INFO', `🔗 Gateway connected to ${name} engine IPC`),
     onDisconnect: () => log('INFO', `🔗 Gateway disconnected from ${name} engine IPC`),
   });
-  client.connect();
   return client;
 };
 
@@ -308,9 +307,6 @@ ipcEventListeners.push((name, msg) => {
   }
 });
 
-// Seed candle cache from public APIs (non-blocking)
-candleCache.seedAll();
-
 // ============ UpDown Service ============
 
 const updownService = createUpDownService(io, { exchangeIPCMap, readJSON, writeJSON, DATA_DIR, candleCache });
@@ -331,12 +327,9 @@ ipcEventListeners.push((name, msg) => {
   }
 });
 
-gatewayShutdown.track(updownService.start()).catch((err) => log('ERROR', `UpDown startup failed: ${err.message}`));
-
 // ============ Sentinel Service ============
 
 const sentinelService = createSentinelService(io, { readJSON, writeJSON, DATA_DIR, getSentinelConfig });
-sentinelService.start();
 
 // ============ Route Modules ============
 
@@ -503,21 +496,21 @@ const checkAndRunIntervalTrade = () => {
 };
 
 // ============ Start Server ============
+//
+// Own every HTTP listener BEFORE any writer, scheduler or exchange connection
+// starts — the gateway-side counterpart of the engines' bind-first rule
+// (#816). A second gateway on the same port (`node server.js` or `npm run dev`
+// beside the PM2 process) must fail here without connecting to the engines,
+// rewriting UpDown/Sentinel state, placing a scheduled DCA buy or sending
+// Telegram. Routes and services are constructed above so a request admitted
+// right after the bind finds them; nothing below has side effects until the
+// bind resolves.
 
 const extraServers = [];
-LISTEN_HOSTS.forEach((host, i) => {
-  const s = i === 0 ? server : http.createServer(app);
-  if (i > 0) {
-    io.attach(s);
-    socketEngines.push(io.engine);
-    extraServers.push(s);
-  }
-  s.listen(PORT, host, () => {
-    log('INFO', `Critical Mass listening on http://${host}:${PORT}`);
-  });
-});
 
-{
+const startGatewayServices = () => {
+  if (gatewayShutdown.isStopping()) return;
+
   const enabledExchanges = getEnabledExchanges();
 
   const { version } = require('./package.json');
@@ -533,11 +526,20 @@ LISTEN_HOSTS.forEach((host, i) => {
     log('INFO', `[${fundLabel(exchange, pair)}] Interval: ${intervalLabel}, next trade in ${timeUntilNext.formatted}`);
   }
 
-  // Regime engine auto-resume is handled by engine processes (e.g. cm-coinbase)
-  // Market data services are handled by engine processes
-
-  // Start notification system
+  // Notifier first, so every event the starts below emit is delivered.
   notifier.start();
+
+  // Regime engine auto-resume and market data services are owned by the
+  // engine processes; the gateway only attaches to them.
+  for (const ipc of Object.values(exchangeIPCMap)) ipc.connect();
+
+  // Seed candle cache from public APIs (non-blocking)
+  candleCache.seedAll();
+
+  gatewayShutdown.track(updownService.start()).catch((err) => log('ERROR', `UpDown startup failed: ${err.message}`));
+  sentinelService.start();
+
+  exchangeRefreshTimer = setInterval(() => { for (const e of getConfiguredExchanges()) KNOWN_EXCHANGES.add(e); }, 60_000);
 
   // Start backup scheduler
   rescheduleBackupTimer();
@@ -548,7 +550,26 @@ LISTEN_HOSTS.forEach((host, i) => {
 
   // Check immediately on startup
   checkAndRunIntervalTrade();
-}
+};
+
+bindGatewayListeners({
+  hosts: LISTEN_HOSTS,
+  port: PORT,
+  server,
+  createServer: () => http.createServer(app),
+  onExtra: (s) => {
+    io.attach(s);
+    socketEngines.push(io.engine);
+    extraServers.push(s);
+  },
+  log,
+}).then(startGatewayServices, (err) => {
+  // A shutdown that began mid-bind closes these servers itself; its own exit
+  // path owns the outcome.
+  if (gatewayShutdown.isStopping()) return;
+  log('ERROR', `Gateway failed to bind http://${err.host}:${err.port} (${err.code || err.message}) — is another gateway running? No writer, scheduler or engine connection was started`);
+  process.exit(1);
+});
 
 // ============ Graceful Shutdown ============
 

@@ -725,3 +725,32 @@ describe('Manual Trades unaccounted-fills scan routes (issue #966)', () => {
     assert.equal(res.statusCode, 503);
   });
 });
+
+describe('long-running engine commands carry an IPC deadline the operation fits in', () => {
+  afterEach(() => { mock.restoreAll(); configUtils._resetConfigCacheForTests(); delete require.cache[ROUTES_PATH]; });
+  const { LADDER_WAIT_MS, FILL_DRAIN_MS } = require('../src/engine-locks');
+  const { DEFAULT_TIMEOUT } = require('../src/ipc/ipc-protocol');
+
+  // A deadline the engine outlives makes the gateway report "Engine
+  // unavailable" for work that is still running; the operator retries and the
+  // engine queues the same ladder sweep again (withLadderLock).
+  for (const [route, channel, floor] of [
+    ['POST /api/:exchange/regime/rebuild-ladder', 'regime:rebuild-ladder', LADDER_WAIT_MS],
+    ['POST /api/:exchange/regime/cancel-ladder', 'regime:cancel-ladder', LADDER_WAIT_MS],
+    ['POST /api/:exchange/regime/reset-cycle', 'regime:reset-cycle', LADDER_WAIT_MS],
+    ['POST /api/:exchange/regime/start', 'regime:start', FILL_DRAIN_MS + DEFAULT_TIMEOUT],
+    ['POST /api/:exchange/regime/stop', 'regime:stop', FILL_DRAIN_MS + DEFAULT_TIMEOUT],
+  ]) {
+    it(`${route} waits at least ${floor}ms for ${channel}`, async () => {
+      const calls = [];
+      const app = setupApp((...args) => { calls.push(args); return Promise.resolve({ success: true }); });
+      const res = await invoke(app, route, reqFor({}));
+      assert.equal(res.statusCode, 200);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0][0], channel);
+      assert.equal(calls[0][3], 'CRO_USD');
+      assert.equal(typeof calls[0][4], 'number');
+      assert.ok(calls[0][4] >= floor, `${channel} deadline ${calls[0][4]} < ${floor}`);
+    });
+  }
+});

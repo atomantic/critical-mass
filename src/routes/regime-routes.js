@@ -13,6 +13,27 @@ const { createContextLogger } = require('../logger');
 const { readBooleanFlag } = require('../shared-utils');
 const { parseFillsQuery } = require('../transactions-regime-query');
 const { getSafeIPC, withConfiguredPair, asyncRoute } = require('./route-utils');
+const { LADDER_WAIT_MS, FILL_DRAIN_MS } = require('../engine-locks');
+
+/**
+ * IPC deadlines for commands whose engine-side work is a sequence of exchange
+ * calls, far beyond the 10s request default (ipc-protocol.js). A deadline the
+ * operation outlives is worse than a long wait: the gateway reports "Engine
+ * unavailable" while the engine keeps working, so the operator retries and
+ * the engine queues the same sweep a second time (withLadderLock).
+ *
+ * - Ladder sweeps (rebuild, cancel, reset-cycle) cancel every rung in turn —
+ *   each with up to three verified cancel attempts and 1s polls — then place
+ *   the new rungs. Their lock wait is bounded by LADDER_WAIT_MS; the sweep
+ *   itself finishes well inside the same budget (engine-locks.js).
+ * - Start runs startup reconciliation against the exchange for every open
+ *   order; stop drains in-flight fills for up to FILL_DRAIN_MS, flushes state
+ *   and ledger, then starts the standalone market-data consumer (candle fetch
+ *   plus gap recovery). The 50s on top of the fill drain covers that handover
+ *   on a paced exchange REST queue.
+ */
+const LADDER_SWEEP_TIMEOUT_MS = LADDER_WAIT_MS;
+const LIFECYCLE_TIMEOUT_MS = FILL_DRAIN_MS + 50_000;
 
 /**
  * Context logger for the regime routes. Every endpoint here is fund-scoped, so
@@ -163,7 +184,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/start', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:start', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request('regime:start', {}, exchange, pair, LIFECYCLE_TIMEOUT_MS).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -171,7 +192,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/stop', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:stop', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request('regime:stop', {}, exchange, pair, LIFECYCLE_TIMEOUT_MS).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -251,7 +272,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/rebuild-ladder', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:rebuild-ladder', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request('regime:rebuild-ladder', {}, exchange, pair, LADDER_SWEEP_TIMEOUT_MS).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -259,7 +280,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/cancel-ladder', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:cancel-ladder', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request('regime:cancel-ladder', {}, exchange, pair, LADDER_SWEEP_TIMEOUT_MS).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -288,7 +309,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/reset-cycle', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:reset-cycle', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request('regime:reset-cycle', {}, exchange, pair, LADDER_SWEEP_TIMEOUT_MS).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
