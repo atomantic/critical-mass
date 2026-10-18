@@ -1,6 +1,6 @@
 // @ts-check
 // Characterize public startup ordering and retention before extracting its steps (#1006).
-const { describe, it, after } = require('node:test');
+const { describe, it, after, mock } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createIsolatedDataDir } = require('./test-data-dir');
@@ -106,6 +106,44 @@ const persistedPosition = (pair) => JSON.parse(fs.readFileSync(
 )).position;
 
 describe('startup recovery step boundaries (#1006)', () => {
+  it('clamps the fill-drift sweep to its floor and warns at public startup (#1134)', async () => {
+    const warnings = [];
+    const intervals = [];
+    const realSetInterval = global.setInterval;
+    const warn = mock.method(console, 'warn', message => warnings.push(message));
+    const timer = mock.method(global, 'setInterval', (callback, delay, ...args) => {
+      intervals.push(delay);
+      return realSetInterval(callback, delay, ...args);
+    });
+    const eng = makeEngine('__startup_drift_floor__', {
+      capabilities: { fillReconciliation: true },
+    }, {}, { fillDriftSweepMs: 1 });
+    const disabled = makeEngine('__startup_drift_disabled__', {
+      capabilities: { fillReconciliation: true },
+    }, {}, { fillDriftSweepMs: 0 });
+    try {
+      assert.equal((await disabled.start()).success, true);
+      const baselineIntervals = intervals.splice(0);
+      await disabled.stop();
+      assert.equal((await eng.start()).success, true);
+      const warning = warnings.find(message => message.includes('fillDriftSweepMs 1ms'));
+      assert.ok(warning, 'startup must explain the configured sweep was clamped');
+      assert.match(warning, /below the 60000ms floor — using the floor/);
+      assert.match(warning, /"configured":1,"applied":60000/);
+      assert.deepEqual(intervals.sort((a, b) => a - b),
+        [...baselineIntervals, 60000].sort((a, b) => a - b),
+        'enabling drift adds exactly one 60-second timer to ordinary startup');
+      assert.ok(!intervals.includes(1), 'no rate-limit-exhausting timer');
+    } finally {
+      await eng.stop();
+      await disabled.stop();
+      eng._test.clearTimers();
+      disabled._test.clearTimers();
+      timer.mock.restore();
+      warn.mock.restore();
+    }
+  });
+
   it('restores and books a mixed snapshot sequentially before restoring its ladder', async () => {
     const pair = '__startup_steps_mixed__';
     const calls = [];

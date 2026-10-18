@@ -2964,6 +2964,163 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
   };
 
+  const warnUntrackedExchangeSells = (exchangeOpenOrders) => {
+    const trackedSellIds = new Set();
+    if (positionState.activeTpOrderId) trackedSellIds.add(positionState.activeTpOrderId);
+    for (const body of (positionState.celestialBodies || [])) {
+      if (body.tpOrderId) trackedSellIds.add(body.tpOrderId);
+    }
+    const orphanedSells = exchangeOpenOrders.filter(o =>
+      o.side.toUpperCase() === 'SELL' && !trackedSellIds.has(o.orderId) && o.size > 0
+    );
+
+    // Log orphaned sell orders but do NOT adopt them. Automatic reclamation
+    // is unsafe — it can sell non-engine assets (user holdings, other bots).
+    if (orphanedSells.length > 0) {
+      for (const order of orphanedSells) {
+        logger.warn(`⚠️ [${exchange}] Untracked sell order on exchange: ${order.orderId.slice(0, 8)} ${order.size.toFixed(8)} ${baseCurrency} @ ${fmtPrice(order.price)} — NOT adopting (manual review required)`);
+      }
+    }
+  };
+
+  const placeMissingBodyTakeProfits = async () => {
+    // Ensure all celestial bodies have TP orders
+    // (covers bodies with null tpOrderId from saved state, e.g. after a cancelled TP wasn't re-placed)
+    const bodiesNeedingTp = (positionState.celestialBodies || []).filter(b => !b.tpOrderId && b.assetQty > 0);
+    if (bodiesNeedingTp.length > 0) {
+      logger.info(`🔧 [${exchange}] ${bodiesNeedingTp.length} celestial bodies need TP orders`);
+      for (const body of bodiesNeedingTp) {
+        await placeBodyTp(body);
+      }
+    }
+  };
+
+  const warnUntrackedPositionAsset = () => {
+    // Log untracked position asset but do NOT create recovery bodies or place sells.
+    // Automatic sell placement for untracked assets is unsafe — it can sell non-engine holdings.
+    const allRecoveryBodies = positionState.celestialBodies || [];
+    if (allRecoveryBodies.length > 0 && positionState.totalAsset > 0) {
+      const trackedBtc = allRecoveryBodies.reduce((sum, b) => sum + b.assetQty, 0);
+      const untrackedAsset = roundAsset(positionState.totalAsset - trackedBtc);
+      if (untrackedAsset > 0.00000100) {
+        logger.warn(`⚠️ [${exchange}] ${untrackedAsset.toFixed(8)} ${baseCurrency} in position not tracked by any body — manual review required`);
+      }
+    }
+  };
+
+  const ensureStartupLegacyTakeProfit = async () => {
+    // Update TP if we have position but no order, OR if existing TP has drifted below minimum
+    if (positionState.totalAsset > 0) {
+      if (!positionState.activeTpOrderId) {
+        await placeTakeProfitOrder();
+      } else if (positionState.lastTpPrice > 0 && positionState.avgCostBasis > 0) {
+        const currentTpPct = ((positionState.lastTpPrice - positionState.avgCostBasis) / positionState.avgCostBasis) * 100;
+        if (currentTpPct < config.tpMinPercent) {
+          logger.warn(`⚠️ [${exchange}] TP has drifted below minimum: ${currentTpPct.toFixed(3)}% < ${config.tpMinPercent}% — rebuilding`);
+          await placeTakeProfitOrder({ forceUpdate: true });
+        }
+      }
+    }
+  };
+
+  const autoCloseDrainedFund = () => {
+    // Auto-close: if fund is draining but position is fully empty after recovery,
+    // transition to closed immediately instead of running an empty engine.
+    if (closeDrainedEmptyPosition(positionState)) {
+      logger.info(`🛑 [${exchange}] Draining fund has empty position — auto-closing`);
+      if (!isDryRun) saveLiveState();
+      scheduleLifecycleClosed();
+      return true;
+    }
+    return false;
+  };
+
+  const startFillDriftSweep = () => {
+    // Exchange-vs-ledger drift check. Deliberately on its own timer rather
+    // than inside reconcileTick: it is a read-only network sweep and must
+    // never hold the reconcile lock behind a slow or hung trade fetch.
+    // 0 disables. Any positive value is clamped to a floor: the sweep is a
+    // full-history exchange fetch, and a misconfigured `fillDriftSweepMs: 1`
+    // would queue one every millisecond, exhausting the rate limit the trading
+    // path depends on.
+    const configuredSweepMs = config.fillDriftSweepMs ?? 0;
+    const driftSweepMs = configuredSweepMs > 0
+      ? Math.max(configuredSweepMs, MIN_FILL_DRIFT_SWEEP_MS)
+      : 0;
+    if (configuredSweepMs > 0 && driftSweepMs !== configuredSweepMs) {
+      logger.warn(`⚠️ [${exchange}] fillDriftSweepMs ${configuredSweepMs}ms is below the ${MIN_FILL_DRIFT_SWEEP_MS}ms floor — using the floor`, {
+        configured: configuredSweepMs,
+        applied: driftSweepMs,
+      });
+    }
+    if (driftSweepMs > 0 && adapter.capabilities?.fillReconciliation) {
+      fillDriftInterval = setInterval(() => {
+        // A slow exchange can outlast the interval; never stack sweeps.
+        // A long Crypto.com history now completes over many paced steps
+        // (issue #966), so this guard also spans that whole traversal.
+        if (fillDriftInFlight) return;
+        fillDriftInFlight = true;
+        const abort = new AbortController();
+        fillDriftAbort = abort;
+        sweepLedgerDrift(abort.signal)
+          .catch(err => {
+            logger.error(`❌ [${exchange}] Ledger drift sweep failed: ${err.message}`, { error: err.message });
+          })
+          .finally(() => {
+            fillDriftInFlight = false;
+            if (fillDriftAbort === abort) fillDriftAbort = null;
+          });
+      }, driftSweepMs);
+    }
+  };
+
+  const installStateReloadSignal = () => {
+    // SIGUSR1: reload state from disk (for applying manual state fixes without restart)
+    if (!isDryRun) {
+      process.on('SIGUSR1', reloadStateFromDisk);
+      // Store for cleanup
+      positionState._sigusr1Handler = reloadStateFromDisk;
+    }
+  };
+
+  const restoreStartupEntryOrders = async (exchangeOpenOrders) => {
+    // Restore pending entry orders from saved state (instead of canceling them)
+    const savedPendingEntries = positionState.pendingEntryOrders || [];
+    const savedOrderIds = new Set(savedPendingEntries.map(e => e.orderId));
+
+    // Reuse the exchange snapshot from orphan sell detection
+    const openEntries = exchangeOpenOrders.filter(o => o.side.toUpperCase() === 'BUY');
+
+    // Pre-build ladder order ID set so we don't flag them as orphans
+    const savedLadderIds = new Set((positionState.pendingLadderOrders || []).map(o => o.orderId));
+
+    const correctiveBuyIds = collectStartupBuyExclusions();
+    await restoreStartupOpenEntries(savedPendingEntries, savedOrderIds, savedLadderIds, openEntries, correctiveBuyIds);
+    const allOpenIds = await catchUpStartupSavedEntries(savedPendingEntries, exchangeOpenOrders);
+    await restoreStartupLadderOrders(savedLadderIds, openEntries, allOpenIds);
+  };
+
+  const restoreStartupDryRunState = () => {
+    // Try to load saved dry-run state
+    const loaded = loadDryRunState();
+    if (!loaded) {
+      logger.info(`🧪 [${exchange}] [DRY-RUN] No saved state, starting fresh`);
+      positionState = createInitialPositionState();
+    }
+  };
+
+  const restoreStartupUnbookedEntryTranches = async () => {
+    // Book entry tranches the ledger holds but no owning body records
+    // (issue #756) first, so the seal counts them as open.
+    const recoveredEntryTranches = await recoverUnbookedOwnedEntryTranches().catch(err => {
+      logger.warn(`⚠️ [${exchange}] Unbooked entry tranche recovery failed: ${err.message}`, { error: err.message });
+      return 0;
+    });
+    if (recoveredEntryTranches > 0) {
+      logger.info(`🔧 [${exchange}] Booked unrecorded tranches of ${recoveredEntryTranches} entry order(s) into their own bodies`);
+    }
+  };
+
   /**
    * Start the regime engine
    * @returns {Promise<{success: boolean, error?: string}>}
@@ -3024,15 +3181,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       reconcileStartupPosition(position, hasSavedState);
 
-      // Book entry tranches the ledger holds but no owning body records
-      // (issue #756) first, so the seal counts them as open.
-      const recoveredEntryTranches = await recoverUnbookedOwnedEntryTranches().catch(err => {
-        logger.warn(`⚠️ [${exchange}] Unbooked entry tranche recovery failed: ${err.message}`, { error: err.message });
-        return 0;
-      });
-      if (recoveredEntryTranches > 0) {
-        logger.info(`🔧 [${exchange}] Booked unrecorded tranches of ${recoveredEntryTranches} entry order(s) into their own bodies`);
-      }
+      await restoreStartupUnbookedEntryTranches();
 
       // Seal legacy closure into per-buy consumption records while the
       // sellOrderId links still say which orders were closed (issue #607).
@@ -3076,22 +3225,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       // Detect orphaned sell orders on exchange that we lost track of
       const exchangeOpenOrders = await adapter.getOpenOrders(productId);
-      const trackedSellIds = new Set();
-      if (positionState.activeTpOrderId) trackedSellIds.add(positionState.activeTpOrderId);
-      for (const body of (positionState.celestialBodies || [])) {
-        if (body.tpOrderId) trackedSellIds.add(body.tpOrderId);
-      }
-      const orphanedSells = exchangeOpenOrders.filter(o =>
-        o.side.toUpperCase() === 'SELL' && !trackedSellIds.has(o.orderId) && o.size > 0
-      );
-
-      // Log orphaned sell orders but do NOT adopt them. Automatic reclamation
-      // is unsafe — it can sell non-engine assets (user holdings, other bots).
-      if (orphanedSells.length > 0) {
-        for (const order of orphanedSells) {
-          logger.warn(`⚠️ [${exchange}] Untracked sell order on exchange: ${order.orderId.slice(0, 8)} ${order.size.toFixed(8)} ${baseCurrency} @ ${fmtPrice(order.price)} — NOT adopting (manual review required)`);
-        }
-      }
+      warnUntrackedExchangeSells(exchangeOpenOrders);
 
       // Repair historical fill annotations (orphan recovery, size fuzzy-match, -recovered- cycle rewrites)
       repairHistoricalFillAnnotations({
@@ -3114,64 +3248,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       restoreStartupCycleAccounting(sealedLegacy);
 
-      // Restore pending entry orders from saved state (instead of canceling them)
-      const savedPendingEntries = positionState.pendingEntryOrders || [];
-      const savedOrderIds = new Set(savedPendingEntries.map(e => e.orderId));
+      await restoreStartupEntryOrders(exchangeOpenOrders);
 
-      // Reuse exchangeOpenOrders from orphan satellite detection above
-      const openEntries = exchangeOpenOrders.filter(o => o.side.toUpperCase() === 'BUY');
+      await placeMissingBodyTakeProfits();
 
-      // Pre-build ladder order ID set so we don't flag them as orphans
-      const savedLadderIds = new Set((positionState.pendingLadderOrders || []).map(o => o.orderId));
+      warnUntrackedPositionAsset();
 
-      const correctiveBuyIds = collectStartupBuyExclusions();
-      await restoreStartupOpenEntries(savedPendingEntries, savedOrderIds, savedLadderIds, openEntries, correctiveBuyIds);
-      const allOpenIds = await catchUpStartupSavedEntries(savedPendingEntries, exchangeOpenOrders);
-      await restoreStartupLadderOrders(savedLadderIds, openEntries, allOpenIds);
-
-      // Ensure all celestial bodies have TP orders
-      // (covers bodies with null tpOrderId from saved state, e.g. after a cancelled TP wasn't re-placed)
-      const bodiesNeedingTp = (positionState.celestialBodies || []).filter(b => !b.tpOrderId && b.assetQty > 0);
-      if (bodiesNeedingTp.length > 0) {
-        logger.info(`🔧 [${exchange}] ${bodiesNeedingTp.length} celestial bodies need TP orders`);
-        for (const body of bodiesNeedingTp) {
-          await placeBodyTp(body);
-        }
-      }
-
-      // Log untracked position asset but do NOT create recovery bodies or place sells.
-      // Automatic sell placement for untracked assets is unsafe — it can sell non-engine holdings.
-      const allRecoveryBodies = positionState.celestialBodies || [];
-      if (allRecoveryBodies.length > 0 && positionState.totalAsset > 0) {
-        const trackedBtc = allRecoveryBodies.reduce((sum, b) => sum + b.assetQty, 0);
-        const untrackedAsset = roundAsset(positionState.totalAsset - trackedBtc);
-        if (untrackedAsset > 0.00000100) {
-          logger.warn(`⚠️ [${exchange}] ${untrackedAsset.toFixed(8)} ${baseCurrency} in position not tracked by any body — manual review required`);
-        }
-      }
-
-      // Update TP if we have position but no order, OR if existing TP has drifted below minimum
-      if (positionState.totalAsset > 0) {
-        if (!positionState.activeTpOrderId) {
-          await placeTakeProfitOrder();
-        } else if (positionState.lastTpPrice > 0 && positionState.avgCostBasis > 0) {
-          const currentTpPct = ((positionState.lastTpPrice - positionState.avgCostBasis) / positionState.avgCostBasis) * 100;
-          if (currentTpPct < config.tpMinPercent) {
-            logger.warn(`⚠️ [${exchange}] TP has drifted below minimum: ${currentTpPct.toFixed(3)}% < ${config.tpMinPercent}% — rebuilding`);
-            await placeTakeProfitOrder({ forceUpdate: true });
-          }
-        }
-      }
+      await ensureStartupLegacyTakeProfit();
 
       // Save initial state after recovery
       saveLiveState();
     } else {
-      // Try to load saved dry-run state
-      const loaded = loadDryRunState();
-      if (!loaded) {
-        logger.info(`🧪 [${exchange}] [DRY-RUN] No saved state, starting fresh`);
-        positionState = createInitialPositionState();
-      }
+      restoreStartupDryRunState();
     }
 
     // Initialize APY tracking if not already set (preserves existing tracking from saved state)
@@ -3182,12 +3270,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       macroRegime.restoreState(positionState.macroRegime);
     }
 
-    // Auto-close: if fund is draining but position is fully empty after recovery,
-    // transition to closed immediately instead of running an empty engine.
-    if (closeDrainedEmptyPosition(positionState)) {
-      logger.info(`🛑 [${exchange}] Draining fund has empty position — auto-closing`);
-      if (!isDryRun) saveLiveState();
-      scheduleLifecycleClosed();
+    if (autoCloseDrainedFund()) {
       return { success: true, autoClosed: true };
     }
 
@@ -3211,42 +3294,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Guarded: a bare `setInterval(saveLiveState, ...)` turns a full disk into
       // an uncaughtException that kills the process from a timer tick (#532).
       stateSaveInterval = setInterval(() => saveLiveStateGuarded('state-save-timer'), 300000);
-      // Exchange-vs-ledger drift check. Deliberately on its own timer rather
-      // than inside reconcileTick: it is a read-only network sweep and must
-      // never hold the reconcile lock behind a slow or hung trade fetch.
-      // 0 disables. Any positive value is clamped to a floor: the sweep is a
-      // full-history exchange fetch, and a misconfigured `fillDriftSweepMs: 1`
-      // would queue one every millisecond, exhausting the rate limit the trading
-      // path depends on.
-      const configuredSweepMs = config.fillDriftSweepMs ?? 0;
-      const driftSweepMs = configuredSweepMs > 0
-        ? Math.max(configuredSweepMs, MIN_FILL_DRIFT_SWEEP_MS)
-        : 0;
-      if (configuredSweepMs > 0 && driftSweepMs !== configuredSweepMs) {
-        logger.warn(`⚠️ [${exchange}] fillDriftSweepMs ${configuredSweepMs}ms is below the ${MIN_FILL_DRIFT_SWEEP_MS}ms floor — using the floor`, {
-          configured: configuredSweepMs,
-          applied: driftSweepMs,
-        });
-      }
-      if (driftSweepMs > 0 && adapter.capabilities?.fillReconciliation) {
-        fillDriftInterval = setInterval(() => {
-          // A slow exchange can outlast the interval; never stack sweeps.
-          // A long Crypto.com history now completes over many paced steps
-          // (issue #966), so this guard also spans that whole traversal.
-          if (fillDriftInFlight) return;
-          fillDriftInFlight = true;
-          const abort = new AbortController();
-          fillDriftAbort = abort;
-          sweepLedgerDrift(abort.signal)
-            .catch(err => {
-              logger.error(`❌ [${exchange}] Ledger drift sweep failed: ${err.message}`, { error: err.message });
-            })
-            .finally(() => {
-              fillDriftInFlight = false;
-              if (fillDriftAbort === abort) fillDriftAbort = null;
-            });
-        }, driftSweepMs);
-      }
+      startFillDriftSweep();
     } else {
       // Start periodic state saving for dry-run (every 60 seconds)
       stateSaveInterval = setInterval(saveDryRunState, 60000);
@@ -3271,12 +3319,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     logger.info(`✅ [${exchange}] ${modeLabel}Regime engine started`);
 
-    // SIGUSR1: reload state from disk (for applying manual state fixes without restart)
-    if (!isDryRun) {
-      process.on('SIGUSR1', reloadStateFromDisk);
-      // Store for cleanup
-      positionState._sigusr1Handler = reloadStateFromDisk;
-    }
+    installStateReloadSignal();
 
     return { success: true };
   };
