@@ -25,6 +25,22 @@ describe('PM2 kill_timeout ordering', () => {
     assert.ok(longRunning.length >= 4);
   });
 
+  it('docker stop_grace_period covers the ordered gateway-then-engine stop', () => {
+    const gateway = apps.find((a) => a.name === 'critical-mass');
+    const engineKill = Math.max(...longRunning.filter((a) => a !== gateway).map((a) => a.kill_timeout));
+    assert.ok(graceMs > gateway.kill_timeout + engineKill);
+  });
+
+  it('entrypoint runs pm2-runtime as a child and stops the stack in order on SIGTERM', () => {
+    const entrypoint = read('docker-entrypoint.sh');
+    assert.doesNotMatch(entrypoint, /^exec pm2-runtime/m);
+    assert.match(entrypoint, /trap stop_stack TERM INT/);
+    assert.match(entrypoint, /node \/app\/scripts\/pm2-stack\.js stop/);
+    assert.ok(entrypoint.indexOf('pm2-stack.js stop') < entrypoint.indexOf('kill -TERM "$PM2_PID"'));
+    assert.match(read('Dockerfile'), /COPY scripts\/pm2-stack\.js/);
+    assert.match(read('.dockerignore'), /^!scripts\/pm2-stack\.js$/m);
+  });
+
   for (const app of longRunning) {
     it(`${app.name}: kill_timeout > in-process deadline and < docker stop_grace_period`, () => {
       assert.ok(Number.isFinite(app.kill_timeout), 'kill_timeout must be set');

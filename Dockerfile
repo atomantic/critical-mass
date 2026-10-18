@@ -34,6 +34,8 @@ COPY config.example.json ./
 COPY src/ ./src/
 COPY shared/ ./shared/
 COPY engines/ ./engines/
+# Ordered gateway-then-engines stop, run by docker-entrypoint.sh on SIGTERM
+COPY scripts/pm2-stack.js ./scripts/pm2-stack.js
 
 # Copy built admin UI from builder stage
 COPY --from=builder /app/admin/dist ./admin/dist
