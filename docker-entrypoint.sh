@@ -57,5 +57,33 @@ fi
 
 # Start all processes with PM2 in Docker-foreground mode.
 # Excludes the UI dev server — the admin panel is pre-built into admin/dist.
-exec pm2-runtime start ecosystem.config.cjs --env production \
-  --only "critical-mass,critical-mass-coinbase,critical-mass-gemini,critical-mass-cryptocom"
+#
+# pm2-runtime runs as a child (not exec) so this shell can order the stop.
+# Its own SIGTERM handler deletes every app concurrently, which signals the
+# gateway and the engines in the same tick and cuts the gateway's command drain
+# off from the engines. On SIGTERM/SIGINT, scripts/pm2-stack.js stops the
+# gateway, verifies it is stopped, then stops the engines; only then is
+# pm2-runtime told to exit. The container stop grace must cover both
+# kill_timeouts (see docker-compose.yml).
+pm2-runtime start ecosystem.config.cjs --env production \
+  --only "critical-mass,critical-mass-coinbase,critical-mass-gemini,critical-mass-cryptocom" &
+PM2_PID=$!
+STOPPING=false
+
+stop_stack() {
+  # A repeated signal must not start a second ordered stop.
+  [ "$STOPPING" = true ] && return
+  STOPPING=true
+  printf 'docker-entrypoint: received stop signal; stopping gateway before engines\n'
+  node /app/scripts/pm2-stack.js stop || printf 'docker-entrypoint: ordered stop failed; falling back to pm2-runtime shutdown\n' >&2
+  kill -TERM "$PM2_PID" 2>/dev/null || true
+}
+trap stop_stack TERM INT
+
+# `wait` returns early (status > 128) when a trapped signal arrives; keep
+# waiting until pm2-runtime itself has exited.
+PM2_STATUS=0
+while kill -0 "$PM2_PID" 2>/dev/null; do
+  wait "$PM2_PID" && PM2_STATUS=0 || PM2_STATUS=$?
+done
+exit "$PM2_STATUS"

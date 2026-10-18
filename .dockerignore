@@ -17,7 +17,8 @@ tmp-*
 .ghostty-theme
 umbrel/
 tests/
-scripts/
+scripts/*
+!scripts/pm2-stack.js
 
 # Local environment settings may contain credentials.
 **/.env

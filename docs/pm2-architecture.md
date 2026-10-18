@@ -83,8 +83,9 @@ Start/restart recreates the stack to refresh environment settings, submits engin
 starts before the gateway/UI, and saves only when all five report online. This
 PM2 status check is not a fund-readiness or migration check; upgrades still use
 the explicit procedure in [UPGRADE.md](../UPGRADE.md). Stop failures abort the
-sequence, and unrelated PM2 processes are left untouched. Docker continues to
-use `pm2-runtime` directly and is outside this native command sequence.
+sequence, and unrelated PM2 processes are left untouched. In Docker,
+`pm2-runtime` runs as a child of `docker-entrypoint.sh`; see
+[Docker ordered stop](#docker-ordered-stop).
 
 ## Development topology
 
@@ -119,8 +120,9 @@ Repeated signals share the same drain and deadline. Normal completion exits 0.
 
 The gateway's PM2 `kill_timeout` is **35000 ms** in `ecosystem.config.cjs`. Keep any
 supervisor/container stop grace longer than that. The supplied Docker Compose
-configuration uses `stop_grace_period: 40s`; standalone Docker runs need
-`docker stop --time 40`. For an ordered whole-stack
+configuration uses `stop_grace_period: 70s` (see
+[Docker ordered stop](#docker-ordered-stop)); standalone Docker runs need
+`docker stop --time 70`. For an ordered whole-stack
 restart, drain the gateway before stopping exchange engine processes so admitted
 IPC operations can finish; stopping all engines simultaneously cannot provide
 that dependency guarantee. The exchange engines (`critical-mass-coinbase`, `-gemini`, `-cryptocom`) set
@@ -129,8 +131,22 @@ force-exit watchdog (`SHUTDOWN_WATCHDOG_MS` in `engines/coinbase-engine.js`), wh
 turn outlasts the 10 s bounded wait for in-flight fill handlers that
 `regime-engine` `stop()` performs before saving state (`FILL_DRAIN_MS` in `src/engine-locks.js`).
 PM2's 1600 ms default would SIGKILL an engine mid state-save. Required ordering:
-in-process deadline < PM2 `kill_timeout` < Docker `stop_grace_period` (40 s, the
-largest PM2 value plus margin). `tests/pm2-kill-timeout.test.js` enforces it.
+in-process deadline < PM2 `kill_timeout`, and Docker `stop_grace_period` (70 s)
+> gateway `kill_timeout` + engine `kill_timeout` (35 s + 25 s, the ordered
+worst case, plus margin). `tests/pm2-kill-timeout.test.js` enforces it.
+
+### Docker ordered stop
+
+`pm2-runtime`'s own SIGTERM handler deletes every app concurrently, which would
+signal the gateway and all engines in the same tick and refuse an admitted
+command with `engine-shutting-down`. `docker-entrypoint.sh` therefore runs
+`pm2-runtime` as a child (not `exec`) and traps SIGTERM/SIGINT. On the signal it
+runs `node scripts/pm2-stack.js stop` (gateway stop, verified stopped, then the
+engines, using the in-container `pm2` CLI) and only then signals `pm2-runtime`
+and waits for it. If the ordered stop fails, `pm2-runtime` is still signaled so
+the container does not hang. The image copies `scripts/pm2-stack.js` for this
+purpose. The worst case is 35 s + 25 s = 60 s, hence the 70 s grace; Umbrel
+deployments should likewise use at least `70s`.
 
 The gateway deadline bounds its own lifetime even
 when an exchange or transport hangs.
