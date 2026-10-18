@@ -13,6 +13,8 @@ merge candidate and once-only accounting closure before merge cancellation.
 `commitBuyIntoBody` owns body creation/merging and the shared TP/notification
 sequence. No await separates body ownership, annotation and accounting commit.
 The live cycle is read at accounting commit, after any merge-cancel await.
+The shared step invokes synchronous finalization after log/emit, so pending-entry
+updates, persistence and acknowledgement complete before its promise resolves.
 
 The existing synchronous prefixes deliberately differ:
 

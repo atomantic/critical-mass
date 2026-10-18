@@ -5636,7 +5636,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // before the first TP await, and merge size repair precedes notification.
   const commitBuyIntoBody = async ({
     newBuy, orderId, mergeTarget, summary, fillTypeLabel, isLadderFill,
-    linkBookedBuyRows, commitBuyAccounting,
+    linkBookedBuyRows, commitBuyAccounting, finishBooking,
   }) => {
     const isMerge = Boolean(mergeTarget);
     let body;
@@ -5697,6 +5697,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       ...(isMerge ? { isMerge: true } : {}),
       isLadderFill,
     });
+    // Finish tracking and persistence in this continuation, before resolving
+    // the helper promise can yield to another order's booking/reset cycle.
+    finishBooking();
   };
 
   // Prepare the booking inputs before any merge cancellation awaits.
@@ -5838,23 +5841,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       mergeTarget = cancellation.mergeTarget;
     }
 
-    await commitBuyIntoBody({ newBuy, orderId: fillData.orderId, mergeTarget,
-      summary, fillTypeLabel, isLadderFill, linkBookedBuyRows, commitBuyAccounting });
+    return commitBuyIntoBody({ newBuy, orderId: fillData.orderId, mergeTarget,
+      summary, fillTypeLabel, isLadderFill, linkBookedBuyRows, commitBuyAccounting,
+      finishBooking: () => {
+        // Both body paths commit before TP placement; repeating the once-only
+        // accounting commit here preserves the post-branch safety net.
+        commitBuyAccounting();
 
-    // Both body paths commit before TP placement; repeating the once-only
-    // accounting commit here preserves the post-branch safety net.
-    commitBuyAccounting();
+        updatePendingBuyTracking(fillData, summary, keepEntryTracked, isLadderFill);
 
-    updatePendingBuyTracking(fillData, summary, keepEntryTracked, isLadderFill);
+        // Ladder orders stay in place on individual fills (no reprice).
+        // Rebuild happens only after cycle reset.
 
-    // Ladder orders stay in place on individual fills (no reprice).
-    // Rebuild happens only after cycle reset.
+        // Persist state immediately after buy fill to prevent loss on crash
+        saveLiveState();
+        fillLedger.persist();
 
-    // Persist state immediately after buy fill to prevent loss on crash
-    saveLiveState();
-    fillLedger.persist();
-
-    if (!keepEntryTracked) orderExecutor.handleOrderFill(fillData.orderId);
+        if (!keepEntryTracked) orderExecutor.handleOrderFill(fillData.orderId);
+      },
+    });
   };
 
   /**
