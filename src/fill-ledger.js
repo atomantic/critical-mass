@@ -880,7 +880,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // to inspect it), so writing back from inside load() would make ANY
     // caller — not just the owning engine — a second, uncoordinated writer
     // of a live fund's ledger file, racing a running engine's own persists
-    // (codex/claude review, issue #779). The repair rides along on the
+    // (issue #779). The repair rides along on the
     // owning engine's own next dirtying persist() instead, the same way
     // the netFee backfill's in-memory-only fix eventually reaches disk.
     let negativeHoldbackRepairCount = 0;

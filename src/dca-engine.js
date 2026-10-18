@@ -255,7 +255,7 @@ const executeConsolidation = async (exchange = 'coinbase', pair, orderIds = null
       // restore was attempted and rejected — safe to manually re-place) versus
       // an UNRESOLVED outcome (never restored, or the restore's own outcome was
       // ambiguous — the order may already be resting live, so a manual
-      // re-placement risks a double-sell; #676 review rounds 1 and 2). Applied
+      // re-placement risks a double-sell; #676). Applied
       // as two calls so each set gets its own reason.
       stateTracker.applyConsolidationRecovery(state, result.restoredOrders, result.failedRestoreOrderIds);
       if (result.unresolvedRestoreOrderIds?.length) {

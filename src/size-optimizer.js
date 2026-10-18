@@ -121,7 +121,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
   };
 
   /**
-   * Invalidate the cached balance reading (issue #694 review round 2).
+   * Invalidate the cached balance reading (issue #694).
    *
    * A caller can lose the ability to attribute the shared exchange wallet to
    * this fund alone (e.g. a sibling fund on the same exchange/quote currency

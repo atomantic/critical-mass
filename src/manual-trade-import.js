@@ -61,7 +61,7 @@ const toLedgerFill = (raw, orderId, defaultSide) => ({
   commission: raw.commission || 0,
   rebate: raw.rebate || 0,
   // Pass raw.netFee through AS-IS (no `|| raw.commission` fallback) —
-  // codex delta review, round 4: falling back to the GROSS commission
+  // Falling back to the GROSS commission
   // here short-circuited fillLedger.ingestFill's own rebate-aware
   // default (`commission - rebate`), which only applies when `netFee`
   // is `undefined`/`null` on the input. That silently made every
@@ -824,7 +824,7 @@ const createManualTradeImporter = ({
    * reprice" pass (regime-engine.js, cancelBodyTpForReplace / issue #670)
    * picks that flag up on next start and cancels+re-places through the
    * adapter it has there, exactly as it already does for an overpriced TP%
-   * (codex delta review — leaving a stale TP in place would otherwise
+   * (Leaving a stale TP in place would otherwise
    * silently understate its assetOnOrder relative to the grown assetQty
    * beyond the system's planned holdback fraction, per CLAUDE.md). A body
    * with no tpOrderId yet needs no flag — the engine's normal
@@ -833,7 +833,7 @@ const createManualTradeImporter = ({
    *
    * Idempotent the same way regime-engine's extendBody is, INCLUDING across
    * compounding retries where more of the order fills again before the
-   * ledger link ever lands (codex review, round 3 — a naive delta-based
+   * ledger link ever lands (a naive delta-based
    * idempotency check still double-counted an already-applied portion in
    * that case). `totals` is therefore the buy order's FULL current totals —
    * every fill known for it, linked or not — not a delta. The exact
@@ -989,8 +989,8 @@ const createManualTradeImporter = ({
       //
       // Gate on the DURABLE bookkeeping — trade.buySize (refreshed below,
       // on every successful reconciliation) vs the ledger's current full
-      // fill total — NOT on a ledger row's bodyId (codex delta review,
-      // round 4). A row's bodyId is not a reliable "already reconciled"
+      // fill total — NOT on a ledger row's bodyId. A row's bodyId is not a
+      // reliable "already reconciled"
       // signal on its own: placeBodyTp's TP-placement annotation, the
       // startup re-annotator, and Collapse-All's re-stamp (regime-engine.js)
       // all blanket-stamp bodyId onto EVERY row for an orderId once a body
@@ -1029,28 +1029,27 @@ const createManualTradeImporter = ({
       // extendBody/extendPersistedBody take the buy order's FULL current
       // totals (every row) rather than a delta — a delta-only idempotency
       // check still double-counts an already-applied portion when MORE
-      // fills arrive before a crashed extend's retry (codex review, round
-      // 3: extend #1 applies d1 but crashes before the ledger link; if d2
-      // arrives before the retry, a delta of d1+d2 would re-add the
-      // already-applied d1). Both functions compute the exact shortfall
+      // fills arrive before a crashed extend's retry: extend #1 applies d1 but
+      // crashes before the ledger link; if d2 arrives before retry, a delta
+      // of d1+d2 would re-add the
+      // already-applied d1. Both functions compute the exact shortfall
       // themselves — `totals` minus what the body's own `buyOrders`
       // bookkeeping already recorded for this orderId — so however many
       // times this runs for the same buyOrderId, the body converges to
       // exactly `totals`, never more.
       //
-      // Ledger rows carry `quoteAmount` (price × size) and `netFee` (fee
-      // net of rebate) — the SAME convention the body-creation path below
-      // now also sources its initial costBasis from (codex delta review:
-      // the two used to disagree — creation summed gross adapter commission
-      // while this summed net-of-rebate ledger fee — so a shortfall
-      // computed as `totals.costBasis - recorded.cost` could absorb that
-      // mismatch and go negative on a tiny extra fill).
+      // Ledger rows carry `quoteAmount` (price × size) and `netFee` (fee net of
+      // rebate); the body-creation path below uses these same fields for its
+      // initial costBasis. The two used to disagree: creation
+      // summed gross adapter commission while this summed net-of-rebate ledger
+      // fee, so a shortfall computed as `totals.costBasis - recorded.cost`
+      // could absorb that mismatch and go negative on a tiny extra fill.
       const fullQuote = orderRows.reduce((sum, r) => sum + r.quoteAmount, 0);
       const fullCostBasis = orderRows.reduce((sum, r) => sum + r.quoteAmount + r.netFee, 0);
       const totals = { assetQty: fullQty, costBasis: fullCostBasis, avgPrice: averagePrice(fullQuote, fullQty) };
       const growthQty = fullQty - priorRecordedQty; // for logging only
 
-      // Attempt the extend BEFORE linking anything (codex review): linking
+      // Attempt the extend BEFORE linking anything: linking
       // the ledger rows to currentBodyId unconditionally, win or lose, would
       // make a FAILED extend permanently unrecoverable.
       const extended = extendBody
@@ -1084,7 +1083,7 @@ const createManualTradeImporter = ({
       // set (totalSize/totalQuote/avgBuyPrice/tradeIds, computed above from
       // every fill fetched this call) instead of leaving them stuck at
       // whatever partial amount was known when the trade was first created
-      // (issue #726 codex review). Refreshing buySize is also what makes
+      // (issue #726). Refreshing buySize is also what makes
       // the durable gate above work on the NEXT retry.
       fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: currentBodyId, isBodyOwned: true, isSatellite: true, bodyTier: extended.tier });
       fillLedger.persist();
@@ -1117,7 +1116,7 @@ const createManualTradeImporter = ({
     // mismatched convention here (gross vs net-of-rebate) would make a later
     // extend's `shortfall.costBasis = totals.costBasis - recorded.cost`
     // absorb the gross/net difference on these very first fills, and could
-    // go negative on a small extra fill (codex delta review).
+    // go negative on a small extra fill.
     const createdRows = fillLedger.getFillsForOrder(buyOrderId);
     const costBasis = createdRows.reduce((sum, r) => sum + r.quoteAmount + r.netFee, 0);
     const body = createNewBody({

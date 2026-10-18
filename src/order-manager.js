@@ -895,8 +895,8 @@ const restoreCancelledSellOrders = async (productId, cancelledOrders, adapter, l
   // definitive failure — the order may already be resting live on the
   // exchange, so collapsing it into failedRestoreOrderIds would flag it with
   // the same "could not be re-placed" reason as a genuine rejection and could
-  // invite an operator to manually re-place it, risking a double-sell (#676
-  // review round 2). Once one restore in this loop lands here, the fund's
+  // invite an operator to manually re-place it, risking a double-sell
+  // (#676). Once one restore in this loop lands here, the fund's
   // durable placement intent blocks every later restore attempt too — those
   // land here as well, never having reached the exchange.
   const unresolvedRestoreOrderIds = [];
@@ -1103,7 +1103,7 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter, scope = 
     // originals now risks resting a duplicate sell on top of it, so do NOT
     // restore. Mark every confirmed-cancelled order as unresolved (NOT a
     // definitive failure — same channel `restoreCancelledSellOrders` uses for
-    // an unresolvable restore, #676 review round 2) so `applyConsolidationRecovery`
+    // an unresolvable restore, #676) so `applyConsolidationRecovery`
     // stops tracking them as pending and flags them for operator reconciliation
     // with a reason that does not imply a normal restore was attempted and
     // failed; the durable placement intent already recorded above blocks
