@@ -13,7 +13,7 @@ const modulePath = pathToFileURL(
 ).href
 
 const dashboardSource = fs.readFileSync(
-  path.join(__dirname, '..', 'admin', 'src', 'components', 'RegimeDashboard.jsx'),
+  path.join(__dirname, '..', 'admin', 'src', 'components', 'regime', 'LiveStatusBar.jsx'),
   'utf8',
 )
 
@@ -65,7 +65,7 @@ describe('LiveTimer elapsed empty-state (issue #586)', () => {
 
 describe('RegimeDashboard LiveTimer wiring (issue #586)', () => {
   it('uses resolveElapsedDisplay for the elapsed variant and keeps the tile mounted', () => {
-    assert.match(dashboardSource, /import \{ resolveElapsedDisplay \} from '\.\.\/utils\/liveTimerElapsed\.mjs'/)
+    assert.match(dashboardSource, /import \{ resolveElapsedDisplay \} from '\.\.\/\.\.\/utils\/liveTimerElapsed\.mjs'/)
     assert.match(dashboardSource, /if \(variant === 'elapsed'\)/)
     assert.doesNotMatch(dashboardSource, /elapsed !== undefined/)
     assert.match(dashboardSource, /resolveElapsedDisplay\(elapsed, now, formatDuration\)/)

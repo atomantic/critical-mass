@@ -183,7 +183,9 @@ describe('dashboard request ownership wiring', () => {
   const readSource = (relative) => fs.readFileSync(path.join(__dirname, '..', relative), 'utf8')
 
   it('routes RegimeDashboard fills reads through a per-mount owner', () => {
-    const source = readSource('admin/src/components/RegimeDashboard.jsx')
+    const dashboard = readSource('admin/src/components/RegimeDashboard.jsx')
+    assert.match(dashboard, /useRegimeDashboardData\(exchange, pair, pairQuery\)/)
+    const source = readSource('admin/src/components/regime/useRegimeDashboardData.js')
     assert.match(source, /createRequestOwner/, 'RegimeDashboard imports the request owner')
     assert.match(source, /fillsOwner\.read\(`\/api\/\$\{exchange\}\/regime\/fills\$\{pairQuery\}`\)/)
     assert.doesNotMatch(source, /await fetch\(`\/api\/\$\{exchange\}\/regime\/fills/, 'fills are no longer fetched unfenced')
