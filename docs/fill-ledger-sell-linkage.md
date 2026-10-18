@@ -81,13 +81,10 @@ When a body's TP order is cancelled and re-placed (e.g., on merge or reprice), t
 
 ### Historical repair script
 
-`scripts/repair-sell-linkage.js` records the one-time repair for this incident.
-It is **not a general repair command**: it reads the legacy
-`data/coinbase/fill-ledger.json`, selects a hardcoded historical cycle and TP
-order IDs, and writes immediately when it finds changes. There is no dry-run
-flag or exchange/pair option. Merely changing the file path to a modern fund's
-`data/<exchange>/<pair>/fill-ledger.json` does not make its matching assumptions
-valid for that fund.
+The one-time repair script for this incident (`repair-sell-linkage.js`) was removed once its work was done; it remains in git history at commit `93fb60c`.
+It was **not a general repair command**: it hardcoded a historical cycle and TP
+order IDs against the legacy exchange-level ledger path, which is why it was
+retired rather than ported to the per-pair layout.
 
 The incident repair matched single-buy sells by recorded average price, checked
 the total quantity before remapping the known multi-buy body, and cleared the
