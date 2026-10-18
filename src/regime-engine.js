@@ -9117,14 +9117,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   const annotateMergedSourceBuys = (source, merged) => {
-  for (const srcId of (source.sourceOrderIds || [])) {
-    fillLedger.annotateFillsByOrderId(srcId, { bodyId: merged.id, bodyTier: merged.tier });
-  }
-  for (const buyOrder of (source.buyOrders || [])) {
-    if (buyOrder.orderId && buyOrder.orderId !== 'core-migration') {
-      fillLedger.annotateFillsByOrderId(buyOrder.orderId, { bodyId: merged.id, bodyTier: merged.tier });
+    for (const srcId of (source.sourceOrderIds || [])) {
+      fillLedger.annotateFillsByOrderId(srcId, { bodyId: merged.id, bodyTier: merged.tier });
     }
-  }
+    for (const buyOrder of (source.buyOrders || [])) {
+      if (buyOrder.orderId && buyOrder.orderId !== 'core-migration') {
+        fillLedger.annotateFillsByOrderId(buyOrder.orderId, { bodyId: merged.id, bodyTier: merged.tier });
+      }
+    }
   };
 
   const completeMergeSnapshot = (snapshot) => {
