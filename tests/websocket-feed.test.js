@@ -71,6 +71,37 @@ for (const p of ['../src/websocket-feed', '../src/adapters/gemini/websocket', '.
 
 const { createWebSocketFeed } = require('../src/websocket-feed');
 
+describe('coinbase user-channel authentication', () => {
+  it('subscribes to the user channel with an ES256 CDP token the key pair verifies', (t) => {
+    const crypto = require('node:crypto');
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', {
+      namedCurve: 'prime256v1',
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    });
+    const apiKey = 'organizations/example-org/apiKeys/example-key';
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    FakeWebSocket.instances = [];
+    const feed = createWebSocketFeed('coinbase', { productId: 'BTC-USD', apiKey, apiSecret: privateKey });
+    feed.connect();
+    const sock = FakeWebSocket.instances[0];
+    sock.emit('open');
+    feed.disconnect();
+
+    const userSub = sock.sent.map(raw => JSON.parse(raw)).find(message => message.channel === 'user');
+    assert.ok(userSub, 'user channel subscription must be sent when credentials are configured');
+    assert.deepEqual(userSub.product_ids, ['BTC-USD']);
+    const [header, payload, signature] = userSub.jwt.split('.');
+    const decodedHeader = JSON.parse(Buffer.from(header, 'base64url').toString('utf8'));
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    assert.equal(decodedHeader.alg, 'ES256');
+    assert.equal(decodedHeader.kid, apiKey);
+    assert.match(decodedHeader.nonce, /^[0-9a-f]{32}$/);
+    assert.deepEqual({ iss: claims.iss, sub: claims.sub, ttl: claims.exp - claims.nbf, uri: claims.uri }, { iss: 'cdp', sub: apiKey, ttl: 120, uri: undefined });
+    assert.ok(crypto.verify('sha256', Buffer.from(`${header}.${payload}`), { key: publicKey, dsaEncoding: 'ieee-p1363' }, Buffer.from(signature, 'base64url')));
+  });
+});
+
 const VARIANTS = [
   { exchange: 'coinbase', openDelayMs: 0, connectMessage: '🔌 [coinbase] Connecting to WebSocket...' },
   { exchange: 'gemini', openDelayMs: 0, connectMessage: '🔌 [gemini] Connecting to Gemini WebSocket...' },
