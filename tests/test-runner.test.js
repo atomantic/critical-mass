@@ -260,7 +260,9 @@ describe('scripts/test.js runner lifecycle', () => {
     const [code] = await require('events').once(proc, 'close');
     assert.equal(code, 0, output);
     assert.match(output, /ok 1 - chosen/);
-    assert.match(output, /unselected.*SKIP/);
+    assert.doesNotMatch(output, /not ok|filter was ignored/);
+    assert.match(output, /^# pass 1$/m);
+    assert.match(output, /^# fail 0$/m);
     assert.deepEqual(ownedRoots(), []);
   });
 });
