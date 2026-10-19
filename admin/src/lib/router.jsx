@@ -50,14 +50,17 @@ export function Navigate({ to, replace = false }) {
 
 const isModifiedClick = (event) => event.metaKey || event.altKey || event.ctrlKey || event.shiftKey
 
-export function Link({ to, replace = false, onClick, target, ...rest }) {
-  const navigate = useNavigate()
+// Like react-router, a link to the URL already showing replaces the entry
+// instead of stacking a duplicate, unless `replace` is passed explicitly.
+export function Link({ to, replace, onClick, target, ...rest }) {
+  const { location, navigate } = useRouter('Link')
   const handleClick = (event) => {
     onClick?.(event)
     if (event.defaultPrevented || event.button !== 0 || isModifiedClick(event)) return
     if (target && target !== '_self') return
     event.preventDefault()
-    navigate(to, { replace })
+    const sameUrl = to === location.pathname + location.search + location.hash
+    navigate(to, { replace: replace ?? sameUrl })
   }
   return <a href={to} target={target} onClick={handleClick} {...rest} />
 }

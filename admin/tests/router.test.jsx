@@ -166,6 +166,17 @@ describe('admin router', () => {
       expect(currentPath()).toBe('/')
     })
 
+    it('replaces instead of pushing when linking to the current URL', () => {
+      renderAt('/gateway', <><AppRoutes /><Link to="/gateway">go gateway</Link><Link to="/gateway" replace={false}>force push</Link></>)
+      const pushState = vi.spyOn(window.history, 'pushState')
+      const replaceState = vi.spyOn(window.history, 'replaceState')
+      fireEvent.click(screen.getByText('go gateway'))
+      expect(pushState).not.toHaveBeenCalled()
+      expect(replaceState).toHaveBeenCalledTimes(1)
+      fireEvent.click(screen.getByText('force push'))
+      expect(pushState).toHaveBeenCalledTimes(1)
+    })
+
     it('lets target=_blank and onClick preventDefault through', () => {
       renderLink({ target: '_blank' })
       expect(fireEvent.click(screen.getByText('go gateway'))).toBe(true)
