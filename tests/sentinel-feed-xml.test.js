@@ -90,8 +90,10 @@ describe('parseFeedXml text', () => {
     assert.equal(rootText('<r><a>&#8217; &#x2014; &#65;&#x42;</a></r>', 'a'), '’ — AB');
     assert.equal(rootText('<r><a>&amp;lt; &#38;amp;</a></r>', 'a'), '&lt; &amp;', 'decodes exactly once');
     assert.equal(rootText('<r><a>&nbsp; &copy; &bogus; AT&T & co</a></r>', 'a'), '&nbsp; &copy; &bogus; AT&T & co');
-    assert.equal(rootText('<r><a>&#0; &#xD800; &#x110000; &#X41; &#99999999;</a></r>', 'a'),
-      '&#0; &#xD800; &#x110000; &#X41; &#99999999;', 'invalid or malformed references stay literal');
+    assert.equal(rootText('<r><a>&#00000039; &#x0000027;</a></r>', 'a'), "' '", 'leading zeros are legal');
+    const huge = `&#${'9'.repeat(400)};`;
+    assert.equal(rootText(`<r><a>&#0; &#xD800; &#x110000; &#X41; &#99999999; ${huge}</a></r>`, 'a'),
+      `&#0; &#xD800; &#x110000; &#X41; &#99999999; ${huge}`, 'invalid or malformed references stay literal');
   });
 });
 

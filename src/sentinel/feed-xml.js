@@ -32,7 +32,8 @@ const MAX_DEPTH = 100;
 const NO_ATTRS = Object.freeze(Object.create(null));
 
 const XML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
-const ENTITY_REF = /&(?:#(\d{1,7})|#x([0-9a-fA-F]{1,6})|(amp|lt|gt|quot|apos));/g;
+/** Digit runs are unbounded (leading zeros are legal); isXmlChar bounds the value. */
+const ENTITY_REF = /&(?:#(\d+)|#x([0-9a-fA-F]+)|(amp|lt|gt|quot|apos));/g;
 
 /** XML 1.0 `Char` production — references to anything else stay literal. */
 const isXmlChar = (cp) => cp === 0x9 || cp === 0xA || cp === 0xD
