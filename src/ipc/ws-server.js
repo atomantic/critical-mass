@@ -68,10 +68,13 @@ const encodeFrame = (opcode, payload, fin = true) => {
  */
 const encodeClosePayload = (code, reason) => {
   if (code === 1005) return Buffer.alloc(0);
-  const text = Buffer.from(reason);
-  const payload = Buffer.allocUnsafe(2 + Math.min(text.length, 123));
+  // A control frame carries at most 125 bytes; trim whole characters so the
+  // reason stays valid UTF-8 for the peer.
+  let text = reason;
+  while (Buffer.byteLength(text) > 123) text = text.slice(0, -1);
+  const payload = Buffer.allocUnsafe(2 + Buffer.byteLength(text));
   payload.writeUInt16BE(code, 0);
-  text.copy(payload, 2, 0, payload.length - 2);
+  payload.write(text, 2);
   return payload;
 };
 
