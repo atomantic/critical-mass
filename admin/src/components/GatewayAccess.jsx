@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { KeyRound, ScrollText } from 'lucide-react'
+import { KeyRound, ScrollText } from './icons'
 
 export default function GatewayAccess() {
   const [required, setRequired] = useState(false)

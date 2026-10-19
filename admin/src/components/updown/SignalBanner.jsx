@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { TrendingUp, TrendingDown, Minus, Plus, CircleDot, Clock } from 'lucide-react'
+import { TrendingUp, TrendingDown, Minus, Plus, CircleDot, Clock } from '../icons'
 import { formatCountdown } from './TimeWarningBanner'
 import { getActionLabel } from '../../constants/signals'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'

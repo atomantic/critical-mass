@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, RefreshCw } from 'lucide-react'
+import { ArrowLeft, RefreshCw } from '../icons'
 import { CartesianChart } from '../charts/primitives/CartesianChart'
 import { INDICATORS, INDICATOR_LABELS } from '../../../../shared/indicator-config.mjs'
 

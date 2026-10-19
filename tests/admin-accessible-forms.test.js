@@ -64,6 +64,7 @@ function createView(component, extraStubs = {}, fetchResponse = null) {
   const stubs = {
     react: hooks,
     'lucide-react': new Proxy({}, { get: () => () => null }),
+    '../icons': new Proxy({}, { get: () => () => null }),
     '../Toast': { useToast: () => ({ addToast() {} }) },
     '../ModalDialog': { default: ({ children }) => children },
     '../../utils/runLifecycle.mjs': { createRunLifecycle: () => ({ execute: value => executed.push(value), dispose() {} }) },
