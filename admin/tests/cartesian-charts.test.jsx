@@ -72,6 +72,19 @@ describe('CartesianChart', () => {
     rerender(<CartesianChart data={data} height={200} series={[{ dataKey: 'v', connectNulls: true }]} />)
     expect(path().match(/M/g)).toHaveLength(1)
   })
+
+  it('clips series to the plot only on axes whose fixed domain the data may exceed', () => {
+    stubBox(400, 200)
+    const data = [{ v: 1 }, { v: 20 }, { v: 3 }]
+    const { container, rerender } = render(<CartesianChart data={data} height={200} yAxes={[{ domain: [0, 10], allowDataOverflow: true }]} series={[{ dataKey: 'v' }]} />)
+    const clipRef = container.querySelector('.series-line').getAttribute('clip-path')
+    const rect = container.querySelector(`clipPath${clipRef.slice(4, -1)} rect`)
+    // Plot: x 65..395 (60px axis + 5px margins), y 5..165 (200 - 2×5 margin - 30 axis).
+    expect(['x', 'y', 'width', 'height'].map((k) => rect.getAttribute(k))).toEqual(['65', '5', '330', '160'])
+    expect([...container.querySelectorAll('.tick text')].map((t) => t.textContent)).toContain('10')
+    rerender(<CartesianChart data={data} height={200} yAxes={[{ domain: [0, 10] }]} series={[{ dataKey: 'v' }]} />)
+    expect(container.querySelector('.series-line').getAttribute('clip-path')).toBeNull()
+  })
 })
 
 describe('BTCPriceChart', () => {

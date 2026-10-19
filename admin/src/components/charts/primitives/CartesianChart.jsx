@@ -1,11 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { areaPath, extent, linePath, linearScale, pointScale } from '../../../lib/chart-math'
 import { Axis } from './Axis'
 import { ChartContext } from './chartContext'
-import { Grid } from './Grid'
+import { ClipRect, Grid } from './Grid'
 import { Legend } from './Legend'
 import { ReferenceLine } from './ReferenceLine'
-import { Responsive, localPoint } from './Responsive'
+import { Responsive, localPoint, svgId } from './Responsive'
 import { TooltipContent } from './Tooltip'
 
 const DEFAULT_MARGIN = { top: 5, right: 5, bottom: 5, left: 5 }
@@ -84,6 +84,8 @@ function Plot({
   referenceLines = [], grid, tooltip, legend, underlay, overlay,
 }) {
   const [active, setActive] = useState(null)
+  const clipId = svgId('plot-clip', useId())
+  const plotClip = `url(#${clipId})`
   const margin = { ...DEFAULT_MARGIN, ...marginOverride }
   const svgHeight = height - (legend ? LEGEND_HEIGHT : 0)
 
@@ -109,6 +111,8 @@ function Plot({
       return [axis, yScaleFor(axis, values, yRange)]
     }))
     const y = (id) => scales.get(axisFor(id))
+    // A fixed domain that data may exceed clips its layers to the plot, as Recharts did.
+    const clips = (id) => Boolean(axisFor(id).allowDataOverflow)
     // Explicit ticks are kept; generated ones are thinned so stacked labels never overlap.
     const tickSets = new Map(axes.map((axis) => {
       if (axis.ticks) return [axis, axis.ticks]
@@ -148,10 +152,10 @@ function Plot({
         area: s.type === 'area' ? areaPath(shown, { ...shape, y0: (p) => p.y0, y1: (p) => p.y1 }) : null,
       }
     })
-    return { axes, plot, x, y, yTicks, layers, labels, xTicks, xLabelDx, xFontSize, categoryOf }
+    return { axes, plot, x, y, clips, yTicks, layers, labels, xTicks, xLabelDx, xFontSize, categoryOf }
   }, [width, svgHeight, data, margin.top, margin.right, margin.bottom, margin.left, xAxis, yAxes, series])
 
-  const { axes, plot, x, y, yTicks, layers, labels, xTicks, xLabelDx, xFontSize, categoryOf } = geometry
+  const { axes, plot, x, y, clips, yTicks, layers, labels, xTicks, xLabelDx, xFontSize, categoryOf } = geometry
   const context = useMemo(() => ({ plot, x, y }), [plot, x, y])
   const index = active?.index
 
@@ -221,9 +225,10 @@ function Plot({
           )
         })}
         {index != null && <line className="cursor" x1={activeX} x2={activeX} y1={plot.y} y2={plot.y + plot.height} stroke="#ccc" />}
-        {underlay}
+        <ClipRect id={clipId} x={plot.x} y={plot.y} width={plot.width} height={plot.height} />
+        <g clipPath={clips() ? plotClip : undefined}>{underlay}</g>
         {layers.map((s) => (
-          <g key={s.dataKey} className={`series series-${s.type ?? 'line'}`}>
+          <g key={s.dataKey} className={`series series-${s.type ?? 'line'}`} clipPath={clips(s.yAxisId) ? plotClip : undefined}>
             {s.area && <path d={s.area} fill={s.fill ?? DEFAULT_COLOR} fillOpacity={s.fillOpacity ?? 0.6} stroke="none" />}
             <path d={s.line} fill="none" stroke={s.stroke ?? DEFAULT_COLOR} strokeWidth={s.strokeWidth ?? 1} strokeDasharray={s.strokeDasharray} />
           </g>

@@ -12,11 +12,11 @@ export function Grid({ x = 0, y = 0, width = 0, height = 0, rows = [], columns =
 }
 
 /** clipPath holding one rect, so plot layers can be clipped to the drawing area. */
-export function ClipRect({ id, width, height }) {
+export function ClipRect({ id, x = 0, y = 0, width, height }) {
   return (
     <defs>
       <clipPath id={id}>
-        <rect x={0} y={0} width={width} height={height} />
+        <rect x={x} y={y} width={width} height={height} />
       </clipPath>
     </defs>
   )
