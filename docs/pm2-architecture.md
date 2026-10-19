@@ -6,7 +6,7 @@ Critical-mass runs as 5 PM2 processes: a thin API gateway and 3 isolated engine 
 
 ```
 ┌──────────────────────────────────┐
-│   critical-mass (:5570)          │  API gateway, Socket.IO hub, admin UI,
+│   critical-mass (:5570)          │  API gateway, realtime hub, admin UI,
 │   server.js                      │  DCA scheduler, backup, notifier, settings
 └────────┬─────────┬───────────────┘
     IPC WS    IPC WS
@@ -35,13 +35,30 @@ Critical-mass runs as 5 PM2 processes: a thin API gateway and 3 isolated engine 
 | `ws-server.js` | Owned RFC 6455 loopback WebSocket server (handshake, framing, close handshake, Origin refusal) |
 | `ipc-server.js` | WS server for engine processes (request/response) |
 | `ipc-client.js` | WS client for gateway (auto-reconnect, backoff) over Node's global `WebSocket` |
-| `socket-io-proxy.js` | Drop-in `io` replacement forwarding over IPC |
+| `realtime-proxy.js` | Engine-side stand-in for the gateway realtime bus, forwarding over IPC |
 
 IPC listens only on loopback and accepts process clients only. Every WebSocket
 upgrade containing an `Origin` header is rejected before connection admission,
 including same-origin, `null`, and empty values. The gateway IPC client sends no
 Origin header. All three engine wrappers use this shared server gate; loopback
 binding alone does not prevent browser access.
+
+## Admin realtime bus (`src/realtime-bus.js`)
+
+The admin UI receives live events over one WebSocket per tab at `/realtime` on
+every gateway listener (primary, extra hosts and late Tailscale binds), using the
+same RFC 6455 code as IPC. The upgrade is refused with 401 unless it carries an
+operator session cookie or bearer password and, when an `Origin` header is
+present, that origin is the gateway itself (same rule as session-cookie
+mutations); it is refused with 503 while the gateway drains. Frames are JSON:
+the server sends `{t:'open', id, pingInterval, pingTimeout}` and then
+`{t:'event', e, p}` and `{t:'ping'}`; the client sends `{t:'sub'|'unsub', r}`
+for the `coinbase`/`gemini`/`cryptocom`/`updown`/`sentinel` rooms,
+`{t:'event', e, p}` for PM2 log commands, and `{t:'pong'}`. A client that misses
+a heartbeat for 20 seconds is dropped. A password change closes every
+connection; shutdown closes them with 1001. `admin/src/lib/realtime.js` is the
+client: shared subscriptions re-sent after every reconnect, events queued while
+disconnected, and 1–30 second exponential backoff.
 
 ## Engine Processes (`engines/`)
 
@@ -56,7 +73,7 @@ binding alone does not prevent browser access.
 - Regime/exchange routes → IPC proxy via `exchangeIPCMap` (per-exchange routing)
 - Manual and scheduled backups → share `runBackup` and the restore maintenance lock. Engines pause and flush their writers, gateway services stop, and accepted writes drain before an archive is copied. Failure to confirm quiescence refuses the backup without pruning existing archives. The coordinator then resumes the previous writers; the manual backup UI reports any restart warnings alongside the created archive. A pause is never left ownerless: if the gateway's IPC connection closes, or its maintenance window expires, before `engine:backup-resume` arrives (a gateway crash, memory restart or drain-deadline exit mid-backup), the engine runs the same resume path itself, retrying while writers drain, so captured funds do not stay stopped until the engine process restarts (`src/engine-backup-window.js`). Backup and restore handlers remain tracked for gateway shutdown but are excluded from their own pending-write drain. Full archives and hourly fund-state snapshots flush their copied bytes (including manifests) and publication directories before reporting success or pruning older recovery points. A flush failure refuses publication and preserves older backups; directory flushes use the shared platform compatibility policy in `fsync-dir.js`.
 - Settings restore → opens restore maintenance and sends `stop-all` to every **configured** engine in parallel. Each engine joins accepted IPC commands, cancels automatic starts, fences standalone market-data consumers, stops regime producers, and joins every tracked writer before its final state/ledger flush and cache invalidation. Chart-buffer save timers and cached histories are retired before acknowledgement too. Reads and config updates are refused during restore so they cannot reload stale in-memory ledgers; restored funds remain stopped in this process until explicitly started. A drain timeout returns a negative acknowledgement while engine cleanup continues; closing the gateway window cannot reopen intake until the accepted writers settle, final snapshots flush, and caches retire. The gateway requires a positive `{ success: true, stopped: [...] }` acknowledgement from each before any file is overwritten. A rejection, IPC timeout, disconnected client, negative or malformed reply blocks the restore (HTTP 409, `code: writers-not-quiesced`) with zero destination writes; `POST` body `{ "force": true }` is the explicit operator override for an engine that is already dead. While a restore runs, `src/restore-maintenance.js` holds an exclusive lock that 503s every mutating `/api` request and skips the DCA scheduler, and the gateway's own UpDown writer is stopped before the copy and restarted after so it reloads the restored state.
-- Socket.IO events → forwarded via IPC clients
+- Realtime bus events → forwarded via IPC clients
 
 ## Gateway health (`GET /api/health`)
 
@@ -108,11 +125,11 @@ runs the production start block against that contract.
 ## Gateway shutdown grace period
 
 The gateway handles SIGTERM and SIGINT through one drain coordinator. It stops
-admitting HTTP requests and Socket.IO commands, cancels the DCA and backup timers,
+admitting HTTP requests and realtime client commands, cancels the DCA and backup timers,
 and waits for accepted request handlers and scheduled DCA cycles before stopping
 local producers. An aborted HTTP client does not cancel the handler's ownership.
 IPC remains connected through that drain; queued and already-sending Telegram
-notifications then settle before IPC, Socket.IO and every HTTP listener close.
+notifications then settle before IPC, the realtime bus and every HTTP listener close.
 
 The internal deadline is **30 seconds** (`SHUTDOWN_TIMEOUT_MS` in
 `src/gateway-shutdown.js`). Deadline expiry or a teardown failure exits with code

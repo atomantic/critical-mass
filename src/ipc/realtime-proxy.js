@@ -1,13 +1,13 @@
 // @ts-check
 /**
- * Socket.IO Proxy
+ * Realtime Proxy
  *
- * Drop-in replacement for Socket.IO's `io` object that forwards
- * .emit() and .to(room).emit() calls over IPC to the gateway process,
- * which re-emits them on the real Socket.IO server.
+ * Stand-in for the gateway's realtime bus (src/realtime-bus.js) inside an
+ * engine process: .emit() and .to(room).emit() are forwarded over IPC to the
+ * gateway, which re-emits them on the bus.
  *
- * Engine processes use this instead of a real Socket.IO server so the
- * admin UI only connects to the gateway (:5570).
+ * Engine processes use this instead of a bus of their own so the admin UI
+ * only connects to the gateway (:5570).
  */
 
 const { tradeEvents } = require('../trade-events');
@@ -32,11 +32,11 @@ const forwardIPCEvent = (io, msg, emitter = tradeEvents) => {
 };
 
 /**
- * Create a Socket.IO-compatible proxy backed by an IPC server
+ * Create a bus-compatible proxy backed by an IPC server
  * @param {Object} ipcServer - IPC server instance (from ipc-server.js)
- * @returns {Object} Socket.IO-compatible `io` object
+ * @returns {Object} bus-compatible `io` object
  */
-const createSocketIOProxy = (ipcServer) => {
+const createRealtimeProxy = (ipcServer) => {
   /** @type {Map<string, Set<Function>>} event -> handlers (for io.on('connection', ...)) */
   const localHandlers = new Map();
 
@@ -51,7 +51,7 @@ const createSocketIOProxy = (ipcServer) => {
     },
 
     /**
-     * Target a specific Socket.IO room
+     * Target a specific realtime bus room
      * @param {string} room - Room name
      * @returns {{ emit: Function }}
      */
@@ -76,4 +76,4 @@ const createSocketIOProxy = (ipcServer) => {
   return proxy;
 };
 
-module.exports = { createSocketIOProxy, forwardTradeEvents, forwardIPCEvent };
+module.exports = { createRealtimeProxy, forwardTradeEvents, forwardIPCEvent };

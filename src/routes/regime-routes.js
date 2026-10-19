@@ -59,7 +59,7 @@ const engineError = (err) => ({ success: false, error: `Engine unavailable: ${er
  * which re-derives P&L from the cached fill ledger and falls back to the
  * ledger's last fill price for `market.lastPrice` when there's no live
  * price to report — the same enrichment the engine's own IPC handler and
- * the Socket.IO stream produce.
+ * the realtime stream produce.
  *
  * Returns null when there's no persisted state to fall back on, so a true
  * IPC outage (e.g., first-time fund or broken connection with no saved

@@ -46,7 +46,7 @@ const runStartBlock = ({ stopping = false, host, allowRemote = true } = {}) => {
     bindGatewayListeners: (args) => { bindArgs.push(args); return bind.promise; },
     LISTEN_HOSTS: ['127.0.0.1'], PORT: 5570,
     server: { name: 'primary' }, app: {}, http: { createServer: () => ({ name: 'extra' }) },
-    io: { attach: recorder('io.attach'), engine: { name: 'engine' } }, socketEngines: [],
+    io: { attach: recorder('io.attach') },
     getEnabledExchanges: () => [], getConfiguredExchanges: () => ['fake'], getEnabledFunds: () => [],
     normalizeConfig: (c) => c, getFundConfig: () => ({}), formatInterval: () => '', getTimeUntilNext: () => ({ formatted: '' }), fundLabel: () => '',
     KNOWN_EXCHANGES: new Set(),
@@ -109,12 +109,11 @@ describe('gateway startup order', () => {
     assert.deepEqual(logs, []);
   });
 
-  it('attaches Socket.IO to every extra host listener before it binds', () => {
-    const { bindArgs, context, started } = runStartBlock();
+  it('attaches the realtime bus to every extra host listener before it binds', () => {
+    const { bindArgs, started } = runStartBlock();
     const extra = bindArgs[0].createServer();
     bindArgs[0].onExtra(extra);
     assert.deepEqual(started, ['io.attach']);
-    assert.deepEqual(context.socketEngines, [{ name: 'engine' }]);
   });
 
   describe('late Tailscale address watcher', () => {

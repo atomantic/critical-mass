@@ -24,7 +24,7 @@ const MAX_SEEN_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /**
  * Create the Sentinel service
- * @param {Object} io - Socket.IO server instance
+ * @param {Object} io - realtime bus (src/realtime-bus.js)
  * @param {Object} deps
  * @param {Function} deps.readJSON - Read JSON file
  * @param {Function} deps.writeJSON - Write JSON file
@@ -211,7 +211,7 @@ const createSentinelService = (io, deps) => {
         alerts.push(alert);
         newAlerts++;
 
-        // Emit via Socket.IO
+        // Emit on the realtime bus
         io.to('sentinel').emit('sentinel:alert', alert);
 
         // Emit critical/warning alerts via tradeEvents for Telegram. alert.title

@@ -86,7 +86,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
     '../src/manual-trade-import': {},
     '../src/unaccounted-fills-jobs': require('../src/unaccounted-fills-jobs'),
     '../src/ipc/ipc-server': { createIPCServer: () => ipc },
-    '../src/ipc/socket-io-proxy': { createSocketIOProxy: () => ({}), forwardTradeEvents: () => {} },
+    '../src/ipc/realtime-proxy': { createRealtimeProxy: () => ({}), forwardTradeEvents: () => {} },
     '../src/shared-utils': {
       fundKey: (name, pair) => `${name}::${pair}`,
       fundLabel: (name, pair) => `${name}/${pair}`,

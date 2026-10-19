@@ -227,8 +227,8 @@ describe('watchTailscaleListeners', () => {
       assert.equal(servers[0].host, '100.83.147.46')
       assert.deepEqual(logs, ['INFO Critical Mass listening on http://100.83.147.46:5570'])
 
-      const io = { close: (cb) => cb() }
-      await closeGatewayListeners(io, extras, [])
+      const bus = { close: () => Promise.resolve() }
+      await closeGatewayListeners(bus, extras)
       assert.equal(servers[0].listening, false)
     } finally {
       watcher.stop()
