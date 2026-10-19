@@ -1,20 +1,28 @@
 // @ts-check
 /**
- * WebSocket feed pong-timeout watchdog tests (issue #103)
+ * WebSocket feed liveness watchdog tests (issues #103, #1180)
  *
- * All three feeds (Coinbase, Gemini, Crypto.com) ping every 30s. If
- * MAX_MISSED_PONGS (2) pings go unanswered — no pong and no inbound
- * messages — the watchdog must terminate() the socket so the existing
- * 'close' → reconnect/backoff path runs. A silently dead TCP connection
- * (NAT timeout, sleep, partition) keeps readyState OPEN forever, so
- * without this the feed would never reconnect.
+ * All three feeds (Coinbase, Gemini, Crypto.com) judge liveness on inbound
+ * traffic: each exchange sends periodic heartbeat frames, so if
+ * MAX_SILENT_INTERVALS (2) heartbeat intervals pass with nothing inbound the
+ * watchdog must terminate() the socket so the existing 'close' →
+ * reconnect/backoff path runs. A silently dead TCP connection (NAT timeout,
+ * sleep, partition) keeps the runtime socket OPEN forever, so without this the
+ * feed would never reconnect.
  *
- * Uses a fake `ws` module injected via require.cache plus node:test
- * mock timers to drive the heartbeat interval deterministically.
+ * Uses the fake global WebSocket from tests/helpers/fake-websocket.js plus
+ * node:test mock timers to drive the heartbeat interval deterministically.
  */
-const { describe, it } = require('node:test');
+const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { EventEmitter } = require('node:events');
+const { FakeWebSocket, installFakeWebSocket } = require('./helpers/fake-websocket');
+
+// Installed BEFORE any feed connects; the connection adapter resolves the
+// global at connect time, so all three feeds pick it up.
+const restoreWebSocket = installFakeWebSocket();
+after(restoreWebSocket);
+
+const { createWebSocketFeed } = require('../src/websocket-feed');
 
 const contextFor = (lines, prefix) => {
   const line = lines.find(candidate => candidate.startsWith(prefix));
@@ -26,51 +34,6 @@ const contextFor = (lines, prefix) => {
 
 const HEARTBEAT = 30000;
 
-class FakeWebSocket extends EventEmitter {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSING = 2;
-  static CLOSED = 3;
-  /** @type {FakeWebSocket[]} */
-  static instances = [];
-
-  constructor(url) {
-    super();
-    this.url = url;
-    this.readyState = FakeWebSocket.OPEN;
-    this.pings = 0;
-    this.sent = [];
-    this.terminated = false;
-    FakeWebSocket.instances.push(this);
-  }
-
-  send(data) { this.sent.push(data); }
-  ping() { this.pings++; }
-  close() { this.readyState = FakeWebSocket.CLOSED; }
-  terminate() {
-    this.terminated = true;
-    this.readyState = FakeWebSocket.CLOSED;
-    this.emit('close', 1006, Buffer.from(''));
-  }
-}
-
-// Inject the fake 'ws' module BEFORE loading the feed modules so all three
-// feeds (and the lazily-required adapters) pick it up.
-const wsPath = require.resolve('ws');
-require.cache[wsPath] = /** @type {any} */ ({
-  id: wsPath,
-  filename: wsPath,
-  path: wsPath,
-  loaded: true,
-  exports: FakeWebSocket,
-  children: [],
-});
-for (const p of ['../src/websocket-feed', '../src/adapters/gemini/websocket', '../src/adapters/cryptocom/websocket']) {
-  delete require.cache[require.resolve(p)];
-}
-
-const { createWebSocketFeed } = require('../src/websocket-feed');
-
 describe('coinbase user-channel authentication', () => {
   it('subscribes to the user channel with an ES256 CDP token the key pair verifies', (t) => {
     const crypto = require('node:crypto');
@@ -81,14 +44,14 @@ describe('coinbase user-channel authentication', () => {
     });
     const apiKey = 'organizations/example-org/apiKeys/example-key';
     t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
-    FakeWebSocket.instances = [];
+    FakeWebSocket.reset();
     const feed = createWebSocketFeed('coinbase', { productId: 'BTC-USD', apiKey, apiSecret: privateKey });
     feed.connect();
     const sock = FakeWebSocket.instances[0];
-    sock.emit('open');
+    sock.open();
     feed.disconnect();
 
-    const userSub = sock.sent.map(raw => JSON.parse(raw)).find(message => message.channel === 'user');
+    const userSub = sock.frames.find(message => message.channel === 'user');
     assert.ok(userSub, 'user channel subscription must be sent when credentials are configured');
     assert.deepEqual(userSub.product_ids, ['BTC-USD']);
     const [header, payload, signature] = userSub.jwt.split('.');
@@ -100,22 +63,33 @@ describe('coinbase user-channel authentication', () => {
     assert.deepEqual({ iss: claims.iss, sub: claims.sub, ttl: claims.exp - claims.nbf, uri: claims.uri }, { iss: 'cdp', sub: apiKey, ttl: 120, uri: undefined });
     assert.ok(crypto.verify('sha256', Buffer.from(`${header}.${payload}`), { key: publicKey, dsaEncoding: 'ieee-p1363' }, Buffer.from(signature, 'base64url')));
   });
+
+  it('subscribes to the heartbeats channel so a quiet product still feeds the watchdog', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    FakeWebSocket.reset();
+    const feed = createWebSocketFeed('coinbase', { productId: 'BTC-USD', publicOnly: true });
+    feed.connect();
+    const sock = FakeWebSocket.instances[0];
+    sock.open();
+    feed.disconnect();
+    assert.deepEqual(sock.frames.map(message => message.channel), ['ticker', 'market_trades', 'heartbeats']);
+  });
 });
 
 const VARIANTS = [
-  { exchange: 'coinbase', openDelayMs: 0, connectMessage: '🔌 [coinbase] Connecting to WebSocket...' },
-  { exchange: 'gemini', openDelayMs: 0, connectMessage: '🔌 [gemini] Connecting to Gemini WebSocket...' },
-  { exchange: 'cryptocom', openDelayMs: 1000, connectMessage: '🔌 [cryptocom] Connecting to Crypto.com WebSocket...' }, // 1s post-connect delay before subscribe/heartbeat
+  { exchange: 'coinbase', openDelayMs: 0, connectMessage: '🔌 [coinbase] Connecting to WebSocket...', heartbeat: '{"channel":"heartbeats","client_id":"","timestamp":"2026-10-19T00:00:00Z","sequence_num":1,"events":[{"current_time":"2026-10-19 00:00:00","heartbeat_counter":1}]}' },
+  { exchange: 'gemini', openDelayMs: 0, connectMessage: '🔌 [gemini] Connecting to Gemini WebSocket...', heartbeat: '{"type":"heartbeat","timestamp":1}' },
+  { exchange: 'cryptocom', openDelayMs: 1000, connectMessage: '🔌 [cryptocom] Connecting to Crypto.com WebSocket...', heartbeat: '{"id":7,"method":"public/heartbeat","code":0}' }, // 1s post-connect delay before subscribe/heartbeat
 ];
 
 /**
- * Enable mock timers, create a feed, connect it, and emit 'open'.
+ * Enable mock timers, create a feed, connect it, and open the socket.
  * @param {import('node:test').TestContext} t
  * @param {{exchange: string, openDelayMs: number}} variant
  */
 const openFeed = (t, variant) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
-  FakeWebSocket.instances = [];
+  FakeWebSocket.reset();
   const events = { disconnects: 0, connects: 0, errors: 0 };
   const feed = createWebSocketFeed(variant.exchange, {
     productId: 'BTC-USD',
@@ -126,7 +100,7 @@ const openFeed = (t, variant) => {
   });
   feed.connect();
   const sock = FakeWebSocket.instances[0];
-  sock.emit('open');
+  sock.open();
   if (variant.openDelayMs > 0) {
     t.mock.timers.tick(variant.openDelayMs);
   }
@@ -134,7 +108,7 @@ const openFeed = (t, variant) => {
 };
 
 for (const variant of VARIANTS) {
-  describe(`${variant.exchange} pong-timeout watchdog`, () => {
+  describe(`${variant.exchange} liveness watchdog`, () => {
     it('preserves connection messages and appends fund lifecycle context', (t) => {
       const lines = [];
       const originalLog = console.log;
@@ -153,18 +127,18 @@ for (const variant of VARIANTS) {
       );
     });
 
-    it('terminates a silently dead connection after missed pongs and reconnects', (t) => {
+    it('terminates a silently dead connection after two silent intervals and reconnects', (t) => {
       const { sock, events } = openFeed(t, variant);
 
-      // Two pings go out, no pong — not yet over the deadline
+      // Two silent intervals — not yet over the deadline
       t.mock.timers.tick(HEARTBEAT);
       t.mock.timers.tick(HEARTBEAT);
-      assert.equal(sock.pings, 2);
-      assert.equal(sock.terminated, false);
+      assert.equal(sock.closeCalls.length, 0);
+      assert.equal(events.disconnects, 0);
 
-      // Third tick: MAX_MISSED_PONGS (2) unanswered pings — watchdog trips
+      // Third tick: MAX_SILENT_INTERVALS (2) passed with nothing inbound — watchdog trips
       t.mock.timers.tick(HEARTBEAT);
-      assert.equal(sock.terminated, true);
+      assert.equal(sock.closeCalls.length, 1, 'the dead socket is closed best-effort');
       assert.equal(events.disconnects, 1, 'terminate must drive the close → disconnect path');
 
       // Reconnect/backoff path runs (base delay 1s, attempts reset on open)
@@ -172,79 +146,82 @@ for (const variant of VARIANTS) {
       assert.equal(FakeWebSocket.instances.length, 2, 'a new socket must be created by reconnect');
     });
 
-    it('pong responses keep the connection alive indefinitely', (t) => {
+    it('exchange heartbeat frames keep the connection alive indefinitely', (t) => {
       const { sock, events } = openFeed(t, variant);
+      const sentBefore = sock.sent.length;
 
       for (let i = 0; i < 5; i++) {
         t.mock.timers.tick(HEARTBEAT);
-        sock.emit('pong');
+        sock.receive(variant.heartbeat);
       }
 
-      assert.equal(sock.pings, 5);
-      assert.equal(sock.terminated, false);
+      assert.equal(sock.closeCalls.length, 0);
       assert.equal(events.disconnects, 0);
       assert.equal(FakeWebSocket.instances.length, 1);
+      if (variant.exchange === 'cryptocom') {
+        const replies = sock.frames.slice(sentBefore);
+        assert.equal(replies.length, 5, 'every Crypto.com heartbeat is answered');
+        assert.deepEqual(replies[0], { id: 7, method: 'public/respond-heartbeat' });
+      }
     });
 
-    it('inbound messages also reset the watchdog (data flow proves liveness)', (t) => {
+    it('any inbound message resets the watchdog (data flow proves liveness)', (t) => {
       const { sock } = openFeed(t, variant);
 
-      // Two unanswered pings, then a message arrives
+      // Two silent intervals, then a message arrives
       t.mock.timers.tick(HEARTBEAT);
       t.mock.timers.tick(HEARTBEAT);
-      sock.emit('message', Buffer.from('{}'));
+      sock.receive('{}');
 
       // Counter was reset: two more ticks must NOT terminate
       t.mock.timers.tick(HEARTBEAT);
       t.mock.timers.tick(HEARTBEAT);
-      assert.equal(sock.terminated, false);
+      assert.equal(sock.closeCalls.length, 0);
 
       // But with continued silence the watchdog still trips
       t.mock.timers.tick(HEARTBEAT);
-      assert.equal(sock.terminated, true);
+      assert.equal(sock.closeCalls.length, 1);
     });
 
     it('ignores obsolete socket callbacks after reconnect, including liveness', (t) => {
       const { feed, sock, events } = openFeed(t, variant);
-      sock.close();
-      sock.emit('close', 1006, Buffer.from('lost'));
+      sock.peerClose(1006, 'lost');
       assert.equal(feed.isActive(), false);
       t.mock.timers.tick(1000);
       const replacement = FakeWebSocket.instances[1];
-      replacement.emit('open');
+      replacement.open();
       t.mock.timers.tick(variant.openDelayMs);
       assert.equal(events.connects, 2);
       const subscriptions = replacement.sent.length;
 
       t.mock.timers.tick(HEARTBEAT);
       t.mock.timers.tick(HEARTBEAT);
-      sock.readyState = FakeWebSocket.OPEN; // An already queued old callback remains stale.
-      sock.emit('open');
-      sock.emit('message', Buffer.from('{}'));
-      sock.emit('pong');
-      sock.emit('error', new Error('obsolete socket'));
-      sock.emit('close', 1006, Buffer.from('late close'));
+      // The retired socket is detached: anything it still reports is stale.
+      sock.readyState = FakeWebSocket.OPEN;
+      sock.open();
+      sock.receive('{}');
+      sock.fail('obsolete socket');
+      sock.peerClose(1006, 'late close');
       assert.equal(events.errors, 0);
       assert.equal(events.disconnects, 1);
       assert.equal(events.connects, 2);
       assert.equal(replacement.sent.length, subscriptions);
       assert.equal(feed.isActive(), true);
-      assert.equal(sock.pings, 0, 'closed session heartbeat is cancelled');
       t.mock.timers.tick(HEARTBEAT);
-      assert.equal(replacement.terminated, true, 'old pong/message cannot reset replacement watchdog');
+      assert.equal(replacement.closeCalls.length, 1, 'old socket traffic cannot reset the replacement watchdog');
+      assert.equal(sock.closeCalls.length, 0, 'the retired socket is never closed twice');
       feed.disconnect();
     });
 
     it('cancels a pending reconnect on shutdown and ignores late close callbacks', (t) => {
       const { feed, sock, events } = openFeed(t, variant);
-      sock.close();
-      sock.emit('close', 1006, Buffer.from('lost'));
+      sock.peerClose(1006, 'lost');
       feed.disconnect();
-      sock.emit('close', 1006, Buffer.from('duplicate'));
+      sock.peerClose(1006, 'duplicate');
       t.mock.timers.tick(HEARTBEAT * 10);
       assert.equal(events.disconnects, 1);
       assert.equal(FakeWebSocket.instances.length, 1);
-      assert.equal(sock.pings, 0);
+      assert.equal(sock.closeCalls.length, 0);
     });
 
     it('uses capped exponential reconnect backoff and resets it on open', (t) => {
@@ -252,16 +229,28 @@ for (const variant of VARIANTS) {
       let current = sock;
       for (const delay of [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000]) {
         const count = FakeWebSocket.instances.length;
-        current.close();
-        current.emit('close', 1006, Buffer.from('lost'));
+        current.peerClose(1006, 'lost');
         t.mock.timers.tick(delay - 1);
         assert.equal(FakeWebSocket.instances.length, count);
         t.mock.timers.tick(1);
         current = FakeWebSocket.instances[count];
       }
       assert.equal(feed.getStatus().reconnectAttempts, 8);
-      current.emit('open');
+      current.open();
       assert.equal(feed.getStatus().reconnectAttempts, 0);
+      feed.disconnect();
+    });
+
+    it('a failed handshake with no close event (Node 22) still reconnects with backoff', (t) => {
+      const { feed, sock, events } = openFeed(t, variant);
+      sock.peerClose(1006, 'lost');
+      t.mock.timers.tick(1000);
+      const retry = FakeWebSocket.instances[1];
+      retry.fail('Received network error or non-101 status code.');
+      assert.equal(events.errors, 1, 'the handshake failure is reported');
+      t.mock.timers.tick(2000);
+      assert.equal(FakeWebSocket.instances.length, 3, 'the next attempt is scheduled from the error alone');
+      assert.equal(feed.getStatus().reconnectAttempts, 2);
       feed.disconnect();
     });
 
@@ -271,7 +260,7 @@ for (const variant of VARIANTS) {
       feed.disconnect();
       t.mock.timers.tick(HEARTBEAT * 10);
 
-      assert.equal(sock.terminated, false);
+      assert.deepEqual(sock.closeCalls, [{ code: undefined, reason: undefined }], 'one graceful close, never a terminate');
       assert.equal(FakeWebSocket.instances.length, 1, 'no reconnect after intentional disconnect');
       assert.equal(feed.isActive(), false);
     });
@@ -284,7 +273,7 @@ describe('Crypto.com delayed subscription session ownership (issue #1003)', () =
     it(`cancels subscription and heartbeat when ${shutdown} occurs before subscription`, (t) => {
       t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
       const intervals = t.mock.method(global, 'setInterval');
-      FakeWebSocket.instances = [];
+      FakeWebSocket.reset();
       const events = [];
       const feed = createWebSocketFeed('cryptocom', {
         productId: 'BTC-USD',
@@ -293,12 +282,10 @@ describe('Crypto.com delayed subscription session ownership (issue #1003)', () =
       });
       feed.connect();
       const first = FakeWebSocket.instances[0];
-      first.emit('open');
+      first.open();
       t.mock.timers.tick(100);
-      if (shutdown === 'close') {
-        first.close();
-        first.emit('close', 1006, Buffer.from('early close'));
-      } else feed.disconnect();
+      if (shutdown === 'close') first.peerClose(1006, 'early close');
+      else feed.disconnect();
       t.mock.timers.tick(900);
       assert.deepEqual(events, ['disconnect']);
       assert.equal(feed.isActive(), false);
@@ -309,24 +296,25 @@ describe('Crypto.com delayed subscription session ownership (issue #1003)', () =
         t.mock.timers.tick(100);
         assert.equal(FakeWebSocket.instances.length, 2);
         const replacement = FakeWebSocket.instances[1];
-        replacement.emit('open');
-        replacement.emit('open'); // Duplicate open cannot schedule a second subscription.
+        replacement.open();
+        replacement.open(); // Duplicate open cannot schedule a second subscription.
         t.mock.timers.tick(999);
         assert.equal(replacement.sent.length, 0);
         t.mock.timers.tick(1);
         assert.equal(replacement.sent.length, 2);
-        assert.deepEqual(replacement.sent.map(JSON.parse).map(sub => sub.params.channels), [
+        assert.deepEqual(replacement.frames.map(sub => sub.params.channels), [
           ['ticker.BTC_USD'], ['trade.BTC_USD'],
         ]);
         assert.deepEqual(events, ['disconnect', 'connect']);
         assert.equal(intervals.mock.callCount(), 1);
         t.mock.timers.tick(HEARTBEAT);
-        assert.equal(replacement.pings, 1);
+        assert.equal(replacement.closeCalls.length, 0, 'the watchdog is armed, not tripped');
+        assert.equal(first.closeCalls.length, 0);
       } else {
         t.mock.timers.tick(HEARTBEAT * 10);
         assert.equal(FakeWebSocket.instances.length, 1);
+        assert.equal(first.closeCalls.length, 1, 'disconnect closes the pending socket once');
       }
-      assert.equal(first.pings, 0);
       feed.disconnect();
     });
   }

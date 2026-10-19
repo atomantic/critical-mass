@@ -157,7 +157,6 @@ describe('gateway shutdown owns admitted work', () => {
 
   it('closes transports on every Socket.IO attachment, including pre-namespace handshakes', async () => {
     const { Server } = require('socket.io');
-    const WebSocket = require('ws');
     const servers = [http.createServer(), http.createServer()];
     const io = new Server(servers[0]);
     const engines = [io.engine];
@@ -165,9 +164,9 @@ describe('gateway shutdown owns admitted work', () => {
     engines.push(io.engine);
     await Promise.all(servers.map((server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))));
     const sockets = servers.map((server) => new WebSocket(`ws://127.0.0.1:${server.address().port}/socket.io/?EIO=4&transport=websocket`));
-    await Promise.all(sockets.map((socket) => new Promise((resolve) => socket.once('message', resolve))));
+    await Promise.all(sockets.map((socket) => new Promise((resolve) => socket.addEventListener('message', resolve, { once: true }))));
     // Engine.IO has accepted them, but no Socket.IO namespace CONNECT was sent.
-    const closed = sockets.map((socket) => new Promise((resolve) => socket.once('close', resolve)));
+    const closed = sockets.map((socket) => new Promise((resolve) => socket.addEventListener('close', resolve, { once: true })));
     await closeGatewayListeners(io, servers, engines);
     await Promise.all(closed);
     assert.ok(servers.every((server) => !server.listening));

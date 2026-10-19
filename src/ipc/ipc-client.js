@@ -8,7 +8,7 @@
  * - Receives events from the engine and forwards them via callback
  */
 
-const WebSocket = require('ws');
+const { connectWebSocket } = require('../websocket-connection');
 const { MSG_TYPE, DEFAULT_TIMEOUT, createMessage, serialize, deserialize } = require('./ipc-protocol');
 const { createContextLogger } = require('../logger');
 
@@ -42,7 +42,7 @@ const createIPCClient = (url, name, options = {}) => {
     reconnectMax = 30000,
   } = options;
 
-  /** @type {WebSocket | null} */
+  /** @type {import('../websocket-connection').WebSocketConnection | null} */
   let ws = null;
   let connected = false;
   let shouldReconnect = true;
@@ -56,27 +56,33 @@ const createIPCClient = (url, name, options = {}) => {
   const pendingRequests = new Map();
 
   const connect = () => {
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    if (ws && (ws.isOpen() || ws.isConnecting())) return;
 
     shouldReconnect = true;
 
-    ws = new WebSocket(url);
+    const socket = connectWebSocket(url);
+    ws = socket;
+    // Handlers act only while this socket is the current one: a close that
+    // lands after disconnect() or a reconnect must not touch its successor.
+    const isCurrent = () => ws === socket;
 
-    ws.on('open', () => {
+    socket.on('open', () => {
+      if (!isCurrent()) return;
       connected = true;
       reconnectDelay = reconnectMin;
       logger.info(`ℹ️ 🔗 [${name}] IPC connected to ${url}`, { event: 'open', url });
 
       pingTimer = setInterval(() => {
-        if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(serialize(createMessage(MSG_TYPE.PING, 'ping', null)));
+        if (socket.isOpen()) {
+          socket.send(serialize(createMessage(MSG_TYPE.PING, 'ping', null)));
         }
       }, 15_000);
 
       if (onConnect) onConnect();
     });
 
-    ws.on('message', (data) => {
+    socket.on('message', (data) => {
+      if (!isCurrent()) return;
       let msg;
       try {
         msg = deserialize(data.toString());
@@ -90,7 +96,8 @@ const createIPCClient = (url, name, options = {}) => {
       handleIncoming(msg);
     });
 
-    ws.on('close', () => {
+    socket.on('close', () => {
+      if (!isCurrent()) return;
       const wasConnected = connected;
       connected = false;
       if (pingTimer) {
@@ -115,16 +122,16 @@ const createIPCClient = (url, name, options = {}) => {
       }
     });
 
-    ws.on('error', (err) => {
-      // Don't log ECONNREFUSED on every attempt — expected when engine isn't up yet
-      if (err.code !== 'ECONNREFUSED') {
-        logger.error(`❌ 🔗 [${name}] IPC error: ${err.message}`, {
-          event: 'socket-error',
-          url,
-          code: err.code,
-          error: err.message,
-        });
-      }
+    socket.on('error', (err) => {
+      if (!isCurrent()) return;
+      // A failed handshake is expected while the engine is still starting
+      // (the refused-connection case); the close path schedules the retry.
+      if (!connected) return;
+      logger.error(`❌ 🔗 [${name}] IPC error: ${err.message}`, {
+        event: 'socket-error',
+        url,
+        error: err.message,
+      });
     });
   };
 
@@ -195,7 +202,7 @@ const createIPCClient = (url, name, options = {}) => {
       }, timeout);
 
       pendingRequests.set(msg.id, { resolve, reject, timer });
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
+      if (!ws || !ws.isOpen()) {
         clearTimeout(timer);
         pendingRequests.delete(msg.id);
         return reject(new Error(`IPC WebSocket not open (${name})`));
@@ -211,7 +218,7 @@ const createIPCClient = (url, name, options = {}) => {
    * @param {string} [pair] - Pair name
    */
   const sendConfigUpdate = (payload, exchange, pair) => {
-    if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!connected || !ws || !ws.isOpen()) return;
     const msg = createMessage(MSG_TYPE.CONFIG_UPDATE, 'config_update', payload, { exchange, pair });
     ws.send(serialize(msg));
   };

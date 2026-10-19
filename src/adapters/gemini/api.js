@@ -1,7 +1,6 @@
 // @ts-check
 const fs = require('fs');
 const path = require('path');
-const WebSocket = require('ws');
 const crypto = require('crypto');
 const { getWebSocketAuthHeaders, getRestAuthHeaders } = require('./auth');
 const { createBaseAdapter, createAmbiguousPlacementError, restQueueTiming } = require('../base-adapter');
