@@ -11,7 +11,10 @@
  *    `close` (1006) either way, so reconnect logic never stalls.
  *  - close() on a peer that never answers waits forever (no close timeout), so
  *    a dead TCP connection needs `terminate()`: detach, best-effort close, and
- *    report `close` (1006) immediately.
+ *    report `close` (1006) immediately. The global client exposes no transport
+ *    abort, so the runtime socket stays in CLOSING until the kernel gives up
+ *    retransmitting the close frame (bounded by the TCP retransmission limit,
+ *    minutes at most); it is detached, so it can never affect the session.
  *
  * Events: `open`, `message` (string for text, Buffer for binary), `error`
  * (Error), and exactly one `close` (code, reason). `error` is only emitted
@@ -108,6 +111,7 @@ const connectWebSocket = (url) => {
   };
   emitter.terminate = (reason = 'terminated') => {
     if (state === 'closed') return;
+    // Best effort only: there is no API to abort the transport (see header).
     try { socket.close(); } catch { /* already closing, or an invalid state */ }
     finish(1006, reason);
   };
