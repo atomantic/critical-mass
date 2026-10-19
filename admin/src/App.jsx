@@ -1,5 +1,5 @@
 import { Component, useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react'
-import { Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom'
+import { Routes, Route, Link, useLocation, useNavigate, Navigate } from './lib/router'
 import ExchangeSelector from './components/ExchangeSelector'
 import AddFundModal from './components/AddFundModal'
 import ModalDialog from './components/ModalDialog'

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from '../../lib/router'
 import { Play, Square, RotateCcw, Volume2, VolumeX, BarChart3 } from '../icons'
 import { useUpDownSocket } from '../../hooks/useUpDownSocket'
 

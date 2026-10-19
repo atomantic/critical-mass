@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from '../lib/router'
 import { formatCurrency } from './charts/chartUtils'
 
 // Closed fund summary link. Flex-wrap + min-w-0/break-words keep identity and

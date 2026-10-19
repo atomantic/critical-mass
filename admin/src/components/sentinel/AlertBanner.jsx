@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from '../../lib/router'
 
 /**
  * Compact alert banner shown globally when critical/warning sentinel alerts are active.
