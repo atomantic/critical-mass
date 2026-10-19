@@ -11,8 +11,9 @@
  */
 const { describe, it, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
-const WebSocket = require('ws');
+const http = require('node:http');
 const path = require('node:path');
 
 const { createIPCClient } = require('../src/ipc/ipc-client');
@@ -22,7 +23,7 @@ const { registerEngineLifecycleHandlers } = require('../src/engine-lifecycle-han
 const { fundKey, fundLabel } = require('../src/shared-utils');
 const { LIFECYCLE } = require('../src/state-tracker');
 const {
-  FakeWebSocket, until, deferred, loadClientWithFakeWs, trackTimers, restoreTimers, startEngineIpc,
+  FakeWebSocket, installFakeWebSocket, commands, until, deferred, trackTimers, restoreTimers, startEngineIpc,
 } = require('./helpers/ipc-command-harness');
 
 const EXCHANGE = 'coinbase';
@@ -49,6 +50,23 @@ const connectReal = async (register, options = {}) => {
 };
 
 describe('IPC process-only upgrade boundary', () => {
+  /** Raw HTTP upgrade attempt; resolves with the status the engine answered. */
+  const rawUpgrade = (url, headers) => new Promise((resolve, reject) => {
+    const { hostname, port } = new URL(url);
+    const req = http.request({
+      host: hostname, port, method: 'GET', path: '/',
+      headers: {
+        Connection: 'Upgrade', Upgrade: 'websocket',
+        'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64'), 'Sec-WebSocket-Version': '13',
+        ...headers,
+      },
+    });
+    req.on('upgrade', (res, socket) => { socket.destroy(); resolve(res.statusCode); });
+    req.on('response', (res) => { res.resume(); resolve(res.statusCode); });
+    req.on('error', reject);
+    req.end();
+  });
+
   for (const origin of ['https://untrusted.example', 'same-origin', 'null', '']) {
     it(`rejects ${JSON.stringify(origin)} Origin before admitting requests or events`, async () => {
       let requests = 0;
@@ -58,26 +76,20 @@ describe('IPC process-only upgrade boundary', () => {
         ipc.onRequest('config_update', async () => { updates++; });
       });
       onCleanup(() => server.stop());
-      const browser = new WebSocket(url, { headers: { Origin: origin === 'same-origin' ? url.replace('ws:', 'http:') : origin } });
-      onCleanup(() => browser.terminate());
+      const originHeader = origin === 'same-origin' ? url.replace('ws:', 'http:') : origin;
+      assert.equal(await rawUpgrade(url, { Origin: originHeader }), 401);
+      // The production client class, told to send an Origin, is refused the same way.
+      const browser = new WebSocket(url, { headers: { Origin: originHeader } });
+      onCleanup(() => browser.close());
       let opened = false;
       const messages = [];
-      browser.on('message', (message) => messages.push(message));
-      browser.on('open', () => {
+      browser.addEventListener('message', (event) => messages.push(event.data));
+      browser.addEventListener('open', () => {
         opened = true;
         browser.send(JSON.stringify(createMessage(MSG_TYPE.REQUEST, 'test:echo', {})));
         browser.send(JSON.stringify(createMessage(MSG_TYPE.CONFIG_UPDATE, 'config_update', {})));
       });
-      const rejected = new Promise((resolve, reject) => {
-        browser.once('unexpected-response', (_request, response) => {
-          response.resume();
-          browser.terminate();
-          resolve(response.statusCode);
-        });
-        browser.once('open', () => reject(new Error('Origin client admitted')));
-        browser.on('error', () => {}); // terminate after a rejected HTTP upgrade
-      });
-      assert.equal(await rejected, 401);
+      await new Promise((resolve) => browser.addEventListener('error', resolve, { once: true }));
       server.broadcast('test:event', { private: true });
       assert.equal(opened, false);
       assert.equal(requests, 0);
@@ -166,8 +178,8 @@ describe('IPC command transport over a real socket', () => {
 describe('IPC request lifecycle on a controlled socket', () => {
   const setup = (options = {}) => {
     const timers = trackTimers();
-    const createClient = loadClientWithFakeWs();
-    const client = createClient('ws://127.0.0.1:1', 'fake', options);
+    onCleanup(installFakeWebSocket());
+    const client = createIPCClient('ws://127.0.0.1:1', 'fake', options);
     onCleanup(() => client.disconnect());
     client.connect();
     const sock = FakeWebSocket.instances[0];
@@ -175,12 +187,12 @@ describe('IPC request lifecycle on a controlled socket', () => {
     return { client, sock, ...timers };
   };
   const respond = (sock, request, extra = {}) =>
-    sock.receive(createMessage(MSG_TYPE.RESPONSE, request.channel, extra.payload ?? { ok: true }, { id: request.id, error: extra.error }));
+    sock.receive(JSON.stringify(createMessage(MSG_TYPE.RESPONSE, request.channel, extra.payload ?? { ok: true }, { id: request.id, error: extra.error })));
 
   it('serializes channel, exchange, pair and payload for the pair-aware signature', () => {
     const { client, sock } = setup();
     client.request('regime:pause', { reason: 'r' }, EXCHANGE, SECOND_FUND).catch(() => {});
-    const [frame] = sock.frames;
+    const [frame] = commands(sock);
     assert.equal(frame.type, MSG_TYPE.REQUEST);
     assert.equal(frame.channel, 'regime:pause');
     assert.equal(frame.exchange, EXCHANGE);
@@ -191,7 +203,7 @@ describe('IPC request lifecycle on a controlled socket', () => {
   it('honors a custom deadline in the pair-aware signature and ignores a late reply for the next request', async () => {
     const { client, sock, tick, live } = setup();
     const first = client.request('regime:rollup-body', { bodyId: 1 }, EXCHANGE, SECOND_FUND, 60_000);
-    const firstFrame = sock.frames[0];
+    const firstFrame = commands(sock)[0];
 
     tick(DEFAULT_TIMEOUT + 1);
     let settled = false;
@@ -204,7 +216,7 @@ describe('IPC request lifecycle on a controlled socket', () => {
     assert.equal(live.size, 0, 'expired deadline is gone');
 
     const second = client.request('regime:status', {}, EXCHANGE, DEFAULT_FUND);
-    const secondFrame = sock.frames[1];
+    const secondFrame = commands(sock)[1];
     let secondSettled = false;
     second.then(() => { secondSettled = true; }, () => { secondSettled = true; });
 
@@ -220,7 +232,7 @@ describe('IPC request lifecycle on a controlled socket', () => {
   it('honors a custom deadline in the legacy fourth-argument signature and defaults otherwise', async () => {
     const { client, sock, tick } = setup();
     const legacy = client.request('regime:status', {}, EXCHANGE, 250);
-    assert.equal(sock.frames[0].pair, null, 'legacy signature carries no pair');
+    assert.equal(commands(sock)[0].pair, null, 'legacy signature carries no pair');
     const defaulted = client.request('regime:status', {}, EXCHANGE, DEFAULT_FUND);
     const outcomes = [legacy, defaulted].map((p) => p.then(() => 'resolved', (err) => err.message));
 
@@ -240,7 +252,7 @@ describe('IPC request lifecycle on a controlled socket', () => {
     const { client, sock, live } = setup();
     const a = client.request('regime:pause', {}, EXCHANGE, DEFAULT_FUND);
     const b = client.request('regime:pause', {}, EXCHANGE, SECOND_FUND);
-    const [fa, fb] = sock.frames;
+    const [fa, fb] = commands(sock);
     assert.notEqual(fa.id, fb.id);
 
     respond(sock, fb, { payload: { fund: SECOND_FUND } });
@@ -268,14 +280,14 @@ describe('IPC request lifecycle on a controlled socket', () => {
     tick(1000);
     assert.equal(FakeWebSocket.instances.length, 2, 'automatic reconnect opened a new socket');
     const fresh = FakeWebSocket.instances[1];
-    assert.equal(fresh.frames.length, 0, 'reconnect must not replay sent commands');
+    assert.equal(commands(fresh).length, 0, 'reconnect must not replay sent commands');
     fresh.open();
 
     const next = client.request('regime:status', {}, EXCHANGE, SECOND_FUND);
-    assert.equal(fresh.frames.length, 1);
-    assert.equal(fresh.frames[0].channel, 'regime:status');
-    assert.equal(sock.frames.length, 2, 'the old socket saw only its original two commands');
-    respond(fresh, fresh.frames[0], { payload: { success: true } });
+    assert.equal(commands(fresh).length, 1);
+    assert.equal(commands(fresh)[0].channel, 'regime:status');
+    assert.equal(commands(sock).length, 2, 'the old socket saw only its original two commands');
+    respond(fresh, commands(fresh)[0], { payload: { success: true } });
     assert.deepEqual(await next, { success: true });
   });
 
@@ -292,7 +304,7 @@ describe('IPC request lifecycle on a controlled socket', () => {
 
     tick(10 * 60_000);
     assert.equal(FakeWebSocket.instances.length, 1, 'intentional disconnect must schedule no reconnect');
-    assert.equal(sock.frames.length, 1);
+    assert.equal(commands(sock).length, 1);
     await assert.rejects(client.request('regime:status', {}, EXCHANGE, DEFAULT_FUND), /IPC not connected/);
   });
 });

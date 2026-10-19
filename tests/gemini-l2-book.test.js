@@ -11,41 +11,17 @@
  * The fix maintains a real L2 book (price -> qty per side), applies qty=0 as a
  * deletion, and recomputes bestBid = max(bids) / bestAsk = min(asks) after
  * each update. These tests drive the feed through its public interface using
- * the same injected-fake-`ws` pattern as websocket-feed.test.js and assert on
- * the emitted ticker bid/ask.
+ * the same fake global WebSocket as websocket-feed.test.js and assert on the
+ * emitted ticker bid/ask.
  */
-const { describe, it } = require('node:test');
+const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { EventEmitter } = require('node:events');
+const { FakeWebSocket, installFakeWebSocket } = require('./helpers/fake-websocket');
 
-class FakeWebSocket extends EventEmitter {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSING = 2;
-  static CLOSED = 3;
-  /** @type {FakeWebSocket[]} */
-  static instances = [];
+// Installed before the feed connects so it picks up the fake.
+const restoreWebSocket = installFakeWebSocket();
+after(restoreWebSocket);
 
-  constructor(url) {
-    super();
-    this.url = url;
-    this.readyState = FakeWebSocket.OPEN;
-    this.sent = [];
-    FakeWebSocket.instances.push(this);
-  }
-
-  send(data) { this.sent.push(data); }
-  ping() {}
-  close() { this.readyState = FakeWebSocket.CLOSED; }
-  terminate() { this.readyState = FakeWebSocket.CLOSED; this.emit('close', 1006, Buffer.from('')); }
-}
-
-// Inject the fake 'ws' module before loading the feed so it picks it up.
-const wsPath = require.resolve('ws');
-require.cache[wsPath] = /** @type {any} */ ({
-  id: wsPath, filename: wsPath, path: wsPath, loaded: true, exports: FakeWebSocket, children: [],
-});
-delete require.cache[require.resolve('../src/adapters/gemini/websocket')];
 const { createGeminiWebSocketFeed } = require('../src/adapters/gemini/websocket');
 
 /**
@@ -65,7 +41,7 @@ const openFeed = (t) => {
   });
   feed.connect();
   const sock = FakeWebSocket.instances[0];
-  sock.emit('open');
+  sock.open();
   return {
     feed,
     sock,
@@ -76,7 +52,7 @@ const openFeed = (t) => {
 
 /** Emit an l2_updates message with the given [side, price, qty] changes. */
 const l2 = (sock, changes) =>
-  sock.emit('message', Buffer.from(JSON.stringify({ type: 'l2_updates', symbol: 'BTCUSD', changes })));
+  sock.receive(JSON.stringify({ type: 'l2_updates', symbol: 'BTCUSD', changes }));
 
 describe('Gemini L2 best bid/ask book (issue #144)', () => {
   it('drops best bid to the next level when the top bid is removed (qty=0)', (t) => {
@@ -160,18 +136,18 @@ describe('Gemini L2 best bid/ask book (issue #144)', () => {
     const { sock, ticker } = openFeed(t);
 
     // Snapshot carries an embedded trade → lastPrice becomes 200.
-    sock.emit('message', Buffer.from(JSON.stringify({
+    sock.receive(JSON.stringify({
       type: 'l2_updates', symbol: 'BTCUSD',
       changes: [['buy', '199', '1'], ['sell', '201', '1']],
       trades: [{ tid: 1, price: '200', quantity: '0.1', side: 'buy', timestamp: 1 }],
-    })));
+    }));
     assert.equal(ticker().price, 200);
 
     // Reconnect, then a fresh snapshot at a much lower range with NO trade.
-    sock.terminate();
+    sock.peerClose(1006, 'lost');
     t.mock.timers.tick(1000);
     const sock2 = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
-    sock2.emit('open');
+    sock2.open();
     l2(sock2, [['buy', '49', '1'], ['sell', '51', '1']]);
 
     // Price must reflect the fresh book (bestBid 49), not the stale 200 trade.
@@ -185,11 +161,11 @@ describe('Gemini L2 best bid/ask book (issue #144)', () => {
     assert.equal(ticker().bid, 100);
 
     // Drop the connection; the close path schedules a reconnect.
-    sock.terminate();
+    sock.peerClose(1006, 'lost');
     t.mock.timers.tick(1000); // RECONNECT_BASE_DELAY → connect() makes a new socket
     const sock2 = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
     assert.notEqual(sock2, sock, 'reconnect must create a fresh socket');
-    sock2.emit('open');
+    sock2.open();
 
     // Fresh snapshot at a much lower range. The old 100 bid must be gone.
     l2(sock2, [['buy', '50', '1'], ['sell', '51', '1']]);

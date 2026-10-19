@@ -32,8 +32,9 @@ Critical-mass runs as 5 PM2 processes: a thin API gateway and 3 isolated engine 
 | File | Purpose |
 |---|---|
 | `ipc-protocol.js` | Message types, serialization, UUID correlation |
+| `ws-server.js` | Owned RFC 6455 loopback WebSocket server (handshake, framing, close handshake, Origin refusal) |
 | `ipc-server.js` | WS server for engine processes (request/response) |
-| `ipc-client.js` | WS client for gateway (auto-reconnect, backoff) |
+| `ipc-client.js` | WS client for gateway (auto-reconnect, backoff) over Node's global `WebSocket` |
 | `socket-io-proxy.js` | Drop-in `io` replacement forwarding over IPC |
 
 IPC listens only on loopback and accepts process clients only. Every WebSocket

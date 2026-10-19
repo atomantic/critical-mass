@@ -33,7 +33,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
   const logger = { info: (message) => logs.push(message), warn: () => {}, error: () => {} };
   const ipcModule = { exports: {} };
   const ipcDependencies = {
-    ws: { Server: MockServer, OPEN: 1 },
+    './ws-server': { WebSocketServer: MockServer, OPEN: 1 },
     '../pending-writes': { trackPendingWrite: (_, run) => Promise.resolve().then(run) },
     './ipc-protocol': protocol,
     '../logger': { createContextLogger: () => logger },

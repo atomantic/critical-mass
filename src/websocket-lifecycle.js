@@ -1,14 +1,21 @@
 // @ts-check
-const WebSocket = require('ws');
+const { connectWebSocket } = require('./websocket-connection');
 
 const HEARTBEAT_INTERVAL = 30000;
-const MAX_MISSED_PONGS = 2;
+const MAX_SILENT_INTERVALS = 2;
 const RECONNECT_BASE_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 60000;
 
 /**
  * Own one feed's socket sessions and their timers. Exchange protocol work stays
  * in the feed; callbacks and delayed work may only act on their own live socket.
+ *
+ * Liveness is judged on inbound traffic. Every feed guarantees periodic frames
+ * (Coinbase `heartbeats` channel, Gemini `heartbeat`, Crypto.com
+ * `public/heartbeat`), so a socket that stays silent for MAX_SILENT_INTERVALS
+ * heartbeat intervals is dead (NAT timeout, sleep, partition) even though the
+ * runtime still reports it open. It is terminated so the usual close →
+ * reconnect/backoff path runs.
  */
 const createWebSocketLifecycle = ({
   url, exchange, logger, config, subscribe, handleMessage,
@@ -19,7 +26,7 @@ const createWebSocketLifecycle = ({
   let reconnectAttempts = 0;
   let reconnectTimeout = null;
   const isCurrent = current => session === current;
-  const isOpen = current => isCurrent(current) && current.socket.readyState === WebSocket.OPEN;
+  const isOpen = current => isCurrent(current) && current.socket.isOpen();
 
   const clearReconnect = () => {
     clearTimeout(reconnectTimeout);
@@ -46,29 +53,29 @@ const createWebSocketLifecycle = ({
   };
 
   const startHeartbeat = current => {
-    current.missedPongs = 0;
+    current.silentIntervals = 0;
     current.heartbeatInterval = setInterval(() => {
       if (!isOpen(current)) return;
-      if (current.missedPongs >= MAX_MISSED_PONGS) {
-        logger.error(`💀 [${exchange}] No pong after ${current.missedPongs} pings (${(current.missedPongs * HEARTBEAT_INTERVAL) / 1000}s) — terminating dead WebSocket to trigger reconnect`, {
-          missedPongs: current.missedPongs,
-          elapsedMs: current.missedPongs * HEARTBEAT_INTERVAL,
+      if (current.silentIntervals >= MAX_SILENT_INTERVALS) {
+        const elapsedMs = current.silentIntervals * HEARTBEAT_INTERVAL;
+        logger.error(`💀 [${exchange}] No inbound frame for ${elapsedMs / 1000}s — terminating dead WebSocket to trigger reconnect`, {
+          silentIntervals: current.silentIntervals,
+          elapsedMs,
         });
         current.socket.terminate();
         return;
       }
-      current.missedPongs++;
-      current.socket.ping();
+      current.silentIntervals++;
     }, HEARTBEAT_INTERVAL);
   };
 
   const connect = () => {
-    if (session && [WebSocket.OPEN, WebSocket.CONNECTING].includes(session.socket.readyState)) return;
+    if (session && (session.socket.isOpen() || session.socket.isConnecting())) return;
     if (session) retireSession(session);
     clearReconnect();
     logger.info(`🔌 [${exchange}] Connecting to ${name}...`, { lifecycle: 'connecting' });
-    const socket = new WebSocket(url);
-    const current = { socket, connected: false, missedPongs: 0, subscribeTimeout: null, heartbeatInterval: null };
+    const socket = connectWebSocket(url);
+    const current = { socket, connected: false, silentIntervals: 0, subscribeTimeout: null, heartbeatInterval: null };
     session = current;
 
     socket.on('open', () => {
@@ -90,16 +97,13 @@ const createWebSocketLifecycle = ({
     });
     socket.on('message', data => {
       if (!isOpen(current)) return;
-      current.missedPongs = 0;
-      handleMessage(data.toString(), socket);
-    });
-    socket.on('pong', () => {
-      if (isOpen(current)) current.missedPongs = 0;
+      current.silentIntervals = 0;
+      handleMessage(typeof data === 'string' ? data : data.toString(), socket);
     });
     socket.on('close', (code, reason) => {
       if (!isCurrent(current)) return;
       logger.info(`🔌 [${exchange}] ${name} closed: ${code} ${reason}`, {
-        lifecycle: 'closed', code, reason: reason.toString(),
+        lifecycle: 'closed', code, reason: String(reason),
       });
       retireSession(current);
       config.onDisconnect?.();

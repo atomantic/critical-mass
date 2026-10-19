@@ -10,7 +10,7 @@
  *
  * Features:
  * - Automatic reconnection with exponential backoff
- * - Heartbeat/ping-pong for connection health
+ * - heartbeats channel keeps inbound traffic flowing for the liveness watchdog
  * - JWT authentication for user channel
  */
 
@@ -107,8 +107,17 @@ const createWebSocketFeed = (exchange, config) => {
       channel: 'market_trades',
     };
 
+    // Heartbeats (one per second) keep inbound traffic flowing on a quiet
+    // product; the lifecycle judges liveness on inbound frames (issue #1180).
+    const heartbeatSub = {
+      type: 'subscribe',
+      product_ids: productIds,
+      channel: 'heartbeats',
+    };
+
     ws.send(JSON.stringify(tickerSub));
     ws.send(JSON.stringify(tradesSub));
+    ws.send(JSON.stringify(heartbeatSub));
 
     // Subscribe to user channel (authenticated) - only if not public-only mode
     if (!config.publicOnly && config.apiKey && config.apiSecret) {
@@ -121,18 +130,18 @@ const createWebSocketFeed = (exchange, config) => {
           jwt: jwtToken,
         };
         ws.send(JSON.stringify(userSub));
-        logger.info(`📡 [${exchange}] Subscribed to ticker, market_trades, user channels for ${config.productId}`, {
-          channels: ['ticker', 'market_trades', 'user'],
+        logger.info(`📡 [${exchange}] Subscribed to ticker, market_trades, heartbeats, user channels for ${config.productId}`, {
+          channels: ['ticker', 'market_trades', 'heartbeats', 'user'],
         });
       } catch (err) {
         logger.warn(`⚠️ [${exchange}] Failed to subscribe to user channel (JWT error): ${err.message}`, { error: err.message, channel: 'user' });
-        logger.info(`📡 [${exchange}] Subscribed to ticker, market_trades channels for ${config.productId}`, {
-          channels: ['ticker', 'market_trades'],
+        logger.info(`📡 [${exchange}] Subscribed to ticker, market_trades, heartbeats channels for ${config.productId}`, {
+          channels: ['ticker', 'market_trades', 'heartbeats'],
         });
       }
     } else {
-      logger.info(`📡 [${exchange}] Subscribed to ticker, market_trades channels for ${config.productId}`, {
-        channels: ['ticker', 'market_trades'],
+      logger.info(`📡 [${exchange}] Subscribed to ticker, market_trades, heartbeats channels for ${config.productId}`, {
+        channels: ['ticker', 'market_trades', 'heartbeats'],
       });
     }
   };

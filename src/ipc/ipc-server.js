@@ -7,7 +7,7 @@
  * - Broadcasts events back to the gateway (for Socket.IO forwarding)
  */
 
-const WebSocket = require('ws');
+const { WebSocketServer, OPEN } = require('./ws-server');
 const { MSG_TYPE, createMessage, serialize, deserialize } = require('./ipc-protocol');
 const { createContextLogger } = require('../logger');
 const { trackPendingWrite } = require('../pending-writes');
@@ -30,7 +30,7 @@ const ipcServerLogger = (name) => createContextLogger({ module: 'ipc-server', pe
  */
 const createIPCServer = (port, name) => {
   const logger = ipcServerLogger(name);
-  /** @type {import('ws').WebSocketServer | null} */
+  /** @type {WebSocketServer | null} */
   let wss = null;
   /** @type {Promise<void> | null} */
   let startPromise = null;
@@ -38,7 +38,7 @@ const createIPCServer = (port, name) => {
   let rejectStart = null;
   let initializing = false;
   let shuttingDown = false;
-  /** @type {Set<WebSocket>} */
+  /** @type {Set<import('./ws-server').WebSocketConnection>} */
   const clients = new Set();
   /** @type {Set<Promise<void>>} Outbound frames awaiting their send callback. */
   const pendingBroadcasts = new Set();
@@ -66,12 +66,12 @@ const createIPCServer = (port, name) => {
     if (startPromise) return startPromise;
     let server;
     try {
-      server = new WebSocket.Server({
+      server = new WebSocketServer({
         port,
         host: '127.0.0.1',
         // Process IPC only: browsers always supply Origin, including opaque
         // ('null') origins. Check presence so an empty header is rejected too.
-        verifyClient: ({ req }) => !shuttingDown && !Object.prototype.hasOwnProperty.call(req.headers, 'origin'),
+        verifyClient: (req) => !shuttingDown && !Object.prototype.hasOwnProperty.call(req.headers, 'origin'),
       });
     } catch (err) {
       return Promise.reject(err);
@@ -165,7 +165,7 @@ const createIPCServer = (port, name) => {
 
   /**
    * Handle an incoming message from the gateway
-   * @param {WebSocket} ws
+   * @param {import('./ws-server').WebSocketConnection} ws
    * @param {Object} msg
    */
   const handleIncoming = async (ws, msg) => {
@@ -263,7 +263,7 @@ const createIPCServer = (port, name) => {
     const msg = createMessage(MSG_TYPE.EVENT, channel, payload, options);
     const data = serialize(msg);
     for (const client of clients) {
-      if (client.readyState === WebSocket.OPEN) {
+      if (client.readyState === OPEN) {
         let complete;
         const sent = new Promise((resolve) => { complete = resolve; });
         pendingBroadcasts.add(sent);

@@ -1,12 +1,10 @@
 'use strict';
-// Minimal Chrome DevTools driver; uses the existing ws dependency, never
+// Minimal Chrome DevTools driver over Node's global WebSocket; never
 // downloads a browser or reads an operator's browser profile.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { once } = require('node:events');
-const WebSocket = require('ws');
 const { stopChild } = require('./perf-browser-fixture');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function startChrome(executable = process.env.CM_PERF_CHROME) {
@@ -35,11 +33,14 @@ async function startChrome(executable = process.env.CM_PERF_CHROME) {
     if (!port) throw new Error('Chrome DevTools startup timed out');
     const target = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
     socket = new WebSocket(target.webSocketDebuggerUrl);
-    await once(socket, 'open');
+    await new Promise((resolve, reject) => {
+      socket.addEventListener('open', resolve, { once: true });
+      socket.addEventListener('error', () => reject(new Error('DevTools socket failed to connect')), { once: true });
+    });
     const listeners = new Map();
     let id = 0;
-    socket.on('message', bytes => {
-      const msg = JSON.parse(bytes.toString());
+    socket.addEventListener('message', ({ data }) => {
+      const msg = JSON.parse(String(data));
       if (msg.id) {
         const request = pending.get(msg.id);
         if (!request) return;

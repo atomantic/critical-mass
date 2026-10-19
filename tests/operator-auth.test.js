@@ -789,16 +789,15 @@ describe('operator authentication resource bounds', () => {
   });
 });
 
-// Use real Engine.IO/WebSocket transports without adding a client dependency.
+// Use real Engine.IO/WebSocket transports through Node's global WebSocket client.
 const connectOperatorSocket = (baseUrl, { cookie, token } = {}) => new Promise((resolve, reject) => {
-  const WebSocket = require('ws');
   const socket = new WebSocket(`${baseUrl.replace('http:', 'ws:')}/socket.io/?EIO=4&transport=websocket`, {
     headers: cookie ? { Cookie: cookie } : {},
   });
   socket.packets = [];
-  socket.on('error', reject);
-  socket.on('message', (data) => {
-    const packet = data.toString();
+  socket.addEventListener('error', () => reject(new Error('operator socket failed')));
+  socket.addEventListener('message', ({ data }) => {
+    const packet = String(data);
     socket.packets.push(packet);
     if (packet.startsWith('0')) socket.send(`40${JSON.stringify(token ? { token } : {})}`);
     if (packet === '2') socket.send('3');
@@ -811,15 +810,15 @@ const connectOperatorSocket = (baseUrl, { cookie, token } = {}) => new Promise((
 });
 
 const socketEvent = (socket, name) => new Promise((resolve) => {
-  const onMessage = (data) => {
-    const packet = data.toString();
+  const onMessage = ({ data }) => {
+    const packet = String(data);
     if (!packet.startsWith('42')) return;
     const [event, payload] = JSON.parse(packet.slice(2));
     if (event !== name) return;
-    socket.off('message', onMessage);
+    socket.removeEventListener('message', onMessage);
     resolve(payload);
   };
-  socket.on('message', onMessage);
+  socket.addEventListener('message', onMessage);
 });
 
 const withSocketGateway = async (run, { failPersistence = false } = {}) => {
@@ -884,7 +883,7 @@ const withSocketGateway = async (run, { failPersistence = false } = {}) => {
     };
     await run({ urls, connect, io, registry, children, authFile, changes: () => changes, expireAttempts: () => { now += 60_001; } });
   } finally {
-    for (const client of clients) client.terminate();
+    for (const client of clients) client.close();
     io.disconnectSockets(true);
     for (const engine of engines) engine.close();
     await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
@@ -924,7 +923,7 @@ describe('established operator socket revocation', () => {
         io.emit('trade:event', { valid: true });
         assert.deepEqual(await delivered, { valid: true });
       }
-      const closed = clients.map((client) => new Promise((resolve) => client.once('close', resolve)));
+      const closed = clients.map((client) => new Promise((resolve) => client.addEventListener('close', resolve, { once: true })));
       const response = await fetch(`${urls[0]}/api/auth/password`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie },
         body: JSON.stringify({ password: NEW_PASSWORD, currentPassword: PASSWORD }),
@@ -941,9 +940,11 @@ describe('established operator socket revocation', () => {
       io.emit('trade:event', { revoked: true });
       for (const child of children) child.stdout.emit('data', Buffer.from('private log\n'));
       for (const client of clients) {
-        // A closed transport cannot dispatch another PM2 subscribe or flush.
-        client.send(`42${JSON.stringify(['logs:flush', { processName: 'critical-mass' }])}`, () => {});
-        client.send(`42${JSON.stringify(['logs:subscribe', { processName: 'critical-mass' }])}`, () => {});
+        // A closed transport cannot dispatch another PM2 subscribe or flush
+        // (a closed global WebSocket drops sends silently).
+        assert.equal(client.readyState, WebSocket.CLOSED);
+        client.send(`42${JSON.stringify(['logs:flush', { processName: 'critical-mass' }])}`);
+        client.send(`42${JSON.stringify(['logs:subscribe', { processName: 'critical-mass' }])}`);
       }
       assert.equal(children.length, 2);
       assert.deepEqual(clients.map((client) => client.packets.length), packetCounts);
