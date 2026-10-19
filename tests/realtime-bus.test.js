@@ -54,6 +54,8 @@ const startBus = async (t, { count = 1, auth = false, ...options } = {}) => {
     ...options,
   });
   for (const server of servers) bus.attach(server);
+  // Echo for roundTrip(): frames on one connection are handled in order.
+  bus.on('connection', (socket) => socket.on('test:sync', (marker) => socket.emit('test:synced', marker)));
   const hosts = [];
   for (const server of servers) hosts.push(await listen(server));
   t.after(async () => {
@@ -113,11 +115,16 @@ const connect = (t, host, { headers = {}, pong = true } = {}) => new Promise((re
 const send = (client, frame) => client.ws.send(JSON.stringify(frame));
 const events = (client, name) => client.frames.filter((f) => f.t === 'event' && f.e === name).map((f) => f.p);
 const settle = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
-/** Round-trip through the server so earlier client frames are processed. */
-const roundTrip = async (bus, client) => {
+/**
+ * Round-trip through the server: once the echo of a client-sent marker
+ * arrives, every earlier client frame was handled and every earlier server
+ * frame was delivered.
+ */
+const roundTrip = async (client) => {
   const marker = crypto.randomUUID();
-  bus.sockets.get(client.id)?.emit('test:marker', marker);
-  for (let i = 0; i < 100 && !events(client, 'test:marker').includes(marker); i++) await settle(5);
+  send(client, { t: 'event', e: 'test:sync', p: marker });
+  for (let i = 0; i < 200 && !events(client, 'test:synced').includes(marker); i++) await settle(5);
+  assert.ok(events(client, 'test:synced').includes(marker), 'server echoed the sync marker');
 };
 
 describe('realtime bus: operator check at upgrade', () => {
@@ -161,16 +168,16 @@ describe('realtime bus: delivery', () => {
     const [subscriber, other] = [await connect(t, host), await connect(t, host)];
     send(subscriber, { t: 'sub', r: 'updown' });
     send(other, { t: 'sub', r: 'not-a-room' });
-    await roundTrip(bus, subscriber);
-    await roundTrip(bus, other);
+    await roundTrip(subscriber);
+    await roundTrip(other);
     assert.deepEqual([...bus.sockets.get(subscriber.id).rooms], ['updown']);
     assert.deepEqual([...bus.sockets.get(other.id).rooms], [], 'rooms outside the allowlist are ignored');
 
     bus.to('updown').emit('updown:tick', { price: 1 });
     bus.to('sentinel').emit('sentinel:status', { running: true });
     bus.emit('trade:event', { id: 'broadcast' });
-    await roundTrip(bus, subscriber);
-    await roundTrip(bus, other);
+    await roundTrip(subscriber);
+    await roundTrip(other);
     assert.deepEqual(events(subscriber, 'updown:tick'), [{ price: 1 }]);
     assert.deepEqual(events(other, 'updown:tick'), []);
     assert.deepEqual(events(subscriber, 'sentinel:status'), []);
@@ -178,9 +185,9 @@ describe('realtime bus: delivery', () => {
     assert.deepEqual(events(other, 'trade:event'), [{ id: 'broadcast' }]);
 
     send(subscriber, { t: 'unsub', r: 'updown' });
-    await roundTrip(bus, subscriber);
+    await roundTrip(subscriber);
     bus.to('updown').emit('updown:tick', { price: 2 });
-    await roundTrip(bus, subscriber);
+    await roundTrip(subscriber);
     assert.deepEqual(events(subscriber, 'updown:tick'), [{ price: 1 }]);
   });
 
@@ -196,13 +203,13 @@ describe('realtime bus: delivery', () => {
       socket.emit('welcome', { id: socket.id });
     });
     const client = await connect(t, host);
-    await roundTrip(bus, client);
+    await roundTrip(client);
     assert.deepEqual(events(client, 'welcome'), [{ id: client.id }], 'events emitted during connection follow the open frame');
     send(client, { t: 'event', e: 'logs:subscribe', p: { processName: 'critical-mass' } });
     send(client, { t: 'event', e: 'logs:unsubscribe' });
     send(client, { t: 'event', e: 'disconnect' });
     send(client, { t: 'event', e: 'logs:subscribe', p: { processName: 'after-failure' } });
-    await roundTrip(bus, client);
+    await roundTrip(client);
     assert.deepEqual(received, [{ processName: 'critical-mass' }, { processName: 'after-failure' }]);
     assert.equal(disconnects, 0);
     assert.ok(logs.some((line) => /logs:unsubscribe handler failed/.test(line)));
@@ -223,16 +230,24 @@ describe('realtime bus: shutdown and revocation', () => {
   it('refuses upgrades and drops inbound client messages while the gateway is stopping', async (t) => {
     let stopping = false;
     const received = [];
+    const joins = [];
     const { bus, hosts: [host] } = await startBus(t, { isStopping: () => stopping, rooms: ['updown'] });
-    bus.on('connection', (socket) => socket.on('logs:flush', (payload) => received.push(payload)));
+    bus.on('connection', (socket) => {
+      socket.on('logs:flush', (payload) => received.push(payload));
+      const join = socket.join;
+      socket.join = (room) => { joins.push(room); join(room); };
+    });
     const client = await connect(t, host);
     stopping = true;
     assert.equal(await upgradeStatus(host), 503);
     send(client, { t: 'event', e: 'logs:flush', p: { processName: 'critical-mass' } });
     send(client, { t: 'sub', r: 'updown' });
-    await roundTrip(bus, client);
+    // Client events are dropped while stopping, so sync on the close an
+    // invalid frame causes: it is handled after the two frames above.
+    client.ws.send('not json');
+    assert.equal((await client.closed).code, 1008);
     assert.deepEqual(received, []);
-    assert.deepEqual([...bus.sockets.get(client.id).rooms], []);
+    assert.deepEqual(joins, []);
   });
 
   it('disconnectSockets tears every socket down synchronously on every listener', async (t) => {
