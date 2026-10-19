@@ -1,8 +1,10 @@
-import { useRef, useEffect, useId, useMemo, useState } from 'react'
-import * as d3 from 'd3'
-import { formatPriceCompact } from './chartUtils'
+import { useId, useMemo } from 'react'
+import { areaPath, extent, formatTime, linePath, linearScale, max, min, timeScale } from '../../lib/chart-math'
+import { formatPriceCompact, regimeZones } from './chartUtils'
 import InfoTooltip from '../InfoTooltip'
 import ChartDataAlternative from './ChartDataAlternative'
+import { Axis, solidAxis } from './primitives/Axis'
+import { useElementSize } from './primitives/Responsive'
 import {
   REGIME_INTERVAL_COLUMNS,
   buildRegimeIntervals,
@@ -24,6 +26,10 @@ const REGIME_COLORS = {
   TREND: 'rgba(239, 68, 68, 0.08)',
 }
 
+const AXIS_GRAY = '#6b7280'
+const PRICE_BLUE = '#60a5fa'
+const formatHourMinute = formatTime('%H:%M')
+
 /**
  * Price chart with ATR bands for the regime dashboard
  * Shows 1 hour of price data with trigger zones
@@ -38,14 +44,12 @@ function RegimePriceChart({
   height = 280,
   className = '',
 }) {
-  const containerRef = useRef(null)
-  const svgRef = useRef(null)
-  const [containerWidth, setContainerWidth] = useState(0)
+  const [containerRef, { width: containerWidth }] = useElementSize()
   const headingId = useId()
   const summaryId = useId()
 
   // Filter to last 1 hour and sort by timestamp — defense in depth against any
-  // unsorted/overlapping upstream series (d3.line/d3.area draw in array order,
+  // unsorted/overlapping upstream series (lines and areas draw in array order,
   // so an unsorted series produces a line that jumps backward in time).
   const chartData = useMemo(() => {
     const cutoff = Date.now() - 60 * 60 * 1000
@@ -91,246 +95,29 @@ function RegimePriceChart({
     }
   }, [chartData, sortedRegimes, anchorPrice, atr, kFactor])
 
-  useEffect(() => {
-    if (!svgRef.current || !containerRef.current || chartData.length < 2 || containerWidth === 0) return
-    const svg = d3.select(svgRef.current)
-    svg.selectAll('*').remove()
-
+  const chart = useMemo(() => {
+    if (chartData.length < 2 || containerWidth === 0) return null
     const margin = { top: 20, right: 60, bottom: 30, left: 60 }
-    const width = containerWidth
-    const innerWidth = width - margin.left - margin.right
+    const innerWidth = containerWidth - margin.left - margin.right
     const innerHeight = height - margin.top - margin.bottom
 
-    svg.attr('width', width).attr('height', height)
-
-    const g = svg
-      .append('g')
-      .attr('transform', `translate(${margin.left},${margin.top})`)
-
-    // Scales
-    const xExtent = d3.extent(chartData, d => d.timestamp)
-    const xScale = d3.scaleTime()
-      .domain(xExtent)
-      .range([0, innerWidth])
-
+    const xExtent = extent(chartData, d => d.timestamp)
+    const xScale = timeScale(xExtent, [0, innerWidth])
     const prices = chartData.map(d => d.price)
-    const minPrice = d3.min(prices)
-    const maxPrice = d3.max(prices)
+    const minPrice = min(prices)
+    const maxPrice = max(prices)
     const padding = (maxPrice - minPrice) * 0.15 || 50
+    const yScale = linearScale([minPrice - padding, maxPrice + padding], [innerHeight, 0])
 
-    const yScale = d3.scaleLinear()
-      .domain([minPrice - padding, maxPrice + padding])
-      .range([innerHeight, 0])
-
-    // Regime background zones
-    if (sortedRegimes.length > 0) {
-      sortedRegimes.forEach((regime, i) => {
-        const startX = xScale(Math.max(regime.timestamp, xExtent[0]))
-        const endX = i < sortedRegimes.length - 1
-          ? xScale(sortedRegimes[i + 1].timestamp)
-          : innerWidth
-
-        if (startX < innerWidth && endX > 0) {
-          g.append('rect')
-            .attr('x', Math.max(0, startX))
-            .attr('y', 0)
-            .attr('width', Math.min(innerWidth, endX) - Math.max(0, startX))
-            .attr('height', innerHeight)
-            .attr('fill', REGIME_COLORS[regime.mode] || 'transparent')
-        }
-      })
+    const atX = d => xScale(d.timestamp)
+    return {
+      margin, innerWidth, innerHeight, xScale, yScale,
+      zones: regimeZones(sortedRegimes, xScale, xExtent[0], innerWidth),
+      area: areaPath(chartData, { x: atX, y0: innerHeight, y1: d => yScale(d.price) }),
+      line: linePath(chartData, { x: atX, y: d => yScale(d.price) }),
+      lastPoint: chartData[chartData.length - 1],
     }
-
-    // ATR trigger bands (if we have anchor and ATR)
-    if (anchorPrice && atr && atr > 0) {
-      const triggerDistance = kFactor * atr
-      const upperTrigger = anchorPrice + triggerDistance
-      const lowerTrigger = anchorPrice - triggerDistance
-
-      // Upper trigger zone
-      g.append('rect')
-        .attr('x', 0)
-        .attr('y', yScale(upperTrigger + triggerDistance * 0.5))
-        .attr('width', innerWidth)
-        .attr('height', yScale(upperTrigger) - yScale(upperTrigger + triggerDistance * 0.5))
-        .attr('fill', 'rgba(34, 197, 94, 0.1)')
-
-      // Lower trigger zone
-      g.append('rect')
-        .attr('x', 0)
-        .attr('y', yScale(lowerTrigger))
-        .attr('width', innerWidth)
-        .attr('height', yScale(lowerTrigger - triggerDistance * 0.5) - yScale(lowerTrigger))
-        .attr('fill', 'rgba(239, 68, 68, 0.1)')
-
-      // Anchor price line
-      g.append('line')
-        .attr('x1', 0)
-        .attr('x2', innerWidth)
-        .attr('y1', yScale(anchorPrice))
-        .attr('y2', yScale(anchorPrice))
-        .attr('stroke', '#60a5fa')
-        .attr('stroke-width', 1)
-        .attr('stroke-dasharray', '4,4')
-
-      // Upper trigger line
-      g.append('line')
-        .attr('x1', 0)
-        .attr('x2', innerWidth)
-        .attr('y1', yScale(upperTrigger))
-        .attr('y2', yScale(upperTrigger))
-        .attr('stroke', '#22c55e')
-        .attr('stroke-width', 1)
-        .attr('stroke-dasharray', '2,2')
-
-      // Lower trigger line
-      g.append('line')
-        .attr('x1', 0)
-        .attr('x2', innerWidth)
-        .attr('y1', yScale(lowerTrigger))
-        .attr('y2', yScale(lowerTrigger))
-        .attr('stroke', '#ef4444')
-        .attr('stroke-width', 1)
-        .attr('stroke-dasharray', '2,2')
-
-      // Labels
-      const anchorLabel = g.append('text')
-        .attr('x', innerWidth - 5)
-        .attr('y', yScale(anchorPrice) - 4)
-        .attr('text-anchor', 'end')
-        .attr('fill', '#60a5fa')
-        .attr('font-size', '9px')
-        .attr('cursor', 'help')
-        .text(`Anchor ${formatPriceCompact(anchorPrice)}`)
-      anchorLabel.append('title')
-        .text('Anchor price: the reference price used to calculate ATR trigger bands')
-
-      const upperLabel = g.append('text')
-        .attr('x', innerWidth - 5)
-        .attr('y', yScale(upperTrigger) - 4)
-        .attr('text-anchor', 'end')
-        .attr('fill', '#22c55e')
-        .attr('font-size', '9px')
-        .attr('cursor', 'help')
-        .text(`+${kFactor}x ATR`)
-      upperLabel.append('title')
-        .text(`Upper trigger: ${formatPriceCompact(upperTrigger)} — price ${kFactor}× ATR above anchor signals bullish momentum`)
-
-      const lowerLabel = g.append('text')
-        .attr('x', innerWidth - 5)
-        .attr('y', yScale(lowerTrigger) + 12)
-        .attr('text-anchor', 'end')
-        .attr('fill', '#ef4444')
-        .attr('font-size', '9px')
-        .attr('cursor', 'help')
-        .text(`-${kFactor}x ATR`)
-      lowerLabel.append('title')
-        .text(`Lower trigger: ${formatPriceCompact(lowerTrigger)} — price ${kFactor}× ATR below anchor signals bearish pressure`)
-    }
-
-    // Price area
-    const area = d3.area()
-      .x(d => xScale(d.timestamp))
-      .y0(innerHeight)
-      .y1(d => yScale(d.price))
-      .curve(d3.curveMonotoneX)
-
-    g.append('path')
-      .datum(chartData)
-      .attr('d', area)
-      .attr('fill', 'rgba(96, 165, 250, 0.1)')
-
-    // Price line
-    const line = d3.line()
-      .x(d => xScale(d.timestamp))
-      .y(d => yScale(d.price))
-      .curve(d3.curveMonotoneX)
-
-    g.append('path')
-      .datum(chartData)
-      .attr('d', line)
-      .attr('fill', 'none')
-      .attr('stroke', '#60a5fa')
-      .attr('stroke-width', 2)
-
-    // Current price dot and label
-    const lastPoint = chartData[chartData.length - 1]
-    if (lastPoint) {
-      g.append('circle')
-        .attr('cx', xScale(lastPoint.timestamp))
-        .attr('cy', yScale(lastPoint.price))
-        .attr('r', 4)
-        .attr('fill', '#60a5fa')
-        .attr('stroke', '#1e3a5f')
-        .attr('stroke-width', 2)
-
-      // Current price line extending to Y axis
-      g.append('line')
-        .attr('x1', xScale(lastPoint.timestamp))
-        .attr('x2', innerWidth)
-        .attr('y1', yScale(lastPoint.price))
-        .attr('y2', yScale(lastPoint.price))
-        .attr('stroke', '#60a5fa')
-        .attr('stroke-width', 1)
-        .attr('stroke-dasharray', '2,2')
-        .attr('opacity', 0.5)
-    }
-
-    // X axis
-    const xAxis = d3.axisBottom(xScale)
-      .ticks(6)
-      .tickFormat(d3.timeFormat('%H:%M'))
-
-    g.append('g')
-      .attr('transform', `translate(0,${innerHeight})`)
-      .call(xAxis)
-      .selectAll('text, line, path')
-      .attr('fill', '#6b7280')
-      .attr('stroke', '#6b7280')
-
-    // Y axis
-    const yAxis = d3.axisLeft(yScale)
-      .ticks(6)
-      .tickFormat(d => formatPriceCompact(d))
-
-    g.append('g')
-      .call(yAxis)
-      .selectAll('text, line, path')
-      .attr('fill', '#6b7280')
-      .attr('stroke', '#6b7280')
-
-    // Right Y axis (current price)
-    const yAxisRight = d3.axisRight(yScale)
-      .tickValues([lastPoint?.price || currentPrice].filter(Boolean))
-      .tickFormat(d => formatPriceCompact(d))
-
-    g.append('g')
-      .attr('transform', `translate(${innerWidth},0)`)
-      .call(yAxisRight)
-      .selectAll('text')
-      .attr('fill', '#60a5fa')
-      .attr('font-weight', '600')
-
-    g.selectAll('g:last-child line, g:last-child path')
-      .attr('stroke', '#60a5fa')
-
-  }, [chartData, sortedRegimes, height, anchorPrice, atr, kFactor, currentPrice, containerWidth])
-
-  // Handle resize
-  useEffect(() => {
-    const resizeObserver = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setContainerWidth(entry.contentRect.width)
-      }
-    })
-
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current)
-      setContainerWidth(containerRef.current.clientWidth)
-    }
-
-    return () => resizeObserver.disconnect()
-  }, [])
+  }, [chartData, sortedRegimes, height, containerWidth])
 
   if (chartData.length < 2) {
     return (
@@ -343,6 +130,51 @@ function RegimePriceChart({
       </div>
     )
   }
+
+  const renderTriggers = () => {
+    const { innerWidth, yScale } = chart
+    const triggerDistance = kFactor * atr
+    const upperTrigger = anchorPrice + triggerDistance
+    const lowerTrigger = anchorPrice - triggerDistance
+    const rule = (value, stroke, dash) => (
+      <line x1={0} x2={innerWidth} y1={yScale(value)} y2={yScale(value)} stroke={stroke} strokeWidth={1} strokeDasharray={dash} />
+    )
+    const label = (y, fill, text, title) => (
+      <text x={innerWidth - 5} y={y} textAnchor="end" fill={fill} fontSize="9px" cursor="help">
+        {text}
+        <title>{title}</title>
+      </text>
+    )
+    return (
+      <>
+        <rect
+          x={0}
+          y={yScale(upperTrigger + triggerDistance * 0.5)}
+          width={innerWidth}
+          height={yScale(upperTrigger) - yScale(upperTrigger + triggerDistance * 0.5)}
+          fill="rgba(34, 197, 94, 0.1)"
+        />
+        <rect
+          x={0}
+          y={yScale(lowerTrigger)}
+          width={innerWidth}
+          height={yScale(lowerTrigger - triggerDistance * 0.5) - yScale(lowerTrigger)}
+          fill="rgba(239, 68, 68, 0.1)"
+        />
+        {rule(anchorPrice, PRICE_BLUE, '4,4')}
+        {rule(upperTrigger, '#22c55e', '2,2')}
+        {rule(lowerTrigger, '#ef4444', '2,2')}
+        {label(yScale(anchorPrice) - 4, PRICE_BLUE, `Anchor ${formatPriceCompact(anchorPrice)}`,
+          'Anchor price: the reference price used to calculate ATR trigger bands')}
+        {label(yScale(upperTrigger) - 4, '#22c55e', `+${kFactor}x ATR`,
+          `Upper trigger: ${formatPriceCompact(upperTrigger)} — price ${kFactor}× ATR above anchor signals bullish momentum`)}
+        {label(yScale(lowerTrigger) + 12, '#ef4444', `-${kFactor}x ATR`,
+          `Lower trigger: ${formatPriceCompact(lowerTrigger)} — price ${kFactor}× ATR below anchor signals bearish pressure`)}
+      </>
+    )
+  }
+
+  const rightTick = chart && [chart.lastPoint?.price || currentPrice].filter(Boolean)
 
   return (
     <div ref={containerRef} className={`bg-gray-800 rounded-lg p-4 ${className}`}>
@@ -360,13 +192,67 @@ function RegimePriceChart({
         />
       </h3>
       <svg
-        ref={svgRef}
         role="img"
         aria-labelledby={headingId}
         aria-describedby={summaryId}
         className="w-full"
+        width={chart ? containerWidth : undefined}
+        height={chart ? height : undefined}
         style={{ height: height - 40 }}
-      />
+      >
+        {chart && (
+          <g transform={`translate(${chart.margin.left},${chart.margin.top})`}>
+            {chart.zones.map(({ mode, x, width }, i) => (
+              <rect key={i} x={x} y={0} width={width} height={chart.innerHeight} fill={REGIME_COLORS[mode] || 'transparent'} />
+            ))}
+            {Boolean(anchorPrice) && atr > 0 && renderTriggers()}
+            <path d={chart.area} fill="rgba(96, 165, 250, 0.1)" />
+            <path d={chart.line} fill="none" stroke={PRICE_BLUE} strokeWidth={2} />
+            {chart.lastPoint && (
+              <>
+                <circle
+                  cx={chart.xScale(chart.lastPoint.timestamp)}
+                  cy={chart.yScale(chart.lastPoint.price)}
+                  r={4}
+                  fill={PRICE_BLUE}
+                  stroke="#1e3a5f"
+                  strokeWidth={2}
+                />
+                {/* Current price line extending to the right axis */}
+                <line
+                  x1={chart.xScale(chart.lastPoint.timestamp)}
+                  x2={chart.innerWidth}
+                  y1={chart.yScale(chart.lastPoint.price)}
+                  y2={chart.yScale(chart.lastPoint.price)}
+                  stroke={PRICE_BLUE}
+                  strokeWidth={1}
+                  strokeDasharray="2,2"
+                  opacity={0.5}
+                />
+              </>
+            )}
+            <Axis
+              orient="bottom"
+              transform={`translate(0,${chart.innerHeight})`}
+              scale={chart.xScale}
+              ticks={chart.xScale.ticks(6)}
+              format={formatHourMinute}
+              {...solidAxis(AXIS_GRAY)}
+            />
+            <Axis orient="left" scale={chart.yScale} ticks={chart.yScale.ticks(6)} format={formatPriceCompact} {...solidAxis(AXIS_GRAY)} />
+            <Axis
+              orient="right"
+              transform={`translate(${chart.innerWidth},0)`}
+              scale={chart.yScale}
+              ticks={rightTick}
+              format={formatPriceCompact}
+              stroke={PRICE_BLUE}
+              textFill={PRICE_BLUE}
+              fontWeight="600"
+            />
+          </g>
+        )}
+      </svg>
       <ChartDataAlternative summaryId={summaryId} summary={textAlternative.summary} tables={textAlternative.tables} />
     </div>
   )

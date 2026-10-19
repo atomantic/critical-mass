@@ -2,7 +2,7 @@ import usePriceChartCoordinates from './usePriceChartCoordinates'
 
 /**
  * Render atomoku cloud fills as raw SVG polygons.
- * Uses the public Recharts coordinate hooks for the indexed price axis.
+ * Uses the chart's coordinate scales for the indexed price axis.
  */
 const AtomokuCloudRenderer = ({ data }) => {
   const { points, yScale } = usePriceChartCoordinates(data)

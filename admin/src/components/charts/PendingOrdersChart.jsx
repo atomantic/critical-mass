@@ -1,182 +1,53 @@
-import { useRef, useEffect } from 'react'
-import * as d3 from 'd3'
+import { useMemo } from 'react'
+import { extent, histogram, linearScale, max } from '../../lib/chart-math'
+import { Axis } from './primitives/Axis'
+import { Grid } from './primitives/Grid'
+import { useElementSize } from './primitives/Responsive'
 import {
   formatCurrencyCompact,
   formatCurrency,
-  formatAssetCompact,
-  formatDate,
   getAxisFontSize,
   colors,
+  DASHED_GRID,
   colorWithOpacity,
 } from './chartUtils'
+
+const PENDING_LEGEND = [
+  { color: colors.green, label: 'Ready to Fill' },
+  { color: colors.purple, label: 'Waiting' },
+  { color: colors.blue, label: 'Buy Price' },
+  { color: colors.yellow, label: 'Current Price' },
+]
 
 export function PendingOrdersChart({
   orders,
   currentPrice,
-  resize = 0,
 }) {
-  const ref = useRef(null)
+  const [ref, size] = useElementSize()
+  const hasData = orders?.length > 0
 
-  useEffect(() => {
-    if (!ref.current || !orders || orders.length === 0) return
-
-    const svg = d3.select(ref.current)
-    svg.selectAll('*').remove()
-
-    const containerWidth = ref.current.clientWidth
-    const containerHeight = ref.current.clientHeight
+  const chart = useMemo(() => {
+    if (!hasData || !size.width) return null
     const margin = { top: 30, right: 20, bottom: 40, left: 70 }
-    const width = containerWidth - margin.left - margin.right
-    const height = containerHeight - margin.top - margin.bottom
-    const axisFontSize = getAxisFontSize(containerWidth)
-
-    const g = svg
-      .append('g')
-      .attr('transform', `translate(${margin.left},${margin.top})`)
-
-    // Sort orders by sell price
+    const width = size.width - margin.left - margin.right
+    const height = size.height - margin.top - margin.bottom
     const sortedOrders = [...orders].sort((a, b) => a.sellPrice - b.sellPrice)
 
-    // Price range (include current price)
-    const allPrices = [...sortedOrders.map((o) => o.sellPrice), ...sortedOrders.map((o) => o.buyPrice), currentPrice]
-    const [minPrice, maxPrice] = d3.extent(allPrices)
-    const priceRange = maxPrice - minPrice
-    const padding = priceRange * 0.1
+    // Price range covers every sell and buy price plus the current price.
+    const [minPrice, maxPrice] = extent([...sortedOrders.map((o) => o.sellPrice), ...sortedOrders.map((o) => o.buyPrice), currentPrice])
+    const padding = (maxPrice - minPrice) * 0.1
+    const y = linearScale([minPrice - padding, maxPrice + padding], [height, 0]).nice()
+    // Bar length is the asset quantity, using 70% of the width to leave room for labels.
+    const x = linearScale([0, max(sortedOrders, (d) => d.sellQuantity)], [0, width * 0.7]).nice()
 
-    // Y scale (price)
-    const y = d3
-      .scaleLinear()
-      .domain([minPrice - padding, maxPrice + padding])
-      .nice()
-      .range([height, 0])
+    return {
+      margin, width, height, sortedOrders, x, y,
+      barHeight: Math.min(20, (height - 60) / sortedOrders.length),
+      axisFontSize: getAxisFontSize(size.width),
+    }
+  }, [hasData, orders, currentPrice, size.width, size.height])
 
-    // X scale (order index or BTC amount)
-    const x = d3
-      .scaleLinear()
-      .domain([0, d3.max(sortedOrders, (d) => d.sellQuantity)])
-      .nice()
-      .range([0, width * 0.7])
-
-    // Draw current price line
-    g.append('line')
-      .attr('x1', 0)
-      .attr('x2', width)
-      .attr('y1', y(currentPrice))
-      .attr('y2', y(currentPrice))
-      .attr('stroke', colors.yellow)
-      .attr('stroke-width', 2)
-      .attr('stroke-dasharray', '5,5')
-
-    g.append('text')
-      .attr('x', width)
-      .attr('y', y(currentPrice) - 5)
-      .attr('text-anchor', 'end')
-      .attr('fill', colors.yellow)
-      .style('font-size', '11px')
-      .text(`Current: ${formatCurrency(currentPrice)}`)
-
-    // Draw order bars
-    const barHeight = Math.min(20, (height - 60) / sortedOrders.length)
-    const barGap = 2
-
-    sortedOrders.forEach((order, i) => {
-      const yPos = y(order.sellPrice)
-
-      // Horizontal bar representing BTC amount
-      g.append('rect')
-        .attr('x', 0)
-        .attr('y', yPos - barHeight / 2)
-        .attr('width', x(order.sellQuantity))
-        .attr('height', barHeight)
-        .attr('fill', order.sellPrice <= currentPrice ? colors.green : colorWithOpacity(colors.purple, 0.7))
-        .attr('rx', 2)
-        .attr('stroke', order.sellPrice <= currentPrice ? colors.green : colors.purple)
-        .attr('stroke-width', 1)
-
-      // Buy price marker
-      g.append('circle')
-        .attr('cx', x(order.sellQuantity) + 15)
-        .attr('cy', y(order.buyPrice))
-        .attr('r', 4)
-        .attr('fill', colors.blue)
-
-      // Line connecting buy price to sell price
-      g.append('line')
-        .attr('x1', x(order.sellQuantity) + 15)
-        .attr('y1', y(order.buyPrice))
-        .attr('x2', x(order.sellQuantity) + 15)
-        .attr('y2', yPos)
-        .attr('stroke', colors.gray)
-        .attr('stroke-width', 1)
-        .attr('stroke-dasharray', '2,2')
-
-      // Sell price label
-      g.append('text')
-        .attr('x', x(order.sellQuantity) + 25)
-        .attr('y', yPos + 4)
-        .attr('fill', order.sellPrice <= currentPrice ? colors.green : colors.lightGray)
-        .style('font-size', axisFontSize)
-        .text(formatCurrency(order.sellPrice))
-    })
-
-    // Y Axis (Price)
-    g.append('g')
-      .call(d3.axisLeft(y).ticks(6).tickFormat(formatCurrencyCompact))
-      .selectAll('text')
-      .attr('fill', colors.lightGray)
-      .style('font-size', axisFontSize)
-
-    g.selectAll('.domain').attr('stroke', colors.darkGray)
-    g.selectAll('.tick line').attr('stroke', colors.darkGray)
-
-    // Axis label
-    g.append('text')
-      .attr('transform', 'rotate(-90)')
-      .attr('x', -height / 2)
-      .attr('y', -55)
-      .attr('text-anchor', 'middle')
-      .attr('fill', colors.lightGray)
-      .style('font-size', '11px')
-      .text('Price')
-
-    // Legend
-    const legend = g.append('g').attr('transform', `translate(0, -20)`)
-
-    const legendItems = [
-      { color: colors.green, label: 'Ready to Fill' },
-      { color: colors.purple, label: 'Waiting' },
-      { color: colors.blue, label: 'Buy Price' },
-      { color: colors.yellow, label: 'Current Price' },
-    ]
-
-    legendItems.forEach((item, i) => {
-      const legendItem = legend.append('g').attr('transform', `translate(${i * 100}, 0)`)
-
-      if (item.label === 'Current Price') {
-        legendItem
-          .append('line')
-          .attr('x1', 0)
-          .attr('x2', 15)
-          .attr('y1', 5)
-          .attr('y2', 5)
-          .attr('stroke', item.color)
-          .attr('stroke-width', 2)
-          .attr('stroke-dasharray', '3,3')
-      } else {
-        legendItem.append('circle').attr('r', 5).attr('cx', 7).attr('cy', 5).attr('fill', item.color)
-      }
-
-      legendItem
-        .append('text')
-        .attr('x', 20)
-        .attr('y', 9)
-        .attr('fill', colors.lightGray)
-        .style('font-size', '10px')
-        .text(item.label)
-    })
-  }, [orders, currentPrice, resize])
-
-  if (!orders || orders.length === 0) {
+  if (!hasData) {
     return (
       <div className="flex items-center justify-center h-full text-gray-400">
         No pending orders
@@ -184,148 +55,108 @@ export function PendingOrdersChart({
     )
   }
 
-  return <svg ref={ref} className="w-full h-full" style={{ overflow: 'visible' }} />
+  return (
+    <svg ref={ref} className="w-full h-full" style={{ overflow: 'visible' }}>
+      {chart && (
+        <g transform={`translate(${chart.margin.left},${chart.margin.top})`}>
+          <line
+            x1={0}
+            x2={chart.width}
+            y1={chart.y(currentPrice)}
+            y2={chart.y(currentPrice)}
+            stroke={colors.yellow}
+            strokeWidth={2}
+            strokeDasharray="5,5"
+          />
+          <text x={chart.width} y={chart.y(currentPrice) - 5} textAnchor="end" fill={colors.yellow} style={{ fontSize: '11px' }}>
+            {`Current: ${formatCurrency(currentPrice)}`}
+          </text>
+          {chart.sortedOrders.map((order, i) => {
+            const yPos = chart.y(order.sellPrice)
+            const barEnd = chart.x(order.sellQuantity)
+            const ready = order.sellPrice <= currentPrice
+            return (
+              <g key={i}>
+                <rect
+                  x={0}
+                  y={yPos - chart.barHeight / 2}
+                  width={barEnd}
+                  height={chart.barHeight}
+                  fill={ready ? colors.green : colorWithOpacity(colors.purple, 0.7)}
+                  rx={2}
+                  stroke={ready ? colors.green : colors.purple}
+                  strokeWidth={1}
+                />
+                <circle cx={barEnd + 15} cy={chart.y(order.buyPrice)} r={4} fill={colors.blue} />
+                <line
+                  x1={barEnd + 15}
+                  y1={chart.y(order.buyPrice)}
+                  x2={barEnd + 15}
+                  y2={yPos}
+                  stroke={colors.gray}
+                  strokeWidth={1}
+                  strokeDasharray="2,2"
+                />
+                <text x={barEnd + 25} y={yPos + 4} fill={ready ? colors.green : colors.lightGray} style={{ fontSize: chart.axisFontSize }}>
+                  {formatCurrency(order.sellPrice)}
+                </text>
+              </g>
+            )
+          })}
+          <Axis
+            orient="left"
+            scale={chart.y}
+            ticks={chart.y.ticks(6)}
+            format={formatCurrencyCompact}
+            stroke={colors.darkGray}
+            textFill={colors.lightGray}
+            fontSize={chart.axisFontSize}
+          />
+          <text transform="rotate(-90)" x={-chart.height / 2} y={-55} textAnchor="middle" fill={colors.lightGray} style={{ fontSize: '11px' }}>
+            Price
+          </text>
+          <g transform="translate(0, -20)">
+            {PENDING_LEGEND.map((item, i) => (
+              <g key={item.label} transform={`translate(${i * 100}, 0)`}>
+                {item.label === 'Current Price' ? (
+                  <line x1={0} x2={15} y1={5} y2={5} stroke={item.color} strokeWidth={2} strokeDasharray="3,3" />
+                ) : (
+                  <circle r={5} cx={7} cy={5} fill={item.color} />
+                )}
+                <text x={20} y={9} fill={colors.lightGray} style={{ fontSize: '10px' }}>{item.label}</text>
+              </g>
+            ))}
+          </g>
+        </g>
+      )}
+    </svg>
+  )
 }
 
 export function CostBasisDistributionChart({
   orders,
   currentPrice,
-  resize = 0,
 }) {
-  const ref = useRef(null)
+  const [ref, size] = useElementSize()
+  const hasData = orders?.length > 0
 
-  useEffect(() => {
-    if (!ref.current || !orders || orders.length === 0) return
-
-    const svg = d3.select(ref.current)
-    svg.selectAll('*').remove()
-
-    const containerWidth = ref.current.clientWidth
-    const containerHeight = ref.current.clientHeight
+  const chart = useMemo(() => {
+    if (!hasData || !size.width) return null
     const margin = { top: 20, right: 20, bottom: 40, left: 60 }
-    const width = containerWidth - margin.left - margin.right
-    const height = containerHeight - margin.top - margin.bottom
-    const axisFontSize = getAxisFontSize(containerWidth)
+    const width = size.width - margin.left - margin.right
+    const height = size.height - margin.top - margin.bottom
 
-    const g = svg
-      .append('g')
-      .attr('transform', `translate(${margin.left},${margin.top})`)
-
-    // Create histogram bins based on buy price
+    // Histogram of buy prices in up to 20 uniform bins.
     const buyPrices = orders.map((o) => o.buyPrice)
-    const [minPrice, maxPrice] = d3.extent(buyPrices)
-    const binCount = Math.min(20, orders.length)
+    const [minPrice, maxPrice] = extent(buyPrices)
+    const bins = histogram(buyPrices, { domain: [minPrice, maxPrice], thresholds: Math.min(20, orders.length) })
+    const x = linearScale([minPrice, maxPrice], [0, width]).nice()
+    const y = linearScale([0, max(bins, (b) => b.values.length)], [height, 0]).nice()
 
-    const histogram = d3
-      .bin()
-      .domain([minPrice, maxPrice])
-      .thresholds(binCount)
+    return { margin, width, height, minPrice, maxPrice, bins, x, y, axisFontSize: getAxisFontSize(size.width) }
+  }, [hasData, orders, size.width, size.height])
 
-    const bins = histogram(buyPrices)
-
-    // X scale (price ranges)
-    const x = d3
-      .scaleLinear()
-      .domain([minPrice, maxPrice])
-      .nice()
-      .range([0, width])
-
-    // Y scale (count)
-    const y = d3
-      .scaleLinear()
-      .domain([0, d3.max(bins, (d) => d.length)])
-      .nice()
-      .range([height, 0])
-
-    // Gridlines
-    g.append('g')
-      .attr('class', 'grid')
-      .selectAll('line')
-      .data(y.ticks(5))
-      .enter()
-      .append('line')
-      .attr('x1', 0)
-      .attr('x2', width)
-      .attr('y1', (d) => y(d))
-      .attr('y2', (d) => y(d))
-      .attr('stroke', colors.gridLine)
-      .attr('stroke-dasharray', '3,3')
-      .attr('stroke-opacity', 0.5)
-
-    // Draw bars
-    g.selectAll('.bar')
-      .data(bins)
-      .enter()
-      .append('rect')
-      .attr('class', 'bar')
-      .attr('x', (d) => x(d.x0) + 1)
-      .attr('y', (d) => y(d.length))
-      .attr('width', (d) => Math.max(0, x(d.x1) - x(d.x0) - 2))
-      .attr('height', (d) => height - y(d.length))
-      .attr('fill', (d) => {
-        const midPrice = (d.x0 + d.x1) / 2
-        return midPrice < currentPrice ? colors.green : colors.blue
-      })
-      .attr('rx', 2)
-
-    // Current price line
-    if (currentPrice >= minPrice && currentPrice <= maxPrice) {
-      g.append('line')
-        .attr('x1', x(currentPrice))
-        .attr('x2', x(currentPrice))
-        .attr('y1', 0)
-        .attr('y2', height)
-        .attr('stroke', colors.yellow)
-        .attr('stroke-width', 2)
-        .attr('stroke-dasharray', '5,5')
-
-      g.append('text')
-        .attr('x', x(currentPrice))
-        .attr('y', -5)
-        .attr('text-anchor', 'middle')
-        .attr('fill', colors.yellow)
-        .style('font-size', '10px')
-        .text('Current')
-    }
-
-    // X Axis
-    g.append('g')
-      .attr('transform', `translate(0,${height})`)
-      .call(d3.axisBottom(x).ticks(5).tickFormat(formatCurrencyCompact))
-      .selectAll('text')
-      .attr('fill', colors.lightGray)
-      .style('font-size', axisFontSize)
-
-    g.selectAll('.domain').attr('stroke', colors.darkGray)
-    g.selectAll('.tick line').attr('stroke', colors.darkGray)
-
-    // Y Axis
-    g.append('g')
-      .call(d3.axisLeft(y).ticks(5))
-      .selectAll('text')
-      .attr('fill', colors.lightGray)
-      .style('font-size', axisFontSize)
-
-    // Axis labels
-    g.append('text')
-      .attr('x', width / 2)
-      .attr('y', height + 35)
-      .attr('text-anchor', 'middle')
-      .attr('fill', colors.lightGray)
-      .style('font-size', '11px')
-      .text('Buy Price')
-
-    g.append('text')
-      .attr('transform', 'rotate(-90)')
-      .attr('x', -height / 2)
-      .attr('y', -45)
-      .attr('text-anchor', 'middle')
-      .attr('fill', colors.lightGray)
-      .style('font-size', '11px')
-      .text('Order Count')
-  }, [orders, currentPrice, resize])
-
-  if (!orders || orders.length === 0) {
+  if (!hasData) {
     return (
       <div className="flex items-center justify-center h-full text-gray-400">
         No orders for distribution
@@ -333,7 +164,60 @@ export function CostBasisDistributionChart({
     )
   }
 
-  return <svg ref={ref} className="w-full h-full" style={{ overflow: 'visible' }} />
+  return (
+    <svg ref={ref} className="w-full h-full" style={{ overflow: 'visible' }}>
+      {chart && (
+        <g transform={`translate(${chart.margin.left},${chart.margin.top})`}>
+          <Grid width={chart.width} rows={chart.y.ticks(5).map(chart.y)} {...DASHED_GRID} />
+          {chart.bins.map((bin, i) => (
+            <rect
+              key={i}
+              className="bar"
+              x={chart.x(bin.x0) + 1}
+              y={chart.y(bin.values.length)}
+              width={Math.max(0, chart.x(bin.x1) - chart.x(bin.x0) - 2)}
+              height={chart.height - chart.y(bin.values.length)}
+              fill={(bin.x0 + bin.x1) / 2 < currentPrice ? colors.green : colors.blue}
+              rx={2}
+            />
+          ))}
+          {currentPrice >= chart.minPrice && currentPrice <= chart.maxPrice && (
+            <>
+              <line
+                x1={chart.x(currentPrice)}
+                x2={chart.x(currentPrice)}
+                y1={0}
+                y2={chart.height}
+                stroke={colors.yellow}
+                strokeWidth={2}
+                strokeDasharray="5,5"
+              />
+              <text x={chart.x(currentPrice)} y={-5} textAnchor="middle" fill={colors.yellow} style={{ fontSize: '10px' }}>
+                Current
+              </text>
+            </>
+          )}
+          <Axis
+            orient="bottom"
+            transform={`translate(0,${chart.height})`}
+            scale={chart.x}
+            ticks={chart.x.ticks(5)}
+            format={formatCurrencyCompact}
+            stroke={colors.darkGray}
+            textFill={colors.lightGray}
+            fontSize={chart.axisFontSize}
+          />
+          <Axis orient="left" scale={chart.y} ticks={chart.y.ticks(5)} format={chart.y.tickFormat(5)} textFill={colors.lightGray} fontSize={chart.axisFontSize} />
+          <text x={chart.width / 2} y={chart.height + 35} textAnchor="middle" fill={colors.lightGray} style={{ fontSize: '11px' }}>
+            Buy Price
+          </text>
+          <text transform="rotate(-90)" x={-chart.height / 2} y={-45} textAnchor="middle" fill={colors.lightGray} style={{ fontSize: '11px' }}>
+            Order Count
+          </text>
+        </g>
+      )}
+    </svg>
+  )
 }
 
 export default PendingOrdersChart

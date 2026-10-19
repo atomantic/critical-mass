@@ -1,20 +1,29 @@
 # React 19 admin rendering
 
-The admin app uses React/React DOM/types 19, React Three Fiber 9, Drei 10,
-React Three Postprocessing 3 and Recharts 3. These majors must be upgraded
-together to preserve renderer peer compatibility. The existing icon package
-remains compatible and does not need a major upgrade for this migration.
+The admin app uses React/React DOM/types 19, React Three Fiber 9, Drei 10
+and React Three Postprocessing 3. These majors must be upgraded together to
+preserve renderer peer compatibility. The existing icon package remains
+compatible and does not need a major upgrade for this migration.
 
-Recharts 3 removed the internal state props previously injected into
-`Customized`. BTC candles, Atomoku clouds and signal markers now use the
-public axis-scale and plot-area hooks. The main price chart uses a unique
-index category and formats ticks/tooltips with the original time label,
-so repeated labels across days occupy distinct coordinates. The backtest
-portfolio grid explicitly selects its USD axis.
+Charts have no third-party charting dependency. `admin/src/lib/chart-math.js`
+owns the scales, nice ticks, local-time ticks, monotone-x paths, bins and
+time formatting (ported from d3 7.9), and `admin/src/components/charts/primitives/`
+owns the axis, grid, tooltip, legend, reference-line and responsive pieces
+plus `CartesianChart`, the line/area frame the BTC price, backtest and
+scorecard charts use. BTC candles, Atomoku clouds and signal markers read
+that frame's own scales through `usePriceChartCoordinates`. The main price
+chart uses a unique index category and formats ticks/tooltips with the
+original time label, so repeated labels across days occupy distinct
+coordinates. The backtest portfolio grid explicitly selects its USD axis.
 
-References: [Recharts migration guide](https://github.com/recharts/recharts/wiki/3.0-migration-guide),
-[coordinate hooks](https://recharts.github.io/en-US/guide/coordinateSystems/),
-[Fiber React 19 migration](https://r3f.docs.pmnd.rs/tutorials/v9-migration-guide).
+`admin/tests/fixtures/d3-parity.json` is the frozen output of d3 and of the
+former d3 charts for flat, monotonic, spiky, two-point, one-point and empty
+fixtures (`admin/tests/fixtures/chart-series.js`); `chart-math-parity` and
+`chart-parity` hold the owned code to it within 1e-6. d3 is no longer
+installed, so the snapshot cannot be regenerated — add new fixture cases
+rather than editing the existing ones.
+
+Reference: [Fiber React 19 migration](https://r3f.docs.pmnd.rs/tutorials/v9-migration-guide).
 
 Run the ordinary tests and production build:
 

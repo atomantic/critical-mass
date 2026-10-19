@@ -1,5 +1,5 @@
-export { AreaChart, StackedAreaChart } from './AreaChart'
-export { BarChart, HorizontalBarChart } from './BarChart'
+export { AreaChart } from './AreaChart'
+export { BarChart } from './BarChart'
 export { PriceChart } from './PriceChart'
 export { ComposedChart } from './ComposedChart'
 export { PendingOrdersChart, CostBasisDistributionChart } from './PendingOrdersChart'

@@ -1,7 +1,7 @@
 // Synthetic-only fixture: no gateway, exchanges, operator data or credentials.
 import React, { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { ComposedChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts'
+import { CartesianChart } from '../src/components/charts/primitives/CartesianChart'
 import BTCPriceChart from '../src/components/charts/BTCPriceChart'
 import HeikinAshiRenderer from '../src/components/charts/HeikinAshiRenderer'
 import AtomokuCloudRenderer from '../src/components/charts/AtomokuCloudRenderer'
@@ -48,16 +48,15 @@ function Fixture() {
   return <div style={{ width }} id="fixture">
     <button id="resize" onClick={() => setWidth(420)}>Resize</button>
     <button id="empty" onClick={() => setEmpty(true)}>Empty</button>
-    <div id="layers"><ResponsiveContainer width="100%" height={260}>
-      <ComposedChart data={empty ? [] : data}>
-        <XAxis dataKey="chartIndex" tickFormatter={index => data[index].label} />
-        <YAxis domain={[100, 120]} />
-        <Line dataKey="price" isAnimationActive={false} />
+    <div id="layers"><CartesianChart data={empty ? [] : data} height={260}
+      xAxis={{ tickFormatter: index => data[index].label }}
+      yAxes={[{ domain: [100, 120] }]}
+      series={[{ dataKey: 'price' }]}
+      underlay={<>
         <HeikinAshiRenderer data={empty ? [] : data} />
         <AtomokuCloudRenderer data={empty ? [] : data} />
         <SignalAnnotationRenderer data={empty ? [] : data} />
-      </ComposedChart>
-    </ResponsiveContainer></div>
+      </>} /></div>
     <div id="btc"><BTCPriceChart exchange="coinbase" chartType="heikinAshi"
       showIntervalSelector defaultInterval="1m" defaultRange="3h"
       overlays={['atomoku']} signalAnnotations={annotations} /></div>

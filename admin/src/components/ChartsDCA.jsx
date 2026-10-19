@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useMemo } from 'react'
 import {
   AreaChart,
   BarChart,
@@ -10,15 +10,6 @@ import {
 } from './charts/index'
 
 function ChartsDCA({ summary, quoteCurrency = 'USDC' }) {
-  const [chartResize, setChartResize] = useState(0)
-
-  // Handle window resize for responsive D3 charts
-  useEffect(() => {
-    const handleResize = () => setChartResize((n) => n + 1)
-    window.addEventListener('resize', handleResize)
-    return () => window.removeEventListener('resize', handleResize)
-  }, [])
-
   const { transactions = [], state, stats, costBasis } = summary || {}
 
   // Process data for charts - use orders for timestamps (they have createdAt)
@@ -170,7 +161,6 @@ function ChartsDCA({ summary, quoteCurrency = 'USDC' }) {
               sellData={chartData.sellData}
               avgCostBasis={chartData.avgCostBasisPrice}
               title="Price History"
-              resize={chartResize}
             />
           ) : (
             <div className="flex items-center justify-center h-full text-gray-400 text-sm">No buy data yet</div>
@@ -190,7 +180,6 @@ function ChartsDCA({ summary, quoteCurrency = 'USDC' }) {
               valueKey="fundSize"
               dateKey="date"
               color={colors.blue}
-              resize={chartResize}
             />
           </div>
         </div>
@@ -208,7 +197,6 @@ function ChartsDCA({ summary, quoteCurrency = 'USDC' }) {
                   { key: 'bought', color: colors.blue, label: `Bought (${quoteCurrency})` },
                   { key: 'sold', color: colors.green, label: `Sold (${quoteCurrency})` },
                 ]}
-                resize={chartResize}
               />
             ) : (
               <div className="flex items-center justify-center h-full text-gray-400 text-sm">No volume data</div>
@@ -232,7 +220,6 @@ function ChartsDCA({ summary, quoteCurrency = 'USDC' }) {
                 lines={[
                   { key: 'netFees', color: colors.purple, label: 'Net', strokeWidth: 2 },
                 ]}
-                resize={chartResize}
               />
             ) : (
               <div className="flex items-center justify-center h-full text-gray-400 text-sm">No fee data</div>
@@ -250,7 +237,6 @@ function ChartsDCA({ summary, quoteCurrency = 'USDC' }) {
               <PendingOrdersChart
                 orders={pendingOrders}
                 currentPrice={currentPrice}
-                resize={chartResize}
               />
             </div>
           </div>
@@ -261,7 +247,6 @@ function ChartsDCA({ summary, quoteCurrency = 'USDC' }) {
               <CostBasisDistributionChart
                 orders={pendingOrders}
                 currentPrice={currentPrice}
-                resize={chartResize}
               />
             </div>
           </div>

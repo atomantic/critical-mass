@@ -1,5 +1,9 @@
-import { useRef, useEffect } from 'react'
-import * as d3 from 'd3'
+import { useId, useMemo, useState } from 'react'
+import { areaPath, extent, linePath, linearScale, timeScale } from '../../lib/chart-math'
+import { Axis } from './primitives/Axis'
+import { ClipRect, Grid } from './primitives/Grid'
+import { HoverMarker } from './primitives/Tooltip'
+import { localPoint, svgId, useElementSize } from './primitives/Responsive'
 import {
   formatCurrencyCompact,
   formatCurrency,
@@ -9,7 +13,10 @@ import {
   getSmartDateFormatter,
   getSmartTickCount,
   colors,
+  DASHED_GRID,
   colorWithOpacity,
+  nearestByDate,
+  parseDates,
 } from './chartUtils'
 
 export function ComposedChart({
@@ -18,260 +25,40 @@ export function ComposedChart({
   dateKey = 'date',
   areas = [],
   lines = [],
-  resize = 0,
 }) {
-  const ref = useRef(null)
+  const [ref, size] = useElementSize()
+  const clipId = svgId(`clip-composed-${title?.replace(/\s+/g, '-') || 'chart'}`, useId())
+  const [hovered, setHovered] = useState(null)
+  const hasData = data?.length >= 2
 
-  useEffect(() => {
-    if (!ref.current || !data || data.length < 2) return
+  const chart = useMemo(() => {
+    if (!hasData || !size.width) return null
+    const margin = getResponsiveMargin(size.width)
+    const width = size.width - margin.left - margin.right
+    const height = size.height - margin.top - margin.bottom
+    const parsedData = parseDates(data, dateKey)
 
-    const svg = d3.select(ref.current)
-    svg.selectAll('*').remove()
+    const [minDate, maxDate] = extent(parsedData, (d) => d.parsedDate)
+    const x = timeScale([minDate, maxDate], [0, width])
 
-    const containerWidth = ref.current.clientWidth
-    const containerHeight = ref.current.clientHeight
-    const margin = getResponsiveMargin(containerWidth)
-    const width = containerWidth - margin.left - margin.right
-    const height = containerHeight - margin.top - margin.bottom
-    const axisFontSize = getAxisFontSize(containerWidth)
-
-    const g = svg
-      .append('g')
-      .attr('transform', `translate(${margin.left},${margin.top})`)
-
-    // Parse dates
-    const parsedData = data.map((d) => ({
-      ...d,
-      parsedDate: d[dateKey] instanceof Date ? d[dateKey] : new Date(d[dateKey]),
-    }))
-
-    // Scales
-    const [minDate, maxDate] = d3.extent(parsedData, (d) => d.parsedDate)
-    const timeSpanMs = maxDate - minDate
-
-    const x = d3
-      .scaleTime()
-      .domain([minDate, maxDate])
-      .range([0, width])
-
-    // Smart formatting based on time span
-    const dateFormatter = getSmartDateFormatter(minDate, maxDate)
-    const tickCount = getSmartTickCount(timeSpanMs, containerWidth)
-
-    // Find y extent from all series
+    // One y domain across every series, padded 10% and always including zero.
     const allKeys = [...areas.map((a) => a.key), ...lines.map((l) => l.key)]
-    const allValues = parsedData.flatMap((d) => allKeys.map((k) => d[k] || 0))
-    const [yMin, yMax] = d3.extent(allValues)
+    const [yMin, yMax] = extent(parsedData.flatMap((d) => allKeys.map((k) => d[k] || 0)))
     const yPadding = (yMax - yMin) * 0.1
+    const y = linearScale([Math.min(0, yMin - yPadding), yMax + yPadding], [height, 0]).nice()
+    const atX = (d) => x(d.parsedDate)
 
-    const y = d3
-      .scaleLinear()
-      .domain([Math.min(0, yMin - yPadding), yMax + yPadding])
-      .nice()
-      .range([height, 0])
+    return {
+      margin, width, height, parsedData, x, y,
+      dateFormatter: getSmartDateFormatter(minDate, maxDate),
+      tickCount: getSmartTickCount(maxDate - minDate, size.width),
+      axisFontSize: getAxisFontSize(size.width),
+      areaPaths: areas.map((a) => areaPath(parsedData, { x: atX, y0: y(0), y1: (d) => y(d[a.key] || 0) })),
+      linePaths: lines.map((l) => linePath(parsedData, { x: atX, y: (d) => y(d[l.key] || 0) })),
+    }
+  }, [hasData, data, dateKey, areas, lines, size.width, size.height])
 
-    // Clip path
-    const clipId = `clip-composed-${title?.replace(/\s+/g, '-') || 'chart'}-${Date.now()}`
-    g.append('defs')
-      .append('clipPath')
-      .attr('id', clipId)
-      .append('rect')
-      .attr('x', 0)
-      .attr('y', 0)
-      .attr('width', width)
-      .attr('height', height)
-
-    // Gridlines
-    g.append('g')
-      .attr('class', 'grid')
-      .selectAll('line')
-      .data(y.ticks(5))
-      .enter()
-      .append('line')
-      .attr('x1', 0)
-      .attr('x2', width)
-      .attr('y1', (d) => y(d))
-      .attr('y2', (d) => y(d))
-      .attr('stroke', colors.gridLine)
-      .attr('stroke-dasharray', '3,3')
-      .attr('stroke-opacity', 0.5)
-
-    // Draw areas
-    areas.forEach((areaConfig) => {
-      const area = d3
-        .area()
-        .x((d) => x(d.parsedDate))
-        .y0(y(0))
-        .y1((d) => y(d[areaConfig.key] || 0))
-        .curve(d3.curveMonotoneX)
-
-      g.append('path')
-        .datum(parsedData)
-        .attr('clip-path', `url(#${clipId})`)
-        .attr('fill', colorWithOpacity(areaConfig.color, 0.3))
-        .attr('stroke', areaConfig.color)
-        .attr('stroke-width', 1)
-        .attr('d', area)
-    })
-
-    // Draw lines
-    lines.forEach((lineConfig) => {
-      const line = d3
-        .line()
-        .x((d) => x(d.parsedDate))
-        .y((d) => y(d[lineConfig.key] || 0))
-        .curve(d3.curveMonotoneX)
-
-      g.append('path')
-        .datum(parsedData)
-        .attr('clip-path', `url(#${clipId})`)
-        .attr('fill', 'none')
-        .attr('stroke', lineConfig.color)
-        .attr('stroke-width', lineConfig.strokeWidth || 2)
-        .attr('stroke-dasharray', lineConfig.dashed ? '5,3' : null)
-        .attr('d', line)
-    })
-
-    // Axes
-    g.append('g')
-      .attr('transform', `translate(0,${height})`)
-      .call(
-        d3
-          .axisBottom(x)
-          .ticks(tickCount)
-          .tickFormat(dateFormatter)
-      )
-      .selectAll('text')
-      .attr('fill', colors.lightGray)
-      .style('font-size', axisFontSize)
-
-    g.selectAll('.domain').attr('stroke', colors.darkGray)
-    g.selectAll('.tick line').attr('stroke', colors.darkGray)
-
-    g.append('g')
-      .call(d3.axisLeft(y).ticks(5).tickFormat(formatCurrencyCompact))
-      .selectAll('text')
-      .attr('fill', colors.lightGray)
-      .style('font-size', axisFontSize)
-
-    // Legend
-    const allSeries = [...areas, ...lines]
-    const legend = g
-      .append('g')
-      .attr('class', 'legend')
-      .attr('transform', `translate(10, 10)`)
-
-    allSeries.forEach((s, i) => {
-      const legendItem = legend.append('g').attr('transform', `translate(${i * 90}, 0)`)
-
-      if (lines.includes(s)) {
-        legendItem
-          .append('line')
-          .attr('x1', 0)
-          .attr('x2', 15)
-          .attr('y1', 5)
-          .attr('y2', 5)
-          .attr('stroke', s.color)
-          .attr('stroke-width', 2)
-          .attr('stroke-dasharray', s.dashed ? '3,2' : null)
-      } else {
-        legendItem
-          .append('rect')
-          .attr('width', 12)
-          .attr('height', 12)
-          .attr('fill', colorWithOpacity(s.color, 0.5))
-          .attr('stroke', s.color)
-          .attr('rx', 2)
-      }
-
-      legendItem
-        .append('text')
-        .attr('x', 20)
-        .attr('y', 10)
-        .attr('fill', colors.lightGray)
-        .style('font-size', '10px')
-        .text(s.label)
-    })
-
-    // Interactive hover
-    const bisect = d3.bisector((d) => d.parsedDate).left
-
-    const focus = g.append('g').attr('class', 'focus').style('display', 'none')
-
-    focus
-      .append('line')
-      .attr('class', 'hover-line')
-      .attr('y1', 0)
-      .attr('y2', height)
-      .attr('stroke', colors.lightGray)
-      .attr('stroke-dasharray', '3,3')
-
-    // Tooltip
-    const tooltip = focus.append('g').attr('class', 'tooltip-group')
-
-    tooltip
-      .append('rect')
-      .attr('class', 'tooltip-bg')
-      .attr('fill', colors.darkBg)
-      .attr('stroke', colors.darkGray)
-      .attr('rx', 4)
-
-    tooltip
-      .append('text')
-      .attr('class', 'tooltip-date')
-      .attr('fill', colors.lightGray)
-      .style('font-size', '10px')
-
-    allSeries.forEach((s, i) => {
-      tooltip
-        .append('text')
-        .attr('class', `tooltip-value-${i}`)
-        .attr('fill', s.color)
-        .style('font-size', '11px')
-    })
-
-    g.append('rect')
-      .attr('class', 'overlay')
-      .attr('width', width)
-      .attr('height', height)
-      .attr('fill', 'none')
-      .attr('pointer-events', 'all')
-      .on('mouseover', () => focus.style('display', null))
-      .on('mouseout', () => focus.style('display', 'none'))
-      .on('mousemove', function (event) {
-        const [mouseX] = d3.pointer(event)
-        const x0 = x.invert(mouseX)
-        const i = bisect(parsedData, x0, 1)
-        const d0 = parsedData[i - 1]
-        const d1 = parsedData[i]
-
-        if (!d0) return
-        const d =
-          d1 && x0.getTime() - d0.parsedDate.getTime() > d1.parsedDate.getTime() - x0.getTime() ? d1 : d0
-
-        const xPos = x(d.parsedDate)
-
-        focus.select('.hover-line').attr('x1', xPos).attr('x2', xPos)
-
-        const tooltipX = xPos > width / 2 ? xPos - 130 : xPos + 10
-        const tooltipHeight = 20 + allSeries.length * 16
-
-        tooltip.attr('transform', `translate(${tooltipX}, 20)`)
-        tooltip.select('.tooltip-date').text(formatDateTimeFull(d.parsedDate)).attr('x', 8).attr('y', 16)
-
-        allSeries.forEach((s, idx) => {
-          tooltip
-            .select(`.tooltip-value-${idx}`)
-            .text(`${s.label}: ${formatCurrency(d[s.key] || 0)}`)
-            .attr('x', 8)
-            .attr('y', 32 + idx * 16)
-        })
-
-        tooltip.select('.tooltip-bg').attr('width', 120).attr('height', tooltipHeight)
-      })
-  }, [data, title, dateKey, areas, lines, resize])
-
-  if (!data || data.length < 2) {
+  if (!hasData) {
     return (
       <div className="flex items-center justify-center h-full text-gray-400">
         Not enough data for chart
@@ -279,7 +66,81 @@ export function ComposedChart({
     )
   }
 
-  return <svg ref={ref} className="w-full h-full" style={{ overflow: 'visible' }} />
+  const allSeries = [...areas, ...lines]
+
+  const renderHover = () => {
+    const { x, width, height } = chart
+    const xPos = x(hovered.parsedDate)
+    return (
+      <HoverMarker
+        x={xPos}
+        height={height}
+        box={{ x: xPos > width / 2 ? xPos - 130 : xPos + 10, y: 20, width: 120, height: 20 + allSeries.length * 16 }}
+        rows={[
+          { text: formatDateTimeFull(hovered.parsedDate), color: colors.lightGray, fontSize: '10px' },
+          ...allSeries.map((s) => ({ text: `${s.label}: ${formatCurrency(hovered[s.key] || 0)}`, color: s.color, fontSize: '11px' })),
+        ]}
+      />
+    )
+  }
+
+  return (
+    <svg ref={ref} className="w-full h-full" style={{ overflow: 'visible' }}>
+      {chart && (
+        <g transform={`translate(${chart.margin.left},${chart.margin.top})`}>
+          <ClipRect id={clipId} width={chart.width} height={chart.height} />
+          <Grid width={chart.width} rows={chart.y.ticks(5).map(chart.y)} {...DASHED_GRID} />
+          {areas.map((a, i) => (
+            <path key={a.key} clipPath={`url(#${clipId})`} fill={colorWithOpacity(a.color, 0.3)} stroke={a.color} strokeWidth={1} d={chart.areaPaths[i]} />
+          ))}
+          {lines.map((l, i) => (
+            <path
+              key={l.key}
+              clipPath={`url(#${clipId})`}
+              fill="none"
+              stroke={l.color}
+              strokeWidth={l.strokeWidth || 2}
+              strokeDasharray={l.dashed ? '5,3' : undefined}
+              d={chart.linePaths[i]}
+            />
+          ))}
+          <Axis
+            orient="bottom"
+            transform={`translate(0,${chart.height})`}
+            scale={chart.x}
+            ticks={chart.x.ticks(chart.tickCount)}
+            format={chart.dateFormatter}
+            stroke={colors.darkGray}
+            textFill={colors.lightGray}
+            fontSize={chart.axisFontSize}
+          />
+          <Axis orient="left" scale={chart.y} ticks={chart.y.ticks(5)} format={formatCurrencyCompact} textFill={colors.lightGray} fontSize={chart.axisFontSize} />
+          <g className="legend" transform="translate(10, 10)">
+            {allSeries.map((s, i) => (
+              <g key={s.key} transform={`translate(${i * 90}, 0)`}>
+                {lines.includes(s) ? (
+                  <line x1={0} x2={15} y1={5} y2={5} stroke={s.color} strokeWidth={2} strokeDasharray={s.dashed ? '3,2' : undefined} />
+                ) : (
+                  <rect width={12} height={12} fill={colorWithOpacity(s.color, 0.5)} stroke={s.color} rx={2} />
+                )}
+                <text x={20} y={10} fill={colors.lightGray} style={{ fontSize: '10px' }}>{s.label}</text>
+              </g>
+            ))}
+          </g>
+          {hovered && renderHover()}
+          <rect
+            className="overlay"
+            width={chart.width}
+            height={chart.height}
+            fill="none"
+            pointerEvents="all"
+            onMouseMove={(event) => setHovered(nearestByDate(chart.parsedData, chart.x.invert(localPoint(event)[0])))}
+            onMouseLeave={() => setHovered(null)}
+          />
+        </g>
+      )}
+    </svg>
+  )
 }
 
 export default ComposedChart

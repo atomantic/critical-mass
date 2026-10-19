@@ -95,7 +95,7 @@ function tickSpec(start, stop, count) {
   return [i1, i2, inc]
 }
 
-export function ticks(start, stop, count) {
+function ticks(start, stop, count) {
   stop = +stop, start = +start, count = +count
   if (!(count > 0)) return []
   if (start === stop) return [start]
@@ -111,11 +111,11 @@ export function ticks(start, stop, count) {
   return out
 }
 
-export function tickIncrement(start, stop, count) {
+function tickIncrement(start, stop, count) {
   return tickSpec(+start, +stop, +count)[2]
 }
 
-export function tickStep(start, stop, count) {
+function tickStep(start, stop, count) {
   stop = +stop, start = +start, count = +count
   const reverse = stop < start
   const inc = reverse ? tickIncrement(stop, start, count) : tickIncrement(start, stop, count)
@@ -398,6 +398,17 @@ export function bandScale(domain = [], range = [0, 1], { padding = 0 } = {}) {
   scale.bandwidth = () => bandwidth
   scale.step = () => step
   scale.domain = () => keys.slice()
+  scale.range = () => [r0, r1]
+  return scale
+}
+
+// Evenly spaced positions for `count` categories (indices) across the range, ends included.
+export function pointScale(count, range = [0, 1]) {
+  const [r0, r1] = range.map(Number)
+  const step = count > 1 ? (r1 - r0) / (count - 1) : 0
+  const start = count > 1 ? r0 : (r0 + r1) / 2
+  const scale = (index) => start + step * index
+  scale.step = () => step
   scale.range = () => [r0, r1]
   return scale
 }

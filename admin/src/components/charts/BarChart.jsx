@@ -1,5 +1,9 @@
-import { useRef, useEffect } from 'react'
-import * as d3 from 'd3'
+import { useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { bandScale, linearScale, max } from '../../lib/chart-math'
+import { Axis } from './primitives/Axis'
+import { Grid } from './primitives/Grid'
+import { useElementSize } from './primitives/Responsive'
 import {
   formatCurrencyCompact,
   formatCurrency,
@@ -8,181 +12,49 @@ import {
   getAxisFontSize,
   getSmartDateFormatter,
   colors,
-  colorWithOpacity,
+  DASHED_GRID,
 } from './chartUtils'
+
+const TOOLTIP_STYLE = {
+  position: 'absolute',
+  background: colors.darkBg,
+  border: `1px solid ${colors.darkGray}`,
+  borderRadius: '4px',
+  padding: '8px 12px',
+  fontSize: '12px',
+  color: colors.lightGray,
+  pointerEvents: 'none',
+  zIndex: 1000,
+}
 
 export function BarChart({
   data,
-  title,
   dateKey = 'date',
   series,
-  resize = 0,
 }) {
-  const ref = useRef(null)
+  const [ref, size] = useElementSize()
+  const [hovered, setHovered] = useState(null)
+  const hasData = data?.length > 0
 
-  useEffect(() => {
-    if (!ref.current || !data || data.length === 0 || !series?.length) return
+  const chart = useMemo(() => {
+    if (!hasData || !series?.length || !size.width) return null
+    const margin = getResponsiveMargin(size.width)
+    const width = size.width - margin.left - margin.right
+    const height = size.height - margin.top - margin.bottom
 
-    const svg = d3.select(ref.current)
-    svg.selectAll('*').remove()
+    const dates = data.map((d) => (d[dateKey] instanceof Date ? d[dateKey] : new Date(d[dateKey])))
+    const dateFormatter = getSmartDateFormatter(Math.min(...dates), Math.max(...dates))
 
-    const containerWidth = ref.current.clientWidth
-    const containerHeight = ref.current.clientHeight
-    const margin = getResponsiveMargin(containerWidth)
-    const width = containerWidth - margin.left - margin.right
-    const height = containerHeight - margin.top - margin.bottom
-    const axisFontSize = getAxisFontSize(containerWidth)
+    // One band per date, subdivided into one bar per series.
+    const x0 = bandScale(data.map((d) => d[dateKey]), [0, width], { padding: 0.2 })
+    const x1 = bandScale(series.map((s) => s.key), [0, x0.bandwidth()], { padding: 0.05 })
+    const maxValue = max(data, (d) => max(series, (s) => d[s.key] || 0))
+    const y = linearScale([0, maxValue * 1.1], [height, 0]).nice()
 
-    const g = svg
-      .append('g')
-      .attr('transform', `translate(${margin.left},${margin.top})`)
+    return { margin, width, height, x0, x1, y, dateFormatter, axisFontSize: getAxisFontSize(size.width) }
+  }, [hasData, data, dateKey, series, size.width, size.height])
 
-    // Parse dates and get time span for formatting
-    const parsedData = data.map((d) => ({
-      ...d,
-      parsedDate: d[dateKey] instanceof Date ? d[dateKey] : new Date(d[dateKey]),
-    }))
-
-    const dates = parsedData.map((d) => d.parsedDate)
-    const [minDate, maxDate] = [Math.min(...dates), Math.max(...dates)]
-    const dateFormatter = getSmartDateFormatter(minDate, maxDate)
-
-    // X scale for dates (band scale)
-    const x0 = d3
-      .scaleBand()
-      .domain(data.map((d) => d[dateKey]))
-      .range([0, width])
-      .padding(0.2)
-
-    // X scale for grouped bars within each date
-    const x1 = d3
-      .scaleBand()
-      .domain(series.map((s) => s.key))
-      .range([0, x0.bandwidth()])
-      .padding(0.05)
-
-    // Y scale
-    const maxValue = d3.max(data, (d) =>
-      d3.max(series, (s) => d[s.key] || 0)
-    )
-    const y = d3.scaleLinear().domain([0, maxValue * 1.1]).nice().range([height, 0])
-
-    // Gridlines
-    g.append('g')
-      .attr('class', 'grid')
-      .selectAll('line')
-      .data(y.ticks(5))
-      .enter()
-      .append('line')
-      .attr('x1', 0)
-      .attr('x2', width)
-      .attr('y1', (d) => y(d))
-      .attr('y2', (d) => y(d))
-      .attr('stroke', colors.gridLine)
-      .attr('stroke-dasharray', '3,3')
-      .attr('stroke-opacity', 0.5)
-
-    // Draw bars
-    const barGroups = g
-      .selectAll('.bar-group')
-      .data(data)
-      .enter()
-      .append('g')
-      .attr('class', 'bar-group')
-      .attr('transform', (d) => `translate(${x0(d[dateKey])},0)`)
-
-    series.forEach((s, i) => {
-      barGroups
-        .append('rect')
-        .attr('x', x1(s.key))
-        .attr('y', (d) => y(d[s.key] || 0))
-        .attr('width', x1.bandwidth())
-        .attr('height', (d) => height - y(d[s.key] || 0))
-        .attr('fill', s.color)
-        .attr('rx', 2)
-    })
-
-    // X Axis
-    g.append('g')
-      .attr('transform', `translate(0,${height})`)
-      .call(d3.axisBottom(x0).tickFormat((d) => dateFormatter(new Date(d))))
-      .selectAll('text')
-      .attr('fill', colors.lightGray)
-      .style('font-size', axisFontSize)
-      .attr('transform', 'rotate(-45)')
-      .attr('text-anchor', 'end')
-
-    g.selectAll('.domain').attr('stroke', colors.darkGray)
-    g.selectAll('.tick line').attr('stroke', colors.darkGray)
-
-    // Y Axis
-    g.append('g')
-      .call(d3.axisLeft(y).ticks(5).tickFormat(formatCurrencyCompact))
-      .selectAll('text')
-      .attr('fill', colors.lightGray)
-      .style('font-size', axisFontSize)
-
-    // Legend
-    const legend = g
-      .append('g')
-      .attr('class', 'legend')
-      .attr('transform', `translate(${width - 100}, 10)`)
-
-    series.forEach((s, i) => {
-      const legendItem = legend.append('g').attr('transform', `translate(0, ${i * 18})`)
-
-      legendItem.append('rect').attr('width', 12).attr('height', 12).attr('fill', s.color).attr('rx', 2)
-
-      legendItem
-        .append('text')
-        .attr('x', 18)
-        .attr('y', 10)
-        .attr('fill', colors.lightGray)
-        .style('font-size', '10px')
-        .text(s.label)
-    })
-
-    // Tooltip on hover
-    const tooltip = d3
-      .select('body')
-      .append('div')
-      .attr('class', 'd3-tooltip')
-      .style('position', 'absolute')
-      .style('background', colors.darkBg)
-      .style('border', `1px solid ${colors.darkGray}`)
-      .style('border-radius', '4px')
-      .style('padding', '8px 12px')
-      .style('font-size', '12px')
-      .style('color', colors.lightGray)
-      .style('pointer-events', 'none')
-      .style('opacity', 0)
-      .style('z-index', 1000)
-
-    barGroups
-      .selectAll('rect')
-      .on('mouseover', function (event, d) {
-        const seriesItem = series[Array.from(this.parentNode.querySelectorAll('rect')).indexOf(this)]
-        tooltip
-          .style('opacity', 1)
-          .html(
-            `<div style="color: ${seriesItem.color}; font-weight: bold;">${seriesItem.label}</div>
-             <div>${formatDateTimeFull(new Date(d[dateKey]))}</div>
-             <div>${formatCurrency(d[seriesItem.key] || 0)}</div>`
-          )
-      })
-      .on('mousemove', function (event) {
-        tooltip.style('left', event.pageX + 10 + 'px').style('top', event.pageY - 28 + 'px')
-      })
-      .on('mouseout', function () {
-        tooltip.style('opacity', 0)
-      })
-
-    return () => {
-      tooltip.remove()
-    }
-  }, [data, title, dateKey, series, resize])
-
-  if (!data || data.length === 0) {
+  if (!hasData) {
     return (
       <div className="flex items-center justify-center h-full text-gray-400">
         No data available
@@ -190,94 +62,70 @@ export function BarChart({
     )
   }
 
-  return <svg ref={ref} className="w-full h-full" style={{ overflow: 'visible' }} />
-}
+  const tooltip = hovered && createPortal(
+    <div className="d3-tooltip" style={{ ...TOOLTIP_STYLE, left: hovered.pageX + 10, top: hovered.pageY - 28 }}>
+      <div style={{ color: hovered.series.color, fontWeight: 'bold' }}>{hovered.series.label}</div>
+      <div>{formatDateTimeFull(new Date(hovered.datum[dateKey]))}</div>
+      <div>{formatCurrency(hovered.datum[hovered.series.key] || 0)}</div>
+    </div>,
+    document.body,
+  )
 
-export function HorizontalBarChart({
-  data,
-  title,
-  labelKey = 'label',
-  valueKey = 'value',
-  color = colors.blue,
-  formatValue = formatCurrencyCompact,
-  resize = 0,
-}) {
-  const ref = useRef(null)
-
-  useEffect(() => {
-    if (!ref.current || !data || data.length === 0) return
-
-    const svg = d3.select(ref.current)
-    svg.selectAll('*').remove()
-
-    const containerWidth = ref.current.clientWidth
-    const containerHeight = ref.current.clientHeight
-    const margin = { top: 10, right: 60, bottom: 20, left: 80 }
-    const width = containerWidth - margin.left - margin.right
-    const height = containerHeight - margin.top - margin.bottom
-    const axisFontSize = getAxisFontSize(containerWidth)
-
-    const g = svg
-      .append('g')
-      .attr('transform', `translate(${margin.left},${margin.top})`)
-
-    // Y scale (categories)
-    const y = d3
-      .scaleBand()
-      .domain(data.map((d) => d[labelKey]))
-      .range([0, height])
-      .padding(0.2)
-
-    // X scale (values)
-    const maxValue = d3.max(data, (d) => d[valueKey])
-    const x = d3.scaleLinear().domain([0, maxValue * 1.1]).nice().range([0, width])
-
-    // Draw bars
-    g.selectAll('.bar')
-      .data(data)
-      .enter()
-      .append('rect')
-      .attr('class', 'bar')
-      .attr('y', (d) => y(d[labelKey]))
-      .attr('x', 0)
-      .attr('height', y.bandwidth())
-      .attr('width', (d) => x(d[valueKey]))
-      .attr('fill', color)
-      .attr('rx', 3)
-
-    // Value labels
-    g.selectAll('.value-label')
-      .data(data)
-      .enter()
-      .append('text')
-      .attr('class', 'value-label')
-      .attr('y', (d) => y(d[labelKey]) + y.bandwidth() / 2)
-      .attr('x', (d) => x(d[valueKey]) + 5)
-      .attr('dy', '0.35em')
-      .attr('fill', colors.lightGray)
-      .style('font-size', axisFontSize)
-      .text((d) => formatValue(d[valueKey]))
-
-    // Y Axis
-    g.append('g')
-      .call(d3.axisLeft(y))
-      .selectAll('text')
-      .attr('fill', colors.lightGray)
-      .style('font-size', axisFontSize)
-
-    g.selectAll('.domain').attr('stroke', colors.darkGray)
-    g.selectAll('.tick line').attr('stroke', colors.darkGray)
-  }, [data, title, labelKey, valueKey, color, formatValue, resize])
-
-  if (!data || data.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-full text-gray-400">
-        No data available
-      </div>
-    )
-  }
-
-  return <svg ref={ref} className="w-full h-full" style={{ overflow: 'visible' }} />
+  return (
+    <>
+      <svg ref={ref} className="w-full h-full" style={{ overflow: 'visible' }}>
+        {chart && (
+          <g transform={`translate(${chart.margin.left},${chart.margin.top})`}>
+            <Grid width={chart.width} rows={chart.y.ticks(5).map(chart.y)} {...DASHED_GRID} />
+            {data.map((d, i) => (
+              <g key={i} className="bar-group" transform={`translate(${chart.x0(d[dateKey])},0)`}>
+                {series.map((s) => {
+                  const value = d[s.key] || 0
+                  const track = (event) => setHovered({ datum: d, series: s, pageX: event.pageX, pageY: event.pageY })
+                  return (
+                    <rect
+                      key={s.key}
+                      x={chart.x1(s.key)}
+                      y={chart.y(value)}
+                      width={chart.x1.bandwidth()}
+                      height={chart.height - chart.y(value)}
+                      fill={s.color}
+                      rx={2}
+                      onMouseEnter={track}
+                      onMouseMove={track}
+                      onMouseLeave={() => setHovered(null)}
+                    />
+                  )
+                })}
+              </g>
+            ))}
+            <Axis
+              orient="bottom"
+              transform={`translate(0,${chart.height})`}
+              scale={chart.x0}
+              ticks={chart.x0.domain()}
+              format={(d) => chart.dateFormatter(new Date(d))}
+              stroke={colors.darkGray}
+              textFill={colors.lightGray}
+              fontSize={chart.axisFontSize}
+              textTransform="rotate(-45)"
+              textAnchor="end"
+            />
+            <Axis orient="left" scale={chart.y} ticks={chart.y.ticks(5)} format={formatCurrencyCompact} textFill={colors.lightGray} fontSize={chart.axisFontSize} />
+            <g className="legend" transform={`translate(${chart.width - 100}, 10)`}>
+              {series.map((s, i) => (
+                <g key={s.key} transform={`translate(0, ${i * 18})`}>
+                  <rect width={12} height={12} fill={s.color} rx={2} />
+                  <text x={18} y={10} fill={colors.lightGray} style={{ fontSize: '10px' }}>{s.label}</text>
+                </g>
+              ))}
+            </g>
+          </g>
+        )}
+      </svg>
+      {tooltip}
+    </>
+  )
 }
 
 export default BarChart
