@@ -5,12 +5,13 @@ import { ChartContext } from './chartContext'
 import { ClipRect, Grid } from './Grid'
 import { Legend } from './Legend'
 import { ReferenceLine } from './ReferenceLine'
-import { Responsive, localPoint, svgId } from './Responsive'
+import { Responsive, localPoint, svgId, useElementSize } from './Responsive'
 import { TooltipContent } from './Tooltip'
 
 const DEFAULT_MARGIN = { top: 5, right: 5, bottom: 5, left: 5 }
 const X_AXIS_HEIGHT = 30
 const Y_AXIS_WIDTH = 60
+// Legend height assumed until the wrapped legend has been measured.
 const LEGEND_HEIGHT = 24
 const AXIS_STROKE = '#666'
 const DEFAULT_COLOR = '#3182bd'
@@ -86,8 +87,9 @@ function Plot({
   const [active, setActive] = useState(null)
   const clipId = svgId('plot-clip', useId())
   const plotClip = `url(#${clipId})`
+  const [legendRef, legendSize] = useElementSize()
   const margin = { ...DEFAULT_MARGIN, ...marginOverride }
-  const svgHeight = height - (legend ? LEGEND_HEIGHT : 0)
+  const svgHeight = height - (legend ? legendSize.height || LEGEND_HEIGHT : 0)
 
   const geometry = useMemo(() => {
     const axes = yAxes.map((axis, i) => ({ id: i, orientation: 'left', width: Y_AXIS_WIDTH, ...axis }))
@@ -167,6 +169,24 @@ function Plot({
     setActive({ index: Math.max(0, Math.min(data.length - 1, i)), y: plot.y + py })
   }
 
+  // Keyboard inspection (Recharts' accessibility layer): arrows step through the samples.
+  const onKeyDown = (event) => {
+    const delta = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0
+    if (!delta || !data.length) return
+    event.preventDefault()
+    setActive((prev) => {
+      const from = prev?.index ?? (delta > 0 ? -1 : data.length)
+      return { index: Math.max(0, Math.min(data.length - 1, from + delta)), y: plot.y + plot.height / 2 }
+    })
+  }
+  const inspectable = tooltip && {
+    role: 'application',
+    tabIndex: 0,
+    'aria-label': 'Chart: use the left and right arrow keys to inspect samples',
+    onKeyDown,
+    onBlur: () => setActive(null),
+  }
+
   const payload = index == null ? [] : sortBy(layers
     .filter((s) => s.values[index] != null)
     .map((s) => ({ dataKey: s.dataKey, name: s.name ?? s.dataKey, value: s.values[index], color: seriesColor(s) })), 'name')
@@ -174,7 +194,7 @@ function Plot({
 
   return (
     <ChartContext.Provider value={context}>
-      <svg width={width} height={svgHeight} className="cartesian-chart">
+      <svg width={width} height={svgHeight} className="cartesian-chart" {...inspectable}>
         {grid && (
           <Grid
             x={plot.x}
@@ -252,18 +272,20 @@ function Plot({
           />
         )}
       </svg>
-      {tooltip && index != null && (
+      {tooltip && (
+        // Always mounted so the live region announces each newly inspected sample.
         <div
           className="pointer-events-none absolute left-0 top-0 z-10"
-          style={{
+          aria-live="polite"
+          style={index == null ? undefined : {
             transform: `translate(${activeX > width / 2 ? `calc(${activeX - 10}px - 100%)` : `${activeX + 10}px`}, ${active.y > svgHeight / 2 ? `calc(${active.y - 10}px - 100%)` : `${active.y + 10}px`})`,
           }}
         >
-          <TooltipContent active label={categoryOf(index)} payload={payload} {...tooltip} />
+          {index != null && <TooltipContent active label={categoryOf(index)} payload={payload} {...tooltip} />}
         </div>
       )}
       {legend && (
-        <div style={{ height: LEGEND_HEIGHT }}>
+        <div ref={legendRef} className="chart-legend-box">
           <Legend
             items={sortBy(layers.map((s) => ({ key: s.dataKey, value: s.name ?? s.dataKey, color: seriesColor(s) })), 'value')}
             formatter={legend.formatter}

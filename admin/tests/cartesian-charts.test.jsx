@@ -20,10 +20,13 @@ vi.mock('../src/hooks/useCandleData', () => ({
 }))
 
 // jsdom has no layout: give every element a fixed box (getBoundingClientRect stays at 0,0,
-// so a pointer's clientX/clientY is its offset inside the hovered element).
-function stubBox(width, height) {
+// so a pointer's clientX/clientY is its offset inside the hovered element). Legends report
+// `legendHeight` (one 24px row unless a test wraps them).
+function stubBox(width, height, legendHeight = 24) {
   vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(width)
-  vi.spyOn(Element.prototype, 'clientHeight', 'get').mockReturnValue(height)
+  vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(function () {
+    return this.classList?.contains('chart-legend-box') ? legendHeight : height
+  })
 }
 
 const tickLabels = (axis) => [...axis.querySelectorAll('.tick text')].map((t) => t.textContent)
@@ -71,6 +74,32 @@ describe('CartesianChart', () => {
     expect(path().match(/M/g)).toHaveLength(2)
     rerender(<CartesianChart data={data} height={200} series={[{ dataKey: 'v', connectNulls: true }]} />)
     expect(path().match(/M/g)).toHaveLength(1)
+  })
+
+  it('steps through samples with the arrow keys and clears on blur', () => {
+    stubBox(400, 200)
+    const data = [{ t: 'a', v: 1 }, { t: 'b', v: 2 }, { t: 'c', v: 3 }]
+    const { container } = render(<CartesianChart data={data} height={200} xAxis={{ dataKey: 't' }} tooltip={{}} series={[{ dataKey: 'v' }]} />)
+    const svg = container.querySelector('svg.cartesian-chart')
+    expect(svg.getAttribute('tabindex')).toBe('0')
+    const label = () => container.querySelector('.chart-tooltip p')?.textContent
+    fireEvent.keyDown(svg, { key: 'ArrowRight' })
+    expect(label()).toBe('a')
+    fireEvent.keyDown(svg, { key: 'ArrowRight' })
+    fireEvent.keyDown(svg, { key: 'ArrowRight' })
+    fireEvent.keyDown(svg, { key: 'ArrowRight' })
+    expect(label()).toBe('c')
+    fireEvent.keyDown(svg, { key: 'ArrowLeft' })
+    expect(label()).toBe('b')
+    expect(container.querySelector('[aria-live="polite"] .chart-tooltip')).toBeTruthy()
+    fireEvent.blur(svg)
+    expect(label()).toBeUndefined()
+  })
+
+  it('gives a wrapped legend its measured height', () => {
+    stubBox(300, 200, 48)
+    const { container } = render(<CartesianChart data={[{ v: 1 }, { v: 2 }]} height={200} legend series={[{ dataKey: 'v' }]} />)
+    expect(container.querySelector('svg.cartesian-chart').getAttribute('height')).toBe('152')
   })
 
   it('clips series to the plot only on axes whose fixed domain the data may exceed', () => {
