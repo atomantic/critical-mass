@@ -1,11 +1,13 @@
-import { useXAxisScale, useYAxisScale } from 'recharts'
+import { useChartContext } from './primitives/chartContext'
 
-// BTCPriceChart uses a unique chartIndex category, independent of display labels.
+// Positions BTCPriceChart samples by their unique chartIndex category (independent of the
+// display labels) using the enclosing CartesianChart's own scales.
 export default function usePriceChartCoordinates(data) {
-  const xScale = useXAxisScale()
-  const yScale = useYAxisScale()
+  const chart = useChartContext()
+  if (!chart) return { points: [], yScale: null, plot: null }
   return {
-    points: xScale ? data.map(payload => ({ payload, x: xScale(payload.chartIndex) })) : [],
-    yScale,
+    points: data.map(payload => ({ payload, x: chart.x(payload.chartIndex) })),
+    yScale: chart.y(),
+    plot: chart.plot,
   }
 }

@@ -64,8 +64,13 @@ async function main() {
     assert.equal(initial.invalid, false);
     // Exercise the actual BTCPriceChart + hook, not only standalone layers.
     await waitFor('document.querySelectorAll("#btc rect[stroke]").length > 2 && document.querySelectorAll("#btc polygon").length > 0 && [...document.querySelectorAll("#btc text")].some(el => el.textContent === "OPEN")');
+    // DCA charts observe their own svg: the x-axis domain must follow the container width.
+    const areaAxisEnd = 'Number(/H([\\d.]+)V/.exec(document.querySelector("#area path.domain")?.getAttribute("d") || "")?.[1])';
+    await waitFor(areaAxisEnd + ' > 0');
+    const areaWide = await browser.evaluate(areaAxisEnd);
     await browser.evaluate('document.querySelector("#resize").click()');
     await waitFor('document.querySelector("#layers svg").getBoundingClientRect().width === 420');
+    await waitFor(areaAxisEnd + ' < ' + areaWide);
     const resized = await geometry();
     assert.ok(resized.xs.at(-1) < initial.xs.at(-1), 'overlay geometry must follow responsive width');
     assert.equal(resized.invalid, false);
@@ -74,7 +79,7 @@ async function main() {
     await browser.evaluate('window.__smokeUnmount()');
     assert.equal(await browser.evaluate('document.querySelectorAll("canvas, svg").length'), 0);
     assert.deepEqual(errors, []);
-    console.log('PASS: React 19 StrictMode, repeated-label overlays, responsive resize, actual BTC chart, all Celestial tiers/WebGL draws, empty data and unmount.');
+    console.log('PASS: React 19 StrictMode, repeated-label overlays, responsive resize (frame and DCA chart), actual BTC chart, all Celestial tiers/WebGL draws, empty data and unmount.');
   } finally {
     const results = await Promise.allSettled([browser?.stop(), server && new Promise(resolve => server.close(resolve))]);
     fs.rmSync(dir, { recursive: true, force: true });

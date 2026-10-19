@@ -1,7 +1,7 @@
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { useState, useEffect, useId } from 'react'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, Area, Bar } from 'recharts'
-import { formatCurrency, formatPrice, formatPriceCompact } from './charts/chartUtils'
+import { formatCurrency, formatPrice } from './charts/chartUtils'
+import { CartesianChart } from './charts/primitives/CartesianChart'
 import { pairQuery } from '../utils/api'
 
 // Time periods adjusted per interval type
@@ -82,6 +82,14 @@ const DEFAULT_PARAMS = {
   fundSize: 10000,
   productId: null  // Will be loaded from config
 }
+
+const formatThousands = (v) => `$${(v / 1000).toFixed(0)}k`
+const PORTFOLIO_X_AXIS = { dataKey: 'date', stroke: '#9CA3AF', tick: { fontSize: 10 }, tickFormatter: (d) => d.slice(5) }
+const PORTFOLIO_Y_AXES = [
+  { id: 'usd', stroke: '#9CA3AF', tickFormatter: formatThousands },
+  { id: 'btc', orientation: 'right', stroke: '#F59E0B', tickFormatter: formatThousands },
+]
+const PORTFOLIO_GRID = { yAxisId: 'usd', stroke: '#374151', strokeDasharray: '3 3' }
 
 // Extract base and quote currencies from productId
 const parseProductId = (productId) => {
@@ -512,76 +520,26 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
           <div className="bg-gray-800 rounded-lg p-4">
             <h4 className="font-semibold mb-4">Portfolio Composition Over Time</h4>
             <div className="h-80">
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={getChartData()}>
-                  <CartesianGrid yAxisId="usd" strokeDasharray="3 3" stroke="#374151" />
-                  <XAxis
-                    dataKey="date"
-                    stroke="#9CA3AF"
-                    tick={{ fontSize: 10 }}
-                    tickFormatter={(d) => d.slice(5)}
-                  />
-                  <YAxis
-                    yAxisId="usd"
-                    stroke="#9CA3AF"
-                    tickFormatter={(v) => `$${(v/1000).toFixed(0)}k`}
-                  />
-                  <YAxis
-                    yAxisId="btc"
-                    orientation="right"
-                    stroke="#F59E0B"
-                    tickFormatter={(v) => `$${(v/1000).toFixed(0)}k`}
-                  />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151' }}
-                    formatter={(value, name) => {
-                      if (name === 'basePrice') return [formatPrice(value), `${baseCurrency} Price`]
-                      return [formatCurrency(value), name]
-                    }}
-                    labelFormatter={(label) => `Date: ${label}`}
-                  />
-                  <Legend />
-                  <Area
-                    yAxisId="usd"
-                    type="monotone"
-                    dataKey="usdcBalance"
-                    name={quoteCurrency}
-                    stackId="portfolio"
-                    fill="#10B981"
-                    fillOpacity={0.6}
-                    stroke="#10B981"
-                  />
-                  <Area
-                    yAxisId="usd"
-                    type="monotone"
-                    dataKey="assetValue"
-                    name={`${baseCurrency} Value`}
-                    stackId="portfolio"
-                    fill="#F59E0B"
-                    fillOpacity={0.6}
-                    stroke="#F59E0B"
-                  />
-                  <Line
-                    yAxisId="usd"
-                    type="monotone"
-                    dataKey="totalValue"
-                    name="Total Value"
-                    stroke="#FFFFFF"
-                    strokeWidth={2}
-                    dot={false}
-                  />
-                  <Line
-                    yAxisId="btc"
-                    type="monotone"
-                    dataKey="assetPrice"
-                    name="basePrice"
-                    stroke="#F59E0B"
-                    strokeWidth={1}
-                    strokeDasharray="5 5"
-                    dot={false}
-                  />
-                </ComposedChart>
-              </ResponsiveContainer>
+              <CartesianChart
+                data={getChartData()}
+                height="100%"
+                grid={PORTFOLIO_GRID}
+                xAxis={PORTFOLIO_X_AXIS}
+                yAxes={PORTFOLIO_Y_AXES}
+                legend
+                tooltip={{
+                  contentStyle: { backgroundColor: '#1F2937', border: '1px solid #374151' },
+                  formatter: (value, name) => (name === 'basePrice' ? [formatPrice(value), `${baseCurrency} Price`] : [formatCurrency(value), name]),
+                  labelFormatter: (label) => `Date: ${label}`,
+                }}
+                series={[
+                  // Quote balance and asset value stack into the portfolio total.
+                  { type: 'area', yAxisId: 'usd', dataKey: 'usdcBalance', name: quoteCurrency, stackId: 'portfolio', fill: '#10B981', fillOpacity: 0.6, stroke: '#10B981' },
+                  { type: 'area', yAxisId: 'usd', dataKey: 'assetValue', name: `${baseCurrency} Value`, stackId: 'portfolio', fill: '#F59E0B', fillOpacity: 0.6, stroke: '#F59E0B' },
+                  { yAxisId: 'usd', dataKey: 'totalValue', name: 'Total Value', stroke: '#FFFFFF', strokeWidth: 2 },
+                  { yAxisId: 'btc', dataKey: 'assetPrice', name: 'basePrice', stroke: '#F59E0B', strokeWidth: 1, strokeDasharray: '5 5' },
+                ]}
+              />
             </div>
           </div>
 

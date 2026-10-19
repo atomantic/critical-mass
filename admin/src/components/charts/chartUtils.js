@@ -1,4 +1,5 @@
-// D3 Chart Utilities - Following EscapeMint patterns
+// Chart utilities - formatting, layout and palette shared by the admin charts
+import { bisectLeft } from '../../lib/chart-math'
 
 // Compact currency formatting for axes
 export function formatCurrencyCompact(value) {
@@ -175,6 +176,9 @@ export const colors = {
   gridLine: '#374151',
 }
 
+// Faint dashed horizontal grid behind the time-series charts
+export const DASHED_GRID = { stroke: colors.gridLine, strokeDasharray: '3,3', strokeOpacity: 0.5 }
+
 // Opacity variants for fills
 export const colorWithOpacity = (color, opacity = 0.3) => {
   const hex = color.replace('#', '')
@@ -196,4 +200,32 @@ export const BTC_TOOLTIP_STYLE = {
 export function formatBTCPrice(value) {
   if (value == null) return ''
   return `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+}
+
+// Adds a Date `parsedDate` to every sample, parsing `dateKey` unless it already is one.
+export const parseDates = (data, dateKey) => data.map((d) => ({
+  ...d,
+  parsedDate: d[dateKey] instanceof Date ? d[dateKey] : new Date(d[dateKey]),
+}))
+
+// Nearest parsed sample to a date: the bisected neighbour on whichever side is closer.
+export function nearestByDate(parsedData, date) {
+  const i = bisectLeft(parsedData, date, (d) => d.parsedDate, 1)
+  const d0 = parsedData[i - 1]
+  const d1 = parsedData[i]
+  if (!d0) return null
+  return d1 && date - d0.parsedDate > d1.parsedDate - date ? d1 : d0
+}
+
+// Background band per regime: from its start (clamped to the plotted window) to the next
+// regime's start, or the right edge for the latest one; bands entirely off-plot are dropped.
+export function regimeZones(sortedRegimes, xScale, windowStart, innerWidth) {
+  return sortedRegimes
+    .map((regime, i) => ({
+      mode: regime.mode,
+      startX: xScale(Math.max(regime.timestamp, windowStart)),
+      endX: i < sortedRegimes.length - 1 ? xScale(sortedRegimes[i + 1].timestamp) : innerWidth,
+    }))
+    .filter(({ startX, endX }) => startX < innerWidth && endX > 0)
+    .map(({ mode, startX, endX }) => ({ mode, x: Math.max(0, startX), width: Math.min(innerWidth, endX) - Math.max(0, startX) }))
 }

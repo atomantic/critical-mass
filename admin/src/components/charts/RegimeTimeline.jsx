@@ -1,6 +1,7 @@
-import { useRef, useEffect, useId, useMemo, useState } from 'react'
-import * as d3 from 'd3'
+import { useId, useMemo } from 'react'
+import { formatTime, timeScale } from '../../lib/chart-math'
 import ChartDataAlternative from './ChartDataAlternative'
+import { useElementSize } from './primitives/Responsive'
 import {
   REGIME_INTERVAL_COLUMNS,
   buildRegimeIntervals,
@@ -22,6 +23,8 @@ const REGIME_BG_COLORS = {
   TREND: 'rgba(239, 68, 68, 0.3)',
 }
 
+const formatHourMinute = formatTime('%H:%M')
+
 /**
  * Horizontal bar showing regime history
  * Color-coded segments (green=HARVEST, yellow=CAUTION, red=TREND)
@@ -33,9 +36,7 @@ function RegimeTimeline({
   height = 60,
   className = '',
 }) {
-  const containerRef = useRef(null)
-  const svgRef = useRef(null)
-  const [containerWidth, setContainerWidth] = useState(0)
+  const [containerRef, { width: containerWidth }] = useElementSize()
   const headingId = useId()
   const summaryId = useId()
 
@@ -74,153 +75,90 @@ function RegimeTimeline({
     }
   }, [regimeData, timeWindow])
 
-  useEffect(() => {
-    if (!svgRef.current || !containerRef.current || containerWidth === 0) return
-    const svg = d3.select(svgRef.current)
-    svg.selectAll('*').remove()
-
+  const chart = useMemo(() => {
+    if (containerWidth === 0) return null
     const margin = { top: 20, right: 10, bottom: 20, left: 10 }
-    const width = containerWidth
-    const innerWidth = width - margin.left - margin.right
+    const innerWidth = containerWidth - margin.left - margin.right
     const innerHeight = height - margin.top - margin.bottom
     const barHeight = Math.min(24, innerHeight)
-
-    svg.attr('width', width).attr('height', height)
-
-    const g = svg
-      .append('g')
-      .attr('transform', `translate(${margin.left},${margin.top})`)
-
-    // Time range: last 1 hour
     const { now, timeStart } = timeWindow
+    const xScale = timeScale([timeStart, now], [0, innerWidth])
 
-    const xScale = d3.scaleTime()
-      .domain([timeStart, now])
-      .range([0, innerWidth])
-
-    // Background
-    g.append('rect')
-      .attr('x', 0)
-      .attr('y', (innerHeight - barHeight) / 2)
-      .attr('width', innerWidth)
-      .attr('height', barHeight)
-      .attr('fill', '#374151')
-      .attr('rx', 4)
-
-    // Draw regime segments
-    if (regimeData.length > 0) {
-      regimeData.forEach((regime, i) => {
-        const startTime = Math.max(regime.timestamp, timeStart)
-        const endTime = i < regimeData.length - 1
-          ? regimeData[i + 1].timestamp
-          : now
-
-        if (startTime < now && endTime > timeStart) {
-          const x = xScale(startTime)
-          const segmentWidth = xScale(endTime) - x
-
-          if (segmentWidth > 0) {
-            // Segment rectangle
-            g.append('rect')
-              .attr('x', Math.max(0, x))
-              .attr('y', (innerHeight - barHeight) / 2)
-              .attr('width', Math.min(segmentWidth, innerWidth - Math.max(0, x)))
-              .attr('height', barHeight)
-              .attr('fill', REGIME_BG_COLORS[regime.mode] || REGIME_BG_COLORS.HARVEST)
-              .attr('stroke', REGIME_COLORS[regime.mode] || REGIME_COLORS.HARVEST)
-              .attr('stroke-width', 1)
-              .attr('rx', i === 0 ? 4 : 0)
-
-            // Regime label (if segment is wide enough)
-            if (segmentWidth > 50) {
-              g.append('text')
-                .attr('x', Math.max(0, x) + Math.min(segmentWidth, innerWidth - Math.max(0, x)) / 2)
-                .attr('y', innerHeight / 2 + 4)
-                .attr('text-anchor', 'middle')
-                .attr('fill', REGIME_COLORS[regime.mode] || '#fff')
-                .attr('font-size', '10px')
-                .attr('font-weight', '500')
-                .text(regime.mode)
-            }
-          }
-        }
-      })
-    } else {
-      // No data - show placeholder
-      g.append('text')
-        .attr('x', innerWidth / 2)
-        .attr('y', innerHeight / 2 + 4)
-        .attr('text-anchor', 'middle')
-        .attr('fill', '#6b7280')
-        .attr('font-size', '10px')
-        .text('No regime history')
-    }
-
-    // Current time marker
-    g.append('line')
-      .attr('x1', innerWidth)
-      .attr('x2', innerWidth)
-      .attr('y1', (innerHeight - barHeight) / 2 - 4)
-      .attr('y2', (innerHeight + barHeight) / 2 + 4)
-      .attr('stroke', '#fff')
-      .attr('stroke-width', 2)
-
-    // Time labels
-    const timeFormat = d3.timeFormat('%H:%M')
-
-    g.append('text')
-      .attr('x', 0)
-      .attr('y', innerHeight + 12)
-      .attr('fill', '#6b7280')
-      .attr('font-size', '9px')
-      .text(timeFormat(new Date(timeStart)))
-
-    g.append('text')
-      .attr('x', innerWidth)
-      .attr('y', innerHeight + 12)
-      .attr('text-anchor', 'end')
-      .attr('fill', '#6b7280')
-      .attr('font-size', '9px')
-      .text('Now')
-
-    // Title
-    g.append('text')
-      .attr('x', 0)
-      .attr('y', -6)
-      .attr('fill', '#9ca3af')
-      .attr('font-size', '11px')
-      .attr('font-weight', '500')
-      .text('Regime Timeline (1 hour)')
-
-  }, [regimeData, timeWindow, height, containerWidth])
-
-  // Handle resize
-  useEffect(() => {
-    const resizeObserver = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setContainerWidth(entry.contentRect.width)
-      }
+    // One segment per regime, from its start (clamped to the window) to the next regime or now.
+    const segments = regimeData.flatMap((regime, i) => {
+      const startTime = Math.max(regime.timestamp, timeStart)
+      const endTime = i < regimeData.length - 1 ? regimeData[i + 1].timestamp : now
+      if (!(startTime < now && endTime > timeStart)) return []
+      const x = xScale(startTime)
+      const segmentWidth = xScale(endTime) - x
+      if (!(segmentWidth > 0)) return []
+      const left = Math.max(0, x)
+      return [{ mode: regime.mode, first: i === 0, left, width: Math.min(segmentWidth, innerWidth - left), segmentWidth }]
     })
-
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current)
-      setContainerWidth(containerRef.current.clientWidth)
-    }
-
-    return () => resizeObserver.disconnect()
-  }, [])
+    return { margin, innerWidth, innerHeight, barHeight, segments, timeStart }
+  }, [regimeData, timeWindow, height, containerWidth])
 
   return (
     <div ref={containerRef} className={`bg-gray-800 rounded-lg p-3 ${className}`}>
       <span id={headingId} className="sr-only">Regime Timeline (1 hour)</span>
       <svg
-        ref={svgRef}
         role="img"
         aria-labelledby={headingId}
         aria-describedby={summaryId}
         className="w-full"
+        width={chart ? containerWidth : undefined}
+        height={chart ? height : undefined}
         style={{ height }}
-      />
+      >
+        {chart && (
+          <g transform={`translate(${chart.margin.left},${chart.margin.top})`}>
+            <rect x={0} y={(chart.innerHeight - chart.barHeight) / 2} width={chart.innerWidth} height={chart.barHeight} fill="#374151" rx={4} />
+            {regimeData.length > 0 ? chart.segments.map((segment, i) => (
+              <g key={i}>
+                <rect
+                  x={segment.left}
+                  y={(chart.innerHeight - chart.barHeight) / 2}
+                  width={segment.width}
+                  height={chart.barHeight}
+                  fill={REGIME_BG_COLORS[segment.mode] || REGIME_BG_COLORS.HARVEST}
+                  stroke={REGIME_COLORS[segment.mode] || REGIME_COLORS.HARVEST}
+                  strokeWidth={1}
+                  rx={segment.first ? 4 : 0}
+                />
+                {/* Label only segments wide enough to hold it */}
+                {segment.segmentWidth > 50 && (
+                  <text
+                    x={segment.left + segment.width / 2}
+                    y={chart.innerHeight / 2 + 4}
+                    textAnchor="middle"
+                    fill={REGIME_COLORS[segment.mode] || '#fff'}
+                    fontSize="10px"
+                    fontWeight="500"
+                  >
+                    {segment.mode}
+                  </text>
+                )}
+              </g>
+            )) : (
+              <text x={chart.innerWidth / 2} y={chart.innerHeight / 2 + 4} textAnchor="middle" fill="#6b7280" fontSize="10px">
+                No regime history
+              </text>
+            )}
+            {/* Current time marker */}
+            <line
+              x1={chart.innerWidth}
+              x2={chart.innerWidth}
+              y1={(chart.innerHeight - chart.barHeight) / 2 - 4}
+              y2={(chart.innerHeight + chart.barHeight) / 2 + 4}
+              stroke="#fff"
+              strokeWidth={2}
+            />
+            <text x={0} y={chart.innerHeight + 12} fill="#6b7280" fontSize="9px">{formatHourMinute(new Date(chart.timeStart))}</text>
+            <text x={chart.innerWidth} y={chart.innerHeight + 12} textAnchor="end" fill="#6b7280" fontSize="9px">Now</text>
+            <text x={0} y={-6} fill="#9ca3af" fontSize="11px" fontWeight="500">Regime Timeline (1 hour)</text>
+          </g>
+        )}
+      </svg>
       <ChartDataAlternative summaryId={summaryId} summary={textAlternative.summary} tables={textAlternative.tables} />
     </div>
   )

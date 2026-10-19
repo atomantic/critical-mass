@@ -1,10 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowLeft, RefreshCw } from 'lucide-react'
-import {
-  AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  ReferenceLine, CartesianGrid, Legend,
-} from 'recharts'
+import { CartesianChart } from '../charts/primitives/CartesianChart'
 import { INDICATORS, INDICATOR_LABELS } from '../../../../shared/indicator-config.mjs'
 
 const RANGES = [
@@ -19,6 +16,14 @@ const INDICATOR_COLORS = {
   obv: '#14b8a6', williamsR: '#f43f5e', cci: '#84cc16',
 }
 const DEFAULT_TF_ORDER = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']
+
+const AXIS_TICK = { fontSize: 10, fill: '#9ca3af' }
+const GRID = { stroke: '#374151', strokeDasharray: '3 3' }
+const TOOLTIP_STYLE = { backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }
+const PERCENT_AXES = [{ domain: [0, 100], tick: AXIS_TICK }]
+const HOUR_X_AXIS = { dataKey: 'hour', tick: AXIS_TICK, tickFormatter: formatHour }
+const COIN_FLIP_LINE = [{ y: 50, stroke: '#6b7280', strokeDasharray: '4 4' }]
+const LEGEND_STYLE = { fontSize: 11 }
 
 function heatmapColor(accuracy) {
   if (accuracy == null) return 'bg-gray-700/50 text-gray-400'
@@ -80,6 +85,7 @@ export default function ScorecardAnalysis() {
     ? Object.fromEntries(indicatorCatalog.map(item => [item.key, item.label]))
     : INDICATOR_LABELS
   const timeframes = data?.catalog?.timeframes || DEFAULT_TF_ORDER
+  const indicatorSeries = indicators.map(ind => ({ dataKey: ind, stroke: INDICATOR_COLORS[ind], strokeWidth: 1.5, connectNulls: true }))
 
   return (
     <div className="space-y-4">
@@ -159,26 +165,16 @@ export default function ScorecardAnalysis() {
             <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
               <h3 className="text-sm font-semibold mb-3">Accuracy Over Time</h3>
               <div className="h-48">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={data.accuracyOverTime}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                    <XAxis dataKey="hour" tick={{ fontSize: 10, fill: '#9ca3af' }} tickFormatter={formatHour} />
-                    <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#9ca3af' }} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }}
-                      labelFormatter={formatHour}
-                      formatter={(v) => [`${v}%`, 'Accuracy']}
-                    />
-                    <ReferenceLine y={50} stroke="#6b7280" strokeDasharray="4 4" />
-                    <Area
-                      type="monotone"
-                      dataKey="accuracy"
-                      stroke="#3b82f6"
-                      fill="#3b82f680"
-                      strokeWidth={2}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
+                <CartesianChart
+                  data={data.accuracyOverTime}
+                  height="100%"
+                  grid={GRID}
+                  xAxis={HOUR_X_AXIS}
+                  yAxes={PERCENT_AXES}
+                  tooltip={{ contentStyle: TOOLTIP_STYLE, labelFormatter: formatHour, formatter: (v) => [`${v}%`, 'Accuracy'] }}
+                  referenceLines={COIN_FLIP_LINE}
+                  series={[{ type: 'area', dataKey: 'accuracy', stroke: '#3b82f6', fill: '#3b82f680', strokeWidth: 2 }]}
+                />
               </div>
             </div>
           )}
@@ -224,34 +220,21 @@ export default function ScorecardAnalysis() {
             <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
               <h3 className="text-sm font-semibold mb-3">Indicator Accuracy Trends</h3>
               <div className="h-56">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={data.indicatorAccuracyOverTime}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                    <XAxis dataKey="hour" tick={{ fontSize: 10, fill: '#9ca3af' }} tickFormatter={formatHour} />
-                    <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#9ca3af' }} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }}
-                      labelFormatter={formatHour}
-                      formatter={(v, name) => [v != null ? `${v}%` : '---', indicatorLabels[name] || name]}
-                    />
-                    <Legend
-                      formatter={(value) => indicatorLabels[value] || value}
-                      wrapperStyle={{ fontSize: 11 }}
-                    />
-                    <ReferenceLine y={50} stroke="#6b7280" strokeDasharray="4 4" />
-                    {indicators.map(ind => (
-                      <Line
-                        key={ind}
-                        type="monotone"
-                        dataKey={ind}
-                        stroke={INDICATOR_COLORS[ind]}
-                        strokeWidth={1.5}
-                        dot={false}
-                        connectNulls
-                      />
-                    ))}
-                  </LineChart>
-                </ResponsiveContainer>
+                <CartesianChart
+                  data={data.indicatorAccuracyOverTime}
+                  height="100%"
+                  grid={GRID}
+                  xAxis={HOUR_X_AXIS}
+                  yAxes={PERCENT_AXES}
+                  tooltip={{
+                    contentStyle: TOOLTIP_STYLE,
+                    labelFormatter: formatHour,
+                    formatter: (v, name) => [v != null ? `${v}%` : '---', indicatorLabels[name] || name],
+                  }}
+                  legend={{ formatter: (value) => indicatorLabels[value] || value, wrapperStyle: LEGEND_STYLE }}
+                  referenceLines={COIN_FLIP_LINE}
+                  series={indicatorSeries}
+                />
               </div>
             </div>
           )}
@@ -261,37 +244,20 @@ export default function ScorecardAnalysis() {
             <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
               <h3 className="text-sm font-semibold mb-3">Weight Evolution</h3>
               <div className="h-48">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={data.weightEvolution}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                    <XAxis
-                      dataKey="ts"
-                      tick={{ fontSize: 10, fill: '#9ca3af' }}
-                      tickFormatter={(v) => v?.slice(11, 16) || ''}
-                    />
-                    <YAxis tick={{ fontSize: 10, fill: '#9ca3af' }} domain={[0, 'auto']} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }}
-                      labelFormatter={(v) => v?.slice(0, 16)?.replace('T', ' ') || ''}
-                      formatter={(v, name) => [(v * 100).toFixed(1) + '%', indicatorLabels[name] || name]}
-                    />
-                    <Legend
-                      formatter={(value) => indicatorLabels[value] || value}
-                      wrapperStyle={{ fontSize: 11 }}
-                    />
-                    {indicators.map(ind => (
-                      <Line
-                        key={ind}
-                        type="monotone"
-                        dataKey={ind}
-                        stroke={INDICATOR_COLORS[ind]}
-                        strokeWidth={1.5}
-                        dot={false}
-                        connectNulls
-                      />
-                    ))}
-                  </LineChart>
-                </ResponsiveContainer>
+                <CartesianChart
+                  data={data.weightEvolution}
+                  height="100%"
+                  grid={GRID}
+                  xAxis={{ dataKey: 'ts', tick: AXIS_TICK, tickFormatter: (v) => v?.slice(11, 16) || '' }}
+                  yAxes={[{ tick: AXIS_TICK, domain: [0, 'auto'] }]}
+                  tooltip={{
+                    contentStyle: TOOLTIP_STYLE,
+                    labelFormatter: (v) => v?.slice(0, 16)?.replace('T', ' ') || '',
+                    formatter: (v, name) => [(v * 100).toFixed(1) + '%', indicatorLabels[name] || name],
+                  }}
+                  legend={{ formatter: (value) => indicatorLabels[value] || value, wrapperStyle: LEGEND_STYLE }}
+                  series={indicatorSeries}
+                />
               </div>
             </div>
           )}

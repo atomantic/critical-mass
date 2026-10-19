@@ -1,6 +1,6 @@
 import usePriceChartCoordinates from './usePriceChartCoordinates'
 
-/** Custom SVG candlesticks positioned by the public Recharts coordinate hooks. */
+/** Custom SVG candlesticks positioned by the chart's coordinate scales. */
 const HeikinAshiRenderer = ({ data }) => {
   const { points, yScale } = usePriceChartCoordinates(data)
   if (!yScale || points.length < 2) return null

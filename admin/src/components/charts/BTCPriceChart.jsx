@@ -1,18 +1,97 @@
 import { useEffect, useMemo } from 'react'
-import {
-  ComposedChart, Line, XAxis, YAxis, Tooltip, ReferenceLine,
-  ResponsiveContainer, CartesianGrid, LineChart,
-} from 'recharts'
 import { BarChart3 } from 'lucide-react'
 import useCandleData, { DEFAULT_VIEWS } from '../../hooks/useCandleData'
 import { BTC_TOOLTIP_STYLE, formatBTCPrice } from './chartUtils'
-import InactiveSafeTooltipContent from './InactiveSafeTooltipContent'
+import { CartesianChart } from './primitives/CartesianChart'
 import AtomokuCloudRenderer from './AtomokuCloudRenderer'
 import HeikinAshiRenderer from './HeikinAshiRenderer'
 import SignalAnnotationRenderer from './SignalAnnotationRenderer'
 
 // Stable empty arrays to avoid re-render loops from default prop values
 const EMPTY_ARRAY = []
+
+const AXIS_TICK = { fontSize: 10, fill: '#9ca3af' }
+const SUB_AXIS_TICK = { fontSize: 9, fill: '#6b7280' }
+const SUB_MARGIN = { top: 2, right: 5, bottom: 0, left: 5 }
+const SUB_X_AXIS = { dataKey: 'label', hide: true }
+const MAIN_MARGIN = { top: 5, right: 5, bottom: 0, left: 5 }
+const GRID = { stroke: '#374151', strokeDasharray: '3 3' }
+
+const SERIES_LABELS = {
+  price: 'Price', bollingerUpper: 'BB Upper', bollingerLower: 'BB Lower',
+  bollingerMiddle: 'BB Mid', vwap: 'VWAP',
+  atomokuConv: 'Conversion', atomokuBase: 'Base Line',
+  atomokuLead1: 'Lead 1', atomokuLead2: 'Lead 2',
+  atomokuLagging: 'Lagging Span',
+}
+
+const ATOMOKU_SERIES = [
+  { dataKey: 'atomokuConv', stroke: '#0496ff', strokeWidth: 2, connectNulls: true },
+  { dataKey: 'atomokuBase', stroke: '#991515', strokeWidth: 2, connectNulls: true },
+  { dataKey: 'atomokuLead1', stroke: 'green', strokeWidth: 1, strokeDasharray: '4 3', connectNulls: true },
+  { dataKey: 'atomokuLead2', stroke: 'red', strokeWidth: 1, strokeDasharray: '4 3', connectNulls: true },
+  { dataKey: 'atomokuLagging', stroke: '#459915', strokeWidth: 1, connectNulls: true },
+]
+const BOLLINGER_SERIES = [
+  { dataKey: 'bollingerUpper', stroke: '#6366f1', strokeWidth: 1, strokeDasharray: '3 3', connectNulls: true },
+  { dataKey: 'bollingerLower', stroke: '#6366f1', strokeWidth: 1, strokeDasharray: '3 3', connectNulls: true },
+  { dataKey: 'bollingerMiddle', stroke: '#818cf8', strokeWidth: 1, strokeDasharray: '5 5', connectNulls: true },
+]
+const VWAP_SERIES = { dataKey: 'vwap', stroke: '#f59e0b', strokeWidth: 1, strokeDasharray: '4 4', connectNulls: true }
+
+const SUB_CHARTS = {
+  rsi: {
+    title: 'RSI',
+    yAxes: [{ domain: [0, 100], tick: SUB_AXIS_TICK, width: 30, ticks: [30, 70] }],
+    tooltip: { contentStyle: BTC_TOOLTIP_STYLE, formatter: v => [v?.toFixed(1), 'RSI'] },
+    referenceLines: [
+      { y: 70, stroke: '#ef4444', strokeDasharray: '3 3', strokeOpacity: 0.4 },
+      { y: 30, stroke: '#10b981', strokeDasharray: '3 3', strokeOpacity: 0.4 },
+    ],
+    series: [{ dataKey: 'rsi', stroke: '#a855f7', strokeWidth: 1.5, connectNulls: true }],
+  },
+  stochastic: {
+    title: 'Stochastic',
+    yAxes: [{ domain: [0, 100], tick: SUB_AXIS_TICK, width: 30, ticks: [20, 80] }],
+    tooltip: { contentStyle: BTC_TOOLTIP_STYLE, formatter: (v, name) => [v?.toFixed(1), name === 'stochK' ? '%K' : '%D'] },
+    referenceLines: [
+      { y: 80, stroke: '#ef4444', strokeDasharray: '3 3', strokeOpacity: 0.4 },
+      { y: 20, stroke: '#10b981', strokeDasharray: '3 3', strokeOpacity: 0.4 },
+    ],
+    series: [
+      { dataKey: 'stochK', stroke: '#3b82f6', strokeWidth: 1.5, connectNulls: true },
+      { dataKey: 'stochD', stroke: '#f97316', strokeWidth: 1, strokeDasharray: '3 3', connectNulls: true },
+    ],
+  },
+  macd: {
+    title: 'MACD',
+    yAxes: [{ tick: SUB_AXIS_TICK, width: 30 }],
+    tooltip: {
+      contentStyle: BTC_TOOLTIP_STYLE,
+      formatter: (v, name) => {
+        const labels = { macdLine: 'MACD', macdSignal: 'Signal', macdHistogram: 'Histogram' }
+        return [v?.toFixed(2), labels[name] || name]
+      },
+    },
+    referenceLines: [{ y: 0, stroke: '#6b7280', strokeDasharray: '3 3' }],
+    series: [
+      { dataKey: 'macdLine', stroke: '#3b82f6', strokeWidth: 1.5, connectNulls: true },
+      { dataKey: 'macdSignal', stroke: '#ef4444', strokeWidth: 1, strokeDasharray: '3 3', connectNulls: true },
+      { dataKey: 'macdHistogram', stroke: '#10b981', strokeWidth: 1, connectNulls: true },
+    ],
+  },
+}
+
+// 80px indicator panel under the price chart, sharing its sample positions.
+function IndicatorSubChart({ kind, data, timeframe }) {
+  const { title, ...chart } = SUB_CHARTS[kind]
+  return (
+    <div>
+      <div className="text-[10px] text-gray-400 pl-8 -mb-1">{title} ({timeframe})</div>
+      <CartesianChart data={data} height={80} margin={SUB_MARGIN} xAxis={SUB_X_AXIS} {...chart} />
+    </div>
+  )
+}
 
 /**
  * Shared composable BTC price chart.
@@ -194,6 +273,48 @@ export default function BTCPriceChart({
   const hasStoch = subCharts.includes('stochastic') && displayData.some(d => d.stochK != null)
   const hasMacd = subCharts.includes('macd') && displayData.some(d => d.macdLine != null)
 
+  // A unique chartIndex category keeps candles at distinct x positions; ticks and the
+  // tooltip still show the sample's time label.
+  const mainXAxis = useMemo(() => ({
+    dataKey: 'chartIndex',
+    tickFormatter: index => displayData[index]?.label ?? '',
+    tick: AXIS_TICK,
+    interval: 'preserveStartEnd',
+  }), [displayData])
+
+  const mainYAxes = useMemo(() => [
+    { domain: priceDomain, allowDataOverflow: true, tick: AXIS_TICK, tickFormatter: formatBTCPrice, width: 70 },
+  ], [priceDomain])
+
+  const mainTooltip = useMemo(() => {
+    const labels = { ...SERIES_LABELS }
+    for (const line of exchangeLines) labels[line.dataKey] = line.label
+    return {
+      labelFormatter: index => displayData[index]?.label ?? '',
+      contentStyle: BTC_TOOLTIP_STYLE,
+      labelStyle: { color: '#9ca3af' },
+      formatter: (value, name) => (value == null || value <= 0 ? [null, null] : [formatBTCPrice(value), labels[name] || name]),
+    }
+  }, [displayData, exchangeLines])
+
+  // Overlays first, then exchange lines; the price line is transparent under Heikin Ashi
+  // candles so it still feeds the tooltip.
+  const mainSeries = useMemo(() => [
+    ...(showAtomoku ? ATOMOKU_SERIES : []),
+    ...(showBollinger ? BOLLINGER_SERIES : []),
+    ...(showVwap ? [VWAP_SERIES] : []),
+    ...exchangeLines.map(line => ({ dataKey: line.dataKey, stroke: line.stroke, strokeWidth: 1.5, connectNulls: true })),
+    { dataKey: 'price', stroke: isHA ? 'transparent' : '#3b82f6', strokeWidth: isHA ? 1 : 2 },
+  ], [showAtomoku, showBollinger, showVwap, exchangeLines, isHA])
+
+  // Target, stop, strike, entry, SMA... lines.
+  const mainReferenceLines = useMemo(() => referenceLines.map(ref => ({
+    y: ref.y,
+    stroke: ref.stroke,
+    strokeDasharray: ref.strokeDasharray || '3 3',
+    label: ref.label ? { value: ref.label, fontSize: 10, fill: ref.labelFill || ref.stroke } : undefined,
+  })), [referenceLines])
+
   return (
     <div className={`bg-gray-800 rounded-lg p-4 border border-gray-700 ${className || ''}`}>
       {/* Header with view selector / interval selector */}
@@ -280,113 +401,23 @@ export default function BTCPriceChart({
       ) : (
         <div className="space-y-0">
           {/* Main Price Chart */}
-          <ResponsiveContainer width="100%" height={height}>
-            <ComposedChart data={displayData} margin={{ top: 5, right: 5, bottom: 0, left: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-              <XAxis dataKey="chartIndex" tickFormatter={index => displayData[index]?.label ?? ''} tick={{ fontSize: 10, fill: '#9ca3af' }} interval="preserveStartEnd" />
-              <YAxis domain={priceDomain} allowDataOverflow tick={{ fontSize: 10, fill: '#9ca3af' }} tickFormatter={formatBTCPrice} width={70} />
-              <Tooltip
-                content={InactiveSafeTooltipContent}
-                labelFormatter={index => displayData[index]?.label ?? ''}
-                contentStyle={BTC_TOOLTIP_STYLE}
-                labelStyle={{ color: '#9ca3af' }}
-                formatter={(value, name) => {
-                  if (value == null || value <= 0) return [null, null]
-                  const labels = {
-                    price: 'Price', bollingerUpper: 'BB Upper', bollingerLower: 'BB Lower',
-                    bollingerMiddle: 'BB Mid', vwap: 'VWAP',
-                    atomokuConv: 'Conversion', atomokuBase: 'Base Line',
-                    atomokuLead1: 'Lead 1', atomokuLead2: 'Lead 2',
-                    atomokuLagging: 'Lagging Span',
-                    haOpen: 'HA Open', haHigh: 'HA High', haLow: 'HA Low', haClose: 'HA Close',
-                  }
-                  for (const line of exchangeLines) {
-                    labels[line.dataKey] = line.label
-                  }
-                  return [formatBTCPrice(value), labels[name] || name]
-                }}
-              />
-
-              {/* Heikin Ashi candlestick renderer */}
-              {isHA && (
-                <HeikinAshiRenderer data={displayData} />
-              )}
-
-              {/* Atomoku cloud fills (rendered behind everything via custom SVG) */}
-              {showAtomoku && (
-                <AtomokuCloudRenderer data={displayData} />
-              )}
-
-              {/* Atomoku lines */}
-              {showAtomoku && (
-                <>
-                  <Line type="monotone" dataKey="atomokuConv" stroke="#0496ff" strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
-                  <Line type="monotone" dataKey="atomokuBase" stroke="#991515" strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
-                  <Line type="monotone" dataKey="atomokuLead1" stroke="green" strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls isAnimationActive={false} />
-                  <Line type="monotone" dataKey="atomokuLead2" stroke="red" strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls isAnimationActive={false} />
-                  <Line type="monotone" dataKey="atomokuLagging" stroke="#459915" strokeWidth={1} dot={false} connectNulls isAnimationActive={false} />
-                </>
-              )}
-
-              {/* Bollinger Band overlays */}
-              {showBollinger && (
-                <>
-                  <Line type="monotone" dataKey="bollingerUpper" stroke="#6366f1" strokeWidth={1} strokeDasharray="3 3" dot={false} connectNulls isAnimationActive={false} />
-                  <Line type="monotone" dataKey="bollingerLower" stroke="#6366f1" strokeWidth={1} strokeDasharray="3 3" dot={false} connectNulls isAnimationActive={false} />
-                  <Line type="monotone" dataKey="bollingerMiddle" stroke="#818cf8" strokeWidth={1} strokeDasharray="5 5" dot={false} connectNulls isAnimationActive={false} />
-                </>
-              )}
-
-              {/* VWAP overlay */}
-              {showVwap && (
-                <Line type="monotone" dataKey="vwap" stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 4" dot={false} connectNulls />
-              )}
-
-              {/* Exchange-specific lines (e.g., Coinbase, Gemini, Crypto.com) */}
-              {exchangeLines.map(line => (
-                <Line
-                  key={line.dataKey}
-                  type="monotone"
-                  dataKey={line.dataKey}
-                  stroke={line.stroke}
-                  strokeWidth={1.5}
-                  dot={false}
-                  isAnimationActive={false}
-                  connectNulls
-                />
-              ))}
-
-              {/* Main price line — transparent in HA mode to retain price tooltips */}
-              <Line
-                type="monotone"
-                dataKey="price"
-                stroke={isHA ? 'transparent' : '#3b82f6'}
-                strokeWidth={isHA ? 1 : 2}
-                dot={false}
-              />
-
-              {/* Reference lines (target, stop, strike, entry, etc.) */}
-              {referenceLines.map((ref, i) => (
-                <ReferenceLine
-                  key={`ref-${i}`}
-                  y={ref.y}
-                  stroke={ref.stroke}
-                  strokeDasharray={ref.strokeDasharray || '3 3'}
-                  label={ref.label ? {
-                    value: ref.label,
-                    position: 'right',
-                    fontSize: 10,
-                    fill: ref.labelFill || ref.stroke,
-                  } : undefined}
-                />
-              ))}
-
-              {/* Signal change annotations */}
-              {signalAnnotations?.length > 0 && (
-                <SignalAnnotationRenderer data={displayData} />
-              )}
-            </ComposedChart>
-          </ResponsiveContainer>
+          <CartesianChart
+            data={displayData}
+            height={height}
+            margin={MAIN_MARGIN}
+            grid={GRID}
+            xAxis={mainXAxis}
+            yAxes={mainYAxes}
+            tooltip={mainTooltip}
+            series={mainSeries}
+            referenceLines={mainReferenceLines}
+            underlay={<>
+              {/* Heikin Ashi candles, then Atomoku cloud fills, behind every line */}
+              {isHA && <HeikinAshiRenderer data={displayData} />}
+              {showAtomoku && <AtomokuCloudRenderer data={displayData} />}
+            </>}
+            overlay={signalAnnotations?.length > 0 && <SignalAnnotationRenderer data={displayData} />}
+          />
 
           {/* Current Indicator Values */}
           {currentInd && subCharts.length > 0 && (
@@ -418,67 +449,9 @@ export default function BTCPriceChart({
             </div>
           )}
 
-          {/* RSI Sub-chart */}
-          {hasRsi && (
-            <div>
-              <div className="text-[10px] text-gray-400 pl-8 -mb-1">RSI ({indicatorTf})</div>
-              <ResponsiveContainer width="100%" height={80}>
-                <LineChart data={displayData} margin={{ top: 2, right: 5, bottom: 0, left: 5 }}>
-                  <XAxis dataKey="label" hide />
-                  <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: '#6b7280' }} width={30} ticks={[30, 70]} />
-                  <Tooltip contentStyle={BTC_TOOLTIP_STYLE} formatter={v => [v?.toFixed(1), 'RSI']} />
-                  <ReferenceLine y={70} stroke="#ef4444" strokeDasharray="3 3" strokeOpacity={0.4} />
-                  <ReferenceLine y={30} stroke="#10b981" strokeDasharray="3 3" strokeOpacity={0.4} />
-                  <Line type="monotone" dataKey="rsi" stroke="#a855f7" strokeWidth={1.5} dot={false} connectNulls />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-
-          {/* Stochastic Sub-chart */}
-          {hasStoch && (
-            <div>
-              <div className="text-[10px] text-gray-400 pl-8 -mb-1">Stochastic ({indicatorTf})</div>
-              <ResponsiveContainer width="100%" height={80}>
-                <LineChart data={displayData} margin={{ top: 2, right: 5, bottom: 0, left: 5 }}>
-                  <XAxis dataKey="label" hide />
-                  <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: '#6b7280' }} width={30} ticks={[20, 80]} />
-                  <Tooltip
-                    contentStyle={BTC_TOOLTIP_STYLE}
-                    formatter={(v, name) => [v?.toFixed(1), name === 'stochK' ? '%K' : '%D']}
-                  />
-                  <ReferenceLine y={80} stroke="#ef4444" strokeDasharray="3 3" strokeOpacity={0.4} />
-                  <ReferenceLine y={20} stroke="#10b981" strokeDasharray="3 3" strokeOpacity={0.4} />
-                  <Line type="monotone" dataKey="stochK" stroke="#3b82f6" strokeWidth={1.5} dot={false} connectNulls />
-                  <Line type="monotone" dataKey="stochD" stroke="#f97316" strokeWidth={1} dot={false} strokeDasharray="3 3" connectNulls />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-
-          {/* MACD Sub-chart */}
-          {hasMacd && (
-            <div>
-              <div className="text-[10px] text-gray-400 pl-8 -mb-1">MACD ({indicatorTf})</div>
-              <ResponsiveContainer width="100%" height={80}>
-                <LineChart data={displayData} margin={{ top: 2, right: 5, bottom: 0, left: 5 }}>
-                  <XAxis dataKey="label" hide />
-                  <YAxis tick={{ fontSize: 9, fill: '#6b7280' }} width={30} />
-                  <Tooltip
-                    contentStyle={BTC_TOOLTIP_STYLE}
-                    formatter={(v, name) => {
-                      const labels = { macdLine: 'MACD', macdSignal: 'Signal', macdHistogram: 'Histogram' }
-                      return [v?.toFixed(2), labels[name] || name]
-                    }}
-                  />
-                  <ReferenceLine y={0} stroke="#6b7280" strokeDasharray="3 3" />
-                  <Line type="monotone" dataKey="macdLine" stroke="#3b82f6" strokeWidth={1.5} dot={false} connectNulls />
-                  <Line type="monotone" dataKey="macdSignal" stroke="#ef4444" strokeWidth={1} dot={false} strokeDasharray="3 3" connectNulls />
-                  <Line type="monotone" dataKey="macdHistogram" stroke="#10b981" strokeWidth={1} dot={false} connectNulls />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          )}
+          {hasRsi && <IndicatorSubChart kind="rsi" data={displayData} timeframe={indicatorTf} />}
+          {hasStoch && <IndicatorSubChart kind="stochastic" data={displayData} timeframe={indicatorTf} />}
+          {hasMacd && <IndicatorSubChart kind="macd" data={displayData} timeframe={indicatorTf} />}
         </div>
       )}
     </div>

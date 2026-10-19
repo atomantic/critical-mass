@@ -1,9 +1,8 @@
-import { usePlotArea } from 'recharts'
 import usePriceChartCoordinates from './usePriceChartCoordinates'
 
 /**
  * Custom SVG renderer for signal change annotations on the price chart.
- * Uses the public Recharts coordinate hooks, like the other price layers.
+ * Uses the chart's own coordinate scales, like the other price layers.
  *
  * Reads `signalChange` field from chart data points and renders small markers
  * at the bottom of the chart area.
@@ -29,8 +28,7 @@ const MARKER_LABELS = {
 }
 
 const SignalAnnotationRenderer = ({ data }) => {
-  const { points } = usePriceChartCoordinates(data)
-  const plot = usePlotArea()
+  const { points, plot } = usePriceChartCoordinates(data)
   if (!plot || points.length < 2) return null
   const yBottom = plot.y + plot.height - 6
 
