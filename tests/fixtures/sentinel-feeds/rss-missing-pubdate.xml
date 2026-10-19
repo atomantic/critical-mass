@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Dates</title>
+    <item>
+      <title>No pubDate element</title>
+      <guid>date-1</guid>
+    </item>
+    <item>
+      <title>Empty pubDate element</title>
+      <guid>date-2</guid>
+      <pubDate></pubDate>
+    </item>
+  </channel>
+</rss>

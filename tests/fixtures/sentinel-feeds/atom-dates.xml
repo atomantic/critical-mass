@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Dates</title>
+  <entry>
+    <id>atom-date-1</id>
+    <title>Updated wins</title>
+    <updated>2026-09-15T12:00:00Z</updated>
+    <published>2026-09-14T12:00:00Z</published>
+  </entry>
+  <entry>
+    <id>atom-date-2</id>
+    <title>Published only</title>
+    <published>2026-09-13T12:00:00-05:00</published>
+  </entry>
+  <entry>
+    <id>atom-date-3</id>
+    <title>No dates</title>
+  </entry>
+</feed>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Numbers</title>
+    <item>
+      <title>007</title>
+      <guid>0042</guid>
+      <description>0x1F</description>
+      <link>https://ex.com/n/1</link>
+      <pubDate>Sat, 19 Sep 2026 08:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>1e5</title>
+      <guid isPermaLink="false">12345</guid>
+      <description>-3.50</description>
+      <pubDate>Sat, 19 Sep 2026 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>true</title>
+      <guid>false</guid>
+      <description>2026</description>
+      <pubDate>2026</pubDate>
+    </item>
+  </channel>
+</rss>

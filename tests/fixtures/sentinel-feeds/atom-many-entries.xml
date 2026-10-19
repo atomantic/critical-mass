@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Exchange Announcements</title>
+  <id>urn:uuid:60a76c80-d399-11d9-b93C-0003939e0af6</id>
+  <updated>2026-09-12T18:30:02Z</updated>
+  <entry>
+    <title type="text">Trading halt on ETH-USD</title>
+    <link href="https://ex.com/announcements/halt"/>
+    <id>urn:uuid:1225c695-cfb8-4ebb-aaaa-80da344efa6a</id>
+    <updated>2026-09-12T18:30:02Z</updated>
+    <summary>Trading is halted while we investigate.</summary>
+  </entry>
+  <entry>
+    <title type="html">New listing: &lt;b&gt;SOL-USD&lt;/b&gt;</title>
+    <link rel="alternate" href="https://ex.com/announcements/sol"/>
+    <id>urn:uuid:1225c695-cfb8-4ebb-bbbb-80da344efa6a</id>
+    <published>2026-09-11T10:00:00Z</published>
+    <summary type="html">&lt;p&gt;Deposits open &lt;em&gt;now&lt;/em&gt;.&lt;/p&gt;</summary>
+  </entry>
+  <entry>
+    <title>Fee schedule update</title>
+    <link rel="alternate" href="https://ex.com/announcements/fees"/>
+    <id>urn:uuid:1225c695-cfb8-4ebb-cccc-80da344efa6a</id>
+    <updated>2026-09-10T09:00:00+02:00</updated>
+    <published>2026-09-09T09:00:00+02:00</published>
+    <content type="html">&lt;p&gt;Maker fees drop to 0.10%.&lt;/p&gt;</content>
+  </entry>
+</feed>

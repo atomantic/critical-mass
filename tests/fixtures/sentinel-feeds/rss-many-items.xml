@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<?xml-stylesheet type="text/xsl" href="/feeds/rss.xsl"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>FRB: Press Release - All</title>
+    <link>https://www.federalreserve.gov/feeds/press_all.html</link>
+    <atom:link href="https://www.federalreserve.gov/feeds/press_all.xml" rel="self" type="application/rss+xml" />
+    <description>Federal Reserve press releases</description>
+    <language>en</language>
+    <!-- generated feed -->
+    <item>
+      <title>Federal Reserve issues FOMC statement</title>
+      <link>https://www.federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm</link>
+      <guid isPermaLink="true">https://www.federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm</guid>
+      <description>Federal Reserve issues FOMC statement</description>
+      <category>Monetary Policy</category>
+      <pubDate>Wed, 16 Sep 2026 18:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Minutes of the Federal Open Market Committee</title>
+      <link>https://www.federalreserve.gov/newsevents/pressreleases/monetary20260909a.htm</link>
+      <guid isPermaLink="true">https://www.federalreserve.gov/newsevents/pressreleases/monetary20260909a.htm</guid>
+      <description>Minutes of the Federal Open Market Committee, July 28-29, 2026</description>
+      <category>Monetary Policy</category>
+      <category>FOMC</category>
+      <dc:creator>Board of Governors</dc:creator>
+      <pubDate>Wed, 09 Sep 2026 18:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Agencies announce results of stress test</title>
+      <link>https://www.federalreserve.gov/newsevents/pressreleases/bcreg20260901a.htm</link>
+      <guid isPermaLink="true">https://www.federalreserve.gov/newsevents/pressreleases/bcreg20260901a.htm</guid>
+      <description>Banking regulators announced stress test results</description>
+      <enclosure url="https://www.federalreserve.gov/files/stress.pdf" length="1024" type="application/pdf" />
+      <pubDate>Tue, 01 Sep 2026 14:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

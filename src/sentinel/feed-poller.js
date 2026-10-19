@@ -6,17 +6,14 @@
  * Handles per-feed errors gracefully (log + skip).
  */
 
-const { XMLParser } = require('fast-xml-parser');
 const { createContextLogger } = require('../logger');
 const { safeFetch } = require('../url-validator');
+const { parseFeedXml, child, children, text } = require('./feed-xml');
+
+/** @typedef {import('./feed-xml').FeedNode} FeedNode */
 
 /** Feed identity is per-call (one poller serves every configured feed). */
 const feedPollerLogger = createContextLogger({ module: 'sentinel-feed-poller' });
-
-const parser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: '@_',
-});
 
 /**
  * Only allow http(s) links through to storage/display — feed items are
@@ -33,11 +30,11 @@ const sanitizeLink = (link) => {
   return protocol === 'http:' || protocol === 'https:' ? link : '';
 };
 
-/** Extract XML text constructs without coercing arbitrary parsed objects. */
-const textValue = (value) => {
-  const text = value && typeof value === 'object' ? value['#text'] : value;
-  return typeof text === 'string' || typeof text === 'number' ? String(text) : '';
-};
+/** Text of the first `name` child ('' when absent). */
+const childText = (node, name) => text(child(node, name));
+
+/** Feed description text: markup stripped, capped at 500 characters. */
+const plainDescription = (value) => value.replace(/<[^>]+>/g, '').trim().slice(0, 500);
 
 /** Normalize independently so one malformed item cannot suppress the feed. */
 const normalizeItems = (items, normalize, feed) => items.flatMap(item => {
@@ -53,37 +50,40 @@ const normalizeItems = (items, normalize, feed) => items.flatMap(item => {
 
 /**
  * Normalize an RSS 2.0 item to common format
- * @param {Object} item - Raw RSS item
+ * @param {FeedNode} item - RSS <item> element
  * @param {string} sourceName - Feed name
  * @returns {Object} Normalized item
  */
-const normalizeRSSItem = (item, sourceName) => ({
-  guid: item.guid?.['#text'] || item.guid || item.link || `${sourceName}-${item.title}`,
-  title: textValue(item.title).trim(),
-  description: textValue(item.description || item['content:encoded']).replace(/<[^>]+>/g, '').trim().slice(0, 500),
-  link: sanitizeLink(item.link),
-  pubDate: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
-  source: sourceName,
-});
+const normalizeRSSItem = (item, sourceName) => {
+  const pubDate = childText(item, 'pubDate');
+  return {
+    guid: childText(item, 'guid') || childText(item, 'link') || `${sourceName}-${childText(item, 'title')}`,
+    title: childText(item, 'title').trim(),
+    description: plainDescription(childText(item, 'description') || childText(item, 'content:encoded')),
+    link: sanitizeLink(childText(item, 'link')),
+    pubDate: pubDate ? new Date(pubDate).toISOString() : new Date().toISOString(),
+    source: sourceName,
+  };
+};
 
 /**
  * Normalize an Atom entry to common format
- * @param {Object} entry - Raw Atom entry
+ * @param {FeedNode} entry - Atom <entry> element
  * @param {string} sourceName - Feed name
  * @returns {Object} Normalized item
  */
 const normalizeAtomEntry = (entry, sourceName) => {
-  const link = Array.isArray(entry.link)
-    ? (entry.link.find(l => l['@_rel'] === 'alternate') || entry.link[0])
-    : entry.link;
-  const href = typeof link === 'string' ? link : (link?.['@_href'] || '');
+  const links = children(entry, 'link');
+  const link = links.find(l => l.attrs.rel === 'alternate') || links[0];
+  const href = link?.attrs.href || text(link);
+  const pubDate = childText(entry, 'updated') || childText(entry, 'published');
 
   return {
-    guid: entry.id || href || `${sourceName}-${entry.title}`,
-    title: textValue(entry.title).trim(),
-    description: textValue(entry.summary || entry.content).replace(/<[^>]+>/g, '').trim().slice(0, 500),
+    guid: childText(entry, 'id') || href || `${sourceName}-${childText(entry, 'title')}`,
+    title: childText(entry, 'title').trim(),
+    description: plainDescription(childText(entry, 'summary') || childText(entry, 'content')),
     link: sanitizeLink(href),
-    pubDate: entry.updated || entry.published ? new Date(entry.updated || entry.published).toISOString() : new Date().toISOString(),
+    pubDate: pubDate ? new Date(pubDate).toISOString() : new Date().toISOString(),
     source: sourceName,
   };
 };
@@ -109,7 +109,7 @@ const fetchFeedOutcome = async (feed, timeoutMs = 15000) => {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    let text;
+    let body;
     try {
       // safeFetch validates the URL (and any redirect target) against the
       // SSRF denylist and re-checks the resolved IP at connect time — a
@@ -122,28 +122,22 @@ const fetchFeedOutcome = async (feed, timeoutMs = 15000) => {
       if (!response.ok) {
         throw Object.assign(new Error(`HTTP ${response.status}`), { feedFailureCategory: 'http' });
       }
-      text = await response.text();
+      body = await response.text();
     } finally {
       clearTimeout(timeout);
     }
 
-    const parsed = parser.parse(text);
+    const { root, unclosed } = parseFeedXml(body);
+    // An item still open when the body ended was cut off: normalizing it would
+    // mark its guid seen with a partial title and suppress the complete alert.
+    const complete = (nodes) => nodes.filter(node => !unclosed.has(node));
 
-    // RSS 2.0
-    if (parsed.rss?.channel) {
-      const channel = parsed.rss.channel;
-      const items = Array.isArray(channel.item) ? channel.item : (channel.item ? [channel.item] : []);
-      return ok(normalizeItems(items, normalizeRSSItem, feed));
-    }
+    // RSS 2.0 (a channel with no items is a successful-empty feed)
+    const channel = root?.name === 'rss' ? child(root, 'channel') : null;
+    if (channel) return ok(normalizeItems(complete(children(channel, 'item')), normalizeRSSItem, feed));
 
-    // Atom
-    if (parsed.feed?.entry) {
-      const entries = Array.isArray(parsed.feed.entry) ? parsed.feed.entry : [parsed.feed.entry];
-      return ok(normalizeItems(entries, normalizeAtomEntry, feed));
-    }
-
-    // Valid but empty containers are successful-empty feeds.
-    if (parsed.rss?.channel !== undefined || parsed.feed !== undefined) return ok([]);
+    // Atom (likewise for a feed with no entries)
+    if (root?.name === 'feed') return ok(normalizeItems(complete(children(root, 'entry')), normalizeAtomEntry, feed));
 
     feedPollerLogger.warn(`⚠️ Sentinel: unrecognized feed format from ${feed.name}`, {
       action: 'parse-feed',
