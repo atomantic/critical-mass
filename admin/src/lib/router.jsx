@@ -70,7 +70,12 @@ export function Route() {
   return null
 }
 
-const splitPath = (path) => path.split('/').filter(Boolean)
+// Drops the leading slash and any trailing slashes but keeps interior empty
+// segments, so `/gateway//logs` does not collapse into `/gateway/logs`.
+const splitPath = (path) => {
+  const trimmed = path.replace(/^\//, '').replace(/\/+$/, '')
+  return trimmed ? trimmed.split('/') : []
+}
 
 const safeDecode = (segment) => {
   try { return decodeURIComponent(segment) } catch { return segment }
@@ -102,7 +107,7 @@ export function matchPath(path, pathname) {
       return params
     }
     const segment = pathSegments[i]
-    if (segment === undefined) return null
+    if (!segment) return null
     if (pattern.startsWith(':')) params[pattern.slice(1)] = segment
     else if (pattern.toLowerCase() !== segment.toLowerCase()) return null
   }

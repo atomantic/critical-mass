@@ -79,6 +79,11 @@ describe('admin router', () => {
     expect(screen.getByText('fund dashboard')).toBeTruthy()
   })
 
+  it.each(['/gateway//logs', '/coinbase//BTC-USDC'])('sends repeated interior slashes (%s) to the fallback', (pathname) => {
+    renderAt(pathname)
+    expect(currentPath()).toBe('/coinbase/BTC-USDC')
+  })
+
   it('includes routes nested in conditional fragments', () => {
     renderAt('/coinbase/BTC-USDC/backtest', <AppRoutes dcaRoutes />)
     expect(screen.getByText('fund backtest')).toBeTruthy()
