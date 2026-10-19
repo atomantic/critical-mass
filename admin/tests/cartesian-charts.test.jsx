@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { MemoryRouter } from 'react-router-dom'
+import { BrowserRouter } from '../src/lib/router'
 import { TooltipContent } from '../src/components/charts/primitives/Tooltip'
 import { CartesianChart } from '../src/components/charts/primitives/CartesianChart'
 import BTCPriceChart from '../src/components/charts/BTCPriceChart'
@@ -227,7 +227,7 @@ describe('ScorecardAnalysis charts', () => {
       failurePatterns: [],
     }
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => analysis })))
-    const { container } = render(<MemoryRouter><ScorecardAnalysis /></MemoryRouter>)
+    const { container } = render(<BrowserRouter><ScorecardAnalysis /></BrowserRouter>)
     await screen.findByText('Accuracy Over Time')
     await waitFor(() => expect(container.querySelectorAll('svg.cartesian-chart')).toHaveLength(3))
 
