@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Blog</title>
+    <item>
+      <title>Only encoded content</title>
+      <guid>enc-1</guid>
+      <content:encoded><![CDATA[<p>Full <strong>article</strong> body</p>]]></content:encoded>
+      <pubDate>Thu, 17 Sep 2026 08:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Empty description falls back</title>
+      <guid>enc-2</guid>
+      <description></description>
+      <content:encoded><![CDATA[<p>Encoded fallback</p>]]></content:encoded>
+      <pubDate>Thu, 17 Sep 2026 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Description wins</title>
+      <guid>enc-3</guid>
+      <description>Short summary</description>
+      <content:encoded><![CDATA[<p>Long body</p>]]></content:encoded>
+      <pubDate>Thu, 17 Sep 2026 10:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Long description is truncated</title>
+      <guid>enc-4</guid>
+      <description>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Lorem ipsum dolor sit amet, consectetur adipiscing elit. </description>
+      <pubDate>Thu, 17 Sep 2026 11:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

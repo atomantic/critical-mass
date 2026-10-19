@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Guids</title>
+    <item>
+      <title>Permalink guid</title>
+      <guid isPermaLink="true">https://ex.com/p/1</guid>
+      <link>https://ex.com/p/1?utm=rss</link>
+      <pubDate>Fri, 18 Sep 2026 08:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Opaque guid</title>
+      <guid isPermaLink="false">tag:ex.com,2026:post-2</guid>
+      <link>https://ex.com/p/2</link>
+      <pubDate>Fri, 18 Sep 2026 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>No guid uses link</title>
+      <link>https://ex.com/p/3</link>
+      <pubDate>Fri, 18 Sep 2026 10:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>No guid or link</title>
+      <pubDate>Fri, 18 Sep 2026 11:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Padded guid</title>
+      <guid>   spaced-guid   </guid>
+      <link>
+        https://ex.com/p/5
+      </link>
+      <pubDate>Fri, 18 Sep 2026 12:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

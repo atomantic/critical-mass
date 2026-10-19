@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en-US">
+  <id>tag:github.com,2008:https://github.com/nodejs/node/releases</id>
+  <link type="text/html" rel="alternate" href="https://github.com/nodejs/node/releases"/>
+  <link type="application/atom+xml" rel="self" href="https://github.com/nodejs/node/releases.atom"/>
+  <title>Release notes from node</title>
+  <updated>2026-09-10T12:00:00Z</updated>
+  <entry>
+    <id>tag:github.com,2008:Repository/27193779/v24.8.0</id>
+    <updated>2026-09-10T12:00:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/nodejs/node/releases/tag/v24.8.0"/>
+    <title>2026-09-10, Version 24.8.0 (Current), @RafaelGSS</title>
+    <content type="html">&lt;h2&gt;Notable Changes&lt;/h2&gt;
+&lt;p&gt;Security fixes.&lt;/p&gt;</content>
+    <author>
+      <name>RafaelGSS</name>
+    </author>
+  </entry>
+</feed>

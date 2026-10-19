@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Entities</title>
+    <item>
+      <title>Fed &amp; ECB: rates &lt;unchanged&gt; &quot;for now&quot; &apos;26</title>
+      <guid>ent-1</guid>
+      <description>&lt;p&gt;Policy makers&lt;/p&gt; said &amp;amp; more</description>
+      <link>https://ex.com/a?x=1&amp;y=2</link>
+      <pubDate>Sun, 20 Sep 2026 08:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Powell&#8217;s remarks &#x2014; full text</title>
+      <guid>ent-2</guid>
+      <description>Caf&#233; &nbsp; &copy; unknown</description>
+      <pubDate>Sun, 20 Sep 2026 09:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

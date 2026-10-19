@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Numeric Atom</title>
+  <entry>
+    <id>000123</id>
+    <title>1.10</title>
+    <summary>1e3</summary>
+    <updated>2026-09-16T00:00:00Z</updated>
+  </entry>
+</feed>

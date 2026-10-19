@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title><![CDATA[Crypto Wire]]></title>
+    <item>
+      <title><![CDATA[Bitcoin <b>surges</b> past $100k & holds]]></title>
+      <link><![CDATA[https://news.example.com/a?x=1&y=2]]></link>
+      <guid isPermaLink="false"><![CDATA[news-1001]]></guid>
+      <description><![CDATA[<p>Markets <em>rallied</em> after the &amp; announcement.</p>]]></description>
+      <pubDate>Tue, 15 Sep 2026 09:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>
+        <![CDATA[  Padded CDATA title  ]]>
+      </title>
+      <guid>news-1002</guid>
+      <description>Before <![CDATA[<i>inner</i>]]> after</description>
+      <pubDate>Tue, 15 Sep 2026 10:00:00 +0000</pubDate>
+    </item>
+  </channel>
+</rss>

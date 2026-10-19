@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Text constructs</title>
+  <entry>
+    <id>text-1</id>
+    <title>Summary only</title>
+    <summary type="text">Plain summary</summary>
+    <updated>2026-09-01T00:00:00Z</updated>
+  </entry>
+  <entry>
+    <id>text-2</id>
+    <title>Content only</title>
+    <content type="html">&lt;p&gt;Escaped &lt;a href="https://ex.com"&gt;HTML&lt;/a&gt; body&lt;/p&gt;</content>
+    <updated>2026-09-02T00:00:00Z</updated>
+  </entry>
+  <entry>
+    <id>text-3</id>
+    <title>Summary wins over content</title>
+    <summary>The summary</summary>
+    <content type="html">&lt;p&gt;The content&lt;/p&gt;</content>
+    <updated>2026-09-03T00:00:00Z</updated>
+  </entry>
+  <entry>
+    <id>text-4</id>
+    <title>Empty summary falls back to content</title>
+    <summary></summary>
+    <content>Fallback content</content>
+    <updated>2026-09-04T00:00:00Z</updated>
+  </entry>
+  <entry>
+    <id>text-5</id>
+    <title type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml">XHTML <b>title</b></div></title>
+    <content type="xhtml">
+      <div xmlns="http://www.w3.org/1999/xhtml"><p>XHTML body</p></div>
+    </content>
+    <updated>2026-09-05T00:00:00Z</updated>
+  </entry>
+</feed>
