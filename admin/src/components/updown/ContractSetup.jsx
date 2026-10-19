@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useId } from 'react'
-import { FileText, Save, Camera, Upload, Check, X, Loader2 } from 'lucide-react'
+import { FileText, Save, Camera, Upload, Check, X, Loader2 } from '../icons'
 
 const LS_PROVIDER_KEY = 'updown-screenshot-provider'
 const LS_MODEL_KEY = 'updown-screenshot-model'

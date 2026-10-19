@@ -1,4 +1,4 @@
-import { Target, TrendingUp, TrendingDown, Minus } from 'lucide-react'
+import { Target, TrendingUp, TrendingDown, Minus } from '../icons'
 import { INDICATORS, INDICATOR_LABELS, INDICATOR_WEIGHTS } from '../../../../shared/indicator-config.mjs'
 
 const WINDOW_ORDER = ['1m', '5m', '15m', '1h']

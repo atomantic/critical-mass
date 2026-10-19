@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Signal, Minus } from 'lucide-react'
+import { Signal, Minus } from '../icons'
 import { signalBadgeColors, getSignalIcon, getActionLabel, labelHistoryActions } from '../../constants/signals'
 
 function ConfidenceBar({ value }) {

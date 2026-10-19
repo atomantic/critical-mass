@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Crosshair, Save, Trash2 } from 'lucide-react'
+import { Crosshair, Save, Trash2 } from '../icons'
 import { calculateManualPositionPnl } from './position-tracker-math'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 

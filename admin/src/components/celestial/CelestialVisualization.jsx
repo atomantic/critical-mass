@@ -1,6 +1,6 @@
 import { useMemo, useState, useRef, useEffect, Suspense } from 'react'
 import { Canvas } from '@react-three/fiber'
-import { Pause, Play } from 'lucide-react'
+import { Pause, Play } from '../icons'
 import CelestialScene from './CelestialScene'
 import { TIER_COLORS, TIER_EMOJIS, TIER_ORDER } from './celestialConstants'
 import useReducedMotion from '../../hooks/useReducedMotion'

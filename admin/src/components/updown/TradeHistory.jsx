@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useId } from 'react'
-import { History, Plus, Trash2, Edit3, Check, X, ArrowUp, ArrowDown } from 'lucide-react'
+import { History, Plus, Trash2, Edit3, Check, X, ArrowUp, ArrowDown } from '../icons'
 import { useToast } from '../Toast'
 import { runDashboardAction } from '../../utils/dashboardAction.mjs'
 import { parseTradeAmountExpression } from './tradeAmountExpression'

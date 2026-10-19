@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { Play, Square, RotateCcw, Volume2, VolumeX, BarChart3 } from 'lucide-react'
+import { Play, Square, RotateCcw, Volume2, VolumeX, BarChart3 } from '../icons'
 import { useUpDownSocket } from '../../hooks/useUpDownSocket'
 
 const ENGINE_CONTROL_CLASS = 'min-h-11 min-w-11 shrink-0 inline-flex items-center justify-center'

@@ -1,4 +1,4 @@
-import { TrendingUp, TrendingDown, Minus, Plus, CircleDot } from 'lucide-react'
+import { TrendingUp, TrendingDown, Minus, Plus, CircleDot } from '../components/icons'
 import {
   resolveAction,
   resolveActionLabel as getActionLabel,

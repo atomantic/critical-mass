@@ -1,4 +1,4 @@
-import { Clock } from 'lucide-react'
+import { Clock } from '../icons'
 
 // Warning zone thresholds (must match signal-engine.js)
 const WARNING_ZONE_H = 8

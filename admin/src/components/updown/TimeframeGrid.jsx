@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { TrendingUp, TrendingDown, Minus, AlertTriangle, ChevronsUp, ChevronsDown } from 'lucide-react'
+import { TrendingUp, TrendingDown, Minus, AlertTriangle, ChevronsUp, ChevronsDown } from '../icons'
 
 const TF_ORDER = ['1w', '1d', '4h', '2h', '1h', '30m', '15m', '10m', '5m', '3m', '1m']
 const MACD_MIN_CANDLES = 35

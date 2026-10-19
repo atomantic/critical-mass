@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ExternalLink } from 'lucide-react'
+import { ExternalLink } from './icons'
 import { useMultiRegimeStatuses } from '../hooks/useTradeEvents'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'

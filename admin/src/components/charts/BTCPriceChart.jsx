@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from 'react'
-import { BarChart3 } from 'lucide-react'
+import { BarChart3 } from '../icons'
 import useCandleData, { DEFAULT_VIEWS } from '../../hooks/useCandleData'
 import { BTC_TOOLTIP_STYLE, formatBTCPrice } from './chartUtils'
 import { CartesianChart } from './primitives/CartesianChart'
