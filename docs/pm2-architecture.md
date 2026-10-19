@@ -148,5 +148,10 @@ the container does not hang. The image copies `scripts/pm2-stack.js` for this
 purpose. The worst case is 35 s + 25 s = 60 s, hence the 70 s grace; Umbrel
 deployments should likewise use at least `70s`.
 
+`scripts/docker-stop-order-smoke-test.sh` verifies this order with a Docker
+engine: it runs the real entrypoint against stub `pm2-runtime`/`pm2-stack.js`,
+`docker stop`s it, and asserts gateway stopped → engines stopped → `pm2-runtime`
+SIGTERM with exit code 0 (it fails if the entrypoint reverts to `exec pm2-runtime`).
+
 The gateway deadline bounds its own lifetime even
 when an exchange or transport hangs.
