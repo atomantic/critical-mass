@@ -295,7 +295,8 @@ const rollbackFromJournal = ({ dataDir, journal, logger }) => {
   for (const entry of journal.entries) {
     const dest = path.join(dataDir, entry.dest);
     // A crash between copy and rename orphans the staged temp copy.
-    fs.rmSync(restoreTmpPath(dest), { force: true });
+    const cleared = attempt(() => fs.rmSync(restoreTmpPath(dest), { force: true }));
+    if (!cleared.ok) failures.push(`${entry.dest}: ${cleared.error.message}`);
     if (entry.existed) {
       const original = path.join(dataDir, journal.originalsDir, entry.dest);
       if (!fs.existsSync(original)) {

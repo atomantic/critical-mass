@@ -429,6 +429,24 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.equal(fs.existsSync(gamma), false);
   });
 
+  it('reports incomplete rollback instead of throwing when a temp copy cannot be deleted', async () => {
+    breakRenameFor({ [path.join(dataDir, 'alpha.json')]: [2], [path.join(dataDir, 'beta.json')]: [1] });
+    applyStagedFiles({ dataDir, stageDir, filename: 'backup-torn.zip', logger: silentLogger });
+    mock.restoreAll();
+    const tmp = path.join(dataDir, '.beta.json.restore-tmp');
+    const realRm = fs.rmSync;
+    mock.method(fs, 'rmSync', (target, ...rest) => {
+      if (target === tmp) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      return realRm(target, ...rest);
+    });
+
+    const result = recoverIncompleteRestore({ dataDir, logger: silentLogger });
+    mock.restoreAll();
+
+    assert.equal(result.recovered, false);
+    assert.equal(result.blocked, true);
+  });
+
   it('is a no-op for a data directory with no journal', async () => {
     assert.deepEqual(recoverIncompleteRestore({ dataDir, logger: silentLogger }), { pending: false, recovered: false, blocked: false });
     assert.deepEqual(preRestoreState().alpha, '{"gen":"current-alpha"}');
