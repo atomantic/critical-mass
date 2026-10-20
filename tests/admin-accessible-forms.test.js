@@ -68,6 +68,7 @@ function createView(component, extraStubs = {}, fetchResponse = null) {
     '../Toast': { useToast: () => ({ addToast() {} }) },
     '../../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
+    '../DestructiveConfirmation': { default: ({ children }) => children },
     '../ModalDialog': { default: ({ children }) => children },
     '../../utils/runLifecycle.mjs': { createRunLifecycle: () => ({ execute: value => executed.push(value), dispose() {} }) },
     '../../utils/dashboardAction.mjs': { runDashboardAction: async action => { await action.request(); await action.onSuccess() } },
