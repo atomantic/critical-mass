@@ -134,6 +134,8 @@ describe('operator authentication bootstrap', () => {
     assert.equal(isLoopbackRequest(request('127.0.0.1', '', 'critical-mass.example')), false);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'evil.example:5571', 'evil.example:5571')), false);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'localhost:5571', 'evil.example:5571')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'evil.example:5571', 'localhost:5571')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'localhost:5571', 'localhost:5571, evil.example:5571')), false);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'evil.example:5571')), false);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'localhost:5571', 'localhost:5571')), true);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', '127.0.0.1:5571')), true);

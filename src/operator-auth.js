@@ -49,11 +49,17 @@ const isLoopbackRequest = (req) => {
   if (!requestOriginMatches(req)) return false;
   if (!isLoopbackHost(req?.socket?.remoteAddress)) return false;
   const getHeader = (name) => (typeof req?.get === 'function' ? req.get(name) : req?.headers?.[name]) || '';
-  const effectiveHost = (getHeader('x-forwarded-host') || getHeader('host')).split(',')[0].trim();
-  const hostname = effectiveHost.startsWith('[')
-    ? effectiveHost.slice(1, effectiveHost.indexOf(']'))
-    : effectiveHost.split(':')[0];
-  if (!isLoopbackHost(hostname)) return false;
+  const isLoopbackHostHeader = (hostHeader) => {
+    const host = hostHeader.trim();
+    const hostname = host.startsWith('[')
+      ? host.slice(1, host.indexOf(']'))
+      : host.split(':')[0];
+    return isLoopbackHost(hostname);
+  };
+  const host = getHeader('host');
+  const forwardedHost = getHeader('x-forwarded-host');
+  if (!host || !host.split(',').every(isLoopbackHostHeader)) return false;
+  if (forwardedHost && !forwardedHost.split(',').every(isLoopbackHostHeader)) return false;
 
   // A loopback proxy may preserve the original client. Forwarding headers can
   // only downgrade trust: every reported hop must also be loopback.
