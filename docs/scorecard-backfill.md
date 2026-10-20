@@ -10,7 +10,8 @@ those services before applying a replay. Older processes do not honor the lock.
 The script reports its mode, lock path and resume manifest. Apply refuses a busy
 lock; retry after the current writer finishes. Live appends wait up to two minutes
 while publication holds the lock, then append to the newly published daily file;
-an append that times out is dropped and marks the scorecard journal unhealthy.
+an append that times out, or is still waiting when UpDown stops for a backup or
+restart, is dropped and marks the scorecard journal unhealthy.
 Retention pruning skips a busy lock after a few seconds and retries daily.
 
 Each day is staged beside its destination, flushed, validated and renamed

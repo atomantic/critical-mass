@@ -200,4 +200,25 @@ describe('stale maintenance lock', () => {
     assert.ok(lines.some((line) => line.includes('Scorecard prune failed') && line.includes('still held')));
     assert.equal(fs.existsSync(lockPath(directory)), true);
   });
+
+  // Backups stop UpDown and then require every tracked write to drain within
+  // 30s; a journal append parked on the lock for its full wait would fail them.
+  it('cancels parked journal writes on stop so the pending-write drain completes', async (t) => {
+    const directory = staleLock(t);
+    const { drainPendingWrites } = require('../src/pending-writes');
+    const scorecard = createScorecard({
+      io: { to: () => ({ emit: () => {} }) },
+      lastPriceFn: () => 100,
+      journalWriter: (record, options) => withScorecardLock(directory, async () => {}, options),
+    });
+
+    scorecard.recordPrediction({ score: 20, type: 'BUY', confidence: 0.8, timeframes: {} }, 'signal_change');
+    scorecard.stop();
+
+    assert.equal((await drainPendingWrites(1000)).drained, true);
+    const { journal } = scorecard.getMetrics();
+    assert.equal(journal.healthy, false);
+    assert.match(journal.lastError, /cancelled: writer stopped/);
+    assert.equal(fs.existsSync(lockPath(directory)), true);
+  });
 });

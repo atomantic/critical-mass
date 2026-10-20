@@ -147,8 +147,8 @@ const getJournalPath = () => {
  * Append a JSONL record (fire-and-forget)
  * @param {Object} record
  */
-const appendRecord = async (record) => {
-  await appendScorecardRecord(SCORECARD_DIR, getJournalPath(), record)
+const appendRecord = async (record, options) => {
+  await appendScorecardRecord(SCORECARD_DIR, getJournalPath(), record, options)
 }
 
 /**
@@ -483,7 +483,7 @@ const computeByHour = (outcomes) => {
  * @param {Object} opts.io - realtime bus (src/realtime-bus.js)
  * @param {Function} opts.lastPriceFn - Returns current BTC price
  * @param {Function} [opts.contractFn] - Returns current contract config
- * @param {Function} [opts.journalWriter] - Testable persistence boundary
+ * @param {Function} [opts.journalWriter] - Testable persistence boundary; receives (record, {signal})
  * @param {string} [opts.scorecardDir] - Testable history source directory
  * @param {(file: string) => Promise<void>} [opts.unlinkFile] - Testable history deletion boundary
  * @param {typeof scorecardLogger} [opts.retentionLogger] - Testable retention logging boundary
@@ -512,6 +512,8 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
   let totalSkipped = 0
   let adaptiveWeights = { ...BASE_WEIGHTS }
   let running = false
+  // Aborted by stop() so lock waits never outlive the writer (backup drain).
+  let lockWaits = new AbortController()
   let lifecycleGeneration = 0
   const journal = {
     healthy: true,
@@ -520,7 +522,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     lastSuccessAt: null,
   }
 
-  const persistRecord = (record) => trackPendingWrite('updown-scorecard-journal', () => journalWriter(record))
+  const persistRecord = (record) => trackPendingWrite('updown-scorecard-journal', () => journalWriter(record, { signal: lockWaits.signal }))
     .then(() => {
       journal.healthy = true
       journal.lastError = null
@@ -1113,7 +1115,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       if (failures.length > 0) {
         throw new Error(`failed to delete ${failures.length} scorecard file(s): ${failures.join('; ')}`)
       }
-    }, { timeoutMs: pruneLockWaitMs })
+    }, { timeoutMs: pruneLockWaitMs, signal: lockWaits.signal })
   }
 
   const start = async (computeSignals) => {
@@ -1122,6 +1124,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       return
     }
     running = true
+    if (lockWaits.signal.aborted) lockWaits = new AbortController()
     const generation = ++lifecycleGeneration
     computeSignalsFn = computeSignals
 
@@ -1172,6 +1175,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
   const stop = () => {
     running = false
     lifecycleGeneration++
+    lockWaits.abort()
     if (sampleInterval) {
       clearInterval(sampleInterval)
       sampleInterval = null
