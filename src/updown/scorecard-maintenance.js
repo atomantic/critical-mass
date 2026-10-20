@@ -31,9 +31,32 @@ const acquireScorecardLock = (directory) => {
   }
 }
 
-const withScorecardLock = async (directory, operation) => {
+// Live appends wait out a replay publication (docs/scorecard-backfill.md), which
+// can run for minutes of fsync'd day rewrites on slow storage.
+const DEFAULT_LOCK_WAIT_MS = 120_000
+const LOCK_POLL_MS = 25
+
+const describeLockOwner = (directory) => {
+  try {
+    const owner = JSON.parse(fs.readFileSync(path.join(lockPath(directory), 'owner.json'), 'utf8'))
+    return `owner pid ${owner?.pid ?? 'unknown'} since ${owner?.startedAt ?? 'unknown'}`
+  } catch {
+    return 'no readable owner metadata'
+  }
+}
+
+// Bounded because the lock is never stolen: an unbounded wait on a lock left by
+// a killed process wedged scorecard startup (and with it UpDown and the gateway
+// shutdown drain) silently and forever. Fail with the recovery pointer instead.
+const withScorecardLock = async (directory, operation, { timeoutMs = DEFAULT_LOCK_WAIT_MS } = {}) => {
+  const deadline = Date.now() + timeoutMs
   let release
-  while (!(release = acquireScorecardLock(directory))) await delay(25)
+  while (!(release = acquireScorecardLock(directory))) {
+    if (Date.now() >= deadline) {
+      throw Object.assign(new Error(`Scorecard maintenance lock ${lockPath(directory)} still held after ${Math.round(timeoutMs / 1000)}s (${describeLockOwner(directory)}); if no replay is running, clear it per docs/scorecard-backfill.md`), { code: 'SCORECARD_LOCK_BUSY' })
+    }
+    await delay(LOCK_POLL_MS)
+  }
   try {
     return await operation()
   } finally {

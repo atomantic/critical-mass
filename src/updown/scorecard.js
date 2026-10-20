@@ -42,6 +42,9 @@ const EMIT_THROTTLE_MS = 5_000
 const DEDUP_WINDOW_MS = 55_000
 const WEIGHT_LOG_THROTTLE_MS = 300_000
 const EVAL_RETRY_MS = 5_000
+// Retention is housekeeping: skip a busy lock (the daily timer retries) rather
+// than hold scorecard startup behind a replay or a stale lock.
+const PRUNE_LOCK_WAIT_MS = 5_000
 const MAX_EVAL_LAG_MS = 60_000
 
 const BASE_WEIGHTS = INDICATOR_WEIGHTS
@@ -484,10 +487,11 @@ const computeByHour = (outcomes) => {
  * @param {string} [opts.scorecardDir] - Testable history source directory
  * @param {(file: string) => Promise<void>} [opts.unlinkFile] - Testable history deletion boundary
  * @param {typeof scorecardLogger} [opts.retentionLogger] - Testable retention logging boundary
+ * @param {number} [opts.pruneLockWaitMs] - How long retention waits for the maintenance lock before skipping
  * @param {{snapshot: Function, hydrate: Function, isLong: Function, serialize: Function}|null} [opts.perpBook] - Shared 0.01-BTC-per-contract paper book
  * @returns {{recordPrediction: Function, recordPerpFill: Function, getMetrics: Function, start: Function, stop: Function}}
  */
-const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRecord, scorecardDir = SCORECARD_DIR, unlinkFile = unlink, retentionLogger = scorecardLogger, perpBook = null }) => {
+const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRecord, scorecardDir = SCORECARD_DIR, unlinkFile = unlink, retentionLogger = scorecardLogger, perpBook = null, pruneLockWaitMs = PRUNE_LOCK_WAIT_MS }) => {
   /** @type {Array<Object>} Ring buffer of evaluated outcomes */
   const outcomeBuffer = []
 
@@ -1109,7 +1113,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       if (failures.length > 0) {
         throw new Error(`failed to delete ${failures.length} scorecard file(s): ${failures.join('; ')}`)
       }
-    })
+    }, { timeoutMs: pruneLockWaitMs })
   }
 
   const start = async (computeSignals) => {
