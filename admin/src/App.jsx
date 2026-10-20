@@ -1112,7 +1112,7 @@ function AppContent() {
               </>}
 
               {/* API Keys - in sub-nav tabs */}
-              <Route path="/:exchange/:pair/keys" element={<KeysConfig exchange={currentExchange} onSave={fetchExchanges} />} />
+              <Route path="/:exchange/:pair/keys" element={<KeysConfig exchange={currentExchange} funds={exchanges.filter(e => e.name === currentExchange)} onSave={fetchExchanges} />} />
 
               {/* PM2 Logs - per exchange engine */}
               <Route path="/:exchange/:pair/logs" element={<LogViewer processName={`critical-mass-${currentExchange}`} />} />
