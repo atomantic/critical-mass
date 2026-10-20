@@ -70,9 +70,9 @@ const RegimeActionModals = ({
           labelledBy="cancel-ladder-title"
           describedBy="cancel-ladder-description"
         >
-          <h3 id="cancel-ladder-title" className="text-white text-lg font-medium mb-3">Cancel Ladder</h3>
+          <h3 id="cancel-ladder-title" className="text-white text-lg font-medium mb-3">Cancel ladder orders?</h3>
           <p id="cancel-ladder-description" className="text-gray-300 text-sm mb-4">
-            Cancels <span className="text-amber-300 font-medium">{status?.position?.pendingLadderOrders?.length || 0}</span> resting ladder buy order{(status?.position?.pendingLadderOrders?.length || 0) !== 1 ? 's' : ''} and switches <span className="font-mono">entryMode</span> to <span className="font-mono">reactive</span>.
+            Cancels <span className="text-amber-300 font-medium">{status?.position?.pendingLadderOrders?.length || 0}</span> resting ladder buy order{(status?.position?.pendingLadderOrders?.length || 0) !== 1 ? 's' : ''} on the exchange and switches this fund's Entry mode from LADDER to REACTIVE.
           </p>
           <p className="text-gray-400 text-xs mb-4">
             The fund will no longer place new ladder orders and will only enter positions through reactive buys (market, fill-or-kill).
@@ -84,14 +84,14 @@ const RegimeActionModals = ({
               disabled={cancellingLadder}
               autoFocus
             >
-              Cancel
+              Keep ladder
             </button>
             <button
               className="px-4 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded-sm transition-colors disabled:opacity-50"
               onClick={onExecuteCancelLadder}
               disabled={cancellingLadder}
             >
-              {cancellingLadder ? 'Cancelling…' : 'Cancel Ladder'}
+              {cancellingLadder ? 'Cancelling orders…' : 'Cancel ladder orders'}
             </button>
           </div>
         </ModalDialog>
