@@ -81,9 +81,10 @@ const readRunningFlag = (exchange, pair) => {
  * alive for that exchange even when the fund's flag is missing.
  * @param {number} port
  * @param {number} [timeoutMs]
+ * @param {string} [host]
  * @returns {Promise<boolean>}
  */
-const isPortListening = (port, timeoutMs = 750) => new Promise((resolve) => {
+const isPortListening = (port, timeoutMs = 750, host = '127.0.0.1') => new Promise((resolve) => {
   const socket = new net.Socket();
   const done = (result) => {
     // Keep an error sink: a late ECONNRESET / ERR_SOCKET_CLOSED during teardown
@@ -100,7 +101,7 @@ const isPortListening = (port, timeoutMs = 750) => new Promise((resolve) => {
   socket.once('connect', () => done(true));
   socket.once('timeout', () => done(false));
   socket.once('error', () => done(false));
-  socket.connect(port, '127.0.0.1');
+  socket.connect(port, host);
 });
 
 /**
@@ -138,4 +139,28 @@ const checkEngineStopped = async (exchange, pair) => {
   };
 };
 
-module.exports = { checkEngineStopped, readRunningFlag, isPortListening, candidatePorts, IPC_PORT };
+/**
+ * Is the gateway down? While it runs it is the DCA writer (scheduler,
+ * /api/trade, consolidation) and serializes each fund's state.json under a
+ * process-local lock, so a second process cycling the same fund races it.
+ * Probes loopback (bound in every default topology) plus any explicit HOST,
+ * on both $PORT and the PM2 port: a shell PORT meant for another app must not
+ * make the check fail open.
+ * @param {{defaultPort?: number}} [options] - defaultPort overrides the PM2 port (tests)
+ * @returns {Promise<{safe: boolean, reason: string}>}
+ */
+const checkGatewayStopped = async ({ defaultPort = PORTS.API } = {}) => {
+  const ports = [...new Set([Number(process.env.PORT) || 0, defaultPort].filter(port => Number.isInteger(port) && port > 0))];
+  const explicit = (process.env.HOST || '').split(',').map(h => h.trim())
+    .filter(h => h && h !== '0.0.0.0' && h !== '::');
+  for (const host of new Set(['127.0.0.1', ...explicit])) {
+    for (const port of ports) {
+      if (await isPortListening(port, 750, host)) {
+        return { safe: false, reason: `the gateway is accepting connections on ${host}:${port}` };
+      }
+    }
+  }
+  return { safe: true, reason: `no gateway is listening on port ${ports.join(' or ')}` };
+};
+
+module.exports = { checkEngineStopped, checkGatewayStopped, readRunningFlag, isPortListening, candidatePorts, IPC_PORT };
