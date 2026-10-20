@@ -12,7 +12,8 @@ lock; retry after the current writer finishes. Live appends wait up to two minut
 while publication holds the lock, then append to the newly published daily file;
 an append that times out, or is still waiting when UpDown stops for a backup or
 restart, is dropped and marks the scorecard journal unhealthy.
-Retention pruning skips a busy lock after a few seconds and retries daily.
+Retention pruning skips a busy lock after a few seconds and retries daily; UpDown
+startup waits up to two minutes for publication before loading history.
 
 Each day is staged beside its destination, flushed, validated and renamed
 atomically. The original bytes are retained in a hidden `.backfill-*.backup`

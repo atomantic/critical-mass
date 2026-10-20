@@ -192,13 +192,39 @@ describe('stale maintenance lock', () => {
       scorecardDir: directory,
       retentionLogger: logger,
       pruneLockWaitMs: 60,
+      historyLockWaitMs: 60,
     });
     t.after(() => scorecard.stop());
 
     await scorecard.start(() => ({ score: 0, type: 'NEUTRAL', confidence: 0, timeframes: {} }));
 
     assert.ok(lines.some((line) => line.includes('Scorecard prune failed') && line.includes('still held')));
+    assert.ok(lines.some((line) => line.includes('history loading without the lock')));
     assert.equal(fs.existsSync(lockPath(directory)), true);
+  });
+
+  // A live replay holds the same lock while it swaps day files one by one;
+  // hydrating mid-publication would keep a partial history until next restart.
+  it('hydrates history only after an active replay releases the lock', async (t) => {
+    const directory = staleLock(t);
+    const scorecard = createScorecard({
+      io: { to: () => ({ emit: () => {} }) },
+      lastPriceFn: () => 100,
+      scorecardDir: directory,
+      retentionLogger: { info: () => {}, warn: () => {}, error: () => {} },
+      pruneLockWaitMs: 20,
+      historyLockWaitMs: 5000,
+    });
+    t.after(() => scorecard.stop());
+    setTimeout(() => {
+      const ts = new Date().toISOString();
+      fs.writeFileSync(path.join(directory, `${ts.slice(0, 10)}.jsonl`), JSON.stringify({ type: 'prediction', id: 'replayed', ts, price: 100, compositeDirection: 'up' }) + '\n');
+      fs.rmSync(lockPath(directory), { recursive: true });
+    }, 100);
+
+    await scorecard.start(() => ({ score: 0, type: 'NEUTRAL', confidence: 0, timeframes: {} }));
+
+    assert.equal(scorecard.getMetrics().totalPredictions, 1);
   });
 
   // Backups stop UpDown and then require every tracked write to drain within
