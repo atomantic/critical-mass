@@ -155,7 +155,8 @@ function BackupRestore() {
         dirty.current = false
         setMessage({ type: 'success', text: 'Backup settings saved!' })
       } else {
-        setMessage({ type: 'error', text: 'Failed to save settings' })
+        const data = await res.json().catch(() => ({}))
+        setMessage({ type: 'error', text: data.errors?.join('; ') || data.error || `Failed to save settings (HTTP ${res.status})` })
       }
     } catch (err) {
       setMessage({ type: 'error', text: err.message || 'Failed to save settings' })
@@ -243,7 +244,8 @@ function BackupRestore() {
         setMessage({ type: 'success', text: `Deleted ${filename}` })
         fetchData({ silent: true })
       } else {
-        setMessage({ type: 'error', text: 'Failed to delete backup' })
+        const data = await res.json().catch(() => ({}))
+        setMessage({ type: 'error', text: `Could not delete ${filename}: ${data.error || `HTTP ${res.status}`}` })
       }
     } catch (err) {
       setMessage({ type: 'error', text: err.message || 'Failed to delete backup' })
