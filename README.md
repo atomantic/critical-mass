@@ -312,6 +312,10 @@ For upgrades and whole-stack restarts, do not use `pm2 restart all`. Follow the 
 npm test
 ```
 
+The gateway retains Express as an accepted framework dependency; see the
+[HTTP framework decision](docs/gateway-http-dependency.md) for its scope,
+maintenance obligations and criteria for revisiting it.
+
 ## Safety Features
 
 - **Max price threshold** - Skips buys above `maxBuyPrice`
