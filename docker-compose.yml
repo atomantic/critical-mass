@@ -21,6 +21,8 @@ services:
         bind:
           create_host_path: false
     environment:
+      # Hours in notification settings use this server timezone; choose an IANA zone.
+      - TZ=${TZ:-UTC}
       - NODE_ENV=production
       - HOST=0.0.0.0
       - AI_ALLOWED_ENDPOINTS=${AI_ALLOWED_ENDPOINTS:-}

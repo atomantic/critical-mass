@@ -1,0 +1,2 @@
+- **[issue-1217] Operator sign-in recovers clearly from unreachable gateways** — A failed session probe now offers a retry without inviting password submission, while rejected sign-in requests and non-authentication HTTP failures produce visible, distinct errors. Existing first-password bootstrap handling remains intact.
+- **[issue-1217] Keep the contrast guard aligned with disabled button styles** — The admin text contrast guard now recognizes Sentinel’s disabled Start button classes so the repository-wide guard matches the current UI.

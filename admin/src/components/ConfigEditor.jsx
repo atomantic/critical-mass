@@ -115,8 +115,8 @@ function SectionCard({ title, children, className = '' }) {
   )
 }
 
-function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pair, strategy = 'dca', engineRunning = false, engineDryRun = false, onRestart }) {
-  const [config, setConfig] = useState(initialConfig || {})
+function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pair, strategy = 'dca', engineRunning = null, engineDryRun = null, onRestart, loadError, onRetry }) {
+  const [config, setConfig] = useState(initialConfig)
   const [saving, setSaving] = useState(false)
   const [toggleBusy, setToggleBusy] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -145,7 +145,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
 
   // Determine if showing regime config based on URL strategy prop
   const isRegime = strategy === 'regime'
-  const isFibonacci = !isRegime && config.dcaStrategy === 'fibonacci'
+  const isFibonacci = !isRegime && config?.dcaStrategy === 'fibonacci'
 
   // Reset config when exchange or strategy changes
   useEffect(() => {
@@ -167,13 +167,18 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // navigation without any stored flag to go stale. dryRun only takes effect at
   // engine construction (the engine captures it once and picks its live-vs-paper
   // executor), so a config/engine mismatch is exactly the restart trigger.
-  const restartNeeded = isRegime && engineRunning && config.dryRun !== engineDryRun
+  const restartNeeded = isRegime && engineRunning === true && typeof engineDryRun === 'boolean' && config?.dryRun !== engineDryRun
 
   // Sync with initialConfig when not dirty (e.g., server-side refresh). Skip
   // while any configuration write (full save or toggle auto-save) is in
   // flight so a background poll can't clobber the optimistic/pending value
   // before the write resolves.
   useEffect(() => {
+    if (!initialConfig) {
+      setConfig(undefined)
+      setIsDirty(false)
+      return
+    }
     if (initialConfig && !isDirty && pendingWriteRef.current === 0) {
       setConfig(initialConfig)
     }
@@ -192,6 +197,26 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       })
       .catch(() => {})
   }, [isRegime])
+
+  // Do not render editable defaults or retain a previous draft when this fund's
+  // summary has not arrived. All hooks stay above this gate so Retry can mount
+  // the real form only once its own authoritative config is available.
+  if (!initialConfig || !config) {
+    return (
+      <div className="bg-gray-800 rounded-lg p-4">
+        <h2 className="text-lg font-semibold mb-3">Bot Configuration</h2>
+        <button type="button" disabled className="px-4 py-2 rounded bg-blue-800 opacity-50">Save Configuration</button>
+        {loadError ? (
+          <div role="alert" className="mt-4 text-red-200">
+            Failed to load configuration: {loadError}
+            <button type="button" onClick={onRetry} className="ml-3 underline">Retry configuration</button>
+          </div>
+        ) : (
+          <p role="status" className="mt-4 text-gray-400">Loading configuration...</p>
+        )}
+      </div>
+    )
+  }
 
   const handlePresetParamChange = (level, key, value) => {
     setEditingPresets(prev => ({

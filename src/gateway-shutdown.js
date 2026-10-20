@@ -95,16 +95,12 @@ const createGatewayShutdown = ({
   return { track, middleware, handler, routes, shutdown, isStopping: () => stopping };
 };
 
-const closeGatewayListeners = async (io, servers, engines = [io.engine]) => {
-  // io.attach() replaces io.engine; older listener transports still own
-  // connected clients (even handshakes not yet admitted to a namespace).
-  for (const engine of engines) engine?.close();
-  // Socket.IO may also close its last attached HTTP server. Start every HTTP
-  // close as well; ERR_SERVER_NOT_RUNNING is then harmless.
+const closeGatewayListeners = async (bus, servers) => {
+  // The bus closes every realtime connection on every listener (upgraded
+  // sockets hold server.close() open until they end). Start every HTTP close
+  // alongside it; ERR_SERVER_NOT_RUNNING from an already closed one is harmless.
   await Promise.all([
-    new Promise((resolve, reject) => {
-      Promise.resolve(io.close((err) => err && err.code !== 'ERR_SERVER_NOT_RUNNING' ? reject(err) : resolve())).catch(reject);
-    }),
+    bus.close(),
     ...servers.map((server) => new Promise((resolve, reject) => {
       server.close((err) => err && err.code !== 'ERR_SERVER_NOT_RUNNING' ? reject(err) : resolve());
       server.closeIdleConnections?.();

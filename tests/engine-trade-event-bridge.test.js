@@ -8,10 +8,10 @@ const { TradeEventEmitter, tradeEvents } = require('../src/trade-events');
 const { createFaultReporter } = require('../src/process-guard');
 const { createIPCServer } = require('../src/ipc/ipc-server');
 const { createIPCClient } = require('../src/ipc/ipc-client');
-const { forwardTradeEvents, forwardIPCEvent } = require('../src/ipc/socket-io-proxy');
+const { forwardTradeEvents, forwardIPCEvent } = require('../src/ipc/realtime-proxy');
 const { createNotifier } = require('../src/notifier');
 
-it('delivers engine faults over IPC to Telegram and Socket.IO exactly once', { timeout: 5000 }, async (t) => {
+it('delivers engine faults over IPC to Telegram and the realtime bus exactly once', { timeout: 5000 }, async (t) => {
   const configFile = path.join(__dirname, '..', 'config.json');
   const userConfigFile = path.join(__dirname, '..', 'data', 'config.json');
   const originalRead = fs.readFileSync;

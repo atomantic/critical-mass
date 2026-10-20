@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { getSocket } from './useTradeEvents'
+import { getRealtimeClient } from '../lib/realtime'
 import { shouldAcceptFlushResult } from '../utils/flushResult.mjs'
 
 const MAX_LINES = 2000
@@ -25,7 +25,7 @@ export function useLogStream(processName, { lines = 500 } = {}) {
   useEffect(() => {
     if (!processName) return
 
-    const socket = getSocket()
+    const socket = getRealtimeClient()
 
     const handleLine = (data) => {
       if (data.processName !== processName) return
@@ -57,13 +57,14 @@ export function useLogStream(processName, { lines = 500 } = {}) {
       setFlushing(false)
       setFlushResult({ success: data.success, reason: data.reason })
     }
-    // On the shared singleton socket, a reconnect (gateway restart, network
-    // blip) drops the server-side subscription without telling this hook —
-    // re-subscribe whenever the socket (re)connects, and stop claiming
-    // "Streaming" the instant it disconnects (mirrors useSentinelSocket /
-    // useSocketPrice, which both re-subscribe in a 'connect' handler).
+    // On the shared connection, a reconnect (gateway restart, network blip)
+    // drops the server-side PM2 tail without telling this hook — re-subscribe
+    // whenever the client (re)connects, and stop claiming "Streaming" the
+    // instant it disconnects.
     const handleConnect = () => {
       setTerminal(null)
+      logsRef.current = []
+      setLogs([])
       socket.emit('logs:subscribe', { processName, lines })
     }
     const handleDisconnect = () => {
@@ -89,6 +90,8 @@ export function useLogStream(processName, { lines = 500 } = {}) {
     socket.on('disconnect', handleDisconnect)
 
     if (socket.connected) {
+      logsRef.current = []
+      setLogs([])
       socket.emit('logs:subscribe', { processName, lines })
     }
 
@@ -123,7 +126,7 @@ export function useLogStream(processName, { lines = 500 } = {}) {
     pendingFlushRef.current = { processName }
     setFlushing(true)
     setFlushResult(null)
-    const socket = getSocket()
+    const socket = getRealtimeClient()
     socket.emit('logs:flush', { processName })
   }, [processName])
 
@@ -132,7 +135,9 @@ export function useLogStream(processName, { lines = 500 } = {}) {
   const retry = useCallback(() => {
     if (!processName) return
     setTerminal(null)
-    const socket = getSocket()
+    const socket = getRealtimeClient()
+    logsRef.current = []
+    setLogs([])
     socket.emit('logs:subscribe', { processName, lines })
   }, [processName, lines])
 

@@ -477,7 +477,7 @@ const computeByHour = (outcomes) => {
 /**
  * Create a scorecard instance
  * @param {Object} opts
- * @param {Object} opts.io - Socket.IO server instance
+ * @param {Object} opts.io - realtime bus (src/realtime-bus.js)
  * @param {Function} opts.lastPriceFn - Returns current BTC price
  * @param {Function} [opts.contractFn] - Returns current contract config
  * @param {Function} [opts.journalWriter] - Testable persistence boundary

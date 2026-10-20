@@ -322,6 +322,62 @@ describe('API key routes', () => {
       assert.match(res.body.error, /Coinbase Advanced API \/ CDP keys are required/i);
     });
 
+    it('rejects malformed credentials without replacing an existing key file', async () => {
+      const app = createFakeApp();
+      const writeJSON = (filePath, data) => fs.writeFileSync(filePath, JSON.stringify(data));
+      registerKeysRoutes(app, { writeJSON });
+      const keysFilePath = path.join(tempKeysDir, 'coinbase-keys.json');
+      const existing = Buffer.from('{"name":"working-account","privateKey":"preserved"}\n');
+      fs.writeFileSync(keysFilePath, existing);
+
+      const invalidBodies = [
+        { name: 123, privateKey: 'x'.repeat(50) },
+        { name: 'short-key', privateKey: 'x'.repeat(50) },
+        { name: 'working-account', privateKey: 'too-short' },
+        { name: 'working-account', privateKey: 'x'.repeat(50 * 400) },
+      ];
+      for (const method of ['POST', 'PUT']) {
+        for (const body of invalidBodies) {
+          const res = await invoke(app, `${method} /api/:exchange/keys`, {
+            params: { exchange: 'coinbase' }, body,
+          });
+          assert.equal(res.statusCode, 400);
+          assert.deepEqual(fs.readFileSync(keysFilePath), existing);
+        }
+      }
+    });
+
+    it('trims valid credentials before validating and writing them', async () => {
+      const app = createFakeApp();
+      const writeJSON = (filePath, data) => fs.writeFileSync(filePath, JSON.stringify(data));
+      registerKeysRoutes(app, { writeJSON });
+      mock.method(require('../src/adapters'), 'getAdapter', () => ({ hasValidKeys: () => true }));
+
+      const res = await invoke(app, 'POST /api/:exchange/keys', {
+        params: { exchange: 'gemini' },
+        body: { apiKey: '  gemini-key-123  ', apiSecret: '  gemini-secret-456  ' },
+      });
+
+      assert.equal(res.statusCode, 200);
+      const saved = JSON.parse(fs.readFileSync(path.join(tempKeysDir, 'gemini-keys.json'), 'utf8'));
+      assert.equal(saved.apiKey, 'gemini-key-123');
+      assert.equal(saved.apiSecret, 'gemini-secret-456');
+    });
+
+    it('reports the adapter configured state after a successful save', async () => {
+      const app = createFakeApp();
+      registerKeysRoutes(app, { writeJSON: () => {} });
+      mock.method(require('../src/adapters'), 'getAdapter', () => ({ hasValidKeys: () => false }));
+
+      const res = await invoke(app, 'POST /api/:exchange/keys', {
+        params: { exchange: 'gemini' },
+        body: { apiKey: 'gemini-key-123', apiSecret: 'gemini-secret-456' },
+      });
+
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.body.configured, false);
+    });
+
     it('rejects Crypto.com keys when apiKey is missing (400)', async () => {
       const app = createFakeApp();
       const writeJSON = () => { throw new Error('should not write'); };
@@ -354,10 +410,11 @@ describe('API key routes', () => {
       const app = createFakeApp();
       const writeJSON = (filePath, data) => fs.writeFileSync(filePath, JSON.stringify(data));
       registerKeysRoutes(app, { writeJSON });
+      mock.method(require('../src/adapters'), 'getAdapter', () => ({ hasValidKeys: () => true }));
 
       const res = await invoke(app, 'POST /api/:exchange/keys', {
         params: { exchange: 'coinbase' },
-        body: { name: 'my-key', privateKey: 'secret-key' },
+        body: { name: 'my-key-name', privateKey: 'x'.repeat(50) },
       });
 
       assert.equal(res.statusCode, 200);
@@ -368,8 +425,8 @@ describe('API key routes', () => {
       // Verify file was written
       const keysFilePath = path.join(tempKeysDir, 'coinbase-keys.json');
       const written = JSON.parse(fs.readFileSync(keysFilePath, 'utf8'));
-      assert.equal(written.name, 'my-key');
-      assert.equal(written.privateKey, 'secret-key');
+      assert.equal(written.name, 'my-key-name');
+      assert.equal(written.privateKey, 'x'.repeat(50));
       assert.ok(written.createdAt, 'createdAt must be set');
     });
 
@@ -377,10 +434,11 @@ describe('API key routes', () => {
       const app = createFakeApp();
       const writeJSON = (filePath, data) => fs.writeFileSync(filePath, JSON.stringify(data));
       registerKeysRoutes(app, { writeJSON });
+      mock.method(require('../src/adapters'), 'getAdapter', () => ({ hasValidKeys: () => true }));
 
       const res = await invoke(app, 'POST /api/:exchange/keys', {
         params: { exchange: 'crypto.com' },
-        body: { apiKey: 'my-api-key', apiSecret: 'my-api-secret' },
+        body: { apiKey: 'my-api-key-long', apiSecret: 'my-api-secret-long' },
       });
 
       assert.equal(res.statusCode, 200);
@@ -390,8 +448,8 @@ describe('API key routes', () => {
       // Verify file was written
       const keysFilePath = path.join(tempKeysDir, 'crypto.com-keys.json');
       const written = JSON.parse(fs.readFileSync(keysFilePath, 'utf8'));
-      assert.equal(written.apiKey, 'my-api-key');
-      assert.equal(written.apiSecret, 'my-api-secret');
+      assert.equal(written.apiKey, 'my-api-key-long');
+      assert.equal(written.apiSecret, 'my-api-secret-long');
     });
 
     it('includes createdAt timestamp when saving keys', async () => {
@@ -402,7 +460,7 @@ describe('API key routes', () => {
       const before = new Date();
       const res = await invoke(app, 'POST /api/:exchange/keys', {
         params: { exchange: 'gemini' },
-        body: { apiKey: 'key', apiSecret: 'secret' },
+        body: { apiKey: 'long-test-key', apiSecret: 'long-test-secret' },
       });
       const after = new Date();
 
@@ -423,7 +481,7 @@ describe('API key routes', () => {
 
       const res = await invoke(app, 'PUT /api/:exchange/keys', {
         params: { exchange: 'coinbase' },
-        body: { name: 'updated-key', privateKey: 'updated-secret' },
+        body: { name: 'updated-key-name', privateKey: 'x'.repeat(50) },
       });
 
       assert.equal(res.statusCode, 200);
@@ -431,7 +489,7 @@ describe('API key routes', () => {
 
       const keysFilePath = path.join(tempKeysDir, 'coinbase-keys.json');
       const written = JSON.parse(fs.readFileSync(keysFilePath, 'utf8'));
-      assert.equal(written.name, 'updated-key');
+      assert.equal(written.name, 'updated-key-name');
     });
 
     it('rejects invalid payload on PUT (same validation as POST)', async () => {
@@ -587,7 +645,7 @@ describe('API key routes', () => {
       // First, create keys
       await invoke(app, 'POST /api/:exchange/keys', {
         params: { exchange: 'coinbase' },
-        body: { name: 'key', privateKey: 'secret' },
+        body: { name: 'valid-key-name', privateKey: 'x'.repeat(50) },
       });
 
       const keysFilePath = path.join(tempKeysDir, 'coinbase-keys.json');
@@ -633,7 +691,7 @@ describe('API key routes', () => {
       // Create keys
       await invoke(app, 'POST /api/:exchange/keys', {
         params: { exchange: 'crypto.com' },
-        body: { apiKey: 'key', apiSecret: 'secret' },
+        body: { apiKey: 'long-test-key', apiSecret: 'long-test-secret' },
       });
 
       // Delete

@@ -59,7 +59,7 @@ const engineError = (err) => ({ success: false, error: `Engine unavailable: ${er
  * which re-derives P&L from the cached fill ledger and falls back to the
  * ledger's last fill price for `market.lastPrice` when there's no live
  * price to report — the same enrichment the engine's own IPC handler and
- * the Socket.IO stream produce.
+ * the realtime stream produce.
  *
  * Returns null when there's no persisted state to fall back on, so a true
  * IPC outage (e.g., first-time fund or broken connection with no saved
@@ -408,8 +408,16 @@ module.exports = (app, deps) => {
     const pair = getFundPair(req);
     const query = parseFillsQuery(req.query);
     if (query.success === false) return res.status(400).json(query);
-    const result = await getIPC(exchange).request('regime:fills', query.paged ? query : {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request('regime:fills', query, exchange, pair).catch(engineError);
     if (result.success === false) return res.status(result.statusCode || errStatus(result)).json(result);
+    res.json({ success: true, exchange, pair, ...result });
+  });
+
+  app.get('/api/:exchange/regime/fills/cycles', async (req, res) => {
+    const { exchange } = req.params;
+    const pair = getFundPair(req);
+    const result = await getIPC(exchange).request('regime:fills:cycles', {}, exchange, pair).catch(engineError);
+    if (result.success === false) return res.status(errStatus(result)).json(result);
     res.json({ success: true, exchange, pair, ...result });
   });
 

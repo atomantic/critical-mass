@@ -55,6 +55,8 @@ function Overview() {
   const navigate = useNavigate()
   const [exchanges, setExchanges] = useState([])
   const [statusMap, setStatusMap] = useState({})
+  const [statusState, setStatusState] = useState({})
+  const [exchangesError, setExchangesError] = useState(null)
   const [loading, setLoading] = useState(true)
   const [addFundOpen, setAddFundOpen] = useState(false)
   const { statuses: wsStatuses, connected } = useMultiRegimeStatuses()
@@ -77,41 +79,38 @@ function Overview() {
   // independent status entries.
   const fundKey = (ex) => `${ex.name}::${ex.pair || ex.productId || 'default'}`
 
-  // Fetch exchange list and initial statuses
-  useEffect(() => {
-    const load = async () => {
-      setLoading(true)
-      try {
-        const res = await fetch('/api/exchanges')
-        if (!res.ok) return
-        const data = await res.json().catch(() => ({}))
-        const exchangeList = data.exchanges || []
-        setExchanges(exchangeList)
+  // Fetch exchange list and each fund status as one retryable page load.
+  const load = async () => {
+    setLoading(true)
+    try {
+      const res = await fetch('/api/exchanges')
+      if (!res.ok) throw new Error(`Exchange list request failed (HTTP ${res.status})`)
+      const data = await res.json()
+      const exchangeList = data.exchanges || []
+      setExchanges(exchangeList)
+      setExchangesError(null)
 
-        // Fetch regime status for each fund in parallel (pair-aware). Each fund's
-        // fetch is individually guarded so one network failure doesn't reject the
-        // whole Promise.all and leave every other fund's status unset.
-        const entries = await Promise.all(
-          exchangeList.map(async (ex) => {
-            try {
-              const pairParam = ex.pair || ex.productId || ''
-              const r = await fetch(`/api/${ex.name}/regime/status?pair=${encodeURIComponent(pairParam)}`)
-              if (!r.ok) return [fundKey(ex), null]
-              const d = await r.json().catch(() => ({}))
-              return [fundKey(ex), d.status || null]
-            } catch {
-              return [fundKey(ex), null]
-            }
-          })
-        )
-        setStatusMap(Object.fromEntries(entries))
-      } catch {
-        // Leave whatever exchanges/statusMap we already have — the loading
-        // flag below still clears so the page never gets stuck on "Loading…".
-      } finally {
-        setLoading(false)
-      }
+      const entries = await Promise.all(exchangeList.map(async (ex) => {
+        try {
+          const pairParam = ex.pair || ex.productId || ''
+          const r = await fetch(`/api/${ex.name}/regime/status?pair=${encodeURIComponent(pairParam)}`)
+          if (!r.ok) return [fundKey(ex), null, 'error']
+          const d = await r.json()
+          return [fundKey(ex), d.status || null, d.status ? 'ok' : 'error']
+        } catch {
+          return [fundKey(ex), null, 'error']
+        }
+      }))
+      setStatusMap(Object.fromEntries(entries.map(([key, status]) => [key, status])))
+      setStatusState(Object.fromEntries(entries.map(([key, , state]) => [key, state])))
+    } catch (error) {
+      setExchangesError(error.message || 'Failed to load exchanges')
+    } finally {
+      setLoading(false)
     }
+  }
+
+  useEffect(() => {
     load()
   }, [])
 
@@ -127,11 +126,17 @@ function Overview() {
       }
       return next
     })
+    setStatusState(prev => {
+      const next = { ...prev }
+      for (const key of Object.keys(wsStatuses)) if (key in next) next[key] = 'ok'
+      return next
+    })
   }, [wsStatuses])
 
   // Build card data from exchanges + statuses
   const cards = exchanges.map(ex => {
     const status = statusMap[fundKey(ex)]
+    const statusUnavailable = statusState[fundKey(ex)] === 'error'
     const pair = ex.pair || ex.productId || 'BTC-USDC'
     const baseCurrency = getBaseCurrency(ex.productId || pair)
     const quoteCurrency = getQuoteCurrency(ex.productId || pair)
@@ -192,6 +197,7 @@ function Overview() {
     return {
       exchange: ex.name,
       pair,
+      statusUnavailable,
       baseCurrency,
       quoteCurrency,
       isRunning,
@@ -231,7 +237,9 @@ function Overview() {
   })
 
   // Aggregate summary
-  const totals = cards.reduce((acc, c) => ({
+  const availableCards = cards.filter(c => !c.statusUnavailable)
+  const unavailableCount = cards.length - availableCards.length
+  const totals = availableCards.reduce((acc, c) => ({
     deployed: acc.deployed + c.totalCostBasis,
     available: acc.available + c.availableCapital,
     unrealized: acc.unrealized + c.unrealizedPnL,
@@ -240,14 +248,14 @@ function Overview() {
   }), { deployed: 0, available: 0, unrealized: 0, realized: 0, expectedCycleGain: 0 })
 
   // Keep quote profits grouped by currency alongside the per-asset breakdown.
-  const quoteBreakdown = cards.reduce((acc, card) => {
+  const quoteBreakdown = availableCards.reduce((acc, card) => {
     const quote = card.quoteCurrency
     if (!acc[quote]) acc[quote] = { realized: 0, annual: 0 }
     acc[quote].realized += card.realizedUsdcPnL
     acc[quote].annual += card.estimatedDailyUsdc * 365
     return acc
   }, {})
-  const assetBreakdown = cards.reduce((acc, c) => {
+  const assetBreakdown = availableCards.reduce((acc, c) => {
     if (c.realizedAssetPnL > 0) {
       if (!acc[c.baseCurrency]) acc[c.baseCurrency] = { qty: 0, usd: 0 }
       acc[c.baseCurrency].qty += c.realizedAssetPnL
@@ -257,14 +265,14 @@ function Overview() {
   }, {})
 
   // Weighted APY (by cost basis)
-  const totalCostBasisAll = cards.reduce((sum, c) => sum + c.totalCostBasis, 0)
+  const totalCostBasisAll = availableCards.reduce((sum, c) => sum + c.totalCostBasis, 0)
   const weightedApy = totalCostBasisAll > 0
-    ? cards.reduce((sum, c) => sum + c.estimatedApy * c.totalCostBasis, 0) / totalCostBasisAll
+    ? availableCards.reduce((sum, c) => sum + c.estimatedApy * c.totalCostBasis, 0) / totalCostBasisAll
     : 0
 
   // Aggregate annual yield projections
-  const totalAnnualUsdc = cards.reduce((sum, c) => sum + (c.estimatedDailyUsdc * 365), 0)
-  const annualAssetBreakdown = cards.reduce((acc, c) => {
+  const totalAnnualUsdc = availableCards.reduce((sum, c) => sum + (c.estimatedDailyUsdc * 365), 0)
+  const annualAssetBreakdown = availableCards.reduce((acc, c) => {
     if (c.estimatedDailyAsset > 0) {
       const key = c.baseCurrency
       if (!acc[key]) acc[key] = { qty: 0, usd: 0 }
@@ -308,6 +316,13 @@ function Overview() {
           navigate(`/${exchange}/${pair}/config`)
         }}
       />
+
+      {exchangesError && (
+        <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-red-700 bg-red-900/20 p-4 mb-4 text-red-200">
+          <span>Unable to load exchanges: {exchangesError}</span>
+          <button onClick={load} className="px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-700 text-white">Retry</button>
+        </div>
+      )}
 
       {/* Aggregate summary bar */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
@@ -365,10 +380,26 @@ function Overview() {
           )}
         </div>
       </div>
+      {unavailableCount > 0 && (
+        <div className="text-sm text-amber-300 mb-4" role="status">{unavailableCount} {unavailableCount === 1 ? 'fund' : 'funds'} unavailable; excluded from totals.</div>
+      )}
 
       {/* Active fund cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {cards.filter(c => c.lifecycle !== 'closed').map(card => {
+          if (card.statusUnavailable) {
+            return (
+              <div key={`${card.exchange}-${card.pair}`} className="bg-gray-800 rounded-lg border border-amber-700 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <Link to={`/${card.exchange}/${card.pair}`} className="text-white font-medium capitalize hover:opacity-80">
+                    {card.exchange} / {card.pair}
+                  </Link>
+                  <span className="text-xs px-2 py-0.5 rounded-sm bg-amber-900/60 text-amber-200">Status unavailable</span>
+                </div>
+                <button onClick={load} className="mt-4 px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-700 text-white text-sm">Retry</button>
+              </div>
+            )
+          }
           const engineStatus = getEngineStatus(card.isRunning, card.isDryRun, card.lifecycle)
           const regimeColor = REGIME_COLORS[card.regimeMode] || {}
           const healthColor = HEALTH_COLORS[card.healthMode] || 'text-gray-400'
@@ -551,7 +582,7 @@ function Overview() {
         </div>
       )}
 
-      {cards.length === 0 && (
+      {cards.length === 0 && !exchangesError && (
         <div className="text-center text-gray-400 py-12">
           No exchanges configured. Add an exchange to get started.
         </div>

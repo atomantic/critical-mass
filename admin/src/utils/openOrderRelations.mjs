@@ -25,14 +25,12 @@
  * parent can memoize it on the fill snapshot and the ~1s status tick only pays
  * for map lookups. Pure: inputs are never mutated.
  */
-import { pairCycleFills, buyPairKey } from '../../../shared/cycle-pairing.mjs'
+import { pairCycleFills, buyPairKey, isBodyOwnedFill } from '../../../shared/cycle-pairing.mjs'
 import { deriveDryRunFillGroups } from './regimeFillGroups.mjs'
 import { computeOpenOrderEstimate } from './openOrderEstimates.mjs'
 
 export const isTpOrderType = (type) =>
   type === 'take_profit' || type === 'satellite_tp' || type === 'body_tp'
-
-const isBodyOwnedFill = (fill) => Boolean(fill.isBodyOwned ?? fill.isSatellite)
 
 const fillQuote = (fill) => fill.quoteAmount || fill.size * fill.price
 
