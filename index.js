@@ -3,8 +3,10 @@ require('./src/runtime-env').loadRuntimeEnv();
 const { runIntervalCycle, checkStatus } = require('./src/dca-engine');
 const { log } = require('./src/logger');
 const { getAdapter } = require('./src/adapters');
-const { getExchangeConfig, getConfiguredExchanges, getBaseCurrency, getQuoteCurrency } = require('./src/config-utils');
+const { getExchangeConfig, getConfiguredExchanges, getBaseCurrency, getQuoteCurrency, getGlobalConfig } = require('./src/config-utils');
 const { guardLegacyMigration } = require('./src/migration');
+const { guardIncompleteRestore } = require('./src/restore-apply');
+const { checkGatewayStopped, claimGatewayListeners } = require('./src/engine-liveness');
 
 // Finish the legacy namespace migration before any command reads persisted
 // state; a conflicting or still-in-progress migration refuses to run (issue #971).
@@ -43,6 +45,8 @@ const parseArgs = () => {
   return result;
 };
 
+let releaseGatewayClaim = async () => {};
+
 /**
  * Main entry point
  */
@@ -57,6 +61,39 @@ const main = async () => {
     console.log(`Error: Unknown exchange '${exchange}'`);
     console.log(`Configured exchanges: ${configuredExchanges.join(', ')}`);
     process.exit(1);
+  }
+
+  // `run` and `status` save the fund's state.json. The gateway owns those
+  // writes while it is up (a process-local per-fund lock, the Simple DCA gate,
+  // restore recovery at boot), so the CLI stands in for it only while it is
+  // down, and holds its listen addresses so it cannot start mid-command.
+  if (command === 'run' || command === 'status') {
+    if (command === 'run' && !getGlobalConfig().simpleDcaEnabled) {
+      console.log('Simple DCA is disabled. Use Regime engine.');
+      process.exit(1);
+      return;
+    }
+    const gateway = await checkGatewayStopped();
+    if (!gateway.safe) {
+      console.log(`Refusing to ${command}: ${gateway.reason}. Use the dashboard, or stop the stack first (npm run pm2:stop).`);
+      process.exit(1);
+      return;
+    }
+    const claim = await claimGatewayListeners();
+    if (!claim.claimed) {
+      console.log(`Refusing to ${command}: ${claim.reason}.`);
+      process.exit(1);
+      return;
+    }
+    releaseGatewayClaim = claim.release;
+    guardIncompleteRestore({
+      processLabel: 'CLI',
+      logger: {
+        info: (message, data) => log('INFO', message, data),
+        warn: (message, data) => log('WARN', message, data),
+        error: (message, data) => log('ERROR', message, data),
+      },
+    });
   }
 
   if (command === 'status') {
@@ -182,8 +219,8 @@ const main = async () => {
   console.log('Usage: node index.js [command] [--exchange <exchange>]');
   console.log('');
   console.log('Commands:');
-  console.log('  run        - Execute interval DCA cycle (default)');
-  console.log('  status     - Check status and reconcile existing fills without new trades');
+  console.log('  run        - Execute interval DCA cycle (default; requires Simple DCA and a stopped gateway)');
+  console.log('  status     - Check status and reconcile existing fills without new trades (requires a stopped gateway)');
   console.log('  debug      - Show raw account information');
   console.log('  exchanges  - List all configured exchanges');
   console.log('');
@@ -196,7 +233,7 @@ const main = async () => {
   console.log('  node index.js run -e coinbase');
 };
 
-main().catch(err => {
+main().then(() => releaseGatewayClaim(), err => {
   log('ERROR', `Fatal error: ${err.message}`);
   console.error(err);
   process.exit(1);

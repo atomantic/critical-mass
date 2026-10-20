@@ -18,7 +18,7 @@ const fs = require('fs');
 const net = require('net');
 const path = require('path');
 
-const { checkEngineStopped, readRunningFlag, isPortListening } = require('../src/engine-liveness');
+const { checkEngineStopped, checkGatewayStopped, claimGatewayListeners, readRunningFlag, isPortListening } = require('../src/engine-liveness');
 const { resolveFundDataDir } = require('../src/migration');
 
 const TEST_PAIR = '__testliveness__';
@@ -97,5 +97,67 @@ describe('checkEngineStopped', () => {
     writeFlagFor(UNPROBEABLE, { running: false });
     const result = await checkEngineStopped(UNPROBEABLE, TEST_PAIR);
     assert.equal(result.safe, true);
+  });
+});
+
+describe('checkGatewayStopped', () => {
+  it('refuses while the gateway port accepts loopback connections, under the deployed HOST forms', async () => {
+    const saved = { PORT: process.env.PORT, HOST: process.env.HOST };
+    const server = net.createServer();
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = /** @type {import('net').AddressInfo} */ (server.address()).port;
+    try {
+      process.env.PORT = String(port);
+      for (const host of [undefined, '0.0.0.0', '127.0.0.1']) {
+        if (host === undefined) delete process.env.HOST; else process.env.HOST = host;
+        const result = await checkGatewayStopped({ defaultPort: port });
+        assert.equal(result.safe, false, `HOST=${host ?? '(unset)'} must detect the gateway`);
+        assert.match(result.reason, new RegExp(`127\\.0\\.0\\.1:${port}`));
+      }
+      // A stray shell PORT must not hide a gateway on the PM2 port.
+      process.env.PORT = '1';
+      assert.equal((await checkGatewayStopped({ defaultPort: port })).safe, false, 'the PM2 port is always probed');
+      await new Promise((resolve) => server.close(resolve));
+      process.env.PORT = String(port);
+      assert.equal((await checkGatewayStopped({ defaultPort: port })).safe, true, 'a closed gateway port is safe');
+    } finally {
+      if (server.listening) server.close();
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
+});
+
+describe('claimGatewayListeners', () => {
+  it('holds the gateway address so a starting gateway or a second CLI write cannot bind it, until released', async () => {
+    const saved = process.env.PORT;
+    const probe = net.createServer();
+    await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const port = /** @type {import('net').AddressInfo} */ (probe.address()).port;
+    await new Promise((resolve) => probe.close(resolve));
+    try {
+      process.env.PORT = String(port);
+      const claim = await claimGatewayListeners({ defaultPort: port, hosts: ['127.0.0.1'] });
+      assert.equal(claim.claimed, true);
+
+      const gateway = net.createServer();
+      const bindError = await new Promise((resolve) => {
+        gateway.once('error', resolve);
+        gateway.listen(port, '127.0.0.1', () => resolve(null));
+      });
+      assert.equal(/** @type {any} */ (bindError)?.code, 'EADDRINUSE', 'a gateway starting mid-command fails its bind');
+
+      const second = await claimGatewayListeners({ defaultPort: port, hosts: ['127.0.0.1'] });
+      assert.equal(second.claimed, false);
+      assert.match(/** @type {{reason: string}} */ (second).reason, /holds 127\.0\.0\.1:/);
+
+      await /** @type {{release: () => Promise<void>}} */ (claim).release();
+      const again = await claimGatewayListeners({ defaultPort: port, hosts: ['127.0.0.1'] });
+      assert.equal(again.claimed, true, 'release frees the address');
+      await /** @type {{release: () => Promise<void>}} */ (again).release();
+    } finally {
+      if (saved === undefined) delete process.env.PORT; else process.env.PORT = saved;
+    }
   });
 });

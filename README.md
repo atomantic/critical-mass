@@ -279,6 +279,8 @@ npm run pm2:start
 
 ### CLI Commands
 
+`run` and `status` write the fund's `state.json`, so they refuse while the gateway is running (it owns those writes — use the dashboard instead, or stop the stack first). `run` also requires Simple DCA to be enabled, matching the gateway's scheduler.
+
 ```bash
 # Complete one interval cycle for an exchange (places trades unless dry-run)
 node index.js run --exchange coinbase
