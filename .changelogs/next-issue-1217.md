@@ -1,0 +1,1 @@
+- **[issue-1217] Operator sign-in recovers clearly from unreachable gateways** — A failed session probe now offers a retry without inviting password submission, while rejected sign-in requests and non-authentication HTTP failures produce visible, distinct errors. Existing first-password bootstrap handling remains intact.
