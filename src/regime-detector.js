@@ -50,6 +50,7 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
 
   /** @type {Array<{direction: string, timestamp: number}>} */
   let momentumHistory = [];
+  let warmingUp = false;
 
   /**
    * Classify current regime based on market conditions
@@ -58,6 +59,11 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
    */
   const classify = (marketState) => {
     const { realizedVol, volBaseline, atr1m, vwap, lastPrice } = marketState;
+
+    // Startup metrics can arrive before a live ticker or usable indicators.
+    if (![lastPrice, vwap, atr1m].every(value => Number.isFinite(value) && value > 0)) {
+      return state.mode;
+    }
 
     // Calculate key metrics
     const volExpansion = calculateVolExpansion(realizedVol, volBaseline);
@@ -77,6 +83,18 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
       newMode = classifyFromCaution(volExpansion, momentum, vwapDistance);
     } else if (prevMode === 'TREND') {
       newMode = classifyFromTrend(volExpansion, momentum, vwapDistance);
+    }
+
+    // Fresh readings may tighten protection immediately; relaxing a restored
+    // regime must wait for a complete post-restore confirmation window.
+    if (warmingUp) {
+      if (momentumHistory.length < config.trendConfirmationPeriods) {
+        if (prevMode === 'TREND' || (prevMode === 'CAUTION' && newMode === 'HARVEST')) {
+          newMode = prevMode;
+        }
+      } else {
+        warmingUp = false;
+      }
     }
 
     // Handle transition
@@ -210,7 +228,13 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
     const consistent = recentMomentum.every(m => m.direction === expectedDirection);
 
     if (consistent) {
-      state.trendConfirmationCount++;
+      // A restored TREND is already established. The fresh consistent window
+      // confirms it without imposing a second confirmation-count warmup.
+      if (warmingUp && state.mode === 'TREND') {
+        state.trendConfirmationCount = config.trendConfirmationPeriods;
+      } else {
+        state.trendConfirmationCount++;
+      }
       state.trendDirection = expectedDirection;
       return state.trendConfirmationCount >= config.trendConfirmationPeriods;
     }
@@ -322,6 +346,7 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
   const reset = () => {
     state = createInitialRegimeState();
     momentumHistory = [];
+    warmingUp = false;
   };
 
   /**
@@ -337,6 +362,10 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
       // Reset 'since' timestamp to current session start
       since: Date.now(),
     };
+
+    momentumHistory = [];
+    warmingUp = true;
+    state.trendConfirmationCount = 0;
 
     logger.info(`📂 [${exchange}] Restored regime state: mode=${state.mode}, transitions=${state.transitionCount}`, {
       mode: state.mode, transitionCount: state.transitionCount,

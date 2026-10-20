@@ -505,9 +505,9 @@ describe('Edge cases', () => {
     assert.equal(mode, 'TREND');
   });
 
-  it('handles zero ATR gracefully (vwapDistance returns 0)', () => {
+  it('ignores zero ATR until indicators are usable', () => {
     const det = createRegimeDetector('test', createTestConfig());
-    // With atr1m=0, calculateVWAPDistance returns 0, so VWAP distance won't trigger
+    // Unusable ATR must leave the current regime untouched.
     const mode = det.classify(createMarketState({
       realizedVol: 0.5,
       volBaseline: 0.5,
@@ -515,8 +515,8 @@ describe('Edge cases', () => {
       vwap: 100000,
       atr1m: 0,
     }));
-    // momentum = |100500 - 100000| = 500 > 100 -> CAUTION
-    assert.equal(mode, 'CAUTION');
+    // Even a large momentum reading is ignored until ATR is available.
+    assert.equal(mode, 'HARVEST');
   });
 
   it('handles negative trade imbalance amplifying downward momentum', () => {
@@ -692,5 +692,78 @@ describe('Regression - momentum threshold is basis-points, not fixed USD (#683)'
       }));
       assert.equal(mode, 'CAUTION', `expected CAUTION at price=${price}, got ${mode}`);
     }
+  });
+});
+
+describe('restored regime warmup (#1298)', () => {
+  const trending = () => createMarketState({ lastPrice: 100300 });
+
+  it('keeps TREND and forbids entries through and beyond the fresh window', () => {
+    for (const periods of [1, 3, 5]) {
+      const transitions = [];
+      const det = createRegimeDetector('test', createTestConfig({ trendConfirmationPeriods: periods }), {
+        onTransition: (...args) => transitions.push(args),
+      });
+      det.restoreState({ mode: 'TREND', trendConfirmationCount: 0 });
+      for (let i = 0; i < periods + 2; i++) {
+        assert.equal(det.classify(trending()), 'TREND', `periods=${periods}, reading=${i + 1}`);
+        assert.equal(det.allowsEntries(), false);
+      }
+      assert.deepEqual(transitions, []);
+      assert.equal(det.classify(createMarketState()), 'CAUTION', 'real weakening relaxes after warmup');
+      assert.equal(transitions.length, 1);
+    }
+  });
+
+  it('ignores all non-positive or non-finite required inputs without advancing warmup', () => {
+    const det = createRegimeDetector('test', createTestConfig());
+    det.restoreState({ mode: 'TREND' });
+    const before = { ...det.getState() };
+    for (const field of ['lastPrice', 'vwap', 'atr1m']) {
+      for (const value of [0, -1, NaN, Infinity, -Infinity, undefined, '100']) {
+        assert.equal(det.classify(createMarketState({ [field]: value })), 'TREND');
+        assert.deepEqual(det.getState(), before);
+      }
+    }
+    assert.equal(det.classify(createMarketState()), 'TREND');
+    assert.equal(det.classify(createMarketState()), 'TREND');
+    assert.equal(det.classify(createMarketState()), 'CAUTION');
+  });
+
+  it('discards old closure readings and confirmation counts on every restore', () => {
+    const det = createRegimeDetector('test', createTestConfig());
+    for (let i = 0; i < 10; i++) det.classify(trending());
+    for (let restart = 0; restart < 2; restart++) {
+      det.restoreState({ mode: 'TREND', trendConfirmationCount: 99 });
+      assert.equal(det.classify(createMarketState()), 'TREND');
+      assert.equal(det.classify(createMarketState()), 'TREND');
+      assert.equal(det.classify(createMarketState()), 'CAUTION');
+    }
+  });
+
+  it('holds CAUTION relaxation but allows immediate tightening from restored HARVEST', () => {
+    const det = createRegimeDetector('test', createTestConfig());
+    det.restoreState({ mode: 'CAUTION' });
+    const calm = () => createMarketState({ realizedVol: 0.1 });
+    assert.equal(det.classify(calm()), 'CAUTION');
+    assert.equal(det.classify(calm()), 'CAUTION');
+    assert.equal(det.classify(calm()), 'HARVEST');
+    for (const market of [createMarketState({ realizedVol: 0.9 }), trending()]) {
+      det.restoreState({ mode: 'HARVEST' });
+      assert.equal(det.classify(market), 'CAUTION');
+    }
+    det.restoreState({ mode: 'HARVEST' });
+    assert.equal(det.classify(createMarketState({ realizedVol: 2, lastPrice: 101000 })), 'TREND');
+  });
+
+  it('allows CAUTION to tighten to TREND and reset ends restore warmup', () => {
+    const det = createRegimeDetector('test', createTestConfig());
+    det.restoreState({ mode: 'CAUTION' });
+    for (let i = 0; i < 5; i++) det.classify(trending());
+    assert.equal(det.getMode(), 'TREND');
+    det.restoreState({ mode: 'TREND' });
+    det.reset();
+    det.forceTransition('TREND', 'test');
+    assert.equal(det.classify(createMarketState()), 'CAUTION');
   });
 });

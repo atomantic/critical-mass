@@ -24,7 +24,7 @@ after(async () => {
   isolated.cleanup();
 });
 
-const makeEngine = (pair, dryRun = true) => {
+const makeEngine = (pair, dryRun = true, adapterOverrides = {}) => {
   const eng = createRegimeEngine('coinbase', pair, { dryRun, productId: 'BTC-USDC' }, {});
   engines.push(eng);
   Object.assign(eng._getConfig(), {
@@ -38,6 +38,7 @@ const makeEngine = (pair, dryRun = true) => {
     getAccountBalance: async () => ({ available: 0, hold: 0 }),
     getOpenOrders: async () => [], getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
     getOrderFills: async () => [],
+    ...adapterOverrides,
   });
   eng._test.setRecoveryModule({ recoverState: async () => ({
     position: { totalAsset: 0, totalCostBasis: 0, avgCostBasis: 0, cycleBuys: 0 },
@@ -181,5 +182,56 @@ describe('durable engine episodes (#1297)', () => {
     assert.equal(pos.lastHourlySummaryEventAt, now);
     assert.deepEqual(pos.announcedCaps, []);
     assert.equal(pos.drawdownGuard.cycleBuysLimitReachedAt, null);
+  });
+});
+
+describe('restored TREND engine protection (#1298)', () => {
+  it('does not emit a regime change or place entries during restart warmup', async (t) => {
+    const pair = '__restart_trend__';
+    saveFundRegimeState('coinbase', pair, { position: { cyclesCompleted: 1 }, regime: {
+      mode: 'TREND', transitionCount: 7, trendConfirmationCount: 5, trendDirection: 'down',
+    } });
+    const changes = [];
+    const listener = event => { if (event.type === 'regime_change') changes.push(event); };
+    tradeEvents.on('trade', listener);
+    t.after(() => tradeEvents.off('trade', listener));
+    let placements = 0;
+    const eng = makeEngine(pair, false, {
+      getAccountBalance: async () => ({ available: 1000, hold: 0 }),
+    });
+    Object.assign(eng._getConfig(), { trendConfirmationPeriods: 5, trendScale: 0 });
+    assert.equal((await eng.start()).success, true);
+    t.mock.method(eng._test.getOrderExecutor(), 'placeEntryBid', async () => {
+      placements++;
+      return { success: false };
+    });
+    t.mock.method(eng._test.getOrderExecutor(), 'placeLadderOrders', async () => {
+      placements++;
+      return { placed: [], failed: [] };
+    });
+    await eng._test.updateMetrics(); // the no-ticker classification must be inert
+    assert.equal(eng._getMarketState().lastPrice, 0);
+    assert.equal(eng.getState().regime.mode, 'TREND');
+    for (let reading = 0; reading < 7; reading++) {
+      Object.assign(eng._getMarketState(), {
+        lastPrice: 100, bid: 99.99, ask: 100.01, vwap: 103, atr1m: 1,
+        realizedVol: 0.5, volBaseline: 0.5,
+      });
+      await eng._test.updateMetrics();
+      Object.assign(eng._test.getHealth(), { mode: 'ACTIVE', reason: null });
+      await eng._test.evaluateEntryTrigger();
+      await eng._test.evaluateLadderEntry();
+      assert.equal(eng.getState().regime.mode, 'TREND', `reading ${reading + 1}`);
+      assert.equal(placements, 0);
+      assert.equal(eng.getState().orders.total, 0);
+    }
+    assert.equal(changes.length, 0);
+    assert.equal(eng.getState().regime.transitionCount, 7);
+    // Positive control: the same funded, healthy fixture reaches placement
+    // when the regime guard is deliberately relaxed. No exchange I/O occurs.
+    eng.forceRegime('CAUTION', 'test positive control');
+    await eng._test.evaluateEntryTrigger();
+    assert.equal(placements, 1);
+    await eng.stop();
   });
 });
