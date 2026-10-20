@@ -9,6 +9,7 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [liveFills, setLiveFills] = useState([])
+  const [fillAggregates, setFillAggregates] = useState(null)
   const [presets, setPresets] = useState(null)
   const prevPriceRef = useRef(null)
   // Per-mount ownership fence for fills reads (#508). Initial load, the live
@@ -59,11 +60,14 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
     }
   }, [exchange])
 
-  // Fetch live fills from fill ledger. Reads go through the per-mount request
+  // Fetch bounded fill aggregates from the cached engine read view. Reads go through the per-mount request
   // owner so overlapping refreshes always commit in request order (#508).
   const fetchFills = useCallback(async () => {
-    const { owned, data } = await fillsOwner.read(`/api/${exchange}/regime/fills${pairQuery}`)
-    if (owned && data) setLiveFills(data.fills || [])
+    const { owned, data } = await fillsOwner.read(`/api/${exchange}/regime/fills/cycles${pairQuery}`)
+    if (owned && data) {
+      setFillAggregates(data)
+      setLiveFills(data.detailFills || [])
+    }
   }, [exchange, pairQuery, fillsOwner])
 
   // Refresh the Filled Orders table when a fill lands. fetchFills otherwise ran
@@ -121,5 +125,5 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
     load()
   }, [exchange, fetchStatus, fetchConfig, fetchFills, fetchCachedChartData, fetchPresets])
 
-  return { status, config, loading, error, liveFills, presets, isRunning, prevPriceRef, priceHistory, atrHistory, regimeHistory, setSocketStatus, fetchStatus, fetchConfig, fetchFills }
+  return { status, config, loading, error, liveFills, fillAggregates, presets, isRunning, prevPriceRef, priceHistory, atrHistory, regimeHistory, setSocketStatus, fetchStatus, fetchConfig, fetchFills }
 }

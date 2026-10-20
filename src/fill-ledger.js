@@ -3111,6 +3111,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     getFillCount,
     getAllFills,
     getFillPage: input => transactionsReadView.query(input),
+    getFillAggregates: () => transactionsReadView.aggregates(),
     getStats,
     getFillTimeStats,
     getFillsSince,

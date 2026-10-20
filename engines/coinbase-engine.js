@@ -462,11 +462,20 @@ ipcServer.onRequest('regime:fills', async (payload, exchange, pair) => {
     } catch (err) {
       return { running: false, success: false, error: err.message };
     }
-    if (query.paged) return { running: false, ...ledger.getFillPage(query) };
-    return { running: false, fills: ledger.getAllFills(), stats: ledger.getStats() };
+    return { running: false, ...ledger.getFillPage(query) };
   }
-  if (query.paged) return { running: true, ...engine.getFillPage(query) };
-  return { running: true, fills: engine.getFills(), stats: engine.getFillStats() };
+  return { running: true, ...engine.getFillPage(query) };
+});
+
+ipcServer.onRequest('regime:fills:cycles', async (_payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
+  if (engine) return { running: true, ...engine.getFillAggregates() };
+  try {
+    return { running: false, ...getStandaloneLedger(exchange, resolvedPair).getFillAggregates() };
+  } catch (err) {
+    return { running: false, success: false, error: err.message };
+  }
 });
 
 ipcServer.onRequest('regime:open-orders', async (payload, exchange, pair) => {

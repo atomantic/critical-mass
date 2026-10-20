@@ -62,7 +62,8 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
     ledgerCreations++;
     const { createTransactionsReadView } = require('../src/transactions-regime-query');
     const view = createTransactionsReadView(() => pageRows, () => `instance-${ledgerCreations}`);
-    return { load: () => {}, getAllFills: () => pageRows, getStats: () => ({}), getFillPage: query => view.query(query) };
+    return { load: () => {}, getAllFills: () => pageRows, getStats: () => ({}),
+      getFillPage: query => view.query(query), getFillAggregates: () => view.aggregates() };
   };
   const makeRunningReadView = require('../src/transactions-regime-query').createTransactionsReadView(() => pageRows, () => 'running');
   const dependencies = {
@@ -76,7 +77,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
     },
     '../src/regime-engine': { createRegimeEngine: (_, pair) => {
       calls.push('construct');
-      return { start: () => { calls.push('trade'); if (failFirst && pair === 'BTC-USD') return Promise.reject(new Error('fetch failed')); return fundStarted; }, stop: async () => { calls.push('cleanup'); }, getStatus: () => ({}), getFillPage: query => makeRunningReadView.query(query), getFills: () => pageRows, getFillStats: () => ({}) };
+      return { start: () => { calls.push('trade'); if (failFirst && pair === 'BTC-USD') return Promise.reject(new Error('fetch failed')); return fundStarted; }, stop: async () => { calls.push('cleanup'); }, getStatus: () => ({}), getFillPage: query => makeRunningReadView.query(query), getFillAggregates: () => makeRunningReadView.aggregates(), getFills: () => pageRows, getFillStats: () => ({}) };
     } },
     '../src/market-data-service': { stopMarketDataService: () => {}, fenceMarketDataService: async () => ({ drained: true }), startMarketDataService: async () => {} },
     '../src/chart-data-buffer': {},
@@ -268,9 +269,20 @@ describe('engine regime:fills paging', () => {
       assert.equal(h.getLedgerCreations(), stopped ? 1 : 0);
       const oversized = await read({ paged: true, pageSize: 1000 });
       assert.equal(oversized.fills.length, 100);
-      const legacy = await read({});
-      assert.equal(legacy.fills.length, 250);
-      assert.ok(legacy.stats);
+      const unpaged = await read({});
+      assert.equal(unpaged.statusCode, 400);
+      assert.equal(unpaged.error, 'paged=true required');
+      assert.equal(unpaged.fills, undefined);
+      const aggregateFrames = h.send('request', 'regime:fills:cycles');
+      await settle();
+      const aggregate = aggregateFrames[0].payload;
+      assert.equal(aggregate.running, !stopped);
+      assert.equal(aggregate.fillCount, 250);
+      assert.equal(aggregate.buyCount, 250);
+      assert.equal(aggregate.sellCount, 0);
+      assert.equal(aggregate.cycles[0].entryCount, 250);
+      assert.equal(aggregate.detailFills.length <= 500, true);
+      assert.equal(aggregate.revision, first.revision);
       h.ipc.stop();
     });
   }

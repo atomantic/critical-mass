@@ -128,7 +128,7 @@ test('60 price updates reuse history; fills, cycle selection and remount invalid
   const memoSource = source.slice(source.indexOf('  const filteredFills = useMemo'), source.indexOf('  // Derive the most recent cycle ID'));
   assert.ok(memoSource.includes('historicalFillGroups'));
   const reserveSource = source.match(/const reservesUsd = .*\n/)[0];
-  const run = new Function('useMemo', 'deriveRegimeFillGroups', 'searchRegimeFillGroups', 'liveFills', 'showAllCycles', 'fillSearchId', 'status', `${memoSource}\nconst { totalHoldback } = searchedFillGroups; const market = status.market; ${reserveSource} return { history: historicalFillGroups, searched: searchedFillGroups, reservesUsd };`);
+  const run = new Function('useMemo', 'deriveRegimeFillGroups', 'searchRegimeFillGroups', 'fillAggregates', 'liveFills', 'showAllCycles', 'fillSearchId', 'status', `${memoSource}\nconst { totalHoldback } = searchedFillGroups; const market = status.market; ${reserveSource} return { history: historicalFillGroups, searched: searchedFillGroups, reservesUsd };`);
   let calls = 0, cache = [], cursor = 0;
   const useMemo = (fn, deps) => {
     const slot = cursor++;
@@ -138,7 +138,7 @@ test('60 price updates reuse history; fills, cycle selection and remount invalid
   const fills = [buy('b', { sellOrderId: 's' }), sell('s'), sell('s2', { cycleId: 'cycle-2', bodyPnl: 10 })];
   const render = (price, snapshot = fills, all = true, search = '') => {
     cursor = 0;
-    return run(useMemo, (...args) => { calls++; return utils.deriveRegimeFillGroups(...args); }, utils.searchRegimeFillGroups, snapshot, all, search, { market: { lastPrice: price }, pendingOrders: [] });
+    return run(useMemo, (...args) => { calls++; return utils.deriveRegimeFillGroups(...args); }, utils.searchRegimeFillGroups, null, snapshot, all, search, { market: { lastPrice: price }, pendingOrders: [] });
   };
   const first = render(100);
   for (let i = 1; i <= 60; i++) {
