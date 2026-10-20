@@ -363,3 +363,38 @@ describe('log-stream-manager untrusted payloads', () => {
     assert.deepEqual(calls.map((call) => call[1].at(-1)), ['500', '100', '250', '1', '5000']);
   });
 });
+
+describe('createLogStreamRegistry stopAll', () => {
+  it('kills every child and empties the registry', () => {
+    const registry = createLogStreamRegistry();
+    const a = createFakeChild();
+    const b = createFakeChild();
+    registry.start('s1', 'p1', a);
+    registry.start('s2', 'p2', b);
+    registry.stopAll();
+    assert.equal(a.killed, true);
+    assert.equal(b.killed, true);
+    assert.equal(registry.get('s1'), undefined);
+    assert.equal([...registry.entries()].length, 0);
+  });
+
+  it('lets the real registry run through createGatewayShutdown to a clean exit', async () => {
+    const { createGatewayShutdown } = require('../src/gateway-shutdown');
+    const registry = createLogStreamRegistry();
+    const child = createFakeChild();
+    registry.start('s1', 'p1', child);
+    const calls = [];
+    const gateway = createGatewayShutdown({
+      cancelSchedules: () => calls.push('cancel'),
+      stopProducers: () => { calls.push('producers'); registry.stopAll(); },
+      stopNotifier: () => calls.push('notifier'),
+      disconnectIPC: () => calls.push('disconnect'),
+      closeListeners: () => calls.push('listeners'),
+      log: () => {},
+      exit: (code) => calls.push(`exit:${code}`),
+    });
+    await gateway.shutdown('SIGTERM');
+    assert.equal(child.killed, true);
+    assert.deepEqual(calls, ['cancel', 'producers', 'notifier', 'disconnect', 'listeners', 'exit:0']);
+  });
+});
