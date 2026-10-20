@@ -216,6 +216,7 @@ const REGIME_DEFAULTS = {
   maxRateLimits: 3,
   maxLatencyMs: 5000,
   safeRecoveryMs: 60000,
+  wsConnectGraceMs: 30000, // initial WS connect window before ws_disconnected trips SAFE
 
   // Invariants
   maxOpenOrders: 100,
