@@ -13,7 +13,8 @@ while publication holds the lock, then append to the newly published daily file;
 an append that times out, or is still waiting when UpDown stops for a backup or
 restart, is dropped and marks the scorecard journal unhealthy.
 Retention pruning skips a busy lock after a few seconds and retries daily; UpDown
-startup waits up to two minutes for publication before loading history.
+startup waits up to two minutes for publication before loading history; if a
+replay publishes for longer than that, restart UpDown once it completes.
 
 Each day is staged beside its destination, flushed, validated and renamed
 atomically. The original bytes are retained in a hidden `.backfill-*.backup`
