@@ -1,5 +1,8 @@
 import { useState, useEffect } from 'react'
 import ModalDialog from './ModalDialog'
+import { plural } from '../utils/plural.mjs'
+
+const EXCHANGE_DISPLAY_NAMES = { coinbase: 'Coinbase', gemini: 'Gemini', cryptocom: 'Crypto.com' }
 
 const EXCHANGE_FIELD_CONFIGS = {
   coinbase: {
@@ -35,7 +38,7 @@ const EXCHANGE_FIELD_CONFIGS = {
   },
 }
 
-function KeysConfig({ exchange, onSave }) {
+function KeysConfig({ exchange, funds = [], onSave }) {
   // Local edit state — what the operator is typing. The server never echoes back
   // secret values, so this always starts blank regardless of stored state.
   const [keys, setKeys] = useState({})
@@ -55,14 +58,19 @@ function KeysConfig({ exchange, onSave }) {
   const [statusAnnouncement, setStatusAnnouncement] = useState('')
   const [alertAnnouncement, setAlertAnnouncement] = useState('')
 
+  const exchangeName = EXCHANGE_DISPLAY_NAMES[exchange] || exchange
   const config = EXCHANGE_FIELD_CONFIGS[exchange] || {
-    title: `${exchange} API`,
+    title: `${exchangeName} API`,
     description: 'Configure your API credentials.',
     fields: [
       { key: 'apiKey', label: 'API Key', type: 'text' },
       { key: 'apiSecret', label: 'API Secret', type: 'password' },
     ],
   }
+
+  const fundPairs = funds.map(fund => fund.pair).filter(Boolean)
+  const runningFunds = funds.filter(fund => fund.regimeRunning).length
+  const pairList = fundPairs.join(', ')
 
   // `silent` skips the full-page loading state so a post-save/post-delete refetch
   // doesn't blank out the success message that was just set.
@@ -310,6 +318,9 @@ function KeysConfig({ exchange, onSave }) {
             </a>
           )}
         </div>
+        <p className="text-gray-400 text-sm mb-3">
+          These keys are shared by all {plural(funds.length, `${exchangeName} fund`)}: {pairList}.
+        </p>
         <p className="text-gray-400 text-xs mb-6">
           {configured && createdAt ? `Stored on ${new Date(createdAt).toLocaleString()}` : ' '}
         </p>
@@ -421,9 +432,11 @@ function KeysConfig({ exchange, onSave }) {
             describedBy="delete-keys-desc"
             dismissible={!deleting}
           >
-            <h3 id="delete-keys-title" className="text-lg font-semibold text-white mb-2">Delete API Keys?</h3>
+            <h3 id="delete-keys-title" className="text-lg font-semibold text-white mb-2">Delete {exchangeName} API keys?</h3>
             <p id="delete-keys-desc" className="text-gray-400 mb-4">
-              Are you sure you want to delete the {exchange} API keys? This action cannot be undone.
+              Every {exchangeName} fund ({pairList}) uses these keys. {runningFunds > 0 && `${plural(runningFunds, 'running fund')} will immediately fail to place, cancel or check orders until new keys are saved. `}
+              {exchange === 'gemini' && 'If this key has "Requires Heartbeat" enabled, Gemini cancels its open orders about 5 minutes after heartbeats stop. '}
+              Exchanges show the secret only once, so reconnecting usually means creating a new key.
             </p>
             <div className="flex flex-col-reverse sm:flex-row gap-3 sm:justify-end">
               <button
@@ -433,7 +446,7 @@ function KeysConfig({ exchange, onSave }) {
                 disabled={deleting}
                 className="min-h-11 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded-lg font-medium transition-colors"
               >
-                Cancel
+                Keep keys
               </button>
               <button
                 type="button"
@@ -441,7 +454,7 @@ function KeysConfig({ exchange, onSave }) {
                 disabled={deleting}
                 className="min-h-11 px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded-lg font-medium transition-colors"
               >
-                {deleting ? 'Deleting...' : 'Delete'}
+                {deleting ? 'Deleting…' : `Delete ${exchangeName} keys`}
               </button>
             </div>
           </ModalDialog>

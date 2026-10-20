@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import TradeHistory from '../src/components/updown/TradeHistory'
 import SentinelDashboard from '../src/components/sentinel/Dashboard'
 import AIProviders from '../src/components/ai/Providers'
+import KeysConfig from '../src/components/KeysConfig'
 vi.mock('../src/components/Toast', () => ({ useToast: () => ({ addToast: vi.fn() }) }))
 vi.mock('../src/hooks/useSentinelSocket', () => ({ default: () => ({ connected: true }) }))
 HTMLDialogElement.prototype.showModal = function () { this.open = true; this.querySelector('[autofocus]')?.focus() }
@@ -116,4 +117,30 @@ it('clearing alerts retains rows after a failed write', async () => {
   expect(screen.getByText('News')).toBeTruthy()
   expect(screen.getByRole('dialog')).toBeTruthy()
   expect(writes).toHaveLength(1)
+})
+
+it('shared API key deletion names every fund and the running-fund impact', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ configured: true }) })))
+  const funds = [
+    { pair: 'BTCUSD', regimeRunning: true },
+    { pair: 'ETHUSD', regimeRunning: false },
+  ]
+  render(<KeysConfig exchange="gemini" funds={funds} />)
+  expect(await screen.findByText('These keys are shared by all 2 Gemini funds: BTCUSD, ETHUSD.')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Delete Keys' }))
+  expect(screen.getByRole('heading', { name: 'Delete Gemini API keys?' })).toBeTruthy()
+  expect(screen.getByText(/Every Gemini fund \(BTCUSD, ETHUSD\) uses these keys\. 1 running fund will immediately fail/)).toBeTruthy()
+  expect(screen.getByText(/Requires Heartbeat.*cancels its open orders about 5 minutes/)).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Keep keys' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Delete Gemini keys' })).toBeTruthy()
+})
+
+it.each([['coinbase', 'Coinbase'], ['cryptocom', 'Crypto.com']])('%s uses its display name and omits Gemini heartbeat guidance', async (exchange, name) => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ configured: true }) })))
+  render(<KeysConfig exchange={exchange} funds={[{ pair: 'BTCUSD', regimeRunning: false }]} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Delete Keys' }))
+  expect(screen.getByRole('heading', { name: `Delete ${name} API keys?` })).toBeTruthy()
+  expect(screen.getByText(/Every .* fund \(BTCUSD\) uses these keys/)).toBeTruthy()
+  expect(screen.getByRole('dialog').textContent).not.toMatch(/Requires Heartbeat/)
+  expect(screen.getByRole('button', { name: `Delete ${name} keys` })).toBeTruthy()
 })
