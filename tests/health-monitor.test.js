@@ -429,7 +429,7 @@ describe('Data staleness detection (checkHealth)', () => {
   });
 
   it('aggregates multiple issues into a single SAFE mode reason', () => {
-    const config = createTestConfig({ maxRestErrors: 0, maxLatencyMs: 1 });
+    const config = createTestConfig({ maxRestErrors: 0, maxLatencyMs: 1, wsConnectGraceMs: 0 });
     const monitor = createHealthMonitor('test', config);
     // ws is disconnected by default (wsConnected starts false)
     monitor.recordRestError(); // 1 > 0
@@ -823,5 +823,59 @@ describe('instrumentAdapterForHealth + Gemini REST throttle (issue #680)', () =>
       `expected avgLatencyMs < 250 (429 backoff wait excluded), got ${state.healthChecks.avgLatencyMs}`
     );
     assert.equal(monitor.checkHealth().mode, 'ACTIVE');
+  });
+});
+
+// ============================================================================
+// WebSocket connect grace (issue #1235)
+// ============================================================================
+describe('WebSocket connect grace', () => {
+  afterEach(() => mock.timers.reset());
+
+  it('stays ACTIVE before the first connect while inside the grace window', () => {
+    mock.timers.enable({ apis: ['Date'] });
+    const onSafeMode = mock.fn();
+    const monitor = createHealthMonitor('test', createTestConfig({ wsConnectGraceMs: 30000 }), { onSafeMode });
+    mock.timers.tick(5000);
+    assert.equal(monitor.checkHealth().mode, 'ACTIVE');
+    assert.equal(onSafeMode.mock.callCount(), 0);
+  });
+
+  it('enters SAFE with ws_disconnected once the grace elapses without a connect', () => {
+    mock.timers.enable({ apis: ['Date'] });
+    const monitor = createHealthMonitor('test', createTestConfig({ wsConnectGraceMs: 30000 }));
+    mock.timers.tick(31000);
+    const state = monitor.checkHealth();
+    assert.equal(state.mode, 'SAFE');
+    assert.ok(state.reason.includes('ws_disconnected'));
+  });
+
+  it('trips immediately on a drop after the feed has connected', () => {
+    mock.timers.enable({ apis: ['Date'] });
+    const monitor = createHealthMonitor('test', createTestConfig({ wsConnectGraceMs: 30000 }));
+    monitor.recordWsStatus(true);
+    monitor.recordWsStatus(false);
+    assert.equal(monitor.getState().mode, 'SAFE');
+  });
+
+  it('does not re-grant grace after a connect then disconnect during checkHealth', () => {
+    mock.timers.enable({ apis: ['Date'] });
+    const monitor = createHealthMonitor('test', createTestConfig({ wsConnectGraceMs: 30000, safeRecoveryMs: 0 }));
+    monitor.recordWsStatus(true);
+    monitor.getState().healthChecks.wsConnected = false;
+    assert.ok(monitor.checkHealth().reason.includes('ws_disconnected'));
+  });
+
+  it('a restart-style boot (tick before feed connects) never calls onSafeMode', () => {
+    mock.timers.enable({ apis: ['Date'] });
+    const onSafeMode = mock.fn();
+    const monitor = createHealthMonitor('test', createTestConfig(), { onSafeMode });
+    mock.timers.tick(300); // first updateMetrics tick lands before the feed connects
+    monitor.checkHealth();
+    mock.timers.tick(400);
+    monitor.recordWsStatus(true);
+    monitor.checkHealth();
+    assert.equal(onSafeMode.mock.callCount(), 0);
+    assert.equal(monitor.getState().mode, 'ACTIVE');
   });
 });

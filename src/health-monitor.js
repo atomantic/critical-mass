@@ -29,6 +29,14 @@ const MAX_CONSECUTIVE_PERSISTENCE_FAILURES = 3;
 const PERSISTENCE_FAILED_PREFIX = 'persistence_failed:';
 
 /**
+ * Default time a freshly created monitor waits for its first WebSocket connect
+ * before "not connected yet" counts as "feed lost". Engine boots, deploys and
+ * the hourly backup resume all build a new monitor whose first health tick
+ * lands before the feed reconnects (issue #1235).
+ */
+const DEFAULT_WS_CONNECT_GRACE_MS = 30000;
+
+/**
  * True when EVERY reason in a SAFE-mode reason string is a persistence
  * failure — the disk is broken but the exchange connection is not. Callers use
  * this to keep resting orders in place: cancelling live orders because a write
@@ -91,6 +99,12 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
 
   let lastHealthyTimestamp = Date.now();
 
+  /** Monitor creation time — start of the initial WebSocket connect grace (issue #1235) */
+  const monitorStartedAt = Date.now();
+
+  /** True once the feed has connected at least once; ends the connect grace */
+  let wsEverConnected = false;
+
   /** @type {number} Consecutive failed state persists (issue #532) */
   let persistenceFailures = 0;
 
@@ -102,6 +116,7 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
    */
   const recordWsStatus = (connected) => {
     state.healthChecks.wsConnected = connected;
+    if (connected) wsEverConnected = true;
 
     if (!connected && state.mode === 'ACTIVE') {
       enterSafeMode('websocket_disconnected');
@@ -364,8 +379,12 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
       issues.push(`high_latency:${state.healthChecks.avgLatencyMs}ms`);
     }
 
-    // WebSocket disconnected
-    if (!state.healthChecks.wsConnected) {
+    // WebSocket disconnected. A feed that has never connected is given
+    // wsConnectGraceMs to come up before it counts as lost (issue #1235); once
+    // it has connected, any drop trips immediately.
+    const wsGraceMs = config.wsConnectGraceMs ?? DEFAULT_WS_CONNECT_GRACE_MS;
+    const inWsConnectGrace = !wsEverConnected && now - monitorStartedAt < wsGraceMs;
+    if (!state.healthChecks.wsConnected && !inWsConnectGrace) {
       issues.push('ws_disconnected');
     }
 

@@ -116,8 +116,7 @@ const gatewayShutdown = createGatewayShutdown({
   stopProducers: () => {
     updownService.stop();
     sentinelService.stop();
-    for (const [, entry] of activeLogStreams) entry.process?.kill();
-    activeLogStreams.clear();
+    activeLogStreams.stopAll();
   },
   stopNotifier: () => notifier.stop(),
   disconnectIPC: () => {

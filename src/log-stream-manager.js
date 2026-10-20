@@ -48,7 +48,13 @@ const createLogStreamRegistry = () => {
   const entries = () => streams.entries();
   const clear = () => streams.clear();
 
-  return { start, stop, end, get, entries, clear };
+  // Gateway shutdown: kill every child, then drop them all.
+  const stopAll = () => {
+    for (const entry of streams.values()) entry.process?.kill();
+    streams.clear();
+  };
+
+  return { start, stop, end, get, entries, clear, stopAll };
 };
 
 /**

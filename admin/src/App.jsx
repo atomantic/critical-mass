@@ -332,7 +332,9 @@ function AppContent() {
       const res = await fetch(`/api/${currentExchange}/summary${pairQuery()}`, { signal: controller.signal })
       if (!isCurrent()) return
       if (!res.ok) {
-        setError('Failed to fetch data')
+        const body = await res.json().catch(() => ({}))
+        if (!isCurrent()) return
+        setError(`Could not load ${currentExchange}/${currentPair}: ${body.error || `HTTP ${res.status}`}`)
         setLoading(false)
         return
       }
@@ -345,7 +347,7 @@ function AppContent() {
       fetchExchanges()
     } catch (err) {
       if (err?.name !== 'AbortError' && isCurrent()) {
-        setError('Failed to fetch data')
+        setError(`Could not reach the gateway to load ${currentExchange}/${currentPair}.`)
         setLoading(false)
       }
     } finally {
@@ -653,7 +655,7 @@ function AppContent() {
                   to="/"
                   className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
-                  DCA
+                  Funds
                 </Link>
                 <Link
                   to="/notifications"
@@ -689,7 +691,7 @@ function AppContent() {
                   to="/ai"
                   className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
-                  AI
+                  AI Providers
                 </Link>
                 <Link
                   to="/gateway"
@@ -708,7 +710,7 @@ function AppContent() {
                   onClick={() => setMobileMenuOpen(false)}
                   className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
                 >
-                  DCA
+                  Funds
                 </Link>
                 <Link
                   to="/notifications"
@@ -1029,8 +1031,15 @@ function AppContent() {
         {/* Main Content */}
         <main id="main-content" tabIndex={-1} className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6 focus:outline-hidden">
           {error && (
-            <div className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200">
-              Error: {error}
+            <div role="alert" className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200 flex items-center justify-between gap-4">
+              <span>{error}</span>
+              <button
+                type="button"
+                className="px-3 py-1 text-sm bg-red-800 hover:bg-red-700 rounded"
+                onClick={fetchData}
+              >
+                Retry
+              </button>
             </div>
           )}
 
