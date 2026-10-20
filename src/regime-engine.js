@@ -1708,6 +1708,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const saveDryRunState = () => {
     if (!isDryRun) return;
 
+    persistEpisodeState();
+
     // Persist macro regime state into position for recovery
     if (macroRegime) {
       positionState.macroRegime = macroRegime.getState();
@@ -1738,6 +1740,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Restore position state
     if (savedState.position) {
       positionState = { ...createInitialPositionState(), ...savedState.position };
+      restoreEpisodeState(positionState);
     }
 
     // Restore TP optimizer state
@@ -1881,6 +1884,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const saveLiveState = () => {
     if (isDryRun) return;
 
+    persistEpisodeState();
+
     // Persist macro regime state into position for recovery
     if (macroRegime) {
       positionState.macroRegime = macroRegime.getState();
@@ -2003,6 +2008,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     const savedState = loadFundRegimeState(exchange, pair);
     const pos = savedState.position;
+    // Episode markers matter even for an otherwise empty fund.
+    restoreEpisodeState(pos);
     // Check if state has any meaningful data (not just default initial state)
     // Even with totalAsset=0, there may be satellites, TP orders, or historical data to restore
     const hasMeaningfulState = pos && (
@@ -3354,6 +3361,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       restoreStartupDryRunState();
     }
 
+    // Hydrate before the feed connects or any entry evaluation can run.
+    hydrateDrawdownState();
+
     // Initialize APY tracking if not already set (preserves existing tracking from saved state)
     initializeApyTracking();
 
@@ -3503,6 +3513,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
       // Save state before stopping
       if (isDryRun) {
+        persistEpisodeState();
         dryRunState.forceSave(exchange, {
           isDryRun: true,
           executor: orderExecutor.exportState(),
@@ -6328,14 +6339,32 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Seed the risk manager's drawdown tracker from the persisted snapshot once
+   * Seed the risk manager's trackers from the persisted snapshot once
    * per engine instance, so a restart keeps an active pause and the peak.
    */
   let drawdownStateHydrated = false;
-  const hydrateDrawdownState = () => {
+  const hydrateDrawdownState = (saved = positionState.drawdownGuard) => {
     if (drawdownStateHydrated) return;
     drawdownStateHydrated = true;
-    riskManager.restoreState(positionState.drawdownGuard);
+    riskManager.restoreState(saved);
+  };
+
+  /** Restore durable episode markers once during state loading, before recovery saves. */
+  const restoreEpisodeState = (saved) => {
+    if (!saved) return;
+    hydrateDrawdownState(saved.drawdownGuard);
+    announcedCaps = new Set(Array.isArray(saved.announcedCaps)
+      ? saved.announcedCaps.filter(key => Object.hasOwn(CAP_ALERT_LABELS, key)) : []);
+    if (typeof saved.lastHourlySummaryEventAt === 'number' && Number.isFinite(saved.lastHourlySummaryEventAt)) {
+      lastHourlySummaryEventAt = saved.lastHourlySummaryEventAt;
+    }
+  };
+
+  /** Mirror all restart-sensitive episodes on every save, including shutdown. */
+  const persistEpisodeState = () => {
+    persistDrawdownState();
+    positionState.announcedCaps = [...announcedCaps];
+    positionState.lastHourlySummaryEventAt = lastHourlySummaryEventAt;
   };
 
   /** Mirror the tracker into positionState (persisted with regime-state.json). */
@@ -9040,6 +9069,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // it survives the positionState wipe and the next metrics tick writes
       // the stale peak/pause right back into the fresh state (issue #742).
       riskManager.resetDrawdown();
+      riskManager.resetCycleTracking();
+      announcedCaps.clear();
+      lastHourlySummaryEventAt = Date.now();
       // Clear saved state file
       dryRunState.clearState(exchange, pair);
       return true;
