@@ -1,7 +1,18 @@
 import React from 'react'
 import { ConfigTooltip, REGIME_TOOLTIPS } from './RegimeHelp'
 
-export default function EntryStatusCard({ healthMode, regimeMode, celestial, macroEnabled, maxCelestialBodies, macro }) {
+export default function EntryStatusCard({ healthMode, regimeMode, celestial, macroEnabled, maxCelestialBodies, macro, trendScale }) {
+  const isTrend = regimeMode === 'TREND'
+  const scaleNum = Number(trendScale)
+  const trendBuys = isTrend && !Number.isNaN(scaleNum) && scaleNum > 0
+
+  const regimeDotClass = isTrend
+    ? (trendBuys ? 'bg-yellow-400' : 'bg-red-400')
+    : 'bg-green-400'
+  const regimeStatusText = isTrend
+    ? (trendBuys ? `Reduced (${trendScale}×)` : 'Blocked')
+    : 'Allowed'
+
   return (
     <>
       <div className="col-span-1">
@@ -15,9 +26,9 @@ export default function EntryStatusCard({ healthMode, regimeMode, celestial, mac
               <span className="text-xs">{healthMode === 'ACTIVE' ? 'Ready' : healthMode}</span>
             </div>
             <div className="flex items-center gap-1">
-              <span className={`w-1.5 h-1.5 rounded-full ${regimeMode === 'TREND' ? 'bg-red-400' : 'bg-green-400'}`} />
+              <span className={`w-1.5 h-1.5 rounded-full ${regimeDotClass}`} />
               <span className="text-xs text-gray-400">
-                {regimeMode === 'TREND' ? 'Blocked' : 'Allowed'}
+                {regimeStatusText}
               </span>
             </div>
             <div className="flex items-center gap-1">

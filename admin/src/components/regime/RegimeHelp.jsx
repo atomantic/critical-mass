@@ -9,7 +9,7 @@ export const CONFIG_TOOLTIPS = {
   tpRange: 'Take-profit target range. Sell orders are placed within this band above cost basis. "Auto" adjusts based on volatility',
   entryOffset: 'Basis points below mid-price for limit buy entry. Higher values target a deeper discount but may fill less often',
   cautionScale: 'Scales down order size during high-volatility regimes. Lower values = more cautious sizing when markets are volatile',
-  trendScale: 'Adjusts buy aggression based on trend strength. Lower values reduce buying into strong downtrends',
+  trendScale: 'Size multiplier for buys while the micro regime is TREND (strong up or down moves). 0 = no buys in TREND.',
   maxCycleBuys: 'Maximum buy orders in a single accumulation cycle before the bot waits for corresponding sells to complete',
 }
 
@@ -21,7 +21,7 @@ export const REGIME_TOOLTIPS = {
       <div className="mb-1">Short-term market state derived from 1m ATR, realized volatility vs baseline, and VWAP distance.</div>
       <div><span className="text-green-400">HARVEST</span>: calm / mean-reverting → full sizing (1.0x). The <em>most aggressive</em> buy/sell cycling mode — &quot;harvest&quot; refers to harvesting micro cycles, NOT selling out.</div>
       <div><span className="text-yellow-400">CAUTION</span>: volatility expanding → sizing scaled by <code>cautionScale</code>.</div>
-      <div><span className="text-red-400">TREND</span>: strong directional move → entries blocked unless <code>trendScale &gt; 0</code>.</div>
+      <div><span className="text-red-400">TREND</span>: strong directional move → entries blocked unless <code>Trend Scale &gt; 0</code>.</div>
     </>
   ),
   macro: (
@@ -39,7 +39,7 @@ export const REGIME_TOOLTIPS = {
       <div className="font-semibold text-gray-200 mb-1">Entry Status</div>
       <div>Gates that must pass for the bot to place a buy order:</div>
       <div className="mt-1">• <strong>Health</strong>: Ready / Safe / Paused / Stopped</div>
-      <div>• <strong>Regime</strong>: Allowed unless micro regime is TREND</div>
+      <div>• <strong>Regime</strong>: in TREND, buys continue at Trend Scale × base size; a Trend Scale of 0 blocks them</div>
       <div>• <strong>Celestial bodies</strong>: open-position capacity by tier (Sun / Planet / Asteroid)</div>
       <div>• <strong>Macro</strong>: long-term trend indicator (informational unless macro multipliers are non-zero)</div>
     </>
