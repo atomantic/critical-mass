@@ -5,8 +5,8 @@ import { useState, useEffect, useRef } from 'react'
  *
  * The modal lets the operator pick an exchange that has API keys configured,
  * type a pair, set an initial allocation, and choose dry-run mode. The new
- * fund is created via POST /api/:exchange/funds and starts disabled — the
- * operator must explicitly enable + start it from the fund's dashboard.
+ * fund is created via POST /api/:exchange/funds and remains stopped until the
+ * operator presses Start from the fund header.
  */
 
 // Per-exchange pair format conventions and defaults
@@ -212,7 +212,7 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
       >
         <h2 id="add-fund-title" className="text-lg font-bold text-white mb-4">Add Fund</h2>
         <p id="add-fund-description" className="text-sm text-gray-400 mb-4">
-          Create a new trading fund on an existing exchange. The fund starts <span className="text-yellow-400">disabled</span> and in <span className="text-purple-400">dry-run mode</span> by default — enable it manually from the fund dashboard once you've reviewed the config.
+          Create a new trading fund on an existing exchange. The fund is created stopped, and in <span className="text-purple-400">dry-run mode</span> unless you untick the box below. Nothing trades until you press Start in the fund header, so review its config first.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">

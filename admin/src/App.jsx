@@ -968,7 +968,7 @@ function AppContent() {
             addToast({
               type: 'success',
               title: `Fund created: ${exchange}/${pair}`,
-              message: 'Review the regime config and enable the fund when ready.',
+              message: 'Review the config, then press Start in the fund header to begin trading.',
             })
           }}
         />

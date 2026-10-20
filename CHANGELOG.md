@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-1293] Clarify fund creation and Enabled switch copy** — Explain that new funds remain stopped until Start is pressed, and that Enabled only controls the Ready badge.
 - **[issue-1291] Shared API key deletion explains its exchange-wide impact** — The keys page lists every fund sharing the exchange credentials, and confirmation names affected pairs, running funds and Gemini heartbeat cancellation.
 - **[issue-1298] Preserve restored regime protection during warmup** — Ignore invalid startup readings and require fresh momentum history before relaxing a restored regime.
 - **[issue-1221] Confirm destructive history and Sentinel actions** — Deleting trades, clearing all alerts and removing feeds now require confirmation, with Cancel focused and failed writes preserving the displayed data.
