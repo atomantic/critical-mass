@@ -1,6 +1,9 @@
 // @ts-check
 /**
- * Is a fund's engine live right now?
+ * Is a fund's engine (or the gateway) live right now?
+ *
+ * The CLI's DCA commands use checkGatewayStopped below for the same reason the
+ * repair scripts use checkEngineStopped: a live writer owns the fund's files.
  *
  * Operator repair scripts must never write `fill-ledger.json` or
  * `regime-state.json` under a running engine — it holds both in memory and
