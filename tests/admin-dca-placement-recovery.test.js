@@ -64,6 +64,7 @@ function view(name, fetchImpl, extra = {}) {
     './ModalDialog': () => null,
     '../utils/api': { pairQuery: pair => `?pair=${encodeURIComponent(pair)}` },
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
+    '../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
     '../utils/intervals.mjs': { getIntervalMs: () => 86400000 },
     '../utils/requestOwner.mjs': { createRequestOwner: () => createRequestOwner({ fetchImpl }) },
     '../utils/dashboardAction.mjs': {},

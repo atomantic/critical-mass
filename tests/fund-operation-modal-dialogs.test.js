@@ -143,9 +143,9 @@ describe('RegimeActionModals.jsx body/regime dialogs use ModalDialog (issue #434
 
   const confirmations = [
     { name: 'Cancel Ladder', titleId: 'cancel-ladder-title', descId: 'cancel-ladder-description', dismissible: '!cancellingLadder', cancelDisabled: 'cancellingLadder', dismissLabel: 'Keep ladder' },
-    { name: 'Collapse All', titleId: 'collapse-all-title', descId: 'collapse-all-description', dismissible: '!collapsingAll', cancelDisabled: 'collapsingAll' },
+    { name: 'Collapse All', titleId: 'collapse-all-title', descId: 'collapse-all-description', dismissible: '!collapsingAll', cancelDisabled: 'collapsingAll', dismissLabel: 'Keep bodies' },
     { name: 'Reset Cycle', titleId: 'reset-cycle-title', descId: 'reset-cycle-description', dismissible: '!resettingCycle', cancelDisabled: 'resettingCycle' },
-    { name: 'Roll Up', titleId: 'roll-up-title', descId: 'roll-up-description', dismissible: '!rollingUp', cancelDisabled: 'rollingUp' },
+    { name: 'Roll Up', titleId: 'roll-up-title', descId: 'roll-up-description', dismissible: '!rollingUp', cancelDisabled: 'rollingUp', dismissLabel: 'Keep separate' },
     { name: 'DCA conversion', titleId: 'convert-dca-title', descId: 'convert-dca-description', dismissible: '!converting', cancelDisabled: 'converting' },
     { name: 'placement-intent reconcile', titleId: 'reconcile-intent-title', descId: 'reconcile-intent-description', dismissible: '!reconcilingIntent', cancelDisabled: 'reconcilingIntent' },
   ]

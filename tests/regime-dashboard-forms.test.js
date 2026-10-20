@@ -140,6 +140,8 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
     './regime/RegimeHelp': { CONFIG_TOOLTIPS: {}, ConfigTooltip: () => null },
     './Toast': { useToast: () => ({ addToast: toast => toasts.push(toast) }) },
     '../App': { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' },
+    '../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
+    '../../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../utils/api': { pairQuery: pair => `?pair=${encodeURIComponent(pair)}` },
@@ -341,7 +343,7 @@ describe('RegimeDashboard expanded operational forms', () => {
       const ui = {
         net, dashboard,
         control: text => labeledControl(dashboard, dashboard.render(), text),
-        place: () => dashboard.elements(dashboard.render()).find(n => n.type === 'button' && typeof n.props.children === 'string' && /^Place \d+ Orders$|^Placing/.test(n.props.children)),
+        place: () => dashboard.elements(dashboard.render()).find(n => n.type === 'button' && typeof n.props.children === 'string' && /^Place \d+ Orders?$|^Placing/.test(n.props.children)),
         button: text => dashboard.elements(dashboard.render()).find(n => n.type === 'button' && n.props.children === text),
       }
       return ui
@@ -403,7 +405,7 @@ describe('RegimeDashboard expanded operational forms', () => {
       assert.equal(ui.place(), undefined, 'stale preview must not re-enable placement')
       save2.resolve(reply({ success: true, persisted: true, applied: true }))
       await tick()
-      assert.equal(ui.place().props.children, 'Place 1 Orders')
+      assert.equal(ui.place().props.children, 'Place 1 Order')
     })
 
     it('never posts a rebuild while a save is pending, even on rapid repeated invocations', async () => {
