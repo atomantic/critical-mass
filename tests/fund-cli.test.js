@@ -103,4 +103,23 @@ describe('fund repair apply preparation', () => {
     assert.match(result.stderr, /Usage:/);
     assert.deepEqual(backups(root), []);
   });
+
+  for (const name of ['adopt-untracked-asset', 'backfill-missing-fills']) {
+    it(`${name} invokes its entrypoint and guards the positional fund`, () => {
+      const root = fixture();
+      flag(root, true);
+      const result = run(root, ['gemini', 'ETHUSD', '--apply'], require.resolve(`../scripts/${name}`));
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /REFUSING.*gemini\/ETHUSD.*RUNNING/);
+      assert.deepEqual(backups(root), []);
+    });
+
+    it(`${name} reports usage for missing positional arguments`, () => {
+      const result = run(fixture(), [], require.resolve(`../scripts/${name}`));
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Usage:/);
+      assert.doesNotMatch(result.stderr, /TypeError/);
+    });
+  }
+
 });
