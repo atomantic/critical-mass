@@ -70,6 +70,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
     path,
     '../src/logger': { createContextLogger: () => logger },
     '../src/config-utils': {
+      initializeConfigBase: () => { calls.push('base-config'); },
       getRegimeConfig: () => ({}),
       getFundConfig: () => { calls.push('fund-config'); return {}; },
       getFundsForExchange: () => { calls.push('funds'); return failFirst ? ['BTC-USD', 'ETH-USD'] : ['BTC-USD']; },
@@ -86,7 +87,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
     '../src/manual-trade-import': {},
     '../src/unaccounted-fills-jobs': require('../src/unaccounted-fills-jobs'),
     '../src/ipc/ipc-server': { createIPCServer: () => ipc },
-    '../src/ipc/socket-io-proxy': { createSocketIOProxy: () => ({}), forwardTradeEvents: () => {} },
+    '../src/ipc/realtime-proxy': { createRealtimeProxy: () => ({}), forwardTradeEvents: () => {} },
     '../src/shared-utils': {
       fundKey: (name, pair) => `${name}::${pair}`,
       fundLabel: (name, pair) => `${name}/${pair}`,
@@ -221,7 +222,7 @@ describe('IPC bind ownership and exchange startup', () => {
       assert.deepEqual(h.calls, []);
       h.servers[0].emit('listening');
       await settle();
-      assert.deepEqual(h.calls, ['restore', 'namespace-migration', 'migration', 'funds', 'running-flag', 'state', 'fund-config', 'adapter', 'construct', 'trade']);
+      assert.deepEqual(h.calls, ['restore', 'base-config', 'namespace-migration', 'migration', 'funds', 'running-flag', 'state', 'fund-config', 'adapter', 'construct', 'trade']);
       let mutations = 0;
       h.ipc.onRequest('mutate', async () => { mutations++; return { success: true }; });
       h.ipc.onRequest('config_update', async () => { mutations++; });

@@ -1,0 +1,1 @@
+- **[issue-1190] Restrict dev bootstrap trust to loopback hosts** — Loopback enrollment now requires the effective forwarded or direct host to be a loopback hostname, and the Vite dev server accepts only localhost, loopback IPs, and Tailscale MagicDNS hosts.
