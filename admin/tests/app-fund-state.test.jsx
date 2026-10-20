@@ -1,5 +1,5 @@
 import React from 'react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from '../src/App'
 import ConfigEditor from '../src/components/ConfigEditor'
@@ -158,4 +158,37 @@ it('discards a dirty editor draft while configuration is unavailable and adopts 
   page.rerender(<ConfigEditor {...props} config={config(222)} />)
   await screen.findByDisplayValue('222')
   expect(screen.queryByDisplayValue('999')).toBeNull()
+})
+
+for (const lifecycle of ['draining', 'closed']) it(`clears the previous fund's ${lifecycle} badge and lifecycle actions while B status is pending`, async () => {
+  read.mockImplementation(url => url.includes('/summary')
+    ? response({ config: config(111, true) })
+    : response(status(lifecycle === 'draining', true, lifecycle)))
+  mount()
+  await screen.findByDisplayValue('111')
+  await screen.findByText(lifecycle.toUpperCase(), { exact: true })
+  const pending = deferred()
+  read.mockImplementation(url => url.includes('/summary') ? response({ config: config(222) }) : pending.promise)
+  await switchFund('gemini')
+  await screen.findByDisplayValue('222')
+  expectUnknownStatus()
+})
+
+it('invalidates known status on a failed poll for the same fund and recovers through Retry', async () => {
+  const intervals = vi.spyOn(globalThis, 'setInterval')
+  try {
+    mount()
+    await screen.findByDisplayValue('111')
+    await screen.findByRole('button', { name: 'Stop', exact: true })
+    read.mockImplementation(url => url.includes('/regime/status') ? response({}, false) : response({}))
+    const poll = intervals.mock.calls.find(([, delay]) => delay === 5000)[0]
+    await act(async () => poll())
+    await screen.findByRole('button', { name: 'Retry engine status' })
+    expectUnknownStatus()
+    read.mockImplementation(() => response(status(false)))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry engine status' }))
+    await screen.findByRole('button', { name: 'Start', exact: true })
+  } finally {
+    intervals.mockRestore()
+  }
 })

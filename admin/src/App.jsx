@@ -1056,7 +1056,7 @@ function AppContent() {
               <button type="button" onClick={fetchRegimeStatus} className="ml-3 underline">Retry engine status</button>
             </div>
           )}
-          {error && !isActiveTab('/config') && (
+          {error && (!isActiveTab('/config') || summary?.config) && (
             <div role="alert" className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200 flex items-center justify-between gap-4">
               <span>{error}</span>
               <button
