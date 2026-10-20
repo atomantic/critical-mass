@@ -5,6 +5,7 @@
  * between files resumes without applying a dollar delta twice.
  */
 const { roundUSDC } = require('./volatility-utils');
+const { isBodyOwnedFill } = require('../shared/cycle-pairing.mjs');
 const { syncPositionState } = require('./celestial-hierarchy');
 
 const pendingError = (reason) => Object.assign(new Error(`Buy economic correction pending: ${reason}`), {
@@ -20,7 +21,7 @@ const planBuyCorrection = (allFills, orderId, costDelta, id) => {
     const order = orders.get(fill.orderId) || { size: 0, cost: 0, consumedBy: {}, owned: false, legacy: false };
     order.size += fill.size;
     order.cost += fill.quoteAmount + fill.netFee;
-    order.owned ||= Boolean(fill.isBodyOwned || fill.isSatellite || fill.bodyId);
+    order.owned ||= isBodyOwnedFill(fill);
     order.legacy ||= !fill.consumedBy && Number(fill.consumedCostFraction) > 0;
     for (const [sell, qty] of Object.entries(fill.consumedBy || {})) {
       order.consumedBy[sell] = Math.max(order.consumedBy[sell] || 0, qty);

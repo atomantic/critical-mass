@@ -60,6 +60,14 @@ export const quoteOf = (fill) => fill.quoteAmount || (fill.size || 0) * (fill.pr
 export const feeOf = (fill) => fill.netFee ?? fill.fee ?? 0;
 
 /**
+ * Whether a fill belongs to a celestial body or satellite rather than the
+ * legacy core position. The one ownership rule every view shares.
+ * @param {any} fill
+ * @returns {boolean}
+ */
+export const isBodyOwnedFill = (fill) => Boolean(fill.isBodyOwned || fill.isSatellite || fill.bodyId);
+
+/**
  * Cost of a buy fill (quote + fee).
  * @param {any} fill
  * @returns {number}

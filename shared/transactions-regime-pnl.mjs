@@ -1,4 +1,4 @@
-import { buyFillCost, feeOf, quoteOf } from './cycle-pairing.mjs';
+import { buyFillCost, feeOf, quoteOf, isBodyOwnedFill } from './cycle-pairing.mjs';
 
 // Pure P&L aggregation for the Transactions (Regime) view.
 //
@@ -18,8 +18,6 @@ import { buyFillCost, feeOf, quoteOf } from './cycle-pairing.mjs';
 //
 // Exported as a standalone pure function (no React) so it can be unit
 // tested directly.
-const isBodyFill = (f) => Boolean(f.isBodyOwned || f.isSatellite || f.bodyId);
-
 export function computeFillsWithPnL(fills) {
   // Use ALL fills for P&L calculation (not just the currently-filtered
   // subset) so the running-avg fallback and orderId aggregation are correct.
@@ -73,7 +71,7 @@ export function computeFillsWithPnL(fills) {
   for (let i = 0; i < chronological.length; i++) {
     const fill = chronological[i]
     if (fill.side === 'buy') {
-      const isBody = isBodyFill(fill)
+      const isBody = isBodyOwnedFill(fill)
       if (!isBody) {
         totalBtc += fill.size
         totalCost += buyFillCost(fill)
@@ -82,7 +80,7 @@ export function computeFillsWithPnL(fills) {
       continue
     }
     // Sell fill
-    const isBody = isBodyFill(fill)
+    const isBody = isBodyOwnedFill(fill)
     const orderTotals = sellTotalsByOrderId.get(fill.orderId)
     const fillValue = quoteOf(fill)
     // This partial fill's share of its order's total sell value. Used to
