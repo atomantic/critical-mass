@@ -1506,6 +1506,47 @@ const resolvePlacementIntent = (exchange, pair, intentId) => {
 };
 
 /**
+ * Intents whose outcome this process knows is definitive (accepted and handed
+ * off, or rejected) but whose removal write failed — typically a full disk.
+ * Left alone, the row reads as our own in-flight dispatch until the process
+ * restarts, then as a foreign dispatch that blocks the fund until exchange
+ * reconciliation searches for it, though this process already knew the outcome.
+ * Removal is retried on every blocking check until a write succeeds.
+ * @type {Map<string, {exchange: string, pair: string|null}>}
+ */
+const deferredIntentRemovals = new Map();
+
+/**
+ * Queue a definitively-resolved intent for removal once the disk accepts writes.
+ * Pure in-memory and cannot fail, so callers do it after a failed removal.
+ * @param {string} exchange - Exchange name
+ * @param {string|undefined} pair - Pair name
+ * @param {string} intentId - Intent id to remove later
+ * @returns {void}
+ */
+const deferPlacementIntentRemoval = (exchange, pair, intentId) => {
+  if (intentId) deferredIntentRemovals.set(intentId, { exchange, pair: pair ?? null });
+};
+
+/**
+ * Retry queued removals for one fund. A write that still fails stays queued.
+ * @param {string} exchange - Exchange name
+ * @param {string|undefined} pair - Pair name
+ * @returns {void}
+ */
+const flushDeferredIntentRemovals = (exchange, pair) => {
+  for (const [intentId, fund] of deferredIntentRemovals) {
+    if (fund.exchange !== exchange || fund.pair !== (pair ?? null)) continue;
+    try {
+      resolvePlacementIntent(exchange, pair, intentId);
+      deferredIntentRemovals.delete(intentId);
+    } catch {
+      // Disk still refusing writes (or the file is unreadable); retry next check.
+    }
+  }
+};
+
+/**
  * Whether a persisted intent blocks new placements from THIS process.
  * @param {Object|null} intent - Persisted intent
  * @returns {boolean} True when the intent must block
@@ -1523,11 +1564,13 @@ const isBlockingPlacementIntent = (intent) => {
  * A corrupt/unreadable intent file yields a synthetic blocking row rather than
  * throwing, so the caller fails closed (refuse to place) instead of crashing a
  * timer-driven tick — monitoring and fill processing keep running.
+ * Retries any deferred removals for the fund first.
  * @param {string} [exchange] - Exchange name
  * @param {string} [pair] - Pair name
  * @returns {Array<Object>} Blocking intents
  */
 const getBlockingPlacementIntents = (exchange = 'coinbase', pair) => {
+  flushDeferredIntentRemovals(exchange, pair);
   let intents;
   try {
     intents = loadPlacementIntents(exchange, pair);
@@ -1655,6 +1698,7 @@ module.exports = {
   markPlacementIntentUnresolved,
   retainPlacementIntentInProcess,
   resolvePlacementIntent,
+  deferPlacementIntentRemoval,
   isBlockingPlacementIntent,
   getBlockingPlacementIntents,
   describePlacementIntents,

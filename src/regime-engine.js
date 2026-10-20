@@ -60,6 +60,7 @@ const {
   closeDrainedEmptyPosition,
 } = require('./state-tracker');
 const { resolveFundDataDir } = require('./migration');
+const { findPlacementOnExchange } = require('./placement-evidence');
 const celestialHierarchy = require('./celestial-hierarchy');
 const { fmtCurrency: fmtPrice, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
@@ -84,6 +85,8 @@ const CAP_ALERT_LABELS = {
 const PLACEMENT_BLOCK_LOG_INTERVAL_MS = 60_000;
 // How long the engine-side intent check may be reused between ticker messages.
 const PLACEMENT_INTENT_CACHE_MS = 1_000;
+// How often one intent may be searched for in open orders and fill history.
+const PLACEMENT_EVIDENCE_INTERVAL_MS = 5 * 60_000;
 
 /**
  * Position fields a SIGUSR1 reload is allowed to take from disk. Everything
@@ -1432,6 +1435,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // engine-side skip (and the operator's unblock) by up to a second, never let
   // a duplicate order through.
   let placementIntentCache = { at: 0, intents: [] };
+  // intentId -> last exchange-evidence search, bounding the fill-history scans.
+  const placementEvidenceCheckedAt = new Map();
   let insufficientFundsCooldownUntil = 0; // Cooldown after InsufficientFunds to prevent rapid retry spam
   const MERGE_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
   const FILL_DEDUP_TTL_MS = 5 * 60 * 1000;
@@ -8752,7 +8757,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (now - placementBlockLoggedAt > PLACEMENT_BLOCK_LOG_INTERVAL_MS) {
       placementBlockLoggedAt = now;
       const [oldest] = blocking;
-      logger.error(`⏸️ [${exchange}] New entries blocked — ${blocking.length} unresolved placement intent(s); oldest ${oldest.action ?? 'order'} ${oldest.id} awaiting automatic exchange reconciliation`, {
+      // Without a client order id, reconcilePendingPlacements matches open orders and fills instead.
+      const resolution = oldest.clientOrderId
+        ? 'awaiting automatic exchange reconciliation'
+        : 'awaiting automatic reconciliation against exchange open orders and fills (no client order id)';
+      logger.error(`⏸️ [${exchange}] New entries blocked — ${blocking.length} unresolved placement intent(s); oldest ${oldest.action ?? 'order'} ${oldest.id} ${resolution}`, {
         pendingIntents: blocking.length,
         intentId: oldest.id,
         action: oldest.action ?? null,
@@ -8848,15 +8857,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     ['take_profit_replacement', adoptLegacyTpPlacement],
   ]);
 
-  const discardPlacementIntent = (intentId, intent) => {
+  /** Remove an intent and drop every engine-side cache of it. */
+  const releasePlacementIntent = (intentId) => {
     const removed = resolvePlacementIntent(exchange, pair, intentId);
+    placementEvidenceCheckedAt.delete(intentId);
+    placementIntentCache = { at: 0, intents: [] };
+    return removed;
+  };
+
+  const discardPlacementIntent = (intentId, intent) => {
+    const removed = releasePlacementIntent(intentId);
     if (!removed) return { success: false, error: `Placement intent ${intentId} was already resolved` };
     logger.warn(`🧹 [${exchange}] Operator discarded placement intent ${intentId} (${intent.action ?? 'order'}) — placements resume`, {
       intentId,
       action: intent.action ?? null,
       clientOrderId: intent.clientOrderId ?? null,
     });
-    placementIntentCache = { at: 0, intents: [] };
     return { success: true, message: `Discarded ${intent.action ?? 'placement'} intent — placements resume for this fund` };
   };
 
@@ -8870,7 +8886,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * as part of the action, so a duplicate call finds nothing to act on.
    *
    * Automatic reconciliation uses the same durable adoption path and clears
-   * only positively identified terminal orders with zero fills.
+   * positively identified terminal orders with zero fills. When there is no
+   * client order id, or the lookup finds nothing, it searches open orders and
+   * fill history instead (resolveFromExchangeEvidence).
    * @param {string} intentId - Intent id to reconcile
    * @param {'adopt'|'discard'} action - Operator decision
    * @returns {Promise<{success: boolean, message?: string, error?: string, adoptedOrderId?: string}>} Result
@@ -8887,9 +8905,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (action === 'discard') return discardPlacementIntent(intentId, intent);
 
     if (!intent.clientOrderId) {
-      return { success: false, error: 'This intent carries no client order id (the process died before the response), so it cannot be looked up. Check the exchange manually, cancel any duplicate, then discard it.' };
+      if (automatic) return resolveFromExchangeEvidence(intentId, intent);
+      return { success: false, error: 'This intent carries no client order id (the process died before the response), so it cannot be looked up. The engine searches open orders and fills for it automatically; otherwise check the exchange, cancel any duplicate, then discard it.' };
     }
     if (typeof adapter.findOrderByClientOrderId !== 'function') {
+      if (automatic) return resolveFromExchangeEvidence(intentId, intent);
       return { success: false, error: `${exchange} cannot look up an order by client id; check the exchange manually, then discard the intent` };
     }
 
@@ -8899,21 +8919,89 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     if (automatic) {
       const classification = classifyAutomaticLookup(found);
-      if (classification === 'clear-unfilled-terminal') {
-        const removed = resolvePlacementIntent(exchange, pair, intentId);
-        placementIntentCache = { at: 0, intents: [] };
-        return { success: removed, message: 'Exchange confirmed an unfilled terminal order; placements may resume' };
-      }
-      const retryErrors = {
-        'status-unknown': 'Exchange order status remains unknown; retrying automatically',
-        absent: 'No matching order found; retaining the intent and retrying automatically',
-      };
-      if (retryErrors[classification]) return { success: false, error: retryErrors[classification] };
+      if (classification === 'clear-unfilled-terminal') return clearUnfilledTerminalIntent(intentId);
+      if (classification === 'status-unknown') return { success: false, error: 'Exchange order status remains unknown; retrying automatically' };
+      // An empty lookup may only reflect bounded history; corroborate it.
+      if (classification === 'absent') return resolveFromExchangeEvidence(intentId, intent);
     }
     if (!found) {
-      return { success: false, error: `The exchange reports no order for client id ${intent.clientOrderId}. If you have confirmed that, discard the intent instead — an empty lookup is never auto-cleared.` };
+      return { success: false, error: `The exchange reports no order for client id ${intent.clientOrderId}. If you have confirmed that, discard the intent instead — an empty lookup alone is never auto-cleared.` };
     }
+    return adoptFoundPlacement(intentId, intent, found, automatic);
+  };
 
+  const clearUnfilledTerminalIntent = (intentId) => ({
+    success: Boolean(releasePlacementIntent(intentId)),
+    message: 'Exchange confirmed an unfilled terminal order; placements may resume',
+  });
+
+  /**
+   * Orders and fills this fund already owns, so evidence matching only
+   * considers exchange activity nobody here is tracking.
+   * @returns {{isKnownOrder: (orderId: string) => boolean, isKnownTrade: (tradeId: string) => boolean}}
+   */
+  const ownedExchangeActivity = () => {
+    const ledgerOrderIds = new Set(fillLedger.getAllFills().map(f => f.orderId));
+    const pendingOrderIds = new Set(orderExecutor.getPendingOrdersList().map(o => o.orderId));
+    return {
+      isKnownOrder: (orderId) => pendingOrderIds.has(orderId) || ledgerOrderIds.has(orderId)
+        || orderExecutor.isBodyTpOrder(orderId) || orderExecutor.isTrackedTpOrder(orderId),
+      isKnownTrade: (tradeId) => fillLedger.hasProcessedTrade(tradeId),
+    };
+  };
+
+  /**
+   * Settle an intent the client-order-id lookup could not: search open orders
+   * and fill history for the placement. A unique match is adopted, no match
+   * clears the intent, and an ambiguous or failed search retries later.
+   * @param {string} intentId
+   * @param {Object} intent
+   * @returns {Promise<{success: boolean, message?: string, error?: string, adoptedOrderId?: string}>}
+   */
+  const resolveFromExchangeEvidence = async (intentId, intent) => {
+    const lastChecked = placementEvidenceCheckedAt.get(intentId) ?? 0;
+    if (Date.now() - lastChecked < PLACEMENT_EVIDENCE_INTERVAL_MS) {
+      return { success: false, deferred: true, error: 'Exchange evidence search ran recently; retrying automatically' };
+    }
+    placementEvidenceCheckedAt.set(intentId, Date.now());
+
+    const evidence = await findPlacementOnExchange({ adapter, productId, intent, ...ownedExchangeActivity() })
+      .catch(err => ({ verdict: 'inconclusive', reason: `exchange search failed (${err.message})` }));
+    if (evidence.verdict === 'inconclusive') {
+      return { success: false, error: `Exchange evidence inconclusive: ${evidence.reason}; retrying automatically` };
+    }
+    if (!describePlacementIntents(exchange, pair).some(i => i.id === intentId)) {
+      return { success: false, error: `Placement intent ${intentId} was already resolved` };
+    }
+    if (evidence.verdict === 'absent') {
+      const removed = releasePlacementIntent(intentId);
+      logger.warn(`🧹 [${exchange}] Cleared placement intent ${intentId} (${intent.action ?? 'order'}) — no matching open order or untracked fill on the exchange; placements resume`, {
+        intentId,
+        action: intent.action ?? null,
+        clientOrderId: intent.clientOrderId ?? null,
+        side: intent.side ?? null,
+        price: intent.price ?? null,
+        size: intent.size ?? null,
+      });
+      return { success: Boolean(removed), message: 'No matching order on the exchange; intent cleared' };
+    }
+    const classification = classifyAutomaticLookup(evidence.order);
+    if (classification === 'clear-unfilled-terminal') return clearUnfilledTerminalIntent(intentId);
+    if (classification === 'status-unknown') {
+      return { success: false, error: `Matched exchange order ${evidence.order.orderId} but its status is unknown; retrying automatically` };
+    }
+    return adoptFoundPlacement(intentId, intent, evidence.order, true);
+  };
+
+  /**
+   * Adopt a positively identified exchange order into tracking, then clear its intent.
+   * @param {string} intentId
+   * @param {Object} intent
+   * @param {Object} found - Exchange order (OrderDetails shape)
+   * @param {boolean} automatic
+   * @returns {{success: boolean, message?: string, error?: string, adoptedOrderId?: string}}
+   */
+  const adoptFoundPlacement = (intentId, intent, found, automatic) => {
     // Recheck after the lookup await. From here through persistence and removal
     // there are no awaits, so concurrent operator requests cannot interleave.
     // Keep the intent until tracking reaches disk: a failed write must leave
@@ -8934,28 +9022,28 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       saveLiveState();
       fillLedger.persist();
     }
-    resolvePlacementIntent(exchange, pair, intentId);
+    releasePlacementIntent(intentId);
 
     logger.info(`ℹ️ ✅ [${exchange}] ${automatic ? 'Automatically adopted' : 'Operator adopted'} exchange order ${found.orderId} for placement intent ${intentId} (${intent.action ?? 'order'})`, {
       intentId,
       orderId: found.orderId,
-      clientOrderId: intent.clientOrderId,
+      clientOrderId: intent.clientOrderId ?? null,
       action: intent.action ?? null,
       tracked: adopted.tracked,
     });
-    placementIntentCache = { at: 0, intents: [] };
     return { success: true, adoptedOrderId: found.orderId, message: adopted.message };
   };
 
   // Run under the periodic reconciliation lock, before polling fills or TP
   // repair. Sequential lookups avoid bursts and cannot overlap another tick.
   const reconcilePendingPlacements = async () => {
-    if (isDryRun || typeof adapter.findOrderByClientOrderId !== 'function') return;
+    if (isDryRun) return;
     for (const intent of getBlockingPlacementIntents(exchange, pair)) {
-      if (!intent.clientOrderId) continue;
+      // An unparseable intent file is a disk problem, not an exchange question.
+      if (intent.id === 'unreadable-intent-file') continue;
       try {
         const result = await reconcilePlacementIntent(intent.id, 'adopt', { automatic: true });
-        if (!result.success) logger.warn(`⏳ [${exchange}] Placement ${intent.id}: ${result.error}`);
+        if (!result.success && !result.deferred) logger.warn(`⏳ [${exchange}] Placement ${intent.id}: ${result.error}`);
       } catch (err) {
         logger.warn(`⏳ [${exchange}] Placement ${intent.id} recovery will retry: ${err.message}`);
       }

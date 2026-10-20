@@ -279,7 +279,7 @@ describe('placeWithUnknownReconcile — a post-outcome intent-cleanup failure ne
     assert.equal(result.success, true, 'a housekeeping write failure must not swallow a genuine placement success');
     assert.equal(result.orderId, 'ok-710');
     const [stale] = readIntents();
-    assert.ok(stale, 'the intent stays on disk (stale) when clearing it fails — an operator reconciles it manually');
+    assert.ok(stale, 'the intent stays on disk (stale) while clearing it keeps failing');
     assert.equal(stale.action, 'entry_bid');
   });
 
@@ -321,7 +321,7 @@ describe('placeWithUnknownReconcile — a post-outcome intent-cleanup failure ne
     assert.equal(result.reconciled, true);
     assert.equal(result.orderId, 'real-710');
     const [stale] = readIntents();
-    assert.ok(stale, 'the intent stays on disk (stale) when clearing it fails — an operator reconciles it manually');
+    assert.ok(stale, 'the intent stays on disk (stale) while clearing it keeps failing');
   });
 
   it('still returns the definitive not-found failure when clearing the intent afterward fails (reconciled not-found)', async () => {
@@ -341,7 +341,57 @@ describe('placeWithUnknownReconcile — a post-outcome intent-cleanup failure ne
     assert.equal(result.success, false, 'a positive not-found is still a definitive (non-throwing) failure');
     assert.notEqual(result.pending, true, 'a positive not-found is definitive, not pending, even when clearing the intent afterward fails');
     const [stale] = readIntents();
-    assert.ok(stale, 'the intent stays on disk (stale) when clearing it fails — an operator reconciles it manually');
+    assert.ok(stale, 'the intent stays on disk (stale) while clearing it keeps failing');
+  });
+});
+
+describe('placeWithUnknownReconcile — a failed post-outcome cleanup is retried once the disk recovers', () => {
+  /** Let the pre-dispatch intent write through, then fail writes until `heal()`. */
+  const failWritesAfterFirst = () => {
+    const originalWriteFileSync = fs.writeFileSync.bind(fs);
+    let writeCalls = 0;
+    let healed = false;
+    mock.method(fs, 'writeFileSync', (...args) => {
+      writeCalls += 1;
+      if (writeCalls === 1 || healed) return originalWriteFileSync(...args);
+      throw new Error('ENOSPC: no space left on device');
+    });
+    return { heal: () => { healed = true; } };
+  };
+
+  it('removes a rejected placement\'s intent on the next blocking check, before a restart can strand it', async () => {
+    const disk = failWritesAfterFirst();
+    const rejection = Object.assign(new Error('InsufficientFunds'), { status: 'error' });
+
+    await assert.rejects(
+      () => placeWithUnknownReconcile({ name: EXCHANGE }, PRODUCT, async () => { throw rejection; }, scope()),
+      /InsufficientFunds/,
+    );
+    assert.equal(readIntents().length, 1, 'the clear failed, so the row is still on disk');
+
+    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0, 'still our own dispatch, so not blocking');
+    assert.equal(readIntents().length, 1, 'removal stays queued while writes keep failing');
+
+    disk.heal();
+    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0);
+    assert.equal(readIntents().length, 0, 'the deferred removal lands once the disk accepts writes');
+
+    simulateRestart();
+    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0, 'nothing is left for a restarted process to block on');
+  });
+
+  it('removes an accepted placement\'s intent once the disk recovers', async () => {
+    const disk = failWritesAfterFirst();
+
+    const result = await placeWithUnknownReconcile({ name: EXCHANGE }, PRODUCT, async () => (
+      { success: true, orderId: 'ok-deferred' }
+    ), scope());
+    assert.equal(result.success, true);
+    assert.equal(readIntents().length, 1);
+
+    disk.heal();
+    stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR);
+    assert.equal(readIntents().length, 0);
   });
 });
 

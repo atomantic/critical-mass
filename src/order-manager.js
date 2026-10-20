@@ -10,6 +10,7 @@ const {
   markPlacementIntentUnresolved,
   retainPlacementIntentInProcess,
   resolvePlacementIntent,
+  deferPlacementIntentRemoval,
 } = require('./state-tracker');
 
 /**
@@ -341,16 +342,18 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
    * AFTER the exchange-side outcome is already known — a disk-full/permission
    * failure here must never masquerade as a placement failure and cost the
    * caller a placement result (or a genuine rejection error) it already has.
-   * The stale intent row is left on disk; an operator reconciles it manually
-   * (it no longer blocks anything once a later placement clears/replaces it,
-   * but `describePlacementIntents` will keep surfacing it until then).
+   * The row is queued for deferred removal, retried on every blocking check
+   * until the disk accepts the write. Without that, a restart would read the
+   * leftover `dispatching` row as a dead process's dispatch and block the fund
+   * with no client order id for automatic reconciliation to look up.
    * @param {string} context - Human label for what just happened, for the log line
    */
   const safeClearIntent = (context) => {
     try {
       clearIntent();
     } catch (clearErr) {
-      logger.error(`⚠️ Placement outcome resolved (${context}) but clearing its placement intent failed (${clearErr.message}) — reconcile the stale intent manually`, {
+      if (intent) deferPlacementIntentRemoval(exchange, pair, intent.id);
+      logger.error(`⚠️ Placement outcome resolved (${context}) but clearing its placement intent failed (${clearErr.message}) — removal will be retried automatically`, {
         context,
         error: clearErr.message,
         intentId: intent?.id ?? null,
