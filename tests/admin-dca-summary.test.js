@@ -25,6 +25,7 @@ before(async () => {
     finally { await bundle.close() }
     const stubs = {
       react: React,
+      '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
       '../utils/intervals.mjs': { getIntervalMs: () => 86400000 },
       './ActivityFeed': () => null,
       './FailedSellPlacements': () => null,

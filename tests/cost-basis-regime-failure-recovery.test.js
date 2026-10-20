@@ -92,6 +92,7 @@ function createView(props = {}) {
     './charts/chartUtils': { formatCurrency: value => `$${value}`, formatPrice: value => `$${value}`, formatAsset: String },
     '../App': { getBaseCurrency: productId => productId?.split('-')[0] || 'BTC' },
     '../utils/api': { pairQuery: pair => pair ? `?pair=${encodeURIComponent(pair)}` : '' },
+    '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../utils/regimeFillGroups.mjs': { compareCycleIds: (a, b) => a.localeCompare(b) },
   }
   const mod = { exports: {} }
