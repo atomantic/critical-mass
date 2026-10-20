@@ -258,6 +258,60 @@ describe('PUT /api/updown/trades/:id rejects non-numeric updates (issue #151)', 
   });
 });
 
+describe('UpDown trade descriptive fields (issue #1204)', () => {
+  afterEach(() => mock.restoreAll());
+  const initial = () => ({ trades: [{ id: 1, date: '2026-01-02', cost: 50, returnAmount: 80, note: '', direction: 'up', exitTime: null, pnl: 30 }], nextId: 2 });
+
+  it('rejects invalid descriptive fields on create before writing', async () => {
+    for (const body of [
+      { date: '2026-02-30' }, { date: {} }, { note: {} }, { note: 'x'.repeat(501) },
+      { direction: 'UP' }, { exitTime: 'not a date' }, { exitTime: '' },
+    ]) {
+      const { app, getWritten } = setup();
+      const res = await invoke(app, 'POST /api/updown/trades', { body: { cost: 50, returnAmount: 80, ...body } });
+      assert.equal(res.statusCode, 400, JSON.stringify(body));
+      assert.match(res.body.error, /^(date|note|direction|exitTime) /);
+      assert.equal(getWritten(), null);
+      mock.restoreAll();
+    }
+  });
+
+  it('rejects invalid descriptive updates without writing and canonicalizes valid exit times', async () => {
+    for (const body of [{ date: '2026-1-02' }, { note: 4 }, { direction: 'long' }, { exitTime: new Date(Date.now() + 60_000).toISOString() }]) {
+      const { app, getWritten } = setup(initial());
+      const res = await invoke(app, 'PUT /api/updown/trades/:id', { params: { id: '1' }, body });
+      assert.equal(res.statusCode, 400, JSON.stringify(body));
+      assert.equal(getWritten(), null);
+      mock.restoreAll();
+    }
+    const { app } = setup(initial());
+    const res = await invoke(app, 'PUT /api/updown/trades/:id', { params: { id: '1' }, body: { exitTime: '2026-01-03T00:00:00Z', direction: 'down', note: 'closed' } });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.trade.exitTime, '2026-01-03T00:00:00.000Z');
+  });
+
+  it('validates and canonicalizes position entryTime before persistence', async () => {
+    let position;
+    const app = createFakeApp();
+    registerUpdownRoutes(app, { updownService: { setPosition: (p) => { position = p; } }, candleCache: { getAllCandles: () => [] }, DATA_DIR: '/tmp/updown-test' });
+    for (const entryTime of ['junk', '', '2026-02-30T00:00:00Z', new Date(Date.now() + 60_000).toISOString(), {}, -1e20]) {
+      const res = await invoke(app, 'PUT /api/updown/position', { body: { entryPrice: 100, contracts: 1, direction: 'up', entryTime } });
+      assert.equal(res.statusCode, 400);
+      assert.equal(position, undefined);
+    }
+    const res = await invoke(app, 'PUT /api/updown/position', { body: { entryPrice: 100, contracts: 1, direction: 'up', entryTime: '2026-01-03T00:00:00Z' } });
+    assert.equal(res.statusCode, 200);
+    assert.equal(position.entryTime, Date.parse('2026-01-03T00:00:00Z'));
+    const epochMs = Date.parse('2026-01-04T00:00:00Z');
+    const epochRes = await invoke(app, 'PUT /api/updown/position', { body: { entryPrice: 100, contracts: 1, direction: 'up', entryTime: epochMs } });
+    assert.equal(epochRes.statusCode, 200);
+    assert.equal(position.entryTime, epochMs);
+    const offsetRes = await invoke(app, 'PUT /api/updown/position', { body: { entryPrice: 100, contracts: 1, direction: 'up', entryTime: '2026-01-02T23:30:00-05:00' } });
+    assert.equal(offsetRes.statusCode, 200);
+    assert.equal(position.entryTime, Date.parse('2026-01-02T23:30:00-05:00'));
+  });
+});
+
 describe('PUT /api/updown/position strictly validates numeric fields', () => {
   const setupPosition = () => {
     const calls = [];
