@@ -63,6 +63,17 @@ test('sellOrderId linkage aggregates partials per order, using the shared pairin
   assert.deepEqual(fills, original, 'inputs are never mutated');
 });
 
+test('live fallback: a bodyId-only fill is body-owned (same rule as the ledger)', async () => {
+  const { relatedBuysForOrder } = await load();
+  const fills = [
+    buy('core1', { timestamp: 1 }),
+    buy('body-id-only', { timestamp: 2, bodyId: 'body-1' }),
+    sell('body-id-sell', { timestamp: 3, bodyId: 'body-1' }), // must not reset the core walk
+    buy('core2', { timestamp: 4 }),
+  ];
+  assert.deepEqual(ids(relatedBuysForOrder(tp('core-tp'), { bodyLookup: new Map(), fills })), ['core1', 'core2']);
+});
+
 test('live fallback: core buys since the last core sell, ignoring body fills, within the live cycle only', async () => {
   const { relatedBuysForOrder } = await load();
   const fills = [
