@@ -632,12 +632,237 @@ const restorePersistedCycleId = (fillLedger, positionState, logger, exchange) =>
 };
 
 /**
+ * Step 0: recover orphan buys — ledger fills from the current cycle that have
+ * no bodyId AND aren't referenced by any body. These come from
+ * handleOrderFill being interrupted (e.g. SIGINT during pm2 restart)
+ * between fillLedger.ingestFill and the body-merge/annotation step.
+ * Merge each orphan order into the historically-eligible body whose TP
+ * is closest to where the orphan's TP would have landed. The body's
+ * reconcile loop will then detect the assetQty/assetOnOrder mismatch
+ * on the next tick and cancel-replace the TP at the new size.
+ * @returns {number} orphan orders merged into a body
+ */
+const recoverOrphanBuys = (deps, cycleFills) => {
+  const { fillLedger, positionState, config, logger, baseCurrency, priceIncrement, exchange,
+    celestialHierarchy, calculateDynamicTpPercent, roundPrice, fmtPrice } = deps;
+  const knownBuyOrderIds = new Set();
+  for (const body of (positionState.celestialBodies || [])) {
+    for (const oid of (body.sourceOrderIds || [])) knownBuyOrderIds.add(oid);
+    for (const buy of (body.buyOrders || [])) if (buy.orderId) knownBuyOrderIds.add(buy.orderId);
+  }
+  // Fills recalculateCycles folded into this cycle purely by timestamp
+  // (#705) are excluded: nothing links them to an engine order (sync-fills
+  // re-imports manual trades too), so adopting one into a body would place
+  // an automatic sell for it — manual review only (R2, pnl-architecture.md).
+  const orphanBuyFills = cycleFills.filter(f =>
+    f.side === 'buy' && !f.bodyId
+    && f.cycleAttribution !== 'timeframe'
+    && !String(f.tradeId).startsWith('dca-convert')
+    && !knownBuyOrderIds.has(f.orderId)
+  );
+  const orphansByOrderId = new Map();
+  for (const f of orphanBuyFills) {
+    if (!orphansByOrderId.has(f.orderId)) orphansByOrderId.set(f.orderId, []);
+    orphansByOrderId.get(f.orderId).push(f);
+  }
+
+  let recoveredCount = 0;
+  for (const [orderId, fills] of orphansByOrderId) {
+    const summary = fillLedger.aggregateFills(fills);
+    const fillTime = Math.max(...fills.map(f => f.timestamp));
+    const newBuy = {
+      assetQty: summary.totalSize,
+      costBasis: summary.totalValue + (summary.totalFees || 0),
+      avgPrice: summary.avgPrice,
+      buyOrderId: orderId,
+    };
+    const candidateTpPrice = roundPrice(summary.avgPrice * (1 + calculateDynamicTpPercent() / 100), priceIncrement);
+
+    // Restrict to bodies that existed at the orphan's fill time
+    const eligibleBodies = (positionState.celestialBodies || []).filter(b => !b.createdAt || b.createdAt <= fillTime);
+    const target = pickOrphanMergeTarget(eligibleBodies, newBuy, candidateTpPrice, deps);
+    if (!target) {
+      logger.warn(`⚠️ [${exchange}] Orphan buy ${orderId.slice(0, 8)} (${summary.totalSize.toFixed(8)} ${baseCurrency}): no eligible body to merge into, leaving unattributed`);
+      continue;
+    }
+
+    const merged = celestialHierarchy.mergeIntoBody(target, newBuy, config.maxUsdcDeployed, orderId, logger);
+    // Overwrite mergeIntoBody's Date.now() lastMergedAt with the orphan's
+    // actual fill time, and the appended buyOrder's filledAt likewise.
+    merged.lastMergedAt = fillTime;
+    if (merged.buyOrders && merged.buyOrders.length > 0) {
+      merged.buyOrders[merged.buyOrders.length - 1].filledAt = fillTime;
+    }
+
+    const annotation = { isBodyOwned: true, bodyId: merged.id, bodyTier: merged.tier };
+    if (merged.tpOrderId) annotation.sellOrderId = merged.tpOrderId;
+    fillLedger.annotateFillsByOrderId(orderId, annotation);
+
+    // A still-tracked entry (or ladder rung) shrinks by what was just booked
+    // from it, as the live fill path does — its remainder is the evidence startup uses to
+    // prove a later tranche unbooked (issue #756).
+    for (const list of ['pendingEntryOrders', 'pendingLadderOrders']) {
+      if (!positionState[list]?.some(e => e.orderId === orderId)) continue;
+      positionState[list] = positionState[list].map(e => (e.orderId !== orderId ? e : {
+        ...e,
+        assetQty: Math.max(0, (Number(e.assetQty) || 0) - newBuy.assetQty),
+        sizeUsdc: Math.max(0, (Number(e.sizeUsdc) || 0) - newBuy.costBasis),
+      }));
+    }
+
+    const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
+    logger.info(`🔧 [${exchange}] Recovered orphan buy ${orderId.slice(0, 8)} (${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}) → body ${merged.id.slice(-8)} ${tierCfg.emoji} ${merged.tier}`);
+    recoveredCount++;
+  }
+
+  if (recoveredCount > 0) {
+    celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
+    celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+    logger.info(`🔧 [${exchange}] Recovered ${recoveredCount} orphan buy order(s) into bodies; reconcile loop will re-place affected TPs`);
+  }
+  return recoveredCount;
+};
+
+/**
+ * Merge target for an orphan buy: the hierarchy's proximity match, else the
+ * eligible body whose tpPrice is closest to where the orphan's TP would land.
+ */
+const pickOrphanMergeTarget = (eligibleBodies, newBuy, candidateTpPrice, { config, celestialHierarchy }) => {
+  const target = celestialHierarchy.findMergeTarget(
+    eligibleBodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
+    config.maxCelestialBodies || 10, 0, config.maxOpenOrders,
+    config.mergeProximityScale ?? 1.0
+  );
+  if (target) return target;
+  let closest = null;
+  let bestDist = Infinity;
+  for (const b of eligibleBodies) {
+    if (!b.tpPrice || b.tpPrice <= 0) continue;
+    const d = Math.abs(b.tpPrice - candidateTpPrice);
+    if (d < bestDist) { bestDist = d; closest = b; }
+  }
+  return closest;
+};
+
+/**
+ * Step 1: annotate buy fills for active celestial bodies (sourceOrderIds and
+ * buyOrders). Also fixes fills that have isBodyOwned but are missing bodyId
+ * (e.g. from the DCA merge converter).
+ * @returns {number} buy fill rows annotated
+ */
+const annotateBodyBuyFills = (positionState, fillLedger, cycleFills) => {
+  let annotatedCount = 0;
+  for (const body of (positionState.celestialBodies || [])) {
+    const annotation = { isBodyOwned: true, bodyId: body.id, bodyTier: body.tier };
+    if (body.tpOrderId) annotation.sellOrderId = body.tpOrderId;
+    const orderIds = new Set([
+      ...(body.sourceOrderIds || []),
+      ...(body.buyOrders || []).map(b => b.orderId).filter(oid => oid !== 'core-migration'),
+    ]);
+    for (const orderId of orderIds) {
+      const buyFills = cycleFills.filter(f => f.orderId === orderId && !(f.isSatellite) && (!f.isBodyOwned || !f.bodyId));
+      if (buyFills.length > 0) {
+        fillLedger.annotateFillsByOrderId(orderId, annotation);
+        annotatedCount += buyFills.length;
+      }
+    }
+  }
+  return annotatedCount;
+};
+
+/**
+ * Buy matching a sell: similar asset size (±1%), earlier than the sell, not
+ * already consumed, and closest in time (a body TP is placed right after its buy).
+ */
+const matchBuyForSell = (sellFill, buyFills, consumed) => {
+  let best = null;
+  for (const buy of buyFills) {
+    if (consumed.has(buy.orderId)) continue;
+    const sizeRatio = buy.size / sellFill.size;
+    if (!(sizeRatio > 0.99 && sizeRatio < 1.01) || !(buy.timestamp < sellFill.timestamp)) continue;
+    if (!best || (sellFill.timestamp - buy.timestamp) < (sellFill.timestamp - best.timestamp)) best = buy;
+  }
+  return best;
+};
+
+/**
+ * Step 2: re-derive PnL/holdback for unannotated or badly-annotated body sells
+ * (non-core-TP sells missing isBodyOwned, or with negative PnL/holdback).
+ * @returns {number} annotation operations applied
+ */
+const annotateBodySells = ({ fillLedger, positionState, logger, baseCurrency, exchange, roundAsset }, cycleFills) => {
+  const coreTpOrderId = positionState.activeTpOrderId;
+  const sellsToAnnotate = cycleFills.filter(f =>
+    f.side === 'sell' && f.orderId !== coreTpOrderId
+    && (!(f.isBodyOwned || f.isSatellite) || (f.bodyPnl ?? f.satellitePnl) < 0 || (f.bodyHoldbackAsset ?? f.satelliteHoldbackAsset) < 0)
+  );
+  const buyFills = cycleFills.filter(f => f.side === 'buy');
+  const consumedBuyOrderIds = new Set();
+  let annotatedCount = 0;
+
+  for (const sellFill of sellsToAnnotate) {
+    const matchingBuy = matchBuyForSell(sellFill, buyFills, consumedBuyOrderIds);
+    if (!matchingBuy) continue;
+
+    consumedBuyOrderIds.add(matchingBuy.orderId);
+    const costBasis = matchingBuy.quoteAmount + (matchingBuy.netFee || matchingBuy.fee || 0);
+    const proceeds = sellFill.quoteAmount - (sellFill.netFee || sellFill.fee || 0);
+    const pnl = proceeds - costBasis;
+    const holdbackAsset = roundAsset(matchingBuy.size - sellFill.size);
+
+    // Sanity check: body PnL should be positive and holdback non-negative
+    if (pnl >= 0 && holdbackAsset >= 0) {
+      fillLedger.annotateFillsByOrderId(sellFill.orderId, {
+        isBodyOwned: true,
+        bodyCostBasis: costBasis,
+        bodyAvgPrice: matchingBuy.price,
+        bodyBtcQty: matchingBuy.size,
+        bodyHoldbackAsset: holdbackAsset,
+        bodyPnl: pnl,
+      });
+      fillLedger.annotateFillsByOrderId(matchingBuy.orderId, { isBodyOwned: true, sellOrderId: sellFill.orderId });
+      annotatedCount += 2;
+      logger.info(`🔧 [${exchange}] Annotated body sell: ${sellFill.orderId.slice(0, 8)} PnL=$${pnl.toFixed(4)}, holdback=${holdbackAsset.toFixed(8)} ${baseCurrency}`);
+    } else {
+      // Mark as body-owned but without computed values (dashboard will show raw data)
+      fillLedger.annotateFillsByOrderId(sellFill.orderId, { isBodyOwned: true });
+      annotatedCount++;
+      logger.warn(`⚠️ [${exchange}] Marked body sell ${sellFill.orderId.slice(0, 8)} (no matching buy found with valid PnL)`);
+    }
+  }
+  return annotatedCount;
+};
+
+/**
+ * Step 3: fix fills with wrong cycle IDs (recovered-* cycles that belong in the
+ * current one). Only fills within the current cycle's timeframe move.
+ * @returns {number} fills moved
+ */
+const moveRecoveredCycleFills = ({ fillLedger, logger, exchange }, currentCycleId) => {
+  const currentCycleFills = fillLedger.getCurrentCycleFills();
+  const cycleStartTs = currentCycleFills.length > 0
+    ? Math.min(...currentCycleFills.map(f => f.timestamp))
+    : Date.now();
+  let movedCount = 0;
+  for (const fill of fillLedger.getAllFills()) {
+    if (fill.cycleId && fill.cycleId.includes('-recovered-')
+      && fill.cycleId !== currentCycleId && fill.timestamp >= cycleStartTs) {
+      const oldCycleId = fill.cycleId;
+      fillLedger.updateFillCycleId(fill.tradeId, currentCycleId);
+      movedCount++;
+      logger.info(`🔧 [${exchange}] Moved fill ${fill.tradeId.slice(0, 8)} from ${oldCycleId} to ${currentCycleId}`);
+    }
+  }
+  return movedCount;
+};
+
+/**
  * Repair historical fill annotations from ledger.
  * Performs four steps of self-healing for fills that predate annotation code:
- * 1. Recover orphan buys (unfilled bodies) by merging into historical bodies
- * 2. Annotate buy fills for active celestial bodies
- * 3. Match unannotated body sells to buys using 1% size fuzzy-match
- * 4. Rewrite -recovered- cycle IDs to current cycle
+ * 0. recoverOrphanBuys — merge orphan buys into historical bodies
+ * 1. annotateBodyBuyFills — stamp buy fills of active celestial bodies
+ * 2. annotateBodySells — match unannotated body sells to buys (1% size fuzzy-match)
+ * 3. moveRecoveredCycleFills — rewrite -recovered- cycle IDs to current cycle
  * @param {Object} deps - Helper dependencies
  * @param {Object} deps.fillLedger - Fill ledger instance
  * @param {Object} deps.positionState - Current position state
@@ -652,214 +877,23 @@ const restorePersistedCycleId = (fillLedger, positionState, logger, exchange) =>
  * @param {Function} deps.roundAsset - Asset qty rounding utility
  * @param {Function} deps.fmtPrice - Price formatting utility
  */
-const repairHistoricalFillAnnotations = ({
-  fillLedger, positionState, config, logger, baseCurrency, priceIncrement, exchange,
-  celestialHierarchy, calculateDynamicTpPercent, roundPrice, roundAsset, fmtPrice
-}) => {
+const repairHistoricalFillAnnotations = (deps) => {
+  const { fillLedger, positionState, logger, exchange } = deps;
   // Retroactively annotate body fills that are missing isBodyOwned flag
   // This fixes historical fills that were processed before annotation code was deployed
   const currentCycleId = fillLedger.getCurrentCycleId();
-  if (currentCycleId) {
-    const cycleFills = fillLedger.getCurrentCycleFills();
-    const coreTpOrderId = positionState.activeTpOrderId;
-    let annotatedCount = 0;
+  if (!currentCycleId) return;
+  const cycleFills = fillLedger.getCurrentCycleFills();
 
-    // 0. Recover orphan buys: ledger fills from current cycle that have no
-    // bodyId AND aren't referenced by any body. These come from
-    // handleOrderFill being interrupted (e.g. SIGINT during pm2 restart)
-    // between fillLedger.ingestFill and the body-merge/annotation step.
-    // Merge each orphan order into the historically-eligible body whose TP
-    // is closest to where the orphan's TP would have landed. The body's
-    // reconcile loop will then detect the assetQty/assetOnOrder mismatch
-    // on the next tick and cancel-replace the TP at the new size.
-    const knownBuyOrderIds = new Set();
-    for (const body of (positionState.celestialBodies || [])) {
-      for (const oid of (body.sourceOrderIds || [])) knownBuyOrderIds.add(oid);
-      for (const buy of (body.buyOrders || [])) if (buy.orderId) knownBuyOrderIds.add(buy.orderId);
-    }
-    // Fills recalculateCycles folded into this cycle purely by timestamp
-    // (#705) are excluded: nothing links them to an engine order (sync-fills
-    // re-imports manual trades too), so adopting one into a body would place
-    // an automatic sell for it — manual review only (R2, pnl-architecture.md).
-    const orphanBuyFills = cycleFills.filter(f =>
-      f.side === 'buy' && !f.bodyId
-      && f.cycleAttribution !== 'timeframe'
-      && !String(f.tradeId).startsWith('dca-convert')
-      && !knownBuyOrderIds.has(f.orderId)
-    );
-    const orphansByOrderId = new Map();
-    for (const f of orphanBuyFills) {
-      if (!orphansByOrderId.has(f.orderId)) orphansByOrderId.set(f.orderId, []);
-      orphansByOrderId.get(f.orderId).push(f);
-    }
+  // Orphan recovery is counted separately in its own log line, not in the annotated total.
+  recoverOrphanBuys(deps, cycleFills);
+  const annotatedCount = annotateBodyBuyFills(positionState, fillLedger, cycleFills)
+    + annotateBodySells(deps, cycleFills)
+    + moveRecoveredCycleFills(deps, currentCycleId);
 
-    let recoveredCount = 0;
-    for (const [orderId, fills] of orphansByOrderId) {
-      const summary = fillLedger.aggregateFills(fills);
-      const fillTime = Math.max(...fills.map(f => f.timestamp));
-      const newBuy = {
-        assetQty: summary.totalSize,
-        costBasis: summary.totalValue + (summary.totalFees || 0),
-        avgPrice: summary.avgPrice,
-        buyOrderId: orderId,
-      };
-      const candidateTpPrice = roundPrice(summary.avgPrice * (1 + calculateDynamicTpPercent() / 100), priceIncrement);
-
-      // Restrict to bodies that existed at the orphan's fill time
-      const eligibleBodies = (positionState.celestialBodies || []).filter(b => !b.createdAt || b.createdAt <= fillTime);
-      let target = celestialHierarchy.findMergeTarget(
-        eligibleBodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
-        config.maxCelestialBodies || 10, 0, config.maxOpenOrders,
-        config.mergeProximityScale ?? 1.0
-      );
-      // Fallback: closest tpPrice among historical-eligible bodies
-      if (!target) {
-        let bestDist = Infinity;
-        for (const b of eligibleBodies) {
-          if (!b.tpPrice || b.tpPrice <= 0) continue;
-          const d = Math.abs(b.tpPrice - candidateTpPrice);
-          if (d < bestDist) { bestDist = d; target = b; }
-        }
-      }
-      if (!target) {
-        logger.warn(`⚠️ [${exchange}] Orphan buy ${orderId.slice(0, 8)} (${summary.totalSize.toFixed(8)} ${baseCurrency}): no eligible body to merge into, leaving unattributed`);
-        continue;
-      }
-
-      const merged = celestialHierarchy.mergeIntoBody(target, newBuy, config.maxUsdcDeployed, orderId, logger);
-      // Overwrite mergeIntoBody's Date.now() lastMergedAt with the orphan's
-      // actual fill time, and the appended buyOrder's filledAt likewise.
-      merged.lastMergedAt = fillTime;
-      if (merged.buyOrders && merged.buyOrders.length > 0) {
-        merged.buyOrders[merged.buyOrders.length - 1].filledAt = fillTime;
-      }
-
-      const annotation = { isBodyOwned: true, bodyId: merged.id, bodyTier: merged.tier };
-      if (merged.tpOrderId) annotation.sellOrderId = merged.tpOrderId;
-      fillLedger.annotateFillsByOrderId(orderId, annotation);
-
-      // A still-tracked entry (or ladder rung) shrinks by what was just booked
-      // from it, as the live fill path does — its remainder is the evidence startup uses to
-      // prove a later tranche unbooked (issue #756).
-      for (const list of ['pendingEntryOrders', 'pendingLadderOrders']) {
-        if (!positionState[list]?.some(e => e.orderId === orderId)) continue;
-        positionState[list] = positionState[list].map(e => (e.orderId !== orderId ? e : {
-          ...e,
-          assetQty: Math.max(0, (Number(e.assetQty) || 0) - newBuy.assetQty),
-          sizeUsdc: Math.max(0, (Number(e.sizeUsdc) || 0) - newBuy.costBasis),
-        }));
-      }
-
-      const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
-      logger.info(`🔧 [${exchange}] Recovered orphan buy ${orderId.slice(0, 8)} (${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}) → body ${merged.id.slice(-8)} ${tierCfg.emoji} ${merged.tier}`);
-      recoveredCount++;
-    }
-
-    if (recoveredCount > 0) {
-      celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
-      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
-      logger.info(`🔧 [${exchange}] Recovered ${recoveredCount} orphan buy order(s) into bodies; reconcile loop will re-place affected TPs`);
-    }
-
-    // 1. Annotate buy fills for active celestial bodies (use both sourceOrderIds and buyOrders)
-    // Also fix fills that have isBodyOwned but are missing bodyId (e.g. from DCA merge converter)
-    for (const body of (positionState.celestialBodies || [])) {
-      const annotation = { isBodyOwned: true, bodyId: body.id, bodyTier: body.tier };
-      if (body.tpOrderId) annotation.sellOrderId = body.tpOrderId;
-      const seen = new Set();
-      for (const srcOrderId of (body.sourceOrderIds || [])) {
-        const buyFills = cycleFills.filter(f => f.orderId === srcOrderId && !(f.isSatellite) && (!f.isBodyOwned || !f.bodyId));
-        if (buyFills.length > 0) {
-          fillLedger.annotateFillsByOrderId(srcOrderId, annotation);
-          annotatedCount += buyFills.length;
-        }
-        seen.add(srcOrderId);
-      }
-      for (const buyOrder of (body.buyOrders || [])) {
-        if (buyOrder.orderId === 'core-migration' || seen.has(buyOrder.orderId)) continue;
-        const buyFills = cycleFills.filter(f => f.orderId === buyOrder.orderId && !(f.isSatellite) && (!f.isBodyOwned || !f.bodyId));
-        if (buyFills.length > 0) {
-          fillLedger.annotateFillsByOrderId(buyOrder.orderId, annotation);
-          annotatedCount += buyFills.length;
-        }
-      }
-    }
-
-    // 2. Find unannotated or badly-annotated body sells
-    // (non-core-TP sells missing isBodyOwned, or with negative PnL/holdback)
-    const sellsToAnnotate = cycleFills.filter(f =>
-      f.side === 'sell' && f.orderId !== coreTpOrderId
-      && (!(f.isBodyOwned || f.isSatellite) || (f.bodyPnl ?? f.satellitePnl) < 0 || (f.bodyHoldbackAsset ?? f.satelliteHoldbackAsset) < 0)
-    );
-    const buyFills = cycleFills.filter(f => f.side === 'buy');
-    const consumedBuyOrderIds = new Set();
-
-    for (const sellFill of sellsToAnnotate) {
-      // Find matching buy: similar BTC size, closest in time to the sell
-      // (satellite TP is placed right after its buy, so the buy should be temporally close)
-      const candidates = buyFills.filter(buy => {
-        if (consumedBuyOrderIds.has(buy.orderId)) return false;
-        const sizeRatio = buy.size / sellFill.size;
-        return sizeRatio > 0.99 && sizeRatio < 1.01
-          && buy.timestamp < sellFill.timestamp;
-      });
-      // Pick the candidate closest in time to the sell
-      const matchingBuy = candidates.length > 0
-        ? candidates.reduce((best, buy) =>
-          (sellFill.timestamp - buy.timestamp) < (sellFill.timestamp - best.timestamp) ? buy : best
-        )
-        : null;
-
-      if (matchingBuy) {
-        consumedBuyOrderIds.add(matchingBuy.orderId);
-        const costBasis = matchingBuy.quoteAmount + (matchingBuy.netFee || matchingBuy.fee || 0);
-        const proceeds = sellFill.quoteAmount - (sellFill.netFee || sellFill.fee || 0);
-        const pnl = proceeds - costBasis;
-        const holdbackAsset = roundAsset(matchingBuy.size - sellFill.size);
-
-        // Sanity check: body PnL should be positive and holdback non-negative
-        if (pnl >= 0 && holdbackAsset >= 0) {
-          fillLedger.annotateFillsByOrderId(sellFill.orderId, {
-            isBodyOwned: true,
-            bodyCostBasis: costBasis,
-            bodyAvgPrice: matchingBuy.price,
-            bodyBtcQty: matchingBuy.size,
-            bodyHoldbackAsset: holdbackAsset,
-            bodyPnl: pnl,
-          });
-          fillLedger.annotateFillsByOrderId(matchingBuy.orderId, { isBodyOwned: true, sellOrderId: sellFill.orderId });
-          annotatedCount += 2;
-          logger.info(`🔧 [${exchange}] Annotated body sell: ${sellFill.orderId.slice(0, 8)} PnL=$${pnl.toFixed(4)}, holdback=${holdbackAsset.toFixed(8)} ${baseCurrency}`);
-        } else {
-          // Mark as body-owned but without computed values (dashboard will show raw data)
-          fillLedger.annotateFillsByOrderId(sellFill.orderId, { isBodyOwned: true });
-          annotatedCount++;
-          logger.warn(`⚠️ [${exchange}] Marked body sell ${sellFill.orderId.slice(0, 8)} (no matching buy found with valid PnL)`);
-        }
-      }
-    }
-
-    // 3. Fix fills with wrong cycle IDs (e.g., recovered-* cycles that belong here)
-    // Only move fills that are within the current cycle's timeframe
-    const currentCycleFills = fillLedger.getCurrentCycleFills();
-    const cycleStartTs = currentCycleFills.length > 0
-      ? Math.min(...currentCycleFills.map(f => f.timestamp))
-      : Date.now();
-    const allFillsRaw = fillLedger.getAllFills();
-    for (const fill of allFillsRaw) {
-      if (fill.cycleId && fill.cycleId.includes('-recovered-')
-        && fill.cycleId !== currentCycleId && fill.timestamp >= cycleStartTs) {
-        const oldCycleId = fill.cycleId;
-        fillLedger.updateFillCycleId(fill.tradeId, currentCycleId);
-        annotatedCount++;
-        logger.info(`🔧 [${exchange}] Moved fill ${fill.tradeId.slice(0, 8)} from ${oldCycleId} to ${currentCycleId}`);
-      }
-    }
-
-    if (annotatedCount > 0) {
-      fillLedger.persist();
-      logger.info(`🔧 [${exchange}] Annotated ${annotatedCount} satellite fills for correct tracking`);
-    }
+  if (annotatedCount > 0) {
+    fillLedger.persist();
+    logger.info(`🔧 [${exchange}] Annotated ${annotatedCount} satellite fills for correct tracking`);
   }
 };
 
