@@ -18,7 +18,7 @@ const API_URL = 'https://api.coinbase.com';
 const { parseFundCli } = require('./lib/fund-cli');
 const { atomicWriteSync } = require('../src/state-tracker');
 
-const { pair: PRODUCT_ID, apply: APPLY, ledgerPath: LEDGER_PATH, statePath: STATE_PATH } =
+const { prepareApply, pair: PRODUCT_ID, apply: APPLY, ledgerPath: LEDGER_PATH, statePath: STATE_PATH } =
   parseFundCli(process.argv, { exchange: 'coinbase', usage: 'node scripts/add-recovery-fill.js' });
 const DRY_RUN = !APPLY;
 
@@ -46,6 +46,7 @@ const makeRequest = async (method, apiPath) => {
 };
 
 async function main() {
+  await prepareApply({ files: [LEDGER_PATH, STATE_PATH, path.join(DATA_DIR, 'config.json')] });
   console.log('\n═══════════════════════════════════════════════════');
   console.log('  ADD RECOVERY FILL — Re-add lost ec8b7bcb buy');
   console.log('═══════════════════════════════════════════════════\n');
@@ -164,15 +165,10 @@ async function main() {
 
     // Save ledger
     ledger.sort((a, b) => a.timestamp - b.timestamp);
-    const backupLedger = LEDGER_PATH + '.backup-addfill-' + Date.now();
-    fs.copyFileSync(LEDGER_PATH, backupLedger);
-    console.log(`\n💾 Backup: ${path.basename(backupLedger)}`);
     atomicWriteSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
     console.log('✅ fill-ledger.json saved');
 
     // Save state
-    const backupState = STATE_PATH + '.backup-addfill-' + Date.now();
-    fs.copyFileSync(STATE_PATH, backupState);
     atomicWriteSync(STATE_PATH, JSON.stringify(state, null, 2));
     console.log('✅ regime-state.json saved');
 

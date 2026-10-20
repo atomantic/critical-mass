@@ -28,30 +28,30 @@
  *          node scripts/diff-cryptocom-ledger.js   # writes missing-fills.json
  *
  * Engine MUST be stopped: pm2 stop critical-mass-cryptocom
- * Refuses to run if state file was touched in the last 15 seconds.
+ * --apply verifies engine liveness and backs up files before repair.
  *
  * Usage:
- *   node scripts/cryptocom-recover-may-2026-partials.js          # dry-run
- *   node scripts/cryptocom-recover-may-2026-partials.js --apply  # writes
+ *   node scripts/cryptocom-recover-may-2026-partials.js --pair CRO_USD          # dry-run
+ *   node scripts/cryptocom-recover-may-2026-partials.js --pair CRO_USD --apply  # writes
  */
+async function main() {
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+const { apply: APPLY, prepareApply, fundDir } = parseFundCli(process.argv, {
+  exchange: 'cryptocom', pair: 'CRO_USD', usage: 'node scripts/cryptocom-recover-may-2026-partials.js'
+});
 const fs = require('fs');
 const path = require('path');
 
-const APPLY = process.argv.includes('--apply');
-const DIR = path.join(__dirname, '..', 'data', 'cryptocom', 'CRO_USD');
+const DIR = fundDir;
 const stateFile = path.join(DIR, 'regime-state.json');
 const ledgerFile = path.join(DIR, 'fill-ledger.json');
 const missingFile = path.join(DIR, 'missing-fills.json');
 
+await prepareApply({ files: [path.join(fundDir, 'fill-ledger.json'), path.join(fundDir, 'regime-state.json')] });
+
 if (!fs.existsSync(missingFile)) {
   console.error(`⛔ ${missingFile} not found. Run scripts/diff-cryptocom-ledger.js first.`);
-  process.exit(1);
-}
-
-const stateAge = (Date.now() - fs.statSync(stateFile).mtimeMs) / 1000;
-if (APPLY && stateAge < 15) {
-  console.error(`⛔ regime-state.json was modified ${stateAge.toFixed(0)}s ago — engine likely running.`);
-  console.error('   Stop it first: pm2 stop critical-mass-cryptocom');
   process.exit(1);
 }
 
@@ -257,22 +257,11 @@ if (!APPLY) {
   process.exit(0);
 }
 
-// Backup
-fs.copyFileSync(stateFile, `${stateFile}.bak.${ts}`);
-fs.copyFileSync(ledgerFile, `${ledgerFile}.bak.${ts}`);
-console.log(`\n📁 Backups written:`);
-console.log(`   ${stateFile}.bak.${ts}`);
-console.log(`   ${ledgerFile}.bak.${ts}`);
-
 // Append new ledger rows (sorted by timestamp, after the existing rows)
 newLedgerRows.sort((a, b) => a.timestamp - b.timestamp);
 const newLedger = [...ledger, ...newLedgerRows];
 
-const writeAtomic = (filePath, data) => {
-  const tmp = `${filePath}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-  fs.renameSync(tmp, filePath);
-};
+const writeAtomic = (filePath, data) => atomicWriteSync(filePath, JSON.stringify(data, null, 2));
 
 writeAtomic(ledgerFile, newLedger);
 writeAtomic(stateFile, state);
@@ -281,3 +270,6 @@ console.log(`\n✅ Wrote ledger (${newLedger.length} fills) and state.`);
 console.log(`Next: pm2 start critical-mass-cryptocom`);
 console.log(`The engine's reconcile loop will detect body.assetQty (${body.assetQty}) > body.assetOnOrder (${body.assetOnOrder})`);
 console.log(`and cancel-replace TP order ${body.tpOrderId} at the new size.`);
+
+}
+main().catch(err => { console.error(err); process.exitCode = 1; });

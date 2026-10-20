@@ -28,7 +28,7 @@ const API_URL = 'https://api.coinbase.com';
 const { parseFundCli } = require('./lib/fund-cli');
 const { atomicWriteSync } = require('../src/state-tracker');
 
-const { pair: PRODUCT_ID, apply: APPLY, ledgerPath: LEDGER_PATH, statePath: STATE_PATH } =
+const { prepareApply, pair: PRODUCT_ID, apply: APPLY, ledgerPath: LEDGER_PATH, statePath: STATE_PATH } =
   parseFundCli(process.argv, { exchange: 'coinbase', usage: 'node scripts/reconcile-state.js' });
 const DRY_RUN = !APPLY;
 
@@ -92,11 +92,6 @@ const fetchAllFills = async (startTimestamp) => {
 const isManualOrder = (orderId) => MANUAL_ORDER_PREFIXES.some(p => orderId.startsWith(p));
 
 // ── Helpers ────────────────────────────────────────────────────
-const backup = (filePath) => {
-  const backupPath = `${filePath}.backup-${Date.now()}`;
-  fs.copyFileSync(filePath, backupPath);
-  console.log(`💾 Backup: ${path.basename(backupPath)}`);
-};
 
 const writeJSON = (filePath, data) => {
   if (DRY_RUN) {
@@ -108,6 +103,7 @@ const writeJSON = (filePath, data) => {
 
 // ── MAIN ───────────────────────────────────────────────────────
 async function main() {
+  await prepareApply({ files: [LEDGER_PATH, STATE_PATH, USER_CONFIG_PATH] });
   console.log(`\n${'═'.repeat(60)}`);
   console.log('  RECONCILE STATE — Comprehensive Fill Audit & Repair');
   console.log(`${'═'.repeat(60)}`);
@@ -434,12 +430,6 @@ async function main() {
 
   // Sort ledger by timestamp before writing
   ledger.sort((a, b) => a.timestamp - b.timestamp);
-
-  if (!DRY_RUN) {
-    backup(LEDGER_PATH);
-    backup(STATE_PATH);
-    backup(USER_CONFIG_PATH);
-  }
 
   writeJSON(LEDGER_PATH, ledger);
   console.log(`✅ fill-ledger.json: ${ledger.length} fills`);

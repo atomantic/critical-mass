@@ -7,20 +7,29 @@
  *     linked buys, exactly 1.0 BTC at $71,500 — same pollution pattern as
  *     the previously deleted 7a3c8ef8-...).
  *
+ * --apply verifies the engine is stopped and backs up files before repair.
+ *
  * Usage:
- *   node scripts/cleanup-coinbase-pollution-2.js          # dry-run
- *   node scripts/cleanup-coinbase-pollution-2.js --apply  # writes
+ *   node scripts/cleanup-coinbase-pollution-2.js --pair BTC-USDC          # dry-run
+ *   node scripts/cleanup-coinbase-pollution-2.js --pair BTC-USDC --apply  # writes
  */
 
+async function main() {
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+const { apply: apply, prepareApply, fundDir } = parseFundCli(process.argv, {
+  exchange: 'coinbase', pair: 'BTC-USDC', usage: 'node scripts/cleanup-coinbase-pollution-2.js'
+});
 const fs = require('fs');
 const path = require('path');
 
-const apply = process.argv.includes('--apply');
-const LEDGER = path.join(__dirname, '..', 'data', 'coinbase', 'BTC-USDC', 'fill-ledger.json');
+const LEDGER = path.join(fundDir, 'fill-ledger.json');
 
 const ORPHANED_BUY = '4ea191b2-7863-43c4-97e5-0aaf8420b6c0';
 const RIGHTFUL_SELL = 'd62b63e2-b0b8-4ad7-8a57-49b3fc7b2bfe';
 const ORPHAN_SELL_TO_DELETE = 'ef8ad8de-57a5-4b1f-8356-75370f0184f3';
+
+await prepareApply({ files: [path.join(fundDir, 'fill-ledger.json')] });
 
 const raw = JSON.parse(fs.readFileSync(LEDGER, 'utf8'));
 const fills = Array.isArray(raw) ? raw : Object.values(raw);
@@ -60,10 +69,11 @@ console.log(`      sumSize: ${removedSize}, sumQuoteAmount: ${removedQuote.toFix
 console.log(`  Total fills after: ${kept.length}`);
 
 if (apply) {
-  const backup = `${LEDGER}.backup-cleanup2-${Date.now()}`;
-  fs.copyFileSync(LEDGER, backup);
-  fs.writeFileSync(LEDGER, JSON.stringify(kept, null, 2));
-  console.log(`  ✓ written (backup: ${path.basename(backup)})`);
+  atomicWriteSync(LEDGER, JSON.stringify(kept, null, 2));
+  console.log(`  ✓ written`);
 } else {
   console.log(`  (Re-run with --apply to write.)`);
 }
+
+}
+main().catch(err => { console.error(err); process.exitCode = 1; });

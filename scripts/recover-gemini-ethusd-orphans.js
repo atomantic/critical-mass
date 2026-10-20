@@ -12,18 +12,22 @@
  *   - Fixes all migration closed-trade entries with missing holdback
  *   - Corrects realizedPnL and realizedAssetPnL
  *
- * Usage: node scripts/recover-gemini-ethusd-orphans.js [--dry-run]
- * PREREQUISITE: pm2 stop critical-mass-gemini
+ * Usage: node scripts/recover-gemini-ethusd-orphans.js --pair ETHUSD [--apply]
+ * Dry-run by default. --apply verifies the engine is stopped and backs up files.
  */
 
 const fs = require('fs');
 const path = require('path');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
-const { DATA_DIR } = require('../src/paths');
 
-const DRY_RUN = process.argv.includes('--dry-run');
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+const { apply, prepareApply, fundDir } = parseFundCli(process.argv, {
+  exchange: 'gemini', pair: 'ETHUSD', usage: 'node scripts/recover-gemini-ethusd-orphans.js'
+});
+const DRY_RUN = !apply;
 
-const PAIR_DIR = path.join(DATA_DIR, 'gemini/ETHUSD');
+const PAIR_DIR = fundDir;
 const LEDGER_PATH = path.join(PAIR_DIR, 'fill-ledger.json');
 const STATE_PATH = path.join(PAIR_DIR, 'regime-state.json');
 const CLOSED_PATH = path.join(PAIR_DIR, 'closed-trades.json');
@@ -37,19 +41,13 @@ const ALREADY_SOLD_BODY_ID = 'body-59257145-mntgr0hl';
 const ALREADY_SOLD_SELL_ORDER = '73771277724825964';
 const PLACEHOLDER_BODY_ID = 'body-69706885-mntmyzk5';
 
-function backup(filepath) {
-  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupPath = filepath + `.backup-recovery-${ts}`;
-  fs.copyFileSync(filepath, backupPath);
-  console.log(`  backed up -> ${path.basename(backupPath)}`);
-}
-
 function generateBodyId(orderId, timestamp) {
   const suffix = orderId.slice(-8);
   return `body-${suffix}-${timestamp.toString(36)}`;
 }
 
 async function main() {
+  await prepareApply({ files: [LEDGER_PATH, STATE_PATH, CLOSED_PATH] });
   console.log('\n===================================================');
   console.log('  RECOVER ORPHANED GEMINI ETHUSD BUYS');
   console.log('===================================================\n');
@@ -364,20 +362,14 @@ async function main() {
     return;
   }
 
-  // ── Save ──
-  console.log('\nBacking up files...');
-  backup(LEDGER_PATH);
-  backup(STATE_PATH);
-  backup(CLOSED_PATH);
-
   // Update ledger
   ledger.push(...newFills);
   ledger.sort((a, b) => a.timestamp - b.timestamp);
-  fs.writeFileSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
+  atomicWriteSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
   console.log(`  wrote ${path.basename(LEDGER_PATH)} (${ledger.length} entries)`);
 
   // Update closed trades
-  fs.writeFileSync(CLOSED_PATH, JSON.stringify(closed, null, 2));
+  atomicWriteSync(CLOSED_PATH, JSON.stringify(closed, null, 2));
   console.log(`  wrote ${path.basename(CLOSED_PATH)}`);
 
   // Update state
@@ -393,7 +385,7 @@ async function main() {
     pos.celestialState.bodiesRealizedAssetPnL = correctReserves;
   }
 
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+  atomicWriteSync(STATE_PATH, JSON.stringify(state, null, 2));
   console.log(`  wrote ${path.basename(STATE_PATH)}`);
 
   console.log('\n===================================================');

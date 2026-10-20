@@ -25,13 +25,13 @@
  *   5. Place a single consolidated TP at max(avgPrice × tpMinPct, ask + 5bps)
  *   6. Backup state + ledger before any writes
  *
- * Dry-run by default. STOP THE GEMINI ENGINE before --apply.
+ * Dry-run by default. --apply verifies the engine is stopped and backs up files.
  *
  * Usage:
- *   node scripts/recover-gemini-ethusd-2026-05-14.js                  # dry-run
- *   node scripts/recover-gemini-ethusd-2026-05-14.js --apply          # apply
- *   node scripts/recover-gemini-ethusd-2026-05-14.js --tp-pct 1.5     # override
- *   node scripts/recover-gemini-ethusd-2026-05-14.js --no-place-tp    # ledger+state only
+ *   node scripts/recover-gemini-ethusd-2026-05-14.js --pair ETHUSD                  # dry-run
+ *   node scripts/recover-gemini-ethusd-2026-05-14.js --pair ETHUSD --apply          # apply
+ *   node scripts/recover-gemini-ethusd-2026-05-14.js --pair ETHUSD --tp-pct 1.5     # override
+ *   node scripts/recover-gemini-ethusd-2026-05-14.js --pair ETHUSD --no-place-tp    # ledger+state only
  */
 
 const fs = require('fs');
@@ -41,7 +41,11 @@ const { resolveFundDataDir } = require('../src/migration');
 const { getRegimeConfig } = require('../src/config-utils');
 const { roundAsset, roundUSDC } = require('../src/volatility-utils');
 
-const APPLY = process.argv.includes('--apply');
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+const { apply: APPLY, prepareApply } = parseFundCli(process.argv, {
+  exchange: 'gemini', pair: 'ETHUSD', usage: 'node scripts/recover-gemini-ethusd-2026-05-14.js'
+});
 const NO_PLACE_TP = process.argv.includes('--no-place-tp');
 const tpPctArg = process.argv.indexOf('--tp-pct');
 const TP_PCT_OVERRIDE = tpPctArg >= 0 ? parseFloat(process.argv[tpPctArg + 1]) : null;
@@ -56,32 +60,16 @@ const fundDir = resolveFundDataDir('gemini', PAIR);
 const statePath = path.join(fundDir, 'regime-state.json');
 const ledgerPath = path.join(fundDir, 'fill-ledger.json');
 
-const atomicWrite = (filePath, data) => {
-  const tmp = `${filePath}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-  fs.renameSync(tmp, filePath);
-};
+const atomicWrite = (filePath, data) => atomicWriteSync(filePath, JSON.stringify(data, null, 2));
 
 const roundToIncrement = (v, inc) => Math.round(v / inc) * inc;
 
 async function main() {
+  await prepareApply({ files: [ledgerPath, statePath] });
   console.log(`\n${'═'.repeat(70)}`);
   console.log(`  Gemini ETHUSD Recovery — full engine history`);
   console.log(`  Mode: ${APPLY ? '⚠️  APPLY (mutate state + place TP)' : '🔍 DRY-RUN (no changes)'}`);
   console.log(`${'═'.repeat(70)}\n`);
-
-  // Safety: refuse if engine running
-  if (APPLY) {
-    const runningFlag = path.join(fundDir, 'regime-engine-running.json');
-    if (fs.existsSync(runningFlag)) {
-      const flag = JSON.parse(fs.readFileSync(runningFlag, 'utf8'));
-      const ageMs = Date.now() - (flag.lastHeartbeat || flag.startedAt || 0);
-      if (ageMs < 60_000) {
-        console.error(`❌ ABORT: regime-engine-running.json updated ${Math.round(ageMs/1000)}s ago. Stop the engine first.`);
-        process.exit(1);
-      }
-    }
-  }
 
   const adapter = createGeminiAdapter();
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
@@ -251,7 +239,7 @@ async function main() {
   console.log(`  state.cycleBuys:     +${buys.length} (orphan buys count toward current cycle)`);
 
   if (!APPLY) {
-    console.log(`\n💡 Dry-run done. To apply: node scripts/recover-gemini-ethusd-2026-05-14.js --apply\n`);
+    console.log(`\n💡 Dry-run done. To apply: node scripts/recover-gemini-ethusd-2026-05-14.js --pair ETHUSD --apply\n`);
     return;
   }
 
@@ -262,11 +250,6 @@ async function main() {
   console.log(`${'═'.repeat(70)}\n`);
 
   const ts = Date.now();
-  fs.copyFileSync(statePath, `${statePath}.bak.${ts}`);
-  fs.copyFileSync(ledgerPath, `${ledgerPath}.bak.${ts}`);
-  console.log(`📁 Backups:`);
-  console.log(`   ${statePath}.bak.${ts}`);
-  console.log(`   ${ledgerPath}.bak.${ts}\n`);
 
   // Place TP first; abort state changes if it fails
   let tpOrderId = null;
@@ -348,9 +331,6 @@ async function main() {
   console.log(`  TP order:    ${tpOrderId || '(none — --no-place-tp)'}`);
   console.log(`  Position:    ${body.assetQty} ETH @ avg $${body.avgPrice.toFixed(2)} (cost basis $${body.costBasis})`);
   console.log(`  TP target:   $${tpRounded.toFixed(2)} (+${((tpRounded-body.avgPrice)/body.avgPrice*100).toFixed(3)}%)`);
-  console.log(`\n  Backups:`);
-  console.log(`    ${statePath}.bak.${ts}`);
-  console.log(`    ${ledgerPath}.bak.${ts}`);
   console.log(`\n  Next: restart engine → pm2 restart critical-mass-gemini\n`);
 }
 

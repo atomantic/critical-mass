@@ -12,15 +12,24 @@
  *
  * Idempotent. Engine MUST be stopped.
  *
+ * --apply verifies the engine is stopped and backs up files before repair.
+ *
  * Usage:
- *   node scripts/cryptocom-flag-orphan-sells.js           # dry-run
- *   node scripts/cryptocom-flag-orphan-sells.js --apply   # writes
+ *   node scripts/cryptocom-flag-orphan-sells.js --pair CRO_USD           # dry-run
+ *   node scripts/cryptocom-flag-orphan-sells.js --pair CRO_USD --apply   # writes
  */
+async function main() {
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+const { apply: APPLY, prepareApply, fundDir } = parseFundCli(process.argv, {
+  exchange: 'cryptocom', pair: 'CRO_USD', usage: 'node scripts/cryptocom-flag-orphan-sells.js'
+});
 const fs = require('fs');
 const path = require('path');
 
-const LEDGER_PATH = path.join(__dirname, '..', 'data', 'cryptocom', 'CRO_USD', 'fill-ledger.json');
-const APPLY = process.argv.includes('--apply');
+const LEDGER_PATH = path.join(fundDir, 'fill-ledger.json');
+
+await prepareApply({ files: [path.join(fundDir, 'fill-ledger.json')] });
 
 const ledger = JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
 
@@ -64,8 +73,8 @@ if (!APPLY) {
   process.exit(0);
 }
 
-const bp = `${LEDGER_PATH}.backup-flag-${Date.now()}`;
-fs.copyFileSync(LEDGER_PATH, bp);
-console.log(`💾 Backup: ${path.basename(bp)}`);
-fs.writeFileSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
+atomicWriteSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
 console.log(`✅ Wrote ledger with ${orphans.length} sells flagged as untracked`);
+
+}
+main().catch(err => { console.error(err); process.exitCode = 1; });

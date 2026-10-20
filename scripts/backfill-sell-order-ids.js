@@ -11,17 +11,20 @@
  *   node scripts/backfill-sell-order-ids.js --pair BTC-USDC --tp-order-id=<id> --apply # explicit core TP for active cycle
  */
 
+async function main() {
 const fs = require('fs');
 const path = require('path');
 
 const { parseFundCli } = require('./lib/fund-cli');
 const { atomicWriteSync } = require('../src/state-tracker');
 
-const { apply, ledgerPath: FILL_LEDGER_PATH, statePath: REGIME_STATE_PATH } =
+const { prepareApply, apply, ledgerPath: FILL_LEDGER_PATH, statePath: REGIME_STATE_PATH } =
   parseFundCli(process.argv, { exchange: 'coinbase', usage: 'node scripts/backfill-sell-order-ids.js' });
 
 const tpOrderIdArg = process.argv.find(a => a.startsWith('--tp-order-id='));
 const explicitTpOrderId = tpOrderIdArg ? tpOrderIdArg.split('=')[1] : null;
+
+await prepareApply({ files: [FILL_LEDGER_PATH] });
 
 const fills = JSON.parse(fs.readFileSync(FILL_LEDGER_PATH, 'utf8'));
 const regimeState = JSON.parse(fs.readFileSync(REGIME_STATE_PATH, 'utf8'));
@@ -189,3 +192,6 @@ if (apply) {
 } else {
   console.log('\nRun with --apply to persist changes.');
 }
+
+}
+main().catch(err => { console.error(err); process.exitCode = 1; });

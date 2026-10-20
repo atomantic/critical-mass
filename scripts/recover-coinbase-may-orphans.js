@@ -20,13 +20,13 @@
  *   4. Computes TP = max(avgPrice × (1 + tpMinPercent), currentBid × (1 + safetyBps))
  *   5. With --apply: appends fills to ledger, adds body to state, places TP sell
  *
- * Default mode is dry-run. STOP THE COINBASE ENGINE before running with --apply.
+ * Default mode is dry-run. --apply verifies the engine is stopped and backs up files.
  *
  * Usage:
- *   node scripts/recover-coinbase-may-orphans.js                 # dry-run
- *   node scripts/recover-coinbase-may-orphans.js --apply         # mutate + place TP
- *   node scripts/recover-coinbase-may-orphans.js --tp-pct 1.5    # override TP % (default: tpMinPercent)
- *   node scripts/recover-coinbase-may-orphans.js --no-place-tp   # ledger+state only, no TP order
+ *   node scripts/recover-coinbase-may-orphans.js --pair BTC-USDC                 # dry-run
+ *   node scripts/recover-coinbase-may-orphans.js --pair BTC-USDC --apply         # mutate + place TP
+ *   node scripts/recover-coinbase-may-orphans.js --pair BTC-USDC --tp-pct 1.5    # override TP % (default: tpMinPercent)
+ *   node scripts/recover-coinbase-may-orphans.js --pair BTC-USDC --no-place-tp   # ledger+state only, no TP order
  */
 
 const fs = require('fs');
@@ -39,7 +39,11 @@ const { getRegimeConfig } = require('../src/config-utils');
 const { DATA_DIR } = require('../src/paths');
 const { roundAsset, roundUSDC } = require('../src/volatility-utils');
 
-const APPLY = process.argv.includes('--apply');
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+const { apply: APPLY, prepareApply } = parseFundCli(process.argv, {
+  exchange: 'coinbase', pair: 'BTC-USDC', usage: 'node scripts/recover-coinbase-may-orphans.js'
+});
 const NO_PLACE_TP = process.argv.includes('--no-place-tp');
 const tpPctArg = process.argv.indexOf('--tp-pct');
 const TP_PCT_OVERRIDE = tpPctArg >= 0 ? parseFloat(process.argv[tpPctArg + 1]) : null;
@@ -97,33 +101,16 @@ const fetchFills = async () => {
 
 // ── Atomic write ────────────────────────────────────────────────
 
-const atomicWrite = (filePath, data) => {
-  const tmpPath = `${filePath}.tmp.${process.pid}`;
-  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
-  fs.renameSync(tmpPath, filePath);
-};
+const atomicWrite = (filePath, data) => atomicWriteSync(filePath, JSON.stringify(data, null, 2));
 
 // ── Main ────────────────────────────────────────────────────────
 
 async function main() {
+  await prepareApply({ files: [ledgerPath, statePath] });
   console.log(`\n${'═'.repeat(70)}`);
   console.log(`  Coinbase BTC-USDC May 2026 Orphan Recovery`);
   console.log(`  Mode: ${APPLY ? '⚠️  APPLY (will mutate state & place TP)' : '🔍 DRY-RUN (no changes)'}`);
   console.log(`${'═'.repeat(70)}\n`);
-
-  // Safety: refuse to apply if engine is running
-  if (APPLY) {
-    const runningFlag = path.join(fundDir, 'regime-engine-running.json');
-    if (fs.existsSync(runningFlag)) {
-      const flag = JSON.parse(fs.readFileSync(runningFlag, 'utf8'));
-      const ageMs = Date.now() - (flag.lastHeartbeat || flag.startedAt || 0);
-      if (ageMs < 60_000) {
-        console.error(`❌ ABORT: regime-engine-running.json was updated ${Math.round(ageMs/1000)}s ago.`);
-        console.error(`   Stop the coinbase engine first: pm2 stop critical-mass-coinbase`);
-        process.exit(1);
-      }
-    }
-  }
 
   // Load state + ledger
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
@@ -247,7 +234,7 @@ async function main() {
   if (!APPLY) {
     console.log(`\n💡 Dry-run complete. Review above. To apply:`);
     console.log(`    pm2 stop critical-mass-coinbase  # if running`);
-    console.log(`    node scripts/recover-coinbase-may-orphans.js --apply\n`);
+    console.log(`    node scripts/recover-coinbase-may-orphans.js --pair BTC-USDC --apply\n`);
     return;
   }
 
@@ -257,13 +244,7 @@ async function main() {
   console.log(`  APPLYING CHANGES`);
   console.log(`${'═'.repeat(70)}\n`);
 
-  // Backup
   const ts = Date.now();
-  fs.copyFileSync(statePath, `${statePath}.bak.${ts}`);
-  fs.copyFileSync(ledgerPath, `${ledgerPath}.bak.${ts}`);
-  console.log(`📁 Backups written:`);
-  console.log(`   ${statePath}.bak.${ts}`);
-  console.log(`   ${ledgerPath}.bak.${ts}\n`);
 
   // Build new body
   const newBody = {
@@ -360,9 +341,6 @@ async function main() {
   console.log(`  TP order:    ${tpOrderId || '(none — --no-place-tp)'}`);
   console.log(`  Restored:    ${roundAsset(totalAsset)} BTC @ avg $${roundUSDC(avgPrice)}`);
   console.log(`  TP target:   $${roundUSDC(tpRounded)} (+${((tpRounded-avgPrice)/avgPrice*100).toFixed(3)}%)`);
-  console.log(`\n  Backups:`);
-  console.log(`    ${statePath}.bak.${ts}`);
-  console.log(`    ${ledgerPath}.bak.${ts}`);
   console.log(`\n  Next steps:`);
   console.log(`    1. Verify TP order is visible on Coinbase`);
   console.log(`    2. Re-run audit-fills.js to confirm orphan count dropped`);

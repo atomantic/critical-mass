@@ -25,28 +25,28 @@
  * applying.
  *
  * Engine MUST be stopped: pm2 stop critical-mass-cryptocom
- * Refuses to run if state file was touched in the last 15 seconds.
+ * --apply verifies engine liveness and backs up files before repair.
  *
  * Usage:
- *   node scripts/cryptocom-recover-orphan-buys.js          # dry-run
- *   node scripts/cryptocom-recover-orphan-buys.js --apply  # writes
+ *   node scripts/cryptocom-recover-orphan-buys.js --pair CRO_USD          # dry-run
+ *   node scripts/cryptocom-recover-orphan-buys.js --pair CRO_USD --apply  # writes
  */
+async function main() {
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+const { apply: APPLY, prepareApply, fundDir } = parseFundCli(process.argv, {
+  exchange: 'cryptocom', pair: 'CRO_USD', usage: 'node scripts/cryptocom-recover-orphan-buys.js'
+});
 const fs = require('fs');
 const path = require('path');
 const { findMergeTarget, classifyTier, getTierConfig } = require('../src/celestial-hierarchy');
 
-const APPLY = process.argv.includes('--apply');
-const DIR = path.join(__dirname, '..', 'data', 'cryptocom', 'CRO_USD');
+const DIR = fundDir;
 const stateFile = path.join(DIR, 'regime-state.json');
 const ledgerFile = path.join(DIR, 'fill-ledger.json');
 const configFile = path.join(__dirname, '..', 'data', 'config.json');
 
-const stateAge = (Date.now() - fs.statSync(stateFile).mtimeMs) / 1000;
-if (stateAge < 15) {
-  console.error(`⛔ regime-state.json was modified ${stateAge.toFixed(0)}s ago — engine likely running.`);
-  console.error('   Stop it first: pm2 stop critical-mass-cryptocom');
-  process.exit(1);
-}
+await prepareApply({ files: [path.join(fundDir, 'fill-ledger.json'), path.join(fundDir, 'regime-state.json')] });
 
 const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
 const ledger = JSON.parse(fs.readFileSync(ledgerFile, 'utf8'));
@@ -198,8 +198,11 @@ if (!APPLY) {
   process.exit(0);
 }
 
-fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
-fs.writeFileSync(ledgerFile, JSON.stringify(ledger, null, 2));
+atomicWriteSync(stateFile, JSON.stringify(state, null, 2));
+atomicWriteSync(ledgerFile, JSON.stringify(ledger, null, 2));
 console.log('\n✅ Wrote state and ledger.');
 console.log('Next: pm2 start critical-mass-cryptocom');
 console.log('The engine\'s reconcile loop will detect each merged body\'s TP-size mismatch on the next tick and cancel-replace.');
+
+}
+main().catch(err => { console.error(err); process.exitCode = 1; });

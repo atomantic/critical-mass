@@ -26,23 +26,32 @@
  *
  * Engine MUST be stopped: pm2 stop critical-mass-cryptocom
  *
+ * --apply verifies the engine is stopped and backs up files before repair.
+ *
  * Usage:
- *   node scripts/cryptocom-resolve-orphans.js           # dry-run
- *   node scripts/cryptocom-resolve-orphans.js --apply   # writes
+ *   node scripts/cryptocom-resolve-orphans.js --pair CRO_USD           # dry-run
+ *   node scripts/cryptocom-resolve-orphans.js --pair CRO_USD --apply   # writes
  */
+async function main() {
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+const { apply: APPLY, prepareApply, fundDir } = parseFundCli(process.argv, {
+  exchange: 'cryptocom', pair: 'CRO_USD', usage: 'node scripts/cryptocom-resolve-orphans.js'
+});
 const fs = require('fs');
 const path = require('path');
 
-const DIR = path.join(__dirname, '..', 'data', 'cryptocom', 'CRO_USD');
+const DIR = fundDir;
 const LEDGER_PATH = path.join(DIR, 'fill-ledger.json');
 const STATE_PATH = path.join(DIR, 'regime-state.json');
-const APPLY = process.argv.includes('--apply');
 
 const BLACK_HOLE_TP = '6142909974300226432';
 const BLACK_HOLE_BODY_ID = 'body-85084389-mmtxp76q';
 
 const round8 = (n) => Math.round(n * 1e8) / 1e8;
 const round2 = (n) => Math.round(n * 100) / 100;
+
+await prepareApply({ files: [path.join(fundDir, 'fill-ledger.json'), path.join(fundDir, 'regime-state.json')] });
 
 const ledger = JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
 const state = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
@@ -161,11 +170,6 @@ if (!APPLY) {
 }
 
 // ── Apply ───────────────────────────────────────────────────────────────────
-const bpLedger = `${LEDGER_PATH}.backup-orphan-${Date.now()}`;
-const bpState = `${STATE_PATH}.backup-orphan-${Date.now()}`;
-fs.copyFileSync(LEDGER_PATH, bpLedger);
-fs.copyFileSync(STATE_PATH, bpState);
-console.log(`\n💾 Backups: ${path.basename(bpLedger)}, ${path.basename(bpState)}`);
 
 // Update nebula body in state
 nebula.assetQty = newNebulaQty;
@@ -179,7 +183,10 @@ state.position.avgCostBasis = state.position.totalAsset > 0
   ? round8(state.position.totalCostBasis / state.position.totalAsset)
   : 0;
 
-fs.writeFileSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
-fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+atomicWriteSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
+atomicWriteSync(STATE_PATH, JSON.stringify(state, null, 2));
 console.log(`✅ Wrote ${path.basename(LEDGER_PATH)} and ${path.basename(STATE_PATH)}`);
 console.log(`\nEngine will replace nebula TP on next tick (body qty > TP qty).`);
+
+}
+main().catch(err => { console.error(err); process.exitCode = 1; });
