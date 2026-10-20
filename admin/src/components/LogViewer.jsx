@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useId } from 'react'
 import { useLogStream } from '../hooks/useLogStream'
 import { useToast } from './Toast'
 import { flushResultToast } from '../utils/flushResult.mjs'
+import { plural } from '../utils/plural.mjs'
 
 const TAIL_OPTIONS = [100, 250, 500, 1000, 2000]
 
@@ -76,7 +77,7 @@ export default function LogViewer({ processName }) {
           </select>
         </div>
 
-        <span className="text-xs text-gray-400">{logs.length} lines</span>
+        <span className="text-xs text-gray-400">{plural(logs.length, 'line')}</span>
 
         <div className="flex items-center gap-2 ml-auto">
           {/* Streaming status */}

@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { formatPriceByMagnitude } from '../charts/chartUtils'
 import { formatTimestamp } from './regimeFormat'
 import RegimeActionModals from './RegimeActionModals'
+import { describeActionFailure } from '../../utils/actionFailure.mjs'
 
 export default function PlacementIntentsPanel({ placementIntents, asset, exchange, pairQuery, addToast, setSocketStatus, fetchStatus, fetchFills }) {
   // { intent, action: 'adopt'|'discard' } — operator reconcile of an unresolved placement intent
@@ -20,7 +21,7 @@ export default function PlacementIntentsPanel({ placementIntents, asset, exchang
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ intentId: intent.id, action }),
       })
-      const data = await res.json().catch(() => ({ success: false, error: 'Bad response' }))
+      const data = await res.json().catch(() => ({}))
       if (data.success) {
         addToast({
           type: 'success',
@@ -31,7 +32,7 @@ export default function PlacementIntentsPanel({ placementIntents, asset, exchang
         fetchStatus()
         fetchFills()
       } else {
-        addToast({ type: 'error', title: 'Reconcile failed', message: data.error || data.message || 'Unknown error' })
+        addToast({ type: 'error', title: 'Reconcile failed', message: describeActionFailure(res.status, data) })
       }
     } catch (err) {
       addToast({ type: 'error', title: 'Reconcile failed', message: err.message })
@@ -84,7 +85,7 @@ export default function PlacementIntentsPanel({ placementIntents, asset, exchang
                 </div>
                 <div className="mt-2 text-gray-400">{intent.recoveryHint}</div>
                 <div className="mt-1 text-gray-400 font-mono">
-                  {intent.clientOrderId ? `client_order_id ${intent.clientOrderId} · ` : ''}
+                  {intent.clientOrderId ? `client order ${intent.clientOrderId} · ` : ''}
                   {formatTimestamp(intent.createdAt)}
                   {intent.reason ? ` · ${intent.reason}` : ''}
                 </div>

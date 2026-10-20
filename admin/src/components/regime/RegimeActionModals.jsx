@@ -1,5 +1,6 @@
 import React from 'react'
 import ModalDialog from '../ModalDialog'
+import { plural } from '../../utils/plural.mjs'
 
 const RegimeActionModals = ({
   // Cancel Ladder state & handlers
@@ -119,7 +120,7 @@ const RegimeActionModals = ({
               disabled={collapsingAll}
               autoFocus
             >
-              Cancel
+              Keep bodies
             </button>
             <button
               className="px-4 py-2 text-sm text-white bg-amber-600 hover:bg-amber-500 rounded-sm transition-colors disabled:opacity-50"
@@ -185,7 +186,7 @@ const RegimeActionModals = ({
           </p>
           <p className="text-gray-400 text-xs mb-4 font-mono break-all">
             {intentConfirm.intent?.action || 'order'} · {intentConfirm.intent?.side || '?'}
-            {intentConfirm.intent?.clientOrderId ? ` · client_order_id ${intentConfirm.intent.clientOrderId}` : ' · no client order id recorded'}
+            {intentConfirm.intent?.clientOrderId ? ` · client order ${intentConfirm.intent.clientOrderId}` : ' · no client order id recorded'}
           </p>
           <div className="flex justify-end gap-3">
             <button
@@ -260,7 +261,7 @@ const RegimeActionModals = ({
               disabled={rollingUp}
               autoFocus
             >
-              Cancel
+              Keep separate
             </button>
             <button
               className="px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded-sm transition-colors disabled:opacity-50"
@@ -404,7 +405,7 @@ const RegimeActionModals = ({
           <h3 id="convert-dca-title" className="text-white text-lg font-medium mb-3">{convertPreview.merge ? 'Import DCA Orders' : 'Upgrade DCA Orders'}</h3>
           <p id="convert-dca-description" className="text-gray-300 text-sm mb-4">
             {convertPreview.merge
-              ? `Merge DCA positions into the existing regime engine (${convertPreview.existingBodies} bodies, ${convertPreview.existingAsset?.toFixed(8)} ${getBaseCurrency(convertPreview.productId)}). Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open. The regime engine will place new take-profit orders when started.`
+              ? `Merge DCA positions into the existing regime engine (${plural(convertPreview.existingBodies, 'body', 'bodies')}, ${convertPreview.existingAsset?.toFixed(8)} ${getBaseCurrency(convertPreview.productId)}). Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open. The regime engine will place new take-profit orders when started.`
               : 'Import DCA positions into the regime engine. Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open. The regime engine will place new take-profit orders when started.'}
           </p>
           {(() => {
@@ -464,7 +465,7 @@ const RegimeActionModals = ({
               onClick={onExecuteConvert}
               disabled={converting}
             >
-              {converting ? 'Converting...' : convertPreview?.merge ? 'Confirm Import' : 'Confirm Upgrade'}
+              {convertPreview?.merge ? (converting ? 'Importing…' : 'Confirm Import') : (converting ? 'Upgrading…' : 'Confirm Upgrade')}
             </button>
           </div>
         </ModalDialog>

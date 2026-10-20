@@ -59,6 +59,7 @@ function createView(name) {
     require: name => {
       if (name === 'react') return hooks
       if (name === '../utils/plural.mjs') return { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` }
+      if (name === '../utils/actionFailure.mjs') return { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` }
       if (name === './ModalDialog') return ({ children }) => children
       throw new Error(`Unexpected fixture import ${name}`)
     },

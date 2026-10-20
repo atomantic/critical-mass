@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { plural } from '../utils/plural.mjs'
+import { describeActionFailure } from '../utils/actionFailure.mjs'
 import ModalDialog from './ModalDialog'
 
 const INTERVAL_OPTIONS = [
@@ -126,11 +127,11 @@ function BackupRestore() {
     setLegacyAcknowledged(false)
     setFundRemovalAcknowledged(false)
     fetch(`/api/backups/${restoreTarget}/compatibility`)
-      .then(res => res.json().then(data => ({ ok: res.ok, data })))
-      .then(({ ok, data }) => {
+      .then(res => res.json().then(data => ({ ok: res.ok, status: res.status, data })))
+      .then(({ ok, status, data }) => {
         if (cancelled) return
         if (ok && data?.success) setCompatibility(data)
-        else setCompatibilityError(data?.error || 'Unknown error')
+        else setCompatibilityError(describeActionFailure(status, data))
       })
       .catch(err => { if (!cancelled) setCompatibilityError(err.message || 'Request failed') })
       .finally(() => { if (!cancelled) setCompatibilityLoading(false) })
@@ -184,7 +185,7 @@ function BackupRestore() {
         const warnings = data.warnings?.length
           ? `. ${data.warnings.join('. ')}. Check engine status before resuming trading.`
           : ''
-        setMessage({ type: 'error', text: `Backup failed: ${data.error || 'Unknown error'}${warnings}` })
+        setMessage({ type: 'error', text: `Backup failed: ${describeActionFailure(res.status, data)}${warnings}` })
       }
     } catch (err) {
       setMessage({ type: 'error', text: err.message || 'Failed to create backup' })
@@ -297,7 +298,7 @@ function BackupRestore() {
           text: `${data.error || 'Restore failed and could not be rolled back.'} Do NOT start engines: restart the gateway to retry the rollback, and keep the retained recovery files until it succeeds.`,
         })
       } else {
-        setMessage({ type: 'error', text: `Restore failed: ${data.error || 'Unknown error'}` })
+        setMessage({ type: 'error', text: `Restore failed: ${describeActionFailure(res.status, data)}` })
       }
     } catch (err) {
       setMessage({ type: 'error', text: err.message || 'Failed to restore backup' })

@@ -26,6 +26,7 @@ before(async () => {
     const stubs = {
       react: React,
       '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
+      '../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
       '../utils/intervals.mjs': { getIntervalMs: () => 86400000 },
       './ActivityFeed': () => null,
       './FailedSellPlacements': () => null,

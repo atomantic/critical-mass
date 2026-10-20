@@ -122,7 +122,7 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     const savedState = loadFundRegimeState(exchange, resolvedPair);
     if (savedState?.position?.lifecycle === LIFECYCLE.CLOSED) {
       saveRegimeRunningFlag(exchange, resolvedPair, false);
-      return { success: false, error: 'Fund is closed — call regime:reopen before starting', needsOperator: true };
+      return { success: false, error: 'Fund is closed — click Reopen in the fund header, then Start', needsOperator: true };
     }
 
     const fundConfig = getFundConfig(exchange, resolvedPair);
@@ -138,7 +138,7 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     const fence = await fenceMarketDataService(exchange, resolvedPair);
     if (!fence?.drained) {
       fundLogger.error(`❌ [${label}] Standalone fill consumer did not finish its in-flight work; engine not started`);
-      return { success: false, error: 'Standalone fill consumer is still draining — retry the start shortly', retryable: true };
+      return { success: false, error: 'The passive fill monitor is still finishing in-flight work — click Start again in a few seconds', retryable: true };
     }
     invalidateStandaloneLedger(exchange, resolvedPair);
     // Any exit that leaves the fund stopped hands it back to passive

@@ -76,7 +76,7 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
     <div className={`bg-gray-800 rounded-lg border p-2 ${alignmentTint} lg:col-span-1`}>
       <h3
         className="text-[10px] font-semibold text-gray-400 mb-1 uppercase tracking-wider cursor-help"
-        title="Shows weighted indicator scores across 10 timeframes. When most timeframes agree on direction, signals are stronger. The 5 core timeframes (1m, 3m, 5m, 15m, 1h) contribute to the composite score."
+        title={`Shows weighted indicator scores across ${TF_ORDER.length} timeframes. When most timeframes agree on direction, signals are stronger. The 5 core timeframes (1m, 3m, 5m, 15m, 1h) contribute to the composite score.`}
       >Timeframe Alignment</h3>
 
       <div className="space-y-0">

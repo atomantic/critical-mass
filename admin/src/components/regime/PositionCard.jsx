@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { plural } from '../../utils/plural.mjs'
+import { describeActionFailure } from '../../utils/actionFailure.mjs'
 import { formatPriceByMagnitude, formatCurrency } from '../charts/chartUtils'
 import CapitalAdjust from './CapitalAdjust'
 
@@ -22,11 +23,11 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apply: false }),
       })
-      const data = await res.json().catch(() => ({ success: false, error: 'Bad response' }))
+      const data = await res.json().catch(() => ({}))
       if (res.ok && data.success) {
         setRecalcPreview(data)
       } else {
-        addToast?.({ type: 'error', title: 'Recalculate failed', message: data.error || data.message || `HTTP ${res.status}` })
+        addToast?.({ type: 'error', title: 'Recalculate failed', message: describeActionFailure(res.status, data) })
       }
     } catch (err) {
       addToast?.({ type: 'error', title: 'Recalculate failed', message: err.message })
@@ -43,12 +44,12 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apply: true }),
       })
-      const data = await res.json().catch(() => ({ success: false, error: 'Bad response' }))
+      const data = await res.json().catch(() => ({}))
       if (res.ok && data.success) {
         setRecalcPreview(null)
         await fetchStatus?.()
       } else {
-        addToast?.({ type: 'error', title: 'Recalculate failed', message: data.error || data.message || `HTTP ${res.status}` })
+        addToast?.({ type: 'error', title: 'Recalculate failed', message: describeActionFailure(res.status, data) })
       }
     } catch (err) {
       addToast?.({ type: 'error', title: 'Recalculate failed', message: err.message })

@@ -1,5 +1,6 @@
 import { getIntervalMs } from '../utils/intervals.mjs'
 import { plural } from '../utils/plural.mjs'
+import { describeActionFailure } from '../utils/actionFailure.mjs'
 import { useState, useEffect, useCallback, useId, useRef } from 'react'
 import ActivityFeed from './ActivityFeed'
 import FailedSellPlacements from './FailedSellPlacements'
@@ -251,7 +252,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      addToast({ type: 'error', title: 'Preview Failed', message: err.error || 'Could not preview export' })
+      addToast({ type: 'error', title: 'Preview Failed', message: describeActionFailure(res.status, err) })
       return
     }
     const data = await res.json()
@@ -640,7 +641,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
             <h3 className="text-white text-lg font-medium mb-3">Export to Regime Engine</h3>
             <p className="text-gray-300 text-sm mb-4">
               {convertPreview.merge
-                ? `Merge ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} into the existing regime engine (${convertPreview.existingBodies} bodies, ${convertPreview.existingAsset?.toFixed(8)} ${baseCurrency}). Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`
+                ? `Merge ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} into the existing regime engine (${plural(convertPreview.existingBodies, 'body', 'bodies')}, ${convertPreview.existingAsset?.toFixed(8)} ${baseCurrency}). Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`
                 : `Export ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} to a new regime engine state. Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`}
             </p>
             <div className="bg-gray-900 rounded-lg p-3 mb-4 text-sm space-y-1.5">

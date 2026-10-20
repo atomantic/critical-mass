@@ -77,6 +77,8 @@ function createView(respond) {
     react: hooks,
     './charts/chartUtils': { formatCurrency: String, formatPrice: String, formatDateTime: String },
     '../utils/api': { pairQuery: () => '?pair=BTC-USDC' },
+    '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
+    '../App': { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' },
     '../utils/unaccountedFillsScan.mjs': { runUnaccountedFillsScan: async () => ({ status: 'cancelled' }), describeScanProgress: () => '' },
   }
   const exports = {}
@@ -161,7 +163,7 @@ describe('Manual Trades recovery row (#1034)', () => {
     let tree = await view.mount()
     button(tree, 'Retry recovery').props.onClick()
     tree = view.render()
-    labeled(tree, 'Recovery Buy Limit Price (USD)').props.onChange({ target: { value: '94000' } })
+    labeled(tree, 'Recovery Buy Limit Price (USDC)').props.onChange({ target: { value: '94000' } })
     tree = view.render()
     await button(tree, 'Place Recovery Buy').props.onClick()
     tree = view.render()
@@ -173,7 +175,7 @@ describe('Manual Trades recovery row (#1034)', () => {
     const alert = elements(tree).find((n) => n.props?.role === 'alert')
     assert.match(text(alert), /INSUFFICIENT_FUNDS/)
     // The form, its value and the row's controls survive the failure.
-    assert.equal(labeled(tree, 'Recovery Buy Limit Price (USD)').props.value, '94000')
+    assert.equal(labeled(tree, 'Recovery Buy Limit Price (USDC)').props.value, '94000')
     button(tree, 'Link replacement')
 
     refuse = false

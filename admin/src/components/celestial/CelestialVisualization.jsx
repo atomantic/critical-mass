@@ -4,6 +4,7 @@ import { Pause, Play } from '../icons'
 import CelestialScene from './CelestialScene'
 import { TIER_COLORS, TIER_EMOJIS, TIER_ORDER } from './celestialConstants'
 import useReducedMotion from '../../hooks/useReducedMotion'
+import { plural } from '../../utils/plural.mjs'
 
 const MOTION_PAUSED_STORAGE_KEY = 'celestial-motion-paused'
 
@@ -79,7 +80,7 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-sm font-medium text-gray-400">Celestial System</h3>
         <div className="flex items-center gap-2 text-xs">
-          <span className="text-cyan-400 font-mono">{bodies.length} bodies</span>
+          <span className="text-cyan-400 font-mono">{plural(bodies.length, 'body', 'bodies')}</span>
           {buyOrders.length > 0 && (
             <span className="text-gray-400 font-mono">+{buyOrders.length} incoming</span>
           )}

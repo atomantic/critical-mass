@@ -191,7 +191,7 @@ describe('engine-lifecycle-handlers', () => {
 
       const result = await h.start({}, EXCHANGE, PAIR_A);
 
-      assert.deepEqual(result, { success: false, error: 'Fund is closed — call regime:reopen before starting', needsOperator: true });
+      assert.deepEqual(result, { success: false, error: 'Fund is closed — click Reopen in the fund header, then Start', needsOperator: true });
       assert.equal(firstIndex(h.calls, 'createRegimeEngine'), -1);
     });
 
@@ -331,7 +331,7 @@ describe('engine-lifecycle-handlers', () => {
 
       assert.equal(result.success, false);
       assert.equal(result.retryable, true);
-      assert.match(result.error, /still draining/);
+      assert.match(result.error, /passive fill monitor is still finishing in-flight work/);
       assert.equal(firstIndex(h.calls, 'createRegimeEngine'), -1, 'the old writer may still persist — no engine may load the ledger');
       assert.equal(countOf(h.calls, 'startMarketDataService', PAIR_A), 0, 'no replacement consumer either');
       assert.equal(h.regimeEngines.has(fundKey(EXCHANGE, PAIR_A)), false);

@@ -15,6 +15,15 @@ const config = { productId: 'BTC-USD', regime: { enabled: false, ladderMaxAthDro
 const stubSave = (status, body) => vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => options.method ? response(status, body) : response(200, { presets: {} })))
 
 describe('config save response handling', () => {
+  it.each([
+    ['regime', 'Saved settings are applied to the running engine immediately. A Dry Run change takes effect after the engine restarts.'],
+    ['dca', 'Changes take effect on the next run. The bot will not make additional trades this interval if it has already run.'],
+  ])('tells %s funds when a saved change takes effect', (strategy, text) => {
+    stubSave(200, {})
+    render(<ConfigEditor config={{ ...config, intervalType: 'daily' }} strategy={strategy} />)
+    expect(screen.getByText(text)).toBeTruthy()
+  })
+
   it('shows the humanized Enabled rejection and restores the unsaved switch', async () => {
     stubSave(400, { errors: ['enabled: expected boolean'] })
     const onSave = vi.fn()
@@ -30,7 +39,7 @@ describe('config save response handling', () => {
     render(<ConfigEditor config={config} strategy="regime" />)
     fireEvent.change(screen.getByLabelText('Min Order Size ($)'), { target: { value: '999' } })
     fireEvent.click(screen.getByRole('button', { name: /Save Configuration/ }))
-    await screen.findByText('Max ATH Drop % must be between 10 and 95; Min Order Size must be between 1 and 100; Max asset exposure must be 0 (uncapped) or between 0.01 and 10.0; TP Absolute Min % must be between 0.01 and 1.0')
+    await screen.findByText('Max ATH Drop % must be between 10 and 95; Min Order Size must be between 1 and 100; Max Asset Exposure must be 0 (uncapped) or between 0.01 and 10.0; TP Absolute Min % must be between 0.01 and 1.0')
     expect(screen.getByLabelText('Min Order Size ($)').value).toBe('999')
   })
 
