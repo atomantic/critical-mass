@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useId } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import useSentinelSocket from '../../hooks/useSentinelSocket'
 
 const TOUCH_BTN = 'min-h-11 min-w-11 shrink-0 inline-flex items-center justify-center'
@@ -22,17 +22,22 @@ export default function SentinelDashboard() {
   const [filter, setFilter] = useState('all')
   const [loading, setLoading] = useState(true)
   const [polling, setPolling] = useState(false)
+  const [mutationError, setMutationError] = useState('')
+  const [feedWritePending, setFeedWritePending] = useState(false)
+  const feedWriteLock = useRef(false)
+  const configRevision = useRef(0)
 
   // New feed form
   const [newFeedName, setNewFeedName] = useState('')
   const [newFeedUrl, setNewFeedUrl] = useState('')
 
   const fetchStatus = useCallback(async () => {
+    const revision = configRevision.current
     try {
       const res = await fetch('/api/sentinel/status')
       if (res.ok) {
         const data = await res.json()
-        setStatus(data)
+        if (revision === configRevision.current) setStatus(data)
       }
     } catch { /* ignore */ }
   }, [])
@@ -48,6 +53,28 @@ export default function SentinelDashboard() {
     } catch { /* ignore */ }
     setLoading(false)
   }, [filter])
+
+  const request = async (label, send) => {
+    setMutationError('')
+    try {
+      const res = await send()
+      if (res.ok) {
+        try { return (await res.json()) || true } catch { return true }
+      }
+
+      let detail = ''
+      try {
+        const body = await res.json()
+        const errors = body.errors
+        detail = body.error || (Array.isArray(errors) ? errors.join(', ') : errors) || ''
+        if (typeof detail === 'object') detail = JSON.stringify(detail)
+      } catch { /* use the HTTP status when the body is empty or invalid */ }
+      setMutationError(`${label}: ${detail || `Request failed (${res.status})`}`)
+    } catch (error) {
+      setMutationError(`${label}: ${error?.message || 'Request failed'}`)
+    }
+    return false
+  }
 
   useEffect(() => {
     fetchStatus()
@@ -65,67 +92,100 @@ export default function SentinelDashboard() {
 
   const handleForcePoll = async () => {
     setPolling(true)
-    await fetch('/api/sentinel/poll', { method: 'POST' })
-    await fetchAlerts()
-    await fetchStatus()
-    setPolling(false)
+    try {
+      if (await request('Could not poll feeds', () => fetch('/api/sentinel/poll', { method: 'POST' }))) {
+        await fetchAlerts()
+        await fetchStatus()
+      }
+    } finally {
+      setPolling(false)
+    }
   }
 
   const handleDismiss = async (alertId) => {
-    await fetch(`/api/sentinel/dismiss/${alertId}`, { method: 'POST' })
-    setAlerts(prev => prev.map(a => a.id === alertId ? { ...a, dismissed: true } : a))
-    fetchStatus()
+    if (await request('Could not dismiss alert', () => fetch(`/api/sentinel/dismiss/${alertId}`, { method: 'POST' }))) {
+      setAlerts(prev => prev.map(a => a.id === alertId ? { ...a, dismissed: true } : a))
+      fetchStatus()
+    }
   }
 
   const handleClearAll = async () => {
-    await fetch('/api/sentinel/alerts', { method: 'DELETE' })
-    setAlerts([])
-    fetchStatus()
+    if (await request('Could not clear alerts', () => fetch('/api/sentinel/alerts', { method: 'DELETE' }))) {
+      setAlerts([])
+      fetchStatus()
+    }
   }
 
   const handleToggleEnabled = async () => {
+    if (feedWriteLock.current) return
     const newEnabled = !status?.config?.enabled
-    await fetch('/api/sentinel/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: newEnabled }),
-    })
-    fetchStatus()
+    feedWriteLock.current = true
+    setFeedWritePending(true)
+    try {
+      const result = await request('Could not update Sentinel settings', () => fetch('/api/sentinel/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: newEnabled }),
+      }))
+      if (result) {
+        configRevision.current += 1
+        setStatus(prev => ({ ...(prev || {}), config: { ...(prev?.config || {}), ...(result.config || {}), enabled: newEnabled } }))
+        await fetchStatus()
+      }
+    } finally {
+      feedWriteLock.current = false
+      setFeedWritePending(false)
+    }
   }
 
   const handleStart = async () => {
-    await fetch('/api/sentinel/start', { method: 'POST' })
-    fetchStatus()
+    if (await request('Could not start Sentinel', () => fetch('/api/sentinel/start', { method: 'POST' }))) await fetchStatus()
   }
 
   const handleStop = async () => {
-    await fetch('/api/sentinel/stop', { method: 'POST' })
-    fetchStatus()
+    if (await request('Could not stop Sentinel', () => fetch('/api/sentinel/stop', { method: 'POST' }))) await fetchStatus()
   }
 
   const updateFeeds = async (feeds) => {
-    await fetch('/api/sentinel/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ feeds }),
-    })
-    fetchStatus()
+    if (feedWriteLock.current) return false
+    feedWriteLock.current = true
+    setFeedWritePending(true)
+    try {
+      const result = await request('Could not update feeds', () => fetch('/api/sentinel/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feeds }),
+      }))
+      if (result) {
+        configRevision.current += 1
+        setStatus(prev => ({ ...(prev || {}), config: { ...(prev?.config || {}), ...(result.config || {}), feeds } }))
+        await fetchStatus()
+      }
+      return Boolean(result)
+    } finally {
+      feedWriteLock.current = false
+      setFeedWritePending(false)
+    }
   }
 
   const handleAddFeed = async () => {
     if (!newFeedName.trim() || !newFeedUrl.trim()) return
-    await updateFeeds([...(status?.config?.feeds || []), { name: newFeedName.trim(), url: newFeedUrl.trim(), enabled: true }])
-    setNewFeedName('')
-    setNewFeedUrl('')
+    if (await updateFeeds([...(status?.config?.feeds || []), { name: newFeedName.trim(), url: newFeedUrl.trim(), enabled: true }])) {
+      setNewFeedName('')
+      setNewFeedUrl('')
+    }
   }
 
   const handleToggleFeed = async (index) => {
+    if (feedWriteLock.current) return
     const feeds = [...(status?.config?.feeds || [])]
+    if (!feeds[index]) return
     feeds[index] = { ...feeds[index], enabled: !feeds[index].enabled }
     await updateFeeds(feeds)
   }
 
   const handleRemoveFeed = async (index) => {
+    if (feedWriteLock.current) return
     await updateFeeds((status?.config?.feeds || []).filter((_, i) => i !== index))
   }
 
@@ -190,7 +250,7 @@ export default function SentinelDashboard() {
             </button>
             <button
               onClick={handleToggleEnabled}
-              disabled={!status?.config}
+              disabled={!status?.config || feedWritePending}
               className={`${TOUCH_BTN} px-3 py-1.5 rounded-sm text-sm ${status?.config?.enabled ? 'bg-yellow-800 hover:bg-yellow-900' : 'bg-gray-600 hover:bg-gray-700'} ${!status?.config ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               {status?.config?.enabled ? 'Disable' : 'Enable'}
@@ -198,6 +258,7 @@ export default function SentinelDashboard() {
           </div>
         </div>
       </div>
+      {mutationError && <p role="alert" className="text-sm text-red-400">{mutationError}</p>}
 
       {/* Feed Configuration */}
       <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
@@ -210,6 +271,7 @@ export default function SentinelDashboard() {
                 aria-checked={feed.enabled}
                 aria-label={`Enable ${feed.name} feed`}
                 onClick={() => handleToggleFeed(i)}
+                disabled={feedWritePending}
                 className={`${TOUCH_BTN}`}
               >
                 <span className={`block w-8 h-5 rounded-full relative transition-colors ${feed.enabled ? 'bg-green-600' : 'bg-gray-600'}`}>
@@ -218,7 +280,7 @@ export default function SentinelDashboard() {
               </button>
               <span className="text-sm text-white font-medium min-w-0 flex-1 sm:flex-none sm:min-w-[120px] wrap-break-word">{feed.name}</span>
               <span className="order-last basis-full sm:order-0 sm:basis-0 text-xs text-gray-400 truncate min-w-0 sm:flex-1">{feed.url}</span>
-              <button aria-label={`Remove ${feed.name} feed`} onClick={() => handleRemoveFeed(i)} className={`${TOUCH_BTN} text-red-400 hover:text-red-300 text-sm px-2`}>Remove</button>
+              <button aria-label={`Remove ${feed.name} feed`} onClick={() => handleRemoveFeed(i)} disabled={feedWritePending} className={`${TOUCH_BTN} text-red-400 hover:text-red-300 text-sm px-2`}>Remove</button>
             </div>
           ))}
         </div>
@@ -241,7 +303,7 @@ export default function SentinelDashboard() {
           />
           <button
             onClick={handleAddFeed}
-            disabled={!newFeedName.trim() || !newFeedUrl.trim()}
+            disabled={feedWritePending || !newFeedName.trim() || !newFeedUrl.trim()}
             className="px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded-sm text-sm min-h-[44px]"
           >
             Add Feed
