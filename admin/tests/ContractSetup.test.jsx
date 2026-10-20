@@ -1,6 +1,6 @@
 import React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import ContractSetup from '../src/components/updown/ContractSetup'
 
 const deferred = () => {
@@ -42,6 +42,30 @@ describe('ContractSetup screenshot request ownership', () => {
     expect(screen.queryByText('Analyzing screenshot...')).toBeNull()
   })
 
+  it('keeps the newer preview when its older predecessor resolves late', async () => {
+    const requests = []
+    vi.stubGlobal('fetch', vi.fn((url, options = {}) => {
+      if (url === '/api/updown/providers') return Promise.resolve({ json: async () => ({ success: true, providers: [{ id: 'provider-a', models: ['model-a', 'model-b'] }] }) })
+      const pending = deferred()
+      requests.push({ ...pending, signal: options.signal })
+      return pending.promise
+    }))
+    render(<ContractSetup />)
+    const input = document.querySelector('input[type="file"]')
+    const file = name => new File([name], `${name}.png`, { type: 'image/png' })
+    fireEvent.change(input, { target: { files: [file('first')] } })
+    fireEvent.change(input, { target: { files: [file('second')] } })
+
+    requests[1].resolve({ ok: true, json: async () => ({ success: true, extracted: { target: 222 } }) })
+    await screen.findByText('$222')
+    await act(async () => {
+      requests[0].resolve({ ok: true, json: async () => ({ success: true, extracted: { target: 111 } }) })
+      await requests[0].promise
+    })
+    await waitFor(() => expect(screen.getByText('$222')).toBeTruthy())
+    expect(screen.queryByText('$111')).toBeNull()
+  })
+
   it('aborts a pending analysis when provider context changes', async () => {
     const pending = deferred()
     let requestSignal
@@ -56,7 +80,10 @@ describe('ContractSetup screenshot request ownership', () => {
     await waitFor(() => expect(requestSignal).toBeTruthy())
     fireEvent.change(screen.getByLabelText('AI Provider'), { target: { value: 'provider-b' } })
     await waitFor(() => expect(requestSignal.aborted).toBe(true))
-    pending.resolve({ ok: true, json: async () => ({ success: true, extracted: { target: 111 } }) })
+    await act(async () => {
+      pending.resolve({ ok: true, json: async () => ({ success: true, extracted: { target: 111 } }) })
+      await pending.promise
+    })
     expect(screen.queryByText('$111')).toBeNull()
   })
 
