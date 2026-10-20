@@ -1051,8 +1051,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                     <FormInput label="Eval Max Hours" hint="Max hours before forcing TP re-evaluation" value={regimeConfig.tpEvaluationMaxHours || 24} onChange={(v) => handleRegimeChange('tpEvaluationMaxHours', v)} type="number" />
                     <FormInput label="Min Sample Size" hint="Min fills needed before first auto-adjust" value={regimeConfig.tpMinSampleSize || 10} onChange={(v) => handleRegimeChange('tpMinSampleSize', v)} type="number" />
                     <FormInput label="Max Change %" hint="Max single adjustment to TP values" value={regimeConfig.tpMaxChangePercent || 25} onChange={(v) => handleRegimeChange('tpMaxChangePercent', v)} type="number" />
-                    <FormInput label="Absolute Min %" hint="Hard floor: TP can never go below this" value={regimeConfig.tpAbsoluteMin || 0.05} onChange={(v) => handleRegimeChange('tpAbsoluteMin', v)} type="number" />
-                    <FormInput label="Absolute Max %" hint="Hard ceiling: TP can never go above this" value={regimeConfig.tpAbsoluteMax || 5.0} onChange={(v) => handleRegimeChange('tpAbsoluteMax', v)} type="number" />
+                    <FormInput label="TP Absolute Min %" hint="Hard floor: TP can never go below this" value={regimeConfig.tpAbsoluteMin || 0.05} onChange={(v) => handleRegimeChange('tpAbsoluteMin', v)} type="number" />
+                    <FormInput label="TP Absolute Max %" hint="Hard ceiling: TP can never go above this" value={regimeConfig.tpAbsoluteMax || 5.0} onChange={(v) => handleRegimeChange('tpAbsoluteMax', v)} type="number" />
                   </div>
                   <div className="mt-2 text-xs text-gray-400">
                     Auto-adjusts TP range every {regimeConfig.tpEvaluationCycles || 5} cycles or {regimeConfig.tpEvaluationMaxHours || 24}h.
@@ -1224,7 +1224,9 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
 
       {/* Warning - more compact */}
       <p className="mt-3 text-xs text-gray-400">
-        Changes take effect on the next run. The bot will not make additional trades this interval if it has already run.
+        {isRegime
+          ? 'Saved settings are applied to the running engine immediately. A Dry Run change takes effect after the engine restarts.'
+          : 'Changes take effect on the next run. The bot will not make additional trades this interval if it has already run.'}
       </p>
     </div>
   )
