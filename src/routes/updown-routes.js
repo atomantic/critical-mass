@@ -107,6 +107,43 @@ const ALLOWED_EXTRACTED_KEYS = new Set([
   'youPay', 'priceToClose', 'unrealizedPnl', 'entryPrice', 'expiresOn',
 ]);
 
+const EXTRACTED_NUMERIC_KEYS = new Set([
+  'currentPrice', 'range', 'target', 'stop', 'upPrice', 'downPrice',
+  'contractPrice', 'contracts', 'maxProfitAmount', 'maxLossAmount',
+  'youPay', 'priceToClose', 'unrealizedPnl', 'entryPrice',
+]);
+const EXTRACTED_STRING_KEYS = new Set(['expiresIn', 'expiresOn', 'maxProfit', 'maxLoss']);
+const EXTRACTED_SCREEN_TYPES = new Set(['select', 'order', 'position']);
+const EXTRACTED_DIRECTIONS = new Set(['Up', 'Down']);
+
+/**
+ * Keep model-produced screenshot fields inside the types expected by the UI.
+ * Invalid or unreadable values are represented as null, matching the prompt.
+ * @param {unknown} value
+ * @returns {Record<string, unknown>}
+ */
+const sanitizeExtractedFields = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+
+  const extracted = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (!ALLOWED_EXTRACTED_KEYS.has(key)) continue;
+    if (raw == null) {
+      extracted[key] = null;
+    } else if (EXTRACTED_NUMERIC_KEYS.has(key)) {
+      const number = parseFiniteNumber(raw);
+      extracted[key] = Number.isFinite(number) && (key === 'unrealizedPnl' || number > 0) ? number : null;
+    } else if (EXTRACTED_STRING_KEYS.has(key)) {
+      extracted[key] = typeof raw === 'string' && raw.length <= 64 ? raw : null;
+    } else if (key === 'screenType') {
+      extracted[key] = typeof raw === 'string' && EXTRACTED_SCREEN_TYPES.has(raw) ? raw : null;
+    } else if (key === 'direction') {
+      extracted[key] = typeof raw === 'string' && EXTRACTED_DIRECTIONS.has(raw) ? raw : null;
+    }
+  }
+  return extracted;
+};
+
 const VISION_PROMPT = `You are analyzing a screenshot from the Crypto.com UpDown Bitcoin options trading interface.
 
 First, identify which screen this is:
@@ -357,13 +394,9 @@ module.exports = (app, deps) => {
       if (!jsonMatch) throw new Error('No JSON object found');
       const raw = JSON.parse(jsonMatch[0]);
 
-      // Sanitize: only keep expected keys
-      extracted = {};
-      for (const key of Object.keys(raw)) {
-        if (ALLOWED_EXTRACTED_KEYS.has(key)) {
-          extracted[key] = raw[key];
-        }
-      }
+      // Sanitize key names and value types before the fields reach expiry
+      // conversion or the operator-facing contract and position forms.
+      extracted = sanitizeExtractedFields(raw);
     } catch (err) {
       logger.error(`❌ 🤖 UpDown screenshot parse failed`, {
         action: 'screenshot',
@@ -376,18 +409,22 @@ module.exports = (app, deps) => {
 
     // Convert expiry to absolute ms timestamp
     // "Expires in Xd Xh Ym" → relative offset from now
-    if (extracted.expiresIn) {
+    if (typeof extracted.expiresIn === 'string' && extracted.expiresIn) {
       const match = extracted.expiresIn.match(/(?:(\d+)d)?\s*(?:(\d+)h)?\s*(?:(\d+)m)?/);
       if (match && (match[1] || match[2] || match[3])) {
         const days = parseInt(match[1] || '0', 10);
         const hours = parseInt(match[2] || '0', 10);
         const minutes = parseInt(match[3] || '0', 10);
-        extracted.expiryMs = Date.now() + days * 86400000 + hours * 3600000 + minutes * 60000;
-        extracted.expiryISO = new Date(extracted.expiryMs).toISOString();
+        const expiryMs = Date.now() + days * 86400000 + hours * 3600000 + minutes * 60000;
+        const expiryDate = new Date(expiryMs);
+        if (Number.isFinite(expiryMs) && Number.isFinite(expiryDate.getTime())) {
+          extracted.expiryMs = expiryMs;
+          extracted.expiryISO = expiryDate.toISOString();
+        }
       }
     }
     // "Expires on Feb 28, 2026 at 1:00:00 AM" → parse absolute date
-    if (!extracted.expiryMs && extracted.expiresOn) {
+    if (!extracted.expiryMs && typeof extracted.expiresOn === 'string' && extracted.expiresOn) {
       const ms = new Date(extracted.expiresOn.replace(' at ', ' ')).getTime();
       if (Number.isFinite(ms)) {
         extracted.expiryMs = ms;
@@ -807,3 +844,4 @@ module.exports.MAX_SCREENSHOT_BYTES = MAX_SCREENSHOT_BYTES;
 module.exports.buildIndicatorTimeframeHeatmap = buildIndicatorTimeframeHeatmap;
 module.exports.parseFiniteNumber = parseFiniteNumber;
 module.exports.parseBoughtAt = parseBoughtAt;
+module.exports.sanitizeExtractedFields = sanitizeExtractedFields;
