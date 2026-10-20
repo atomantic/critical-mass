@@ -163,7 +163,7 @@ export default function LiveStatusBar({ asset, market, position, config, prevPri
         </div>
 
         {/* Entry Status */}
-        <EntryStatusCard healthMode={health.mode} regimeMode={regime.mode} celestial={celestial} macroEnabled={config?.macroEnabled} maxCelestialBodies={config?.maxCelestialBodies} macro={macro} />
+        <EntryStatusCard healthMode={health.mode} regimeMode={regime.mode} celestial={celestial} macroEnabled={config?.macroEnabled} maxCelestialBodies={config?.maxCelestialBodies} macro={macro} trendScale={config?.trendScale} />
 
         {/* Compact Current Regime */}
         <CurrentRegimeCard regime={regime} healthMode={health.mode} macroEnabled={config?.macroEnabled} macro={macro} />

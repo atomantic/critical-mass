@@ -606,7 +606,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 An advanced volatility-driven trading system that replaces fixed-interval DCA with ATR-based triggers.
                 It adapts to three market regimes: <span className="text-green-400">HARVEST</span> (mean-reverting, full entries),
                 <span className="text-yellow-400"> CAUTION</span> (elevated volatility, reduced sizing), and
-                <span className="text-red-400"> TREND</span> (strong momentum, exit only). Uses real-time WebSocket data,
+                <span className="text-red-400"> TREND</span> (strong momentum; buys scaled by Trend Scale, none at 0). Uses real-time WebSocket data,
                 dynamic take-profit based on recent volatility, and automatic safety modes.
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-gray-400">
