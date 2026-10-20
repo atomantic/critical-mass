@@ -3,10 +3,9 @@
 // paths, so fixtures and backup restoration never consult the live install.
 const fs = require('fs');
 const path = require('path');
-const { randomUUID } = require('crypto');
 const { isDeepStrictEqual } = require('util');
 const { jsonReadError } = require('./json-diagnostics');
-const { fsyncDir } = require('./fsync-dir');
+const { atomicWriteSync } = require('./durable-write');
 
 const BASE_SNAPSHOT_FILENAME = 'config-base.snapshot.json';
 const CONFIG_LOCK_DIR = '.config-write.lock';
@@ -42,23 +41,10 @@ const withConfigWriteLock = (dataDir, action, timeoutMs = 5000) => {
 // Publish the override durably BEFORE publishing its new baseline. If the
 // process dies between the two writes, replay sees the pins and is idempotent.
 const writeDurableConfig = (file, value, privateFile = false) => {
-  const tmp = `${file}.${randomUUID()}.tmp`;
   let mode = 0o600;
   try { mode = fs.statSync(file).mode & 0o777; } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (privateFile) mode &= 0o600;
-  let fd;
-  try {
-    fd = fs.openSync(tmp, 'wx', mode);
-    fs.writeFileSync(fd, JSON.stringify(value, null, 2));
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    fd = undefined;
-    fs.renameSync(tmp, file);
-    fsyncDir(path.dirname(file));
-  } finally {
-    if (fd !== undefined) fs.closeSync(fd);
-    try { fs.unlinkSync(tmp); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  }
+  atomicWriteSync(file, JSON.stringify(value, null, 2), { mode });
 };
 
 // Arrays/null/scalars are indivisible leaves. An explicit scalar/null override
