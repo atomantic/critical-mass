@@ -204,6 +204,34 @@ describe('fund lifecycle routes', () => {
       assert.match(res.body.error, /already exists/i);
     });
 
+    it('allows creation when the pair directory contains only operational files', async () => {
+      mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
+      const { app } = setup();
+      const dir = fundDir('coinbase', 'CHART-USD');
+      realFs.mkdirSync(dir, { recursive: true });
+      realFs.writeFileSync(path.join(dir, 'chart-data-buffer.json'), '{}');
+      realFs.writeFileSync(path.join(dir, 'placement-intents.json'), '[]');
+
+      const res = await invoke(app, 'POST /api/:exchange/funds', {
+        params: { exchange: 'coinbase' },
+        body: { pair: 'CHART-USD' },
+      });
+
+      assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+      assert.equal(res.body.success, true);
+    });
+
+    it('guards direct addFund callers when durable state remains', () => {
+      const { fsMocks } = setup();
+      writeRegimeState('coinbase', 'DIRECT-USD', { lifecycle: 'closed' });
+
+      assert.throws(
+        () => configUtils.addFund('coinbase', 'DIRECT-USD'),
+        (error) => error.code === 'FUND_STATE_EXISTS' && /Move or archive that directory/.test(error.message),
+      );
+      assert.ok(!fsMocks.user(), 'direct refusal must not write config');
+    });
+
     it('does not let a caller override dryRun:false on creation (still defaults safe)', async () => {
       // The handler computes dryRun as `dryRun !== false` — i.e. an explicit
       // `dryRun: false` in the request IS honored (operator opt-in), but
@@ -482,14 +510,14 @@ describe('fund lifecycle routes', () => {
       // BASE config.json, which saveConfig's diff persistence used to
       // resurrect — is covered by the base-config-fund test below (#441).
       mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
-      const { app } = setup();
+      const { app, fsMocks } = setup();
       const created = await invoke(app, 'POST /api/:exchange/funds', {
         params: { exchange: 'coinbase' },
         body: { pair: 'SOL-USDC' },
       });
       assert.equal(created.statusCode, 200, JSON.stringify(created.body));
 
-      writeRegimeState('coinbase', 'SOL-USDC', { lifecycle: 'closed' });
+      writeRegimeState('coinbase', 'SOL-USDC', { lifecycle: 'closed', cyclesCompleted: 7, realizedPnL: 123 });
       // No running flag written -> shouldAutoResumeRegime is false.
 
       const res = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
@@ -498,10 +526,42 @@ describe('fund lifecycle routes', () => {
 
       assert.equal(res.statusCode, 200, JSON.stringify(res.body));
       assert.equal(res.body.success, true);
+      assert.match(res.body.note, /Re-adding coinbase\/SOL-USDC is refused until that directory is moved or archived/);
+
+      // The deletion leaves both lifecycle and ledger history intact. A later
+      // add cannot silently inherit it; after the operator archives the old
+      // directory, the same pair can be created with a fresh active lifecycle.
+      const ledgerPath = path.join(fundDir('coinbase', 'SOL-USDC'), 'fill-ledger.json');
+      realFs.writeFileSync(ledgerPath, JSON.stringify({ rows: [{ orderId: 'old-order' }] }));
+      const refused = await invoke(app, 'POST /api/:exchange/funds', {
+        params: { exchange: 'coinbase' },
+        body: { pair: 'SOL-USDC' },
+      });
+      assert.equal(refused.statusCode, 409, JSON.stringify(refused.body));
+      assert.match(refused.body.error, /Fund data for coinbase\/SOL-USDC already exists/);
+      assert.match(refused.body.error, /Move or archive that directory/);
+      assert.ok(!fsMocks.user().exchanges.coinbase.pairs?.['SOL-USDC'], 'refused re-add must not modify config');
+      assert.ok(realFs.existsSync(ledgerPath), 'refused re-add must preserve old ledger');
+
+      const archiveDir = path.join(tempRoot, 'archive', 'SOL-USDC');
+      realFs.mkdirSync(path.dirname(archiveDir), { recursive: true });
+      realFs.renameSync(fundDir('coinbase', 'SOL-USDC'), archiveDir);
+      const readded = await invoke(app, 'POST /api/:exchange/funds', {
+        params: { exchange: 'coinbase' },
+        body: { pair: 'SOL-USDC' },
+      });
+      assert.equal(readded.statusCode, 200, JSON.stringify(readded.body));
+      assert.equal(readded.body.config.enabled, false);
+      assert.equal(readded.body.config.dryRun, true);
+      const freshState = stateTracker.loadFundRegimeState('coinbase', 'SOL-USDC');
+      assert.equal(freshState.position.lifecycle, 'active', 'fresh fund must start active');
+      assert.equal(freshState.position.cyclesCompleted, 0, 'fresh fund must not inherit old cycle history');
+      assert.equal(freshState.position.realizedPnL, 0, 'fresh fund must not inherit old realized P&L');
+      assert.ok(!realFs.existsSync(path.join(fundDir('coinbase', 'SOL-USDC'), 'fill-ledger.json')), 'fresh fund must not inherit the old ledger');
 
       const remaining = await invoke(app, 'GET /api/:exchange/funds', { params: { exchange: 'coinbase' } });
       const pairs = remaining.body.funds.map((f) => f.pair);
-      assert.ok(!pairs.includes('SOL-USDC'), 'deleted fund must be gone');
+      assert.ok(pairs.includes('SOL-USDC'), 'the pair should be available again after its old directory is archived');
       assert.ok(pairs.includes('BTC-USDC') && pairs.includes('ETH-USDC'), 'other funds on the exchange must survive');
     });
 

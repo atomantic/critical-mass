@@ -1,4 +1,5 @@
 import { Link } from '../lib/router'
+import { plural } from '../utils/plural.mjs'
 import { formatCurrency } from './charts/chartUtils'
 
 // Closed fund summary link. Flex-wrap + min-w-0/break-words keep identity and
@@ -20,7 +21,7 @@ function ClosedFundCard({ card, icon, iconClass }) {
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs min-w-0">
-        <span className="text-gray-400">{card.cyclesCompleted} cycles</span>
+        <span className="text-gray-400">{plural(card.cyclesCompleted, "cycle")}</span>
         {card.realizedPnL !== 0 && (
           <span className={`font-mono ${card.realizedPnL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
             {card.realizedPnL >= 0 ? '+' : ''}{formatCurrency(card.realizedPnL)}

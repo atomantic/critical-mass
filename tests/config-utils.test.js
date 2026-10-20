@@ -122,6 +122,7 @@ const setupFsMocks = ({ base = null, user = null } = {}) => {
   mock.method(fs, 'renameSync', () => {});
 
   mock.method(fs, 'mkdirSync', () => {});
+  mock.method(fs, 'rmdirSync', () => {});
 
   return {
     written: () => writtenData,
@@ -688,6 +689,15 @@ describe('saveConfig', () => {
     saveConfig({ global: { schedulerInterval: 3 } });
     assert.deepStrictEqual(mocks.user(), { global: { schedulerInterval: 3 } });
     assert.equal(mocks.mode(), 0o600, 'new published config must be 0600 (may hold secrets)');
+  });
+
+  it('retains explicit pins when a later base matches them and settings are saved again', (t) => {
+    const base = { regime: { maxDrawdownPercent: 50 }, dryRun: true };
+    const files = setupPublishedConfig(t, { base, user: { regime: { maxDrawdownPercent: 50 } } });
+    saveConfig({ ...base, dryRun: false });
+    assert.deepEqual(files.user(), { regime: { maxDrawdownPercent: 50 }, dryRun: false });
+    saveConfig({ ...base, dryRun: true });
+    assert.deepEqual(files.user(), { regime: { maxDrawdownPercent: 50 }, dryRun: true });
   });
 
   it('writes empty object when config matches base exactly', (t) => {

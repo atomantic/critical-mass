@@ -20,7 +20,7 @@ const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 // Canonical cycle pairing shared with the admin Filled Orders view (issue #697).
-const { pairCycleFills, buyPairKey } = require('../shared/cycle-pairing.mjs');
+const { pairCycleFills, buyPairKey, isBodyOwnedFill } = require('../shared/cycle-pairing.mjs');
 
 /**
  * @typedef {import('./types').Fill} Fill
@@ -510,9 +510,6 @@ const ORDER_LEVEL_FIELDS = {
   ],
 };
 
-/** @param {any} fill */
-const isOwnedFill = (fill) => Boolean(fill.isBodyOwned || fill.isSatellite || fill.bodyId);
-
 /**
  * Annotation patches for fills attributeOrphanFills placed into existing
  * cycles (issues #705, #752). Pure — returns patches, never mutates — so
@@ -563,7 +560,7 @@ const deriveAttributedAnnotations = (attributed, cycleMap) => {
   // 2. Linked-buy ownership for sibling-less sells (sees step-1 patches).
   const view = (f) => (patches.has(f) ? { ...f, ...patches.get(f) } : f);
   for (const { fill, cycleId } of attributed) {
-    if (fill.side !== 'sell' || !fill.orderId || patches.has(fill) || isOwnedFill(fill)) continue;
+    if (fill.side !== 'sell' || !fill.orderId || patches.has(fill) || isBodyOwnedFill(fill)) continue;
     const cycleFills = cycleMap.get(cycleId) || [];
     if (cycleFills.some(f => !attributedFills.has(f) && f.orderId === fill.orderId && f.side === 'sell')) continue;
     const linkedBuys = cycleFills.map(view).filter(f => f.side === 'buy' && (
@@ -571,7 +568,7 @@ const deriveAttributedAnnotations = (attributed, cycleMap) => {
       || (f.consumedBy && typeof f.consumedBy === 'object'
         && Object.prototype.hasOwnProperty.call(f.consumedBy, fill.orderId))
     ));
-    if (linkedBuys.length === 0 || !linkedBuys.every(isOwnedFill)) continue;
+    if (linkedBuys.length === 0 || !linkedBuys.every(isBodyOwnedFill)) continue;
     const bodyIds = new Set(linkedBuys.map(f => f.bodyId || null));
     if (bodyIds.size !== 1) continue;
     const [bodyId] = bodyIds;
@@ -1369,7 +1366,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       for (const allocation of reconciliation.allocations) {
         const coveredFill = allocation.row;
         const alreadyAccounted = fill.side === 'buy'
-          ? Boolean(coveredFill.isBodyOwned || coveredFill.isSatellite || coveredFill.bodyId)
+          ? isBodyOwnedFill(coveredFill)
           : Boolean(coveredFill.bodyBooked || (coveredFill.bodyBooked == null && coveredFill.bodyPnl != null));
         if (!alreadyAccounted) {
           bookableFills.push({
@@ -1654,7 +1651,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
     for (const fill of cycleFills) {
       // Skip body-owned fills — they have independent P&L tracking
-      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+      if (isBodyOwnedFill(fill)) continue;
 
       if (fill.side === 'buy') {
         totalAsset += fill.size;
@@ -1734,7 +1731,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
     for (const fill of targetFills) {
       // Skip body-owned fills — they have independent position tracking
-      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+      if (isBodyOwnedFill(fill)) continue;
 
       // A buy recalculateCycles folded into this cycle by timestamp alone
       // (#705) counts toward the cycle's buy limit, but nothing links it to
@@ -2110,22 +2107,24 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // inherit a single owner from, would stamp unrelated core buys with
     // another order's sell (#752).
     const sellLinkOwnership = new Map(); // sell orderId -> { core, owned }
+    // Ownership is tested once per fill; the later passes only see core fills.
+    const coreFills = [];
     for (const fill of fills.values()) {
+      const owned = isBodyOwnedFill(fill);
+      if (!owned) coreFills.push(fill);
       if (fill.side !== 'buy') continue;
       const linkedSellIds = new Set();
       if (fill.sellOrderId) linkedSellIds.add(fill.sellOrderId);
       if (fill.consumedBy && typeof fill.consumedBy === 'object') {
         for (const id of Object.keys(fill.consumedBy)) linkedSellIds.add(id);
       }
-      const owned = Boolean(fill.isBodyOwned || fill.isSatellite || fill.bodyId);
       for (const id of linkedSellIds) {
         const entry = sellLinkOwnership.get(id) || { core: false, owned: false };
         if (owned) entry.owned = true; else entry.core = true;
         sellLinkOwnership.set(id, entry);
       }
     }
-    for (const fill of fills.values()) {
-      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+    for (const fill of coreFills) {
       if (fill.side === 'sell' && fill.cycleAttribution) {
         const links = sellLinkOwnership.get(fill.orderId);
         if (!links || !links.core || links.owned) continue;
@@ -2134,8 +2133,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         cycleSellIds.set(fill.cycleId, fill.orderId);
       }
     }
-    for (const fill of fills.values()) {
-      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+    for (const fill of coreFills) {
       if (fill.cycleId && fill.cycleId === currentCycleId) continue;
       // A buy folded in by timestamp alone (#705) was never part of the core
       // position the cycle's TP sold — stamping it would book its cost as
@@ -3063,7 +3061,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     const uniqueBuyOrders = new Set();
     for (const fill of cycleFills) {
       // Skip body-owned buys — they have independent position tracking
-      if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId) {
+      if (fill.side === 'buy' && !isBodyOwnedFill(fill)) {
         uniqueBuyOrders.add(fill.orderId);
       }
     }
@@ -3113,6 +3111,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     getFillCount,
     getAllFills,
     getFillPage: input => transactionsReadView.query(input),
+    getFillAggregates: () => transactionsReadView.aggregates(),
     getStats,
     getFillTimeStats,
     getFillsSince,

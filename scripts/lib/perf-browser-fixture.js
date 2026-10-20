@@ -49,7 +49,7 @@ async function startBrowserFixture() {
     }
     for (const part of ['', 'admin']) fs.symlinkSync(fs.realpathSync(path.join(ROOT, part, 'node_modules')), path.join(dir, part, 'node_modules'), 'dir');
     // Fixture-only introspection; production bundles never expose this handle.
-    fs.appendFileSync(path.join(dir, 'admin/src/main.jsx'), '\nimport { getSocket } from "./hooks/useTradeEvents"; window.__perfSocket = getSocket;\n');
+    fs.appendFileSync(path.join(dir, 'admin/src/main.jsx'), '\nimport { getRealtimeClient } from "./lib/realtime"; window.__perfSocket = getRealtimeClient;\n');
     const build = spawn(process.execPath, [path.join(dir, 'admin/node_modules/vite/bin/vite.js'), 'build'], { cwd: path.join(dir, 'admin'), env: childEnv(), stdio: 'ignore' });
     if ((await once(build, 'exit'))[0] !== 0) throw new Error('fixture UI build failed');
     const config = JSON.parse(fs.readFileSync(path.join(dir, 'config.example.json')));
@@ -66,7 +66,7 @@ async function startBrowserFixture() {
     require(path.join(dir, 'src/logger')).createContextLogger = () => ({ info() {}, warn() {}, error() {} });
     const { createIPCServer } = require(path.join(dir, 'src/ipc/ipc-server'));
     const { createTransactionsReadView } = require(path.join(dir, 'src/transactions-regime-query'));
-    const { createSocketIOProxy } = require(path.join(dir, 'src/ipc/socket-io-proxy'));
+    const { createRealtimeProxy } = require(path.join(dir, 'src/ipc/realtime-proxy'));
     const env = childEnv();
     for (const exchange of ['coinbase', 'gemini', 'cryptocom']) {
       const port = await freePort();
@@ -79,7 +79,7 @@ async function startBrowserFixture() {
       engine.onRequest('regime:open-orders', () => ({ success: true, orders: [] }));
       engine.onRequest('regime:manual-trades', () => ({ success: true, trades: [] }));
       await engine.start();
-      engine.perfProxy = createSocketIOProxy(engine);
+      engine.perfProxy = createRealtimeProxy(engine);
     }
     // Seeding public candles and starting prediction workers are outside this
     // scenario. Block outbound HTTP as well, so new startup work fails closed.

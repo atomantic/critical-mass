@@ -85,7 +85,7 @@ async function runBrowserScenario({ browser, fixture, metrics, idleMs = 60000 })
     await waitFor(browser, `${JSON.stringify(prefixes)}.every(prefix => (${visiblePrices})[prefix])`);
     const beforePrices = await browser.evaluate(visiblePrices);
     const before = await browser.evaluate(state);
-    await browser.evaluate('void window.__perfSocket().io.engine.close()');
+    await browser.evaluate('void window.__perfSocket().reconnect()');
     await waitFor(browser, `window.__perfSocket().connected && window.__perfSocket().id !== ${JSON.stringify(before.id)}`);
     // Existing DOM values cannot establish recovery: require a newer live
     // fixture tick for each visible fund after the new transport connects.

@@ -58,6 +58,7 @@ function createView(name) {
     setInterval: () => 1, clearInterval() {},
     require: name => {
       if (name === 'react') return hooks
+      if (name === '../utils/plural.mjs') return { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` }
       if (name === './ModalDialog') return ({ children }) => children
       throw new Error(`Unexpected fixture import ${name}`)
     },

@@ -1,4 +1,5 @@
 import React from 'react'
+import { plural } from '../../utils/plural.mjs'
 
 export default function FillTimeStats({ fillTimeStats, effectiveStaleMs, orderStaleMs }) {
   return (
@@ -8,7 +9,7 @@ export default function FillTimeStats({ fillTimeStats, effectiveStaleMs, orderSt
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-medium text-gray-400">Fill Time Stats (7d)</h3>
             <span className="text-[10px] text-gray-400">
-              {fillTimeStats.count} fills
+              {plural(fillTimeStats.count, "fill")}
             </span>
           </div>
 

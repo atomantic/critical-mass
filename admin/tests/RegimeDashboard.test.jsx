@@ -1,7 +1,8 @@
 import React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import RegimeDashboard from '../src/components/RegimeDashboard'
+import useRegimeDashboardData from '../src/components/regime/useRegimeDashboardData'
 
 const fixture = vi.hoisted(() => ({ status: null, addToast: vi.fn(), setStatus: vi.fn(), initializeFromCache: vi.fn() }))
 vi.mock('../src/App', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }))
@@ -44,7 +45,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url) => ({ ok: true, json: async () => {
     if (url.includes('/regime/config')) return { config }
     if (url.includes('/regime/status')) return { status: fixture.status }
-    if (url.includes('/regime/fills')) return { fills: [] }
+    if (url.includes('/regime/fills')) return { detailFills: [], fillCount: 0, fillCycleGroups: [] }
     if (url.includes('/presets/')) return { presets }
     return {}
   } })))
@@ -62,7 +63,7 @@ describe('RegimeDashboard behavior pin', () => {
     for (const heading of ['Volatility', 'TP Auto-Management', 'Size Auto-Management', 'Fill Time Stats (7d)', 'Risk Limits', 'Position', 'Macro Regime', 'Configuration Summary', 'Open Orders', 'Unresolved Placements (1)']) {
       expect(screen.getByRole('heading', { name: heading })).toBeTruthy()
     }
-    for (const value of ['Entry Status', 'HARVEST', 'LADDER', '1 orders ($250)', 'Check exchange order', 'New buys paused — cycle buy-limit reached (3/3)', '$123.00', '1.2s', '2 active / 0 completed']) {
+    for (const value of ['Entry Status', 'HARVEST', 'LADDER', '1 order ($250)', 'Check exchange order', 'New buys paused — cycle buy-limit reached (3/3)', '$123.00', '1.2s', '2 active / 0 completed']) {
       expect(screen.getAllByText(value, { exact: false }).length).toBeGreaterThan(0)
     }
     expect(screen.getByRole('button', { name: 'Collapse All (2)' })).toBeTruthy()
@@ -121,5 +122,79 @@ describe('RegimeDashboard behavior pin', () => {
     expect(screen.getByText('Avg Optimal TP')).toBeTruthy()
     expect(screen.getByText('Recommended TP Range')).toBeTruthy()
     expect(screen.queryByRole('heading', { name: 'Unresolved Placements (1)' })).toBeNull()
+  })
+})
+
+
+describe('RegimeDashboard failed reads', () => {
+  it('shows 504 errors instead of stopped/empty claims and retries only failed reads', async () => {
+    const goodFetch = fetch
+    fixture.status = null
+    let failing = true
+    vi.stubGlobal('fetch', vi.fn(async (...args) => {
+      if (failing && /regime\/(status|fills)/.test(args[0])) return { ok: false, status: 504 }
+      return goodFetch(...args)
+    }))
+    render(<RegimeDashboard exchange="coinbase" pair="BTC-USDC" />)
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    expect(screen.getByText('Fills unavailable.')).toBeTruthy()
+    expect(screen.queryByText(/Regime Engine is not running/)).toBeNull()
+    expect(screen.queryByText('No filled orders yet')).toBeNull()
+    const initialCount = fetch.mock.calls.length
+    fixture.status = runningStatus()
+    failing = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(fetch.mock.calls.slice(initialCount).map(([url]) => url)).toEqual([
+      '/api/coinbase/regime/status?pair=BTC-USDC',
+      '/api/coinbase/regime/fills/cycles?pair=BTC-USDC',
+    ])
+    expect(screen.getByText('No filled orders yet')).toBeTruthy()
+  })
+
+  it('reports rejected status and configuration reads independently', async () => {
+    const goodFetch = fetch
+    fixture.status = null
+    vi.stubGlobal('fetch', vi.fn(async (...args) => {
+      if (/regime\/(status|config)/.test(args[0])) throw new Error('offline')
+      return goodFetch(...args)
+    }))
+    render(<RegimeDashboard exchange="coinbase" pair="BTC-USDC" />)
+    const banner = await screen.findByRole('alert')
+    expect(banner.textContent).toContain('Status request failed')
+    expect(banner.textContent).toContain('Configuration request failed')
+    expect(screen.queryByText(/Regime Engine is not running/)).toBeNull()
+  })
+
+  it('retains last good snapshots, marks stale and reports fills failure to callers', async () => {
+    fixture.status = null
+    const snapshot = runningStatus()
+    const fills = [{ orderId: 'buy-1', side: 'buy', size: 0.01, price: 50000 }]
+    let failing = false
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (failing) return { ok: false, status: 504 }
+      return { ok: true, json: async () => url.includes('/status') ? { status: snapshot }
+        : url.includes('/config') ? { config } : url.includes('/fills') ? { detailFills: fills, fillCount: fills.length, fillCycleGroups: [] } : {} }
+    }))
+    const { result } = renderHook(() => useRegimeDashboardData('coinbase', 'BTC-USDC', '?pair=BTC-USDC'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    failing = true
+    let fillsSuccess
+    await act(async () => {
+      await Promise.all([result.current.fetchStatus(), result.current.fetchConfig()])
+      fillsSuccess = await result.current.fetchFills()
+    })
+    expect(fillsSuccess).toBe(false)
+    expect(result.current.status).toEqual(snapshot)
+    expect(result.current.config).toEqual(config)
+    expect(result.current.liveFills).toEqual(fills)
+    expect(result.current.fillAggregates.detailFills).toEqual(fills)
+    expect(result.current.fillAggregates.fillCount).toBe(1)
+    expect(result.current.stale).toBe(true)
+    expect(result.current.fillsUnavailable).toBe(true)
+    failing = false
+    await act(async () => { await result.current.retry() })
+    expect(result.current.error).toBe('')
+    expect(result.current.stale).toBe(false)
   })
 })

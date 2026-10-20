@@ -1,4 +1,5 @@
 import React from 'react'
+import { plural } from '../../utils/plural.mjs'
 
 export default function SizeOptimizerPanel({ sizeOptimizer }) {
   return (
@@ -35,7 +36,7 @@ export default function SizeOptimizerPanel({ sizeOptimizer }) {
             {/* Cycle Stats */}
             {sizeOptimizer.totalCycleCount >= 3 && (
               <div className="p-2 bg-purple-900/20 border border-purple-700/30 rounded-sm">
-                <div className="text-purple-400/70 text-[10px] mb-1">Step Usage ({sizeOptimizer.totalCycleCount} cycles)</div>
+                <div className="text-purple-400/70 text-[10px] mb-1">Step Usage ({plural(sizeOptimizer.totalCycleCount, "cycle")})</div>
                 <div className="grid grid-cols-3 gap-2">
                   <div>
                     <span className="text-gray-400">Avg:</span>{' '}

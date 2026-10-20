@@ -1,20 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { io } from 'socket.io-client'
+import { useState, useEffect, useCallback } from 'react'
+import { getRealtimeClient } from '../lib/realtime'
 
 // Maximum events to keep in history
 const MAX_EVENTS = 50
-
-// Singleton socket connection
-let socket = null
-
-export const getSocket = () => {
-  if (!socket) {
-    socket = io(window.location.origin, {
-      transports: ['websocket', 'polling'],
-    })
-  }
-  return socket
-}
 
 export function useTradeEvents(exchange = null) {
   const [events, setEvents] = useState([])
@@ -22,7 +10,7 @@ export function useTradeEvents(exchange = null) {
   const [latestEvent, setLatestEvent] = useState(null)
 
   useEffect(() => {
-    const socket = getSocket()
+    const socket = getRealtimeClient()
 
     const handleConnect = () => setConnected(true)
     const handleDisconnect = () => setConnected(false)
@@ -74,7 +62,7 @@ export function useRegimeEvents(exchange = null, pair = null) {
   const [events, setEvents] = useState([])
 
   useEffect(() => {
-    const socket = getSocket()
+    const socket = getRealtimeClient()
 
     const handleConnect = () => setConnected(true)
     const handleDisconnect = () => setConnected(false)
@@ -164,7 +152,7 @@ export function useMultiRegimeStatuses() {
   const [connected, setConnected] = useState(false)
 
   useEffect(() => {
-    const socket = getSocket()
+    const socket = getRealtimeClient()
 
     const handleConnect = () => setConnected(true)
     const handleDisconnect = () => setConnected(false)
@@ -199,7 +187,7 @@ export function useOptimizerEvents() {
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    const socket = getSocket()
+    const socket = getRealtimeClient()
 
     const handleProgress = (data) => setProgress(data)
     const handleBest = (data) => setBestResult(data)

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useRegimeEvents } from '../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
 import RegimePriceChart from './charts/RegimePriceChart'
@@ -13,10 +13,14 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
   const pairQuery = buildPairQuery(pair)
   const [localStatus, setLocalStatus] = useState(null)
   const [config, setConfig] = useState(null)
-  const [fills, setFills] = useState([])
+  const [fillAggregates, setFillAggregates] = useState(null)
   const [loading, setLoading] = useState(true)
   const [historicalPrices, setHistoricalPrices] = useState([])
   const [historicalAtr, setHistoricalAtr] = useState([])
+  const [error, setError] = useState(null)
+  const [stale, setStale] = useState(false)
+  const [historyUnavailable, setHistoryUnavailable] = useState(false)
+  const readState = useRef(null)
 
   const { connected, status: socketStatus } = useRegimeEvents(exchange, pair)
 
@@ -51,69 +55,69 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
   }, [historicalAtr, realtimeAtr])
 
   const fetchData = useCallback(async () => {
+    const session = readState.current
+    if (!session?.active || session.inFlight) return
+    session.inFlight = true
+    const controller = new AbortController()
+    session.controller = controller
     try {
       const candlesQuery = pair ? `?granularity=ONE_MINUTE&limit=60&pair=${encodeURIComponent(pair)}` : '?granularity=ONE_MINUTE&limit=60'
-      const [statusRes, configRes, fillsRes, candlesRes, chartDataRes] = await Promise.all([
-        fetch(`/api/${exchange}/regime/status${pairQuery}`),
-        fetch(`/api/${exchange}/regime/config${pairQuery}`),
-        fetch(`/api/${exchange}/regime/fills${pairQuery}`),
-        fetch(`/api/${exchange}/candles${candlesQuery}`),
-        fetch(`/api/${exchange}/regime/chart-data${pairQuery}`),
+      const read = async (url, name) => {
+        const response = await fetch(url, { signal: controller.signal })
+        if (!response.ok) throw new Error(`${name} fetch failed: HTTP ${response.status}`)
+        return response.json()
+      }
+      const results = await Promise.allSettled([
+        read(`/api/${exchange}/regime/status${pairQuery}`, 'Status'),
+        read(`/api/${exchange}/regime/config${pairQuery}`, 'Config'),
+        read(`/api/${exchange}/regime/fills/cycles${pairQuery}`, 'Fills'),
+        read(`/api/${exchange}/candles${candlesQuery}`, 'Candles'),
+        read(`/api/${exchange}/regime/chart-data${pairQuery}`, 'Chart data'),
       ])
-
-      if (statusRes.ok) {
-        const data = await statusRes.json()
-        setLocalStatus(data.status)
+      if (!session.active) return
+      const requiredFailure = results.slice(0, 3).find(result => result.status === 'rejected')
+      if (requiredFailure) throw requiredFailure.reason
+      const [statusData, configData, fillsData] = results.slice(0, 3).map(result => result.value)
+      const candlesResult = results[3]
+      const cacheResult = results[4]
+      session.hasSnapshot = true
+      setLocalStatus(statusData.status)
+      setConfig(configData.config)
+      setFillAggregates(fillsData)
+      setError(null)
+      setStale(false)
+      const unavailable = candlesResult.status === 'rejected' || cacheResult.status === 'rejected'
+      setHistoryUnavailable(unavailable)
+      if (candlesResult.status === 'fulfilled' && candlesResult.value.candles?.length) {
+        const candles = candlesResult.value.candles
+        setHistoricalPrices(candles.map(c => ({ timestamp: c.timestamp, price: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low) })).reverse())
+        setHistoricalAtr(candles.map(c => ({ timestamp: c.timestamp, atr1m: parseFloat(c.high) - parseFloat(c.low), atr5m: null, realizedVol: null, volBaseline: null })).reverse())
       }
-      if (configRes.ok) {
-        const data = await configRes.json()
-        setConfig(data.config)
-      }
-      if (fillsRes.ok) {
-        const data = await fillsRes.json()
-        setFills(data.fills || [])
-      }
-      if (candlesRes.ok) {
-        const data = await candlesRes.json()
-        if (data.candles && data.candles.length > 0) {
-          // Convert candles to price history format matching useChartDataBuffer schema
-          const prices = data.candles.map(c => ({
-            timestamp: c.timestamp,
-            price: parseFloat(c.close),
-            high: parseFloat(c.high),
-            low: parseFloat(c.low),
-          })).reverse() // Oldest first
-          setHistoricalPrices(prices)
-
-          // Calculate true range from candles (not smoothed ATR, just range per candle)
-          // This provides initial chart data until real-time ATR metrics arrive
-          const trueRangeData = data.candles.map(c => ({
-            timestamp: c.timestamp,
-            atr1m: parseFloat(c.high) - parseFloat(c.low), // True range, not ATR
-            atr5m: null,
-            realizedVol: null,
-            volBaseline: null,
-          })).reverse()
-          setHistoricalAtr(trueRangeData)
-        }
-      }
-      // Initialize chart data buffer from server cache (restores data across page reloads)
-      if (chartDataRes.ok) {
-        const data = await chartDataRes.json()
-        if (data.data) {
-          initializeFromCache(data.data)
-        }
-      }
-    } catch {
-      // Leave whatever chart state is already populated — loading still
-      // clears below so the page never gets stuck on "Loading…" forever.
+      if (cacheResult.status === 'fulfilled' && cacheResult.value.data) initializeFromCache(cacheResult.value.data)
+    } catch (err) {
+      if (!session.active) return
+      if (!session.hasSnapshot) setError(err.message || 'Failed to load regime charts')
+      else setStale(true)
     } finally {
-      setLoading(false)
+      session.inFlight = false
+      if (session.active) setLoading(false)
     }
   }, [exchange, pair, initializeFromCache]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    const session = { active: true, inFlight: false, hasSnapshot: false, controller: null }
+    readState.current = session
+    setLocalStatus(null)
+    setConfig(null)
+    setFillAggregates(null)
+    setHistoricalPrices([])
+    setHistoricalAtr([])
+    setError(null)
+    setStale(false)
+    setHistoryUnavailable(false)
+    setLoading(true)
     fetchData()
+    return () => { session.active = false; session.controller?.abort() }
   }, [fetchData])
 
   const isRunning = status?.isRunning
@@ -122,16 +126,19 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
   const position = status?.position || {}
   const regime = status?.regime || {}
   const dryRunFilled = status?.dryRun?.filledOrders || []
-  const activeFills = isDryRun ? dryRunFilled : fills
+  const buyCount = isDryRun ? dryRunFilled.filter(f => f.side === 'buy').length : fillAggregates?.buyCount || 0
+  const sellCount = isDryRun ? dryRunFilled.filter(f => f.side === 'sell').length : fillAggregates?.sellCount || 0
 
   // Calculate cumulative P&L distribution from fills aligned with cycle-pairing ruleset
   const pnlData = useMemo(() => {
-    return deriveRegimeCumulativePnl({
-      fills,
-      isDryRun,
-      dryRunFilled,
-    })
-  }, [fills, isDryRun, dryRunFilled])
+    return isDryRun
+      ? deriveRegimeCumulativePnl({ isDryRun, dryRunFilled })
+      : (fillAggregates?.pnlPoints || []).map(point => ({ date: new Date(point.timestamp), pnl: point.pnl, cumulative: point.cumulative }))
+  }, [fillAggregates, isDryRun, dryRunFilled])
+
+  if (error) {
+    return <div role="alert" className="flex flex-col items-center justify-center h-64 gap-4"><div className="text-red-400">Error: {error}</div><button onClick={fetchData} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-sm">Retry</button></div>
+  }
 
   if (loading) {
     return (
@@ -143,6 +150,9 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
 
   return (
     <div className="space-y-6">
+      {stale && <div role="status" className="bg-yellow-900/30 border border-yellow-600 rounded-lg p-3 flex items-center justify-between"><span className="text-yellow-400">Data is stale. Waiting for a successful refresh...</span><button onClick={fetchData} className="px-3 py-1 bg-yellow-700 text-white text-sm rounded-sm">Refresh Now</button></div>}
+      {!stale && <div className="flex justify-end"><button onClick={fetchData} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-sm">Refresh</button></div>}
+      {historyUnavailable && <p className="text-sm text-yellow-400">Price history unavailable.</p>}
       {/* Status Banner */}
       <div className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
@@ -175,11 +185,11 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
       {/* Quick Stats */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         <div className="bg-gray-800 rounded-lg p-3 text-center">
-          <div className="text-2xl font-bold text-blue-400">{activeFills.filter(f => f.side === 'buy').length}</div>
+          <div className="text-2xl font-bold text-blue-400">{buyCount}</div>
           <div className="text-xs text-gray-400">Total Entries</div>
         </div>
         <div className="bg-gray-800 rounded-lg p-3 text-center">
-          <div className="text-2xl font-bold text-green-400">{activeFills.filter(f => f.side === 'sell').length}</div>
+          <div className="text-2xl font-bold text-green-400">{sellCount}</div>
           <div className="text-xs text-gray-400">TPs Filled</div>
         </div>
         <div className="bg-gray-800 rounded-lg p-3 text-center">
@@ -243,6 +253,7 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
             {pnlData.length > 0 && (
               <div className="bg-gray-800 rounded-lg p-4 mt-4">
                 <h3 className="text-sm font-medium text-gray-400 mb-3">Cumulative P&L</h3>
+                {!isDryRun && fillAggregates?.pnlPointsTruncated && <p className="text-xs text-gray-400 mb-2">Chart samples historical sells; cumulative total includes every sell.</p>}
                 <CumulativePnlChart points={pnlData} />
                 <div className="flex justify-between text-xs text-gray-400 mt-2">
                   <span>First Fill</span>

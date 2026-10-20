@@ -2,7 +2,7 @@
 
 // PM2 log-tail child lifecycle, extracted from server.js so the exit/
 // replacement/unsubscribe races can be unit tested without a real PM2
-// binary, a real child_process, or a real socket.io server (see #448).
+// binary, a real child_process, or a real realtime bus (see #448).
 
 // CSI (ESC/[ or 0x9B) + OSC (ESC]…BEL/ST). Own the helper — no strip-ansi dep.
 const ANSI_RE = /(?:\u001B|\u009B)(?:\][^\u0007\u001B]*(?:\u0007|\u001B\\)?|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/g;
@@ -48,7 +48,13 @@ const createLogStreamRegistry = () => {
   const entries = () => streams.entries();
   const clear = () => streams.clear();
 
-  return { start, stop, end, get, entries, clear };
+  // Gateway shutdown: kill every child, then drop them all.
+  const stopAll = () => {
+    for (const entry of streams.values()) entry.process?.kill();
+    streams.clear();
+  };
+
+  return { start, stop, end, get, entries, clear, stopAll };
 };
 
 /**
@@ -59,7 +65,8 @@ const createLogStreamRegistry = () => {
  */
 const registerLogStreamHandlers = ({ socket, registry, spawnFn, log, allowedProcesses }) => {
   // Socket payloads are untrusted JSON. Validate before destructuring or
-  // coercing values: listener exceptions escape Socket.IO's event dispatch.
+  // coercing values, so a malformed request gets a logs:error reply instead
+  // of a handler exception.
   const validProcessPayload = (payload) => {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)
       || typeof payload.processName !== 'string') {

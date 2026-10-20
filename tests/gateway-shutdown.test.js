@@ -140,12 +140,12 @@ describe('gateway shutdown owns admitted work', () => {
     assert.deepEqual(calls, ['cancel', 'exit:1']);
   });
 
-  it('waits for Socket.IO and every HTTP listener, including an already closed listener', async () => {
+  it('waits for the realtime bus and every HTTP listener, including an already closed listener', async () => {
     const socketClose = deferred();
     const servers = [http.createServer(), http.createServer()];
     await Promise.all(servers.map((server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))));
     let closed = false;
-    const closing = closeGatewayListeners({ close: (callback) => socketClose.promise.then(callback) }, [...servers, http.createServer()])
+    const closing = closeGatewayListeners({ close: () => socketClose.promise }, [...servers, http.createServer()])
       .then(() => { closed = true; });
     await settle();
     assert.equal(closed, false);
@@ -155,20 +155,18 @@ describe('gateway shutdown owns admitted work', () => {
     assert.equal(closed, true);
   });
 
-  it('closes transports on every Socket.IO attachment, including pre-namespace handshakes', async () => {
-    const { Server } = require('socket.io');
+  it('closes realtime connections on every attached listener before the listeners finish closing', async () => {
+    const { createRealtimeBus } = require('../src/realtime-bus');
     const servers = [http.createServer(), http.createServer()];
-    const io = new Server(servers[0]);
-    const engines = [io.engine];
-    io.attach(servers[1]);
-    engines.push(io.engine);
+    const bus = createRealtimeBus({ httpServer: servers[0] });
+    bus.attach(servers[1]);
     await Promise.all(servers.map((server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))));
-    const sockets = servers.map((server) => new WebSocket(`ws://127.0.0.1:${server.address().port}/socket.io/?EIO=4&transport=websocket`));
+    const sockets = servers.map((server) => new WebSocket(`ws://127.0.0.1:${server.address().port}/realtime`));
+    // The bus's open frame: each connection is registered.
     await Promise.all(sockets.map((socket) => new Promise((resolve) => socket.addEventListener('message', resolve, { once: true }))));
-    // Engine.IO has accepted them, but no Socket.IO namespace CONNECT was sent.
-    const closed = sockets.map((socket) => new Promise((resolve) => socket.addEventListener('close', resolve, { once: true })));
-    await closeGatewayListeners(io, servers, engines);
-    await Promise.all(closed);
+    const closed = sockets.map((socket) => new Promise((resolve) => socket.addEventListener('close', ({ code }) => resolve(code), { once: true })));
+    await closeGatewayListeners(bus, servers);
+    assert.deepEqual(await Promise.all(closed), [1001, 1001]);
     assert.ok(servers.every((server) => !server.listening));
     assert.ok(sockets.every((socket) => socket.readyState === WebSocket.CLOSED));
   });

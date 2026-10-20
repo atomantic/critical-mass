@@ -14,6 +14,7 @@
  */
 
 const fs = require('fs');
+const { BASE_SNAPSHOT_FILENAME, CONFIG_LOCK_DIR } = require('./config-base-drift');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
@@ -469,6 +470,10 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
     '*/*-keys.json',    // Keys in subdirectories
     ...ROOT_CREDENTIAL_FILES,
     'config.json',      // Portable configuration is carried by the manifest
+    'config.json.*.tmp', // Interrupted atomic writes can contain secrets too
+    BASE_SNAPSHOT_FILENAME, // Full local base may contain secrets; rebuild on restore
+    `${BASE_SNAPSHOT_FILENAME}.*.tmp`,
+    CONFIG_LOCK_DIR, `${CONFIG_LOCK_DIR}/*`,
     MANIFEST_FILENAME,  // The manifest is generated below, never archived from data/
     // Restore bookkeeping (rollback journal, saved originals, extraction
     // staging). Archiving these would ship a stale journal into the next
@@ -477,6 +482,7 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
     JOURNAL_FILENAME,
     `${STAGE_PREFIX}*`, `${STAGE_PREFIX}*/*`,
     `${ORIGINALS_PREFIX}*`, `${ORIGINALS_PREFIX}*/*`,
+    '*.restore-tmp', '*/*.restore-tmp', // Orphaned atomic-replace temp files
     // Legacy namespace migration ownership (issue #971): a captured lock is
     // meaningless on another machine or after a restore.
     `${LEGACY_MIGRATION_LOCK}*`,
@@ -688,6 +694,44 @@ const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
     })
     .filter(Boolean)
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+};
+
+const archiveValidityCache = new Map();
+
+/**
+ * Epoch ms of the newest valid archive, or null when none exist. Anchors the schedule.
+ * @returns {number | null}
+ */
+const getNewestBackupTime = () => {
+  ensureBackupsDir();
+  const candidates = [];
+  for (const filename of fs.readdirSync(BACKUPS_DIR)) {
+    if (!filename.startsWith('backup-') || !filename.endsWith('.zip')) continue;
+    const filePath = path.join(BACKUPS_DIR, filename);
+    const stats = fs.lstatSync(filePath);
+    if (stats.isFile()) candidates.push({ filePath, mtimeMs: Math.round(stats.mtimeMs), size: stats.size });
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  // Only the newest candidates are integrity-tested (not every retained ZIP), and
+  // verdicts are cached so a corrupt partial never anchors the schedule nor re-tests.
+  for (const { filePath, mtimeMs, size } of candidates) {
+    const key = `${filePath}:${mtimeMs}:${size}`;
+    if (!archiveValidityCache.has(key)) {
+      archiveValidityCache.set(key, validateBackupArchive(filePath, { allowLegacy: true }).ok);
+    }
+    if (archiveValidityCache.get(key)) return mtimeMs;
+  }
+  return null;
+};
+
+/**
+ * Epoch ms of the newest fund-state snapshot, or null when none exist.
+ * @returns {number | null}
+ */
+const getNewestFundStateBackupTime = () => {
+  const newest = listFundStateBackups()[0];
+  const time = newest ? Date.parse(newest.createdAt) : NaN;
+  return Number.isNaN(time) ? null : time;
 };
 
 /**
@@ -1109,7 +1153,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     if (removedFunds.length > 0 && !acceptFundRemoval) {
       const describe = removedFunds.map(({ exchange, pair }) => `${exchange}/${pair}`).join(', ');
       return abort(
-        `Restoring this archive would remove ${removedFunds.length} fund(s) this machine currently runs that the archive does not carry (${describe}). `
+        `Restoring this archive would remove ${removedFunds.length} fund${removedFunds.length === 1 ? "" : "s"} this machine currently runs that the archive does not carry (${describe}). `
         + 'They may still hold on-disk state or a live exchange order. Pass acceptFundRemoval to proceed. No files were changed.',
         'fund-removal-unacknowledged',
       );
@@ -1125,6 +1169,12 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     // writeUserConfigFile's default for a brand-new file.
     fs.writeFileSync(path.join(tempDir, 'config.json'), JSON.stringify(override, null, 2), { mode: 0o600 });
   }
+
+  // A source baseline is not portable: the reconstructed override is relative
+  // to THIS base. Stage both in the same rollback transaction, including for
+  // legacy data-only restores, which retain the destination configuration.
+  fs.writeFileSync(path.join(tempDir, BASE_SNAPSHOT_FILENAME), JSON.stringify(destination.base, null, 2), { mode: 0o600 });
+  fs.chmodSync(path.join(tempDir, BASE_SNAPSHOT_FILENAME), 0o600);
 
   // ---- Translate a pre-multi-pair archive into the per-fund layout -------
   // Archives predating the multi-pair release hold their per-fund files at
@@ -1167,6 +1217,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     // Skip the backups directory, root credential files, key files and the
     // archive's own metadata.
     skip: (name, isRoot) => name === 'backups'
+      || (isRoot && (name === CONFIG_LOCK_DIR || name.startsWith(`${BASE_SNAPSHOT_FILENAME}.`)))
       || name.endsWith('-keys.json')
       || (isRoot && ROOT_CREDENTIAL_FILES.includes(name))
       || (isRoot && (name === MANIFEST_FILENAME || (legacy && !override && name === 'config.json'))),
@@ -1192,6 +1243,8 @@ module.exports = {
   createFundStateBackup,
   listBackups,
   listFundStateBackups,
+  getNewestBackupTime,
+  getNewestFundStateBackupTime,
   deleteBackup,
   pruneBackups,
   pruneFundStateBackups,

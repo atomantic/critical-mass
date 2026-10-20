@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
-import { io } from 'socket.io-client'
 import { formatCurrency } from './charts/chartUtils'
 import { useToast } from './Toast'
 import { pairQuery as buildPairQuery } from '../utils/api'
+import { getRealtimeClient } from '../lib/realtime'
 
 // Available options for optimizer
 const ALL_INTERVALS = ['5min', '10min', '30min', '1hour', '4hour', 'daily']
@@ -58,9 +58,9 @@ function Optimizer({ exchange = 'coinbase', pair }) {
   const { addToast } = useToast()
   const pairQuery = buildPairQuery(pair)
 
-  // Connect to WebSocket
+  // Optimizer events on the shared realtime connection
   useEffect(() => {
-    const socket = io()
+    const socket = getRealtimeClient()
 
     const isActiveEvent = (data) => (
       data?.exchange === exchange &&
@@ -68,36 +68,44 @@ function Optimizer({ exchange = 'coinbase', pair }) {
       data?.runId === activeRunIdRef.current
     )
 
-    socket.on('optimizer:progress', (data) => {
+    const onProgress = (data) => {
       if (!isActiveEvent(data)) return
       setProgress(data)
-    })
+    }
 
-    socket.on('optimizer:newBest', (data) => {
+    const onNewBest = (data) => {
       if (!isActiveEvent(data)) return
       setCurrentBest(data)
-    })
+    }
 
-    socket.on('optimizer:complete', (data) => {
+    const onComplete = (data) => {
       if (!isActiveEvent(data)) return
       setResults(data)
       setLoading(false)
       setProgress(null)
       setCurrentBest(null)
       activeRunIdRef.current = null
-    })
+    }
 
-    socket.on('optimizer:error', (data) => {
+    const onError = (data) => {
       if (!isActiveEvent(data)) return
       setError(data.error)
       setLoading(false)
       setProgress(null)
       activeRunIdRef.current = null
-    })
+    }
+
+    socket.on('optimizer:progress', onProgress)
+    socket.on('optimizer:newBest', onNewBest)
+    socket.on('optimizer:complete', onComplete)
+    socket.on('optimizer:error', onError)
 
     return () => {
       activeRunIdRef.current = null
-      socket.disconnect()
+      socket.off('optimizer:progress', onProgress)
+      socket.off('optimizer:newBest', onNewBest)
+      socket.off('optimizer:complete', onComplete)
+      socket.off('optimizer:error', onError)
     }
   }, [exchange, pair])
 

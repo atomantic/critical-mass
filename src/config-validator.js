@@ -76,6 +76,7 @@ const REGIME_FIELD_RULES = {
   maxRateLimits: { type: 'number' },
   maxLatencyMs: { type: 'number' },
   safeRecoveryMs: { type: 'number' },
+  wsConnectGraceMs: { type: 'number' },
   maxOpenOrders: { type: 'number' },
   reconcileIntervalMs: { type: 'number' },
   fillDriftSweepMs: { type: 'number' },

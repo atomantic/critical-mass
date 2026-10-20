@@ -72,6 +72,7 @@ const setupFsMocks = (base) => {
   });
   mock.method(fs, 'renameSync', () => {});
   mock.method(fs, 'mkdirSync', () => {});
+  mock.method(fs, 'rmdirSync', () => {}); // paired with the synthetic lock-directory creation
 };
 
 const createFakeApp = () => {
@@ -654,7 +655,7 @@ describe('placement intent discard respects engine ownership', () => {
 
 describe('GET /regime/fills paging', () => {
   afterEach(() => { mock.restoreAll(); configUtils._resetConfigCacheForTests(); delete require.cache[ROUTES_PATH]; });
-  it('forwards validated, bounded pages and keeps unpaged calls compatible', async () => {
+  it('forwards validated, bounded pages and rejects unpaged calls', async () => {
     const calls = [];
     const app = setupApp((...args) => { calls.push(args); return Promise.resolve({ fills: [], pageInfo: { total: 0 } }); });
     const paged = await invoke(app, 'GET /api/:exchange/regime/fills', { params: { exchange: 'cryptocom' }, query: { pair: 'CRO_USD', paged: 'true', pageSize: '99999', page: '2', side: 'sell' } });
@@ -663,17 +664,31 @@ describe('GET /regime/fills paging', () => {
     assert.equal(calls[0][1].pageSize, 100);
     assert.equal(calls[0][1].page, 2);
     assert.equal(calls[0][3], 'CRO_USD');
-    await invoke(app, 'GET /api/:exchange/regime/fills', reqFor({}));
-    assert.deepEqual(calls[1][1], {});
+    const unpaged = await invoke(app, 'GET /api/:exchange/regime/fills', reqFor({}));
+    assert.equal(unpaged.statusCode, 400);
+    assert.equal(unpaged.body.error, 'paged=true required');
     const invalid = await invoke(app, 'GET /api/:exchange/regime/fills', { params: { exchange: 'cryptocom' }, query: { pair: 'CRO_USD', paged: 'true', sortField: 'untrusted' } });
     assert.equal(invalid.statusCode, 400);
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 1);
   });
   it('preserves the stale-revision 409 across IPC', async () => {
     const app = setupApp(() => Promise.resolve({ success: false, statusCode: 409, code: 'STALE_FILL_REVISION', revision: 'new' }));
-    const response = await invoke(app, 'GET /api/:exchange/regime/fills', reqFor({}));
+    const response = await invoke(app, 'GET /api/:exchange/regime/fills', {
+      params: { exchange: 'cryptocom' }, query: { pair: 'CRO_USD', paged: 'true' },
+    });
     assert.equal(response.statusCode, 409);
     assert.equal(response.body.code, 'STALE_FILL_REVISION');
+  });
+  it('routes the bounded cycle read through its own IPC channel', async () => {
+    const calls = [];
+    const app = setupApp((...args) => { calls.push(args); return Promise.resolve({ fillCount: 7, cycles: [], totalPnl: 42 }); });
+    const response = await invoke(app, 'GET /api/:exchange/regime/fills/cycles', {
+      params: { exchange: 'cryptocom' }, query: { pair: 'CRO_USD' },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.totalPnl, 42);
+    assert.deepEqual(calls[0].slice(0, 2), ['regime:fills:cycles', {}]);
+    assert.equal(calls[0][3], 'CRO_USD');
   });
 });
 
