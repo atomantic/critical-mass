@@ -3,6 +3,7 @@ import { formatCurrency } from './charts/chartUtils'
 import { useToast } from './Toast'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { getRealtimeClient } from '../lib/realtime'
+import { plural } from '../utils/plural.mjs'
 import { describeActionFailure } from '../utils/actionFailure.mjs'
 import { describeConfigSaveError } from '../utils/configSaveError.mjs'
 
@@ -304,8 +305,8 @@ function Optimizer({ exchange = 'coinbase', pair }) {
         </div>
 
         <p className="text-gray-400 text-sm mb-4">
-          Test {totalCombinations} parameter combinations
-          ({selectedIntervals.length} intervals x {selectedMarkups.length} markups x {selectedPeriods.length} periods)
+          Test {plural(totalCombinations, 'parameter combination')}
+          ({plural(selectedIntervals.length, 'interval')} x {plural(selectedMarkups.length, 'markup')} x {plural(selectedPeriods.length, 'period')})
         </p>
 
         {/* Expandable Configuration Section */}
@@ -427,7 +428,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
             disabled={loading || totalCombinations === 0}
             className="px-6 py-2 bg-green-800 hover:bg-green-900 disabled:bg-green-950 disabled:cursor-not-allowed rounded-sm font-medium"
           >
-            {loading ? 'Running...' : (results?.cached ? 'Load Cached' : `Run ${totalCombinations} Tests`)}
+            {loading ? 'Running...' : (results?.cached ? 'Load Cached' : `Run ${plural(totalCombinations, 'Test')}`)}
           </button>
           {results && (
             <>
@@ -556,7 +557,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
               <div>
                 <h3 className="text-lg font-semibold">Optimization Complete</h3>
                 <p className="text-sm text-gray-400">
-                  Tested {results.totalCombinations} combinations in {(results.duration / 1000).toFixed(1)}s
+                  Tested {plural(results.totalCombinations, 'combination')} in {(results.duration / 1000).toFixed(1)}s
                 </p>
               </div>
               <div className="text-right">

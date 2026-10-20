@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
+import { plural } from '../utils/plural.mjs'
 
 function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrency = 'USDC' }) {
   const [filter, setFilter] = useState('all')
@@ -75,7 +76,7 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
           </button>
         ))}
         <span className="ml-auto text-gray-400 text-sm">
-          {sortedTx.length} transactions
+          {plural(sortedTx.length, 'transaction')}
         </span>
       </div>
 

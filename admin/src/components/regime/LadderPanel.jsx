@@ -382,7 +382,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
                 disabled={placingLadder || panelState !== 'ready'}
                 className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-sm transition-colors"
               >
-                {placingLadder ? 'Placing...' : `Place ${ladderPreview.levelCount} Orders`}
+                {placingLadder ? 'Placing...' : `Place ${plural(ladderPreview.levelCount, 'Order')}`}
               </button>
             </div>
           ) : (
