@@ -18,7 +18,7 @@ const fs = require('fs');
 const net = require('net');
 const path = require('path');
 
-const { checkEngineStopped, checkGatewayStopped, readRunningFlag, isPortListening } = require('../src/engine-liveness');
+const { checkEngineStopped, checkGatewayStopped, claimGatewayListeners, readRunningFlag, isPortListening } = require('../src/engine-liveness');
 const { resolveFundDataDir } = require('../src/migration');
 
 const TEST_PAIR = '__testliveness__';
@@ -125,6 +125,39 @@ describe('checkGatewayStopped', () => {
       for (const [key, value] of Object.entries(saved)) {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
       }
+    }
+  });
+});
+
+describe('claimGatewayListeners', () => {
+  it('holds the gateway address so a starting gateway or a second CLI write cannot bind it, until released', async () => {
+    const saved = process.env.PORT;
+    const probe = net.createServer();
+    await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const port = /** @type {import('net').AddressInfo} */ (probe.address()).port;
+    await new Promise((resolve) => probe.close(resolve));
+    try {
+      process.env.PORT = String(port);
+      const claim = await claimGatewayListeners({ defaultPort: port, hosts: ['127.0.0.1'] });
+      assert.equal(claim.claimed, true);
+
+      const gateway = net.createServer();
+      const bindError = await new Promise((resolve) => {
+        gateway.once('error', resolve);
+        gateway.listen(port, '127.0.0.1', () => resolve(null));
+      });
+      assert.equal(/** @type {any} */ (bindError)?.code, 'EADDRINUSE', 'a gateway starting mid-command fails its bind');
+
+      const second = await claimGatewayListeners({ defaultPort: port, hosts: ['127.0.0.1'] });
+      assert.equal(second.claimed, false);
+      assert.match(/** @type {{reason: string}} */ (second).reason, /holds 127\.0\.0\.1:/);
+
+      await /** @type {{release: () => Promise<void>}} */ (claim).release();
+      const again = await claimGatewayListeners({ defaultPort: port, hosts: ['127.0.0.1'] });
+      assert.equal(again.claimed, true, 'release frees the address');
+      await /** @type {{release: () => Promise<void>}} */ (again).release();
+    } finally {
+      if (saved === undefined) delete process.env.PORT; else process.env.PORT = saved;
     }
   });
 });

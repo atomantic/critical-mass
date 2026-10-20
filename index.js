@@ -6,7 +6,7 @@ const { getAdapter } = require('./src/adapters');
 const { getExchangeConfig, getConfiguredExchanges, getBaseCurrency, getQuoteCurrency, getGlobalConfig } = require('./src/config-utils');
 const { guardLegacyMigration } = require('./src/migration');
 const { guardIncompleteRestore } = require('./src/restore-apply');
-const { checkGatewayStopped } = require('./src/engine-liveness');
+const { checkGatewayStopped, claimGatewayListeners } = require('./src/engine-liveness');
 
 // Finish the legacy namespace migration before any command reads persisted
 // state; a conflicting or still-in-progress migration refuses to run (issue #971).
@@ -45,6 +45,8 @@ const parseArgs = () => {
   return result;
 };
 
+let releaseGatewayClaim = async () => {};
+
 /**
  * Main entry point
  */
@@ -63,7 +65,8 @@ const main = async () => {
 
   // `run` and `status` save the fund's state.json. The gateway owns those
   // writes while it is up (a process-local per-fund lock, the Simple DCA gate,
-  // restore recovery at boot), so the CLI stands in for it only while it is down.
+  // restore recovery at boot), so the CLI stands in for it only while it is
+  // down, and holds its listen addresses so it cannot start mid-command.
   if (command === 'run' || command === 'status') {
     if (command === 'run' && !getGlobalConfig().simpleDcaEnabled) {
       console.log('Simple DCA is disabled. Use Regime engine.');
@@ -76,6 +79,13 @@ const main = async () => {
       process.exit(1);
       return;
     }
+    const claim = await claimGatewayListeners();
+    if (!claim.claimed) {
+      console.log(`Refusing to ${command}: ${claim.reason}.`);
+      process.exit(1);
+      return;
+    }
+    releaseGatewayClaim = claim.release;
     guardIncompleteRestore({
       processLabel: 'CLI',
       logger: {
@@ -223,7 +233,7 @@ const main = async () => {
   console.log('  node index.js run -e coinbase');
 };
 
-main().catch(err => {
+main().then(() => releaseGatewayClaim(), err => {
   log('ERROR', `Fatal error: ${err.message}`);
   console.error(err);
   process.exit(1);

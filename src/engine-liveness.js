@@ -2,8 +2,9 @@
 /**
  * Is a fund's engine (or the gateway) live right now?
  *
- * The CLI's DCA commands use checkGatewayStopped below for the same reason the
- * repair scripts use checkEngineStopped: a live writer owns the fund's files.
+ * The CLI's DCA commands use checkGatewayStopped / claimGatewayListeners below
+ * for the same reason the repair scripts use checkEngineStopped: a live writer
+ * owns the fund's files.
  *
  * Operator repair scripts must never write `fill-ledger.json` or
  * `regime-state.json` under a running engine — it holds both in memory and
@@ -27,6 +28,7 @@ const net = require('net');
 const path = require('path');
 
 const { resolveFundDataDir } = require('./migration');
+const { resolveListenHosts } = require('./gateway-listen');
 const { PORTS } = require('../ecosystem.config.cjs');
 
 const RUNNING_FLAG = 'regime-engine-running.json';
@@ -152,8 +154,11 @@ const checkEngineStopped = async (exchange, pair) => {
  * @param {{defaultPort?: number}} [options] - defaultPort overrides the PM2 port (tests)
  * @returns {Promise<{safe: boolean, reason: string}>}
  */
+const gatewayPorts = (defaultPort) =>
+  [...new Set([Number(process.env.PORT) || 0, defaultPort].filter(port => Number.isInteger(port) && port > 0))];
+
 const checkGatewayStopped = async ({ defaultPort = PORTS.API } = {}) => {
-  const ports = [...new Set([Number(process.env.PORT) || 0, defaultPort].filter(port => Number.isInteger(port) && port > 0))];
+  const ports = gatewayPorts(defaultPort);
   const explicit = (process.env.HOST || '').split(',').map(h => h.trim())
     .filter(h => h && h !== '0.0.0.0' && h !== '::');
   for (const host of new Set(['127.0.0.1', ...explicit])) {
@@ -166,4 +171,45 @@ const checkGatewayStopped = async ({ defaultPort = PORTS.API } = {}) => {
   return { safe: true, reason: `no gateway is listening on port ${ports.join(' or ')}` };
 };
 
-module.exports = { checkEngineStopped, checkGatewayStopped, readRunningFlag, isPortListening, candidatePorts, IPC_PORT };
+/**
+ * Hold the gateway's listen addresses for the whole CLI write. A probe alone
+ * is a point-in-time answer; the gateway binds before it starts any writer and
+ * exits when a bind fails (server.js), so while these listeners are held no
+ * gateway can start a DCA cycle, and a second CLI write is refused too. Binds
+ * every host the gateway could pick (remote listening allowed: a superset) on
+ * $PORT and the PM2 port. Call after checkGatewayStopped — a held loopback
+ * listener would answer that probe itself.
+ * @param {{defaultPort?: number, hosts?: string[]}} [options]
+ * @returns {Promise<{claimed: true, release: () => Promise<void>} | {claimed: false, reason: string}>}
+ */
+const claimGatewayListeners = async ({ defaultPort = PORTS.API, hosts = resolveListenHosts(process.env.HOST) } = {}) => {
+  const servers = [];
+  const release = async () => {
+    await Promise.all(servers.splice(0).map(server => new Promise(resolve => server.close(() => resolve()))));
+  };
+  for (const host of hosts) {
+    for (const port of gatewayPorts(defaultPort)) {
+      const server = net.createServer(socket => socket.destroy());
+      try {
+        await new Promise((resolve, reject) => {
+          server.once('error', reject);
+          server.listen(port, host, resolve);
+        });
+      } catch (err) {
+        await release();
+        return {
+          claimed: false,
+          reason: err.code === 'EADDRINUSE'
+            ? `the gateway (or another CLI write) holds ${host}:${port}`
+            : `cannot claim the gateway address ${host}:${port} (${err.code || err.message})`,
+        };
+      }
+      // Never keep the CLI alive on its own; work in flight does that.
+      server.unref();
+      servers.push(server);
+    }
+  }
+  return { claimed: true, release };
+};
+
+module.exports = { checkEngineStopped, checkGatewayStopped, claimGatewayListeners, readRunningFlag, isPortListening, candidatePorts, IPC_PORT };
