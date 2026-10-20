@@ -15,7 +15,7 @@ const EMPTY = []
  * shared/cycle-pairing.mjs via deriveRegimeFillGroups; dry-run:
  * deriveDryRunFillGroups). Parent passes only fetched data.
  */
-function FilledOrdersSection({ liveFills, fillAggregates, isDryRun, dryRunFilled: dryRunFilledProp, pendingOrdersList, market, asset }) {
+function FilledOrdersSection({ fillsUnavailable = false, retry, liveFills, fillAggregates, isDryRun, dryRunFilled: dryRunFilledProp, pendingOrdersList, market, asset }) {
   const disclosureId = useId()
   const dryRunFilled = dryRunFilledProp || EMPTY
   const [showAllCycles, setShowAllCycles] = useState(true)
@@ -148,6 +148,12 @@ function FilledOrdersSection({ liveFills, fillAggregates, isDryRun, dryRunFilled
           />
         </div>
       </div>
+      {fillsUnavailable && !isDryRun && (
+        <div className="text-red-300 text-sm py-4">
+          Fills unavailable{(fillAggregates?.fillCount || liveFills?.length) > 0 ? ' — showing last good fills (stale)' : ''}.
+          <button type="button" onClick={retry} className="ml-2 underline">Retry fills</button>
+        </div>
+      )}
       {(isDryRun
         ? dryRunFilled.length
         : visibleFillCount
@@ -155,7 +161,7 @@ function FilledOrdersSection({ liveFills, fillAggregates, isDryRun, dryRunFilled
         <div className="text-gray-400 text-sm text-center py-4">
           {!isDryRun && (fillAggregates?.fillCount || liveFills?.length) > 0 && !showAllCycles
             ? 'No fills in current cycle (toggle to see all cycles)'
-            : 'No filled orders yet'
+            : fillsUnavailable ? null : 'No filled orders yet'
           }
         </div>
       ) : (
