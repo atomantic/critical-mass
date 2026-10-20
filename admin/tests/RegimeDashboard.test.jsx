@@ -45,7 +45,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url) => ({ ok: true, json: async () => {
     if (url.includes('/regime/config')) return { config }
     if (url.includes('/regime/status')) return { status: fixture.status }
-    if (url.includes('/regime/fills')) return { fills: [] }
+    if (url.includes('/regime/fills')) return { detailFills: [], fillCount: 0, fillCycleGroups: [] }
     if (url.includes('/presets/')) return { presets }
     return {}
   } })))
@@ -147,7 +147,7 @@ describe('RegimeDashboard failed reads', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
     expect(fetch.mock.calls.slice(initialCount).map(([url]) => url)).toEqual([
       '/api/coinbase/regime/status?pair=BTC-USDC',
-      '/api/coinbase/regime/fills?pair=BTC-USDC',
+      '/api/coinbase/regime/fills/cycles?pair=BTC-USDC',
     ])
     expect(screen.getByText('No filled orders yet')).toBeTruthy()
   })
@@ -174,7 +174,7 @@ describe('RegimeDashboard failed reads', () => {
     vi.stubGlobal('fetch', vi.fn(async url => {
       if (failing) return { ok: false, status: 504 }
       return { ok: true, json: async () => url.includes('/status') ? { status: snapshot }
-        : url.includes('/config') ? { config } : url.includes('/fills') ? { fills } : {} }
+        : url.includes('/config') ? { config } : url.includes('/fills') ? { detailFills: fills, fillCount: fills.length, fillCycleGroups: [] } : {} }
     }))
     const { result } = renderHook(() => useRegimeDashboardData('coinbase', 'BTC-USDC', '?pair=BTC-USDC'))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -188,6 +188,8 @@ describe('RegimeDashboard failed reads', () => {
     expect(result.current.status).toEqual(snapshot)
     expect(result.current.config).toEqual(config)
     expect(result.current.liveFills).toEqual(fills)
+    expect(result.current.fillAggregates.detailFills).toEqual(fills)
+    expect(result.current.fillAggregates.fillCount).toBe(1)
     expect(result.current.stale).toBe(true)
     expect(result.current.fillsUnavailable).toBe(true)
     failing = false

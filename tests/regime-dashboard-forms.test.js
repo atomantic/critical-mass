@@ -128,7 +128,7 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
     }
     const data = url.includes('/preview-ladder')
       ? { success: true, preview: { levels: [{ price: 90, sizeUsdc: 10, assetQty: 0.1 }], levelCount: 1 } }
-      : { success: true, status, config, fills: [], presets: {} }
+      : { success: true, status, config, detailFills: [], fillCount: 0, fillCycleGroups: [], presets: {} }
     return { ok: true, status: 200, json: async () => data }
   }
   const stubs = {
