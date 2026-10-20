@@ -64,6 +64,7 @@ const celestialHierarchy = require('./celestial-hierarchy');
 const { fmtCurrency: fmtPrice, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
+const { createTtlStore } = require('./ttl-store');
 
 /** Interval between periodic metrics/regime-classification updates (ms) */
 const METRICS_INTERVAL_MS = 60000;
@@ -1398,7 +1399,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // a duplicate order through.
   let placementIntentCache = { at: 0, intents: [] };
   let insufficientFundsCooldownUntil = 0; // Cooldown after InsufficientFunds to prevent rapid retry spam
-  const recentlyProcessedFills = new Set(); // Dedup guard: prevents double-processing when stale check and fill check race
+  const MERGE_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
+  const FILL_DEDUP_TTL_MS = 5 * 60 * 1000;
+  const POLL_FILL_DEDUP_TTL_MS = 60 * 1000;
+  const recentlyProcessedFills = createTtlStore(POLL_FILL_DEDUP_TTL_MS); // Dedup guard: prevents double-processing when stale check and fill check race
   // Bounded engine-level retry for a polled fill whose adapter-side
   // completeness check (issue #679) still comes up short after the
   // adapter's own brief internal retry. Keyed by the SAME dedup key as
@@ -1411,8 +1415,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const incompleteFillRetries = new Map(); // dedupKey -> attempt count
   let incompleteFillMaxRetries = 5;
   let incompleteFillRetryDelayMs = 10000; // overridable via _test.setIncompleteFillRetryTiming for fast tests
-  const recentlyProcessedSellFills = new Set(); // Dedup guard: prevents sell orders from being processed twice across WS/reconcile/polling
-  const recentlyProcessedBuyFills = new Set(); // Dedup guard: prevents buy orders from being processed twice across WS/polling (would duplicate the body at full size)
+  const recentlyProcessedSellFills = createTtlStore(FILL_DEDUP_TTL_MS); // Dedup guard: prevents sell orders from being processed twice across WS/reconcile/polling
+  const recentlyProcessedBuyFills = createTtlStore(FILL_DEDUP_TTL_MS); // Dedup guard: prevents buy orders from being processed twice across WS/polling (would duplicate the body at full size)
   const tpPlacementInFlight = new Set(); // Dedup guard: prevents concurrent placeBodyTp calls for the same body
 
   // Transition-only logging guards (#187). These states persist across many
@@ -1428,8 +1432,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // Race 3: Merge-snapshot maps for fills arriving after body removal during merges
   // tpOrderId → body snapshot (active during merge operation)
   const pendingMergeTpOrders = new Map();
-  // tpOrderId → body snapshot (completed merges, auto-expire after 60s)
-  const completedMergeTpOrders = new Map();
+  // tpOrderId → body snapshot, retained for the five-minute late-fill race window.
+  const completedMergeTpOrders = createTtlStore(MERGE_SNAPSHOT_TTL_MS);
+  const completeMergeSnapshot = (snapshot) => {
+    const orderId = snapshot.tpOrderId;
+    if (!orderId) return;
+    pendingMergeTpOrders.delete(orderId);
+    completedMergeTpOrders.add(orderId, snapshot);
+  };
 
   // Track TTL timers for cleanup on shutdown
   const ttlTimers = new Set();
@@ -3526,7 +3536,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       tailEvents.cleanup();
 
-      // Clear all TTL timers to prevent post-shutdown state mutations
+      // Clear engine-owned retry timers; expiring records own their own timers.
       for (const t of ttlTimers) clearTimeout(t);
       ttlTimers.clear();
       if (!keepHeartbeat) {
@@ -3535,6 +3545,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         recentlyProcessedBuyFills.clear();
         pendingMergeTpOrders.clear();
         completedMergeTpOrders.clear();
+      } else {
+        recentlyProcessedFills.cancelTimers();
+        recentlyProcessedSellFills.cancelTimers();
+        recentlyProcessedBuyFills.cancelTimers();
+        completedMergeTpOrders.cancelTimers();
       }
 
       // Clear order executor stale timers
@@ -5414,10 +5429,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         );
       }
       if (soldTp && !skipImmediateBooking) {
-        pendingMergeTpOrders.delete(soldTp);
-        completedMergeTpOrders.set(soldTp, snapshotBody(mergeTarget));
-        const t = setTimeout(() => { completedMergeTpOrders.delete(soldTp); ttlTimers.delete(t); }, 300000);
-        ttlTimers.add(t);
+        completeMergeSnapshot(snapshotBody(mergeTarget));
       }
       // Clear the cancelled TP so no body references a dead order; the
       // merge-snapshot handler re-places a right-sized TP after deducting.
@@ -5430,10 +5442,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Cancel succeeded — move to completed with TTL
     if (mergeTarget.tpOrderId) {
-      pendingMergeTpOrders.delete(mergeTarget.tpOrderId);
-      completedMergeTpOrders.set(mergeTarget.tpOrderId, snapshotBody(mergeTarget));
-      const t = setTimeout(() => { completedMergeTpOrders.delete(mergeTarget.tpOrderId); ttlTimers.delete(t); }, 300000);
-      ttlTimers.add(t);
+      completeMergeSnapshot(snapshotBody(mergeTarget));
     }
     // Clear body TP fields so placeBodyTp can re-place after merge
     // (cancelBodyTpOrder only removes executor tracking, not body state)
@@ -5644,8 +5653,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     recentlyProcessedBuyFills.add(buyDedupKey);
     if (dedupRef) { dedupRef.set = recentlyProcessedBuyFills; dedupRef.key = buyDedupKey; }
-    const tb = setTimeout(() => { recentlyProcessedBuyFills.delete(buyDedupKey); ttlTimers.delete(tb); }, 5 * 60 * 1000);
-    ttlTimers.add(tb);
 
     // Idempotency guard against a RETRY that already committed this buy
     // (issue #131). The dedup key above is CLEARED when handleOrderFill throws
@@ -5962,8 +5969,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
       recentlyProcessedSellFills.add(dedupKey);
       if (dedupRef) { dedupRef.set = recentlyProcessedSellFills; dedupRef.key = dedupKey; }
-      const t1 = setTimeout(() => { recentlyProcessedSellFills.delete(dedupKey); ttlTimers.delete(t1); }, 5 * 60 * 1000);
-      ttlTimers.add(t1);
 
       // An order that already committed a booking books only the rows no
       // booking covered yet (issue #777): whatever this pass ingested, plus
@@ -8411,8 +8416,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         return;
       }
       recentlyProcessedFills.add(dedupKey);
-      const t2 = setTimeout(() => { recentlyProcessedFills.delete(dedupKey); ttlTimers.delete(t2); }, 60000);
-      ttlTimers.add(t2);
       logger.info(`🔄 [${exchange}] Processing fill detected via polling: ${orderId} side=${status.side}${status.isPartialFill ? ' [PARTIAL]' : ''}`);
       // Convert status to the format handleOrderFill expects. isPartialFill
       // must propagate so handleOrderFill's cancelPartialFillOrder guard
@@ -9143,18 +9146,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         fillLedger.annotateFillsByOrderId(buyOrder.orderId, { bodyId: merged.id, bodyTier: merged.tier });
       }
     }
-  };
-
-  const completeMergeSnapshot = (snapshot) => {
-    const orderId = snapshot.tpOrderId;
-    if (!orderId) return;
-    pendingMergeTpOrders.delete(orderId);
-    completedMergeTpOrders.set(orderId, snapshot);
-    const timer = setTimeout(() => {
-      completedMergeTpOrders.delete(orderId);
-      ttlTimers.delete(timer);
-    }, 300000);
-    ttlTimers.add(timer);
   };
 
   /**
@@ -10197,9 +10188,31 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       getHealth: () => healthMonitor.getState(),
       healthMonitor,
       getPositionState: () => positionState,
-      // Clear the background TTL timers a merge/fill schedules (5-min dedup
-      // sweeps) so a test process can exit without waiting on them.
-      clearTimers: () => { for (const t of ttlTimers) clearTimeout(t); ttlTimers.clear(); },
+      // Clear retry and expiring-record timers so tests can exit promptly.
+      clearTimers: () => {
+        for (const t of ttlTimers) clearTimeout(t);
+        ttlTimers.clear();
+        recentlyProcessedFills.clear();
+        recentlyProcessedSellFills.clear();
+        recentlyProcessedBuyFills.clear();
+        completedMergeTpOrders.clear();
+      },
+      getExpiringStoreSizes: () => ({
+        polling: recentlyProcessedFills.size,
+        buy: recentlyProcessedBuyFills.size,
+        sell: recentlyProcessedSellFills.size,
+        completedMerge: completedMergeTpOrders.size,
+      }),
+      expiringStores: {
+        polling: recentlyProcessedFills,
+        buy: recentlyProcessedBuyFills,
+        sell: recentlyProcessedSellFills,
+        completedMerge: completedMergeTpOrders,
+      },
+      getExpiringTimerCount: () => recentlyProcessedFills.pendingTimerCount
+        + recentlyProcessedBuyFills.pendingTimerCount
+        + recentlyProcessedSellFills.pendingTimerCount
+        + completedMergeTpOrders.pendingTimerCount,
       updateMetrics,
       ensureTakeProfitPlaced,
       refreshDrawdownGuard,

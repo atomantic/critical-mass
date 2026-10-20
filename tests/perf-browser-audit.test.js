@@ -34,10 +34,10 @@ describe('browser audit evidence', () => {
     const browser = driver();
     const metrics = instrument(browser, 'http://127.0.0.1:1234');
     metrics.phase = 'idle';
-    const payload = '42["regime:status",{"secret":"never-store-this"}]';
+    const payload = JSON.stringify({ t: 'event', e: 'regime:status', p: { secret: 'never-store-this' } });
     browser.emit('Network.webSocketFrameReceived', { timestamp: 1, response: { opcode: 1, payloadData: payload } });
-    browser.emit('Network.webSocketFrameSent', { timestamp: 2, response: { opcode: 1, payloadData: '3' } });
-    browser.emit('Network.webSocketFrameReceived', { timestamp: 3, response: { opcode: 1, payloadData: '42["private-event-name",{}]' } });
+    browser.emit('Network.webSocketFrameSent', { timestamp: 2, response: { opcode: 1, payloadData: '{"t":"pong"}' } });
+    browser.emit('Network.webSocketFrameReceived', { timestamp: 3, response: { opcode: 1, payloadData: '{"t":"event","e":"private-event-name","p":{}}' } });
     const report = aggregate(metrics.collector, 'idle', 60000);
     assert.equal(report.ws['in regime:status'].bytes, Buffer.byteLength(payload));
     assert.equal(report.ws['out protocol'].count, 1);

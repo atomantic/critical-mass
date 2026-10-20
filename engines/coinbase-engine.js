@@ -12,7 +12,7 @@
  * Thin wrappers (gemini-engine.js, cryptocom-engine.js) set env and require this file.
  *
  * The gateway (server.js) connects as an IPC client and forwards:
- * - Socket.IO events from the engine (regime:status, trade:event, etc.)
+ * - Realtime bus events from the engine (regime:status, trade:event, etc.)
  * - Regime control commands from the admin UI (start/stop/pause/resume/etc.)
  */
 
@@ -43,7 +43,7 @@ const { parseFillsQuery } = require('../src/transactions-regime-query');
 const { createManualTradeImporter } = require('../src/manual-trade-import');
 const { createUnaccountedFillsJobs } = require('../src/unaccounted-fills-jobs');
 const { createIPCServer } = require('../src/ipc/ipc-server');
-const { createSocketIOProxy, forwardTradeEvents } = require('../src/ipc/socket-io-proxy');
+const { createRealtimeProxy, forwardTradeEvents } = require('../src/ipc/realtime-proxy');
 const { saveRegimeRunningFlag, shouldAutoResumeRegime, fundKey, fundLabel, readBooleanFlag } = require('../src/shared-utils');
 const { registerEngineBackupHandlers } = require('../src/engine-backup-window');
 const { drainPendingWrites } = require('../src/pending-writes');
@@ -93,7 +93,7 @@ const ENGINE_NAME = `cm-${EXCHANGE_NAME}`;
 // ============ IPC Server ============
 
 const ipcServer = createIPCServer(IPC_PORT, ENGINE_NAME);
-const ioProxy = createSocketIOProxy(ipcServer);
+const ioProxy = createRealtimeProxy(ipcServer);
 forwardTradeEvents(ipcServer);
 
 // ============ Engine State ============
@@ -268,7 +268,7 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
 
     // Delegate to the shared stopped/offline status synthesizer (issue #357)
     // so enrichment (P&L re-derivation, APY, pendingOrders, celestial) stays
-    // in one place shared with the HTTP gateway and the Socket.IO stream.
+    // in one place shared with the HTTP gateway and the realtime stream.
     // Uses the read-only cached ledger (issue #183) rather than an uncached
     // instance re-parsed on every stopped status poll.
     const status = buildStoppedRegimeStatus(exchange, resolvedPair, {

@@ -3,7 +3,7 @@
  * UpDown Service
  *
  * Top-level coordinator for the UpDown BTC perp-long signal dashboard.
- * Manages signal computation, state persistence, and Socket.IO emission.
+ * Manages signal computation, state persistence, and realtime emission.
  * Candle aggregation is delegated to the shared candle-cache.
  */
 
@@ -63,7 +63,7 @@ const applyTickMomentumAdjustment = (result, tickMomentum, position) => {
 
 /**
  * Create the UpDown service
- * @param {Object} io - Socket.IO server instance
+ * @param {Object} io - realtime bus (src/realtime-bus.js)
  * @param {Object} deps
  * @param {Object} deps.exchangeIPCMap - Map of exchange IPC clients
  * @param {Function} deps.readJSON - Read JSON file
