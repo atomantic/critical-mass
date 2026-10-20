@@ -94,3 +94,21 @@ it('signal history reports a failed read and keeps live signals that arrived fir
   render(<SignalPanel signal={null} indicators={null} position={null} />)
   expect((await screen.findByRole('alert')).textContent).toContain('Signal history unavailable.')
 })
+
+it('AI Providers keeps the newest sample read when an older one resolves last', async () => {
+  const samples = []
+  vi.stubGlobal('fetch', vi.fn(url => {
+    if (url === '/api/providers') return Promise.resolve(ok({ providers: [], activeProvider: null }))
+    if (url === '/api/runs?limit=20') return Promise.resolve(ok({ runs: [] }))
+    return new Promise(resolve => samples.push(resolve))
+  }))
+  render(<AIProviders />)
+  const load = await screen.findByRole('button', { name: 'Load Samples' })
+  fireEvent.click(load)
+  fireEvent.click(load)
+  const [older, newer] = samples
+  await act(async () => { newer(ok({ providers: [{ id: 's1', name: 'Newer Sample', type: 'api', endpoint: 'https://api.example.com' }] })) })
+  await act(async () => { older(unavailable) })
+  expect(screen.getByText('Newer Sample')).toBeTruthy()
+  expect(screen.queryByRole('alert')).toBeNull()
+})

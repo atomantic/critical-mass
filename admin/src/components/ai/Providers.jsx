@@ -79,6 +79,7 @@ export default function AIProviders() {
   const mutationLocks = useRef(new Set())
   const loadDataRef = useRef(null)
   const loadGenerationRef = useRef(0)
+  const samplesGenerationRef = useRef(0)
   const reconciledRef = useRef(false)
   const mountedRef = useRef(false)
   const operatorRunActionRef = useRef(false)
@@ -253,8 +254,10 @@ export default function AIProviders() {
     setLoadingSamples(true)
     setShowSamples(true)
     setSamplesError('')
+    // Repeated clicks overlap; only the newest read may commit.
+    const generation = ++samplesGenerationRef.current
     const { data, error } = await readJson('/api/providers/samples', 'sample providers')
-    if (!mountedRef.current) return
+    if (generation !== samplesGenerationRef.current || !mountedRef.current) return
     if (data) setSampleProviders((Array.isArray(data.providers) ? data.providers : []).filter(provider => provider.type === 'api'))
     else setSamplesError(error)
     setLoadingSamples(false)
