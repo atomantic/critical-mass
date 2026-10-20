@@ -62,7 +62,7 @@ describe('RegimeDashboard behavior pin', () => {
     for (const heading of ['Volatility', 'TP Auto-Management', 'Size Auto-Management', 'Fill Time Stats (7d)', 'Risk Limits', 'Position', 'Macro Regime', 'Configuration Summary', 'Open Orders', 'Unresolved Placements (1)']) {
       expect(screen.getByRole('heading', { name: heading })).toBeTruthy()
     }
-    for (const value of ['Entry Status', 'HARVEST', 'LADDER', '1 orders ($250)', 'Check exchange order', 'New buys paused — cycle buy-limit reached (3/3)', '$123.00', '1.2s', '2 active / 0 completed']) {
+    for (const value of ['Entry Status', 'HARVEST', 'LADDER', '1 order ($250)', 'Check exchange order', 'New buys paused — cycle buy-limit reached (3/3)', '$123.00', '1.2s', '2 active / 0 completed']) {
       expect(screen.getAllByText(value, { exact: false }).length).toBeGreaterThan(0)
     }
     expect(screen.getByRole('button', { name: 'Collapse All (2)' })).toBeTruthy()

@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { plural } from '../../utils/plural.mjs'
 import {
   deriveRegimeFillGroups, searchRegimeFillGroups, visibleOrphanBuys,
   deriveDryRunFillGroups, searchDryRunFillGroups,
@@ -289,7 +290,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                       {sellGroups.length > 1 && (
                         <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
                           <td className="py-1.5 pr-1"></td>
-                          <td className="py-1.5 pr-2 text-gray-400 text-xs" colSpan={4}>Totals ({sellGroups.length} sells)</td>
+                          <td className="py-1.5 pr-2 text-gray-400 text-xs" colSpan={4}>Totals ({plural(sellGroups.length, "sell")})</td>
                           <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                             {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)}` : '—'}
                             {totalHoldback > 0 && <span className="ml-1 text-cyan-400" title="Total holdback">+{totalHoldback.toFixed(8)}</span>}
@@ -319,7 +320,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                   const reservesClass = totalHoldback < 0 ? 'text-amber-400' : 'text-cyan-400'
                   return (
                     <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded-sm text-xs">
-                      <span className="text-gray-400">{sellGroups.length} sells across {cycleGroups.length} {cycleGroups.length === 1 ? 'cycle' : 'cycles'}</span>
+                      <span className="text-gray-400">{plural(sellGroups.length, "sell")} across {plural(cycleGroups.length, "cycle")}</span>
                       <span className="font-mono">
                         <span className={totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}>
                           {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)}` : '—'}
@@ -359,7 +360,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                       <span className="flex items-center gap-2">
                         <span aria-hidden="true" className={`inline-block transition-transform text-xs text-gray-400 ${expandedCycles.has('orphans') ? 'rotate-90' : ''}`}>&#9654;</span>
                         <span className="px-2 py-0.5 rounded-sm text-xs bg-yellow-900/50 text-yellow-400">Orphaned</span>
-                        <span className="text-xs text-gray-400">{orphanedBuys.length} buys not linked to any sell</span>
+                        <span className="text-xs text-gray-400">{plural(orphanedBuys.length, "buy")} not linked to any sell</span>
                       </span>
                       <span className="font-mono text-xs text-yellow-400">{orphanedBuys.reduce((s, b) => s + (b.size || 0), 0).toFixed(8)} {asset}</span>
                     </button>
@@ -470,7 +471,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                               {cycle.sells.length > 1 && (
                                 <tr className="border-t border-gray-600 bg-gray-700/20">
                                   <td className="py-1.5 pr-1"></td>
-                                  <td className="py-1.5 pr-2 text-gray-400 text-xs">Subtotal ({cycle.sells.length} sells)</td>
+                                  <td className="py-1.5 pr-2 text-gray-400 text-xs">Subtotal ({plural(cycle.sells.length, "sell")})</td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">{cycle.totalSize.toFixed(8)}</td>
                                   <td className="text-right py-1.5 pr-2"></td>
                                   <td className="text-right py-1.5 pr-2"></td>

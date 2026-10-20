@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { plural } from '../../utils/plural.mjs'
 import { formatPriceByMagnitude, formatCurrency } from '../charts/chartUtils'
 import CapitalAdjust from './CapitalAdjust'
 
@@ -159,7 +160,7 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
 
           {recalcPreview.orphansFixed > 0 && (
             <div className="text-xs text-blue-400 mb-2">
-              Will fix {recalcPreview.orphansFixed} fills with missing cycle ID
+              Will fix {plural(recalcPreview.orphansFixed, "fill")} with missing cycle ID
             </div>
           )}
 
@@ -198,7 +199,7 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
               <div className="text-xs text-gray-400 mb-1">Completed Cycles:</div>
               {recalcPreview.cycleDetails.map((cycle, i) => (
                 <div key={i} className="text-xs text-gray-400 pl-2">
-                  {cycle.cycleId?.replace('cycle-', '#')} - {cycle.buys} buys, P&L: ${cycle.pnl?.toFixed(2)}, holdback: {cycle.holdbackAsset?.toFixed(8)} {asset}
+                  {cycle.cycleId?.replace('cycle-', '#')} - {plural(cycle.buys, "buy")}, P&L: ${cycle.pnl?.toFixed(2)}, holdback: {cycle.holdbackAsset?.toFixed(8)} {asset}
                 </div>
               ))}
             </div>

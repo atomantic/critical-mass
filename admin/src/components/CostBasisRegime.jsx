@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { plural } from '../utils/plural.mjs'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
@@ -297,7 +298,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
                         {cycle.cycleId === 'current' ? 'Current Cycle' : cycle.cycleId}
                       </span>
                       <span className="min-w-0 wrap-break-word text-sm text-gray-400">
-                        {cycle.entries.length} entries, {cycle.exits.length} exits
+                        {plural(cycle.entries.length, "entry", "entries")}, {plural(cycle.exits.length, "exit")}
                       </span>
                     </div>
                     {isComplete && (

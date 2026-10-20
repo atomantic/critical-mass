@@ -136,6 +136,7 @@ const TEXT_GRAY_ALLOWLIST = new Set([
   'admin/src/components/LogViewer.jsx::className="px-2 py-1 text-xs bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:text-gray-500 text-yellow-100 rounded-sm transition-colors"',
   'admin/src/components/Backtest.jsx::className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-sm font-medium"',
   'admin/src/components/sentinel/Dashboard.jsx::className="px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded-sm text-sm min-h-[44px]"',
+  'admin/src/components/sentinel/Dashboard.jsx::className={`${TOUCH_BTN} px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed rounded-sm text-sm`}',
   // decorative separators / connective punctuation between two real text nodes
   'admin/src/components/ManualTrades.jsx::<span className="text-gray-600">&rarr;</span>',
   'admin/src/components/ManualTrades.jsx::<span className="text-gray-600">=</span>',
@@ -215,7 +216,7 @@ describe('admin/src bg-green/yellow/red-600 button-fill sweep (issue #538)', () 
     const sentinelDashboard = fs.readFileSync(path.join(ADMIN_SRC, 'components', 'sentinel', 'Dashboard.jsx'), 'utf8')
 
     assert.match(backtest, /bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded-sm font-medium/) // Run Backtest
-    assert.match(sentinelDashboard, /bg-green-800 hover:bg-green-900 rounded-sm text-sm/) // Start
+    assert.match(sentinelDashboard, /bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed rounded-sm text-sm/) // Start
     assert.match(sentinelDashboard, /bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded-sm text-sm min-h-\[44px\]/) // Add Feed
     assert.match(backupRestore, /bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded-lg font-medium/) // Confirm Restore
     assert.match(backupRestore, /bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded-sm text-xs font-medium/) // Restore

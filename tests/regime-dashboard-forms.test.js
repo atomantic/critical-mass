@@ -140,6 +140,8 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
     './regime/RegimeHelp': { CONFIG_TOOLTIPS: {}, ConfigTooltip: () => null },
     './Toast': { useToast: () => ({ addToast: toast => toasts.push(toast) }) },
     '../App': { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' },
+    '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
+    '../../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../utils/api': { pairQuery: pair => `?pair=${encodeURIComponent(pair)}` },
     '../utils/requestOwner.mjs': { createRequestOwner: () => ({ read: async () => ({ owned: true, data: { fills: [] } }), invalidate() {} }) },
     '../utils/liveTimerElapsed.mjs': {},

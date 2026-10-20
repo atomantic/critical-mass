@@ -1,4 +1,5 @@
 import React, { useId, useRef, useState } from 'react'
+import { plural } from '../../utils/plural.mjs'
 import { formatPriceByMagnitude, formatCurrency } from '../charts/chartUtils'
 
 /**
@@ -331,7 +332,7 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
           {ladderPreview ? (
             <div className="space-y-2">
               <div className="flex items-center gap-4 text-xs text-gray-300">
-                <span>{ladderPreview.levelCount} levels</span>
+                <span>{plural(ladderPreview.levelCount, "level")}</span>
                 <span>{formatPriceByMagnitude(ladderPreview.levels[0]?.price)} — {formatPriceByMagnitude(ladderPreview.levels[ladderPreview.levels.length - 1]?.price)}</span>
                 <span title={`Max: ${formatCurrency(ladderPreview.maxUsdcDeployed)} − Allocated: ${formatCurrency(ladderPreview.allocatedCapital)}`}>Budget: {formatCurrency(ladderPreview.totalBudget)}</span>
                 <span>Range: {ladderPreview.lowerBoundPct?.toFixed(1)}%</span>

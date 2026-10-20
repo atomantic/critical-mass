@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { plural } from '../utils/plural.mjs'
 import ModalDialog from './ModalDialog'
 
 const INTERVAL_OPTIONS = [
@@ -209,7 +210,7 @@ function BackupRestore() {
       })
       const data = await res.json().catch(() => ({}))
       if (res.ok && data.success) {
-        setMessage({ type: 'success', text: data.message || `Restored ${data.filesRestored} files for ${exchange}/${pair}` })
+        setMessage({ type: 'success', text: data.message || `Restored ${plural(data.filesRestored, "file")} for ${exchange}/${pair}` })
         fetchData({ silent: true })
       } else if (res.status === 409 && data.code === 'writers-not-quiesced') {
         // Nothing was written. Keep the dialog open and offer the override.
@@ -270,8 +271,8 @@ function BackupRestore() {
           type: data.forced ? 'error' : 'success',
           text: [
             data.forced
-              ? `${data.message || `Restored ${data.filesRestored} files`} — FORCED past ${data.unconfirmed?.length || 0} unconfirmed writer(s); verify your data before restarting engines.`
-              : (data.message || `Restored ${data.filesRestored} files`),
+              ? `${data.message || `Restored ${plural(data.filesRestored, "file")}`} — FORCED past ${plural(data.unconfirmed?.length || 0, "unconfirmed writer")}; verify your data before restarting engines.`
+              : (data.message || `Restored ${plural(data.filesRestored, "file")}`),
             data.configRestored
               ? 'Fund configuration was restored from the archive manifest.'
               : 'Data files only — this machine kept its existing fund configuration.',
@@ -415,7 +416,7 @@ function BackupRestore() {
           {fundStateBlockedBy && (
             <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 mb-4">
               <p className="text-sm font-semibold text-red-200 mb-2">
-                Blocked: {fundStateBlockedBy.length} writer(s) did not confirm shutdown. No files were changed.
+                Blocked: {plural(fundStateBlockedBy.length, "writer")} did not confirm shutdown. No files were changed.
               </p>
               <ul className="text-xs text-red-200/90 font-mono space-y-1 mb-3">
                 {fundStateBlockedBy.map(w => (
@@ -628,12 +629,12 @@ function BackupRestore() {
                     <div className="text-sm font-mono text-gray-200">{snapshot.snapshotId}</div>
                     <div className="text-xs text-gray-400 mt-0.5">{new Date(snapshot.createdAt).toLocaleString()} &middot; {formatBytes(snapshot.sizeBytes)}</div>
                   </div>
-                  <span className="text-xs text-gray-400">{snapshot.funds.length} fund(s)</span>
+                  <span className="text-xs text-gray-400">{plural(snapshot.funds.length, "fund")}</span>
                 </div>
                 <div className="space-y-1">
                   {snapshot.funds.map(fund => (
                     <div key={`${snapshot.snapshotId}:${fund.exchange}:${fund.pair}`} className="flex items-center justify-between gap-3 text-xs">
-                      <span className="font-mono text-gray-300">{fund.exchange} &middot; {fund.pair} &middot; {fund.files.length} file(s)</span>
+                      <span className="font-mono text-gray-300">{fund.exchange} &middot; {fund.pair} &middot; {plural(fund.files.length, "file")}</span>
                       <button
                         onClick={() => handleRestoreFundState(snapshot.snapshotId, fund.exchange, fund.pair)}
                         disabled={restoring || fundStateRestoring}
@@ -672,7 +673,7 @@ function BackupRestore() {
                 {compatibility.removedFunds?.length > 0 && (
                   <div className="bg-red-900/40 border border-red-700 rounded-lg p-4">
                     <p className="text-sm font-semibold text-red-200 mb-2">
-                      This restore will REMOVE {compatibility.removedFunds.length} fund(s) currently configured
+                      This restore will REMOVE {plural(compatibility.removedFunds.length, "fund")} currently configured
                       on this machine — the archive does not carry them.
                     </p>
                     <ul className="text-xs text-red-200/90 font-mono space-y-1 mb-3">
@@ -738,7 +739,7 @@ function BackupRestore() {
               <p className="text-sm font-semibold text-amber-200 mb-2">
                 This archive was written by a newer build of critical-mass
                 {compatibility.snapshotFieldRevision ? ` (field revision ${compatibility.snapshotFieldRevision})` : ''}.
-                {' '}{compatibility.droppedFields.length} setting(s) it carries are not understood here and will be ignored —
+                {' '}{plural(compatibility.droppedFields.length, "setting")} it carries {compatibility.droppedFields.length === 1 ? "is" : "are"} not understood here and will be ignored —
                 this machine keeps its own defaults for them.
               </p>
               <ul className="text-xs text-amber-200/90 font-mono space-y-1">
@@ -782,7 +783,7 @@ function BackupRestore() {
           {blockedBy && (
             <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 mb-4">
               <p className="text-sm font-semibold text-red-200 mb-2">
-                Blocked: {blockedBy.length} writer(s) did not confirm shutdown. No files were changed.
+                Blocked: {plural(blockedBy.length, "writer")} did not confirm shutdown. No files were changed.
               </p>
               <ul className="text-xs text-red-200/90 font-mono space-y-1 mb-3">
                 {blockedBy.map(w => (

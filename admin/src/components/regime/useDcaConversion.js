@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { plural } from '../../utils/plural.mjs'
 
 export default function useDcaConversion({ exchange, pairQuery, isRunning, addToast, fetchStatus, fetchFills }) {
   const [dcaState, setDcaState] = useState(null)
@@ -57,7 +58,7 @@ export default function useDcaConversion({ exchange, pairQuery, isRunning, addTo
       addToast({
         type: 'success',
         title: data.summary?.totalBodies ? 'DCA Orders Merged' : 'DCA Orders Converted',
-        message: `${data.summary?.pendingOrders || 0} positions imported. ${data.summary?.totalBodies ? `Total bodies: ${data.summary.totalBodies}.` : ''} Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.`,
+        message: `${plural(data.summary?.pendingOrders || 0, "position")} imported. ${data.summary?.totalBodies ? `Total bodies: ${data.summary.totalBodies}.` : ''} Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.`,
       })
       // Refresh status and fills
       fetchStatus()
