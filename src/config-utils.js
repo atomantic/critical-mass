@@ -12,6 +12,7 @@ const path = require('path');
 const { jsonReadError } = require('./json-diagnostics');
 const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils');
 const pathsModule = require('./paths');
+const { reconcileBaseConfig, withConfigWriteLock, readConfigObject } = require('./config-base-drift');
 // logger imports migration; migration's back-edge to config-utils must stay lazy.
 const { createContextLogger } = require('./logger');
 
@@ -85,18 +86,19 @@ const deepMerge = (base, override) => {
  * Returns only keys/values that differ from base (user overrides).
  * @param {Object} base - Base configuration
  * @param {Object} modified - Modified configuration
- * @returns {Object} Only the differences
+ * @param {Object} [selected] - Existing explicit overrides to retain, even if equal
+ * @returns {Object} Differences and retained selections
  */
-const computeDiff = (base, modified) => {
+const computeDiff = (base, modified, selected = {}) => {
   const diff = {};
   for (const key of Object.keys(modified)) {
     const baseVal = base[key];
     const modVal = modified[key];
     if (modVal && typeof modVal === 'object' && !Array.isArray(modVal) &&
         baseVal && typeof baseVal === 'object' && !Array.isArray(baseVal)) {
-      const nested = computeDiff(baseVal, modVal);
+      const nested = computeDiff(baseVal, modVal, selected[key] && typeof selected[key] === 'object' ? selected[key] : {});
       if (Object.keys(nested).length) diff[key] = nested;
-    } else if (JSON.stringify(baseVal) !== JSON.stringify(modVal)) {
+    } else if (Object.hasOwn(selected, key) || JSON.stringify(baseVal) !== JSON.stringify(modVal)) {
       diff[key] = modVal;
     }
   }
@@ -460,11 +462,11 @@ const writeUserConfigFile = (override, file = getUserConfigFile()) => {
 
 /**
  * Save configuration to user config file (data/config.json).
- * Only persists the diff (overrides) from the base config.
+ * Persists base differences plus existing explicit selections.
  * @param {MultiExchangeConfig} config - Full merged configuration to save
  * @returns {void}
  */
-const saveConfig = (config) => {
+const saveConfig = (config) => withConfigWriteLock(pathsModule.DATA_DIR, () => {
   const baseFile = resolveBaseConfigFile();
   // Guard the parse the same way loadRawConfig does (#185): the base config
   // can be transiently unreadable (mid-write from another process, disk
@@ -479,12 +481,16 @@ const saveConfig = (config) => {
   } catch (err) {
     throw jsonReadError(err, 'saveConfig base config');
   }
-  writeUserConfigFile(computeDiff(base, config));
+  const userFile = getUserConfigFile();
+  const selected = fs.existsSync(userFile) ? readConfigObject(userFile) : {};
+  // Explicit selections (including upgrade pins) survive a later base that
+  // happens to equal them. Only deleting the override opts back into defaults.
+  writeUserConfigFile(computeDiff(base, config, selected));
   // Bust the cache so the next read picks up our write immediately, even
   // before the OS updates mtime.
   _configCache = null;
   _configCacheKey = null;
-};
+});
 
 /**
  * Check if config is in multi-exchange format
@@ -1531,7 +1537,14 @@ const updateSentinelConfig = (updates) => {
   return config;
 };
 
+const initializeConfigBase = () => {
+  const result = reconcileBaseConfig({ dataDir: pathsModule.DATA_DIR, baseConfigFile: resolveBaseConfigFile(), logger: configLogger });
+  if (result.pins.length) invalidateConfigCache();
+  return result;
+};
+
 module.exports = {
+  initializeConfigBase,
   BACKUP_INTERVAL_BOUNDS,
   loadConfig,
   saveConfig,

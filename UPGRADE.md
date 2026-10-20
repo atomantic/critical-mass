@@ -4,6 +4,51 @@ Step-by-step instructions for breaking changes that require operator action.
 
 ---
 
+## Base Defaults Stay Pinned Across Upgrades (Unreleased)
+
+Gateway and engine startup now record the full parsed base configuration in
+`data/config-base.snapshot.json`. Before loading fund settings, a later startup
+compares that snapshot with the current root `config.json` (or the image's
+`config.example.json`). Changed or removed defaults absent from `data/config.json`
+are pinned to their previous values in that override file. Each pin produces a
+warning naming the setting and its old/new defaults; credential values are redacted.
+Explicit overrides win, unchanged values are untouched, and newly introduced
+settings receive their new defaults. Arrays are treated as a single setting.
+
+The first startup only records a baseline. **It cannot recover defaults from an
+older image that never wrote a snapshot.** Check risk limits on this first upgrade
+against your previous configuration or backup. Subsequent upgrades preserve them.
+A later settings save retains explicit pins, even if a future base temporarily
+matches their value.
+
+To adopt a new default for one setting, stop the gateway and then the engines
+using the ordered shutdown below, remove that leaf from `data/config.json`, and
+restart the engines followed by the gateway. Do this **after** the upgrade's first
+successful startup has advanced the snapshot; otherwise reconciliation will pin
+that setting again. Keep the snapshot intact. For example, remove only
+`regime.maxDrawdownPercent` inside the relevant exchange/pair override to adopt
+its current base value. Other settings remain selected.
+
+Snapshot and override writes are atomic, and concurrent startup/settings writes
+are serialized by `data/.config-write.lock`. A crash may leave that lock directory.
+Startup then refuses to proceed after a bounded wait. Stop **all** Critical Mass
+writers, inspect/repair the configuration files, and remove only the empty lock
+directory before restarting. Locks are never stolen merely because they are old.
+A corrupt override or snapshot blocks startup without replacing either file.
+An unreadable base skips reconciliation and retains the existing config reader's
+last-good/cold-start failure behavior.
+
+The snapshot is private configuration (0600 when created) and can contain secrets.
+Application backup archives continue to carry the non-secret effective settings
+in their existing manifest, excluding the raw base snapshot and lock artifacts.
+Restore reconstructs the override and records the destination base snapshot in
+the same rollback transaction. A foreign snapshot in an archive is replaced with
+the destination base, so it cannot repin source defaults after restoration.
+Whole-volume filesystem backups should retain the snapshot with the data directory
+and protect it as carefully as `data/config.json`.
+
+---
+
 ## Dry-Run State Moves Into the Data Directory (Unreleased)
 
 **Affects dry-run funds only. No operator action required.**

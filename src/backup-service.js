@@ -14,6 +14,7 @@
  */
 
 const fs = require('fs');
+const { BASE_SNAPSHOT_FILENAME, CONFIG_LOCK_DIR } = require('./config-base-drift');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
@@ -469,6 +470,10 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
     '*/*-keys.json',    // Keys in subdirectories
     ...ROOT_CREDENTIAL_FILES,
     'config.json',      // Portable configuration is carried by the manifest
+    'config.json.*.tmp', // Interrupted atomic writes can contain secrets too
+    BASE_SNAPSHOT_FILENAME, // Full local base may contain secrets; rebuild on restore
+    `${BASE_SNAPSHOT_FILENAME}.*.tmp`,
+    CONFIG_LOCK_DIR, `${CONFIG_LOCK_DIR}/*`,
     MANIFEST_FILENAME,  // The manifest is generated below, never archived from data/
     // Restore bookkeeping (rollback journal, saved originals, extraction
     // staging). Archiving these would ship a stale journal into the next
@@ -1126,6 +1131,12 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     fs.writeFileSync(path.join(tempDir, 'config.json'), JSON.stringify(override, null, 2), { mode: 0o600 });
   }
 
+  // A source baseline is not portable: the reconstructed override is relative
+  // to THIS base. Stage both in the same rollback transaction, including for
+  // legacy data-only restores, which retain the destination configuration.
+  fs.writeFileSync(path.join(tempDir, BASE_SNAPSHOT_FILENAME), JSON.stringify(destination.base, null, 2), { mode: 0o600 });
+  fs.chmodSync(path.join(tempDir, BASE_SNAPSHOT_FILENAME), 0o600);
+
   // ---- Translate a pre-multi-pair archive into the per-fund layout -------
   // Archives predating the multi-pair release hold their per-fund files at
   // `<exchange>/`, where nothing reads them any more. Relocating them inside
@@ -1167,6 +1178,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     // Skip the backups directory, root credential files, key files and the
     // archive's own metadata.
     skip: (name, isRoot) => name === 'backups'
+      || (isRoot && (name === CONFIG_LOCK_DIR || name.startsWith(`${BASE_SNAPSHOT_FILENAME}.`)))
       || name.endsWith('-keys.json')
       || (isRoot && ROOT_CREDENTIAL_FILES.includes(name))
       || (isRoot && (name === MANIFEST_FILENAME || (legacy && !override && name === 'config.json'))),
