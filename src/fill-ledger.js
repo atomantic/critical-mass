@@ -760,185 +760,78 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     bumpLedgerVersion();
   };
 
-  const load = () => {
-    const filePath = getFillLedgerPath(exchange, pair);
-    // Reload-vs-cold-start signal. Either a prior successful load OR any
-    // already-ingested fills means there is in-memory state worth
-    // preserving. Without this distinction, a cold-start boot against a
-    // corrupt file would silently start with an empty ledger and the
-    // next persist would overwrite the recoverable file with only
-    // post-start fills — destroying the historical record.
-    const isReload = hasLoadedSuccessfully || fills.size > 0;
-    if (!fs.existsSync(filePath)) {
-      // Initial load (no file yet) leaves the freshly-constructed empty
-      // caches in place. SIGUSR1 reload (regime-engine.js calls load()
-      // on the live ledger) preserves whatever is in memory so a
-      // momentarily-missing file (e.g., operator's edit/rename window)
-      // doesn't wipe live data. To intentionally clear, write `[]` to
-      // the file — that loads cleanly to empty state.
-      if (!quiet) {
-        logger.info(`📖 [${exchange}] fill-ledger not found at ${filePath} — preserving in-memory state (${fills.size} fills)`, {
-          filePath,
-          fillCount: fills.size,
-        });
-      }
-      hasLoadedSuccessfully = true;
-      return;
+  // Refuse cold-start corruption before any persist can overwrite history.
+  // A live reload keeps its last known-good caches until the operator repairs
+  // the file and reloads again. The reason carries the legacy message grammar.
+  const refuseLoad = (filePath, isReload, reason, logFields) => {
+    if (!isReload) {
+      throw new Error(`fill-ledger at ${filePath} ${reason.coldStart}. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
     }
+    logger.error(`❌ [${exchange}] fill-ledger ${reason.reload} — keeping in-memory state (${fills.size} fills); operator must fix and reload`, {
+      filePath,
+      fillCount: fills.size,
+      ...logFields,
+    });
+  };
 
-    let data;
-    try {
-      data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    } catch (err) {
-      if (!isReload) {
-        // Cold-start corruption: throwing forces the operator to repair
-        // (or move aside) the file before the engine boots, so a
-        // post-start persist can't overwrite the recoverable contents.
-        throw new Error(`fill-ledger at ${filePath} is corrupted or unreadable on cold start: ${err.message}. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
-      }
-      // Corrupt/unreadable file: don't reset in-memory state. SIGUSR1
-      // reload on a live ledger could otherwise turn a bad manual edit
-      // or partial write into live data loss — the running process
-      // would forget its last known-good state and the next persist
-      // would rewrite the file with only the fills that arrive after
-      // the reload. Operator can fix the file and re-fire SIGUSR1.
-      logger.error(`❌ [${exchange}] fill-ledger corrupted or unreadable at ${filePath}: ${err.message} — keeping in-memory state (${fills.size} fills); operator must fix and reload`, {
-        filePath,
-        fillCount: fills.size,
-        error: err.message,
-      });
-      return;
+  // Legacy negative-holdback repair (issue #779): between #769 and #770
+  // (both unreleased — never shipped in v2.25.0 or earlier) the engine
+  // could book a stale-TP oversell (a sale beyond what the body/satellite
+  // still held) as a NEGATIVE bodyHoldbackAsset/satelliteHoldbackAsset
+  // annotation. #770 changed the engine to record this instead as
+  // holdback 0 + a non-negative bodyReservesSoldAsset (see
+  // docs/pnl-architecture.md "Reserves sold by an oversized stale TP").
+  // Rows written in that window still carry the old negative shape, and
+  // the pairing (shared/cycle-pairing.mjs) clamps a negative holdback to
+  // 0 rather than crediting the sold reserves — silently overstating
+  // realizedAssetPnL by the oversold quantity. Rewrite in place, on
+  // every load, so every reader (including a read-only diagnostic script
+  // or getCachedFillLedger's gateway instance) computes correct P&L
+  // immediately. Idempotent: a fill already carrying a positive
+  // bodyReservesSoldAsset is left untouched (already repaired, or an
+  // inconsistent state not ours to guess at), and a repaired row has a
+  // non-negative holdback on the next load, so it is never touched twice.
+  // Deliberately NOT auto-persisted here — same reasoning as the netFee
+  // backfill just below: `quiet`/no-quiet is a logging hint, not an
+  // ownership signal (several read-only scripts, e.g.
+  // scripts/analyze-unaccounted.js, construct a non-quiet ledger purely
+  // to inspect it), so writing back from inside load() would make ANY
+  // caller — not just the owning engine — a second, uncoordinated writer
+  // of a live fund's ledger file, racing a running engine's own persists
+  // (issue #779). The repair rides along on the
+  // owning engine's own next dirtying persist() instead, the same way
+  // the netFee backfill's in-memory-only fix eventually reaches disk.
+  const repairLegacyFill = (fill) => {
+    // Legacy-ledger backfill: pre-rebate-split fills only had `fee`,
+    // not `netFee`. The pre-pass validator accepts either; here we
+    // synthesize netFee from fee so the many downstream consumers
+    // that read fill.netFee directly (aggregateFills,
+    // rebuildPositionFromFills, recalculateCycles, etc.) never see
+    // undefined. The on-disk file isn't auto-rewritten — the next
+    // dirtying mutation will trigger the upgraded shape via persist.
+    if (typeof fill.netFee !== 'number' && typeof fill.fee === 'number') {
+      fill.netFee = fill.fee;
     }
-    // Validate shape BEFORE resetCaches. Valid JSON like `{}` or `null`
-    // would parse without throwing but the for-of below would crash —
-    // resetCaches() would have already wiped the live ledger by then,
-    // so the reload-on-malformed-payload would fall into the same data-
-    // loss mode that the catch-block above guards against.
-    if (!Array.isArray(data)) {
-      if (!isReload) {
-        throw new Error(`fill-ledger at ${filePath} is not an array on cold start (got ${data === null ? 'null' : typeof data}). Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
-      }
-      const actualType = data === null ? 'null' : typeof data;
-      logger.error(`❌ [${exchange}] fill-ledger at ${filePath} is not an array (got ${actualType}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`, {
-        filePath,
-        fillCount: fills.size,
-        actualType,
-      });
-      return;
-    }
-    // Element-level validation: even an array can contain malformed
-    // entries like `[null]` or `[{}]` that would crash on `fill.tradeId`
-    // mid-loop, leaving the live ledger half-populated after the
-    // already-run resetCaches. Pre-pass guarantees a clean reload-or-bail.
-    //
-    // Field-type validation is required, not just presence: the load-body
-    // below calls `fill.cycleId.match(/^cycle-(\d+)$/)` which throws on
-    // non-string cycleId (e.g. an object). A presence-only pre-pass would
-    // accept `{tradeId:"t1", cycleId:{}}` and we'd crash mid-load AFTER
-    // resetCaches has wiped the live ledger — re-introducing the data-loss
-    // mode the pre-validation is meant to prevent.
-    const invalidReason = findInvalidLedgerReason(data);
-    if (invalidReason) {
-      if (!isReload) {
-        throw new Error(`fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) on cold start. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
-      }
-      logger.error(`❌ [${exchange}] fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`, {
-        filePath,
-        fillCount: fills.size,
-        invalidReason,
-      });
-      return;
-    }
-    // Clean slate before re-reading. The successful-read path mirrors
-    // disk authoritatively (handles "operator removed fills via manual
-    // reconciliation, then reloaded" — those removals must take effect).
-    resetCaches();
-    // Legacy negative-holdback repair (issue #779): between #769 and #770
-    // (both unreleased — never shipped in v2.25.0 or earlier) the engine
-    // could book a stale-TP oversell (a sale beyond what the body/satellite
-    // still held) as a NEGATIVE bodyHoldbackAsset/satelliteHoldbackAsset
-    // annotation. #770 changed the engine to record this instead as
-    // holdback 0 + a non-negative bodyReservesSoldAsset (see
-    // docs/pnl-architecture.md "Reserves sold by an oversized stale TP").
-    // Rows written in that window still carry the old negative shape, and
-    // the pairing (shared/cycle-pairing.mjs) clamps a negative holdback to
-    // 0 rather than crediting the sold reserves — silently overstating
-    // realizedAssetPnL by the oversold quantity. Rewrite in place, on
-    // every load, so every reader (including a read-only diagnostic script
-    // or getCachedFillLedger's gateway instance) computes correct P&L
-    // immediately. Idempotent: a fill already carrying a positive
-    // bodyReservesSoldAsset is left untouched (already repaired, or an
-    // inconsistent state not ours to guess at), and a repaired row has a
-    // non-negative holdback on the next load, so it is never touched twice.
-    // Deliberately NOT auto-persisted here — same reasoning as the netFee
-    // backfill just below: `quiet`/no-quiet is a logging hint, not an
-    // ownership signal (several read-only scripts, e.g.
-    // scripts/analyze-unaccounted.js, construct a non-quiet ledger purely
-    // to inspect it), so writing back from inside load() would make ANY
-    // caller — not just the owning engine — a second, uncoordinated writer
-    // of a live fund's ledger file, racing a running engine's own persists
-    // (issue #779). The repair rides along on the
-    // owning engine's own next dirtying persist() instead, the same way
-    // the netFee backfill's in-memory-only fix eventually reaches disk.
-    let negativeHoldbackRepairCount = 0;
-    for (const fill of data) {
-      // Legacy-ledger backfill: pre-rebate-split fills only had `fee`,
-      // not `netFee`. The pre-pass validator accepts either; here we
-      // synthesize netFee from fee so the many downstream consumers
-      // that read fill.netFee directly (aggregateFills,
-      // rebuildPositionFromFills, recalculateCycles, etc.) never see
-      // undefined. The on-disk file isn't auto-rewritten — the next
-      // dirtying mutation will trigger the upgraded shape via persist.
-      if (typeof fill.netFee !== 'number' && typeof fill.fee === 'number') {
-        fill.netFee = fill.fee;
-      }
-      if (fill.side === 'sell') {
-        // Mirror the same body-first fallback shared/cycle-pairing.mjs
-        // uses to read the annotation, so we neutralize exactly the
-        // field the pairing would otherwise clamp to 0.
-        const annotatedHoldback = fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset;
-        if (typeof annotatedHoldback === 'number' && annotatedHoldback < 0
-          && !(Number(fill.bodyReservesSoldAsset) > 0)) {
-          if (fill.bodyHoldbackAsset != null) {
-            fill.bodyHoldbackAsset = 0;
-          } else {
-            fill.satelliteHoldbackAsset = 0;
-          }
-          fill.bodyReservesSoldAsset = roundAsset(Math.abs(annotatedHoldback));
-          negativeHoldbackRepairCount++;
+    if (fill.side === 'sell') {
+      // Mirror the same body-first fallback shared/cycle-pairing.mjs
+      // uses to read the annotation, so we neutralize exactly the
+      // field the pairing would otherwise clamp to 0.
+      const annotatedHoldback = fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset;
+      if (typeof annotatedHoldback === 'number' && annotatedHoldback < 0
+        && !(Number(fill.bodyReservesSoldAsset) > 0)) {
+        if (fill.bodyHoldbackAsset != null) {
+          fill.bodyHoldbackAsset = 0;
+        } else {
+          fill.satelliteHoldbackAsset = 0;
         }
-      }
-      fills.set(fill.tradeId, fill);
-      for (const allocation of fill.syntheticCoverage?.reconciledTrades || []) {
-        reconciledTradeIds.add(allocation.tradeId);
-      }
-      // Populate cycle index
-      if (fill.cycleId && fill.size > 1e-9) {
-        if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
-        cycleIndex.get(fill.cycleId).add(fill.tradeId);
+        fill.bodyReservesSoldAsset = roundAsset(Math.abs(annotatedHoldback));
+        return true;
       }
     }
-    if (negativeHoldbackRepairCount > 0 && !quiet) {
-      logger.warn(`🩹 [${exchange}] Repaired ${negativeHoldbackRepairCount} legacy negative-holdback fill(s) into bodyReservesSoldAsset in memory (issue #779) — not written to disk by this load; reaches disk whenever this ledger instance is next persisted`, {
-        repairedCount: negativeHoldbackRepairCount,
-      });
-    }
-    // Rebuild orderSizeIndex from the canonical fills Map AFTER population.
-    // load() can be called multiple times on a live ledger (regime-engine.js
-    // re-loads on state reload). If we accumulated inside the loop above,
-    // a second load() would double-count every persisted fill on top of
-    // the existing totals — making getRecordedSizeForOrder over-report
-    // and the market-data-service watermark believe orders are fully
-    // ingested when they're not. Rebuilding from `fills` is idempotent.
-    orderSizeIndex.clear();
-    for (const f of fills.values()) {
-      if (isUnresolvedSyntheticCoverage(f)) syntheticOrders.add(f.orderId);
-      if (f.orderId) {
-        const next = (orderSizeIndex.get(f.orderId) || 0) + (f.size || 0);
-        orderSizeIndex.set(f.orderId, roundAsset(next));
-      }
-    }
+    return false;
+  };
 
+  const restoreCycleState = () => {
     // Restore currentCycleId from loaded fills
     // Find the most recent cycle that's still active (sells haven't closed out the position)
     const cycleStats = new Map(); // cycleId -> { buysAsset, sellsAsset }
@@ -982,6 +875,116 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       }
     }
     nextCycleNumber = maxCycleNum + 1;
+  };
+
+  const rebuildLoadedOrderIndexes = () => {
+    // Rebuild orderSizeIndex from the canonical fills Map AFTER population.
+    // load() can be called multiple times on a live ledger (regime-engine.js
+    // re-loads on state reload). If we accumulated while populating fills,
+    // a second load() would double-count every persisted fill on top of
+    // the existing totals — making getRecordedSizeForOrder over-report
+    // and the market-data-service watermark believe orders are fully
+    // ingested when they're not. Rebuilding from `fills` is idempotent.
+    orderSizeIndex.clear();
+    for (const f of fills.values()) {
+      if (isUnresolvedSyntheticCoverage(f)) syntheticOrders.add(f.orderId);
+      if (f.orderId) {
+        const next = (orderSizeIndex.get(f.orderId) || 0) + (f.size || 0);
+        orderSizeIndex.set(f.orderId, roundAsset(next));
+      }
+    }
+  };
+
+  const load = () => {
+    const filePath = getFillLedgerPath(exchange, pair);
+    // Reload-vs-cold-start signal. Either a prior successful load OR any
+    // already-ingested fills means there is in-memory state worth
+    // preserving. Without this distinction, a cold-start boot against a
+    // corrupt file would silently start with an empty ledger and the
+    // next persist would overwrite the recoverable file with only
+    // post-start fills — destroying the historical record.
+    const isReload = hasLoadedSuccessfully || fills.size > 0;
+    if (!fs.existsSync(filePath)) {
+      // Initial load (no file yet) leaves the freshly-constructed empty
+      // caches in place. SIGUSR1 reload (regime-engine.js calls load()
+      // on the live ledger) preserves whatever is in memory so a
+      // momentarily-missing file (e.g., operator's edit/rename window)
+      // doesn't wipe live data. To intentionally clear, write `[]` to
+      // the file — that loads cleanly to empty state.
+      if (!quiet) {
+        logger.info(`📖 [${exchange}] fill-ledger not found at ${filePath} — preserving in-memory state (${fills.size} fills)`, {
+          filePath,
+          fillCount: fills.size,
+        });
+      }
+      hasLoadedSuccessfully = true;
+      return;
+    }
+
+    let data;
+    try {
+      data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (err) {
+      return refuseLoad(filePath, isReload, {
+        coldStart: `is corrupted or unreadable on cold start: ${err.message}`,
+        reload: `corrupted or unreadable at ${filePath}: ${err.message}`,
+      }, { error: err.message });
+    }
+    // Validate shape BEFORE resetCaches. Valid JSON like `{}` or `null`
+    // would parse without throwing but the for-of below would crash —
+    // resetCaches() would have already wiped the live ledger by then,
+    // so the reload-on-malformed-payload would fall into the same data-
+    // loss mode that the catch-block above guards against.
+    if (!Array.isArray(data)) {
+      const actualType = data === null ? 'null' : typeof data;
+      return refuseLoad(filePath, isReload, {
+        coldStart: `is not an array on cold start (got ${actualType})`,
+        reload: `at ${filePath} is not an array (got ${actualType})`,
+      }, { actualType });
+    }
+    // Element-level validation: even an array can contain malformed
+    // entries like `[null]` or `[{}]` that would crash on `fill.tradeId`
+    // mid-loop, leaving the live ledger half-populated after the
+    // already-run resetCaches. Pre-pass guarantees a clean reload-or-bail.
+    //
+    // Field-type validation is required, not just presence: cycle restore
+    // calls `fill.cycleId.match(/^cycle-(\d+)$/)` which throws on
+    // non-string cycleId (e.g. an object). A presence-only pre-pass would
+    // accept `{tradeId:"t1", cycleId:{}}` and we'd crash mid-load AFTER
+    // resetCaches has wiped the live ledger — re-introducing the data-loss
+    // mode the pre-validation is meant to prevent.
+    const invalidReason = findInvalidLedgerReason(data);
+    if (invalidReason) {
+      return refuseLoad(filePath, isReload, {
+        coldStart: `contains an invalid entry (${invalidReason}) on cold start`,
+        reload: `at ${filePath} contains an invalid entry (${invalidReason})`,
+      }, { invalidReason });
+    }
+    // Clean slate before re-reading. The successful-read path mirrors
+    // disk authoritatively (handles "operator removed fills via manual
+    // reconciliation, then reloaded" — those removals must take effect).
+    resetCaches();
+    let negativeHoldbackRepairCount = 0;
+    for (const fill of data) {
+      if (repairLegacyFill(fill)) negativeHoldbackRepairCount++;
+      fills.set(fill.tradeId, fill);
+      for (const allocation of fill.syntheticCoverage?.reconciledTrades || []) {
+        reconciledTradeIds.add(allocation.tradeId);
+      }
+      // Populate cycle index
+      if (fill.cycleId && fill.size > 1e-9) {
+        if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
+        cycleIndex.get(fill.cycleId).add(fill.tradeId);
+      }
+    }
+    if (negativeHoldbackRepairCount > 0 && !quiet) {
+      logger.warn(`🩹 [${exchange}] Repaired ${negativeHoldbackRepairCount} legacy negative-holdback fill(s) into bodyReservesSoldAsset in memory (issue #779) — not written to disk by this load; reaches disk whenever this ledger instance is next persisted`, {
+        repairedCount: negativeHoldbackRepairCount,
+      });
+    }
+    rebuildLoadedOrderIndexes();
+
+    restoreCycleState();
 
     hasLoadedSuccessfully = true;
     if (!quiet) {
