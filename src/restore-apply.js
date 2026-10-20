@@ -110,6 +110,17 @@ const writeFileDurable = (file, data, mode) => {
 };
 
 /**
+ * Deterministic sibling temp path for staging a replacement of `dest`. The name
+ * is predictable (no pid/timestamp) so a temp file orphaned by a process death
+ * can be found and removed by rollback, and overwritten by the next attempt. A
+ * restore is serialized by the journal and maintenance lock, so two live
+ * writers never share a name.
+ * @param {string} dest - Destination file
+ * @returns {string} Temp file path next to `dest`
+ */
+const restoreTmpPath = (dest) => path.join(path.dirname(dest), `.${path.basename(dest)}.restore-tmp`);
+
+/**
  * Copy `src` over `dest` without ever leaving `dest` partially written: the
  * bytes land in a sibling temp file on the SAME filesystem, are flushed, and
  * then replace the destination with a single atomic rename.
@@ -123,7 +134,7 @@ const writeFileDurable = (file, data, mode) => {
  */
 const replaceFileAtomic = (src, dest) => {
   const existingMode = attempt(() => fs.statSync(dest).mode & 0o777);
-  const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.${process.pid}.${Date.now()}.restore-tmp`);
+  const tmp = restoreTmpPath(dest);
   const replaced = attempt(() => {
     fs.copyFileSync(src, tmp);
     if (existingMode.ok && existingMode.value) fs.chmodSync(tmp, existingMode.value);
@@ -283,6 +294,9 @@ const rollbackFromJournal = ({ dataDir, journal, logger }) => {
 
   for (const entry of journal.entries) {
     const dest = path.join(dataDir, entry.dest);
+    // A crash between copy and rename orphans the staged temp copy.
+    const cleared = attempt(() => fs.rmSync(restoreTmpPath(dest), { force: true }));
+    if (!cleared.ok) failures.push(`${entry.dest}: ${cleared.error.message}`);
     if (entry.existed) {
       const original = path.join(dataDir, journal.originalsDir, entry.dest);
       if (!fs.existsSync(original)) {

@@ -477,6 +477,7 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
     JOURNAL_FILENAME,
     `${STAGE_PREFIX}*`, `${STAGE_PREFIX}*/*`,
     `${ORIGINALS_PREFIX}*`, `${ORIGINALS_PREFIX}*/*`,
+    '*.restore-tmp', '*/*.restore-tmp', // Orphaned atomic-replace temp files
     // Legacy namespace migration ownership (issue #971): a captured lock is
     // meaningless on another machine or after a restore.
     `${LEGACY_MIGRATION_LOCK}*`,
