@@ -188,7 +188,7 @@ export default function SentinelDashboard() {
                 onClick={handleStart}
                 disabled={!serviceEnabled}
                 title={serviceEnabled ? undefined : 'Enable the service first'}
-                className={`${TOUCH_BTN} px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed rounded-sm text-sm`}
+                className={`${TOUCH_BTN} px-3 py-1.5 bg-green-800 hover:bg-green-900 rounded-sm text-sm disabled:bg-gray-700 disabled:text-gray-400 disabled:cursor-not-allowed`}
               >
                 Start
               </button>
