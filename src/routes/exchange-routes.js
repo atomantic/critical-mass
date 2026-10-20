@@ -15,6 +15,7 @@ const {
   getEnabledFunds,
   getFundsForExchange,
   getDefaultPair,
+  resolveConfiguredPair,
   getRegimeConfig,
   updateExchangeConfig,
   updateFundConfig,
@@ -259,7 +260,8 @@ module.exports = (app, deps) => {
         config: getFundConfig(exchange, pair),
       });
     } catch (err) {
-      res.status(err.code === 'FUND_STATE_EXISTS' ? 409 : 400).json({ success: false, error: err.message });
+      const duplicate = /already exists/i.test(err.message);
+      res.status(duplicate ? 409 : 400).json({ success: false, error: err.message });
     }
   });
 
@@ -267,7 +269,13 @@ module.exports = (app, deps) => {
   // and the engine is not running. Does NOT delete on-disk state files —
   // the directory must be moved or archived before this pair can be re-added.
   app.delete('/api/:exchange/funds/:pair', (req, res) => {
-    const { exchange, pair } = req.params;
+    const { exchange } = req.params;
+    const resolved = resolveConfiguredPair(exchange, req.params.pair);
+    if (resolved.error) {
+      const malformed = /^Invalid pair\./i.test(resolved.error);
+      return res.status(malformed ? 400 : 404).json({ success: false, error: resolved.error });
+    }
+    const pair = resolved.pair;
     const regimeState = stateTracker.loadFundRegimeState(exchange, pair);
     const lifecycle = regimeState?.position?.lifecycle || 'active';
     if (lifecycle !== 'closed') {
