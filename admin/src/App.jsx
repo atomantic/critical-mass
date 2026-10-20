@@ -166,12 +166,13 @@ function AppContent() {
   const [lastExchange, setLastExchange] = useState(urlExchange || 'coinbase')
   const currentExchange = urlExchange || lastExchange
   const [exchanges, setExchanges] = useState([])
-  const [summary, setSummary] = useState(null)
+  const [summarySnapshot, setSummarySnapshot] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [regimeRunning, setRegimeRunning] = useState(false)
-  const [regimeDryRun, setRegimeDryRun] = useState(false)
-  const [regimeLifecycle, setRegimeLifecycle] = useState('active')
+  const [regimeRunning, setRegimeRunning] = useState(null)
+  const [regimeDryRun, setRegimeDryRun] = useState(null)
+  const [regimeLifecycle, setRegimeLifecycle] = useState(null)
+  const [statusError, setStatusError] = useState(null)
   const [stopping, setStopping] = useState(false)
   const [starting, setStarting] = useState(false)
   const [resetting, setResetting] = useState(false)
@@ -201,6 +202,9 @@ function AppContent() {
   // in event handlers or layout effects: an abandoned concurrent render must
   // never invalidate requests belonging to the still-committed screen.
   const selectedFund = `${currentExchange}::${currentPair}`
+  // A new route must never render (or seed an editor with) another fund's data,
+  // even on the first render before the navigation layout effect runs.
+  const summary = summarySnapshot?.fund === selectedFund ? summarySnapshot.data : null
   const committedFundRef = useRef(selectedFund)
   const actionFenceRef = useRef({ navigationGeneration: 0, actionGeneration: 0 })
   const summaryRequestRef = useRef({ generation: 0, controller: null })
@@ -222,6 +226,16 @@ function AppContent() {
       summaryRequestRef.current.controller?.abort()
       summaryRequestRef.current.controller = null
       invalidateStatusRead()
+      setSummarySnapshot(null)
+      setLoading(true)
+      setError(null)
+      setRegimeRunning(null)
+      setRegimeDryRun(null)
+      setRegimeLifecycle(null)
+      setStatusError(null)
+      setCloseFundDialogOpen(false)
+      setReopenFundDialogOpen(false)
+      setResetDryRunConfirm(false)
 
       setStarting(false)
       setStopping(false)
@@ -340,7 +354,7 @@ function AppContent() {
       }
       const data = await res.json()
       if (!isCurrent()) return
-      setSummary(data)
+      setSummarySnapshot({ fund: reqFund, data })
       setLoading(false)
 
       // Also refresh exchanges list to update badges (enabled/dryRun status)
@@ -370,15 +384,21 @@ function AppContent() {
       statusRequestRef.current.generation === requestGeneration
     try {
       const res = await fetch(`/api/${currentExchange}/regime/status${pairQuery()}`, { signal: controller.signal })
-      if (!isCurrent() || !res.ok) return
+      if (!isCurrent()) return
+      if (!res.ok) throw new Error('Failed to fetch engine status')
       const data = await res.json()
       if (!isCurrent()) return
+      if (typeof data.status?.isRunning !== 'boolean') throw new Error('Invalid engine status')
+      setStatusError(null)
       setRegimeRunning(data.status?.isRunning || false)
       setRegimeDryRun(data.status?.isDryRun || false)
       setRegimeLifecycle(data.status?.lifecycle?.lifecycle || 'active')
     } catch (err) {
-      if (err?.name !== 'AbortError') {
-        // Status polling is best-effort; the existing displayed state remains.
+      if (err?.name !== 'AbortError' && isCurrent()) {
+        setRegimeRunning(null)
+        setRegimeDryRun(null)
+        setRegimeLifecycle(null)
+        setStatusError('Failed to fetch engine status')
       }
     } finally {
       if (statusRequestRef.current.controller === controller) statusRequestRef.current.controller = null
@@ -796,7 +816,7 @@ function AppContent() {
                     onRefresh={fetchExchanges}
                     onAddFund={() => setAddFundDialogOpen(true)}
                   />
-                {currentStrategy === 'regime' && (<>
+                {currentStrategy === 'regime' && regimeRunning !== null && (<>
 
                     {regimeDryRun && (
                       <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-[10px] md:text-xs font-medium rounded-sm">
@@ -1030,7 +1050,13 @@ function AppContent() {
 
         {/* Main Content */}
         <main id="main-content" tabIndex={-1} className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6 focus:outline-hidden">
-          {error && (
+          {currentStrategy === 'regime' && statusError && (
+            <div role="alert" className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200">
+              {statusError}
+              <button type="button" onClick={fetchRegimeStatus} className="ml-3 underline">Retry engine status</button>
+            </div>
+          )}
+          {error && (!isActiveTab('/config') || summary?.config) && (
             <div role="alert" className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200 flex items-center justify-between gap-4">
               <span>{error}</span>
               <button
@@ -1043,7 +1069,7 @@ function AppContent() {
             </div>
           )}
 
-          {loading && !summary && !isOverview && !isAI && !isUpDown && !isSentinel && !isGateway ? (
+          {loading && !summary && !isActiveTab('/config') && !isOverview && !isAI && !isUpDown && !isSentinel && !isGateway ? (
             <RouteLoadingFallback />
           ) : (
             <RouteErrorBoundary key={location.pathname}>
@@ -1077,7 +1103,7 @@ function AppContent() {
                   ? <ChartsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
                   : <ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
               } />
-              <Route path="/:exchange/:pair/config" element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} onSave={fetchData} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} engineRunning={regimeRunning} engineDryRun={regimeDryRun} onRestart={fetchRegimeStatus} />} />
+              <Route path="/:exchange/:pair/config" element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} loadError={error || (!loading && !summary?.config ? 'Configuration is unavailable' : null)} onRetry={fetchData} onSave={fetchData} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} engineRunning={regimeRunning} engineDryRun={regimeDryRun} onRestart={fetchRegimeStatus} />} />
 
               {/* DCA-only routes (backtest, optimizer) */}
               {simpleDcaEnabled && currentStrategy !== 'regime' && <>
