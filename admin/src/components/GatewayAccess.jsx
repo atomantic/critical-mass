@@ -3,7 +3,8 @@ import { Link } from '../lib/router'
 import { KeyRound, ScrollText } from './icons'
 
 export default function GatewayAccess() {
-  const [required, setRequired] = useState(false)
+  const [required, setRequired] = useState(null)
+  const [statusError, setStatusError] = useState(false)
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [currentPassword, setCurrentPassword] = useState('')
@@ -12,10 +13,15 @@ export default function GatewayAccess() {
   const [message, setMessage] = useState(null)
 
   const refresh = async () => {
-    const res = await fetch('/api/auth/session').catch(() => null)
-    if (res?.ok) {
-      const data = await res.json()
-      setRequired(Boolean(data.required))
+    setRequired(null)
+    setStatusError(false)
+    try {
+      const res = await fetch('/api/auth/session')
+      if (!res.ok) throw new Error('Could not read gateway status')
+      await res.json()
+      setRequired(true)
+    } catch {
+      setStatusError(true)
     }
   }
 
@@ -33,7 +39,7 @@ export default function GatewayAccess() {
       const res = await fetch('/api/auth/password', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password, currentPassword: currentPassword || undefined }),
+        body: JSON.stringify({ password, currentPassword }),
       })
       const data = await res.json().catch(() => ({}))
       if (res.ok) {
@@ -41,7 +47,7 @@ export default function GatewayAccess() {
         setPassword('')
         setConfirm('')
         setCurrentPassword('')
-        setMessage({ type: 'success', text: 'Password saved. Sign-in is now required.' })
+        setMessage({ type: 'success', text: 'Password changed.' })
       } else {
         setMessage({ type: 'error', text: data.error || 'Could not save password' })
       }
@@ -63,7 +69,7 @@ export default function GatewayAccess() {
       })
       const data = await res.json().catch(() => ({}))
       if (res.ok) {
-        setMessage({ type: 'success', text: 'Password removed. Gateway is restarting in protected setup mode.' })
+        setMessage({ type: 'success', text: 'Password removed. The gateway will ask you to create a new one when the page reloads.' })
         setTimeout(() => window.location.reload(), 1500)
       } else {
         setMessage({ type: 'error', text: data.error || 'Could not remove password' })
@@ -100,10 +106,20 @@ export default function GatewayAccess() {
       <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-semibold">Operator password</h3>
-          <span className={`text-xs font-mono ${required ? 'text-yellow-400' : 'text-green-400'}`}>
-            {required ? 'sign-in required' : 'open'}
-          </span>
+          {required === null
+            ? <span className="text-xs font-mono text-gray-400" role="status">Checking…</span>
+            : <span className="text-xs font-mono text-green-400">Password set</span>}
         </div>
+
+        {required === null ? (
+          statusError ? (
+            <div className="space-y-2" role="alert">
+              <p className="text-sm text-red-300">Could not read gateway status — reload to retry.</p>
+              <button type="button" onClick={refresh} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-sm text-sm">Retry</button>
+            </div>
+          ) : null
+        ) : (
+        <>
 
         {message && (
           <div className={`mb-3 text-sm rounded px-3 py-2 ${
@@ -114,21 +130,20 @@ export default function GatewayAccess() {
         )}
 
         <form onSubmit={handleSet} className="space-y-3">
-          {required && (
-            <div>
-              <label htmlFor="current-password" className="text-xs text-gray-400 block mb-1">Current password</label>
-              <input
-                id="current-password"
-                type="password"
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                autoComplete="current-password"
-                className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white focus:outline-hidden focus:border-blue-500"
-              />
-            </div>
-          )}
           <div>
-            <label htmlFor="new-password" className="text-xs text-gray-400 block mb-1">{required ? 'New password' : 'Password'} (min 8 characters)</label>
+            <label htmlFor="current-password" className="text-xs text-gray-400 block mb-1">Current password</label>
+            <input
+              id="current-password"
+              type="password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              autoComplete="current-password"
+              required
+              className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white focus:outline-hidden focus:border-blue-500"
+            />
+          </div>
+          <div>
+            <label htmlFor="new-password" className="text-xs text-gray-400 block mb-1">New password (min 8 characters)</label>
             <input
               id="new-password"
               type="password"
@@ -159,29 +174,27 @@ export default function GatewayAccess() {
               disabled={saving}
               className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm font-medium"
             >
-              {saving ? 'Saving...' : required ? 'Change password' : 'Require sign-in'}
+              {saving ? 'Saving...' : 'Change password'}
             </button>
-            {required && (
-              <button
-                type="button"
-                onClick={handleClear}
-                disabled={clearing || !currentPassword}
-                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded-sm text-sm"
-              >
-                {clearing ? '...' : 'Remove password'}
-              </button>
-            )}
-            {required && (
-              <button
-                type="button"
-                onClick={handleSignOut}
-                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-sm text-sm ml-auto"
-              >
-                Sign out
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={handleClear}
+              disabled={clearing || !currentPassword}
+              className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded-sm text-sm"
+            >
+              {clearing ? '...' : 'Remove password'}
+            </button>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-sm text-sm ml-auto"
+            >
+              Sign out
+            </button>
           </div>
         </form>
+        </>
+        )}
       </div>
 
       <Link

@@ -10,10 +10,12 @@
 // aggregates per redacted endpoint/event. Exit codes: 0 PASS, 1 FAIL, 2 UNVERIFIED.
 
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { createCollector, aggregate, requested, verdict } = require('./lib/perf-metrics');
 const { startFixture, EXCHANGES } = require('./lib/perf-fixture');
 
-const { io } = require(require.resolve('socket.io-client', { paths: [path.join(__dirname, '..', 'admin'), __dirname] }));
+// The admin UI's own realtime client (an ES module), driven over Node's WebSocket.
+const REALTIME_CLIENT = pathToFileURL(path.join(__dirname, '..', 'admin', 'src', 'lib', 'realtime.js')).href;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const PAGE_CAP = 100;
@@ -40,15 +42,29 @@ function createClient(baseUrl, token, collector) {
   return { get, setPhase: p => { phase = p; }, get phase() { return phase; }, headers };
 }
 
-function connectSocket(baseUrl, token, collector, client) {
-  const socket = io(baseUrl, { auth: token ? { token } : {}, reconnection: true, reconnectionDelay: 50, transports: ['websocket'] });
-  socket.onAny((event, ...args) => collector.recordWs({
-    event, at: collector.now(), bytes: Buffer.byteLength(JSON.stringify(args)), phase: client.phase,
-  }));
-  return socket;
+async function connectSocket(baseUrl, token, collector, client) {
+  const { connect, REALTIME_PATH } = await import(REALTIME_CLIENT);
+  // Node's WebSocket can carry the bearer header a browser cannot.
+  const headers = token ? { authorization: `Bearer ${token}` } : {};
+  return connect({
+    url: `${baseUrl.replace(/^http/, 'ws')}${REALTIME_PATH}`,
+    minDelayMs: 50,
+    maxDelayMs: 1000,
+    createSocket: (url) => {
+      const ws = new WebSocket(url, { headers });
+      // Gateway events only; heartbeats and the open frame are protocol traffic.
+      ws.addEventListener('message', ({ data }) => {
+        let frame;
+        try { frame = JSON.parse(String(data)); } catch { return; }
+        if (frame?.t !== 'event') return;
+        collector.recordWs({ event: frame.e, at: collector.now(), bytes: Buffer.byteLength(String(data)), phase: client.phase });
+      });
+      return ws;
+    },
+  });
 }
 
-// Bounded wait: a rejected token or unreachable gateway must surface as an error (UNVERIFIED), never hang.
+// Bounded wait: a refused upgrade (bad token) or unreachable gateway must surface as an error (UNVERIFIED), never hang.
 const connected = (socket, timeoutMs = 5000) => new Promise((resolve, reject) => {
   if (socket.connected) return resolve();
   const timer = setTimeout(() => done(new Error('websocket did not connect in time')), timeoutMs);
@@ -59,8 +75,8 @@ const connected = (socket, timeoutMs = 5000) => new Promise((resolve, reject) =>
     err ? reject(err) : resolve();
   };
   const onConnect = () => done();
-  const onError = (err) => { if (err?.message && /auth|unauthor|forbidden/i.test(err.message)) done(err); };
-  socket.once('connect', onConnect);
+  const onError = (err) => done(err);
+  socket.on('connect', onConnect);
   socket.on('connect_error', onError);
 });
 
@@ -71,14 +87,14 @@ async function runAudit({ baseUrl, token, pollMs = 10000, idleMs = 60000, exchan
   const check = (name, ok, detail = '') => checks.push({ name, ok: Boolean(ok), detail });
 
   // Fund-specific consumer (Transactions view): its own exchange room only.
-  const socket = connectSocket(baseUrl, token, collector, client);
+  // The client itself re-sends subscriptions after a reconnect.
+  const socket = await connectSocket(baseUrl, token, collector, client);
   let subscribed = new Set();
   const sync = wanted => {
-    for (const ex of wanted) if (!subscribed.has(ex)) socket.emit(`${ex}:subscribe`);
-    for (const ex of subscribed) if (!wanted.includes(ex)) socket.emit(`${ex}:unsubscribe`);
+    for (const ex of wanted) if (!subscribed.has(ex)) socket.subscribe(ex);
+    for (const ex of subscribed) if (!wanted.includes(ex)) socket.unsubscribe(ex);
     subscribed = new Set(wanted);
   };
-  socket.on('connect', () => { for (const ex of subscribed) socket.emit(`${ex}:subscribe`); });
   let poll = null;
   let first; let timeToUsefulMs; let tx; let cfg;
   try {
@@ -119,7 +135,7 @@ async function runAudit({ baseUrl, token, pollMs = 10000, idleMs = 60000, exchan
   const reconnectRooms = async (label, wanted) => {
     sync(wanted);
     await sleep(100);
-    socket.io.engine.close();
+    socket.reconnect();
     await sleep(50);
     await connected(socket);
     await sleep(150);

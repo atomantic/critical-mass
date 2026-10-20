@@ -1,7 +1,7 @@
 'use strict';
 // Isolated synthetic gateway for the route-load audit (issue #935).
 // Serves the real paged-Transactions read view (src/transactions-regime-query)
-// over a generated 30,000-fill ledger and a socket.io feed, from a disposable
+// over a generated 30,000-fill ledger and a realtime-bus feed, from a disposable
 // temp directory. It touches no production service, port or data directory.
 
 const fs = require('node:fs');
@@ -9,7 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const express = require('express');
-const { Server } = require('socket.io');
+const { createRealtimeBus } = require('../../src/realtime-bus');
 const { createTransactionsReadView } = require('../../src/transactions-regime-query');
 
 const EXCHANGES = ['coinbase', 'gemini', 'cryptocom'];
@@ -49,16 +49,7 @@ async function startFixture({ fills = 30000, statusIntervalMs = 1000 } = {}) {
   app.get('/api/:exchange/regime/status', (req, res) => res.json({ success: true, status: { regime: 'range' } }));
   app.get('/api/:exchange/regime/open-orders', (req, res) => res.json({ success: true, orders: [] }));
   const server = http.createServer(app);
-  const io = new Server(server);
-  const sockets = new Set();
-  io.on('connection', (socket) => {
-    sockets.add(socket);
-    socket.on('disconnect', () => sockets.delete(socket));
-    for (const ex of EXCHANGES) {
-      socket.on(`${ex}:subscribe`, () => socket.join(ex));
-      socket.on(`${ex}:unsubscribe`, () => socket.leave(ex));
-    }
-  });
+  const io = createRealtimeBus({ httpServer: server, rooms: EXCHANGES });
   const timer = setInterval(() => {
     for (const ex of EXCHANGES) io.to(ex).emit('regime:status', { exchange: ex, pair: 'BTC-USD', status: { regime: 'range', lastPrice: 50000 } });
   }, statusIntervalMs);
@@ -68,10 +59,9 @@ async function startFixture({ fills = 30000, statusIntervalMs = 1000 } = {}) {
     dir,
     ledgerSize: ledger.length,
     /** Rooms joined by a connected client, by socket id. */
-    roomsOf: id => [...(io.sockets.sockets.get(id)?.rooms || [])].filter(r => r !== id).sort(),
+    roomsOf: id => [...(io.sockets.get(id)?.rooms || [])].sort(),
     async stop() {
       clearInterval(timer);
-      io.disconnectSockets(true);
       await io.close();
       if (server.listening) await new Promise(resolve => server.close(resolve));
       fs.rmSync(dir, { recursive: true, force: true });

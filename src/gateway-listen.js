@@ -99,7 +99,7 @@ const createCorsMiddleware = (allowlist = []) => (req, res, next) => {
 /**
  * Bind one HTTP listener per host on `port` and resolve only once EVERY one
  * is listening. The first host uses `server`; each later host gets a fresh
- * `createServer()` handed to `onExtra` (Socket.IO attach) before it listens.
+ * `createServer()` handed to `onExtra` (realtime bus attach) before it listens.
  *
  * The first bind failure rejects with the error carrying `host`/`port`, after
  * closing every listener that did bind, so a caller that exits on rejection

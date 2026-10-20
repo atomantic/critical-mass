@@ -40,6 +40,34 @@ after(() => {
   isolatedData.cleanup();
 });
 
+describe('expiring fill and merge records', () => {
+  it('stop clears dedup and completed merge stores with their timers', async () => {
+    const eng = makeEngine();
+    for (const [name, store] of Object.entries(eng._test.expiringStores)) {
+      store.add(`stop-${name}`, name === 'completedMerge' ? { tpOrderId: `stop-${name}` } : true);
+    }
+    eng._test.setRunning(true);
+    assert.equal(eng._test.getExpiringTimerCount(), 4);
+
+    await eng.stop();
+
+    assert.deepEqual(eng._test.getExpiringStoreSizes(), { polling: 0, buy: 0, sell: 0, completedMerge: 0 });
+    assert.equal(eng._test.getExpiringTimerCount(), 0);
+  });
+
+  it('keepHeartbeat stop preserves records but cancels their timers', async () => {
+    const eng = makeEngine();
+    for (const [name, store] of Object.entries(eng._test.expiringStores)) {
+      store.add(`keep-${name}`, name === 'completedMerge' ? { tpOrderId: `keep-${name}` } : true);
+    }
+
+    await eng.stop({ keepHeartbeat: true });
+
+    assert.deepEqual(eng._test.getExpiringStoreSizes(), { polling: 1, buy: 1, sell: 1, completedMerge: 1 });
+    assert.equal(eng._test.getExpiringTimerCount(), 0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Harness helpers
 // ---------------------------------------------------------------------------

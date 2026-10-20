@@ -21,7 +21,7 @@ const createFakeChild = () => {
   return child;
 };
 
-/** Minimal stand-in for a socket.io socket: records emitted events. */
+/** Minimal stand-in for a realtime bus socket: records emitted events. */
 const createFakeSocket = (id) => {
   const socket = new EventEmitter();
   socket.id = id;

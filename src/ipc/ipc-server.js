@@ -4,7 +4,7 @@
  *
  * WebSocket server that runs inside each engine process.
  * - Receives requests from the gateway and dispatches to registered handlers
- * - Broadcasts events back to the gateway (for Socket.IO forwarding)
+ * - Broadcasts events back to the gateway (for realtime bus forwarding)
  */
 
 const { WebSocketServer, OPEN } = require('./ws-server');

@@ -56,7 +56,7 @@ const setup = (t, { disconnected = false, resumeFails = false, createFails = fal
   const wrapper = serverSource.slice(serverSource.indexOf('const shutdownRoutes ='), serverSource.indexOf('// ============ Middleware'));
   const runnerStart = serverSource.search(/const run(?:Scheduled)?Backup =/);
   assert.notEqual(runnerStart, -1, 'server must expose its backup runner');
-  const runner = serverSource.slice(runnerStart, serverSource.indexOf('const rescheduleBackupTimer =', runnerStart));
+  const runner = serverSource.slice(runnerStart, serverSource.indexOf('const backupScheduler =', runnerStart));
   const runnerName = /const (run\w*Backup) =/.exec(runner)[1];
   const runtime = vm.runInNewContext(`${wrapper}\n${runner}\n({ routes, runBackup: ${runnerName} });`, {
     app, gatewayShutdown: { routes: () => app }, trackPendingWrite,

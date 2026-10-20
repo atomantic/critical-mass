@@ -59,7 +59,7 @@ Summary: 82 findings across 45+ files. 2 shared utilities to extract.
 | `scripts/audit-fills.js` | dry | CRITICAL duplicated auth + undeclared axios |
 | `scripts/check-orders.js` | dry | CRITICAL duplicated auth + undeclared axios |
 | `scripts/query-fills.js` | dry | CRITICAL duplicated auth + undeclared axios |
-| `scripts/restore-state.js` | dry | CRITICAL duplicated auth + undeclared axios |
+| `scripts/restore-state.js` (retired) | dry | CRITICAL duplicated auth + undeclared axios |
 | `scripts/add-recovery-fill.js` | dry | CRITICAL duplicated auth + undeclared axios |
 | `scripts/recover-btc.js` | dry | CRITICAL duplicated auth + undeclared axios |
 | `scripts/reconcile-state.js` | dry | CRITICAL duplicated auth + undeclared axios |
