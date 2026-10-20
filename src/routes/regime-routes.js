@@ -408,8 +408,16 @@ module.exports = (app, deps) => {
     const pair = getFundPair(req);
     const query = parseFillsQuery(req.query);
     if (query.success === false) return res.status(400).json(query);
-    const result = await getIPC(exchange).request('regime:fills', query.paged ? query : {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request('regime:fills', query, exchange, pair).catch(engineError);
     if (result.success === false) return res.status(result.statusCode || errStatus(result)).json(result);
+    res.json({ success: true, exchange, pair, ...result });
+  });
+
+  app.get('/api/:exchange/regime/fills/cycles', async (req, res) => {
+    const { exchange } = req.params;
+    const pair = getFundPair(req);
+    const result = await getIPC(exchange).request('regime:fills:cycles', {}, exchange, pair).catch(engineError);
+    if (result.success === false) return res.status(errStatus(result)).json(result);
     res.json({ success: true, exchange, pair, ...result });
   });
 

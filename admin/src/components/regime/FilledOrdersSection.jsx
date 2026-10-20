@@ -15,7 +15,7 @@ const EMPTY = []
  * shared/cycle-pairing.mjs via deriveRegimeFillGroups; dry-run:
  * deriveDryRunFillGroups). Parent passes only fetched data.
  */
-function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledProp, pendingOrdersList, market, asset }) {
+function FilledOrdersSection({ liveFills, fillAggregates, isDryRun, dryRunFilled: dryRunFilledProp, pendingOrdersList, market, asset }) {
   const disclosureId = useId()
   const dryRunFilled = dryRunFilledProp || EMPTY
   const [showAllCycles, setShowAllCycles] = useState(true)
@@ -32,7 +32,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
       return liveFills
     }
     // Find the most recent cycleId by comparing cycle numbers
-    const currentCycleId = liveFills.reduce((latest, f) => {
+    const currentCycleId = fillAggregates?.latestCycleId || liveFills.reduce((latest, f) => {
       if (!f.cycleId) return latest
       if (!latest) return f.cycleId
       const latestNum = parseInt(latest.replace('cycle-', '')) || 0
@@ -40,14 +40,32 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
       return fillNum > latestNum ? f.cycleId : latest
     }, null)
     return liveFills.filter(f => f.cycleId === currentCycleId)
-  }, [liveFills, showAllCycles])
+  }, [liveFills, showAllCycles, fillAggregates])
 
   // Historical work depends only on the selected fill snapshot, never ticker status.
-  const historicalFillGroups = useMemo(() => deriveRegimeFillGroups(filteredFills), [filteredFills])
+  const historicalFillGroups = useMemo(() => {
+    const recent = deriveRegimeFillGroups(filteredFills)
+    if (!fillAggregates) return recent
+    const summaries = showAllCycles ? fillAggregates.fillCycleGroups : fillAggregates.fillCycleGroups?.filter(c => c.cycleId === fillAggregates.latestCycleId)
+    const cycleGroups = (summaries || []).map(cycle => ({
+      ...cycle,
+      minTs: cycle.minTs ?? Infinity,
+      maxTs: cycle.maxTs ?? 0,
+      sells: recent.sellGroups.filter(group => (group.sell.cycleId || 'unknown') === cycle.cycleId),
+    }))
+    return {
+      ...recent,
+      orphanCandidates: fillAggregates.openFillsTruncated ? [] : recent.orphanCandidates,
+      cycleGroups,
+      totalPnl: showAllCycles ? fillAggregates.totalPnl : cycleGroups.reduce((sum, cycle) => sum + cycle.totalPnl, 0),
+      totalHoldback: showAllCycles ? fillAggregates.totalHoldback : cycleGroups.reduce((sum, cycle) => sum + cycle.totalHoldback, 0),
+    }
+  }, [filteredFills, fillAggregates, showAllCycles])
   const searchedFillGroups = useMemo(() => searchRegimeFillGroups(historicalFillGroups, fillSearchId), [historicalFillGroups, fillSearchId])
 
   // Derive the most recent cycle ID from filtered fills
   const mostRecentCycleId = useMemo(() => {
+    if (fillAggregates?.latestCycleId) return fillAggregates.latestCycleId
     if (!filteredFills || filteredFills.length === 0) return null
     return filteredFills.reduce((latest, f) => {
       if (!f.cycleId) return latest
@@ -56,7 +74,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
       const fillNum = parseInt(f.cycleId.replace('cycle-', '')) || 0
       return fillNum > latestNum ? f.cycleId : latest
     }, null)
-  }, [filteredFills])
+  }, [filteredFills, fillAggregates])
 
   // Auto-expand most recent cycle on mount / when cycle list changes
   const cycleInitRef = useRef(false)
@@ -71,6 +89,10 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
     () => (isDryRun ? searchDryRunFillGroups(deriveDryRunFillGroups(dryRunFilled), fillSearchId) : null),
     [isDryRun, dryRunFilled, fillSearchId],
   )
+  const selectedCycle = fillAggregates?.cycles?.find(cycle => cycle.cycleId === fillAggregates.latestCycleId)
+  const visibleFillCount = showAllCycles
+    ? (fillAggregates?.fillCount ?? filteredFills.length)
+    : (selectedCycle ? selectedCycle.entryCount + selectedCycle.exitCount : filteredFills.length)
 
   // Handle keyboard scrolling in expanded table containers
   const handleTableScrollKeydown = (e) => {
@@ -91,7 +113,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-medium text-gray-400">Filled Orders</h3>
         <div className="flex items-center gap-3">
-          {!isDryRun && liveFills?.length > 0 && (
+          {!isDryRun && (fillAggregates?.fillCount || liveFills?.length) > 0 && (
             <button
               type="button"
               onClick={e => { e.currentTarget.focus(); setShowAllCycles(!showAllCycles); setExpandedCycles(new Set()); cycleInitRef.current = false }}
@@ -104,14 +126,14 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
               {showAllCycles ? 'All Cycles' : 'Current Cycle'}
             </button>
           )}
-          {((isDryRun && dryRunFilled.length > 0) || (!isDryRun && filteredFills.length > 0)) && (
+          {((isDryRun && dryRunFilled.length > 0) || (!isDryRun && visibleFillCount > 0)) && (
             <span className="text-xs text-gray-400">
               {isDryRun
                 ? dryRunFilled.length
-                : filteredFills.length
+                : visibleFillCount
               } fills
               {!isDryRun && (() => {
-                const cc = new Set(filteredFills.map(f => f.cycleId).filter(Boolean)).size
+                const cc = showAllCycles ? (fillAggregates?.cycleCount ?? new Set(filteredFills.map(f => f.cycleId).filter(Boolean)).size) : new Set(filteredFills.map(f => f.cycleId).filter(Boolean)).size
                 return cc > 0 ? ` (${cc} ${cc === 1 ? 'cycle' : 'cycles'})` : ''
               })()}
             </span>
@@ -128,10 +150,10 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
       </div>
       {(isDryRun
         ? dryRunFilled.length
-        : filteredFills.length
+        : visibleFillCount
       ) === 0 ? (
         <div className="text-gray-400 text-sm text-center py-4">
-          {!isDryRun && liveFills?.length > 0 && !showAllCycles
+          {!isDryRun && (fillAggregates?.fillCount || liveFills?.length) > 0 && !showAllCycles
             ? 'No fills in current cycle (toggle to see all cycles)'
             : 'No filled orders yet'
           }
@@ -139,6 +161,9 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
       ) : (
         /* Filled Sells with expandable buy sub-rows */
         <div>
+          {!isDryRun && fillAggregates?.detailsTruncated && <p className="text-xs text-gray-400 mb-2">Recent order details shown. Cycle and grand totals include all fills.</p>}
+          {!isDryRun && fillAggregates?.openFillsTruncated && <p className="text-xs text-gray-400 mb-2">Unpaired buy details exceed the display limit and are omitted.</p>}
+          {!isDryRun && fillAggregates?.fillCyclesTruncated && <p className="text-xs text-gray-400 mb-2">Showing the latest {fillAggregates.fillCycleGroups.length} of {fillAggregates.fillCycleCount} cycles.</p>}
           {(() => {
             const toggleFill = (key) => {
               setExpandedFills(prev => {
@@ -154,7 +179,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
             const sellGroups = shownGroups.sellGroups
             const orphanedBuys = isDryRun ? [] : visibleOrphanBuys(searchedFillGroups.orphanCandidates, pendingOrdersList)
 
-            if (sellGroups.length === 0 && orphanedBuys.length === 0) {
+            if (sellGroups.length === 0 && orphanedBuys.length === 0 && (isDryRun || searchedFillGroups.cycleGroups.length === 0)) {
               return <div className="text-gray-400 text-sm text-center py-4">{fillSearchId ? 'No matching orders' : 'No filled sells yet'}</div>
             }
 
@@ -307,6 +332,11 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
 
             // --- Live: cycle-grouped layout ---
             const { cycleGroups, totalHoldback } = searchedFillGroups
+            const shownSellCount = fillSearchId ? sellGroups.length
+              : showAllCycles ? fillAggregates?.sellOrderCount ?? sellGroups.length
+                : cycleGroups.reduce((sum, cycle) => sum + (cycle.sellCount ?? cycle.sells.length), 0)
+            const shownCycleCount = !fillSearchId && showAllCycles
+              ? fillAggregates?.fillCycleCount ?? cycleGroups.length : cycleGroups.length
 
             return (
               <div className="overflow-x-auto space-y-2">
@@ -320,7 +350,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                   const reservesClass = totalHoldback < 0 ? 'text-amber-400' : 'text-cyan-400'
                   return (
                     <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded-sm text-xs">
-                      <span className="text-gray-400">{plural(sellGroups.length, "sell")} across {plural(cycleGroups.length, "cycle")}</span>
+                      <span className="text-gray-400">{plural(shownSellCount, "sell")} across {plural(shownCycleCount, "cycle")}</span>
                       <span className="font-mono">
                         <span className={totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}>
                           {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)}` : '—'}
@@ -445,7 +475,7 @@ function FilledOrdersSection({ liveFills, isDryRun, dryRunFilled: dryRunFilledPr
                             {cycleLabel}
                           </span>
                           <span className="text-xs text-gray-400">
-                            {cycle.sells.length} {cycle.sells.length === 1 ? 'sell' : 'sells'}, {cycle.buyCount} {cycle.buyCount === 1 ? 'buy' : 'buys'}
+                            {fillSearchId ? cycle.sells.length : cycle.sellCount ?? cycle.sells.length} {(fillSearchId ? cycle.sells.length : cycle.sellCount ?? cycle.sells.length) === 1 ? 'sell' : 'sells'}, {cycle.buyCount} {cycle.buyCount === 1 ? 'buy' : 'buys'}
                           </span>
                           {cycle.minTs < Infinity && (
                             <span className="text-[10px] text-gray-400 font-mono">

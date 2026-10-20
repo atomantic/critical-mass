@@ -18,6 +18,7 @@ export const REGIME_ORDER_TOUCH_TARGET = 'min-h-11 min-w-11 inline-flex items-ce
 function OpenOrdersTable({
   pendingOrdersList,
   liveFills,
+  openFillsTruncated,
   dryRunFilled,
   isDryRun,
   celestialBodies,
@@ -106,6 +107,7 @@ function OpenOrdersTable({
 
   return (
     <div className="overflow-x-auto">
+      {openFillsTruncated && <p className="text-xs text-gray-400 mb-2">Open order buy details exceed the display limit; estimates use position and order data.</p>}
       <div className="space-y-4">
       {/* Sell Orders Table */}
       {sellOrders.length > 0 && (

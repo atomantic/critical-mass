@@ -13,7 +13,7 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
   const pairQuery = buildPairQuery(pair)
   const [localStatus, setLocalStatus] = useState(null)
   const [config, setConfig] = useState(null)
-  const [fills, setFills] = useState([])
+  const [fillAggregates, setFillAggregates] = useState(null)
   const [loading, setLoading] = useState(true)
   const [historicalPrices, setHistoricalPrices] = useState([])
   const [historicalAtr, setHistoricalAtr] = useState([])
@@ -56,7 +56,7 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
       const [statusRes, configRes, fillsRes, candlesRes, chartDataRes] = await Promise.all([
         fetch(`/api/${exchange}/regime/status${pairQuery}`),
         fetch(`/api/${exchange}/regime/config${pairQuery}`),
-        fetch(`/api/${exchange}/regime/fills${pairQuery}`),
+        fetch(`/api/${exchange}/regime/fills/cycles${pairQuery}`),
         fetch(`/api/${exchange}/candles${candlesQuery}`),
         fetch(`/api/${exchange}/regime/chart-data${pairQuery}`),
       ])
@@ -71,7 +71,7 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
       }
       if (fillsRes.ok) {
         const data = await fillsRes.json()
-        setFills(data.fills || [])
+        setFillAggregates(data)
       }
       if (candlesRes.ok) {
         const data = await candlesRes.json()
@@ -122,16 +122,15 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
   const position = status?.position || {}
   const regime = status?.regime || {}
   const dryRunFilled = status?.dryRun?.filledOrders || []
-  const activeFills = isDryRun ? dryRunFilled : fills
+  const buyCount = isDryRun ? dryRunFilled.filter(f => f.side === 'buy').length : fillAggregates?.buyCount || 0
+  const sellCount = isDryRun ? dryRunFilled.filter(f => f.side === 'sell').length : fillAggregates?.sellCount || 0
 
   // Calculate cumulative P&L distribution from fills aligned with cycle-pairing ruleset
   const pnlData = useMemo(() => {
-    return deriveRegimeCumulativePnl({
-      fills,
-      isDryRun,
-      dryRunFilled,
-    })
-  }, [fills, isDryRun, dryRunFilled])
+    return isDryRun
+      ? deriveRegimeCumulativePnl({ isDryRun, dryRunFilled })
+      : (fillAggregates?.pnlPoints || []).map(point => ({ date: new Date(point.timestamp), pnl: point.pnl, cumulative: point.cumulative }))
+  }, [fillAggregates, isDryRun, dryRunFilled])
 
   if (loading) {
     return (
@@ -175,11 +174,11 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
       {/* Quick Stats */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         <div className="bg-gray-800 rounded-lg p-3 text-center">
-          <div className="text-2xl font-bold text-blue-400">{activeFills.filter(f => f.side === 'buy').length}</div>
+          <div className="text-2xl font-bold text-blue-400">{buyCount}</div>
           <div className="text-xs text-gray-400">Total Entries</div>
         </div>
         <div className="bg-gray-800 rounded-lg p-3 text-center">
-          <div className="text-2xl font-bold text-green-400">{activeFills.filter(f => f.side === 'sell').length}</div>
+          <div className="text-2xl font-bold text-green-400">{sellCount}</div>
           <div className="text-xs text-gray-400">TPs Filled</div>
         </div>
         <div className="bg-gray-800 rounded-lg p-3 text-center">
@@ -243,6 +242,7 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
             {pnlData.length > 0 && (
               <div className="bg-gray-800 rounded-lg p-4 mt-4">
                 <h3 className="text-sm font-medium text-gray-400 mb-3">Cumulative P&L</h3>
+                {!isDryRun && fillAggregates?.pnlPointsTruncated && <p className="text-xs text-gray-400 mb-2">Chart samples historical sells; cumulative total includes every sell.</p>}
                 <CumulativePnlChart points={pnlData} />
                 <div className="flex justify-between text-xs text-gray-400 mt-2">
                   <span>First Fill</span>

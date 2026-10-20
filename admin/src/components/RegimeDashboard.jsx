@@ -37,7 +37,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const pairQuery = buildPairQuery(pair)
   const { addToast } = useToast()
   const {
-    status, config, loading, error, liveFills, presets, isRunning, prevPriceRef,
+    status, config, loading, error, liveFills, fillAggregates, presets, isRunning, prevPriceRef,
     priceHistory, atrHistory, regimeHistory, setSocketStatus, fetchStatus, fetchConfig, fetchFills,
   } = useRegimeDashboardData(exchange, pair, pairQuery)
   const {
@@ -251,7 +251,8 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             />
             <OpenOrdersTable
               pendingOrdersList={pendingOrdersList}
-              liveFills={liveFills}
+              liveFills={fillAggregates?.openFillsTruncated ? [] : fillAggregates?.openFills || liveFills}
+              openFillsTruncated={fillAggregates?.openFillsTruncated}
               dryRunFilled={dryRunState?.filledOrders}
               isDryRun={isDryRun}
               celestialBodies={status?.celestial?.bodies || EMPTY_BODIES}
@@ -271,6 +272,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
           <FilledOrdersSection
             liveFills={liveFills}
+            fillAggregates={fillAggregates}
             isDryRun={isDryRun}
             dryRunFilled={dryRunState?.filledOrders}
             pendingOrdersList={pendingOrdersList}

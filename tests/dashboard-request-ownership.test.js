@@ -187,8 +187,8 @@ describe('dashboard request ownership wiring', () => {
     assert.match(dashboard, /useRegimeDashboardData\(exchange, pair, pairQuery\)/)
     const source = readSource('admin/src/components/regime/useRegimeDashboardData.js')
     assert.match(source, /createRequestOwner/, 'RegimeDashboard imports the request owner')
-    assert.match(source, /fillsOwner\.read\(`\/api\/\$\{exchange\}\/regime\/fills\$\{pairQuery\}`\)/)
-    assert.doesNotMatch(source, /await fetch\(`\/api\/\$\{exchange\}\/regime\/fills/, 'fills are no longer fetched unfenced')
+    assert.match(source, /fillsOwner\.read\(`\/api\/\$\{exchange\}\/regime\/fills\/cycles\$\{pairQuery\}`\)/)
+    assert.doesNotMatch(source, /await fetch\(`\/api\/\$\{exchange\}\/regime\/fills/, 'fill aggregates are not fetched unfenced')
   })
 
   it('routes UpDown status reads through a per-mount owner and fences Start/Stop', () => {
