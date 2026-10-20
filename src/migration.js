@@ -23,6 +23,7 @@
  */
 
 const fs = require('fs');
+const { atomicWriteSync } = require('./durable-write');
 const path = require('path');
 const { DATA_DIR, APP_ROOT } = require('./paths');
 const { upsertCandles } = require('./candle-utils');
@@ -685,9 +686,6 @@ const mergeStrandedPriceCache = ({ src, dst, name, pairName, exchange, label }) 
   const merged = upsertCandles(strandedRows, exchangeRows);
   const dropped = (stranded.prices.length - strandedRows.length) + (exchangeLevel.prices.length - exchangeRows.length);
 
-  // Lazy require: state-tracker requires migration at module load, so a
-  // top-level require here would form a cycle.
-  const { atomicWriteSync } = require('./state-tracker');
   atomicWriteSync(dst, JSON.stringify({ ...exchangeLevel, intervals: merged.length, prices: merged }, null, 2));
   fs.rmSync(src);
 
@@ -849,9 +847,6 @@ const repairStrandedTransactionLog = (exchange, pair) => {
     const header = perFundParsed.header ?? exchangeParsed.header;
     const dataLines = [...perFundParsed.dataLines, ...exchangeParsed.dataLines];
     const merged = header === null ? '' : [header, ...dataLines].join('\n') + '\n';
-    // Lazy require: state-tracker requires migration at module load, so a
-    // top-level require here would form a cycle.
-    const { atomicWriteSync } = require('./state-tracker');
     atomicWriteSync(perFundFile, merged);
   }
 

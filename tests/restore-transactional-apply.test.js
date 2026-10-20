@@ -169,7 +169,8 @@ describe('restore-apply — transactional application (#431)', () => {
     for (const dest of [path.join(dataDir, 'alpha.json'), path.join(dataDir, 'beta.json'), path.join(dataDir, 'sub', 'gamma.json')]) {
       const call = renames.find((r) => r.to === dest);
       assert.ok(call, `${path.basename(dest)} must be published by a rename, not written in place`);
-      assert.equal(path.dirname(call.from), path.dirname(dest), 'the temp file must sit on the destination filesystem');
+      assert.equal(call.from, path.join(path.dirname(dest), `.${path.basename(dest)}.restore-tmp`),
+        'restart recovery and backup exclusions must recognize the publisher temp path');
       assert.ok(!fs.existsSync(call.from), 'the temp file must not survive the rename');
     }
   });

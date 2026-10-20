@@ -8,6 +8,7 @@
 
 const { DEFAULT_AGGRESSIVENESS_PRESETS, MERGE_PROXIMITY_BOUNDS } = require('./regime-preset-contract');
 const fs = require('fs');
+const { atomicWriteSync } = require('./durable-write');
 const path = require('path');
 const { jsonReadError } = require('./json-diagnostics');
 const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils');
@@ -52,10 +53,6 @@ const USER_CONFIG_FILE = getUserConfigFile();
 // data/config.json and merge on top either way.
 const resolveBaseConfigFile = () =>
   fs.existsSync(BASE_CONFIG_FILE) ? BASE_CONFIG_FILE : EXAMPLE_CONFIG_FILE;
-
-// Monotonic per-process counter for unique saveConfig tmp filenames (avoids a
-// cross-process rename race on a shared fixed tmp path — see saveConfig).
-let _saveConfigTmpSeq = 0;
 
 /**
  * Deep merge two objects. Values from `override` take precedence.
@@ -435,30 +432,7 @@ const loadRawConfig = () => {
  */
 const writeUserConfigFile = (override, file = getUserConfigFile()) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  // Atomic write (tmp + rename): a crash mid-write would otherwise leave a
-  // truncated config.json, and loadRawConfig throws on parse failure — which
-  // takes down the gateway AND every engine process at boot, with no recovery
-  // path. Inlined rather than importing state-tracker.atomicWriteSync to avoid
-  // a require cycle (state-tracker already requires config-utils) (issue #110 M7).
-  // The tmp filename is unique per writer (pid + counter) so two processes
-  // saving concurrently (e.g. an engine auto-updating regime limits while the
-  // gateway handles a settings PUT) can't rename each other's tmp file — which
-  // would ENOENT the second rename or persist the wrong payload. The rename
-  // itself is atomic, so the last writer wins cleanly (#110 M7 / review).
-  const tmpPath = `${file}.${process.pid}.${++_saveConfigTmpSeq}.tmp`;
-  // Preserve the existing file's permission mode across the atomic replace.
-  // tmp+rename creates a NEW inode at the default umask mode (commonly 0644),
-  // so without this an operator who locked down config.json to 0600 (it can
-  // hold the Telegram token / other secrets) would silently get it widened to
-  // world-readable on every settings save. Fall back to 0600 for a brand-new
-  // file since it may contain secrets (#110 review).
-  let mode = 0o600;
-  try {
-    const existing = fs.statSync(file).mode & 0o777;
-    if (existing) mode = existing; // keep the operator's chosen mode; ignore a 0/absent mode
-  } catch { /* new file → restrictive default */ }
-  fs.writeFileSync(tmpPath, JSON.stringify(override, null, 2), { mode });
-  fs.renameSync(tmpPath, file);
+  atomicWriteSync(file, JSON.stringify(override, null, 2), { preserveMode: true });
 };
 
 /**

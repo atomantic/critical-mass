@@ -10,6 +10,7 @@
 const { describe, it, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const { supportConfigDescriptors } = require('./helpers/config-fs-descriptors');
 const path = require('path');
 
 const configUtils = require('../src/config-utils');
@@ -64,6 +65,8 @@ const setupFsMocks = (base) => {
   mock.method(fs, 'renameSync', () => {});
   mock.method(fs, 'mkdirSync', () => {});
   mock.method(fs, 'rmdirSync', () => {}); // paired with the synthetic lock-directory creation
+
+  supportConfigDescriptors(USER_CONFIG_FILE);
 
   return { written: () => writtenData };
 };

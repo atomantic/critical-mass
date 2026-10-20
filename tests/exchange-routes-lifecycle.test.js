@@ -20,6 +20,7 @@
 const { describe, it, beforeEach, afterEach, after, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const { supportConfigDescriptors } = require('./helpers/config-fs-descriptors');
 const os = require('os');
 const path = require('path');
 
@@ -102,6 +103,8 @@ const setupFsMocks = (base) => {
     if (String(dir) === path.dirname(USER_CONFIG_FILE)) return;
     return realFs.mkdirSync(dir, ...rest);
   });
+
+  supportConfigDescriptors(USER_CONFIG_FILE);
 
   return { user: () => userData };
 };

@@ -20,6 +20,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { jsonReadError } = require('./json-diagnostics');
 const { fsyncDir } = require('./fsync-dir');
+const { fsyncFile } = require('./durable-write');
 const { spawnSync, spawn } = require('child_process');
 const { DATA_DIR, BACKUP_DIR } = require('./paths');
 const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME } = require('./restore-apply');
@@ -80,12 +81,6 @@ const spawnAsync = (command, args, { cwd, timeout = SPAWN_TIMEOUT_MS } = {}) => 
   child.on('error', (error) => finish({ status: null, error }));
   child.on('close', (status) => finish({ status, error: undefined }));
 });
-
-/** Flush copied backup bytes before publication can authorize retention. */
-const flushBackupFile = (file) => {
-  const fd = fs.openSync(file, 'r');
-  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-};
 
 /** Root-level credential files that must remain machine-local. */
 const ROOT_CREDENTIAL_FILES = [
@@ -532,7 +527,7 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
   const publishedPath = path.join(paths.backupsDir, filename);
   let published = false;
   try {
-    flushBackupFile(zipPath);
+    fsyncFile(zipPath);
     fs.renameSync(zipPath, publishedPath);
     published = true;
     fsyncDir(paths.backupsDir);
@@ -796,7 +791,7 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
         const target = path.join(stageDir, exchange, pair, name);
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.copyFileSync(source, target);
-        flushBackupFile(target);
+        fsyncFile(target);
         for (let dir = path.dirname(target); dir !== stageDir; dir = path.dirname(dir)) snapshotDirs.add(dir);
         copied.push(name);
         files++;
@@ -815,7 +810,7 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
       createdAt,
       funds,
     }, null, 2), { mode: 0o600 });
-    flushBackupFile(path.join(stageDir, FUND_STATE_MANIFEST_FILENAME));
+    fsyncFile(path.join(stageDir, FUND_STATE_MANIFEST_FILENAME));
     // Persist the whole staged tree, children before parents, before exposing it.
     for (const dir of [...snapshotDirs].sort((a, b) => b.length - a.length)) fsyncDir(dir);
     fs.mkdirSync(paths.fundStateBackupsDir, { recursive: true });
