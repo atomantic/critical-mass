@@ -1,939 +1,577 @@
+// @ts-check
 /**
- * Type definitions for Critical Mass
+ * Configuration update validation with schema-based whitelisting.
+ * Prevents arbitrary field injection from `{ ...config, ...req.body }`.
+ */
+
+const { validateConfigUpdate } = require('./config-validation');
+const { DEFAULT_AGGRESSIVENESS_PRESETS, PRESET_FIELD_RULES, LEGACY_PRESET_FIELD_RULES } = require('./regime-preset-contract');
+const { validateBaseSizeUsdc, validateMaxUsdcDeployed } = require('./regime-sizing-contract');
+const { REGIME_DEFAULTS, BACKUP_INTERVAL_BOUNDS, SENTINEL_POLL_INTERVAL_BOUNDS, SENTINEL_MAX_ALERTS_BOUNDS } = require('./config-utils');
+
+const REGIME_ALLOWED_KEYS = new Set(Object.keys(REGIME_DEFAULTS));
+
+/** Primitive contract for every supported regime setting; preset bounds stay shared. */
+const REGIME_FIELD_RULES = {
+  enabled: { type: 'boolean' },
+  aggressiveness: { type: 'string', enum: ['conservative', 'moderate', 'aggressive', 'maximum'] },
+  atrPeriod: { type: 'number' },
+  kFactor: { type: 'number' },
+  minIntervalMs: { type: 'number' },
+  maxIntervalMs: { type: 'number' },
+  momentumMult: { type: 'number' },
+  volExpansionMult: { type: 'number' },
+  volContractionMult: { type: 'number' },
+  vwapPeriodHours: { type: 'number' },
+  trendConfirmationPeriods: { type: 'number' },
+  minOrderSizeUsdc: { type: 'number' },
+  baseSizeUsdc: { type: 'number' },
+  harvestScale: { type: 'number' },
+  cautionScale: { type: 'number' },
+  trendScale: { type: 'number' },
+  maxCycleBuys: { type: 'number' },
+  cycleResetHours: { type: 'number' },
+  liquidityFactorCap: { type: 'number' },
+  divergenceScalePct: { type: 'number' },
+  tpMult: { type: 'number' },
+  tpMinPercent: { type: 'number' },
+  tpMaxPercent: { type: 'number' },
+  tpUpdateThresholdPct: { type: 'number' },
+  holdbackRatio: { type: 'number' },
+  celestialEnabled: { type: 'boolean' },
+  maxCelestialBodies: { type: 'number' },
+  mergeProximityScale: { type: 'number' },
+  tpAutoManaged: { type: 'boolean' },
+  tpEvaluationCycles: { type: 'number' },
+  tpEvaluationMaxHours: { type: 'number' },
+  tpMinSampleSize: { type: 'number' },
+  tpAbsoluteMin: { type: 'number' },
+  tpAbsoluteMax: { type: 'number' },
+  tpMaxChangePercent: { type: 'number' },
+  sizeAutoManaged: { type: 'boolean' },
+  sizeEvaluationCycles: { type: 'number' },
+  sizeEvaluationMaxHours: { type: 'number' },
+  sizeMinSampleSize: { type: 'number' },
+  sizeAbsoluteMinBase: { type: 'number' },
+  sizeAbsoluteMaxBase: { type: 'number' },
+  sizeTargetUtilization: { type: 'number' },
+  sizeMaxChangePercent: { type: 'number' },
+  sizeAutoCycleBuys: { type: 'boolean' },
+  sizeMinCycleBuys: { type: 'number' },
+  sizeMaxCycleBuys: { type: 'number' },
+  maxAssetExposure: { type: 'number' },
+  depositedCapital: { type: 'number' },
+  maxUsdcDeployed: { type: 'number' },
+  maxDrawdownPercent: { type: 'number' },
+  drawdownResetHours: { type: 'number' },
+  entryOffsetBps: { type: 'number' },
+  entryOffsetUpBps: { type: 'number' },
+  entryOffsetDownBps: { type: 'number' },
+  entryMaxRetries: { type: 'number' },
+  cancelRateLimitMs: { type: 'number' },
+  orderStaleMs: { type: 'number' },
+  staleDataMs: { type: 'number' },
+  staleOrdersMs: { type: 'number' },
+  maxRestErrors: { type: 'number' },
+  maxRateLimits: { type: 'number' },
+  maxLatencyMs: { type: 'number' },
+  safeRecoveryMs: { type: 'number' },
+  wsConnectGraceMs: { type: 'number' },
+  maxOpenOrders: { type: 'number' },
+  reconcileIntervalMs: { type: 'number' },
+  fillDriftSweepMs: { type: 'number' },
+  maxSpreadBps: { type: 'number' },
+  spreadPauseMs: { type: 'number' },
+  minDepthUsdc: { type: 'number' },
+  depthPauseMs: { type: 'number' },
+  flashMoveMult: { type: 'number' },
+  flashCooldownMs: { type: 'number' },
+  cancelEntriesOnFlash: { type: 'boolean' },
+  macroEnabled: { type: 'boolean' },
+  macroUpdateIntervalMs: { type: 'number' },
+  macroHysteresis: { type: 'number' },
+  macroAccumulationThreshold: { type: 'number' },
+  macroDeclineThreshold: { type: 'number' },
+  macroMarkupThreshold: { type: 'number' },
+  macroAccumulationSizeMult: { type: 'number' },
+  macroAccumulationTpMult: { type: 'number' },
+  macroAccumulationOffsetMult: { type: 'number' },
+  macroMarkupSizeMult: { type: 'number' },
+  macroMarkupTpMult: { type: 'number' },
+  macroMarkupOffsetMult: { type: 'number' },
+  macroDeclineSizeMult: { type: 'number' },
+  macroDeclineTpMult: { type: 'number' },
+  macroDeclineOffsetMult: { type: 'number' },
+  longTermBiasEnabled: { type: 'boolean' },
+  longTermLookbackDays: { type: 'number' },
+  longTermUpdateIntervalMs: { type: 'number' },
+  autoAggressivenessEnabled: { type: 'boolean' },
+  entryMode: { type: 'string', enum: ['reactive', 'ladder'] },
+  ladderMaxAthDropPct: { type: 'number' },
+  ladderSpacingMode: { type: 'string', enum: ['linear', 'sqrt', 'exponential'] },
+  ladderSizeMode: { type: 'string', enum: ['flat', 'linear', 'sqrt', 'fibonacci'] },
+  ladderAutoSwitch: { type: 'boolean' },
+  ladderAutoSwitchVolMult: { type: 'number' },
+  ladderMinSpacingPct: { type: 'number' },
+  ...PRESET_FIELD_RULES,
+};
+
+/**
+ * Prove the primitive and enum contract before any coercive comparisons.
+ * @param {unknown} config
+ * @returns {config is Partial<RegimeStrategyConfig>}
+ */
+const hasRegimeFieldTypes = (config) => typeof config === 'object'
+  && config !== null && !Array.isArray(config)
+  && validateConfigUpdate(REGIME_FIELD_RULES, config).errors.length === 0;
+
+/**
+ * Validate regime strategy configuration
+ * @param {unknown} config - Untrusted regime config to validate
+ * @returns {import('./types').RegimeValidationResult}
+ */
+const validateRegimeConfig = (config) => {
+  if (!hasRegimeFieldTypes(config)) {
+    return { valid: false, errors: validateConfigUpdate(REGIME_FIELD_RULES, config).errors };
+  }
+  const errors = [];
+
+  // Aggressiveness level validation
+  if (config.aggressiveness !== undefined) {
+    const validLevels = Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS);
+    if (!validLevels.includes(config.aggressiveness)) {
+      errors.push('aggressiveness must be one of: conservative, moderate, aggressive, maximum');
+    }
+  }
+
+  // Volatility Clock validation
+  if (config.atrPeriod !== undefined && (config.atrPeriod < 5 || config.atrPeriod > 30)) {
+    errors.push('atrPeriod must be between 5 and 30');
+  }
+
+  // Regime Detection validation
+  if (config.momentumMult !== undefined && (config.momentumMult < 1.0 || config.momentumMult > 2.5)) {
+    errors.push('momentumMult must be between 1.0 and 2.5');
+  }
+  if (config.volExpansionMult !== undefined && (config.volExpansionMult < 1.2 || config.volExpansionMult > 2.0)) {
+    errors.push('volExpansionMult must be between 1.2 and 2.0');
+  }
+
+  // Position Sizing validation
+  if (config.minOrderSizeUsdc !== undefined && (config.minOrderSizeUsdc < 1 || config.minOrderSizeUsdc > 100)) {
+    errors.push('minOrderSizeUsdc must be between 1 and 100');
+  }
+  if (config.baseSizeUsdc !== undefined) {
+    const err = validateBaseSizeUsdc(config.baseSizeUsdc);
+    if (err) errors.push(err);
+  }
+  if (config.divergenceScalePct !== undefined && (config.divergenceScalePct < 0.5 || config.divergenceScalePct > 20)) {
+    errors.push('divergenceScalePct must be between 0.5 and 20');
+  }
+
+  // Take-Profit validation
+  if (config.tpMinPercent !== undefined && (config.tpMinPercent < 0.01 || config.tpMinPercent > 10.0)) {
+    errors.push('tpMinPercent must be between 0.01 and 10.0');
+  }
+  if (config.tpMaxPercent !== undefined && (config.tpMaxPercent < 0.1 || config.tpMaxPercent > 50.0)) {
+    errors.push('tpMaxPercent must be between 0.1 and 50.0');
+  }
+  if (config.holdbackRatio !== undefined && (config.holdbackRatio < 0.0 || config.holdbackRatio > 1.0)) {
+    errors.push('holdbackRatio must be between 0.0 and 1.0');
+  }
+
+  // TP Auto-Management validation
+  if (config.tpEvaluationCycles !== undefined && (config.tpEvaluationCycles < 1 || config.tpEvaluationCycles > 100)) {
+    errors.push('tpEvaluationCycles must be between 1 and 100');
+  }
+  if (config.tpEvaluationMaxHours !== undefined && (config.tpEvaluationMaxHours < 1 || config.tpEvaluationMaxHours > 168)) {
+    errors.push('tpEvaluationMaxHours must be between 1 and 168 (1 week)');
+  }
+  if (config.tpMinSampleSize !== undefined && (config.tpMinSampleSize < 3 || config.tpMinSampleSize > 100)) {
+    errors.push('tpMinSampleSize must be between 3 and 100');
+  }
+  if (config.tpAbsoluteMin !== undefined && (config.tpAbsoluteMin < 0.01 || config.tpAbsoluteMin > 1.0)) {
+    errors.push('tpAbsoluteMin must be between 0.01 and 1.0');
+  }
+  if (config.tpAbsoluteMax !== undefined && (config.tpAbsoluteMax < 1.0 || config.tpAbsoluteMax > 10.0)) {
+    errors.push('tpAbsoluteMax must be between 1.0 and 10.0');
+  }
+  if (config.tpMaxChangePercent !== undefined && (config.tpMaxChangePercent < 5 || config.tpMaxChangePercent > 50)) {
+    errors.push('tpMaxChangePercent must be between 5 and 50');
+  }
+
+  // Size Auto-Management validation
+  if (config.sizeEvaluationCycles !== undefined && (config.sizeEvaluationCycles < 1 || config.sizeEvaluationCycles > 100)) {
+    errors.push('sizeEvaluationCycles must be between 1 and 100');
+  }
+  if (config.sizeEvaluationMaxHours !== undefined && (config.sizeEvaluationMaxHours < 1 || config.sizeEvaluationMaxHours > 168)) {
+    errors.push('sizeEvaluationMaxHours must be between 1 and 168 (1 week)');
+  }
+  if (config.sizeMinSampleSize !== undefined && (config.sizeMinSampleSize < 1 || config.sizeMinSampleSize > 50)) {
+    errors.push('sizeMinSampleSize must be between 1 and 50');
+  }
+  if (config.sizeAbsoluteMinBase !== undefined && (config.sizeAbsoluteMinBase < 1 || config.sizeAbsoluteMinBase > 100)) {
+    errors.push('sizeAbsoluteMinBase must be between 1 and 100');
+  }
+  if (config.sizeAbsoluteMaxBase !== undefined && (config.sizeAbsoluteMaxBase < 50 || config.sizeAbsoluteMaxBase > 2000)) {
+    errors.push('sizeAbsoluteMaxBase must be between 50 and 2000');
+  }
+  if (config.sizeTargetUtilization !== undefined && (config.sizeTargetUtilization < 0.5 || config.sizeTargetUtilization > 0.99)) {
+    errors.push('sizeTargetUtilization must be between 0.5 and 0.99');
+  }
+  if (config.sizeMaxChangePercent !== undefined && (config.sizeMaxChangePercent < 5 || config.sizeMaxChangePercent > 50)) {
+    errors.push('sizeMaxChangePercent must be between 5 and 50');
+  }
+  if (config.sizeMinCycleBuys !== undefined && (config.sizeMinCycleBuys < 5 || config.sizeMinCycleBuys > 50)) {
+    errors.push('sizeMinCycleBuys must be between 5 and 50');
+  }
+  if (config.sizeMaxCycleBuys !== undefined && (config.sizeMaxCycleBuys < 20 || config.sizeMaxCycleBuys > 200)) {
+    errors.push('sizeMaxCycleBuys must be between 20 and 200');
+  }
+
+  // Legacy satellite config aliases silently accepted (mapped to celestial equivalents)
+
+  // Celestial Hierarchy validation
+  if (config.maxCelestialBodies !== undefined && (!Number.isInteger(config.maxCelestialBodies) || config.maxCelestialBodies < 1 || config.maxCelestialBodies > 1000)) {
+    errors.push('maxCelestialBodies must be an integer between 1 and 1000');
+  }
+
+  // Ladder / Entry Mode validation
+  if (config.entryMode !== undefined) {
+    const allowedEntryModes = ['reactive', 'ladder'];
+    if (!allowedEntryModes.includes(config.entryMode)) {
+      errors.push(`entryMode must be one of: ${allowedEntryModes.join(', ')}`);
+    }
+  }
+  if (config.ladderMaxAthDropPct !== undefined && (config.ladderMaxAthDropPct < 10 || config.ladderMaxAthDropPct > 95)) {
+    errors.push('ladderMaxAthDropPct must be between 10 and 95');
+  }
+  if (config.ladderSpacingMode !== undefined) {
+    const allowedSpacing = ['linear', 'sqrt', 'exponential'];
+    if (!allowedSpacing.includes(config.ladderSpacingMode)) {
+      errors.push(`ladderSpacingMode must be one of: ${allowedSpacing.join(', ')}`);
+    }
+  }
+  if (config.ladderSizeMode !== undefined) {
+    const allowedSizing = ['flat', 'linear', 'sqrt', 'fibonacci'];
+    if (!allowedSizing.includes(config.ladderSizeMode)) {
+      errors.push(`ladderSizeMode must be one of: ${allowedSizing.join(', ')}`);
+    }
+  }
+  if (config.ladderMinSpacingPct !== undefined && (config.ladderMinSpacingPct < 0.01 || config.ladderMinSpacingPct > 5.0)) {
+    errors.push('ladderMinSpacingPct must be between 0.01 and 5.0');
+  }
+
+  // Macro Regime validation
+  if (config.macroHysteresis !== undefined && (config.macroHysteresis < 1 || config.macroHysteresis > 20)) {
+    errors.push('macroHysteresis must be between 1 and 20');
+  }
+  if (config.macroDeclineThreshold !== undefined && config.macroAccumulationThreshold !== undefined
+    && config.macroDeclineThreshold >= config.macroAccumulationThreshold) {
+    errors.push('macroDeclineThreshold must be less than macroAccumulationThreshold');
+  }
+  if (config.macroAccumulationThreshold !== undefined && config.macroMarkupThreshold !== undefined
+    && config.macroAccumulationThreshold >= config.macroMarkupThreshold) {
+    errors.push('macroAccumulationThreshold must be less than macroMarkupThreshold');
+  }
+  if (config.macroUpdateIntervalMs !== undefined && (config.macroUpdateIntervalMs < 60000 || config.macroUpdateIntervalMs > 600000)) {
+    errors.push('macroUpdateIntervalMs must be between 60000 (1 min) and 600000 (10 min)');
+  }
+  const macroMultFields = [
+    'macroAccumulationSizeMult', 'macroAccumulationTpMult', 'macroAccumulationOffsetMult',
+    'macroMarkupSizeMult', 'macroMarkupTpMult', 'macroMarkupOffsetMult',
+    'macroDeclineSizeMult', 'macroDeclineTpMult', 'macroDeclineOffsetMult',
+  ];
+  for (const field of macroMultFields) {
+    if (config[field] !== undefined && (config[field] < 0.1 || config[field] > 3.0)) {
+      errors.push(`${field} must be between 0.1 and 3.0`);
+    }
+  }
+
+  // Risk Caps validation
+  if (config.maxAssetExposure !== undefined && config.maxAssetExposure !== 0 && (config.maxAssetExposure < 0.01 || config.maxAssetExposure > 10.0)) {
+    errors.push('maxAssetExposure must be 0 (uncapped) or between 0.01 and 10.0');
+  }
+  if (config.depositedCapital !== undefined && config.depositedCapital !== 0 && config.depositedCapital < 100) {
+    errors.push('depositedCapital must be 0 (auto-derive) or at least 100');
+  }
+  if (config.maxUsdcDeployed !== undefined) {
+    const err = validateMaxUsdcDeployed(config.maxUsdcDeployed);
+    if (err) errors.push(err);
+  }
+  if (config.maxDrawdownPercent !== undefined && (!(config.maxDrawdownPercent > 0) || config.maxDrawdownPercent > 100)) {
+    errors.push('maxDrawdownPercent must be greater than 0 and at most 100');
+  }
+  if (config.drawdownResetHours !== undefined && (config.drawdownResetHours < 0 || config.drawdownResetHours > 720)) {
+    errors.push('drawdownResetHours must be between 0 (disabled) and 720 (30 days)');
+  }
+
+  return errors.length > 0
+    ? { valid: false, errors }
+    : { valid: true, errors: [], value: config };
+};
+
+/**
+ * Drop stale or unknown regime fields while preserving the known subset.
+ * Config editors round-trip stored objects, so unknown keys are ignored rather
+ * than making an otherwise valid fund permanently unsaveable.
+ * @param {unknown} update
+ * @returns {{ value: Record<string, unknown>, droppedKeys: string[] }}
+ */
+const sanitizeRegimeConfig = (update) => {
+  if (typeof update !== 'object' || update === null || Array.isArray(update)) {
+    return { value: {}, droppedKeys: [] };
+  }
+
+  /** @type {Record<string, unknown>} */
+  const value = {};
+  const droppedKeys = [];
+  for (const [key, fieldValue] of Object.entries(update)) {
+    if (REGIME_ALLOWED_KEYS.has(key)) value[key] = fieldValue;
+    else droppedKeys.push(key);
+  }
+  return { value, droppedKeys };
+};
+
+// Cross-field regime pairs whose validity depends on each other (e.g. a TP
+// floor must stay below the TP ceiling). A partial update touching only one
+// half of a pair must still be checked against the *other* half's real
+// current value, or a lone `tpMinPercent` bump would be validated against
+// `undefined` instead of the fund's actual `tpMaxPercent`.
+const REGIME_CROSS_FIELD_PARTNERS = {
+  tpMinPercent: ['tpMaxPercent'],
+  tpMaxPercent: ['tpMinPercent'],
+  macroDeclineThreshold: ['macroAccumulationThreshold'],
+  macroAccumulationThreshold: ['macroDeclineThreshold', 'macroMarkupThreshold'],
+  macroMarkupThreshold: ['macroAccumulationThreshold'],
+};
+
+/**
+ * Sanitize + value-validate a nested `regime` config update in one shared step.
+ * Every entry point that can persist into `regime.*` — the dedicated
+ * `PUT /api/:exchange/regime/config`, the full-config `PUT /api/:exchange/config`
+ * and legacy `PUT /api/config`, and fund creation's regime seed — must route
+ * through this before persistence or IPC. Without it, a value rejected by one
+ * save surface (e.g. `maxDrawdownPercent: 999`, outside the documented 0-100
+ * range) could still be persisted and forwarded to the live engine through
+ * another, defeating a safety limit it's supposed to enforce (issue #452).
  *
- * This file contains JSDoc type definitions for the core data structures
- * used throughout Critical Mass. Enable @ts-check in your files to benefit
- * from type checking.
- */
-
-// ============================================================================
-// Interval Types
-// ============================================================================
-
-/**
- * @typedef {'5min' | '10min' | '30min' | '1hour' | '4hour' | 'daily'} IntervalType
- */
-
-/**
- * @typedef {Object} IntervalDefinition
- * @property {number} ms - Interval duration in milliseconds
- * @property {string} label - Human-readable label
- * @property {number} granularity - Candle granularity in seconds
- * @property {number} aggregateFactor - Factor for aggregating smaller candles
- */
-
-// ============================================================================
-// Configuration Types
-// ============================================================================
-
-/**
- * @typedef {'never' | 'daily' | 'weekly'} ConsolidateIntervalType
- */
-
-/**
- * @typedef {'bullish' | 'bearish' | 'neutral'} TrendBias
- */
-
-/**
- * @typedef {Object} ExchangeConfig
- * @property {string} productId - Trading pair (e.g., 'BTC-USDC', 'BTCUSD')
- * @property {number} totalAllocation - Total amount to allocate in quote currency
- * @property {number} intervalsToSpread - Number of intervals to spread purchases over
- * @property {IntervalType} intervalType - Type of interval for DCA
- * @property {number} sellMarkupPercent - Markup percentage for sell orders
- * @property {number} holdbackPercent - Percentage of BTC to hold in reserves
- * @property {number} minOrderSize - Minimum order size in quote currency
- * @property {number} maxBuyPrice - Maximum price to buy at
- * @property {boolean} enabled - Whether this exchange is enabled
- * @property {boolean} dryRun - Whether to simulate trades
- * @property {number} [consolidateAfterOrders] - Auto-consolidate when pending orders exceed this count (0 = disabled)
- * @property {ConsolidateIntervalType} [consolidateInterval] - How often to run interval-based consolidation ('never', 'daily', 'weekly')
- * @property {'fixed' | 'fibonacci'} [dcaStrategy] - DCA strategy (default: 'fixed')
- * @property {number} [fibBaseAmount] - Base amount for Fibonacci multiplier (default: 10)
- */
-
-/**
- * @typedef {Object} GlobalConfig
- * @property {number} schedulerInterval - Scheduler interval in milliseconds
- * @property {boolean} [simpleDcaEnabled] - Whether simple DCA strategies (fixed/fibonacci) are enabled (default: false)
- */
-
-/**
- * @typedef {Object} MultiExchangeConfig
- * @property {Object<string, ExchangeConfig>} exchanges - Exchange configurations by name
- * @property {GlobalConfig} global - Global configuration settings
- */
-
-/**
- * @typedef {Object} ValidationResult
- * @property {boolean} valid - Whether the configuration is valid
- * @property {string[]} errors - List of validation errors
- */
-
-// ============================================================================
-// State Types
-// ============================================================================
-
-/**
- * @typedef {'pending' | 'filled' | 'consolidated' | 'awaiting_sell' | 'sell_failed'} OrderStatus
- */
-
-/**
- * @typedef {Object} TrackedOrder
- * @property {string|null} orderId - Sell order ID (null until a sell is attached)
- * @property {string} buyOrderId - Original buy order ID
- * @property {number} buyPrice - Price paid for BTC
- * @property {number} buyQuantity - Amount of BTC bought
- * @property {number} buyUSDC - Amount of USDC spent
- * @property {number} buyFees - Fees paid on buy
- * @property {number} buyRebates - Rebates received on buy
- * @property {number} buyNetFees - Net fees on buy (fees - rebates)
- * @property {number} buyCostBasis - Total cost basis including fees
- * @property {number|null} sellPrice - Limit price for sell order (null until a sell is attached)
- * @property {number} sellQuantity - Amount of BTC to sell
- * @property {number} holdbackAsset - Amount of BTC held in reserves
- * @property {OrderStatus} status - Order status
- * @property {string} createdAt - ISO timestamp when order was created
- * @property {string} [filledAt] - ISO timestamp when order was filled
- * @property {number} [actualFillValue] - Actual value received when filled
- * @property {number} [sellFees] - Fees paid on sell
- * @property {number} [sellRebates] - Rebates received on sell
- * @property {number} [sellNetFees] - Net fees on sell
- * @property {number} [netProceeds] - Net proceeds after fees
- * @property {string} [sellFailedReason] - Why sell placement failed (status 'sell_failed')
- * @property {string} [sellFailedAt] - ISO timestamp when sell placement failed
- * @property {{intentId: string, clientOrderId: string|null}} [sellPlacementUnresolved] - Unknown-outcome sell placement that blocks a retry (issue #1035)
- * @property {number} [sellRetryCount] - Operator retries of a failed sell placement
- * @property {string|null} [lastSellFailedReason] - Failure reason before the latest retry
- * @property {string} [consolidatedInto] - Order ID of the consolidated order (for original orders)
- * @property {string} [consolidatedAt] - ISO timestamp when order was consolidated
- * @property {boolean} [isConsolidated] - Whether this order is a consolidated order
- * @property {string[]} [sourceOrderIds] - Original order IDs that were consolidated (for consolidated orders)
- */
-
-/**
- * @typedef {Object} BotState
- * @property {number} initialAllocation - Initial allocation amount
- * @property {number} totalAllocated - Total amount allocated so far
- * @property {number} totalIntervalsRun - Number of intervals completed
- * @property {number} usdcFundSize - Current fund size in quote currency
- * @property {number} assetReserves - BTC held in reserves
- * @property {number} outstandingOrdersUSDC - Expected USDC from pending sells
- * @property {number} outstandingOrdersAsset - BTC in pending sell orders
- * @property {number} totalFees - Cumulative fees paid
- * @property {number} totalRebates - Cumulative rebates received
- * @property {number} netFees - Cumulative net fees
- * @property {string|null} lastRunId - Identifier for last run
- * @property {number|null} lastRunTimestamp - Timestamp of last run
- * @property {TrackedOrder[]} orders - List of tracked orders
- * @property {string|null} [lastConsolidationId] - Identifier for last consolidation run
- * @property {number|null} [lastConsolidationTimestamp] - Timestamp of last consolidation
- * @property {number} [fibPosition] - Current Fibonacci sequence position (0-indexed)
- * @property {number} [fibCycleStartTime] - Timestamp when Fibonacci cycle started
- * @property {number} [fibCumulativeCost] - Total cost basis for current Fibonacci cycle
- * @property {number} [fibCumulativeAsset] - Total BTC accumulated in current Fibonacci cycle
- * @property {string|null} [fibActiveSellOrderId] - Active consolidated sell order ID for Fibonacci cycle
- * @property {Object} [pendingDcaBuy] - Accepted market buy awaiting fill recovery (issue #963): orderId, clientOrderId, requestedUsdc, runId, acceptedAt, statusChecks, lastError
- * @property {string[]} [bookedDcaBuyOrderIds] - Recently booked buy order ids, for exactly-once booking (issue #963)
- */
-
-/**
- * @typedef {Object} AllocationInfo
- * @property {number} remaining - Remaining allocation
- * @property {number} intervalAmount - Amount per interval
- */
-
-// ============================================================================
-// Account Balance Types
-// ============================================================================
-
-/**
- * @typedef {Object} AccountBalance
- * @property {number} available - Available balance
- * @property {number} hold - Balance on hold
- * @property {number} total - Total balance
- */
-
-// ============================================================================
-// Product Types
-// ============================================================================
-
-/**
- * @typedef {Object} ProductDetails
- * @property {string} baseIncrement - Minimum base currency increment
- * @property {string} quoteIncrement - Minimum quote currency increment
- * @property {string} baseMinSize - Minimum order size in base currency
- * @property {string} quoteMinSize - Minimum order size in quote currency
- * @property {number} price - Current price
- */
-
-// ============================================================================
-// Order Types
-// ============================================================================
-
-/**
- * @typedef {Object} MarketBuyResult
- * @property {string} orderId - Order ID from exchange
- * @property {string} clientOrderId - Client-generated order ID
- * @property {boolean} success - Whether order was placed successfully
- * @property {string} [errorMessage] - Error message if order failed
- * @property {number} [filledSize] - Base-currency amount actually executed (e.g. a partially-filled IOC)
- * @property {number} [filledPrice] - Average execution price of the fill
- */
-
-/**
- * @typedef {Object} LimitSellResult
- * @property {string} orderId - Order ID from exchange
- * @property {string} clientOrderId - Client-generated order ID
- * @property {boolean} success - Whether order was placed successfully
- * @property {string} [errorMessage] - Error message if order failed
- * @property {number} baseSize - Amount of base currency in order
- * @property {number} limitPrice - Limit price for the order
- */
-
-/**
- * @typedef {Object} OrderDetails
- * @property {string} orderId - Order ID
- * @property {string} productId - Product ID
- * @property {string} side - Order side (BUY or SELL)
- * @property {string} status - Order status (OPEN, FILLED, CANCELLED, etc.)
- * @property {number} filledSize - Amount filled
- * @property {number} filledValue - Value of filled amount
- * @property {number} averageFilledPrice - Average fill price
- * @property {number} completionPercentage - Percentage completed
- * @property {number} totalFees - Total fees for order
- * @property {string} createdTime - ISO timestamp when order was created
- */
-
-/**
- * @typedef {Object} OpenOrder
- * @property {string} orderId - Order ID
- * @property {string} productId - Product ID
- * @property {string} side - Order side
- * @property {string} status - Order status
- * @property {number} size - Remaining unfilled base quantity (exchange-reported when
- *   available, otherwise originalSize - filledSize). NOT the size the order was
- *   originally placed for — see originalSize.
- * @property {number} originalSize - Base quantity the order was originally placed for
- * @property {number} price - Limit price the order was placed at
- * @property {number} filledSize - Amount filled
- * @property {string} createdTime - ISO timestamp
- */
-
-/**
- * @typedef {Object} CancelResult
- * @property {boolean} success - Whether cancellation was successful
- */
-
-// ============================================================================
-// Fill Types
-// ============================================================================
-
-/**
- * @typedef {Object} OrderFill
- * @property {string} tradeId - Trade ID
- * @property {string} orderId - Order ID
- * @property {string} productId - Product ID
- * @property {string} side - Trade side
- * @property {number} price - Fill price
- * @property {number} size - Fill size in base currency
- * @property {number} sizeInQuote - Fill size in quote currency
- * @property {number} commission - Commission charged
- * @property {number} totalCommission - Total commission
- * @property {number} rebate - Rebate received
- * @property {number} netFee - Net fee (commission - rebate)
- * @property {string} tradeTime - ISO timestamp of trade
- * @property {string} liquidityIndicator - MAKER or TAKER
- */
-
-/**
- * @typedef {Object} FillSummary
- * @property {number} totalSize - Total size filled
- * @property {number} totalValue - Total value filled
- * @property {number} totalFees - Total fees paid
- * @property {number} totalRebates - Total rebates received
- * @property {number} netFees - Net fees (totalFees - totalRebates)
- * @property {number} fillCount - Number of fills
- * @property {number} averagePrice - Average fill price
- * @property {OrderFill[]} fills - Individual fills
- */
-
-// ============================================================================
-// Buy/Sell Result Types
-// ============================================================================
-
-/**
- * @typedef {Object} BuyResult
- * @property {string} orderId - Order ID
- * @property {number} price - Average fill price
- * @property {number} assetAmount - Amount of BTC purchased
- * @property {number} usdcAmount - Amount of USDC spent
- * @property {number} fees - Fees paid
- * @property {number} rebates - Rebates received
- * @property {number} netFees - Net fees
- * @property {number} actualCost - Actual cost including fees
- * @property {string} status - Order status
- * @property {OrderFill[]} fills - Individual fills
- */
-
-/**
- * @typedef {Object} SellOrder
- * @property {string} orderId - Order ID
- * @property {string} clientOrderId - Client order ID
- * @property {boolean} success - Whether order was placed successfully
- * @property {string} [errorMessage] - Error message if failed
- * @property {number} baseSize - Amount of BTC to sell
- * @property {number} limitPrice - Limit price for sell
- */
-
-/**
- * @typedef {Object} FilledSellOrder
- * @property {string} orderId - Order ID
- * @property {number} filledSize - Amount filled
- * @property {number} fillValue - Value of fill
- * @property {number} averageFilledPrice - Average price
- * @property {number} fees - Fees paid
- * @property {number} rebates - Rebates received
- * @property {number} netFees - Net fees
- * @property {number} netProceeds - Net proceeds after fees
- * @property {TrackedOrder} originalOrder - Original tracked order
- */
-
-// ============================================================================
-// Candle Types
-// ============================================================================
-
-/**
- * @typedef {Object} Candle
- * @property {number} timestamp - Timestamp in milliseconds
- * @property {number} open - Open price
- * @property {number} high - High price
- * @property {number} low - Low price
- * @property {number} close - Close price
- * @property {number} volume - Volume
- */
-
-// ============================================================================
-// Cycle Result Types
-// ============================================================================
-
-/**
- * @typedef {Object} CycleResult
- * @property {string} status - Result status
- * @property {string} exchange - Exchange name
- * @property {boolean} [dryRun] - Whether this was a dry run
- * @property {IntervalType} [intervalType] - Interval type
- * @property {BuyResult} [buyResult] - Buy result if successful
- * @property {SellOrder} [sellOrder] - Sell order if successful
- * @property {number} [holdbackAsset] - BTC held back
- * @property {Object} [state] - State summary
- * @property {number} [currentPrice] - Current price if price check
- * @property {number} [maxBuyPrice] - Max buy price if price too high
- * @property {string} [lastRunId] - Last run ID if already ran
- * @property {string} [error] - Error message (e.g. sell placement failure)
- */
-
-/**
- * @typedef {Object} StatusResult
- * @property {string} exchange - Exchange name
- * @property {number} currentPrice - Current price
- * @property {Object} config - Config summary
- * @property {Object} state - State summary
- * @property {number} recentFills - Number of recent fills
- */
-
-// ============================================================================
-// Fibonacci Strategy Types
-// ============================================================================
-
-/**
- * @typedef {Object} FibonacciFillDetails
- * @property {string} orderId - Order ID
- * @property {number} filledSize - Amount of BTC filled
- * @property {number} fillValue - Value of fill in quote currency
- * @property {number} averageFilledPrice - Average fill price
- * @property {number} fees - Fees paid
- * @property {number} rebates - Rebates received
- * @property {number} netFees - Net fees
- * @property {number} netProceeds - Net proceeds after fees
- * @property {number} realizedProfit - Profit from cycle
- * @property {number} cyclePosition - Final Fibonacci position of cycle
- * @property {number} cycleBuys - Number of buys in cycle
- */
-
-/**
- * @typedef {Object} FibonacciCycleInfo
- * @property {number} position - Current Fibonacci sequence position
- * @property {number} cumulativeCost - Total cost basis
- * @property {number} cumulativeAsset - Total BTC accumulated
- * @property {number} avgCostBasis - Weighted average cost basis per BTC
- * @property {string|null} activeSellOrderId - Active sell order ID
- * @property {number|null} cycleStartTime - When cycle started
- */
-
-// ============================================================================
-// Regime Strategy Types
-// ============================================================================
-
-/**
- * @typedef {'HARVEST' | 'CAUTION' | 'TREND'} RegimeMode
- * Three trading modes based on market conditions:
- * - HARVEST: Mean-reverting, full inventory cycling
- * - CAUTION: Volatility rising, reduced scaling, wider TP
- * - TREND: Strong momentum, exit/manage only, no averaging down
- */
-
-/**
- * @typedef {'ACTIVE' | 'SAFE' | 'PAUSED' | 'AUTH_DENIED'} HealthMode
- * System health states:
- * - ACTIVE: Normal operation, entries allowed
- * - SAFE: Degraded conditions, entries blocked, TP orders maintained
- * - PAUSED: Manually paused by operator
- * - AUTH_DENIED: Exchange rejected the API key (e.g. IP not allowlisted);
- *   entries blocked, no auto-recovery timer — clears when an authenticated
- *   call succeeds again or the operator resumes
- */
-
-/**
- * @typedef {Object} MarketState
- * @property {number} lastPrice - Most recent trade price
- * @property {number} bid - Current best bid price
- * @property {number} ask - Current best ask price
- * @property {number} spread - Current spread (ask - bid)
- * @property {number} atr1m - 1-minute ATR value
- * @property {number} atr5m - 5-minute ATR value
- * @property {number} realizedVol - Rolling realized volatility
- * @property {number} volBaseline - EMA baseline of realized volatility
- * @property {number} vwap - Volume-weighted average price
- * @property {number} vwapDistance - Distance from VWAP in ATR units
- * @property {number} recentSwing - Recent price swing range
- * @property {number} tradeImbalance - Buy/sell imbalance (-1 to +1)
- * @property {{magnitude: number, direction: 'up' | 'down' | 'neutral'}} momentum - Price momentum indicator
- * @property {Array<{price: number, size: number, side: string, timestamp: number}>} trades - Recent trades
- * @property {number} lastUpdate - Timestamp of last market data update
- * @property {number} [ath] - All-time high price (for ladder mode)
- * @property {number} [athDistance] - Current distance from ATH (negative when below)
- * @property {number} [athLastUpdate] - Timestamp of last ATH fetch
- */
-
-/**
- * @typedef {Object} RegimeState
- * @property {RegimeMode} mode - Current regime mode
- * @property {number} since - Timestamp when current regime started
- * @property {number} transitionCount - Number of regime transitions
- * @property {'up' | 'down' | null} trendDirection - Trend direction if in TREND mode
- * @property {number} lastVolExpansion - Last computed volatility expansion ratio
- * @property {number} lastMomentumMag - Last computed momentum magnitude, in basis points of lastPrice
- * @property {number} trendConfirmationCount - Consecutive trend confirmations
- */
-
-/**
- * @typedef {Object} RegimePositionState
- * @property {number} totalAsset - Total BTC in current cycle
- * @property {number} totalCostBasis - Total cost including fees
- * @property {number} avgCostBasis - Average cost per BTC
- * @property {number} cycleBuys - Number of buy orders filled in current cycle
- * @property {string|null} [activeCycleId] - Durable operator-selected cycle boundary
- * @property {number|null} [activeCycleStartedAt] - When activeCycleId began (ms); live-cycle fill-attribution boundary (#705)
- * @property {string|null} [pendingCycleResetFor] - Body TP sell whose cycle-closing reset has not completed yet (#766)
- * @property {number} lastEntryPrice - Price of last entry
- * @property {number} lastEntryTime - Timestamp of last entry
- * @property {number} anchorPrice - Price anchor for volatility clock
- * @property {string|null} activeTpOrderId - Active take-profit order ID
- * @property {number} lastTpPrice - Last take-profit price placed
- * @property {number} cyclesCompleted - Number of completed inventory cycles
- * @property {number} unrealizedPnL - Current unrealized P&L
- * @property {number} realizedPnL - Cumulative realized P&L in USD
- * @property {number} realizedAssetPnL - Cumulative realized P&L in BTC (holdback reserves)
- * @property {number} assetOnOrder - BTC currently in open sell orders
- * @property {number} maxDrawdownSeen - Maximum drawdown observed
- * @property {{peakEquity: number|null, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, capitalBase: number|null, equityDepleted: boolean}|null} [drawdownGuard] - Persisted drawdown-guard tracker (risk-manager getPersistedState; fund-equity unit)
- * @property {boolean} scalingDisabled - Whether scaling is temporarily disabled
- * @property {string|null} scalingDisabledReason - Reason scaling is disabled
- * @property {MacroRegimeState|null} [macroRegime] - Macro regime state for persistence
- * @property {Array<{orderId: string, price: number, assetQty: number, sizeUsdc: number, placedAt: number}>} [pendingEntryOrders] - Pending entry orders persisted for recovery
- * @property {CelestialBody[]} [celestialBodies_legacy] - (removed, use celestialBodies)
- * @property {CelestialBody[]} [celestialBodies] - Active celestial bodies (replaces core+satellites)
- * @property {CelestialState} [celestialState] - Aggregate celestial tracking
- * @property {boolean} [ladderActive] - Whether ladder mode is active
- * @property {number|null} [ladderPlacedAt] - Timestamp when ladder was placed
- * @property {number} [ladderLowerBound] - Current ladder lower bound price
- * @property {Array<{orderId: string, price: number, sizeUsdc: number, ladderIndex: number}>} [pendingLadderOrders] - Pending ladder orders
- */
-
-/**
- * @typedef {Object} HealthState
- * @property {HealthMode} mode - Current health mode
- * @property {number} since - Timestamp when current mode started
- * @property {string|null} reason - Reason for current mode
- * @property {Object} healthChecks - Health check statuses
- * @property {boolean} healthChecks.wsConnected - WebSocket connection status
- * @property {number} healthChecks.lastTickerMs - Age of last ticker in ms
- * @property {number} healthChecks.lastOrderUpdateMs - Age of last order update in ms
- * @property {number} healthChecks.restErrorCount - REST errors in window
- * @property {number} healthChecks.rateLimitCount - Rate limits in window
- * @property {number} healthChecks.avgLatencyMs - Average REST latency
- * @property {number} healthChecks.persistenceFailureCount - Consecutive failed state persists (issue #532)
- */
-
-/**
- * @typedef {Object} PauseState
- * @property {boolean} spreadPaused - Paused due to wide spread
- * @property {number} spreadPausedUntil - Resume timestamp for spread pause
- * @property {number} lastSpreadBps - Last observed spread in bps
- * @property {boolean} depthPaused - Paused due to thin depth
- * @property {number} depthPausedUntil - Resume timestamp for depth pause
- */
-
-/**
- * @typedef {Object} Fill
- * @property {string} tradeId - Exchange trade ID (primary key)
- * @property {string} orderId - Order ID
- * @property {'buy' | 'sell'} side - Trade side
- * @property {number} price - Fill price
- * @property {number} size - Fill size in BTC
- * @property {number} quoteAmount - Fill amount in USDC
- * @property {number} fee - Fee charged
- * @property {string} feeAsset - Fee asset ('USDC' or 'BTC')
- * @property {number} rebate - Maker rebate if any
- * @property {number} netFee - Net fee (fee - rebate)
- * @property {'MAKER' | 'TAKER'} liquidityIndicator - Maker or taker
- * @property {number} timestamp - Exchange timestamp
- * @property {number} ingestedAt - When fill was ingested
- * @property {string|null} cycleId - Trading cycle ID
- * @property {'order'|'link'|'timeframe'} [cycleAttribution] - How recalculateCycles placed a null-cycle fill into an existing cycle (#705)
- */
-
-/**
- * @typedef {Object} PendingOrder
- * @property {'entry' | 'take_profit' | 'body_tp'} type - Order type
- * @property {number} price - Order price
- * @property {number} size - Order size
- * @property {number} sizeUsdc - Order size in USDC (for entries)
- * @property {number} placedAt - Timestamp when placed
- * @property {boolean} [recoveredFromExchange] - Whether recovered on startup
- */
-
-// SatelliteTpOrder typedef removed — use CelestialBody instead
-
-/**
- * @typedef {Object} CelestialTier
- * @property {string} name - Tier name (satellite, asteroid, moon, planet, sun, hypergiant, nebula, galaxy, black_hole)
- * @property {string} emoji - Display emoji
- * @property {number} minMass - Minimum mass multiplier (× baseSizeUsdc)
- * @property {number} maxMass - Maximum mass multiplier
- * @property {number} tpMult - TP percentage multiplier
- * @property {number} tpMaxScale - Multiplied against tpMaxPercent for wider ceiling
- * @property {number} proximity - TP price proximity % for within-tier consolidation
- * @property {number} holdbackScale - Multiplied against holdbackRatio
- */
-
-/**
- * @typedef {Object} CelestialBody
- * @property {string} id - Unique body ID (persists through promotions)
- * @property {string} tier - Tier name (satellite|asteroid|moon|planet|sun|hypergiant|nebula|galaxy|black_hole)
- * @property {number} assetQty - Total BTC
- * @property {number} costBasis - Total cost basis including fees ($)
- * @property {number} avgPrice - costBasis / assetQty
- * @property {string|null} tpOrderId - Exchange sell order ID
- * @property {number} tpPrice - Current TP price
- * @property {number} assetOnOrder - BTC in sell order (after holdback)
- * @property {number} createdAt - First creation timestamp
- * @property {number} lastMergedAt - Last merge/promotion timestamp
- * @property {string[]} sourceOrderIds - All constituent buy order IDs
- * @property {number} mergeCount - Number of merges undergone
- */
-
-/**
- * @typedef {Object} CelestialState
- * @property {number} bodiesCompleted - Total body TP fills (all time)
- * @property {number} bodiesRealizedPnL - Cumulative USD P&L
- * @property {number} bodiesRealizedAssetPnL - Cumulative BTC holdback reserves
- * @property {number} stateVersion - Schema version
- */
-
-/**
- * @typedef {{valid: true, value: Partial<RegimeStrategyConfig>, errors: string[]} | {valid: false, value?: never, errors: string[]}} RegimeValidationResult
- */
-
-/**
- * @typedef {Object} RegimeStrategyConfig
- * Mode Flags
- * @property {boolean} enabled - Whether regime engine is enabled (default: false)
- * Note: dryRun is read from exchange-level config (ExchangeConfig.dryRun), not here
- * @property {'conservative'|'moderate'|'aggressive'|'maximum'} [aggressiveness] - Aggressiveness preset (default: 'moderate')
+ * Unknown keys are DROPPED, not rejected — `sanitizeRegimeConfig`'s documented
+ * round-trip contract, which keeps a fund whose stored regime block carries a
+ * stale/removed key permanently saveable. Known values are then checked with
+ * `validateRegimeConfig`, filling in `currentConfig`'s value for any
+ * cross-field partner this update didn't touch, so partial updates are
+ * validated against the fund's real current state.
  *
- * Volatility Clock Parameters
- * @property {number} atrPeriod - Periods for ATR calculation (default: 14)
- * @property {number} kFactor - ATR multiplier for entry trigger (default: 0.6)
- * @property {number} minIntervalMs - Minimum time between entries (default: 60000)
- * @property {number} maxIntervalMs - Maximum time between entries (default: 3600000)
- *
- * Regime Detection Parameters
- * @property {number} momentumMult - Momentum threshold multiplier (default: 1.5)
- * @property {number} volExpansionMult - RV/baseline for CAUTION (default: 1.5)
- * @property {number} volContractionMult - RV/baseline to return to HARVEST (default: 1.2)
- * @property {number} vwapPeriodHours - VWAP calculation window (default: 4)
- * @property {number} trendConfirmationPeriods - Periods to confirm TREND (default: 5)
- *
- * Position Sizing Parameters
- * @property {number} minOrderSizeUsdc - Minimum order size in USDC (default: 5)
- * @property {number} baseSizeUsdc - Base order size in USDC (default: 50)
- * @property {number} harvestScale - Size multiplier in HARVEST (default: 1.0)
- * @property {number} cautionScale - Size multiplier in CAUTION (default: 0.5)
- * @property {number} trendScale - Size multiplier in TREND (default: 0.0)
- * @property {number} maxCycleBuys - Maximum buys per cycle (default: 10)
- * @property {number} cycleResetHours - Hours after which to auto-reset cycle buys at max (default: 72, 0 to disable)
- * @property {number} liquidityFactorCap - Maximum liquidity multiplier (default: 2.0)
- * @property {number} divergenceScalePct - Price divergence % from avg cost at which liquidity factor reaches cap (default: 5)
- *
- * Take-Profit Parameters
- * @property {number} tpMult - TP distance multiplier (default: 1.0)
- * @property {number} tpMinPercent - Minimum TP percentage (default: 2.0)
- * @property {number} tpMaxPercent - Maximum TP percentage (default: 15.0)
- * @property {number} tpUpdateThresholdPct - Min % change to update TP (default: 0.5)
- * @property {number} holdbackRatio - Ratio of position to hold vs sell (0.0-1.0, default: 0.5)
- *
- * Celestial Body Parameters (legacy satellite aliases removed)
- * @property {number} [mergeProximityScale] - Scale factor for merge proximity thresholds (0.25=conservative..3.0=aggressive, default: 1.0)
- *
- * Risk Cap Parameters
- * @property {number} maxAssetExposure - Maximum asset position, 0 = uncapped (default: 0)
- * @property {number} depositedCapital - Total user deposits, 0 = auto-derive from maxUsdcDeployed - realizedPnL (default: 0)
- * @property {number} maxUsdcDeployed - Maximum USDC cap for trading, grows with profits (default: 10000)
- * @property {number} maxDrawdownPercent - Pause threshold (default: 20)
- * @property {number} drawdownResetHours - Hours after which to auto-reset peak during drawdown pause (default: 72, 0 to disable)
- *
- * Order Execution Parameters
- * @property {number} entryOffsetBps - Offset below mid for bids when momentum is neutral (default: 10)
- * @property {number} entryOffsetUpBps - Offset when momentum is UP, smaller to get fills before price rises (default: 5)
- * @property {number} entryOffsetDownBps - Offset when momentum is DOWN, larger to catch falling price (default: 15)
- * @property {number} entryMaxRetries - Max retries for post-only rejections in fast markets (default: 3)
- * @property {number} cancelRateLimitMs - Min time between cancels (default: 1000)
- * @property {number} orderStaleMs - Floor for the ATR-adaptive stale entry timeout: actual per-order timeout scales with (offsetBps/ATRbps)², clamped to [orderStaleMs, maxIntervalMs] (default: 30000)
- *
- * System Health Parameters
- * @property {number} staleDataMs - Max age of market data (default: 30000)
- * @property {number} staleOrdersMs - Max age of order updates (default: 60000)
- * @property {number} maxRestErrors - REST errors to trigger SAFE (default: 5)
- * @property {number} maxRateLimits - Rate limits to trigger SAFE (default: 3)
- * @property {number} maxLatencyMs - Latency to trigger SAFE (default: 5000)
- * @property {number} safeRecoveryMs - Time healthy to exit SAFE (default: 60000)
- *
- * Invariant Parameters
- * @property {number} maxOpenOrders - Maximum concurrent orders (default: 3)
- * @property {number} reconcileIntervalMs - State reconciliation frequency (default: 300000)
- *
- * Tail Event Parameters
- * @property {number} maxSpreadBps - Spread pause threshold (default: 50)
- * @property {number} spreadPauseMs - Spread pause duration (default: 300000)
- * @property {number} minDepthUsdc - Minimum depth for entries (default: 10000)
- * @property {number} depthPauseMs - Depth pause duration (default: 300000)
- * @property {number} flashMoveMult - ATR multiple for flash detection (default: 3.0)
- * @property {number} flashCooldownMs - Flash move cooldown (default: 600000)
- * @property {boolean} cancelEntriesOnFlash - Cancel entries on flash (default: true)
- *
- * Entry Mode Parameters
- * @property {'reactive' | 'ladder'} [entryMode] - Entry strategy mode (default: 'reactive')
- *
- * Ladder Parameters (when entryMode: 'ladder')
- * @property {number} [ladderMaxAthDropPct] - Floor = ATH × (1 - this/100). 80 means lowest bid at 20% of ATH (default: 80)
- * @property {'linear' | 'sqrt' | 'exponential'} [ladderSpacingMode] - Price level spacing (default: 'sqrt')
- * @property {'flat' | 'linear' | 'sqrt' | 'fibonacci'} [ladderSizeMode] - Size allocation mode (default: 'fibonacci')
- * @property {boolean} [ladderAutoSwitch] - Auto-switch to ladder on high vol (default: false)
- * @property {number} [ladderAutoSwitchVolMult] - Vol expansion threshold for auto-switch (default: 2.0)
- * @property {number} [ladderMinSpacingPct] - Min % between rungs (default: 0.5)
- *
- * Additional managed and macro settings
- * @property {boolean} celestialEnabled - Regime setting (default: true)
- * @property {number} maxCelestialBodies - Regime setting (default: 10)
- * @property {boolean} tpAutoManaged - Regime setting (default: false)
- * @property {number} tpEvaluationCycles - Regime setting (default: 5)
- * @property {number} tpEvaluationMaxHours - Regime setting (default: 24)
- * @property {number} tpMinSampleSize - Regime setting (default: 10)
- * @property {number} tpAbsoluteMin - Regime setting (default: 0.05)
- * @property {number} tpAbsoluteMax - Regime setting (default: 5.0)
- * @property {number} tpMaxChangePercent - Regime setting (default: 25)
- * @property {boolean} sizeAutoManaged - Regime setting (default: false)
- * @property {number} sizeEvaluationCycles - Regime setting (default: 5)
- * @property {number} sizeEvaluationMaxHours - Regime setting (default: 24)
- * @property {number} sizeMinSampleSize - Regime setting (default: 5)
- * @property {number} sizeAbsoluteMinBase - Regime setting (default: 10)
- * @property {number} sizeAbsoluteMaxBase - Regime setting (default: 500)
- * @property {number} sizeTargetUtilization - Regime setting (default: 0.90)
- * @property {number} sizeMaxChangePercent - Regime setting (default: 25)
- * @property {boolean} sizeAutoCycleBuys - Regime setting (default: false)
- * @property {number} sizeMinCycleBuys - Regime setting (default: 10)
- * @property {number} sizeMaxCycleBuys - Regime setting (default: 100)
- * @property {boolean} macroEnabled - Regime setting (default: false)
- * @property {number} macroUpdateIntervalMs - Regime setting (default: 300000)
- * @property {number} macroHysteresis - Regime setting (default: 5)
- * @property {number} macroAccumulationThreshold - Regime setting (default: -15)
- * @property {number} macroDeclineThreshold - Regime setting (default: -50)
- * @property {number} macroMarkupThreshold - Regime setting (default: 35)
- * @property {number} macroAccumulationSizeMult - Regime setting (default: 1.3)
- * @property {number} macroAccumulationTpMult - Regime setting (default: 0.85)
- * @property {number} macroAccumulationOffsetMult - Regime setting (default: 0.8)
- * @property {number} macroMarkupSizeMult - Regime setting (default: 0.7)
- * @property {number} macroMarkupTpMult - Regime setting (default: 1.3)
- * @property {number} macroMarkupOffsetMult - Regime setting (default: 1.2)
- * @property {number} macroDeclineSizeMult - Regime setting (default: 0.4)
- * @property {number} macroDeclineTpMult - Regime setting (default: 0.7)
- * @property {number} macroDeclineOffsetMult - Regime setting (default: 1.5)
- * @property {boolean} longTermBiasEnabled - Regime setting (default: true)
- * @property {number} longTermLookbackDays - Regime setting (default: 365)
- * @property {number} longTermUpdateIntervalMs - Regime setting (default: 3600000)
- * @property {boolean} autoAggressivenessEnabled - Regime setting (default: false)
+ * @param {unknown} rawUpdate - Untrusted nested regime object from a request body
+ * @param {Object} [currentConfig] - The fund's current (defaults-merged) regime config, for cross-field checks
+ * @returns {import('./types').RegimeValidationResult & {droppedKeys: string[]}}
  */
+const validateAndSanitizeRegimeConfig = (rawUpdate, currentConfig = {}) => {
+  if (typeof rawUpdate !== 'object' || rawUpdate === null || Array.isArray(rawUpdate)) {
+    return { valid: false, errors: ['regime update must be an object'], droppedKeys: [] };
+  }
+  const { value, droppedKeys } = sanitizeRegimeConfig(rawUpdate);
+
+  const validationSubset = { ...value };
+  for (const [key, partners] of Object.entries(REGIME_CROSS_FIELD_PARTNERS)) {
+    if (validationSubset[key] === undefined) continue;
+    for (const partner of partners) {
+      if (!Object.prototype.hasOwnProperty.call(validationSubset, partner) && currentConfig?.[partner] !== undefined) {
+        validationSubset[partner] = currentConfig[partner];
+      }
+    }
+  }
+  const result = validateRegimeConfig(validationSubset);
+  if (result.valid === false) return { ...result, droppedKeys };
+
+  // Partners are validation context, not requested updates.
+  for (const key of Object.keys(result.value)) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) delete result.value[key];
+  }
+  return { ...result, droppedKeys };
+};
+
+// ── Exchange config schema ───────────────────────────────────────
+const EXCHANGE_CONFIG_SCHEMA = {
+  enabled: { type: 'boolean' },
+  dryRun: { type: 'boolean' },
+  productId: { type: 'string' },
+  dcaStrategy: { type: 'string', enum: ['fixed', 'fibonacci'] },
+  intervalType: { type: 'string' },
+  amount: { type: 'number', min: 0 },
+  totalAllocation: { type: 'number', min: 0 },
+  intervalsToSpread: { type: 'number', min: 1 },
+  sellMarkupPercent: { type: 'number', min: 0 },
+  holdbackPercent: { type: 'number', min: 0, max: 100 },
+  minOrderSize: { type: 'number', min: 0 },
+  maxBuyPrice: { type: 'number', min: 0 },
+  fibBaseAmount: { type: 'number', min: 0 },
+  consolidateAfterOrders: { type: 'number', min: 0 },
+  consolidateInterval: { type: 'string', enum: ['never', 'daily', 'weekly'] },
+};
+
+// ── Aggressiveness preset schema ─────────────────────────────────
+const AGGRESSIVENESS_SCHEMA = { ...PRESET_FIELD_RULES, ...LEGACY_PRESET_FIELD_RULES };
+
+// ── Backup config schema ─────────────────────────────────────────
+// Mirrors GLOBAL_DEFAULTS.backup (src/config-utils.js). Both scheduler
+// intervals have a 5-minute floor — below the fastest interval the UI offers,
+// and far above the `setInterval` clamp that turns a bad value into a ~1ms
+// backup loop (#547).
+// `maxBackups` must be a whole number in [1, 100] so a persisted 0/null/-1
+// can never reach `pruneBackups` and delete every archive.
+const BACKUP_CONFIG_SCHEMA = {
+  enabled: { type: 'boolean' },
+  intervalMs: { type: 'number', ...BACKUP_INTERVAL_BOUNDS },
+  maxBackups: { type: 'number', min: 1, max: 100, integer: true },
+  fundStateIntervalMs: { type: 'number', ...BACKUP_INTERVAL_BOUNDS },
+  fundStateMaxBackups: { type: 'number', min: 1, max: 168, integer: true },
+  includePriceCache: { type: 'boolean' },
+};
+
+// ── Sentinel config schema ───────────────────────────────────────
+// Mirrors SENTINEL_DEFAULTS (src/config-utils.js). Only the flat top-level
+// fields go through `validateConfigUpdate` here — `aiClassification`,
+// `feeds`, and `keywords` are nested/array shapes it can't check, so
+// `validateSentinelConfigUpdate` below covers those (issue #687).
+const SENTINEL_CONFIG_SCHEMA = {
+  enabled: { type: 'boolean' },
+  pollIntervalMs: { type: 'number', ...SENTINEL_POLL_INTERVAL_BOUNDS, integer: true },
+  maxAlerts: { type: 'number', ...SENTINEL_MAX_ALERTS_BOUNDS, integer: true },
+};
+
+// ── Notification config validation ───────────────────────────────
+const isIntegerInRange = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
 
 /**
- * @typedef {Object} LimitBuyResult
- * @property {string} orderId - Order ID from exchange
- * @property {string} clientOrderId - Client-generated order ID
- * @property {boolean} success - Whether order was placed successfully
- * @property {string} [errorMessage] - Error message if order failed
- * @property {number} baseSize - Amount of base currency in order
- * @property {number} limitPrice - Limit price for the order
- * @property {boolean} [postOnly] - Whether order was post-only
+ * Validate the subset of a `PUT /api/notifications/config` body that feeds
+ * timer arithmetic (`notifier.js` `scheduleDailySummary`/`enqueue`) or the
+ * quiet-hours gate, unlike `validateConfigUpdate` this only reports errors —
+ * it never strips unknown fields — because `telegram`/`events` still need to
+ * pass through untouched to the shallow-merge in `updateNotificationConfig`.
+ * @param {unknown} updates - Request body (post mask round-trip guard)
+ * @returns {{ errors: string[] }}
  */
+const validateNotificationConfigUpdate = (updates) => {
+  const errors = [];
+  if (typeof updates !== 'object' || updates === null || Array.isArray(updates)) {
+    return { errors: ['update must be an object'] };
+  }
+
+  if (updates.enabled !== undefined && typeof updates.enabled !== 'boolean') {
+    errors.push('enabled: expected boolean');
+  }
+  if (updates.dailySummaryHour !== undefined && !isIntegerInRange(updates.dailySummaryHour, 0, 23)) {
+    errors.push('dailySummaryHour: must be an integer between 0 and 23');
+  }
+  if (updates.rateLimitMs !== undefined && !isIntegerInRange(updates.rateLimitMs, 1000, 300000)) {
+    errors.push('rateLimitMs: must be an integer between 1000 and 300000');
+  }
+
+  if (updates.quietHours !== undefined) {
+    const quietHours = updates.quietHours;
+    if (typeof quietHours !== 'object' || quietHours === null || Array.isArray(quietHours)) {
+      errors.push('quietHours: must be an object');
+    } else {
+      if (quietHours.enabled !== undefined && typeof quietHours.enabled !== 'boolean') {
+        errors.push('quietHours.enabled: expected boolean');
+      }
+      if (quietHours.start !== undefined && !isIntegerInRange(quietHours.start, 0, 23)) {
+        errors.push('quietHours.start: must be an integer between 0 and 23');
+      }
+      if (quietHours.end !== undefined && !isIntegerInRange(quietHours.end, 0, 23)) {
+        errors.push('quietHours.end: must be an integer between 0 and 23');
+      }
+    }
+  }
+
+  return { errors };
+};
+
+const SENTINEL_KEYWORD_CATEGORIES = ['critical', 'warning', 'info'];
 
 /**
- * @typedef {Object} EntryCheckResult
- * @property {boolean} allowed - Whether entry is allowed
- * @property {string|null} reason - Reason if not allowed
+ * Validate the `aiClassification`/`feeds`/`keywords` sub-objects of a
+ * `PUT /api/sentinel/config` body. The route's top-level allowlist admits
+ * these as a unit, but nothing checked their internal shape (issue #687):
+ * a non-boolean `aiClassification.enabled`, an unbounded `maxPerHour`, a
+ * non-array `feeds` (which also silently skipped the SSRF check), or a
+ * `keywords` category that isn't an array of strings could all reach
+ * `updateSentinelConfig` verbatim. Like `validateNotificationConfigUpdate`,
+ * this only reports errors — it never strips fields — because the caller
+ * still needs the raw sub-objects to run the SSRF check and to forward to
+ * `updateSentinelConfig`'s shallow merge.
+ * @param {unknown} updates - Sanitized (allowlisted top-level keys only) update body
+ * @returns {{ errors: string[] }}
  */
+const validateSentinelConfigUpdate = (updates) => {
+  const errors = [];
+  if (typeof updates !== 'object' || updates === null || Array.isArray(updates)) {
+    return { errors: ['update must be an object'] };
+  }
 
-/**
- * @typedef {Object} VolatilityMetrics
- * @property {number} atr - Average True Range
- * @property {number} realizedVol - Realized volatility
- * @property {number} volExpansion - Volatility expansion ratio
- * @property {number} vwap - Volume-weighted average price
- * @property {number} recentSwing - Recent swing range
- */
+  if (updates.aiClassification !== undefined) {
+    const ai = updates.aiClassification;
+    if (typeof ai !== 'object' || ai === null || Array.isArray(ai)) {
+      errors.push('aiClassification: must be an object');
+    } else {
+      if (ai.enabled !== undefined && typeof ai.enabled !== 'boolean') {
+        errors.push('aiClassification.enabled: expected boolean');
+      }
+      if (ai.maxPerHour !== undefined && !isIntegerInRange(ai.maxPerHour, 0, 1000)) {
+        errors.push('aiClassification.maxPerHour: must be an integer between 0 and 1000');
+      }
+    }
+  }
 
-// ============================================================================
-// Macro Regime Types
-// ============================================================================
+  if (updates.feeds !== undefined) {
+    if (!Array.isArray(updates.feeds)) {
+      errors.push('feeds: must be an array');
+    } else if (updates.feeds.length > 50) {
+      errors.push('feeds: must contain at most 50 entries');
+    } else {
+      updates.feeds.forEach((feed, i) => {
+        if (!feed || typeof feed !== 'object' || Array.isArray(feed)) {
+          errors.push(`feeds[${i}]: must be an object`);
+          return;
+        }
+        if (typeof feed.name !== 'string') errors.push(`feeds[${i}].name: expected string`);
+        if (typeof feed.url !== 'string') errors.push(`feeds[${i}].url: expected string`);
+        if (feed.enabled !== undefined && typeof feed.enabled !== 'boolean') {
+          errors.push(`feeds[${i}].enabled: expected boolean`);
+        }
+      });
+    }
+  }
 
-/**
- * @typedef {'ACCUMULATION' | 'RANGING' | 'MARKUP' | 'DECLINE'} MacroRegimeMode
- * Four macro market states based on multi-timeframe EMA analysis:
- * - ACCUMULATION: Price below key EMAs, in a dip zone — increase sizing
- * - RANGING: No clear trend, consolidation — normal behavior (passthrough)
- * - MARKUP: Sustained uptrend above EMAs — reduce sizing, wider TP
- * - DECLINE: Steep multi-day drop, capitulation risk — conservative sizing
- */
+  if (updates.keywords !== undefined) {
+    const keywords = updates.keywords;
+    if (typeof keywords !== 'object' || keywords === null || Array.isArray(keywords)) {
+      errors.push('keywords: must be an object');
+    } else {
+      for (const category of SENTINEL_KEYWORD_CATEGORIES) {
+        if (keywords[category] === undefined) continue;
+        const list = keywords[category];
+        if (!Array.isArray(list) || !list.every((entry) => typeof entry === 'string')) {
+          errors.push(`keywords.${category}: must be an array of strings`);
+        }
+      }
+    }
+  }
 
-/**
- * @typedef {Object} MacroRegimeState
- * @property {MacroRegimeMode} mode - Current macro mode
- * @property {number} score - Current composite score (-100 to +100)
- * @property {{h21: number, h50: number, h200: number, d20: number}} emas - EMA values
- * @property {number} lastUpdate - Timestamp of last macro update
- * @property {{hourly: number, daily: number}} candles - Number of candles used
- */
+  return { errors };
+};
 
-/**
- * @typedef {Object} MacroMultipliers
- * @property {number} sizeMult - Position size multiplier
- * @property {number} tpMult - Take-profit multiplier
- * @property {number} offsetMult - Entry offset multiplier
- */
-
-// ============================================================================
-// API Credentials Types
-// ============================================================================
-
-/**
- * @typedef {Object} ApiCredentials
- * @property {string} apiKey - API key
- * @property {string} apiSecret - API secret
- */
-
-// ============================================================================
-// Transaction Log Types
-// ============================================================================
-
-/**
- * @typedef {'BUY' | 'SELL_ORDER' | 'SELL_FILLED' | 'CONSOLIDATE' | 'FIB_BUY' | 'FIB_SELL_ORDER' | 'FIB_SELL_FILLED'} TransactionType
- */
-
-/**
- * @typedef {Object} TransactionDetails
- * @property {number} price - Transaction price
- * @property {number} assetAmount - BTC amount (negative for sells)
- * @property {number} usdcAmount - USDC amount (negative for buys)
- * @property {number} [fees] - Transaction fees
- * @property {number} [rebates] - Transaction rebates
- * @property {number} [netFees] - Net fees
- * @property {string} [orderId] - Order ID
- */
-
-/**
- * @typedef {Object} TransactionRecord
- * @property {string} Date - Transaction date
- * @property {string} Type - Transaction type
- * @property {string} Price - Price as string
- * @property {string} 'BTC Amount' - BTC amount as string
- * @property {string} 'USDC Amount' - USDC amount as string
- * @property {string} Fees - Fees as string
- * @property {string} Rebates - Rebates as string
- * @property {string} 'Net Fees' - Net fees as string
- * @property {string} 'Order ID' - Order ID
- * @property {string} 'Fund Size' - Fund size as string
- * @property {string} 'BTC Reserves' - BTC reserves as string
- * @property {string} 'Outstanding USDC' - Outstanding USDC as string
- * @property {string} 'Outstanding BTC' - Outstanding BTC as string
- * @property {string} 'Total Fees' - Total fees as string
- * @property {string} 'Total Rebates' - Total rebates as string
- */
-
-// ============================================================================
-// Adapter Interface Type
-// ============================================================================
-
-/**
- * @typedef {Object} ExchangeAdapter
- * @property {string} name - Exchange name
- * @property {() => boolean} hasValidKeys - Check if keys are valid
- * @property {() => ApiCredentials} loadCredentials - Load API credentials
- * @property {(currency: string) => Promise<AccountBalance>} getAccountBalance - Get account balance
- * @property {(productId: string) => Promise<number>} getCurrentPrice - Get current price
- * @property {(productId: string) => Promise<{bid: number, ask: number}>} getBidAsk - Get current bid/ask
- * @property {(productId: string) => Promise<ProductDetails>} getProductDetails - Get product details
- * @property {(productId: string, quoteAmount: number) => Promise<MarketBuyResult>} placeMarketBuy - Place market buy
- * @property {(productId: string, baseAmount: number, price: number, options?: {postOnly?: boolean}) => Promise<LimitSellResult>} placeLimitSell - Place limit sell
- * @property {(orderId: string) => Promise<OrderDetails>} getOrder - Get order details
- * @property {(clientOrderId: string, productId?: string|null) => Promise<OrderDetails|null>} [findOrderByClientOrderId] - Resolve an ambiguous placement by the client order id we sent; null only when the exchange positively has no such order
- * @property {(productId: string) => Promise<OpenOrder[]>} getOpenOrders - Get open orders
- * @property {(orderId: string) => Promise<CancelResult>} cancelOrder - Cancel an order
- * @property {(orderId: string) => Promise<OrderFill[]>} getOrderFills - Get order fills
- * @property {{fillReconciliation: boolean}} capabilities - Optional exchange feature metadata
- * @property {(productId: string|undefined, startTimestampMs: number, options?: ReconciliationScanOptions) => Promise<ReconciliationFill[]>} getReconciliationFills - Get normalized historical fills for ledger reconciliation; resolves only with the complete requested range
- * @property {(orderId: string) => Promise<FillSummary>} getOrderFillSummary - Get fill summary
- * @property {(productId: string, start: number, end: number, granularity: string) => Promise<Candle[]>} getCandles - Get candles
- */
-
-/**
- * @typedef {Object} OrderExecutor
- * @property {{liveReconciliation: boolean}} capabilities - Executor feature metadata
- * @property {(sizeUsdc: number, currentBid: number, currentAsk: number, retryCount?: number, effectiveOffsetBps?: number|null, staleMs?: number|null) => Promise<{success: boolean, orderId?: string, price?: number, assetQty?: number, errorMessage?: string}>} placeEntryBid
- * @property {(assetQty: number, tpPrice: number, options?: {forceUpdate?: boolean}) => Promise<{success: boolean, orderId?: string, price?: number, updated?: boolean, errorMessage?: string}>} placeTakeProfitOrder
- * @property {() => Promise<{cancelled: boolean, filled: boolean, filledDuringCancel?: boolean, filledSize?: number}>} cancelTpOrder
- * @property {() => Promise<{cancelled: number, filled?: number, failed?: number}>} cancelAllEntries
- * @property {(orderId: string, size?: number) => void} handleOrderFill
- * @property {(orderId: string) => void} handleOrderCancel
- * @property {() => {entries: number, ladderEntries: number, takeProfits: number, bodies: number, total: number}} getPendingCounts
- * @property {() => Map<string, any>} getPendingEntries
- * @property {(orderId: string, orderData: any) => void} restorePendingOrder
- * @property {(orderId: string, type?: string) => void} markSettled
- * @property {(orderId: string) => boolean} isTrackedTpOrder - true when orderId is/was this executor's legacy core take_profit (issue #672)
- * @property {(orderId: string) => number|null} getOrderPlacedAt
- * @property {(assetQty: number, tpPrice: number, bodyId: string) => Promise<{success: boolean, orderId?: string, errorMessage?: string}>} placeBodyTpOrder
- * @property {(bodyId: string, tpOrderId: string) => Promise<{cancelled: boolean, filled: boolean, filledSize?: number}>} cancelBodyTpOrder
- * @property {(bodyId: string, tpOrderId: string, assetQty: number, tpPrice: number, placedAt?: number) => void} restoreBodyTpOrder
- * @property {(tpOrderId: string) => void} removeBodyTracking
- * @property {(levels: Array<{index: number, price: number, assetQty: number, sizeUsdc: number}>) => Promise<{orders: Array<any>, failedCount: number}>} placeLadderOrders
- * @property {() => Promise<{cancelled: number, remainingTracked: number, partialFills?: number, partialFillOrderIds?: string[], partialFillsCost?: number, unbookedFills?: Array<{orderId: string, filledSize: number, unitCost: number, cost: number}>}>} cancelAllLadderOrders
- * @property {() => Array<{orderId: string, price: number, size: number, sizeUsdc: number, ladderIndex: number, placedAt: number}>} getPendingLadderOrders
- * @property {(orderId: string) => boolean} isLadderOrder
- * @property {(increment: number) => void} setPriceIncrement
- * @property {() => void} clearTimers
- * @property {() => Promise<{filled: number, cancelled: number, polled: number}>} [checkPendingOrderFills]
- * @property {(multiplier: number) => void} [setStaleTimeoutMultiplier]
- * @property {() => Array<any>} [getPendingOrdersList]
- * @property {() => number} [getEffectiveStaleMs]
- * @property {(found: any, intent: any) => {tracked: boolean, message: string}} [adoptPlacement]
- * @property {() => string|null} [getActiveTpOrderId] - Not contract-required (issue #725): implemented by both executors, but no production caller — test-only observability for TP-placement concurrency safety
- * @property {(orderId: string) => boolean} [isBodyTpOrder] - Not contract-required (issue #725): implemented by both executors, but no production caller — regime-engine.js resolves body ownership from positionState.celestialBodies instead
- * @property {(tpOrderId: string) => Object|null} [getBodyByTpOrderId] - Not contract-required (issue #725): implemented by both executors, but no production caller outside their own internal fill handling (dry-run) — test-only read of a body's stamped cost basis
- */
-
-/**
- * @typedef {Object} ReconciliationFill
- * @property {string} tradeId
- * @property {string} orderId
- * @property {'buy'|'sell'} side
- * @property {number} price
- * @property {number} size - Base-asset quantity
- * @property {number} quoteAmount
- * @property {number} fee
- * @property {string} feeCurrency
- * @property {number} timestamp - Milliseconds since epoch
- * @property {'MAKER'|'TAKER'|string} liquidityIndicator
- */
-
-/**
- * Progress of a long reconciliation scan (issue #966). Informational only —
- * a progress report never carries fills and never implies completeness.
- * @typedef {Object} ReconciliationScanProgress
- * @property {number} pages - Exchange requests made so far
- * @property {number} fills - Distinct trades accumulated so far
- * @property {number} fraction - Share of the fixed [startMs, endMs] range walked, 0..1
- * @property {number} cursorMs - Lower edge of the walked range (the walk goes newest → oldest)
- * @property {number} startMs - Fixed lower bound of the scan
- * @property {number} endMs - Fixed upper bound of the scan
- * @property {boolean} done - True once the whole range has been walked
- */
-
-/**
- * Optional controls for `getReconciliationFills`. Adapters whose history read
- * is short may ignore them.
- * @typedef {Object} ReconciliationScanOptions
- * @property {AbortSignal} [signal] - Cancels the scan between requests (rejects; never returns a partial result)
- * @property {(progress: ReconciliationScanProgress) => void} [onProgress] - Progress callback
- * @property {number} [stepPages] - Page budget per bounded scan step (Crypto.com)
- * @property {number} [maxConsecutiveFailures] - Transient page failures retried in place before rejecting (Crypto.com)
- */
-
-/**
- * Resumable Crypto.com `private/get-trades` traversal state over a fixed
- * nanosecond range. The cursor only advances past a window once that
- * window's below-cap response has been accepted.
- * @typedef {Object} CryptocomTradeScan
- * @property {string} [instrument] - instrument_name filter
- * @property {bigint} startNs - Fixed lower bound
- * @property {bigint} endNs - Fixed upper bound
- * @property {bigint} cursor - Upper edge of the next window to request
- * @property {bigint|null} span - Current (possibly halved) window span; null starts a fresh daily window
- * @property {Set<string>} seen - trade_ids already accumulated
- * @property {any[]} rawFills - Accumulated raw trade rows
- * @property {number} pages - Requests completed
- * @property {boolean} done - Whole range walked
- */
-
-/**
- * Status of an engine-owned Manual Trades unaccounted-fills scan job.
- * @typedef {Object} UnaccountedFillsJobStatus
- * @property {boolean} success - False for a failed, cancelled or unknown job
- * @property {string} [jobId]
- * @property {'running'|'complete'|'failed'|'cancelled'} [status]
- * @property {boolean} [pending] - True while the scan is still running
- * @property {ReconciliationScanProgress|null} [progress]
- * @property {string} [error]
- */
-
-// ============================================================================
-// Consolidation Types
-// ============================================================================
-
-/**
- * @typedef {Object} ConsolidationResult
- * @property {boolean} success - Whether consolidation was successful
- * @property {string} [newOrderId] - New consolidated order ID
- * @property {number} [consolidatedPrice] - Weighted average sell price
- * @property {number} [consolidatedAsset] - Total BTC in consolidated order
- * @property {number} [consolidatedCount] - Number of orders consolidated
- * @property {string[]} [skippedOrderIds] - Order IDs skipped due to partial fills
- * @property {string[]} [cancelledOrderIds] - Order IDs confirmed cancelled (0% filled) and folded into the consolidated order
- * @property {string[]} [filledDuringCancelOrderIds] - Order IDs that filled in the gap between the eligibility check and the cancel; excluded from the consolidated total to avoid a double-sell (issue #150)
- * @property {{oldOrderId: string, newOrderId: string}[]} [restoredOrders] - Sells re-placed after a consolidated-place failure (naked-position recovery), mapping cancelled ID to new ID
- * @property {string[]} [failedRestoreOrderIds] - Cancelled order IDs that were DEFINITIVELY rejected during recovery — safe to manually re-place
- * @property {string[]} [unresolvedRestoreOrderIds] - Cancelled order IDs whose restore (or the consolidated placement itself) had an ambiguous, unreconcilable outcome — may already be resting live; do NOT manually re-place until an operator reconciles the fund's placement intent (issue #676)
- * @property {boolean} [pending] - True when the consolidated placement's own outcome is unknown and unresolved (operator reconciliation required); distinct from a definitive `success:false` failure
- * @property {string} [error] - Error message if consolidation failed
- */
-
-// Export empty object to make this a module
-module.exports = {};
+module.exports = {
+  validateConfigUpdate,
+  validateRegimeConfig,
+  sanitizeRegimeConfig,
+  validateAndSanitizeRegimeConfig,
+  EXCHANGE_CONFIG_SCHEMA,
+  AGGRESSIVENESS_SCHEMA,
+  BACKUP_CONFIG_SCHEMA,
+  validateNotificationConfigUpdate,
+  SENTINEL_CONFIG_SCHEMA,
+  validateSentinelConfigUpdate,
+};
