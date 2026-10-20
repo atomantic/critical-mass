@@ -90,7 +90,10 @@ function createView(props = {}) {
   const stubs = {
     react: React,
     './charts/chartUtils': { formatCurrency: value => `$${value}`, formatPrice: value => `$${value}`, formatAsset: String },
-    '../App': { getBaseCurrency: productId => productId?.split('-')[0] || 'BTC' },
+    '../App': {
+      getBaseCurrency: productId => productId?.split('-')[0] || 'BTC',
+      getQuoteCurrency: productId => productId?.split('-')[1] || 'USDC',
+    },
     '../utils/api': { pairQuery: pair => pair ? `?pair=${encodeURIComponent(pair)}` : '' },
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../utils/regimeFillGroups.mjs': { compareCycleIds: (a, b) => a.localeCompare(b) },
