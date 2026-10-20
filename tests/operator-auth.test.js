@@ -890,6 +890,72 @@ const withSocketGateway = async (run, { failPersistence = false } = {}) => {
   }
 };
 
+describe('operator socket origin boundary', () => {
+  // Exercise the dashboard's actual Socket.IO client, including polling-only
+  // clients, rather than treating CORS response headers as an upgrade guard.
+  const { io: createSocketClient } = require('../admin/node_modules/socket.io-client');
+
+  for (const transport of ['websocket', 'polling']) {
+    it(`checks session origins on ${transport} handshakes`, { timeout: 10000 }, async (t) => {
+      await withSocketGateway(async ({ urls, io }) => {
+        const baseUrl = urls[0];
+        const login = await fetch(`${baseUrl}/api/auth/session`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: PASSWORD }),
+        });
+        assert.equal(login.status, 200);
+        const cookie = login.headers.get('set-cookie').split(';')[0];
+        const devHost = 'localhost:5571';
+        const tailscaleHost = 'gateway.example.ts.net:5570';
+        const cases = [
+          { name: 'rejects a same-site sibling port', headers: { Origin: 'http://127.0.0.1:3000' }, code: 'FORBIDDEN_ORIGIN' },
+          { name: 'accepts the production page origin', headers: { Origin: baseUrl } },
+          { name: 'accepts the Vite forwarded page host', headers: { Origin: `http://${devHost}`, 'X-Forwarded-Host': devHost } },
+          { name: 'accepts a forwarded Tailscale page host', headers: { Origin: `https://${tailscaleHost}`, 'X-Forwarded-Host': `${tailscaleHost}, internal:5570` } },
+          { name: 'rejects a mismatch against the forwarded host', headers: { Origin: baseUrl, 'X-Forwarded-Host': devHost }, code: 'FORBIDDEN_ORIGIN' },
+          { name: 'rejects a malformed origin', headers: { Origin: 'null' }, code: 'FORBIDDEN_ORIGIN' },
+          { name: 'accepts explicit bearer credentials despite a foreign origin', headers: { Origin: 'https://attacker.invalid' }, auth: { token: PASSWORD } },
+          { name: 'accepts a session without an Origin header', headers: {} },
+        ];
+
+        for (const { name, headers, auth, code } of cases) {
+          await t.test(name, async () => {
+            const client = createSocketClient(baseUrl, {
+              transports: [transport],
+              extraHeaders: { Cookie: cookie, ...headers },
+              auth,
+              autoConnect: false,
+              reconnection: false,
+              timeout: 2000,
+              forceNew: true,
+            });
+            try {
+              const error = await new Promise((resolve) => {
+                client.once('connect', () => resolve(null));
+                client.once('connect_error', resolve);
+                client.connect();
+              });
+              if (code) {
+                assert.equal(error?.data?.code, code);
+                assert.equal(client.connected, false);
+                assert.equal(io.of('/').sockets.size, 0);
+              } else {
+                assert.equal(error, null);
+                assert.equal(client.connected, true);
+                assert.equal(io.of('/').sockets.size, 1);
+              }
+            } finally {
+              client.disconnect();
+              io.disconnectSockets(true);
+            }
+          });
+        }
+      });
+    });
+  }
+});
+
 describe('established operator socket revocation', () => {
   it('revokes every listener, cleans log streams and permits only replacement credentials', { timeout: 10000 }, async () => {
     await withSocketGateway(async ({ urls, connect, io, registry, children, authFile, changes, expireAttempts }) => {

@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - **[issue-935] Authenticated browser performance coverage** — A disposable real gateway/IPC fixture and headless Chrome scenario measure protected Transactions load, Config idle traffic for 60 seconds, consumer cleanup and reconnect recovery. Page responses now omit ledger metadata; incomplete browser evidence and protocol-only replays report UNVERIFIED. See `docs/perf-route-audit.md`.
 
 ### Fixed
+- **[issue-1189] Realtime sessions enforce the gateway origin boundary** — Socket.IO rejects cookie-authenticated handshakes from sibling ports or other foreign origins, including behind a forwarded host. Same-origin and no-Origin sessions and explicit bearer clients keep working; real dashboard-client tests cover WebSocket and polling handshakes.
 - **[issue-1238] Gateway stop no longer fails with `activeLogStreams is not iterable`** — `stopProducers` iterated the log-stream registry object directly and threw on every shutdown, skipping the notifier flush, IPC disconnect and listener close and exiting 1. The registry now exposes `stopAll()`, and a test drives the real registry through `createGatewayShutdown`.
 
 ### Changed

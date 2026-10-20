@@ -269,6 +269,12 @@ const createOperatorAuth = ({
     const headers = { ...socket.handshake.headers };
     if (socket.handshake.auth?.token) headers.authorization = `Bearer ${socket.handshake.auth.token}`;
     authenticate(headers, socket.conn?.remoteAddress || socket.request?.socket?.remoteAddress).then((auth) => {
+      // Keep this session-origin boundary in any replacement realtime transport.
+      if (auth?.source === 'session' && !requestOriginMatches({ headers })) {
+        const error = new Error('Request origin is not authorized');
+        error.data = { code: 'FORBIDDEN_ORIGIN' };
+        return next(error);
+      }
       if (auth) return next();
       const error = new Error('Operator authentication required');
       error.data = { code: 'UNAUTHORIZED' };
