@@ -129,6 +129,13 @@ export default function SentinelDashboard() {
     await updateFeeds((status?.config?.feeds || []).filter((_, i) => i !== index))
   }
 
+  const serviceEnabled = !!status?.config?.enabled
+  const stateLabel = !serviceEnabled
+    ? 'Disabled'
+    : status?.feedState === 'no-feeds'
+      ? 'Enabled — no feeds configured'
+      : status?.running ? 'Running' : 'Stopped'
+
   const formatTime = (ts) => {
     if (!ts) return '-'
     const d = new Date(ts)
@@ -153,7 +160,7 @@ export default function SentinelDashboard() {
           <div className="flex items-center gap-2">
             <span className={`w-2.5 h-2.5 rounded-full ${status?.running ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
             <span className={status?.running ? 'text-green-400' : 'text-gray-400'}>
-              {status?.running ? 'Running' : 'Stopped'}
+              {stateLabel}
             </span>
           </div>
 
@@ -177,7 +184,12 @@ export default function SentinelDashboard() {
                 Stop
               </button>
             ) : (
-              <button onClick={handleStart} className={`${TOUCH_BTN} px-3 py-1.5 bg-green-800 hover:bg-green-900 rounded-sm text-sm`}>
+              <button
+                onClick={handleStart}
+                disabled={!serviceEnabled}
+                title={serviceEnabled ? undefined : 'Enable the service first'}
+                className={`${TOUCH_BTN} px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed rounded-sm text-sm`}
+              >
                 Start
               </button>
             )}
@@ -193,10 +205,13 @@ export default function SentinelDashboard() {
               disabled={!status?.config}
               className={`${TOUCH_BTN} px-3 py-1.5 rounded-sm text-sm ${status?.config?.enabled ? 'bg-yellow-800 hover:bg-yellow-900' : 'bg-gray-600 hover:bg-gray-700'} ${!status?.config ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
-              {status?.config?.enabled ? 'Disable' : 'Enable'}
+              {serviceEnabled ? 'Disable service' : 'Enable service'}
             </button>
           </div>
         </div>
+        <p className="mt-3 text-xs text-gray-400">
+          Enable turns the service on and saves that choice; Start/Stop runs or pauses polling now.
+        </p>
       </div>
 
       {/* Feed Configuration */}
@@ -276,7 +291,7 @@ export default function SentinelDashboard() {
         {loading ? (
           <div className="text-gray-400 text-center py-8">Loading...</div>
         ) : alerts.length === 0 ? (
-          <div className="text-gray-400 text-center py-8">No alerts yet. Enable the service and add RSS feeds to start monitoring.</div>
+          <div className="text-gray-400 text-center py-8">No alerts yet. Enable the service, add at least one RSS feed, then Start.</div>
         ) : (
           <div className="space-y-3">
             {alerts.map(alert => (
