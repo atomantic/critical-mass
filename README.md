@@ -340,11 +340,12 @@ maintenance obligations and criteria for revisiting it.
 > **Important:** You must use the **Coinbase Advanced API** via the [Coinbase Developer Platform (CDP)](https://cloud.coinbase.com/access/api), **NOT** the regular/legacy Coinbase API (`coinbase.com/settings/api`). Standard/legacy Coinbase API keys do not support the required EC private key authentication and will fail.
 
 1. Go to the [Coinbase Developer Platform (CDP) API Keys](https://cloud.coinbase.com/access/api) portal
-2. Create a new API key with **View** and **Trade** permissions under Advanced Trade
+2. Create a new API key with **View** and **Trade** permissions under Advanced Trade (leave **Transfer** off). Open **Advanced settings** and set the signature algorithm to **ECDSA**. The portal's default (**Ed25519**) will not work.
 3. Add your server's IP to the IP allowlist (recommended)
 4. Download or copy your API credentials:
    - **API Key Name**: Formatted as `organizations/{org-id}/apiKeys/{key-id}`
-   - **Private Key**: The EC private key in PEM format (`-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----\n`)
+   - **Private Key**: The ECDSA private key in PEM format (`-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----\n`)
+   - Ed25519 keys and standard API secrets are not supported.
 5. Save the credentials via the admin UI (**API Keys** tab) or copy them to `data/coinbase-keys.json`:
    ```json
    {
@@ -356,13 +357,14 @@ maintenance obligations and criteria for revisiting it.
 ### Gemini
 
 1. Go to [Gemini API Settings](https://exchange.gemini.com/settings/api)
-2. Create new API key with **Trading** scope
-3. Copy the API key and secret to `data/gemini-keys.json`
+2. Create an account-level (**Primary**) API key with the **Trading** role. The key starts with `account-`; master keys are not supported.
+3. If you enable **Requires Heartbeat**, Gemini cancels this key's open orders about 5 minutes after the last Gemini fund stops.
+4. Save the API key and secret via the admin UI (**API Keys** tab) or copy them to `data/gemini-keys.json`
 
 ### Crypto.com
 
 1. Go to [Crypto.com Exchange API Settings](https://exchange.crypto.com/settings/api)
-2. Create new API key with **Trade** permissions
+2. Create new API key with **Trade** permissions (leave withdrawals off)
 3. Copy the API key and secret to `data/cryptocom-keys.json`
 
 ## License

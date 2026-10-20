@@ -20,6 +20,7 @@ const os = require('os');
 
 const migration = require('../src/migration');
 const paths = require('../src/paths');
+const PEM_PRIVATE_KEY = '-----BEGIN EC PRIVATE KEY-----\nsynthetic-test-key\n-----END EC PRIVATE KEY-----';
 // Note: keys-routes is loaded dynamically in each test after mocking
 
 // Real fs, captured before any mock.method() calls
@@ -332,8 +333,9 @@ describe('API key routes', () => {
 
       const invalidBodies = [
         { name: 123, privateKey: 'x'.repeat(50) },
-        { name: 'short-key', privateKey: 'x'.repeat(50) },
+        { name: 'short-key', privateKey: PEM_PRIVATE_KEY },
         { name: 'working-account', privateKey: 'too-short' },
+        { name: 'working-account', privateKey: 'A'.repeat(88) },
         { name: 'working-account', privateKey: 'x'.repeat(50 * 400) },
       ];
       for (const method of ['POST', 'PUT']) {
@@ -414,7 +416,7 @@ describe('API key routes', () => {
 
       const res = await invoke(app, 'POST /api/:exchange/keys', {
         params: { exchange: 'coinbase' },
-        body: { name: 'my-key-name', privateKey: 'x'.repeat(50) },
+        body: { name: 'my-key-name', privateKey: PEM_PRIVATE_KEY },
       });
 
       assert.equal(res.statusCode, 200);
@@ -426,7 +428,7 @@ describe('API key routes', () => {
       const keysFilePath = path.join(tempKeysDir, 'coinbase-keys.json');
       const written = JSON.parse(fs.readFileSync(keysFilePath, 'utf8'));
       assert.equal(written.name, 'my-key-name');
-      assert.equal(written.privateKey, 'x'.repeat(50));
+      assert.equal(written.privateKey, PEM_PRIVATE_KEY);
       assert.ok(written.createdAt, 'createdAt must be set');
     });
 
@@ -481,7 +483,7 @@ describe('API key routes', () => {
 
       const res = await invoke(app, 'PUT /api/:exchange/keys', {
         params: { exchange: 'coinbase' },
-        body: { name: 'updated-key-name', privateKey: 'x'.repeat(50) },
+        body: { name: 'updated-key-name', privateKey: PEM_PRIVATE_KEY },
       });
 
       assert.equal(res.statusCode, 200);
@@ -490,6 +492,26 @@ describe('API key routes', () => {
       const keysFilePath = path.join(tempKeysDir, 'coinbase-keys.json');
       const written = JSON.parse(fs.readFileSync(keysFilePath, 'utf8'));
       assert.equal(written.name, 'updated-key-name');
+    });
+
+    it('rejects non-PEM Coinbase secrets with ECDSA guidance without writing keys', async () => {
+      const app = createFakeApp();
+      let writes = 0;
+      registerKeysRoutes(app, { writeJSON: () => { writes += 1; } });
+      const keysFilePath = path.join(tempKeysDir, 'coinbase-keys.json');
+      const expectedError = "This private key isn't an ECDSA key in PEM format. In the Coinbase Developer Platform, create a new API key with the signature algorithm set to ECDSA (under Advanced settings), then paste the private key that starts with -----BEGIN EC PRIVATE KEY-----.";
+
+      for (const method of ['POST', 'PUT']) {
+        const res = await invoke(app, `${method} /api/:exchange/keys`, {
+          params: { exchange: 'coinbase' },
+          body: { name: '12345678-1234-1234-1234-123456789012', privateKey: 'A'.repeat(88) },
+        });
+        assert.equal(res.statusCode, 400);
+        assert.equal(res.body.success, false);
+        assert.equal(res.body.error, expectedError);
+        assert.equal(writes, 0);
+        assert.equal(fs.existsSync(keysFilePath), false);
+      }
     });
 
     it('rejects invalid payload on PUT (same validation as POST)', async () => {
@@ -645,7 +667,7 @@ describe('API key routes', () => {
       // First, create keys
       await invoke(app, 'POST /api/:exchange/keys', {
         params: { exchange: 'coinbase' },
-        body: { name: 'valid-key-name', privateKey: 'x'.repeat(50) },
+        body: { name: 'valid-key-name', privateKey: PEM_PRIVATE_KEY },
       });
 
       const keysFilePath = path.join(tempKeysDir, 'coinbase-keys.json');
