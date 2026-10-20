@@ -1,0 +1,1 @@
+- **[issue-1284] Run CI after pushes to main** — The CI workflow now runs on pushes to `main` as well as `dev`, so merge commits receive the same tests, admin tests, and build as pull requests.
