@@ -115,6 +115,19 @@ describe('PUT /api/notifications/config', () => {
     assert.ok(!JSON.stringify(res.body).includes(SECRET_TOKEN));
   });
 
+  it('reports server timezone without persisting client timezone metadata', async () => {
+    const { app, fsMocks } = setup();
+    const response = await invoke(app, 'GET /api/notifications/config');
+    assert.equal(response.body.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone);
+    const result = await invoke(app, 'PUT /api/notifications/config', {
+      body: { ...response.body, timezone: 'Pacific/Honolulu', dailySummaryHour: 9 },
+    });
+    assert.equal(result.statusCode, 200);
+    assert.equal(configUtils.getNotificationConfig().dailySummaryHour, 9);
+    assert.equal(Object.hasOwn(fsMocks.written().global.notifications, 'timezone'), false);
+    assert.equal((await invoke(app, 'GET /api/notifications/config')).body.timezone, response.body.timezone);
+  });
+
   it('GET remains available when an existing config has a non-string bot token', async () => {
     const { app } = setup({
       ...BASE_CONFIG,
