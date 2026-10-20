@@ -691,21 +691,32 @@ const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 };
 
+const archiveValidityCache = new Map();
+
 /**
- * Epoch ms of the newest archive, or null when none exist. Anchors the schedule.
+ * Epoch ms of the newest valid archive, or null when none exist. Anchors the schedule.
  * @returns {number | null}
  */
 const getNewestBackupTime = () => {
   ensureBackupsDir();
-  // Archives are validated before the atomic publish rename, so mtime alone is
-  // enough here; re-testing every retained ZIP would block the event loop.
-  let newest = null;
+  const candidates = [];
   for (const filename of fs.readdirSync(BACKUPS_DIR)) {
     if (!filename.startsWith('backup-') || !filename.endsWith('.zip')) continue;
-    const stats = fs.lstatSync(path.join(BACKUPS_DIR, filename));
-    if (stats.isFile() && (newest === null || stats.mtimeMs > newest)) newest = stats.mtimeMs;
+    const filePath = path.join(BACKUPS_DIR, filename);
+    const stats = fs.lstatSync(filePath);
+    if (stats.isFile()) candidates.push({ filePath, mtimeMs: stats.mtimeMs, size: stats.size });
   }
-  return newest;
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  // Only the newest candidates are integrity-tested (not every retained ZIP), and
+  // verdicts are cached so a corrupt partial never anchors the schedule nor re-tests.
+  for (const { filePath, mtimeMs, size } of candidates) {
+    const key = `${filePath}:${mtimeMs}:${size}`;
+    if (!archiveValidityCache.has(key)) {
+      archiveValidityCache.set(key, validateBackupArchive(filePath, { allowLegacy: true }).ok);
+    }
+    if (archiveValidityCache.get(key)) return mtimeMs;
+  }
+  return null;
 };
 
 /**

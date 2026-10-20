@@ -28,6 +28,7 @@ const {
   pruneBackups,
   restoreBackup,
   inspectBackup,
+  getNewestBackupTime,
 } = require('../src/backup-service');
 const { GLOBAL_DEFAULTS } = require('../src/config-utils');
 Object.assign(pathsModule, originalPaths);
@@ -600,6 +601,15 @@ describe('backup-service — pruneBackups retention', () => {
     const result = pruneBackups(5);
     assert.equal(result.pruned, 0);
     assert.equal(fs.existsSync(corrupt), true);
+  });
+
+  it('anchors the schedule to the newest valid archive, not a newer corrupt one', async () => {
+    const corrupt = path.join(BACKUP_DIR, `backup-${prefix}-newer-corrupt.zip`);
+    fs.writeFileSync(corrupt, 'partial archive');
+    created.push(corrupt);
+    const newestValid = Date.parse(listBackups()[0].createdAt);
+    assert.ok(fs.statSync(corrupt).mtimeMs >= newestValid);
+    assert.equal(getNewestBackupTime(), newestValid);
   });
 
   // #547: a route bug or hand-edited config.json can persist an invalid
