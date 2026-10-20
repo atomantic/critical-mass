@@ -20,6 +20,7 @@ const path = require('path');
 const { createContextLogger } = require('../src/logger');
 const {
   getExchangeConfig,
+  initializeConfigBase,
   getFundConfig,
   getRegimeConfig,
   getConfiguredExchanges,
@@ -815,6 +816,8 @@ const startup = async () => {
   // fund on one would trade against another era's accounting (issue #431).
   // A rollback that cannot complete exits the process rather than trading blind.
   guardIncompleteRestore({ processLabel: `${exchange} engine`, logger: startupLogger });
+
+  initializeConfigBase();
 
   // ===== Legacy root → exchange namespace migration =====
   // Same gate as the gateway and CLI (issue #971): an interrupted namespace

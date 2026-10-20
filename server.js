@@ -12,6 +12,7 @@ const { guardIncompleteRestore } = require('./src/restore-apply');
 const { asyncRoute } = require('./src/routes/route-utils');
 const { errorMiddleware } = require('./src/error-middleware');
 const {
+  initializeConfigBase,
   getFundConfig,
   getEnabledExchanges,
   getEnabledFunds,
@@ -67,6 +68,8 @@ const { createGatewayShutdown, closeGatewayListeners } = require('./src/gateway-
 // rollback cannot complete, rather than serving mismatched accounting data
 // (issue #431).
 guardIncompleteRestore({ processLabel: 'gateway', logger: createContextLogger({ module: 'server' }) });
+
+initializeConfigBase();
 
 // Finish the legacy namespace migration before anything reads persisted
 // state; a conflicting or still-in-progress migration refuses to start (issue #971).
