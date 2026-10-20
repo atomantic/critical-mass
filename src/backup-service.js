@@ -692,6 +692,25 @@ const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
 };
 
 /**
+ * Epoch ms of the newest archive, or null when none exist. Anchors the schedule.
+ * @returns {number | null}
+ */
+const getNewestBackupTime = () => {
+  const newest = listBackups()[0];
+  return newest ? Date.parse(newest.createdAt) : null;
+};
+
+/**
+ * Epoch ms of the newest fund-state snapshot, or null when none exist.
+ * @returns {number | null}
+ */
+const getNewestFundStateBackupTime = () => {
+  const newest = listFundStateBackups()[0];
+  const time = newest ? Date.parse(newest.createdAt) : NaN;
+  return Number.isNaN(time) ? null : time;
+};
+
+/**
  * Prune hourly fund-state snapshots independently from the full archive
  * retention policy.
  * @param {number} [maxBackups]
@@ -1193,6 +1212,8 @@ module.exports = {
   createFundStateBackup,
   listBackups,
   listFundStateBackups,
+  getNewestBackupTime,
+  getNewestFundStateBackupTime,
   deleteBackup,
   pruneBackups,
   pruneFundStateBackups,
