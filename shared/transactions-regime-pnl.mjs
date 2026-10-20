@@ -103,6 +103,8 @@ function sellPnlForRow(fill, orderTotals, linkedBuys, fillShare, fillValue, isBo
     const totalPnl = totalSellProceeds - buyCost
     return totalPnl * fillShare
   }
+  // Preserve the existing truthiness rule: a zero cost annotation falls through
+  // to running average, as characterized for this behavior-preserving refactor.
   if (isBody && orderTotals?.costBasis) {
     // 3. Once-per-order cost annotation, prorated before row subtraction.
     const proratedCostBasis = orderTotals.costBasis * fillShare
