@@ -41,6 +41,7 @@ const path = require('path');
 const { DATA_DIR } = require('./paths');
 const { hasPendingBackfill } = require('./fifo-backfill-transaction');
 const { fsyncDir } = require('./fsync-dir');
+const { atomicWriteSync, fsyncFile } = require('./durable-write');
 
 /** Durable marker + rollback plan. Lives in the data dir so any process finds it. */
 const JOURNAL_FILENAME = '.restore-journal.json';
@@ -80,39 +81,9 @@ const attempt = (fn) => {
 };
 
 /**
- * Write a file so that a crash leaves either the previous content or the new
- * content: temp file, fsync, atomic rename, fsync of the parent directory.
- *
- * Kept local to avoid state-tracker's dependency cycle through migration.
- * A failed write leaves no temp file behind.
- * @param {string} file - Destination path
- * @param {string|Buffer} data - Bytes to write
- * @param {number} [mode] - Permission mode for the new inode
- * @returns {void}
- */
-const writeFileDurable = (file, data, mode) => {
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  const written = attempt(() => {
-    const fd = fs.openSync(tmp, 'w', mode);
-    try {
-      fs.writeFileSync(fd, data);
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(tmp, file);
-    fsyncDir(path.dirname(file));
-  });
-  if (!written.ok) {
-    fs.rmSync(tmp, { force: true });
-    throw written.error;
-  }
-};
-
-/**
  * Deterministic sibling temp path for staging a replacement of `dest`. The name
  * is predictable (no pid/timestamp) so a temp file orphaned by a process death
- * can be found and removed by rollback, and overwritten by the next attempt. A
+ * can be found and removed by rollback before the next attempt. A
  * restore is serialized by the journal and maintenance lock, so two live
  * writers never share a name.
  * @param {string} dest - Destination file
@@ -133,26 +104,11 @@ const restoreTmpPath = (dest) => path.join(path.dirname(dest), `.${path.basename
  * @returns {void}
  */
 const replaceFileAtomic = (src, dest) => {
-  const existingMode = attempt(() => fs.statSync(dest).mode & 0o777);
-  const tmp = restoreTmpPath(dest);
-  const replaced = attempt(() => {
-    fs.copyFileSync(src, tmp);
-    if (existingMode.ok && existingMode.value) fs.chmodSync(tmp, existingMode.value);
-    const fd = fs.openSync(tmp, 'r+');
-    try {
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(tmp, dest);
-    fsyncDir(path.dirname(dest));
+  atomicWriteSync(dest, fs.readFileSync(src), {
+    preserveMode: true,
+    mode: fs.statSync(src).mode & 0o777,
+    temporaryPath: restoreTmpPath(dest),
   });
-  // A half-written temp file left in data/ would be picked up by the next
-  // backup and outlive the failure that created it.
-  if (!replaced.ok) {
-    fs.rmSync(tmp, { force: true });
-    throw replaced.error;
-  }
 };
 
 /**
@@ -249,7 +205,7 @@ const readJournal = (dataDir) => {
  */
 const writeJournal = (dataDir, journal, status) => {
   const next = { ...journal, status, updatedAt: new Date().toISOString() };
-  const written = attempt(() => writeFileDurable(path.join(dataDir, JOURNAL_FILENAME), JSON.stringify(next, null, 2), 0o600));
+  const written = attempt(() => atomicWriteSync(path.join(dataDir, JOURNAL_FILENAME), JSON.stringify(next, null, 2)));
   return written.ok ? { ok: true, journal: next } : { ok: false, error: written.error };
 };
 
@@ -427,8 +383,7 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
         const copyTo = path.join(originalsPath, rel);
         fs.mkdirSync(path.dirname(copyTo), { recursive: true });
         fs.copyFileSync(dest, copyTo);
-        const fd = fs.openSync(copyTo, 'r+');
-        try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+        fsyncFile(copyTo);
         for (let dir = path.dirname(copyTo); dir !== originalsPath; dir = path.dirname(dir)) {
           snapshotDirs.add(dir);
         }

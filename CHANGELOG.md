@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - **[issue-935] Authenticated browser performance coverage** — A disposable real gateway/IPC fixture and headless Chrome scenario measure protected Transactions load, Config idle traffic for 60 seconds, consumer cleanup and reconnect recovery. Page responses now omit ledger metadata; incomplete browser evidence and protocol-only replays report UNVERIFIED. See `docs/perf-route-audit.md`.
 
 ### Fixed
+- **[issue-1197] Durable settings and data publication share one owner** — Flush file bytes before atomic publication and directory metadata afterward across settings, restores, imports, maintenance, and caches, while preserving permissions and exclusive journals.
 - **[issue-1238] Gateway stop no longer fails with `activeLogStreams is not iterable`** — `stopProducers` iterated the log-stream registry object directly and threw on every shutdown, skipping the notifier flush, IPC disconnect and listener close and exiting 1. The registry now exposes `stopAll()`, and a test drives the real registry through `createGatewayShutdown`.
 - **[issue-1236] Backup schedule survives gateway restarts** — The full-archive and fund-state timers are now disk-anchored (`src/backup-scheduler.js`): the next run is due `newest artifact + interval` after the last one, so frequent deploys and settings saves no longer postpone archives. A fund-state snapshot that hits the shared maintenance lock retries in 60s instead of logging an ERROR, and its first boot run is offset by 2 minutes from the archive.
 
