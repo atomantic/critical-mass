@@ -6,6 +6,7 @@ const { getAuthHeaders } = require('./auth');
 const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
 const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
+const { validateCoinbaseKeys } = require('../key-validation');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -52,16 +53,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
     try {
       const keys = JSON.parse(fs.readFileSync(resolvedKeysPath, 'utf8'));
-      const apiKey = keys.name || keys.apiKey;
-      const apiSecret = keys.privateKey || keys.apiSecret;
-
-      // Check for valid-looking credentials
-      if (!apiKey || !apiSecret) return false;
-      if (apiKey.length < 10) return false;
-      // Coinbase private key should be PEM format or at least 50 chars
-      if (!apiSecret.includes('-----BEGIN') && apiSecret.length < 50) return false;
-
-      return true;
+      return validateCoinbaseKeys(keys);
     } catch {
       return false;
     }

@@ -58,13 +58,16 @@ function instrument(browser, baseUrl) {
   const frame = (msg, direction) => {
     const payload = msg.response.payloadData;
     const bytes = msg.response.opcode === 2 ? Buffer.from(payload, 'base64').length : Buffer.byteLength(payload);
-    // Socket.IO text events use the 42 prefix. All other frames are counted as
-    // protocol traffic, without retaining handshake IDs, values or raw bodies.
+    // Realtime bus events are { t: 'event', e: <name> } text frames. All other
+    // frames are counted as protocol traffic, without retaining connection IDs,
+    // values or raw bodies.
     let event = 'protocol';
-    if (payload.startsWith('42')) {
+    if (msg.response.opcode === 1) {
       try {
-        const name = JSON.parse(payload.slice(2))[0];
-        event = ['regime:status', 'regime:change', 'regime:health', 'regime:position', 'trade:event'].includes(name) ? name : 'other';
+        const parsed = JSON.parse(payload);
+        if (parsed?.t === 'event') {
+          event = ['regime:status', 'regime:change', 'regime:health', 'regime:position', 'trade:event'].includes(parsed.e) ? parsed.e : 'other';
+        }
       } catch { event = 'unparsed'; }
     }
     collector.recordWs({ event, at: msg.timestamp * 1000, bytes, direction, phase: metrics.phase });

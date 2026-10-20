@@ -2,7 +2,7 @@ import React from 'react'
 import InfoTooltip from '../InfoTooltip'
 
 export const CONFIG_TOOLTIPS = {
-  baseSize: 'Base USDC amount per buy order. When "Auto", dynamically adjusted based on available balance and position sizing rules',
+  baseSize: 'Base quote-currency amount per buy order. When "Auto", dynamically adjusted based on available balance and position sizing rules',
   kFactor: 'ATR multiplier controlling trigger sensitivity. Lower = more frequent trades on smaller moves. Higher = fewer trades, only on larger price swings',
   minInterval: 'Minimum wait time between consecutive buy orders to prevent over-trading during rapid price movement',
   maxInterval: 'Maximum time before placing another buy, even without a strong trigger signal',

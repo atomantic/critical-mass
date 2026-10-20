@@ -9,7 +9,7 @@
 const crypto = require('crypto');
 
 const MSG_TYPE = {
-  EVENT: 'event',                 // One-way: engine -> gateway (forwarded to Socket.IO)
+  EVENT: 'event',                 // One-way: engine -> gateway (forwarded to the realtime bus)
   REQUEST: 'request',             // Two-way: gateway -> engine (expects response)
   RESPONSE: 'response',          // Two-way: engine -> gateway (reply to request)
   CONFIG_UPDATE: 'config_update', // One-way: gateway -> engine (config changed)
@@ -28,7 +28,7 @@ const DEFAULT_TIMEOUT = 10_000; // 10s for request/response
  * @param {string} [options.id] - Message ID (auto-generated if omitted)
  * @param {string} [options.exchange] - Exchange name
  * @param {string} [options.pair] - Pair / fund identifier (e.g. 'BTC-USDC') — optional, defaults resolved at handler
- * @param {string} [options.room] - Socket.IO room to emit to
+ * @param {string} [options.room] - Realtime bus room to emit to
  * @param {string} [options.error] - Error message (for response type)
  * @returns {Object}
  */

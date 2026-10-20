@@ -81,6 +81,7 @@ const setupFsMocks = ({ base = null, user = null } = {}) => {
   mock.method(fs, 'renameSync', () => {});
 
   mock.method(fs, 'mkdirSync', () => {});
+  mock.method(fs, 'rmdirSync', () => {}); // paired with the synthetic lock-directory creation
 
   supportConfigDescriptors(USER_CONFIG_FILE);
 

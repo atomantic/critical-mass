@@ -1272,6 +1272,45 @@ describe('Fill Ledger', () => {
       'persist must rewrite when ledger is dirty');
   });
 
+  it('preserves exact refusal messages and fields on cold start and reload', (t) => {
+    const errors = [];
+    t.mock.method(require('../src/logger'), 'createContextLogger', () => ({
+      info() {}, warn() {}, error: (...args) => errors.push(args),
+    }));
+    const corrupt = '<<< not valid json >>>';
+    let parseError;
+    try { JSON.parse(corrupt); } catch (err) { parseError = err.message; }
+    const cases = [
+      { payload: corrupt, cold: `is corrupted or unreadable on cold start: ${parseError}`,
+        reload: (filePath) => `corrupted or unreadable at ${filePath}: ${parseError}`,
+        fields: { error: parseError } },
+      { payload: 'null', cold: 'is not an array on cold start (got null)',
+        reload: (filePath) => `at ${filePath} is not an array (got null)`, fields: { actualType: 'null' } },
+      { payload: '[null]', cold: 'contains an invalid entry (non-object entry) on cold start',
+        reload: (filePath) => `at ${filePath} contains an invalid entry (non-object entry)`,
+        fields: { invalidReason: 'non-object entry' } },
+    ];
+    for (const [index, entry] of cases.entries()) {
+      const exchange = `test-refusal-messages-${index}`;
+      const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, entry.payload);
+      assert.throws(() => createTestLedger(exchange), {
+        message: `fill-ledger at ${filePath} ${entry.cold}. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`,
+      });
+      fs.writeFileSync(filePath, '[]');
+      const ledger = createTestLedger(exchange);
+      ledger.ingestFill(makeBuyFill({ tradeId: 'kept-fill' }));
+      fs.writeFileSync(filePath, entry.payload);
+      ledger.load();
+      assert.deepStrictEqual(errors.pop(), [
+        `❌ [${exchange}] fill-ledger ${entry.reload(filePath)} — keeping in-memory state (1 fills); operator must fix and reload`,
+        { filePath, fillCount: 1, ...entry.fields },
+      ]);
+      assert.equal(ledger.getFillCount(), 1);
+    }
+  });
+
   it('createFillLedger throws on cold start when file is corrupt JSON (refuses to boot empty)', () => {
     // Cold start = fresh ledger instance, no prior successful load, no
     // ingested fills. createFillLedger auto-loads in its constructor —

@@ -6,13 +6,13 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const { Server } = require('socket.io');
 const { log, createContextLogger } = require('./src/logger');
 const { guardLegacyMigration } = require('./src/migration');
 const { guardIncompleteRestore } = require('./src/restore-apply');
 const { asyncRoute } = require('./src/routes/route-utils');
 const { errorMiddleware } = require('./src/error-middleware');
 const {
+  initializeConfigBase,
   getFundConfig,
   getEnabledExchanges,
   getEnabledFunds,
@@ -45,7 +45,8 @@ const {
   fundLabel,
 } = require('./src/shared-utils');
 const { createIPCClient } = require('./src/ipc/ipc-client');
-const { forwardIPCEvent } = require('./src/ipc/socket-io-proxy');
+const { forwardIPCEvent } = require('./src/ipc/realtime-proxy');
+const { createRealtimeBus } = require('./src/realtime-bus');
 const { performBackup } = require('./src/backup-coordinator');
 const { drainPendingWrites, trackPendingWrite } = require('./src/pending-writes');
 const { maintenanceGuard, isMaintenanceActive } = require('./src/restore-maintenance');
@@ -55,7 +56,7 @@ const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
 const { buildRuntimeHealth } = require('./src/runtime-health');
 const { createOperatorAuth } = require('./src/operator-auth');
-const { resolveListenHosts, isGatewayOrigin, createCorsMiddleware, bindGatewayListeners, watchTailscaleListeners } = require('./src/gateway-listen');
+const { resolveListenHosts, createCorsMiddleware, bindGatewayListeners, watchTailscaleListeners } = require('./src/gateway-listen');
 const { registerProcessGuards } = require('./src/process-guard');
 const { resolveIpcPort } = require('./src/ipc-port-defaults');
 const { PORTS } = require('./ecosystem.config.cjs');
@@ -67,6 +68,8 @@ const { createGatewayShutdown, closeGatewayListeners } = require('./src/gateway-
 // rollback cannot complete, rather than serving mismatched accounting data
 // (issue #431).
 guardIncompleteRestore({ processLabel: 'gateway', logger: createContextLogger({ module: 'server' }) });
+
+initializeConfigBase();
 
 // Finish the legacy namespace migration before anything reads persisted
 // state; a conflicting or still-in-progress migration refuses to start (issue #971).
@@ -83,8 +86,8 @@ const operatorAuth = createOperatorAuth({
   writeJSON,
   bootstrapSecret: process.env.OPERATOR_BOOTSTRAP_SECRET,
   bootstrapSecretFile: process.env.OPERATOR_BOOTSTRAP_SECRET_FILE,
-  // All attached listeners share this namespace and its disconnect cleanup.
-  onPasswordChanged: () => io.disconnectSockets(true),
+  // Every attached listener shares the bus and its disconnect cleanup.
+  onPasswordChanged: () => io.disconnectSockets(),
   onPasswordRemoved: () => {
     setTimeout(() => gracefulShutdown('operator password removal'), 100).unref();
   },
@@ -95,12 +98,20 @@ const LISTEN_HOSTS = resolveListenHosts(process.env.HOST, undefined, { allowRemo
 // CORS allowlist -- local dev, plus Tailscale 100.x / *.ts.net (see isGatewayOrigin)
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || `http://localhost:${PORT},http://localhost:5571`).split(',').map(s => s.trim());
 
-const io = new Server(server, {
-  cors: { origin: (origin, cb) => cb(null, isGatewayOrigin(origin, CORS_ORIGINS)) },
-});
+// Rooms a client may subscribe to: engine events forwarded over IPC with a
+// room, and the UpDown and Sentinel feeds.
+const REALTIME_ROOMS = ['coinbase', 'gemini', 'cryptocom', 'updown', 'sentinel'];
 
-// Each attach creates an Engine.IO transport owner; retain all of them.
-const socketEngines = [io.engine];
+// Admin realtime bus (src/realtime-bus.js). Upgrades are refused while the
+// gateway drains and need an operator session or bearer password from this
+// gateway's own origin; inbound client events are dropped while stopping.
+const io = createRealtimeBus({
+  httpServer: server,
+  authorize: operatorAuth.authorizeUpgrade,
+  isStopping: () => gatewayShutdown.isStopping(),
+  rooms: REALTIME_ROOMS,
+  log,
+});
 
 // Notification system
 const notifier = createNotifier();
@@ -124,7 +135,7 @@ const gatewayShutdown = createGatewayShutdown({
   disconnectIPC: () => {
     for (const ipc of Object.values(exchangeIPCMap)) ipc.disconnect();
   },
-  closeListeners: () => closeGatewayListeners(io, [server, ...extraServers], socketEngines),
+  closeListeners: () => closeGatewayListeners(io, [server, ...extraServers]),
   log,
 });
 const shutdownRoutes = gatewayShutdown.routes(app);
@@ -154,8 +165,6 @@ app.use('/api', gatewayShutdown.handler(operatorAuth.requireAuth));
 // nothing can land between "writers confirmed stopped" and "archive applied"
 // and silently overwrite the recovered snapshot (issue #429).
 app.use('/api', maintenanceGuard);
-io.use((socket, next) => gatewayShutdown.isStopping() ? next(new Error('Gateway is shutting down')) : next());
-io.use(operatorAuth.socketMiddleware);
 log('INFO', operatorAuth.hasPassword()
   ? '🔐 Operator sign-in is required (password in data/operator-auth.json)'
   : operatorAuth.hasRemoteBootstrap()
@@ -294,7 +303,7 @@ ipcEventListeners.push((name, msg) => {
 
 const updownService = createUpDownService(io, { exchangeIPCMap, readJSON, writeJSON, DATA_DIR, candleCache });
 
-// Forward coinbase BTC price data to updown service for Socket.IO emission + P&L.
+// Forward coinbase BTC price data to updown service for realtime emission + P&L.
 // Only the default (BTC) pair — a second coinbase fund must not drive the BTC
 // UpDown predictor with its own asset's price (issue #110 M3).
 ipcEventListeners.push((name, msg) => {
@@ -396,26 +405,13 @@ tradeEvents.on('trade', (event) => {
   io.emit('trade:event', event);
 });
 
+// Room subscriptions (REALTIME_ROOMS) are handled by the bus itself.
 io.on('connection', (socket) => {
-  socket.use((packet, next) => gatewayShutdown.isStopping() ? next(new Error('Gateway is shutting down')) : next());
   log('INFO', `WebSocket client connected: ${socket.id}`);
   socket.on('disconnect', () => {
     disconnectLogStream({ socket, registry: activeLogStreams, log });
     log('INFO', `WebSocket client disconnected: ${socket.id}`);
   });
-
-  // Room subscriptions for exchange events (forwarded from engine via IPC)
-  socket.on('coinbase:subscribe', () => socket.join('coinbase'));
-  socket.on('coinbase:unsubscribe', () => socket.leave('coinbase'));
-  socket.on('gemini:subscribe', () => socket.join('gemini'));
-  socket.on('gemini:unsubscribe', () => socket.leave('gemini'));
-  socket.on('cryptocom:subscribe', () => socket.join('cryptocom'));
-  socket.on('cryptocom:unsubscribe', () => socket.leave('cryptocom'));
-  socket.on('composite:subscribe', () => socket.join('composite'));
-  socket.on('updown:subscribe', () => socket.join('updown'));
-  socket.on('updown:unsubscribe', () => socket.leave('updown'));
-  socket.on('sentinel:subscribe', () => socket.join('sentinel'));
-  socket.on('sentinel:unsubscribe', () => socket.leave('sentinel'));
 
   // PM2 log streaming
   registerLogStreamHandlers({
@@ -492,7 +488,6 @@ const checkAndRunIntervalTrade = () => {
 const extraServers = [];
 const attachExtraServer = (s) => {
   io.attach(s);
-  socketEngines.push(io.engine);
   extraServers.push(s);
 };
 

@@ -12,7 +12,7 @@ const { socket } = vi.hoisted(() => {
   })
   return { socket: sharedSocket }
 })
-vi.mock('../src/hooks/useTradeEvents', () => ({ getSocket: () => socket }))
+vi.mock('../src/lib/realtime', () => ({ getRealtimeClient: () => socket }))
 
 import { useLogStream } from '../src/hooks/useLogStream'
 
