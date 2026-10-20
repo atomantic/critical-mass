@@ -27,16 +27,27 @@ export default function OperatorLogin({ children }) {
     }
   }, [])
 
+  const checkSession = async () => {
+    setStatus('loading')
+    setError('')
+    try {
+      const response = await fetch('/api/auth/session')
+      if (!response.ok) throw new Error(`Session probe failed (HTTP ${response.status})`)
+      const session = await response.json()
+      if (typeof session.required !== 'boolean' || typeof session.authenticated !== 'boolean') {
+        throw new Error('Session probe returned an invalid response')
+      }
+      setRequired(session.required)
+      setBootstrapRequired(Boolean(session.bootstrapRequired))
+      setBootstrapSecretRequired(Boolean(session.bootstrapSecretRequired))
+      setStatus(session.required && !session.authenticated ? 'anonymous' : 'authenticated')
+    } catch {
+      setStatus('unreachable')
+    }
+  }
+
   useEffect(() => {
-    fetch('/api/auth/session')
-      .then((response) => response.json())
-      .then((session) => {
-        setRequired(Boolean(session.required))
-        setBootstrapRequired(Boolean(session.bootstrapRequired))
-        setBootstrapSecretRequired(Boolean(session.bootstrapSecretRequired))
-        setStatus(session.required && !session.authenticated ? 'anonymous' : 'authenticated')
-      })
-      .catch(() => setStatus('anonymous'))
+    checkSession()
   }, [])
 
   const login = async (event) => {
@@ -48,25 +59,34 @@ export default function OperatorLogin({ children }) {
     }
     const headers = { 'Content-Type': 'application/json' }
     if (bootstrapRequired && bootstrapSecret) headers['X-Operator-Bootstrap'] = bootstrapSecret
-    const response = await fetch(
-      bootstrapRequired ? '/api/auth/password' : '/api/auth/session',
-      {
-        method: bootstrapRequired ? 'PUT' : 'POST',
-        headers,
-        body: JSON.stringify({ password }),
-      },
-    )
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}))
-      setError(data.error || (bootstrapRequired ? 'Operator setup failed.' : 'That password was not accepted.'))
-      return
+    try {
+      const response = await fetch(
+        bootstrapRequired ? '/api/auth/password' : '/api/auth/session',
+        {
+          method: bootstrapRequired ? 'PUT' : 'POST',
+          headers,
+          body: JSON.stringify({ password }),
+        },
+      )
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        const fallback = bootstrapRequired
+          ? 'Operator setup failed.'
+          : response.status === 401
+            ? 'That password was not accepted.'
+            : `Sign-in failed (HTTP ${response.status}).`
+        setError(data.error || fallback)
+        return
+      }
+      setPassword('')
+      setConfirm('')
+      setBootstrapSecret('')
+      setRequired(true)
+      setBootstrapRequired(false)
+      setStatus('authenticated')
+    } catch {
+      setError('Could not reach the gateway. Your password was not checked — try again.')
     }
-    setPassword('')
-    setConfirm('')
-    setBootstrapSecret('')
-    setRequired(true)
-    setBootstrapRequired(false)
-    setStatus('authenticated')
   }
 
   if (status === 'authenticated') return children
@@ -86,6 +106,21 @@ export default function OperatorLogin({ children }) {
           />
           <p className="mt-4 text-sm text-gray-400">Checking operator session…</p>
         </div>
+      </main>
+    )
+  }
+
+  if (status === 'unreachable') {
+    return (
+      <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center px-4">
+        <section className="w-full max-w-sm rounded-xl border border-gray-700 bg-gray-900 p-8 text-center shadow-2xl">
+          <div className="text-3xl mb-3" aria-hidden="true">⚛</div>
+          <h1 className="text-2xl font-semibold">Can&apos;t reach the gateway</h1>
+          <p className="mt-2 text-sm text-gray-400">critical-mass did not respond. Check that it is running, then try again.</p>
+          <button type="button" onClick={checkSession} className="mt-6 w-full rounded-lg bg-blue-600 px-4 py-2 font-medium hover:bg-blue-500">
+            Try again
+          </button>
+        </section>
       </main>
     )
   }
