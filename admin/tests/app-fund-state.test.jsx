@@ -1,5 +1,5 @@
 import React from 'react'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from '../src/App'
 import ConfigEditor from '../src/components/ConfigEditor'
@@ -21,6 +21,27 @@ const deferred = () => {
   return { promise, resolve, reject }
 }
 let read
+
+// The first fund switch in this file pays a one-time first-navigation cost
+// (~100ms on an idle machine) that the first test absorbs. Run one throwaway
+// switch before any test so that cost lands outside the first test's budget.
+beforeAll(async () => {
+  window.history.replaceState({}, '', '/coinbase/BTC-USDC/config')
+  vi.stubGlobal('fetch', vi.fn((url, options) => {
+    if (options?.method) return Promise.resolve(response({}))
+    if (url === '/api/exchanges') return Promise.resolve(response({ exchanges: ['coinbase', 'gemini'].map(name => ({
+      name, pair: 'BTC-USDC', productId: 'BTC-USDC', strategy: 'regime', regimeEnabled: true,
+    })) }))
+    if (url.includes('/regime/status')) return Promise.resolve(response(status(false)))
+    return Promise.resolve(response({ config: config(111, true) }))
+  }))
+  render(<BrowserRouter><App /></BrowserRouter>)
+  await screen.findByDisplayValue('111')
+  await switchFund('gemini')
+  await screen.findByDisplayValue('111')
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 beforeEach(() => {
   window.history.replaceState({}, '', '/coinbase/BTC-USDC/config')
