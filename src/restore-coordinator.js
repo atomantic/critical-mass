@@ -352,8 +352,8 @@ const applyRestoreUnderLock = async ({
     ...(force && unconfirmed.length > 0 ? { forced: true, unconfirmed } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
     message: stoppedEngines.length > 0
-      ? `Restored ${result.filesRestored} files. Stopped engines: ${stoppedEngines.join(', ')}. Restart engines manually from dashboard.`
-      : `Restored ${result.filesRestored} files.`,
+      ? `Restored ${result.filesRestored} ${result.filesRestored === 1 ? 'file' : 'files'}. Stopped engines: ${stoppedEngines.join(', ')}. Restart engines manually from dashboard.`
+      : `Restored ${result.filesRestored} ${result.filesRestored === 1 ? 'file' : 'files'}.`,
   } };
 };
 
