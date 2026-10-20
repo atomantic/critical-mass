@@ -1,3 +1,4 @@
+import { describeConfigSaveError } from '../../utils/configSaveError.mjs'
 import LongTermBiasDetails from './LongTermBiasDetails'
 import React, { useState } from 'react'
 import { detectAggressivenessLevel, computeAggressivenessParams, AGGRESSIVENESS_LEVEL_META } from './aggressiveness'
@@ -41,11 +42,11 @@ export default function LongTermBiasPanel({ bias, config, presets, exchange, pai
         addToast?.({
           type: 'error',
           title: 'Could not apply suggested level',
-          message: (err.errors && err.errors[0]) || err.error || `HTTP ${res.status}`,
+          message: describeConfigSaveError(res.status, err).message,
         })
       }
     } catch (err) {
-      addToast?.({ type: 'error', title: 'Could not apply suggested level', message: err.message || 'Network error' })
+      addToast?.({ type: 'error', title: 'Could not apply suggested level', message: describeConfigSaveError(null, err).message })
     } finally {
       setApplying(false)
     }

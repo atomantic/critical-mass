@@ -1,3 +1,4 @@
+import { CONFIG_FIELD_LABELS, describeConfigSaveError } from '../../utils/configSaveError.mjs'
 import React, { useState, useMemo } from 'react'
 import { buildAggressivenessLevels, detectAggressivenessLevel, computeAggressivenessParams, formatInterval } from './aggressiveness'
 
@@ -30,10 +31,10 @@ export default function AggressivenessControl({ config, exchange, pairQuery, onC
         onConfigUpdate()
       } else {
         const err = await res.json().catch(() => ({}))
-        addToast?.({ type: 'error', title: 'Could not update aggressiveness', message: (err.errors && err.errors[0]) || err.error || `HTTP ${res.status}` })
+        addToast?.({ type: 'error', title: 'Could not update aggressiveness', message: describeConfigSaveError(res.status, err).message })
       }
     } catch (err) {
-      addToast?.({ type: 'error', title: 'Could not update aggressiveness', message: err.message || 'Network error' })
+      addToast?.({ type: 'error', title: 'Could not update aggressiveness', message: describeConfigSaveError(null, err).message })
     } finally {
       setUpdating(false)
     }
@@ -102,43 +103,43 @@ export default function AggressivenessControl({ config, exchange, pairQuery, onC
         <div className="bg-gray-900 rounded-sm p-2 text-xs">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-1">
             <div className="flex justify-between">
-              <span className="text-gray-400">kFactor</span>
+              <span className="text-gray-400">{CONFIG_FIELD_LABELS.kFactor}</span>
               <span className={config?.kFactor !== previewParams.kFactor ? 'text-yellow-400' : 'text-gray-300'}>
                 {previewParams.kFactor}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">minInterval</span>
+              <span className="text-gray-400">{CONFIG_FIELD_LABELS.minIntervalMs}</span>
               <span className={config?.minIntervalMs !== previewParams.minIntervalMs ? 'text-yellow-400' : 'text-gray-300'}>
                 {formatInterval(previewParams.minIntervalMs)}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">maxInterval</span>
+              <span className="text-gray-400">{CONFIG_FIELD_LABELS.maxIntervalMs}</span>
               <span className={config?.maxIntervalMs !== previewParams.maxIntervalMs ? 'text-yellow-400' : 'text-gray-300'}>
                 {formatInterval(previewParams.maxIntervalMs)}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">entryOffset</span>
+              <span className="text-gray-400">{CONFIG_FIELD_LABELS.entryOffsetBps}</span>
               <span className={config?.entryOffsetBps !== previewParams.entryOffsetBps ? 'text-yellow-400' : 'text-gray-300'}>
                 {previewParams.entryOffsetBps}bps
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">cautionScale</span>
+              <span className="text-gray-400">{CONFIG_FIELD_LABELS.cautionScale}</span>
               <span className={config?.cautionScale !== previewParams.cautionScale ? 'text-yellow-400' : 'text-gray-300'}>
                 {previewParams.cautionScale}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">trendScale</span>
+              <span className="text-gray-400">{CONFIG_FIELD_LABELS.trendScale}</span>
               <span className={config?.trendScale !== previewParams.trendScale ? 'text-yellow-400' : 'text-gray-300'}>
                 {previewParams.trendScale}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">maxCycleBuys</span>
+              <span className="text-gray-400">{CONFIG_FIELD_LABELS.maxCycleBuys}</span>
               <span className={config?.maxCycleBuys !== previewParams.maxCycleBuys ? 'text-yellow-400' : 'text-gray-300'}>
                 {previewParams.maxCycleBuys}
               </span>
