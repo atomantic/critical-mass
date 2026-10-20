@@ -101,7 +101,7 @@ export default function OperatorLogin({ children }) {
               ? 'Enter a new operator password and the one-time bootstrap secret supplied by the host operator.'
               : 'Create the first operator password from this local connection.'
             : required
-            ? 'Enter the operator password set in Gateway → Access.'
+            ? 'Enter the operator password set in Gateway → Gateway access.'
             : 'Could not reach the gateway. Check that critical-mass is running, then retry.'}
         </p>
         {required && !bootstrapRequired && (
