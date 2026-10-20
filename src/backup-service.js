@@ -50,7 +50,18 @@ const MANIFEST_VERSION = 1;
 const FUND_STATE_BACKUP_DIRNAME = 'fund-state';
 const FUND_STATE_MANIFEST_FILENAME = 'fund-state-manifest.json';
 const FUND_STATE_MANIFEST_VERSION = 1;
-const FUND_STATE_SNAPSHOT_FILENAMES = ['fill-ledger.json', 'regime-state.json', 'closed-trades.json', 'state.json', 'dry-run-state.json'];
+// manual-trades.json and pending-corrective-buys.json name the open recovery
+// buys that engine startup must not cancel as orphans; a fund restored without
+// them loses those buys and their sell pairing.
+const FUND_STATE_SNAPSHOT_FILENAMES = [
+  'fill-ledger.json',
+  'regime-state.json',
+  'closed-trades.json',
+  'state.json',
+  'dry-run-state.json',
+  'manual-trades.json',
+  'pending-corrective-buys.json',
+];
 
 // Bounds each zip/unzip child. The archive-creation path uses async spawn, so a
 // slow archive no longer blocks the gateway event loop or its shutdown drain;
