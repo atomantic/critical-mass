@@ -2,6 +2,7 @@
 const { describe, it, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const { supportConfigDescriptors } = require('./helpers/config-fs-descriptors');
 const path = require('path');
 const os = require('os');
 const pathsModule = require('../src/paths');
@@ -122,6 +123,9 @@ const setupFsMocks = ({ base = null, user = null } = {}) => {
   mock.method(fs, 'renameSync', () => {});
 
   mock.method(fs, 'mkdirSync', () => {});
+  mock.method(fs, 'rmdirSync', () => {});
+
+  supportConfigDescriptors(USER_CONFIG_FILE);
 
   return {
     written: () => writtenData,
@@ -690,6 +694,15 @@ describe('saveConfig', () => {
     assert.equal(mocks.mode(), 0o600, 'new published config must be 0600 (may hold secrets)');
   });
 
+  it('retains explicit pins when a later base matches them and settings are saved again', (t) => {
+    const base = { regime: { maxDrawdownPercent: 50 }, dryRun: true };
+    const files = setupPublishedConfig(t, { base, user: { regime: { maxDrawdownPercent: 50 } } });
+    saveConfig({ ...base, dryRun: false });
+    assert.deepEqual(files.user(), { regime: { maxDrawdownPercent: 50 }, dryRun: false });
+    saveConfig({ ...base, dryRun: true });
+    assert.deepEqual(files.user(), { regime: { maxDrawdownPercent: 50 }, dryRun: true });
+  });
+
   it('writes empty object when config matches base exactly', (t) => {
     const baseConfig = {
       exchanges: { coinbase: { enabled: false } },
@@ -826,6 +839,7 @@ describe('maskSecret / isMaskedSecret', () => {
   it('returns empty string for empty/undefined', () => {
     assert.equal(maskSecret(''), '');
     assert.equal(maskSecret(undefined), '');
+    assert.equal(maskSecret(12345), '');
   });
 
   it('detects masked values and rejects real tokens', () => {

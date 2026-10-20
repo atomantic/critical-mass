@@ -17,6 +17,7 @@
  */
 
 const fs = require('fs');
+const { atomicWriteSync } = require('./durable-write');
 const path = require('path');
 const { DATA_DIR } = require('./paths');
 const { upsertCandles } = require('./candle-utils');
@@ -90,9 +91,7 @@ const saveCache = (exchange, productId, candles) => {
       count: candles.length,
       candles,
     });
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, payload);
-    fs.renameSync(tmp, file);
+    atomicWriteSync(file, payload, { mode: 0o666 });
   } catch (err) {
     storeLogger(exchange, productId).warn(`⚠️ 🗓️ [${exchange}] long-term cache save failed for ${productId}: ${err.message}`, {
       action: 'cache-save',

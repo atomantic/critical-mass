@@ -19,6 +19,7 @@ export default function ContractSetup({ initialContract }) {
   const [direction, setDirection] = useState('Up')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState('')
 
   // Screenshot AI state
   const [providers, setProviders] = useState([])
@@ -92,22 +93,30 @@ export default function ContractSetup({ initialContract }) {
   const handleSave = async () => {
     setSaving(true)
     setSaved(false)
-    const res = await fetch('/api/updown/contract', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        expiry,
-        target: parseFloat(target),
-        stop: parseFloat(stop),
-        range: parseInt(range, 10),
-        direction: direction.toLowerCase(),
-      }),
-    })
-    if (res.ok) {
+    setSaveError('')
+    try {
+      const res = await fetch('/api/updown/contract', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expiry,
+          target: parseFloat(target),
+          stop: parseFloat(stop),
+          range: parseInt(range, 10),
+          direction: direction.toLowerCase(),
+        }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to save contract')
+      }
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
+    } catch (err) {
+      setSaveError(err.message || 'Failed to save contract')
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const analyzeScreenshot = useCallback(async (file) => {
@@ -566,6 +575,7 @@ export default function ContractSetup({ initialContract }) {
           <Save size={14} />
           {saving ? 'Saving...' : saved ? 'Saved' : 'Save Contract'}
         </button>
+        {saveError && <div className="text-xs text-red-400" role="alert">{saveError}</div>}
       </div>
     </div>
   )

@@ -17,7 +17,7 @@ describe('regime fills paged query', () => {
   });
 
   it('validates paging and cannot bypass the 100-row cap', () => {
-    assert.deepEqual(parseFillsQuery({}), { paged: false });
+    assert.deepEqual(parseFillsQuery({}), { success: false, statusCode: 400, error: 'paged=true required' });
     assert.equal(parseFillsQuery({ paged: true, pageSize: 10000 }).pageSize, 100);
     for (const input of [{ paged: 'false' }, { paged: true, pageSize: 0 }, { paged: true, page: '-1' }, { paged: true, page: [] }, { paged: true, sortField: 'constructor' }, { paged: true, side: 'other' }, { paged: true, cycle: {} }, { paged: true, sortDir: 'other' }, { paged: true, page: Number.MAX_SAFE_INTEGER + 1 }, { paged: true, revision: [] }]) {
       assert.equal(parseFillsQuery(input).statusCode, 400, JSON.stringify(input));

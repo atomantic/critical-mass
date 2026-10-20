@@ -115,8 +115,8 @@ function SectionCard({ title, children, className = '' }) {
   )
 }
 
-function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pair, strategy = 'dca', engineRunning = false, engineDryRun = false, onRestart }) {
-  const [config, setConfig] = useState(initialConfig || {})
+function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pair, strategy = 'dca', engineRunning = null, engineDryRun = null, onRestart, loadError, onRetry }) {
+  const [config, setConfig] = useState(initialConfig)
   const [saving, setSaving] = useState(false)
   const [toggleBusy, setToggleBusy] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -145,7 +145,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
 
   // Determine if showing regime config based on URL strategy prop
   const isRegime = strategy === 'regime'
-  const isFibonacci = !isRegime && config.dcaStrategy === 'fibonacci'
+  const isFibonacci = !isRegime && config?.dcaStrategy === 'fibonacci'
 
   // Reset config when exchange or strategy changes
   useEffect(() => {
@@ -167,13 +167,18 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // navigation without any stored flag to go stale. dryRun only takes effect at
   // engine construction (the engine captures it once and picks its live-vs-paper
   // executor), so a config/engine mismatch is exactly the restart trigger.
-  const restartNeeded = isRegime && engineRunning && config.dryRun !== engineDryRun
+  const restartNeeded = isRegime && engineRunning === true && typeof engineDryRun === 'boolean' && config?.dryRun !== engineDryRun
 
   // Sync with initialConfig when not dirty (e.g., server-side refresh). Skip
   // while any configuration write (full save or toggle auto-save) is in
   // flight so a background poll can't clobber the optimistic/pending value
   // before the write resolves.
   useEffect(() => {
+    if (!initialConfig) {
+      setConfig(undefined)
+      setIsDirty(false)
+      return
+    }
     if (initialConfig && !isDirty && pendingWriteRef.current === 0) {
       setConfig(initialConfig)
     }
@@ -192,6 +197,26 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       })
       .catch(() => {})
   }, [isRegime])
+
+  // Do not render editable defaults or retain a previous draft when this fund's
+  // summary has not arrived. All hooks stay above this gate so Retry can mount
+  // the real form only once its own authoritative config is available.
+  if (!initialConfig || !config) {
+    return (
+      <div className="bg-gray-800 rounded-lg p-4">
+        <h2 className="text-lg font-semibold mb-3">Bot Configuration</h2>
+        <button type="button" disabled className="px-4 py-2 rounded bg-blue-800 opacity-50">Save Configuration</button>
+        {loadError ? (
+          <div role="alert" className="mt-4 text-red-200">
+            Failed to load configuration: {loadError}
+            <button type="button" onClick={onRetry} className="ml-3 underline">Retry configuration</button>
+          </div>
+        ) : (
+          <p role="status" className="mt-4 text-gray-400">Loading configuration...</p>
+        )}
+      </div>
+    )
+  }
 
   const handlePresetParamChange = (level, key, value) => {
     setEditingPresets(prev => ({
@@ -774,7 +799,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             <SectionCard title="Volatility Clock">
               <div className="grid grid-cols-2 gap-3">
                 <FormInput label="Product ID" hint="Trading pair (e.g. BTC-USDC)" value={config.productId} onChange={(v) => handleChange('productId', v)} />
-                <FormInput label="Base Size (USDC)" hint="Dollar amount per entry order" value={regimeConfig.baseSizeUsdc || 50} onChange={(v) => handleRegimeChange('baseSizeUsdc', v)} type="number" />
+                <FormInput label={`Base Size (${quoteCurrency})`} hint="Quote-currency amount per entry order" value={regimeConfig.baseSizeUsdc || 50} onChange={(v) => handleRegimeChange('baseSizeUsdc', v)} type="number" />
                 <FormInput label="k Factor (ATR mult)" hint="Higher = longer waits between entries" value={regimeConfig.kFactor || 0.6} onChange={(v) => handleRegimeChange('kFactor', v)} type="number" />
                 <FormInput label="ATR Period" hint="# of candles for ATR calculation" value={regimeConfig.atrPeriod || 14} onChange={(v) => handleRegimeChange('atrPeriod', v)} type="number" />
                 <FormInput label="Min Interval (ms)" hint="Fastest allowed entry interval" value={regimeConfig.minIntervalMs || 60000} onChange={(v) => handleRegimeChange('minIntervalMs', v)} type="number" />
@@ -830,7 +855,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 <>
                   <div className="bg-indigo-900/20 border border-indigo-700/30 rounded-sm p-3 mb-3">
                     <div className="text-xs text-indigo-300">
-                      <span className="font-medium">Ladder Mode:</span> Deploys all available USDC as limit buy orders from just below current price
+                      <span className="font-medium">Ladder Mode:</span> Deploys all available {quoteCurrency} as limit buy orders from just below current price
                       down to an ATH-based floor with Fibonacci-weighted sizing. Orders stay in place during flash events; rebuild only after cycle reset.
                     </div>
                   </div>
@@ -862,7 +887,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                     />
                   </div>
                   <div className="mt-2 text-xs text-gray-400">
-                    Dynamic order count. Floor at {regimeConfig.ladderMaxAthDropPct || 80}% below ATH. {regimeConfig.ladderSizeMode || 'fibonacci'} sizing across all available USDC.
+                    Dynamic order count. Floor at {regimeConfig.ladderMaxAthDropPct || 80}% below ATH. {regimeConfig.ladderSizeMode || 'fibonacci'} sizing across all available {quoteCurrency}.
                     {regimeConfig.ladderAutoSwitch && ` Auto-switches to ladder when vol expands ${regimeConfig.ladderAutoSwitchVolMult || 2.0}x.`}
                   </div>
                 </>
@@ -887,7 +912,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 return (
                   <div className="mt-2 text-xs text-gray-400">
                     Sell <span className="text-white font-medium">{(sellRatio * 100).toFixed(0)}%</span>, hold <span className="text-white font-medium">{(holdbackRatio * 100).toFixed(0)}%</span> of position.
-                    {' '}At min TP ({tpMin}%): <span className="text-green-400">+{usdcProfitPct}% USDC</span>, <span className="text-blue-400">+{assetProfitPct}% {baseCurrency} value</span>
+                    {' '}At min TP ({tpMin}%): <span className="text-green-400">+{usdcProfitPct}% {quoteCurrency}</span>, <span className="text-blue-400">+{assetProfitPct}% {baseCurrency} value</span>
                   </div>
                 );
               })()}
@@ -1036,7 +1061,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               <div className="grid grid-cols-2 gap-3">
                 <FormInput label="Deposited Capital" hint="Your actual cash deposits (0 = auto-derive)" value={regimeConfig.depositedCapital || 0} onChange={(v) => handleRegimeChange('depositedCapital', v)} type="number" />
                 <FormInput label={`Max ${baseCurrency} Exposure`} hint={`Max ${baseCurrency} the engine can hold (0 = uncapped)`} value={regimeConfig.maxAssetExposure ?? 0} onChange={(v) => handleRegimeChange('maxAssetExposure', v)} type="number" />
-                <FormInput label="Max USDC Cap" hint="Max USDC deployed across active orders" value={regimeConfig.maxUsdcDeployed || 10000} onChange={(v) => handleRegimeChange('maxUsdcDeployed', v)} type="number" />
+                <FormInput label={`Max Deployed (${quoteCurrency})`} hint={`Max ${quoteCurrency} deployed across active orders`} value={regimeConfig.maxUsdcDeployed || 10000} onChange={(v) => handleRegimeChange('maxUsdcDeployed', v)} type="number" />
                 <FormInput label="Max Drawdown %" hint="Pause new buys when fund equity (capital + realized + held coins at market) falls this % below its peak" value={regimeConfig.maxDrawdownPercent || 20} onChange={(v) => handleRegimeChange('maxDrawdownPercent', v)} type="number" />
                 <FormInput label="Liquidity Factor Cap" hint="Max size multiplier from orderbook liquidity" value={regimeConfig.liquidityFactorCap || 2.0} onChange={(v) => handleRegimeChange('liquidityFactorCap', v)} type="number" />
                 <FormInput label="Drawdown Reset (hrs)" hint="Hours at drawdown cap before auto-resuming (0 = off)" value={regimeConfig.drawdownResetHours ?? 72} onChange={(v) => handleRegimeChange('drawdownResetHours', v)} type="number" />

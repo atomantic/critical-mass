@@ -14,11 +14,13 @@
  */
 
 const fs = require('fs');
+const { BASE_SNAPSHOT_FILENAME, CONFIG_LOCK_DIR } = require('./config-base-drift');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { jsonReadError } = require('./json-diagnostics');
 const { fsyncDir } = require('./fsync-dir');
+const { fsyncFile } = require('./durable-write');
 const { spawnSync, spawn } = require('child_process');
 const { DATA_DIR, BACKUP_DIR } = require('./paths');
 const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME } = require('./restore-apply');
@@ -79,12 +81,6 @@ const spawnAsync = (command, args, { cwd, timeout = SPAWN_TIMEOUT_MS } = {}) => 
   child.on('error', (error) => finish({ status: null, error }));
   child.on('close', (status) => finish({ status, error: undefined }));
 });
-
-/** Flush copied backup bytes before publication can authorize retention. */
-const flushBackupFile = (file) => {
-  const fd = fs.openSync(file, 'r');
-  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-};
 
 /** Root-level credential files that must remain machine-local. */
 const ROOT_CREDENTIAL_FILES = [
@@ -469,6 +465,10 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
     '*/*-keys.json',    // Keys in subdirectories
     ...ROOT_CREDENTIAL_FILES,
     'config.json',      // Portable configuration is carried by the manifest
+    'config.json.*.tmp', // Interrupted atomic writes can contain secrets too
+    BASE_SNAPSHOT_FILENAME, // Full local base may contain secrets; rebuild on restore
+    `${BASE_SNAPSHOT_FILENAME}.*.tmp`,
+    CONFIG_LOCK_DIR, `${CONFIG_LOCK_DIR}/*`,
     MANIFEST_FILENAME,  // The manifest is generated below, never archived from data/
     // Restore bookkeeping (rollback journal, saved originals, extraction
     // staging). Archiving these would ship a stale journal into the next
@@ -477,6 +477,7 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
     JOURNAL_FILENAME,
     `${STAGE_PREFIX}*`, `${STAGE_PREFIX}*/*`,
     `${ORIGINALS_PREFIX}*`, `${ORIGINALS_PREFIX}*/*`,
+    '*.restore-tmp', '*/*.restore-tmp', // Orphaned atomic-replace temp files
     // Legacy namespace migration ownership (issue #971): a captured lock is
     // meaningless on another machine or after a restore.
     `${LEGACY_MIGRATION_LOCK}*`,
@@ -526,7 +527,7 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
   const publishedPath = path.join(paths.backupsDir, filename);
   let published = false;
   try {
-    flushBackupFile(zipPath);
+    fsyncFile(zipPath);
     fs.renameSync(zipPath, publishedPath);
     published = true;
     fsyncDir(paths.backupsDir);
@@ -690,6 +691,44 @@ const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 };
 
+const archiveValidityCache = new Map();
+
+/**
+ * Epoch ms of the newest valid archive, or null when none exist. Anchors the schedule.
+ * @returns {number | null}
+ */
+const getNewestBackupTime = () => {
+  ensureBackupsDir();
+  const candidates = [];
+  for (const filename of fs.readdirSync(BACKUPS_DIR)) {
+    if (!filename.startsWith('backup-') || !filename.endsWith('.zip')) continue;
+    const filePath = path.join(BACKUPS_DIR, filename);
+    const stats = fs.lstatSync(filePath);
+    if (stats.isFile()) candidates.push({ filePath, mtimeMs: Math.round(stats.mtimeMs), size: stats.size });
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  // Only the newest candidates are integrity-tested (not every retained ZIP), and
+  // verdicts are cached so a corrupt partial never anchors the schedule nor re-tests.
+  for (const { filePath, mtimeMs, size } of candidates) {
+    const key = `${filePath}:${mtimeMs}:${size}`;
+    if (!archiveValidityCache.has(key)) {
+      archiveValidityCache.set(key, validateBackupArchive(filePath, { allowLegacy: true }).ok);
+    }
+    if (archiveValidityCache.get(key)) return mtimeMs;
+  }
+  return null;
+};
+
+/**
+ * Epoch ms of the newest fund-state snapshot, or null when none exist.
+ * @returns {number | null}
+ */
+const getNewestFundStateBackupTime = () => {
+  const newest = listFundStateBackups()[0];
+  const time = newest ? Date.parse(newest.createdAt) : NaN;
+  return Number.isNaN(time) ? null : time;
+};
+
 /**
  * Prune hourly fund-state snapshots independently from the full archive
  * retention policy.
@@ -752,7 +791,7 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
         const target = path.join(stageDir, exchange, pair, name);
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.copyFileSync(source, target);
-        flushBackupFile(target);
+        fsyncFile(target);
         for (let dir = path.dirname(target); dir !== stageDir; dir = path.dirname(dir)) snapshotDirs.add(dir);
         copied.push(name);
         files++;
@@ -771,7 +810,7 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
       createdAt,
       funds,
     }, null, 2), { mode: 0o600 });
-    flushBackupFile(path.join(stageDir, FUND_STATE_MANIFEST_FILENAME));
+    fsyncFile(path.join(stageDir, FUND_STATE_MANIFEST_FILENAME));
     // Persist the whole staged tree, children before parents, before exposing it.
     for (const dir of [...snapshotDirs].sort((a, b) => b.length - a.length)) fsyncDir(dir);
     fs.mkdirSync(paths.fundStateBackupsDir, { recursive: true });
@@ -1126,6 +1165,12 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     fs.writeFileSync(path.join(tempDir, 'config.json'), JSON.stringify(override, null, 2), { mode: 0o600 });
   }
 
+  // A source baseline is not portable: the reconstructed override is relative
+  // to THIS base. Stage both in the same rollback transaction, including for
+  // legacy data-only restores, which retain the destination configuration.
+  fs.writeFileSync(path.join(tempDir, BASE_SNAPSHOT_FILENAME), JSON.stringify(destination.base, null, 2), { mode: 0o600 });
+  fs.chmodSync(path.join(tempDir, BASE_SNAPSHOT_FILENAME), 0o600);
+
   // ---- Translate a pre-multi-pair archive into the per-fund layout -------
   // Archives predating the multi-pair release hold their per-fund files at
   // `<exchange>/`, where nothing reads them any more. Relocating them inside
@@ -1167,6 +1212,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     // Skip the backups directory, root credential files, key files and the
     // archive's own metadata.
     skip: (name, isRoot) => name === 'backups'
+      || (isRoot && (name === CONFIG_LOCK_DIR || name.startsWith(`${BASE_SNAPSHOT_FILENAME}.`)))
       || name.endsWith('-keys.json')
       || (isRoot && ROOT_CREDENTIAL_FILES.includes(name))
       || (isRoot && (name === MANIFEST_FILENAME || (legacy && !override && name === 'config.json'))),
@@ -1192,6 +1238,8 @@ module.exports = {
   createFundStateBackup,
   listBackups,
   listFundStateBackups,
+  getNewestBackupTime,
+  getNewestFundStateBackupTime,
   deleteBackup,
   pruneBackups,
   pruneFundStateBackups,

@@ -107,6 +107,7 @@ module.exports = (app, deps) => {
     const config = getNotificationConfig();
     const masked = {
       ...config,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       telegram: {
         ...config.telegram,
         botToken: maskSecret(config.telegram.botToken),
@@ -117,6 +118,8 @@ module.exports = (app, deps) => {
 
   app.put('/api/notifications/config', (req, res) => {
     const updates = { ...req.body };
+    // Server timezone is read-only response metadata, never configuration.
+    delete updates.timezone;
     // Round-trip guard: GET /api/notifications/config masks the bot token.
     // If a client echoes the masked value back, drop it so the stored token
     // is preserved instead of being overwritten with the mask.

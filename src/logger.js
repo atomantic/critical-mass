@@ -1,5 +1,6 @@
 // @ts-check
 const fs = require('fs');
+const { atomicWriteSync } = require('./durable-write');
 const path = require('path');
 const { resolveFundDataDir } = require('./migration');
 
@@ -86,8 +87,6 @@ const ensureLogFile = (exchange = 'coinbase', pair) => {
     // One-time backup of the original before the swap (never overwritten once present)
     const backupFile = `${logFile}.pre-timestamp-migration`;
     if (!fs.existsSync(backupFile)) fs.copyFileSync(logFile, backupFile);
-    // Lazy require: state-tracker requires this module at load time (circular)
-    const { atomicWriteSync } = require('./state-tracker');
     atomicWriteSync(logFile, newLines.join('\n'));
   }
 };

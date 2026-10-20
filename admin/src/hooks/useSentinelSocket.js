@@ -1,14 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
-import { io } from 'socket.io-client'
+import { useEffect, useState } from 'react'
+import { getRealtimeClient } from '../lib/realtime'
 
 /**
- * Socket.IO hook for Sentinel news alert data.
+ * Realtime hook for Sentinel news alert data.
  * Subscribes to the sentinel room and listens for new alerts and status updates.
  */
 export const useSentinelSocket = (options = {}) => {
   const { autoConnect = true } = options
 
-  const socketRef = useRef(null)
   const [connected, setConnected] = useState(false)
   const [latestAlert, setLatestAlert] = useState(null)
   const [status, setStatus] = useState(null)
@@ -16,20 +15,10 @@ export const useSentinelSocket = (options = {}) => {
   useEffect(() => {
     if (!autoConnect) return
 
-    const socket = io(window.location.origin, {
-      transports: ['websocket', 'polling']
-    })
+    const socket = getRealtimeClient()
 
-    socketRef.current = socket
-
-    const onConnect = () => {
-      setConnected(true)
-      socket.emit('sentinel:subscribe')
-    }
-
-    const onDisconnect = () => {
-      setConnected(false)
-    }
+    const onConnect = () => setConnected(true)
+    const onDisconnect = () => setConnected(false)
 
     // New alert
     const onAlert = (alert) => {
@@ -45,14 +34,16 @@ export const useSentinelSocket = (options = {}) => {
     socket.on('disconnect', onDisconnect)
     socket.on('sentinel:alert', onAlert)
     socket.on('sentinel:status', onStatus)
+    // The client re-sends the subscription after every reconnect.
+    socket.subscribe('sentinel')
+    setConnected(socket.connected)
 
     return () => {
-      socket.emit('sentinel:unsubscribe')
+      socket.unsubscribe('sentinel')
       socket.off('connect', onConnect)
       socket.off('disconnect', onDisconnect)
       socket.off('sentinel:alert', onAlert)
       socket.off('sentinel:status', onStatus)
-      socket.disconnect()
     }
   }, [autoConnect])
 
