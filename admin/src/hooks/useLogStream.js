@@ -64,6 +64,8 @@ export function useLogStream(processName, { lines = 500 } = {}) {
     // useSocketPrice, which both re-subscribe in a 'connect' handler).
     const handleConnect = () => {
       setTerminal(null)
+      logsRef.current = []
+      setLogs([])
       socket.emit('logs:subscribe', { processName, lines })
     }
     const handleDisconnect = () => {
@@ -89,6 +91,8 @@ export function useLogStream(processName, { lines = 500 } = {}) {
     socket.on('disconnect', handleDisconnect)
 
     if (socket.connected) {
+      logsRef.current = []
+      setLogs([])
       socket.emit('logs:subscribe', { processName, lines })
     }
 
@@ -133,6 +137,8 @@ export function useLogStream(processName, { lines = 500 } = {}) {
     if (!processName) return
     setTerminal(null)
     const socket = getSocket()
+    logsRef.current = []
+    setLogs([])
     socket.emit('logs:subscribe', { processName, lines })
   }, [processName, lines])
 
