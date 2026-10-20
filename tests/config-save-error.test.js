@@ -37,5 +37,8 @@ describe('configuration save error copy', () => {
     }
     assert.equal(describeConfigSaveError(null, new Error('Network offline')).message, 'Network offline')
     assert.equal(describeConfigSaveError(null, {}).kind, 'failed')
+    assert.deepEqual(describeConfigSaveError(400, { error: 'regime.ladderMaxAthDropPct must be between 10 and 95' }), {
+      kind: 'failed', message: 'Max ATH Drop % must be between 10 and 95',
+    }, 'full-config error strings are humanized without treating status alone as an editable regime rejection')
   })
 })

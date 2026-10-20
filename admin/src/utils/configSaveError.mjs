@@ -128,6 +128,10 @@ export function humanizeConfigError(message) {
 export function describeConfigSaveError(status, body) {
   const data = body && typeof body === 'object' ? body : {}
   const errors = Array.isArray(data.errors) ? data.errors.filter(error => typeof error === 'string' && error.trim()) : []
+  // The regime endpoint identifies editable validation failures with errors[].
+  // An HTTP status or error string alone does not establish that changing the
+  // draft can fix it. Full-config callers also use error strings, but consume
+  // only message; keep the response-shape contract independent of HTTP status.
   const kind = data.persisted === true ? 'notApplied' : errors.length ? 'rejected' : 'failed'
   const reason = errors.join('; ') || (typeof data.error === 'string' && data.error) ||
     (typeof data.message === 'string' && data.message) ||
