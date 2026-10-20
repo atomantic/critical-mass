@@ -902,6 +902,41 @@ const withSocketGateway = async (run, { failPersistence = false } = {}) => {
   }
 };
 
+describe('operator realtime upgrade origin boundary', () => {
+  it('checks session origins on realtime upgrades', async (t) => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    await withServer({ authFile, readJSON, writeJSON }, async ({ auth, baseUrl }) => {
+      const login = await fetch(`${baseUrl}/api/auth/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      assert.equal(login.status, 200);
+      const cookie = login.headers.get('set-cookie').split(';')[0];
+      const host = new URL(baseUrl).host;
+      const devHost = 'localhost:5571';
+      const tailscaleHost = 'gateway.example.ts.net:5570';
+      const cases = [
+        { name: 'rejects a same-site sibling port', headers: { host, origin: 'http://127.0.0.1:3000' }, allowed: false },
+        { name: 'accepts the production page origin', headers: { host, origin: baseUrl }, allowed: true },
+        { name: 'accepts the Vite forwarded page host', headers: { host, origin: `http://${devHost}`, 'x-forwarded-host': devHost }, allowed: true },
+        { name: 'accepts a forwarded Tailscale page host', headers: { host, origin: `https://${tailscaleHost}`, 'x-forwarded-host': `${tailscaleHost}, internal:5570` }, allowed: true },
+        { name: 'rejects a mismatch against the forwarded host', headers: { host, origin: baseUrl, 'x-forwarded-host': devHost }, allowed: false },
+        { name: 'rejects a malformed origin', headers: { host, origin: 'null' }, allowed: false },
+        { name: 'rejects a foreign origin even with bearer credentials', headers: { host, origin: 'https://attacker.invalid', authorization: `Bearer ${PASSWORD}` }, allowed: false, bearerOnly: true },
+        { name: 'accepts a session without an Origin header', headers: { host }, allowed: true },
+      ];
+      for (const { name, headers, allowed, bearerOnly } of cases) {
+        await t.test(name, async () => {
+          const req = { headers: bearerOnly ? headers : { cookie, ...headers }, socket: { remoteAddress: '127.0.0.1' } };
+          assert.equal(await auth.authorizeUpgrade(req), allowed);
+        });
+      }
+    });
+  });
+});
+
 describe('established operator socket revocation', () => {
   it('revokes every listener, cleans log streams and permits only replacement credentials', { timeout: 10000 }, async () => {
     await withSocketGateway(async ({ urls, connect, io, registry, children, authFile, changes, expireAttempts }) => {
