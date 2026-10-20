@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { plural } from '../utils/plural.mjs'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
-import { getBaseCurrency } from '../App'
+import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 
 function CostBasisRegime({ exchange = 'coinbase', pair }) {
@@ -109,6 +109,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
   const position = status?.position || {}
   const isDryRun = status?.isDryRun
   const baseCurrency = getBaseCurrency(productId)
+  const quoteCurrency = getQuoteCurrency(productId || pair)
 
   const cycles = (fillAggregates?.cycles || []).map(cycle => ({
     ...cycle,
@@ -210,7 +211,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
           <h3 className="min-w-0 wrap-break-word text-lg font-semibold text-green-400 mb-3">Realized P&L</h3>
           <div className="space-y-2">
             <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
-              <span className="min-w-0 wrap-break-word text-gray-400">USDC Profit:</span>
+              <span className="min-w-0 wrap-break-word text-gray-400">{quoteCurrency} Profit:</span>
               <span className={`min-w-0 max-w-full wrap-break-word text-right text-2xl font-bold ${realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                 {realizedPnL >= 0 ? '+' : ''}{formatCurrency(realizedPnL)}
               </span>
@@ -356,7 +357,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
           <li><strong>Cycle-based</strong>: Each trading cycle (entry to TP fill) is tracked separately</li>
           <li><strong>Position</strong>: Current {baseCurrency} held from active entries</li>
           <li><strong>{baseCurrency} Reserves</strong>: Accumulated holdback from profitable take-profit fills</li>
-          <li><strong>Realized P&L</strong>: USDC profit from completed cycles</li>
+          <li><strong>Realized P&L</strong>: {quoteCurrency} profit from completed cycles</li>
           <li><strong>Total Value</strong>: Combines position + reserves + realized profit</li>
         </ul>
       </div>

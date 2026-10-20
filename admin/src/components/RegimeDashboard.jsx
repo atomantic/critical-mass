@@ -64,6 +64,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   }
 
   const asset = getBaseCurrency(config?.productId)
+  const quoteCurrency = getQuoteCurrency(config?.productId || pair)
   const {
     isDryRun, market, position, regime, health, dryRunState, pendingOrdersList, placementIntents,
     buysPaused, isDrainingOrClosed, apy, tpOptimizer, sizeOptimizer, risk, riskPosition, riskConfig, macroConfig,
@@ -126,7 +127,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             <OptimalTpAnalysis isDryRun={isDryRun} optimalTpAnalytics={dryRunState?.optimalTpAnalytics} tpMinPercent={config?.tpMinPercent} tpMaxPercent={config?.tpMaxPercent} />
 
             {/* Risk Limits */}
-            <RiskLimitsPanel risk={risk} position={riskPosition} config={riskConfig} committedUsdc={status?.ladder?.committedUsdc} asset={asset} setDrawdownResumeConfirm={setDrawdownResumeConfirm} />
+            <RiskLimitsPanel quoteCurrency={quoteCurrency} risk={risk} position={riskPosition} config={riskConfig} committedUsdc={status?.ladder?.committedUsdc} asset={asset} setDrawdownResumeConfirm={setDrawdownResumeConfirm} />
           </div>
 
           {/* Middle Column: Position & Risk */}
@@ -242,6 +243,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 buttons row above so opening it never shifts Cancel Ladder /
                 Collapse All / the order filter input. */}
             <LadderPanel
+              quoteCurrency={quoteCurrency}
               config={config}
               status={status}
               exchange={exchange}
