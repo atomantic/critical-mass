@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **[issue-1202] Fund deletion resolves configured pairs and duplicate creation conflicts** — DELETE now validates pair format before state access, returns 404 for unknown funds, and uses the canonical configured pair spelling; POST returns 409 when the fund already exists.
+
 ### Added
 - **[issue-1000] React 19 admin rendering** — Upgrade the dashboard chart and 3D ecosystems together, preserve candlesticks, cloud overlays and signal markers through public Recharts coordinates, and add isolated browser rendering coverage.
 - **[issue-935] Authenticated browser performance coverage** — A disposable real gateway/IPC fixture and headless Chrome scenario measure protected Transactions load, Config idle traffic for 60 seconds, consumer cleanup and reconnect recovery. Page responses now omit ledger metadata; incomplete browser evidence and protocol-only replays report UNVERIFIED. See `docs/perf-route-audit.md`.

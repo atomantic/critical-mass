@@ -31,6 +31,7 @@ const originalDataDir = pathsModule.DATA_DIR;
 const configDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exchange-routes-config-'));
 pathsModule.DATA_DIR = configDataDir;
 const configUtils = require('../src/config-utils');
+const stateTracker = require('../src/state-tracker');
 const migration = require('../src/migration');
 const adapters = require('../src/adapters');
 const registerExchangeRoutes = require('../src/routes/exchange-routes');
@@ -191,6 +192,16 @@ describe('fund lifecycle routes', () => {
       assert.equal(res.body.success, true);
       assert.equal(res.body.config.enabled, false, 'new fund must default enabled:false');
       assert.equal(res.body.config.dryRun, true, 'new fund must default dryRun:true');
+    });
+
+    it('returns 409 when the requested fund already exists', async () => {
+      mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
+      const { app } = setup();
+      const res = await invoke(app, 'POST /api/:exchange/funds', {
+        params: { exchange: 'coinbase' }, body: { pair: 'BTC-USDC' },
+      });
+      assert.equal(res.statusCode, 409, JSON.stringify(res.body));
+      assert.match(res.body.error, /already exists/i);
     });
 
     it('does not let a caller override dryRun:false on creation (still defaults safe)', async () => {
@@ -389,6 +400,41 @@ describe('fund lifecycle routes', () => {
   });
 
   describe('DELETE /api/:exchange/funds/:pair', () => {
+    it('returns 404 for an unconfigured fund without reading fund state', async () => {
+      const { app } = setup();
+      const loadState = mock.method(stateTracker, 'loadFundRegimeState', () => {
+        throw new Error('must not read state for an unknown pair');
+      });
+      const res = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
+        params: { exchange: 'coinbase', pair: 'NOPE-USDC' },
+      });
+      assert.equal(res.statusCode, 404);
+      assert.equal(loadState.mock.callCount(), 0);
+    });
+
+    it('returns 400 for a malformed pair before reading fund state', async () => {
+      const { app } = setup();
+      const loadState = mock.method(stateTracker, 'loadFundRegimeState', () => {
+        throw new Error('must not read state for a malformed pair');
+      });
+      const res = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
+        params: { exchange: 'coinbase', pair: '../../x' },
+      });
+      assert.equal(res.statusCode, 400);
+      assert.equal(loadState.mock.callCount(), 0);
+    });
+
+    it('resolves case-insensitive requests to the canonical configured pair', async () => {
+      const { app } = setup();
+      const loadState = mock.method(stateTracker, 'loadFundRegimeState', () => ({ position: { lifecycle: 'draining' } }));
+      const res = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
+        params: { exchange: 'coinbase', pair: 'btc-usdc' },
+      });
+      assert.equal(res.statusCode, 400);
+      assert.match(res.body.error, /lifecycle is 'draining'/);
+      assert.equal(loadState.mock.calls[0].arguments[1], 'BTC-USDC');
+    });
+
     it('refuses deletion (400) when the fund lifecycle is active (default, no state file)', async () => {
       const { app, fsMocks } = setup();
 
@@ -489,8 +535,8 @@ describe('fund lifecycle routes', () => {
       const again = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
         params: { exchange: 'coinbase', pair: 'ETH-USDC' },
       });
-      assert.equal(again.statusCode, 400);
-      assert.match(again.body.error, /not found/i);
+      assert.equal(again.statusCode, 404);
+      assert.match(again.body.error, /unknown configured fund/i);
     });
   });
 
