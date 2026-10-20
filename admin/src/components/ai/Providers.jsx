@@ -23,6 +23,17 @@ const RUN_STATUS_LABELS = {
   done: 'Finished',
 }
 
+// Distinguishes a failed read from a legitimately empty one: resolves to
+// { data } on success, or { error } for a network failure, non-OK status or an
+// unreadable body, so callers never render a failure as "nothing configured".
+async function readJson(url, label) {
+  const response = await fetch(url).catch(() => null)
+  if (!response) return { error: `Could not load ${label}: the server is unreachable.` }
+  if (!response.ok) return { error: `Could not load ${label} (HTTP ${response.status}).` }
+  const data = await response.json().catch(() => null)
+  return data ? { data } : { error: `Could not load ${label}: the response was unreadable.` }
+}
+
 async function requireAcceptedResponse(response) {
   if (response.ok) return
   let message = `Request failed (${response.status})`
@@ -55,7 +66,11 @@ export default function AIProviders() {
   const [stopPending, setStopPending] = useState(false)
   const [runStatuses, setRunStatuses] = useState({})
   const [runActionError, setRunActionError] = useState('')
+  const [providersLoaded, setProvidersLoaded] = useState(false)
+  const [providersError, setProvidersError] = useState('')
+  const [runsError, setRunsError] = useState('')
   const [sampleProviders, setSampleProviders] = useState([])
+  const [samplesError, setSamplesError] = useState('')
   const [showSamples, setShowSamples] = useState(false)
   const [loadingSamples, setLoadingSamples] = useState(false)
   const [runPending, setRunPending] = useState(false)
@@ -63,6 +78,8 @@ export default function AIProviders() {
   const [mutationError, setMutationError] = useState('')
   const mutationLocks = useRef(new Set())
   const loadDataRef = useRef(null)
+  const loadGenerationRef = useRef(0)
+  const samplesGenerationRef = useRef(0)
   const reconciledRef = useRef(false)
   const mountedRef = useRef(false)
   const operatorRunActionRef = useRef(false)
@@ -91,20 +108,35 @@ export default function AIProviders() {
     }
   }, [])
 
+  // Reloads overlap (mount, post-mutation, run-lifecycle refresh); only the
+  // newest may commit. A failed read keeps the last good list and reports the
+  // failure instead of replacing it with an empty one.
   const loadData = async () => {
-    setLoading(true)
+    const generation = ++loadGenerationRef.current
     const [providersRes, runsRes] = await Promise.all([
-      fetch('/api/providers').then(r => r.json()).catch(() => ({ providers: [], activeProvider: null })),
-      fetch('/api/runs?limit=20').then(r => r.json()).catch(() => ({ runs: [] }))
+      readJson('/api/providers', 'providers'),
+      readJson('/api/runs?limit=20', 'recent runs'),
     ])
-    setProviders(providersRes.providers || [])
-    const loadedProviders = providersRes.providers || []
-    setActiveProviderId(loadedProviders.some(provider => provider.id === providersRes.activeProvider && provider.type === 'api')
-      ? providersRes.activeProvider
-      : null)
-    const loadedRuns = runsRes.runs || []
-    setRuns(loadedRuns)
+    if (generation !== loadGenerationRef.current || !mountedRef.current) return
+    if (providersRes.data) {
+      const loadedProviders = Array.isArray(providersRes.data.providers) ? providersRes.data.providers : []
+      setProviders(loadedProviders)
+      setActiveProviderId(loadedProviders.some(provider => provider.id === providersRes.data.activeProvider && provider.type === 'api')
+        ? providersRes.data.activeProvider
+        : null)
+      setProvidersLoaded(true)
+      setProvidersError('')
+    } else {
+      setProvidersError(providersRes.error)
+    }
     setLoading(false)
+    if (!runsRes.data) {
+      setRunsError(runsRes.error)
+      return
+    }
+    const loadedRuns = Array.isArray(runsRes.data.runs) ? runsRes.data.runs : []
+    setRuns(loadedRuns)
+    setRunsError('')
     await reconcileRuns(loadedRuns)
   }
 
@@ -221,8 +253,13 @@ export default function AIProviders() {
   const handleLoadSamples = async () => {
     setLoadingSamples(true)
     setShowSamples(true)
-    const result = await fetch('/api/providers/samples').then(r => r.json()).catch(() => ({ providers: [] }))
-    setSampleProviders((result.providers || []).filter(provider => provider.type === 'api'))
+    setSamplesError('')
+    // Repeated clicks overlap; only the newest read may commit.
+    const generation = ++samplesGenerationRef.current
+    const { data, error } = await readJson('/api/providers/samples', 'sample providers')
+    if (generation !== samplesGenerationRef.current || !mountedRef.current) return
+    if (data) setSampleProviders((Array.isArray(data.providers) ? data.providers : []).filter(provider => provider.type === 'api'))
+    else setSamplesError(error)
     setLoadingSamples(false)
   }
 
@@ -440,10 +477,32 @@ export default function AIProviders() {
         </div>
       )}
 
-      {showSamples && sampleProviders.length === 0 && !loadingSamples && (
+      {showSamples && samplesError && !loadingSamples && (
+        <div role="alert" className="bg-gray-800 border border-gray-700 rounded-xl p-4 text-center">
+          <p className="text-red-400">{samplesError}</p>
+          <div className="mt-2 flex justify-center gap-4">
+            <button onClick={handleLoadSamples} className="text-sm text-indigo-400 hover:text-indigo-300">Retry</button>
+            <button onClick={() => setShowSamples(false)} className="text-sm text-gray-400 hover:text-white">Close</button>
+          </div>
+        </div>
+      )}
+
+      {showSamples && !samplesError && sampleProviders.length === 0 && !loadingSamples && (
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 text-center">
           <p className="text-gray-400">No supported API sample providers are available.</p>
           <button onClick={() => setShowSamples(false)} className="mt-2 text-sm text-indigo-400 hover:text-indigo-300">Close</button>
+        </div>
+      )}
+
+      {providersError && (
+        <div role="alert" className="flex flex-col sm:flex-row sm:items-center gap-2 text-sm text-red-400">
+          <span>{providersLoaded ? `${providersError} Showing the last loaded providers.` : providersError}</span>
+          <button
+            onClick={loadData}
+            className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm shrink-0"
+          >
+            Retry
+          </button>
         </div>
       )}
 
@@ -573,7 +632,7 @@ export default function AIProviders() {
           </div>
         ))}
 
-        {providers.length === 0 && (
+        {providersLoaded && providers.length === 0 && (
           <div className="text-center py-12 text-gray-400">
             <p>No providers configured.</p>
             <button
@@ -587,6 +646,17 @@ export default function AIProviders() {
       </div>
 
       {/* Recent Runs */}
+      {runsError && (
+        <div role="alert" className="mt-8 flex flex-col sm:flex-row sm:items-center gap-2 text-sm text-red-400">
+          <span>{runs.length > 0 ? `${runsError} Showing the last loaded runs.` : runsError}</span>
+          <button
+            onClick={loadData}
+            className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm shrink-0"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {runs.length > 0 && (
         <div className="mt-8">
           <h2 className="text-xl font-bold text-white mb-4">Recent Runs</h2>

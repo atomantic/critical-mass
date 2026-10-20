@@ -3,6 +3,7 @@ import { Link } from '../../lib/router'
 import { ArrowLeft, RefreshCw } from '../icons'
 import { CartesianChart } from '../charts/primitives/CartesianChart'
 import { INDICATORS, INDICATOR_LABELS } from '../../../../shared/indicator-config.mjs'
+import { createRequestOwner } from '../../utils/requestOwner.mjs'
 
 const RANGES = [
   { label: '1d', days: 1 },
@@ -53,8 +54,14 @@ function StatCard({ label, value, sub }) {
 
 export default function ScorecardAnalysis() {
   const [range, setRange] = useState(7)
-  const [data, setData] = useState(null)
+  // The snapshot remembers which range it answers, so a range switch never
+  // shows the previous range's numbers under the new selection.
+  const [snapshot, setSnapshot] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  // Range switches, the poll and manual refreshes overlap; only the newest
+  // read may commit, so a slow response for an older range cannot win.
+  const [owner] = useState(createRequestOwner)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -64,20 +71,28 @@ export default function ScorecardAnalysis() {
       from: from.toISOString().slice(0, 10),
       to: to.toISOString().slice(0, 10),
     })
-    const res = await fetch(`/api/updown/scorecard-analysis?${params}`).catch(() => null)
-    if (res?.ok) {
-      const json = await res.json()
-      setData(json)
+    const { owned, data: json } = await owner.read(`/api/updown/scorecard-analysis?${params}`)
+    if (!owned) return
+    if (json) {
+      setSnapshot({ range, data: json })
+      setError(null)
+    } else {
+      setError('Could not load scorecard analysis.')
     }
     setLoading(false)
-  }, [range])
+  }, [range, owner])
 
   useEffect(() => {
+    setError(null)
     fetchData()
     const interval = setInterval(fetchData, 60000)
-    return () => clearInterval(interval)
-  }, [fetchData])
+    return () => {
+      clearInterval(interval)
+      owner.invalidate()
+    }
+  }, [fetchData, owner])
 
+  const data = snapshot?.range === range ? snapshot.data : null
   const s = data?.summary
   const indicatorCatalog = data?.catalog?.indicators
   const indicators = indicatorCatalog?.map(item => item.key) || INDICATORS
@@ -126,9 +141,21 @@ export default function ScorecardAnalysis() {
         </div>
       </div>
 
-      {loading && !data ? (
+      {error && data && (
+        <div role="alert" className="flex items-center justify-between gap-2 text-sm text-red-400">
+          <span>{error} Showing the last loaded analysis.</span>
+          <button onClick={fetchData} disabled={loading} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-xs shrink-0">Retry</button>
+        </div>
+      )}
+
+      {error && !data && !loading ? (
+        <div role="alert" className="bg-gray-800 rounded-lg p-8 border border-gray-700 text-center">
+          <p className="text-red-400">{error}</p>
+          <button onClick={fetchData} className="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-sm text-sm">Retry</button>
+        </div>
+      ) : !data ? (
         <div className="flex items-center justify-center h-48 text-gray-400">Loading analysis...</div>
-      ) : !data?.summary ? (
+      ) : !data.summary ? (
         <div className="bg-gray-800 rounded-lg p-8 border border-gray-700 text-center text-gray-400">
           No scorecard data found for this date range.
         </div>

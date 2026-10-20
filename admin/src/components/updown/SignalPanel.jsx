@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Signal, Minus } from '../icons'
 import { signalBadgeColors, getSignalIcon, getActionLabel, labelHistoryActions } from '../../constants/signals'
 
@@ -17,6 +17,7 @@ function ConfidenceBar({ value }) {
 
 export default function SignalPanel({ signal, indicators, position }) {
   const [history, setHistory] = useState([])
+  const [historyError, setHistoryError] = useState(null)
 
   useEffect(() => {
     if (!signal?.timestamp) return
@@ -27,15 +28,31 @@ export default function SignalPanel({ signal, indicators, position }) {
     })
   }, [signal?.timestamp])
 
-  // Fetch initial history
-  useEffect(() => {
-    fetch('/api/updown/signals')
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data?.signals) setHistory(data.signals.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 50))
-      })
-      .catch(() => {})
+  // Fetch initial history. Live signals that arrived before the read resolved
+  // are merged in rather than replaced; a failed read is reported, not shown
+  // as an empty history.
+  const fetchHistory = useCallback(async (isActive = () => true) => {
+    const res = await fetch('/api/updown/signals').catch(() => null)
+    const data = res?.ok ? await res.json().catch(() => null) : null
+    if (!isActive()) return
+    if (!Array.isArray(data?.signals)) {
+      setHistoryError('Signal history unavailable.')
+      return
+    }
+    setHistoryError(null)
+    setHistory(prev => {
+      const loaded = new Set(data.signals.map(h => h.timestamp))
+      return [...prev.filter(h => !loaded.has(h.timestamp)), ...data.signals]
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+        .slice(0, 50)
+    })
   }, [])
+
+  useEffect(() => {
+    let active = true
+    fetchHistory(() => active)
+    return () => { active = false }
+  }, [fetchHistory])
 
   // Show loading state until live indicators arrive to avoid displaying stale signals
   const liveReady = !!indicators?.type || !!indicators?.timeframes
@@ -84,6 +101,13 @@ export default function SignalPanel({ signal, indicators, position }) {
       {liveScore != null && (
         <div className="mb-4 text-xs text-gray-400">
           Composite score: <span className="font-mono text-white">{liveScore.toFixed(1)}</span>
+        </div>
+      )}
+
+      {historyError && (
+        <div role="alert" className="flex items-center justify-between gap-2 mb-2 text-xs text-red-400">
+          <span>{historyError}</span>
+          <button onClick={() => fetchHistory()} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded-sm shrink-0">Retry</button>
         </div>
       )}
 

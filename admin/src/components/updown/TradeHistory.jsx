@@ -4,6 +4,7 @@ import { plural } from '../../utils/plural.mjs'
 import { History, Plus, Trash2, Edit3, Check, X, ArrowUp, ArrowDown } from '../icons'
 import { useToast } from '../Toast'
 import { runDashboardAction } from '../../utils/dashboardAction.mjs'
+import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { parseTradeAmountExpression } from './tradeAmountExpression'
 
 function fmt(v) {
@@ -54,6 +55,11 @@ export default function TradeHistory() {
   const [busy, setBusy] = useState(false)
   const [trades, setTrades] = useState([])
   const [summary, setSummary] = useState(null)
+  const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState(null)
+  // The mount read and post-save/delete refreshes overlap; only the newest
+  // read may commit, so an older list cannot replace a newer one.
+  const [tradesOwner] = useState(createRequestOwner)
   const [showForm, setShowForm] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState({ date: '', cost: '', returnAmount: '', note: '', direction: '', boughtTime: '' })
@@ -61,17 +67,25 @@ export default function TradeHistory() {
   const parsedCost = parseTradeAmountExpression(form.cost)
   const parsedReturnAmount = parseTradeAmountExpression(form.returnAmount)
 
+  // A failed read keeps the last good list and reports the failure, so an
+  // outage is never shown as "No trades recorded yet".
   const fetchTrades = useCallback(async () => {
-    const res = await fetch('/api/updown/trades').catch(() => null)
-    if (!res?.ok) return
-    const data = await res.json()
-    if (data.success) {
+    const { owned, data } = await tradesOwner.read('/api/updown/trades')
+    if (!owned) return
+    if (data?.success && Array.isArray(data.trades)) {
       setTrades(data.trades)
-      setSummary(data.summary)
+      setSummary(data.summary ?? null)
+      setLoaded(true)
+      setLoadError(null)
+    } else {
+      setLoadError(data?.error || 'Could not load trade history.')
     }
-  }, [])
+  }, [tradesOwner])
 
-  useEffect(() => { fetchTrades() }, [fetchTrades])
+  useEffect(() => {
+    fetchTrades()
+    return () => tradesOwner.invalidate()
+  }, [fetchTrades, tradesOwner])
 
   const resetForm = () => {
     // Local calendar date: "Bought at" is a local time on this date, and the
@@ -360,8 +374,19 @@ export default function TradeHistory() {
         </form>
       )}
 
+      {loadError && (
+        <div role="alert" className="flex items-center justify-between gap-2 mb-2 text-xs text-red-400">
+          <span>{loaded ? `${loadError} Showing the last loaded trades.` : loadError}</span>
+          <button disabled={busy} onClick={fetchTrades} className="min-h-11 px-2 bg-gray-700 hover:bg-gray-600 text-white rounded-sm shrink-0">
+            Retry
+          </button>
+        </div>
+      )}
+
       {/* Trade Table */}
-      {trades.length > 0 ? (
+      {!loaded ? (
+        !loadError && <div className="text-gray-400 text-xs text-center py-4">Loading trades...</div>
+      ) : trades.length > 0 ? (
         <div className="overflow-x-auto max-h-96">
           <table className="w-full text-xs">
             <thead>
