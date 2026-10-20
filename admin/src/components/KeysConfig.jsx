@@ -4,6 +4,24 @@ import { plural } from '../utils/plural.mjs'
 
 const EXCHANGE_DISPLAY_NAMES = { coinbase: 'Coinbase', gemini: 'Gemini', cryptocom: 'Crypto.com' }
 
+function getConnectionResult(testResult, exchangeName) {
+  if (!testResult) return null
+  if (!testResult.success) return { heading: '✗ Connection failed', details: testResult.error || '' }
+
+  let details = ''
+  if (testResult.balance) {
+    const currency = testResult.quoteCurrency
+    const precision = currency === 'BTC' || currency === 'ETH' ? 8 : 2
+    const available = testResult.balance.available
+    const amount = Number.isFinite(Number(available)) ? Number(available).toFixed(precision) : String(available ?? '')
+    details = `Available${currency ? ` ${currency}` : ''}: ${amount}`
+    if (currency && testResult.productId) details += ` (quote currency of ${testResult.productId})`
+    if (currency && Number(available) === 0) details += ` No ${currency} balance found on this account.`
+  }
+
+  return { heading: `✓ Connected to ${exchangeName}`, details }
+}
+
 const EXCHANGE_FIELD_CONFIGS = {
   coinbase: {
     title: 'Coinbase Advanced Trade API',
@@ -59,6 +77,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
   const [alertAnnouncement, setAlertAnnouncement] = useState('')
 
   const exchangeName = EXCHANGE_DISPLAY_NAMES[exchange] || exchange
+  const connectionResult = getConnectionResult(testResult, exchangeName)
   const config = EXCHANGE_FIELD_CONFIGS[exchange] || {
     title: `${exchangeName} API`,
     description: 'Configure your API credentials.',
@@ -124,13 +143,8 @@ function KeysConfig({ exchange, funds = [], onSave }) {
       setStatusAnnouncement('')
       setAlertAnnouncement('')
     } else if (testResult) {
-      let announcement = testResult.success ? 'Connection successful!' : 'Connection failed'
-      if (testResult.balance) {
-        announcement += ` Balance: $${testResult.balance.available?.toFixed(2)} available`
-      }
-      if (testResult.error) {
-        announcement += ` ${testResult.error}`
-      }
+      const result = getConnectionResult(testResult, exchangeName)
+      const announcement = [result.heading, result.details].filter(Boolean).join(' ')
 
       if (testResult.success) {
         setStatusAnnouncement(announcement)
@@ -384,11 +398,11 @@ function KeysConfig({ exchange, funds = [], onSave }) {
               : 'bg-red-900/50 border border-red-700'
           }`}>
             <div className={`font-medium ${testResult.success ? 'text-green-200' : 'text-red-200'}`}>
-              {testResult.success ? '✓ Connection successful!' : '✗ Connection failed'}
+              {connectionResult.heading}
             </div>
-            {testResult.balance && (
+            {testResult.success && connectionResult.details && (
               <div className="text-sm text-gray-300 mt-1">
-                Balance: ${testResult.balance.available?.toFixed(2)} available
+                {connectionResult.details}
               </div>
             )}
             {testResult.error && (

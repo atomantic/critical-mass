@@ -575,6 +575,7 @@ describe('API key routes', () => {
       assert.equal(res.body.success, true);
       assert.equal(res.body.balance.amount, 12345.67);
       assert.equal(res.body.quoteCurrency, 'USDC');
+      assert.equal(res.body.productId, 'BTC-USDC');
     });
 
     it('catches adapter rejection and returns formatted error', async () => {
