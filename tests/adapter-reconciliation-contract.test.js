@@ -167,6 +167,7 @@ describe('adapter fill reconciliation contract (issue #252)', () => {
     assert.equal(calls, 1);
     assert.equal(fills.length, 1);
     assert.equal(fills[0].tradeId, 'cursorless-trade');
+    assert.equal(fills.incomplete, true, 'the early stop is reported so absence checks can refuse it');
   });
 
   it('coinbase rejects a repeated cursor instead of returning incomplete fills', async () => {

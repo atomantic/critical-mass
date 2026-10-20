@@ -30,7 +30,7 @@ const makeAdapter = ({ openOrders = [], fills = [], orders = {} } = {}) => {
     getReconciliationFills: async () => fills,
     getOrder: async (orderId) => {
       calls.getOrder += 1;
-      return orders[orderId] ?? { orderId, side: 'BUY', status: 'FILLED', filledSize: 0.013293, createdTime: iso(400) };
+      return orders[orderId] ?? { orderId, side: 'BUY', status: 'FILLED', filledSize: 0.013293, completionPercentage: 100, createdTime: iso(400) };
     },
   };
 };
@@ -81,6 +81,36 @@ describe('findPlacementOnExchange', () => {
     const result = await search(adapter, { isKnownTrade: (tradeId) => tradeId === 'booked' });
     assert.deepEqual(result, { verdict: 'absent' });
     assert.equal(adapter.calls.getOrder, 1, 'only the plausible fill order is looked up');
+  });
+
+  it('ignores a smaller unrelated order that filled at dispatch time', async () => {
+    const adapter = makeAdapter({
+      fills: [fill({ size: 0.001 })],
+      orders: { 'filled-1': { orderId: 'filled-1', side: 'BUY', status: 'FILLED', filledSize: 0.001, completionPercentage: 100, createdTime: iso(400) } },
+    });
+    assert.deepEqual(await search(adapter), { verdict: 'absent' });
+  });
+
+  it('matches a partly filled, cancelled order by its derived requested size', async () => {
+    const adapter = makeAdapter({
+      fills: [fill({ size: 0.0066465 })],
+      orders: { 'filled-1': { orderId: 'filled-1', side: 'BUY', status: 'CANCELLED', filledSize: 0.0066465, completionPercentage: 50, createdTime: iso(400) } },
+    });
+    const result = await search(adapter);
+    assert.equal(result.verdict, 'match');
+  });
+
+  it('stays inconclusive when a dispatch-time order reports no size to compare', async () => {
+    const adapter = makeAdapter({
+      fills: [fill()],
+      orders: { 'filled-1': { orderId: 'filled-1', side: 'BUY', status: 'FILLED', filledSize: 0.013293, completionPercentage: 0, createdTime: iso(400) } },
+    });
+    assert.equal((await search(adapter)).verdict, 'inconclusive');
+  });
+
+  it('stays inconclusive when the fill history may be incomplete', async () => {
+    const fills = Object.defineProperty([], 'incomplete', { value: true });
+    assert.equal((await search(makeAdapter({ fills }))).verdict, 'inconclusive');
   });
 
   it('stays inconclusive when more than one untracked order matches', async () => {

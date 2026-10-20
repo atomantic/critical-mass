@@ -23,6 +23,9 @@ const MIN_INTENT_AGE_MS = 2 * 60_000;
 const MAX_ORDER_LOOKUPS = 20;
 // Adapters round the requested size to the product's increment before sending.
 const SIZE_TOLERANCE = 1e-3;
+// An order size derived from filled size and a completion percentage carries
+// the exchange's rounding of that percentage.
+const DERIVED_SIZE_TOLERANCE = 0.02;
 const PRICE_TOLERANCE = 1e-6;
 
 /**
@@ -65,6 +68,16 @@ const openOrderMatches = (order, intent, side) =>
   && (intent.price == null || withinTolerance(order.price, intent.price, PRICE_TOLERANCE))
   && withinTolerance(order.originalSize ?? order.size, intent.size, SIZE_TOLERANCE)
   && createdWithDispatch(order.createdTime, intent.createdAt);
+
+/**
+ * An order's requested size from its status: filled size over the completion
+ * percentage. Null when the status cannot say (nothing filled yet).
+ * @param {import('./types').OrderDetails} order
+ * @returns {number|null}
+ */
+const derivedOrderSize = (order) => (
+  order.completionPercentage > 0 && order.filledSize > 0 ? order.filledSize * 100 / order.completionPercentage : null
+);
 
 /**
  * Whether one order's fills could have come from the intent's placement: no
@@ -124,6 +137,8 @@ const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrde
   /** @type {Map<string, Array<import('./types').ReconciliationFill>>} */
   const untrackedFills = new Map();
   const fills = await adapter.getReconciliationFills(productId, intent.createdAt - CREATED_BEFORE_INTENT_MS);
+  // A partial history cannot prove that the placement never filled.
+  if (fills?.incomplete) return inconclusive('the exchange returned an incomplete fill history');
   for (const fill of fills ?? []) {
     if (!fill?.orderId || fill.side !== side || isKnownTrade(fill.tradeId) || isKnownOrder(fill.orderId)) continue;
     if (candidates.has(fill.orderId)) continue;
@@ -133,9 +148,18 @@ const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrde
   if (fillOrderIds.length > MAX_ORDER_LOOKUPS) {
     return inconclusive(`${fillOrderIds.length} untracked orders filled since the dispatch; too many to inspect`);
   }
+  let unsizedCandidates = 0;
   for (const orderId of fillOrderIds) {
     const order = await adapter.getOrder(orderId);
-    if (sameSide(order, side) && createdWithDispatch(order.createdTime, intent.createdAt)) candidates.add(orderId);
+    if (!sameSide(order, side) || !createdWithDispatch(order.createdTime, intent.createdAt)) continue;
+    // A smaller unrelated order also fits under the limit; require the order's
+    // own size to match before treating it as the placement.
+    const size = derivedOrderSize(order);
+    if (size === null) unsizedCandidates += 1;
+    else if (withinTolerance(size, intent.size, DERIVED_SIZE_TOLERANCE)) candidates.add(orderId);
+  }
+  if (unsizedCandidates > 0) {
+    return inconclusive(`${unsizedCandidates} untracked order(s) filled at dispatch time without a reported size to compare`);
   }
 
   if (candidates.size === 0) return { verdict: 'absent' };
