@@ -1,0 +1,1 @@
+- **[issue-1213] UpDown contract saves report errors** — Show server validation and network errors beside Save, and always re-enable the button after a failed request.
