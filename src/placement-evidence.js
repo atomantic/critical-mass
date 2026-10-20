@@ -35,12 +35,12 @@ const withinTolerance = (actual, expected, tolerance) =>
   Number.isFinite(actual) && Math.abs(actual - expected) <= Math.abs(expected) * tolerance + 1e-12;
 
 /**
- * @param {string|undefined} createdTime - Exchange order creation time
+ * @param {string|number|undefined} createdTime - Exchange order creation time (ISO string or ms)
  * @param {number} intentCreatedAt - When the intent was written (ms)
  * @returns {boolean}
  */
 const createdWithDispatch = (createdTime, intentCreatedAt) => {
-  const created = Date.parse(createdTime ?? '');
+  const created = typeof createdTime === 'number' ? createdTime : Date.parse(createdTime ?? '');
   return Number.isFinite(created)
     && created >= intentCreatedAt - CREATED_BEFORE_INTENT_MS
     && created <= intentCreatedAt + CREATED_AFTER_INTENT_MS;

@@ -1639,7 +1639,7 @@ const buildPlacementIntentHint = (intent) => {
   const what = `${intent?.side ?? 'order'} ${intent?.size ?? '?'} @ ${intent?.price ?? 'market'}`;
   return intent?.clientOrderId
     ? `The running engine automatically checks the exchange for client order id ${intent.clientOrderId} (${what}) and retries inconclusive lookups. Manual adoption or discard is available if automatic recovery cannot establish the outcome.`
-    : `No client order id was recorded — the process died before the response. Check the exchange's open orders and recent fills for ${what} around ${new Date(intent?.createdAt ?? Date.now()).toISOString()}, cancel any duplicate, then discard this intent.`;
+    : `No client order id was recorded. A running regime engine searches the exchange's open orders and fills for ${what} placed around ${new Date(intent?.createdAt ?? Date.now()).toISOString()} and adopts or clears it automatically. If it stays unresolved, or this is a DCA fund, check the exchange yourself, cancel any duplicate, then discard this intent.`;
 };
 
 module.exports = {
