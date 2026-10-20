@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { io } from 'socket.io-client'
+import { getRealtimeClient } from '../lib/realtime'
 
 const THROTTLE_MS = 250
 
 /**
- * Socket.IO hook for UpDown BTC perp-long signal data.
+ * Realtime hook for UpDown BTC perp-long signal data.
  * Throttles state updates to avoid render storms from high-frequency WebSocket data.
  */
 export const useUpDownSocket = (options = {}) => {
   const { autoConnect = true } = options
 
-  const socketRef = useRef(null)
   const [connected, setConnected] = useState(false)
   const [tick, setTick] = useState(null)
   const [indicators, setIndicators] = useState(null)
@@ -26,29 +25,24 @@ export const useUpDownSocket = (options = {}) => {
   useEffect(() => {
     if (!autoConnect) return
 
-    const socket = io(window.location.origin, {
-      transports: ['websocket', 'polling']
-    })
+    const socket = getRealtimeClient()
 
-    socketRef.current = socket
-
-    socket.on('connect', () => {
+    const onConnect = () => {
       setConnected(true)
       setError(null)
-      socket.emit('updown:subscribe')
-    })
+    }
 
-    socket.on('disconnect', () => {
+    const onDisconnect = () => {
       setConnected(false)
-    })
+    }
 
-    socket.on('connect_error', (err) => {
+    const onConnectError = (err) => {
       setError(err?.message || 'Connection error')
       setConnected(false)
-    })
+    }
 
     // Tick data (1/sec) - throttle to 250ms
-    socket.on('updown:tick', (data) => {
+    const onTick = (data) => {
       tickRef.current = data
       if (!tickThrottleRef.current) {
         tickThrottleRef.current = setTimeout(() => {
@@ -56,10 +50,10 @@ export const useUpDownSocket = (options = {}) => {
           setTick(tickRef.current)
         }, THROTTLE_MS)
       }
-    })
+    }
 
     // Indicator data (every 5s) - throttle to 250ms
-    socket.on('updown:indicators', (data) => {
+    const onIndicators = (data) => {
       indicatorsRef.current = data
       if (!indicatorsThrottleRef.current) {
         indicatorsThrottleRef.current = setTimeout(() => {
@@ -67,22 +61,42 @@ export const useUpDownSocket = (options = {}) => {
           setIndicators(indicatorsRef.current)
         }, THROTTLE_MS)
       }
-    })
+    }
 
     // Signal changes - no throttle, these are infrequent
-    socket.on('updown:signal', (data) => {
+    const onSignal = (data) => {
       setSignal(data)
-    })
+    }
 
     // Scorecard updates - infrequent (max 1 per 5s), no throttle needed
-    socket.on('updown:scorecard', (data) => {
+    const onScorecard = (data) => {
       setScorecard(data)
-    })
+    }
+
+    socket.on('connect', onConnect)
+    socket.on('disconnect', onDisconnect)
+    socket.on('connect_error', onConnectError)
+    socket.on('updown:tick', onTick)
+    socket.on('updown:indicators', onIndicators)
+    socket.on('updown:signal', onSignal)
+    socket.on('updown:scorecard', onScorecard)
+    // The client re-sends the subscription after every reconnect.
+    socket.subscribe('updown')
+    setConnected(socket.connected)
 
     return () => {
+      socket.unsubscribe('updown')
+      socket.off('connect', onConnect)
+      socket.off('disconnect', onDisconnect)
+      socket.off('connect_error', onConnectError)
+      socket.off('updown:tick', onTick)
+      socket.off('updown:indicators', onIndicators)
+      socket.off('updown:signal', onSignal)
+      socket.off('updown:scorecard', onScorecard)
       if (tickThrottleRef.current) clearTimeout(tickThrottleRef.current)
       if (indicatorsThrottleRef.current) clearTimeout(indicatorsThrottleRef.current)
-      socket.disconnect()
+      tickThrottleRef.current = null
+      indicatorsThrottleRef.current = null
     }
   }, [autoConnect])
 

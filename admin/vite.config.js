@@ -18,9 +18,12 @@ export default defineConfig({
         changeOrigin: true,
         xfwd: true,
       },
-      '/socket.io': {
+      // Realtime bus (src/realtime-bus.js). Keep the browser's Host: the
+      // gateway only upgrades a page from its own origin, and this websocket
+      // proxy adds no X-Forwarded-Host.
+      '/realtime': {
         target: `http://localhost:${API_PORT}`,
-        changeOrigin: true,
+        changeOrigin: false,
         ws: true,
         xfwd: true,
       },
