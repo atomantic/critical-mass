@@ -27,6 +27,30 @@ const { pairCycleFills, buyPairKey, isBodyOwnedFill } = require('../shared/cycle
  * @typedef {import('./types').RegimePositionState} RegimePositionState
  */
 
+const ECONOMIC_FIELDS = ['quoteAmount', 'fee', 'netFee', 'rebate'];
+
+const equivalent = (a, b) => Number.isFinite(a) && Number.isFinite(b)
+  && Math.abs(a - b) <= 1e-8;
+
+const sumEconomics = (parts) => {
+  const totals = { quoteAmount: 0, fee: 0, netFee: 0, rebate: 0 };
+  for (const part of parts) {
+    for (const key of ECONOMIC_FIELDS) totals[key] += part[key];
+  }
+  return totals;
+};
+
+const prorateEconomics = (economics, ratio) => {
+  const prorated = {};
+  for (const key of ECONOMIC_FIELDS) prorated[key] = economics[key] * ratio;
+  return prorated;
+};
+
+const economicCorrectionFields = ({ buyCorrection, sellCorrection }) => ({
+  ...(buyCorrection && { buyEconomicCorrection: buyCorrection }),
+  ...(sellCorrection && { sellEconomicCorrection: sellCorrection }),
+});
+
 /**
  * `consumedBy` key for consumption that sells recorded before per-order
  * consumption tracking existed (issue #607) had already taken from a buy.
@@ -1076,216 +1100,161 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   const isUnresolvedSyntheticCoverage = (fill) =>
     isSyntheticCoverage(fill) && unresolvedSyntheticSize(fill) > 1e-9;
 
-  /**
-   * Plan identity replacement without changing the reported execution. Equivalent coverage
-   * wholly contained in rows with the same annotations can still be replaced
-   * directly. When an execution crosses the remaining coverage or the covered
-   * rows carry different state, keep those rows as the quantity/ownership
-   * record and persist the real identity against them. Only the excess becomes
-   * a new ledger tranche. Buy and sell quote/fee corrections publish durable
-   * journals before their accounting targets are updated.
-   */
-  const reconcileSyntheticCoverage = (reportedExecution) => {
-    const fill = reportedExecution;
-    if (isSyntheticCoverage(fill) || !syntheticOrders.has(fill.orderId)) return null;
-    const covered = Array.from(fills.values())
-      .filter(row => row.orderId === fill.orderId && row.side === fill.side && isUnresolvedSyntheticCoverage(row))
-      .sort((a, b) => a.timestamp - b.timestamp);
-    if (!covered.length) return null;
-    const reject = (reason) => {
-      throw Object.assign(new Error(`Synthetic execution reconciliation required for order ${fill.orderId}: ${reason}`), {
-        syntheticReconciliationRequired: true,
-      });
-    };
-    const total = covered.reduce((sum, row) => sum + unresolvedSyntheticSize(row), 0);
-    if (!Number.isFinite(fill.size) || fill.size <= 0) reject('real execution has an invalid quantity');
-    const coveredSize = Math.min(fill.size, total);
-    const annotations = [...(ORDER_LEVEL_FIELDS[fill.side] || []),
-      'cycleId', 'bodyBooked', 'capitalCredited', 'capitalCreditedSize'];
-    const anchor = covered[0];
-    const sameAnnotations = covered.every(row => annotations.every(key =>
-      JSON.stringify(row[key]) === JSON.stringify(anchor[key])));
-    const hasPriorAllocations = covered.some(row =>
-      (row.syntheticCoverage?.reconciledTrades || []).length > 0);
-    const preserveCoverage = fill.size > total + 1e-9 || !sameAnnotations || hasPriorAllocations;
-    if (preserveCoverage) {
-      let remaining = coveredSize;
-      let syntheticQuote = 0;
-      let syntheticFee = 0;
-      let syntheticNetFee = 0;
-      let syntheticRebate = 0;
-      let rawCoveredQuote = 0;
-      let rawCoveredFee = 0;
-      let rawCoveredNetFee = 0;
-      let rawCoveredRebate = 0;
-      const allocations = [];
-      const reported = {
-        size: fill.size,
-        price: fill.price,
-        quoteAmount: fill.quoteAmount,
-        fee: fill.fee,
-        netFee: fill.netFee,
-        rebate: fill.rebate,
-      };
-      for (const row of covered) {
-        if (remaining <= 1e-9) break;
-        const quantity = Math.min(remaining, unresolvedSyntheticSize(row));
-        if (quantity <= 1e-9) continue;
-        const syntheticRatio = quantity / row.size;
-        const executionRatio = quantity / reported.size;
-        const original = row.syntheticCoverage?.originalEconomics || row;
-        const quoteAmount = original.quoteAmount * syntheticRatio;
-        const fee = original.fee * syntheticRatio;
-        const netFee = original.netFee * syntheticRatio;
-        const rebate = (original.rebate || 0) * syntheticRatio;
-        const executionQuote = reported.quoteAmount * executionRatio;
-        const executionFee = reported.fee * executionRatio;
-        const executionNetFee = reported.netFee * executionRatio;
-        const executionRebate = reported.rebate * executionRatio;
-        syntheticQuote += quoteAmount;
-        syntheticFee += fee;
-        syntheticNetFee += netFee;
-        syntheticRebate += rebate;
-        rawCoveredQuote += executionQuote;
-        rawCoveredFee += executionFee;
-        rawCoveredNetFee += executionNetFee;
-        rawCoveredRebate += executionRebate;
-        allocations.push({
-          row,
-          tradeId: row.tradeId,
-          size: quantity,
-          quoteAmount: executionQuote,
-          fee: executionFee,
-          netFee: executionNetFee,
-          rebate: executionRebate,
-          priorEconomics: { quoteAmount, fee, netFee, rebate },
-        });
-        remaining = roundAsset(Math.max(0, remaining - quantity));
+  const planCorrectionIfEconomicsDiffer = (fill, covered, executionTotals, allocations) => {
+    let buyCorrection;
+    let sellCorrection;
+    if (!ECONOMIC_FIELDS.every(key => equivalent(executionTotals[key], covered[key]))) {
+      if (fill.side === 'buy') {
+        buyCorrection = planBuyCorrection(Array.from(fills.values()), fill.orderId,
+          executionTotals.quoteAmount + executionTotals.netFee - covered.quoteAmount - covered.netFee, fill.tradeId);
+      } else {
+        sellCorrection = planSellCorrection(allocations, fill.tradeId);
       }
-      const equivalent = (a, b) => Number.isFinite(a) && Number.isFinite(b)
-        && Math.abs(a - b) <= 1e-8;
-      let buyCorrection;
-      let sellCorrection;
-      if (!equivalent(rawCoveredQuote, syntheticQuote) || !equivalent(rawCoveredFee, syntheticFee)
-        || !equivalent(rawCoveredNetFee, syntheticNetFee) || !equivalent(rawCoveredRebate, syntheticRebate)) {
-        if (fill.side === 'buy') {
-          buyCorrection = planBuyCorrection(Array.from(fills.values()), fill.orderId,
-            rawCoveredQuote + rawCoveredNetFee - syntheticQuote - syntheticNetFee, fill.tradeId);
-        } else {
-          sellCorrection = planSellCorrection(allocations, fill.tradeId);
-        }
-      }
-
-      const newSize = roundAsset(Math.max(0, reported.size - coveredSize));
-      const newQuote = Math.max(0, reported.quoteAmount - rawCoveredQuote);
-      const newFee = Math.max(0, reported.fee - rawCoveredFee);
-      const newNetFee = reported.netFee - rawCoveredNetFee;
-      const newRebate = reported.rebate - rawCoveredRebate;
-      const ledgerExecution = {
-        ...fill,
-        ...(buyCorrection && { buyEconomicCorrection: buyCorrection }),
-        ...(sellCorrection && { sellEconomicCorrection: sellCorrection }),
-        reportedExecution: reported,
-        syntheticCoverageReconciliation: {
-          coveredSize,
-          newSize,
-          coveredQuoteAmount: rawCoveredQuote,
-          newQuoteAmount: newQuote,
-          coveredFee: rawCoveredFee,
-          newFee,
-          coveredNetFee: rawCoveredNetFee,
-          newNetFee,
-          coveredRebate: rawCoveredRebate,
-          newRebate,
-          allocations: allocations.map(({ tradeId, size, quoteAmount, fee, netFee, rebate }) => ({
-            tradeId, size, quoteAmount, fee, netFee, rebate,
-          })),
-        },
-        replacesSyntheticTradeIds: [...new Set(allocations.map(allocation => allocation.tradeId))],
-        size: newSize > 1e-9 ? newSize : 0,
-        quoteAmount: newSize > 1e-9 ? newQuote : 0,
-        fee: newSize > 1e-9 ? newFee : 0,
-        netFee: newSize > 1e-9 ? newNetFee : 0,
-        rebate: newSize > 1e-9 ? newRebate : 0,
-        ...(newSize > 1e-9 ? { price: newQuote / newSize } : {}),
-      };
-      return { mode: 'preserve', ledgerExecution, reportedExecution,
-        annotations: {}, allocations, replacements: [],
-        corrections: { buy: buyCorrection, sell: sellCorrection }, coveredSize, newSize };
     }
+    return { buyCorrection, sellCorrection };
+  };
 
+  const planPreservedCoverage = (fill, covered, coveredSize) => {
+    let remaining = coveredSize;
+    const allocations = [];
+    const reported = {
+      size: fill.size,
+      price: fill.price,
+      quoteAmount: fill.quoteAmount,
+      fee: fill.fee,
+      netFee: fill.netFee,
+      rebate: fill.rebate,
+    };
+    for (const row of covered) {
+      if (remaining <= 1e-9) break;
+      const quantity = Math.min(remaining, unresolvedSyntheticSize(row));
+      if (quantity <= 1e-9) continue;
+      const original = row.syntheticCoverage?.originalEconomics || row;
+      allocations.push({
+        row,
+        tradeId: row.tradeId,
+        size: quantity,
+        ...prorateEconomics(reported, quantity / reported.size),
+        priorEconomics: prorateEconomics({ ...original, rebate: original.rebate || 0 }, quantity / row.size),
+      });
+      remaining = roundAsset(Math.max(0, remaining - quantity));
+    }
+    const syntheticTotals = sumEconomics(allocations.map(allocation => allocation.priorEconomics));
+    const executionTotals = sumEconomics(allocations);
+    const corrections = planCorrectionIfEconomicsDiffer(fill, syntheticTotals, executionTotals, allocations);
+    const newSize = roundAsset(Math.max(0, reported.size - coveredSize));
+    const newQuote = Math.max(0, reported.quoteAmount - executionTotals.quoteAmount);
+    const newFee = Math.max(0, reported.fee - executionTotals.fee);
+    const newNetFee = reported.netFee - executionTotals.netFee;
+    const newRebate = reported.rebate - executionTotals.rebate;
+    const ledgerExecution = {
+      ...fill,
+      ...economicCorrectionFields(corrections),
+      reportedExecution: reported,
+      syntheticCoverageReconciliation: {
+        coveredSize,
+        newSize,
+        coveredQuoteAmount: executionTotals.quoteAmount,
+        newQuoteAmount: newQuote,
+        coveredFee: executionTotals.fee,
+        newFee,
+        coveredNetFee: executionTotals.netFee,
+        newNetFee,
+        coveredRebate: executionTotals.rebate,
+        newRebate,
+        allocations: allocations.map(({ tradeId, size, quoteAmount, fee, netFee, rebate }) => ({
+          tradeId, size, quoteAmount, fee, netFee, rebate,
+        })),
+      },
+      replacesSyntheticTradeIds: [...new Set(allocations.map(allocation => allocation.tradeId))],
+      size: newSize > 1e-9 ? newSize : 0,
+      quoteAmount: newSize > 1e-9 ? newQuote : 0,
+      fee: newSize > 1e-9 ? newFee : 0,
+      netFee: newSize > 1e-9 ? newNetFee : 0,
+      rebate: newSize > 1e-9 ? newRebate : 0,
+      ...(newSize > 1e-9 ? { price: newQuote / newSize } : {}),
+    };
+    return { mode: 'preserve', ledgerExecution, reportedExecution: fill,
+      annotations: {}, allocations, replacements: [],
+      corrections: { buy: corrections.buyCorrection, sell: corrections.sellCorrection }, coveredSize, newSize };
+  };
+
+  const planReplacedCoverage = (fill, covered, annotations) => {
     let remaining = fill.size;
-    let quote = 0;
-    let fee = 0;
-    let netFee = 0;
-    let rebate = 0;
     const replacements = [];
-    const correctionAllocations = [];
+    const allocations = [];
     for (const row of covered) {
       if (remaining <= 1e-9) break;
       const quantity = Math.min(remaining, unresolvedSyntheticSize(row));
       const ratio = quantity / row.size;
-      const executionRatio = quantity / fill.size;
-      quote += row.quoteAmount * ratio;
-      fee += row.fee * ratio;
-      netFee += row.netFee * ratio;
-      rebate += (row.rebate || 0) * ratio;
-      correctionAllocations.push({
+      const economics = { ...row, rebate: row.rebate || 0 };
+      allocations.push({
         row,
         tradeId: row.tradeId,
         size: quantity,
-        quoteAmount: fill.quoteAmount * executionRatio,
-        fee: fill.fee * executionRatio,
-        netFee: fill.netFee * executionRatio,
-        rebate: fill.rebate * executionRatio,
-        priorEconomics: {
-          quoteAmount: row.quoteAmount * ratio,
-          fee: row.fee * ratio,
-          netFee: row.netFee * ratio,
-          rebate: (row.rebate || 0) * ratio,
-        },
+        ...prorateEconomics(fill, quantity / fill.size),
+        priorEconomics: prorateEconomics(economics, ratio),
       });
       const residualSize = roundAsset(row.size - quantity);
       replacements.push({ old: row, residual: residualSize > 1e-9 ? {
         ...row,
         size: residualSize,
-        quoteAmount: row.quoteAmount * (1 - ratio),
-        fee: row.fee * (1 - ratio),
-        netFee: row.netFee * (1 - ratio),
-        rebate: (row.rebate || 0) * (1 - ratio),
+        ...prorateEconomics(economics, 1 - ratio),
       } : null });
       remaining = roundAsset(remaining - quantity);
     }
-    const equivalent = (a, b) => Number.isFinite(a) && Number.isFinite(b)
-      && Math.abs(a - b) <= 1e-8;
-    let buyCorrection;
-    let sellCorrection;
-    if (!equivalent(fill.quoteAmount, quote) || !equivalent(fill.fee, fee)
-      || !equivalent(fill.netFee, netFee) || !equivalent(fill.rebate, rebate)) {
-      if (fill.side === 'buy') {
-        buyCorrection = planBuyCorrection(Array.from(fills.values()), fill.orderId,
-          fill.quoteAmount + fill.netFee - quote - netFee, fill.tradeId);
-      } else {
-        sellCorrection = planSellCorrection(correctionAllocations, fill.tradeId);
-      }
-    }
+    const syntheticTotals = sumEconomics(allocations.map(allocation => allocation.priorEconomics));
+    const corrections = planCorrectionIfEconomicsDiffer(fill, syntheticTotals, fill, allocations);
     const inheritedAnnotations = {};
+    const anchor = covered[0];
     for (const key of annotations) {
       if (anchor[key] !== undefined) inheritedAnnotations[key] = key === 'consumedBy'
         ? { ...anchor[key] } : anchor[key];
     }
-    // Persist the coverage identity on the real row for diagnostics. It is
-    // deliberately distinct from syntheticCoverage: real rows never cover
-    // another real trade ID, and replay remains the normal ID dedup.
+    // Real rows retain the replaced identities for diagnostics, never as coverage for another real ID.
     const ledgerExecution = { ...fill,
-      ...(buyCorrection && { buyEconomicCorrection: buyCorrection }),
-      ...(sellCorrection && { sellEconomicCorrection: sellCorrection }),
+      ...economicCorrectionFields(corrections),
       ...inheritedAnnotations,
       replacesSyntheticTradeIds: replacements.map(item => item.old.tradeId),
     };
-    return { mode: 'replace', ledgerExecution, reportedExecution,
+    return { mode: 'replace', ledgerExecution, reportedExecution: fill,
       annotations: inheritedAnnotations, allocations: [], replacements,
-      corrections: { buy: buyCorrection, sell: sellCorrection }, coveredSize: fill.size, newSize: 0 };
+      corrections: { buy: corrections.buyCorrection, sell: corrections.sellCorrection }, coveredSize: fill.size, newSize: 0 };
+  };
+
+  const coverageRequiresPreservation = (fill, covered, total, annotations) => {
+    const anchor = covered[0];
+    const sameAnnotations = covered.every(row => annotations.every(key =>
+      JSON.stringify(row[key]) === JSON.stringify(anchor[key])));
+    const hasPriorAllocations = covered.some(row =>
+      (row.syntheticCoverage?.reconciledTrades || []).length > 0);
+    return fill.size > total + 1e-9 || !sameAnnotations || hasPriorAllocations;
+  };
+
+  /**
+   * Equivalent coverage with matching annotations can be replaced directly. Keep
+   * quantity/ownership rows when executions cross coverage or annotations differ;
+   * only excess quantity becomes a new tranche. Both plans publish correction
+   * journals before their accounting targets are updated.
+   */
+  const reconcileSyntheticCoverage = (fill) => {
+    if (isSyntheticCoverage(fill) || !syntheticOrders.has(fill.orderId)) return null;
+    const covered = Array.from(fills.values())
+      .filter(row => row.orderId === fill.orderId && row.side === fill.side && isUnresolvedSyntheticCoverage(row))
+      .sort((a, b) => a.timestamp - b.timestamp);
+    if (!covered.length) return null;
+    const total = covered.reduce((sum, row) => sum + unresolvedSyntheticSize(row), 0);
+    if (!Number.isFinite(fill.size) || fill.size <= 0) {
+      throw Object.assign(new Error(`Synthetic execution reconciliation required for order ${fill.orderId}: real execution has an invalid quantity`), {
+        syntheticReconciliationRequired: true,
+      });
+    }
+    const annotations = [...(ORDER_LEVEL_FIELDS[fill.side] || []),
+      'cycleId', 'bodyBooked', 'capitalCredited', 'capitalCreditedSize'];
+    const preserveCoverage = coverageRequiresPreservation(fill, covered, total, annotations);
+    return preserveCoverage
+      ? planPreservedCoverage(fill, covered, Math.min(fill.size, total))
+      : planReplacedCoverage(fill, covered, annotations);
   };
 
   const recordPreservedCoverage = (fill, reconciliation, tradeId) => {
