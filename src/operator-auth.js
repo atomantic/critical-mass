@@ -48,23 +48,30 @@ const requestOriginMatches = (req) => {
 const isLoopbackRequest = (req) => {
   if (!requestOriginMatches(req)) return false;
   if (!isLoopbackHost(req?.socket?.remoteAddress)) return false;
+  const getHeader = (name) => (typeof req?.get === 'function' ? req.get(name) : req?.headers?.[name]) || '';
+  const isLoopbackHostHeader = (hostHeader) => {
+    const host = hostHeader.trim();
+    const hostname = host.startsWith('[')
+      ? host.slice(1, host.indexOf(']'))
+      : host.split(':')[0];
+    return isLoopbackHost(hostname);
+  };
+  const host = getHeader('host');
+  const forwardedHost = getHeader('x-forwarded-host');
+  if (!host || !host.split(',').every(isLoopbackHostHeader)) return false;
+  if (forwardedHost && !forwardedHost.split(',').every(isLoopbackHostHeader)) return false;
+
   // A loopback proxy may preserve the original client. Forwarding headers can
   // only downgrade trust: every reported hop must also be loopback.
-  const forwardedHeader = (typeof req?.get === 'function' ? req.get('x-forwarded-for') : req?.headers?.['x-forwarded-for']) || '';
+  const forwardedHeader = getHeader('x-forwarded-for');
   const forwarded = forwardedHeader
     .split(',')
     .map((address) => address.trim())
     .filter(Boolean);
   if (forwarded.length > 0) return forwarded.every(isLoopbackHost);
-
-  // A direct browser connection has a loopback Host. A reverse proxy that
-  // erases X-Forwarded-For must not become a trusted bootstrap channel merely
-  // because its backend connection originates on loopback.
-  const host = ((typeof req?.get === 'function' ? req.get('host') : req?.headers?.host) || '').trim();
-  const hostname = host.startsWith('[')
-    ? host.slice(1, host.indexOf(']'))
-    : host.split(':')[0];
-  return isLoopbackHost(hostname);
+  // A reverse proxy that erases X-Forwarded-For must not become a trusted
+  // bootstrap channel merely because its backend connection is loopback.
+  return true;
 };
 
 const submittedSecret = (body = {}) => {

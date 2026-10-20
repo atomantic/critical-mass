@@ -118,15 +118,34 @@ describe('operator authentication bootstrap', () => {
     assert.equal(isLoopbackAddress('100.83.147.46'), false);
     assert.equal(isLoopbackAddress('::ffff:192.168.1.10'), false);
 
-    const request = (remoteAddress, forwardedFor = '', host = 'localhost:5570') => ({
+    const request = (remoteAddress, forwardedFor = '', host = 'localhost:5570', forwardedHost = '') => ({
       socket: { remoteAddress },
-      get: (name) => name === 'x-forwarded-for' ? forwardedFor : name === 'host' ? host : '',
+      get: (name) => name === 'x-forwarded-for' ? forwardedFor
+        : name === 'x-forwarded-host' ? forwardedHost
+          : name === 'host' ? host : '',
     });
     assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1')), true);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '::1, 127.0.0.1')), true);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '100.83.147.46')), false);
     assert.equal(isLoopbackRequest(request('100.83.147.46', '127.0.0.1')), false);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '', 'critical-mass.example')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'evil.example:5571', 'evil.example:5571')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'localhost:5571', 'evil.example:5571')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'evil.example:5571', 'localhost:5571')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'localhost:5571', 'localhost:5571, evil.example:5571')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'evil.example:5571')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'localhost:5571', 'localhost:5571')), true);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', '127.0.0.1:5571')), true);
+    assert.equal(isLoopbackRequest(request('::1', '', '[::1]:5571')), true);
+    const rebindingRequest = {
+      socket: { remoteAddress: '127.0.0.1' },
+      headers: {
+        'x-forwarded-for': '127.0.0.1',
+        'x-forwarded-host': 'evil.example:5571',
+        origin: 'http://evil.example:5571',
+      },
+    };
+    assert.equal(isLoopbackRequest(rebindingRequest), false);
 
     const requestWithOrigin = (remoteAddress, host, origin) => ({
       socket: { remoteAddress },
