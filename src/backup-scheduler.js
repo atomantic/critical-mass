@@ -2,6 +2,7 @@
 const MIN_DELAY_MS = 60_000;
 const FAILURE_RETRY_MS = 5 * 60_000;
 const MAINTENANCE_RETRY_MS = 60_000;
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /**
  * Disk-anchored scheduler for the recurring backup kinds. The next due time
@@ -32,30 +33,56 @@ const createBackupScheduler = ({
     timers.delete(name);
   };
 
-  const delayFor = (name, config) => {
+  // Absolute due times survive repeated arms, so an overdue run's grace and the
+  // startup offset are applied once rather than re-granted on every settings save.
+  const deadlines = new Map();
+
+  const dueFor = (name, config) => {
     const kind = kinds[name];
     const last = Math.max(kind.newest() ?? -Infinity, lastRunAt.get(name) ?? -Infinity);
-    if (last === -Infinity) return MIN_DELAY_MS;
-    return Math.max(MIN_DELAY_MS, last + config[kind.intervalKey] - now());
+    return last === -Infinity ? -Infinity : last + config[kind.intervalKey];
   };
 
-  const arm = (name, delayOverride) => {
+  const startTimer = (name, deadline) => {
+    const remaining = Math.max(0, deadline - now());
+    const delay = Math.min(remaining, MAX_TIMER_MS);
+    timers.set(name, setTimer(() => {
+      timers.delete(name);
+      if (remaining > MAX_TIMER_MS) startTimer(name, deadline);
+      else fire(name);
+    }, delay));
+  };
+
+  const arm = (name, retryMs) => {
     disarm(name);
     if (isStopping() || inFlight.has(name)) return;
     const config = getConfig();
     if (!config.enabled) return;
-    const kind = kinds[name];
-    const delay = delayOverride ?? delayFor(name, config) + (firstArm ? (kind.startupOffsetMs ?? 0) : 0);
-    timers.set(name, setTimer(() => {
-      timers.delete(name);
-      fire(name);
-    }, delay));
+    let deadline;
+    if (retryMs !== undefined) {
+      deadline = now() + retryMs;
+    } else {
+      try {
+        const due = dueFor(name, config);
+        const offset = kinds[name].startupOffsetMs ?? 0;
+        const pending = deadlines.get(name);
+        // A pending deadline stays valid only while it is still the grace for the same overdue state.
+        const keep = pending !== undefined && due <= pending && pending <= Math.max(due, now() + MIN_DELAY_MS + offset);
+        deadline = keep ? pending : Math.max(due, now() + MIN_DELAY_MS + (firstArm ? offset : 0));
+      } catch (err) {
+        log('ERROR', `💾 ${kinds[name].failLabel} schedule lookup failed: ${err.message}`);
+        deadline = now() + FAILURE_RETRY_MS;
+      }
+    }
+    deadlines.set(name, deadline);
+    startTimer(name, deadline);
   };
 
   const fire = (name) => {
     if (isStopping() || inFlight.has(name)) return;
     const kind = kinds[name];
     inFlight.add(name);
+    deadlines.delete(name);
     let retryMs;
     track((async () => {
       const config = getConfig();
@@ -84,6 +111,7 @@ const createBackupScheduler = ({
     if (isStopping()) return;
     const config = getConfig();
     if (!config.enabled) {
+      deadlines.clear();
       log('INFO', '💾 Backup scheduler disabled');
       return;
     }

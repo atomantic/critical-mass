@@ -56,7 +56,37 @@ describe('backup scheduler', () => {
     assert.equal(archive.ms, MIN_DELAY_MS);
     assert.equal(fund.ms, MIN_DELAY_MS + 120000);
     h.scheduler.reschedule();
-    assert.equal(h.pending.filter((t) => t.live)[1].ms, MIN_DELAY_MS);
+    assert.equal(h.pending.filter((t) => t.live)[1].ms, MIN_DELAY_MS + 120000);
+  });
+
+  it('does not re-grant the overdue grace on frequent settings saves', () => {
+    const h = harness();
+    h.state.archiveNewest = h.now() - 30 * HOUR;
+    h.scheduler.reschedule();
+    h.advance(30_000);
+    h.scheduler.reschedule();
+    assert.equal(h.live(0).ms, MIN_DELAY_MS - 30_000);
+  });
+
+  it('survives a throwing artifact lookup and retries later', () => {
+    const h = harness();
+    h.state.config.intervalMs = HOUR;
+    Object.defineProperty(h.state, 'archiveNewest', { get() { throw new Error('EIO'); } });
+    assert.doesNotThrow(() => h.scheduler.reschedule());
+    assert.equal(h.live(0).ms, 5 * 60_000);
+    assert.ok(h.logs.some(([level, msg]) => level === 'ERROR' && msg.includes('EIO')));
+  });
+
+  it('chunks delays beyond the Node timer limit', () => {
+    const h = harness({ config: { fundStateIntervalMs: 3_000_000_000 } });
+    h.state.fundNewest = h.now();
+    h.scheduler.reschedule();
+    const fund = h.pending.filter((t) => t.live)[1];
+    assert.equal(fund.ms, 2147483647);
+    h.advance(2147483647);
+    fund.fn();
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.pending.at(-1).ms, 3_000_000_000 - 2147483647);
   });
 
   it('retries a maintenance-locked run in 60s without logging an error', async () => {

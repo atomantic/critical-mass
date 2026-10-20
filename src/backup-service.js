@@ -696,8 +696,16 @@ const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
  * @returns {number | null}
  */
 const getNewestBackupTime = () => {
-  const newest = listBackups()[0];
-  return newest ? Date.parse(newest.createdAt) : null;
+  ensureBackupsDir();
+  // Archives are validated before the atomic publish rename, so mtime alone is
+  // enough here; re-testing every retained ZIP would block the event loop.
+  let newest = null;
+  for (const filename of fs.readdirSync(BACKUPS_DIR)) {
+    if (!filename.startsWith('backup-') || !filename.endsWith('.zip')) continue;
+    const stats = fs.lstatSync(path.join(BACKUPS_DIR, filename));
+    if (stats.isFile() && (newest === null || stats.mtimeMs > newest)) newest = stats.mtimeMs;
+  }
+  return newest;
 };
 
 /**
