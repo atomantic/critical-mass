@@ -653,7 +653,7 @@ function AppContent() {
                   to="/"
                   className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
-                  DCA
+                  Funds
                 </Link>
                 <Link
                   to="/notifications"
@@ -689,7 +689,7 @@ function AppContent() {
                   to="/ai"
                   className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
-                  AI
+                  AI Providers
                 </Link>
                 <Link
                   to="/gateway"
@@ -708,7 +708,7 @@ function AppContent() {
                   onClick={() => setMobileMenuOpen(false)}
                   className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
                 >
-                  DCA
+                  Funds
                 </Link>
                 <Link
                   to="/notifications"
