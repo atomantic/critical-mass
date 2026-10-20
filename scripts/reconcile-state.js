@@ -28,7 +28,7 @@ const API_URL = 'https://api.coinbase.com';
 const { parseFundCli } = require('./lib/fund-cli');
 const { atomicWriteSync } = require('../src/state-tracker');
 
-const { pair: PRODUCT_ID, apply: APPLY, ledgerPath: LEDGER_PATH, statePath: STATE_PATH } =
+const { prepareApply, pair: PRODUCT_ID, apply: APPLY, ledgerPath: LEDGER_PATH, statePath: STATE_PATH } =
   parseFundCli(process.argv, { exchange: 'coinbase', usage: 'node scripts/reconcile-state.js' });
 const DRY_RUN = !APPLY;
 
@@ -108,6 +108,7 @@ const writeJSON = (filePath, data) => {
 
 // ── MAIN ───────────────────────────────────────────────────────
 async function main() {
+  await prepareApply({ files: [LEDGER_PATH, STATE_PATH, USER_CONFIG_PATH] });
   console.log(`\n${'═'.repeat(60)}`);
   console.log('  RECONCILE STATE — Comprehensive Fill Audit & Repair');
   console.log(`${'═'.repeat(60)}`);

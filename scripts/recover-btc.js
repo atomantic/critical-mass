@@ -22,7 +22,7 @@ const API_URL = 'https://api.coinbase.com';
 const { parseFundCli } = require('./lib/fund-cli');
 const { atomicWriteSync } = require('../src/state-tracker');
 
-const { pair: PRODUCT_ID, apply: APPLY, ledgerPath: LEDGER_PATH, statePath: STATE_PATH } =
+const { prepareApply, pair: PRODUCT_ID, apply: APPLY, ledgerPath: LEDGER_PATH, statePath: STATE_PATH } =
   parseFundCli(process.argv, { exchange: 'coinbase', usage: 'node scripts/recover-btc.js' });
 const DRY_RUN = !APPLY;
 
@@ -60,6 +60,7 @@ const fetchFillsForOrder = async (orderId) => {
 };
 
 async function main() {
+  await prepareApply({ files: [LEDGER_PATH, STATE_PATH] });
   console.log('\n═══════════════════════════════════════════════════');
   console.log('  RECOVER BTC — Market buy to cover ec8b7bcb short');
   console.log('═══════════════════════════════════════════════════\n');

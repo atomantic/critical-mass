@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1194] Fund repairs share engine checks and backups** — Repair apply paths verify the engine is stopped before reading their snapshot, back up existing destination files, and write atomically. Incident tools require their explicit fund pair; unsafe file-age checks are removed.
+
 ### Added
 - **[issue-1000] React 19 admin rendering** — Upgrade the dashboard chart and 3D ecosystems together, preserve candlesticks, cloud overlays and signal markers through public Recharts coordinates, and add isolated browser rendering coverage.
 - **[issue-935] Authenticated browser performance coverage** — A disposable real gateway/IPC fixture and headless Chrome scenario measure protected Transactions load, Config idle traffic for 60 seconds, consumer cleanup and reconnect recovery. Page responses now omit ledger metadata; incomplete browser evidence and protocol-only replays report UNVERIFIED. See `docs/perf-route-audit.md`.

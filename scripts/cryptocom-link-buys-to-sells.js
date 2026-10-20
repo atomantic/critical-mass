@@ -14,15 +14,22 @@
  * Idempotent — only touches buys with side='buy' AND no sellOrderId.
  * Engine MUST be stopped: pm2 stop critical-mass-cryptocom
  *
+ * --apply verifies the engine is stopped and backs up files before repair.
+ *
  * Usage:
- *   node scripts/cryptocom-link-buys-to-sells.js           # dry-run
- *   node scripts/cryptocom-link-buys-to-sells.js --apply   # writes
+ *   node scripts/cryptocom-link-buys-to-sells.js --pair CRO_USD           # dry-run
+ *   node scripts/cryptocom-link-buys-to-sells.js --pair CRO_USD --apply   # writes
  */
+async function main() {
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+const { apply: APPLY, prepareApply, fundDir } = parseFundCli(process.argv, {
+  exchange: 'cryptocom', pair: 'CRO_USD', usage: 'node scripts/cryptocom-link-buys-to-sells.js'
+});
 const fs = require('fs');
 const path = require('path');
 
-const LEDGER_PATH = path.join(__dirname, '..', 'data', 'cryptocom', 'CRO_USD', 'fill-ledger.json');
-const APPLY = process.argv.includes('--apply');
+const LEDGER_PATH = path.join(fundDir, 'fill-ledger.json');
 
 // Black_hole body's TP order_id and its body identity. The TP filled fully on
 // 2026-05-10 16:10:09 UTC (113 partial fills, 483,593 CRO, $35,302 proceeds).
@@ -32,6 +39,8 @@ const BLACK_HOLE_TP = '6142909974300226432';
 const BLACK_HOLE_BODY_ID = 'body-85084389-mmtxp76q';
 const BLACK_HOLE_BODY_TIER = 'black_hole';
 const TP_FILL_END_MS = new Date('2026-05-10T16:10:10Z').getTime();
+
+await prepareApply({ files: [path.join(fundDir, 'fill-ledger.json')] });
 
 const ledger = JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
 
@@ -59,5 +68,8 @@ if (!APPLY) {
 const bp = `${LEDGER_PATH}.backup-link-${Date.now()}`;
 fs.copyFileSync(LEDGER_PATH, bp);
 console.log(`💾 Backup: ${path.basename(bp)}`);
-fs.writeFileSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
+atomicWriteSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
 console.log(`✅ Wrote ledger with ${touched} new buy→sell links`);
+
+}
+main().catch(err => { console.error(err); process.exitCode = 1; });

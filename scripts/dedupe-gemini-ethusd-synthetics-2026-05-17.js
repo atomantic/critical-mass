@@ -30,16 +30,23 @@
  * regime-engine-running.json with recent timestamp exists, but the operator
  * should also confirm via pm2 list).
  *
+ * --apply verifies the engine is stopped and backs up files before repair.
+ *
  * Usage:
- *   node scripts/dedupe-gemini-ethusd-synthetics-2026-05-17.js          # dry-run
- *   node scripts/dedupe-gemini-ethusd-synthetics-2026-05-17.js --apply  # apply
+ *   node scripts/dedupe-gemini-ethusd-synthetics-2026-05-17.js --pair ETHUSD          # dry-run
+ *   node scripts/dedupe-gemini-ethusd-synthetics-2026-05-17.js --pair ETHUSD --apply  # apply
  */
 
+async function main() {
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+const { apply: APPLY, prepareApply, fundDir } = parseFundCli(process.argv, {
+  exchange: 'gemini', pair: 'ETHUSD', usage: 'node scripts/dedupe-gemini-ethusd-synthetics-2026-05-17.js'
+});
 const fs = require('fs');
 const path = require('path');
 
-const LEDGER_PATH = path.resolve(__dirname, '../data/gemini/ETHUSD/fill-ledger.json');
-const APPLY = process.argv.includes('--apply');
+const LEDGER_PATH = path.join(fundDir, 'fill-ledger.json');
 
 const ANNOTATION_KEYS = [
   'bodyPnl',
@@ -60,6 +67,8 @@ const ANNOTATION_KEYS = [
 ];
 
 const isSyn = (f) => typeof f.tradeId === 'string' && f.tradeId.startsWith('synthetic-');
+
+await prepareApply({ files: [path.join(fundDir, 'fill-ledger.json')] });
 
 const ledger = JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
 console.log(`Loaded ${ledger.length} fills from ${LEDGER_PATH}`);
@@ -181,5 +190,8 @@ const backupPath = `${LEDGER_PATH}.backup-dedupe-synthetics-${Date.now()}`;
 fs.copyFileSync(LEDGER_PATH, backupPath);
 console.log(`\nBackup: ${backupPath}`);
 
-fs.writeFileSync(LEDGER_PATH, JSON.stringify(newLedger, null, 2));
+atomicWriteSync(LEDGER_PATH, JSON.stringify(newLedger, null, 2));
 console.log(`Wrote ${newLedger.length} fills to ${LEDGER_PATH}`);
+
+}
+main().catch(err => { console.error(err); process.exitCode = 1; });

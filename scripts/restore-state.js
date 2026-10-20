@@ -14,7 +14,7 @@ const API_URL = 'https://api.coinbase.com';
 const { parseFundCli } = require('./lib/fund-cli');
 const { atomicWriteSync } = require('../src/state-tracker');
 
-const { pair: productId, apply: APPLY, ledgerPath: fillLedgerPath, statePath } =
+const { prepareApply, pair: productId, apply: APPLY, ledgerPath: fillLedgerPath, statePath } =
   parseFundCli(process.argv, { exchange: 'coinbase', usage: 'node scripts/restore-state.js' });
 
 const keysRaw = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'coinbase-keys.json'), 'utf8'));
@@ -32,6 +32,7 @@ const makeRequest = async (method, apiPath, data = null) => {
 };
 
 async function main() {
+  await prepareApply({ files: [fillLedgerPath, statePath] });
   console.log('🔧 Restoring regime engine state from today\'s orders...\n');
 
   // Query filled orders

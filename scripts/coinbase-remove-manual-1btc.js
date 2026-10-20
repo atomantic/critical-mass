@@ -17,20 +17,29 @@
  *
  * Engine MUST be stopped (regime engine, not necessarily PM2 process).
  *
+ * --apply verifies the engine is stopped and backs up files before repair.
+ *
  * Usage:
- *   node scripts/coinbase-remove-manual-1btc.js           # dry-run
- *   node scripts/coinbase-remove-manual-1btc.js --apply   # writes
+ *   node scripts/coinbase-remove-manual-1btc.js --pair BTC-USDC           # dry-run
+ *   node scripts/coinbase-remove-manual-1btc.js --pair BTC-USDC --apply   # writes
  */
+async function main() {
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+const { apply: APPLY, prepareApply, fundDir } = parseFundCli(process.argv, {
+  exchange: 'coinbase', pair: 'BTC-USDC', usage: 'node scripts/coinbase-remove-manual-1btc.js'
+});
 const fs = require('fs');
 const path = require('path');
 
-const DIR = path.join(__dirname, '..', 'data', 'coinbase', 'BTC-USDC');
+const DIR = fundDir;
 const LEDGER_PATH = path.join(DIR, 'fill-ledger.json');
 const CLOSED_PATH = path.join(DIR, 'closed-trades.json');
-const APPLY = process.argv.includes('--apply');
 
 const REMOVE_PREFIXES = ['1d90f021', 'ccbca736', 'd2147728'];
 const isManual = (oid) => REMOVE_PREFIXES.some(p => String(oid).startsWith(p));
+
+await prepareApply({ files: [path.join(fundDir, 'fill-ledger.json'), path.join(fundDir, 'closed-trades.json')] });
 
 const ledger = JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
 const closed = JSON.parse(fs.readFileSync(CLOSED_PATH, 'utf8'));
@@ -65,6 +74,9 @@ const bpC = `${CLOSED_PATH}.backup-manual-${Date.now()}`;
 fs.copyFileSync(LEDGER_PATH, bpL);
 fs.copyFileSync(CLOSED_PATH, bpC);
 console.log(`💾 Backups: ${path.basename(bpL)}, ${path.basename(bpC)}`);
-fs.writeFileSync(LEDGER_PATH, JSON.stringify(ledgerSurvivors, null, 2));
-fs.writeFileSync(CLOSED_PATH, JSON.stringify(closedSurvivors, null, 2));
+atomicWriteSync(LEDGER_PATH, JSON.stringify(ledgerSurvivors, null, 2));
+atomicWriteSync(CLOSED_PATH, JSON.stringify(closedSurvivors, null, 2));
 console.log('✅ Wrote both files. Engine will derive fresh P&L from corrected ledger on next status fetch.');
+
+}
+main().catch(err => { console.error(err); process.exitCode = 1; });

@@ -28,9 +28,7 @@
  * Recovered buys carry no sellOrderId, so they correctly surface as held/open
  * positions: that asset is still sitting on the exchange, unsold.
  *
- * STOP THE ENGINE FIRST. A running engine periodically rewrites the ledger and
- * will clobber these changes. The script refuses to --apply while the fund's
- * regime-engine-running.json heartbeat is fresh.
+ * --apply verifies the engine is stopped and backs up the ledger before repair.
  *
  * Usage:
  *   node scripts/backfill-missing-fills.js gemini ETHUSD           # dry run
@@ -40,12 +38,16 @@
 const fs = require('fs');
 const path = require('path');
 const { getAdapter } = require('../src/adapters');
-const { checkEngineStopped } = require('../src/engine-liveness');
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
 const { resolveFundDataDir } = require('../src/migration');
 const { getBaseCurrency, getQuoteCurrency } = require('../src/config-utils');
 
 const [, , EXCHANGE_ARG, PAIR_ARG] = process.argv;
-const APPLY = process.argv.includes('--apply');
+const { apply: APPLY, prepareApply } = parseFundCli(
+  ['--exchange', EXCHANGE_ARG || '', '--pair', PAIR_ARG || '',
+    ...process.argv.filter(arg => arg === '--apply' || arg === '--dry-run')],
+  { exchange: EXCHANGE_ARG?.toLowerCase(), usage: 'node scripts/backfill-missing-fills.js <exchange> <PAIR>' });
 
 if (!EXCHANGE_ARG || !PAIR_ARG || EXCHANGE_ARG.startsWith('--')) {
   console.error('Usage: node scripts/backfill-missing-fills.js <exchange> <PAIR> [--apply]');
@@ -77,25 +79,6 @@ const ANNOTATION_KEYS = [
 // and must survive untouched. coinbase/BTC-USDC alone holds 20 such rows.
 const PSEUDO_TRADE_ID = /^(synthetic-|consolidated-sell-)/;
 
-/**
- * Refuse to write under a live engine — it holds these files in memory and its
- * next periodic save would discard the repair. See src/engine-liveness.js for
- * why the running flag's mtime is NOT a heartbeat.
- * @returns {Promise<void>}
- */
-const assertEngineStopped = async () => {
-  const { safe, reason } = await checkEngineStopped(EXCHANGE, PAIR);
-  if (safe) {
-    console.log(`  engine check: ${reason}`);
-    return;
-  }
-  console.error(
-    `\n❌ REFUSING to write ${EXCHANGE}/${PAIR}: ${reason}.`
-    + '\n   Stop it first (pm2 stop <process>), then re-run with --apply.'
-  );
-  process.exit(1);
-};
-
 /** Sum an annotation once per orderId — never across an order's partial rows. */
 const sumOncePerOrder = (rows, key) => {
   const seen = new Map();
@@ -114,6 +97,7 @@ const netAsset = (rows) =>
 const fmt = (n, dp = 6) => Number(n).toFixed(dp);
 
 async function main() {
+  await prepareApply({ files: [LEDGER_PATH] });
   console.log(`\nRepairing ${EXCHANGE}/${PAIR} fill-ledger`);
   console.log(`  ledger: ${LEDGER_PATH}`);
 
@@ -388,12 +372,10 @@ async function main() {
     return;
   }
 
-  await assertEngineStopped();
-
   const backupPath = `${LEDGER_PATH}.backup-backfill-${Date.now()}`;
   fs.copyFileSync(LEDGER_PATH, backupPath);
   console.log(`\nBackup: ${backupPath}`);
-  fs.writeFileSync(LEDGER_PATH, JSON.stringify(repaired, null, 2));
+  atomicWriteSync(LEDGER_PATH, JSON.stringify(repaired, null, 2));
   console.log(`Wrote ${repaired.length} fills to ${LEDGER_PATH}`);
   console.log('\nRestart the engine to pick up the repaired ledger.');
 }

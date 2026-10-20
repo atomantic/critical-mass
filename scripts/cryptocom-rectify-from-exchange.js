@@ -22,19 +22,26 @@
  *
  * Engine MUST be stopped: pm2 stop critical-mass-cryptocom
  *
+ * --apply verifies the engine is stopped and backs up files before repair.
+ *
  * Usage:
- *   node scripts/cryptocom-rectify-from-exchange.js           # dry-run
- *   node scripts/cryptocom-rectify-from-exchange.js --apply   # writes
+ *   node scripts/cryptocom-rectify-from-exchange.js --pair CRO_USD           # dry-run
+ *   node scripts/cryptocom-rectify-from-exchange.js --pair CRO_USD --apply   # writes
  */
+async function main() {
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+const { apply: APPLY, prepareApply, fundDir } = parseFundCli(process.argv, {
+  exchange: 'cryptocom', pair: 'CRO_USD', usage: 'node scripts/cryptocom-rectify-from-exchange.js'
+});
 const fs = require('fs');
 const path = require('path');
 
-const DIR = path.join(__dirname, '..', 'data', 'cryptocom', 'CRO_USD');
+const DIR = fundDir;
 const LEDGER_PATH = path.join(DIR, 'fill-ledger.json');
 const STATE_PATH = path.join(DIR, 'regime-state.json');
 const CLOSED_PATH = path.join(DIR, 'closed-trades.json');
 const EXCHANGE_PATH = path.join(DIR, 'exchange-trades.json');
-const APPLY = process.argv.includes('--apply');
 
 const DUST_THRESHOLD = 100; // CRO
 
@@ -48,6 +55,8 @@ const backup = (p) => {
 };
 
 // ── Load inputs ─────────────────────────────────────────────────────────────
+await prepareApply({ files: [path.join(fundDir, 'fill-ledger.json'), path.join(fundDir, 'regime-state.json'), path.join(fundDir, 'closed-trades.json')] });
+
 const oldLedger = JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
 const state = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
 const closed = JSON.parse(fs.readFileSync(CLOSED_PATH, 'utf8'));
@@ -286,10 +295,10 @@ backup(LEDGER_PATH);
 backup(STATE_PATH);
 backup(CLOSED_PATH);
 
-fs.writeFileSync(LEDGER_PATH, JSON.stringify(newLedger, null, 2));
+atomicWriteSync(LEDGER_PATH, JSON.stringify(newLedger, null, 2));
 console.log(`✅ Wrote ${newLedger.length} fills to ${path.basename(LEDGER_PATH)}`);
 
-fs.writeFileSync(CLOSED_PATH, '[]');
+atomicWriteSync(CLOSED_PATH, '[]');
 console.log(`✅ Cleared ${path.basename(CLOSED_PATH)} (FIFO will drive realizedPnL)`);
 
 state.position.celestialBodies = updatedBodies;
@@ -306,7 +315,10 @@ if (state.position.celestialState) {
     (state.position.celestialState.totalBodiesCompleted || 0) + drainedBodies.length;
   state.position.celestialState.totalBodiesActive = updatedBodies.length;
 }
-fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+atomicWriteSync(STATE_PATH, JSON.stringify(state, null, 2));
 console.log(`✅ Updated ${path.basename(STATE_PATH)}`);
 
 console.log(`\nDone. Restart engine: pm2 restart critical-mass-cryptocom`);
+
+}
+main().catch(err => { console.error(err); process.exitCode = 1; });

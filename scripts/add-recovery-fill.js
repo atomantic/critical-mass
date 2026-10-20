@@ -18,7 +18,7 @@ const API_URL = 'https://api.coinbase.com';
 const { parseFundCli } = require('./lib/fund-cli');
 const { atomicWriteSync } = require('../src/state-tracker');
 
-const { pair: PRODUCT_ID, apply: APPLY, ledgerPath: LEDGER_PATH, statePath: STATE_PATH } =
+const { prepareApply, pair: PRODUCT_ID, apply: APPLY, ledgerPath: LEDGER_PATH, statePath: STATE_PATH } =
   parseFundCli(process.argv, { exchange: 'coinbase', usage: 'node scripts/add-recovery-fill.js' });
 const DRY_RUN = !APPLY;
 
@@ -46,6 +46,7 @@ const makeRequest = async (method, apiPath) => {
 };
 
 async function main() {
+  await prepareApply({ files: [LEDGER_PATH, STATE_PATH] });
   console.log('\n═══════════════════════════════════════════════════');
   console.log('  ADD RECOVERY FILL — Re-add lost ec8b7bcb buy');
   console.log('═══════════════════════════════════════════════════\n');

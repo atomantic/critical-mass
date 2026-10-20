@@ -4,18 +4,27 @@
  * (orderId 7a3c8ef8-...) and unlinks the only buy that was annotated to it
  * (orderId 4ea191b2-...). Backs up fill-ledger.json with a timestamp suffix.
  *
+ * --apply verifies the engine is stopped and backs up files before repair.
+ *
  * Usage:
- *   node scripts/remove-bad-sell-coinbase.js          # dry-run
- *   node scripts/remove-bad-sell-coinbase.js --apply  # writes
+ *   node scripts/remove-bad-sell-coinbase.js --pair BTC-USDC          # dry-run
+ *   node scripts/remove-bad-sell-coinbase.js --pair BTC-USDC --apply  # writes
  */
 
+async function main() {
+const { parseFundCli } = require('./lib/fund-cli');
+const { atomicWriteSync } = require('../src/state-tracker');
+const { apply: apply, prepareApply, fundDir } = parseFundCli(process.argv, {
+  exchange: 'coinbase', pair: 'BTC-USDC', usage: 'node scripts/remove-bad-sell-coinbase.js'
+});
 const fs = require('fs');
 const path = require('path');
 
-const apply = process.argv.includes('--apply');
-const LEDGER = path.join(__dirname, '..', 'data', 'coinbase', 'BTC-USDC', 'fill-ledger.json');
+const LEDGER = path.join(fundDir, 'fill-ledger.json');
 const BAD_SELL = '7a3c8ef8-b303-404b-99f0-45f8ed9edeeb';
 const ORPHANED_BUY = '4ea191b2-7863-43c4-97e5-0aaf8420b6c0';
+
+await prepareApply({ files: [path.join(fundDir, 'fill-ledger.json')] });
 
 const raw = JSON.parse(fs.readFileSync(LEDGER, 'utf8'));
 const fills = Array.isArray(raw) ? raw : Object.values(raw);
@@ -59,8 +68,11 @@ console.log(`  Total fills after: ${kept.length}`);
 if (apply) {
   const backup = `${LEDGER}.backup-remove-bad-sell-${Date.now()}`;
   fs.copyFileSync(LEDGER, backup);
-  fs.writeFileSync(LEDGER, JSON.stringify(kept, null, 2));
+  atomicWriteSync(LEDGER, JSON.stringify(kept, null, 2));
   console.log(`  ✓ written (backup: ${path.basename(backup)})`);
 } else {
   console.log(`  (Re-run with --apply to write.)`);
 }
+
+}
+main().catch(err => { console.error(err); process.exitCode = 1; });
