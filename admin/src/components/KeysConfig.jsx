@@ -7,10 +7,10 @@ const EXCHANGE_FIELD_CONFIGS = {
     description: 'Configure your Coinbase Advanced Trade API credentials. Keys must be generated through the Coinbase Developer Platform (CDP) — regular Coinbase API keys are not supported.',
     portalUrl: 'https://cloud.coinbase.com/access/api',
     portalLabel: 'Coinbase Developer Platform (CDP)',
-    notice: 'Critical Mass requires Coinbase Advanced API (CDP) credentials. Do NOT use regular or legacy Coinbase API keys from coinbase.com/settings/api — standard API secrets cannot authenticate and will fail.',
+    notice: 'Critical Mass requires Coinbase Advanced API (CDP) credentials. Do NOT use regular or legacy Coinbase API keys from coinbase.com/settings/api — standard API secrets cannot authenticate and will fail. When you create the key, open Advanced settings and set the signature algorithm to ECDSA. The portal\'s default (Ed25519) will not work.',
     fields: [
       { key: 'name', label: 'API Key Name', type: 'text', placeholder: 'organizations/.../apiKeys/...', help: 'The CDP API key name (starts with "organizations/"). Regular Coinbase API keys do not use this format.' },
-      { key: 'privateKey', label: 'Private Key', type: 'textarea', placeholder: '-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----', help: 'The CDP EC private key in PEM format (starts with "-----BEGIN EC PRIVATE KEY-----"). Standard API secrets are not supported.' },
+      { key: 'privateKey', label: 'Private Key', type: 'textarea', placeholder: '-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----', help: 'The ECDSA private key in PEM format (starts with "-----BEGIN EC PRIVATE KEY-----"). Ed25519 keys and standard API secrets are not supported.' },
     ],
   },
   gemini: {
@@ -19,7 +19,7 @@ const EXCHANGE_FIELD_CONFIGS = {
     portalUrl: 'https://exchange.gemini.com/settings/api',
     portalLabel: 'Gemini API Settings',
     fields: [
-      { key: 'apiKey', label: 'API Key', type: 'text', placeholder: 'master-xxxxxxxx', help: 'Your Gemini API key' },
+      { key: 'apiKey', label: 'API Key', type: 'text', placeholder: 'account-xxxxxxxx', help: 'Your Gemini account-level API key (starts with "account-"). Master keys are not supported.' },
       { key: 'apiSecret', label: 'API Secret', type: 'password', placeholder: '••••••••••••••••', help: 'Your Gemini API secret' },
     ],
   },
@@ -451,7 +451,9 @@ function KeysConfig({ exchange, onSave }) {
       {/* Security Warning */}
       <div className="mt-4 p-4 bg-yellow-900/30 border border-yellow-700/50 rounded-lg text-yellow-200 text-sm">
         <strong>Security Note:</strong> API keys are stored locally in the data directory. Never share your API secrets with anyone.
-        For Coinbase, use "Trade" permission only. For Gemini, use "Primary" scope with trading enabled.
+        Coinbase: View + Trade (leave Transfer off). Gemini: an account-level ("Primary") key with the Trading role.
+        If you enable "Requires Heartbeat", Gemini cancels this key's open orders about 5 minutes after the last Gemini fund stops.
+        Crypto.com: Trade permission (leave withdrawals off).
       </div>
     </div>
   )

@@ -86,9 +86,12 @@ module.exports = (app, deps) => {
       if (name.length > MAX_CREDENTIAL_LENGTH || privateKey.length > MAX_CREDENTIAL_LENGTH) {
         return res.status(400).json({ success: false, error: 'Credential fields exceed the maximum allowed length' });
       }
+      if (!privateKey.includes('-----BEGIN')) {
+        return res.status(400).json({ success: false, error: "This private key isn't an ECDSA key in PEM format. In the Coinbase Developer Platform, create a new API key with the signature algorithm set to ECDSA (under Advanced settings), then paste the private key that starts with -----BEGIN EC PRIVATE KEY-----." });
+      }
       keysData = { name, privateKey };
       if (!validateCoinbaseKeys(keysData)) {
-        return res.status(400).json({ success: false, error: 'Invalid Coinbase credential shape: name must be at least 10 characters and privateKey must be PEM or at least 50 characters' });
+        return res.status(400).json({ success: false, error: 'Invalid Coinbase credential shape: name must be at least 10 characters and privateKey must be PEM' });
       }
       keysData.createdAt = new Date().toISOString();
     } else {
