@@ -400,7 +400,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
             <div className={`font-medium ${testResult.success ? 'text-green-200' : 'text-red-200'}`}>
               {connectionResult.heading}
             </div>
-            {connectionResult.details && (
+            {testResult.success && connectionResult.details && (
               <div className="text-sm text-gray-300 mt-1">
                 {connectionResult.details}
               </div>
