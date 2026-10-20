@@ -7,7 +7,7 @@
 const { validateConfigUpdate } = require('./config-validation');
 const { DEFAULT_AGGRESSIVENESS_PRESETS, PRESET_FIELD_RULES, LEGACY_PRESET_FIELD_RULES } = require('./regime-preset-contract');
 const { validateBaseSizeUsdc, validateMaxUsdcDeployed } = require('./regime-sizing-contract');
-const { REGIME_DEFAULTS, BACKUP_INTERVAL_BOUNDS, SENTINEL_POLL_INTERVAL_BOUNDS, SENTINEL_MAX_ALERTS_BOUNDS } = require('./config-utils');
+const { REGIME_DEFAULTS, NOTIFICATION_DEFAULTS, BACKUP_INTERVAL_BOUNDS, SENTINEL_POLL_INTERVAL_BOUNDS, SENTINEL_MAX_ALERTS_BOUNDS } = require('./config-utils');
 
 const REGIME_ALLOWED_KEYS = new Set(Object.keys(REGIME_DEFAULTS));
 
@@ -442,20 +442,27 @@ const SENTINEL_CONFIG_SCHEMA = {
 
 // ── Notification config validation ───────────────────────────────
 const isIntegerInRange = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+  && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+const NOTIFICATION_UPDATE_KEYS = new Set(Object.keys(NOTIFICATION_DEFAULTS));
+const NOTIFICATION_EVENT_KEYS = new Set(Object.keys(NOTIFICATION_DEFAULTS.events));
 
 /**
  * Validate the subset of a `PUT /api/notifications/config` body that feeds
  * timer arithmetic (`notifier.js` `scheduleDailySummary`/`enqueue`) or the
- * quiet-hours gate, unlike `validateConfigUpdate` this only reports errors —
- * it never strips unknown fields — because `telegram`/`events` still need to
- * pass through untouched to the shallow-merge in `updateNotificationConfig`.
+ * quiet-hours gate. Unlike `validateConfigUpdate`, this reports errors without
+ * stripping fields because the caller forwards the accepted body unchanged.
  * @param {unknown} updates - Request body (post mask round-trip guard)
  * @returns {{ errors: string[] }}
  */
 const validateNotificationConfigUpdate = (updates) => {
   const errors = [];
-  if (typeof updates !== 'object' || updates === null || Array.isArray(updates)) {
+  if (!isPlainObject(updates)) {
     return { errors: ['update must be an object'] };
+  }
+
+  for (const key of Object.keys(updates)) {
+    if (!NOTIFICATION_UPDATE_KEYS.has(key)) errors.push(`${key}: unknown field`);
   }
 
   if (updates.enabled !== undefined && typeof updates.enabled !== 'boolean') {
@@ -468,9 +475,33 @@ const validateNotificationConfigUpdate = (updates) => {
     errors.push('rateLimitMs: must be an integer between 1000 and 300000');
   }
 
+  if (updates.telegram !== undefined) {
+    if (!isPlainObject(updates.telegram)) {
+      errors.push('telegram: must be an object');
+    } else {
+      for (const [key, value] of Object.entries(updates.telegram)) {
+        if (!['botToken', 'chatId'].includes(key)) errors.push(`telegram.${key}: unknown field`);
+        else if (typeof value !== 'string' || value.length > 200) {
+          errors.push(`telegram.${key}: must be a string of at most 200 characters`);
+        }
+      }
+    }
+  }
+
+  if (updates.events !== undefined) {
+    if (!isPlainObject(updates.events)) {
+      errors.push('events: must be an object');
+    } else {
+      for (const [key, value] of Object.entries(updates.events)) {
+        if (!NOTIFICATION_EVENT_KEYS.has(key)) errors.push(`events.${key}: unknown event`);
+        else if (typeof value !== 'boolean') errors.push(`events.${key}: expected boolean`);
+      }
+    }
+  }
+
   if (updates.quietHours !== undefined) {
     const quietHours = updates.quietHours;
-    if (typeof quietHours !== 'object' || quietHours === null || Array.isArray(quietHours)) {
+    if (!isPlainObject(quietHours)) {
       errors.push('quietHours: must be an object');
     } else {
       if (quietHours.enabled !== undefined && typeof quietHours.enabled !== 'boolean') {

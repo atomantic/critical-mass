@@ -91,8 +91,8 @@ describe('PUT /api/notifications/config', () => {
     configUtils._resetConfigCacheForTests();
   });
 
-  const setup = () => {
-    const fsMocks = setupFsMocks(BASE_CONFIG);
+  const setup = (base = BASE_CONFIG) => {
+    const fsMocks = setupFsMocks(base);
     let updateConfigCalls = 0;
     const app = createFakeApp();
     registerSettingsRoutes(app, {
@@ -112,6 +112,16 @@ describe('PUT /api/notifications/config', () => {
     const res = await invoke(app, 'GET /api/notifications/config');
     assert.equal(res.body.telegram.botToken, '123456...cdef');
     assert.ok(!JSON.stringify(res.body).includes(SECRET_TOKEN));
+  });
+
+  it('GET remains available when an existing config has a non-string bot token', async () => {
+    const { app } = setup({
+      ...BASE_CONFIG,
+      global: { notifications: { ...BASE_CONFIG.global.notifications, telegram: { botToken: 12345, chatId: '999' } } },
+    });
+    const res = await invoke(app, 'GET /api/notifications/config');
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.telegram.botToken, '');
   });
 
   it('echoing the masked token back leaves the stored token unchanged', async () => {
@@ -147,6 +157,14 @@ describe('PUT /api/notifications/config', () => {
     { label: 'quietHours.enabled: non-boolean', body: { quietHours: { enabled: 'yes' } } },
     { label: 'quietHours: not an object', body: { quietHours: 'always' } },
     { label: 'enabled: non-boolean', body: { enabled: 'true' } },
+    ...[12345, {}, []].map((botToken) => ({ label: `telegram.botToken: ${Array.isArray(botToken) ? 'array' : typeof botToken}`, body: { telegram: { botToken } } })),
+    { label: 'telegram: non-object', body: { telegram: 'abc' } },
+    { label: 'telegram.botToken: too long', body: { telegram: { botToken: 'x'.repeat(201) } } },
+    { label: 'telegram.chatId: non-string', body: { telegram: { chatId: 999 } } },
+    { label: 'events: non-object', body: { events: [] } },
+    { label: 'events: unknown key', body: { events: { unexpected: true } } },
+    { label: 'events: non-boolean value', body: { events: { buy_filled: 'yes' } } },
+    { label: 'unknown top-level key', body: { unexpected: true } },
   ];
 
   for (const { label, body } of invalidCases) {
@@ -167,6 +185,8 @@ describe('PUT /api/notifications/config', () => {
     const res = await invoke(app, 'PUT /api/notifications/config', {
       body: {
         enabled: true,
+        telegram: { botToken: '654321:NEW-REAL-TOKEN-xyz', chatId: '999' },
+        events: { buy_filled: false, error: true },
         dailySummaryHour: 9,
         rateLimitMs: 15000,
         quietHours: { enabled: true, start: 22, end: 6 },
@@ -176,6 +196,8 @@ describe('PUT /api/notifications/config', () => {
     assert.equal(res.body.success, true);
     const stored = configUtils.getNotificationConfig();
     assert.equal(stored.dailySummaryHour, 9);
+    assert.equal(stored.telegram.botToken, '654321:NEW-REAL-TOKEN-xyz');
+    assert.equal(stored.events.buy_filled, false);
     assert.equal(stored.rateLimitMs, 15000);
     assert.deepStrictEqual(stored.quietHours, { enabled: true, start: 22, end: 6 });
     assert.equal(getUpdateConfigCalls(), 1);
