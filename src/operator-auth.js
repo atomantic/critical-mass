@@ -140,7 +140,8 @@ const authFileUnreadableError = () => ({
 /**
  * @param {string} file
  * @returns {string|null} Why the file is unreadable, or null when it is
- *   missing, empty or a parseable JSON object
+ *   missing or holds a recognized record (a password, or the cleared
+ *   `state: 'bootstrap'` marker). Anything else present is not "unset".
  */
 const unreadableAuthFileReason = (file) => {
   let content;
@@ -149,10 +150,11 @@ const unreadableAuthFileReason = (file) => {
   } catch (err) {
     return err.code === 'ENOENT' ? null : err.message;
   }
-  if (!content.trim()) return null;
+  if (!content.trim()) return 'file is empty';
   try {
-    const parsed = JSON.parse(content);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? null : 'not a JSON object';
+    const saved = JSON.parse(content);
+    const recognized = (saved?.salt && saved?.hash) || saved?.state === 'bootstrap';
+    return recognized ? null : 'no password record or bootstrap marker';
   } catch (err) {
     return err.message;
   }

@@ -107,6 +107,21 @@ describe('UpDown and Sentinel loadState', () => {
 });
 
 describe('operator auth with an unreadable auth file', () => {
+  it('treats empty and unrecognized auth records as unreadable, not as unset', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'operator-auth.json');
+    for (const bytes of ['', '{}', '[]']) {
+      fs.writeFileSync(file, bytes);
+      const auth = createOperatorAuth({ authFile: file, readJSON, writeJSON, bootstrapSecret: 'x'.repeat(40) });
+      assert.equal(auth.isBootstrapping(), false, JSON.stringify(bytes));
+      assert.equal(auth.hasRemoteBootstrap(), false);
+    }
+    fs.writeFileSync(file, '{"state":"bootstrap"}');
+    assert.equal(createOperatorAuth({ authFile: file, readJSON, writeJSON }).isBootstrapping(), true);
+    fs.rmSync(file);
+    assert.equal(createOperatorAuth({ authFile: file, readJSON, writeJSON }).isBootstrapping(), true);
+  });
+
   it('fails closed: no bootstrap, no enrollment, actionable error, file untouched', async () => {
     const dir = tmpDir();
     const file = path.join(dir, 'operator-auth.json');
