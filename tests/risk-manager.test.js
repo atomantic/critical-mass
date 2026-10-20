@@ -582,3 +582,58 @@ describe('risk-manager resetDrawdown (issue #742)', () => {
     assert.equal(state.isDrawdownPaused, false);
   });
 });
+
+describe('risk-manager restart-safe cycle limit episodes (#1297)', () => {
+  it('retains the first limit time through replacements every 59 minutes, including epoch zero', (t) => {
+    const config = makeConfig();
+    let rm = setup(t, {}, 0);
+    assert.equal(rm.checkCycleBuysLimit(3).allowed, false);
+    const snapshot = JSON.parse(JSON.stringify(rm.getPersistedState()));
+    assert.equal(snapshot.cycleBuysLimitReachedAt, 0);
+    t.mock.timers.setTime(59 * 60 * 1000);
+    rm = createRiskManager('coinbase', config, 'BTC-USDC');
+    rm.restoreState(snapshot);
+    assert.equal(rm.checkCycleBuysLimit(3).shouldReset, false);
+    assert.equal(rm.getPersistedState().cycleBuysLimitReachedAt, 0);
+    t.mock.timers.setTime(HOUR_MS);
+    assert.equal(rm.checkCycleBuysLimit(3).shouldReset, true);
+    assert.equal(rm.getPersistedState().cycleBuysLimitReachedAt, null);
+  });
+
+  it('keeps the earlier valid timestamp and ignores malformed timestamps', (t) => {
+    const rm = setup(t);
+    rm.checkCycleBuysLimit(3);
+    rm.restoreState({ cycleBuysLimitReachedAt: 500_000 });
+    rm.restoreState({ cycleBuysLimitReachedAt: 900_000 });
+    for (const value of [null, undefined, '1', NaN, Infinity]) {
+      rm.restoreState({ cycleBuysLimitReachedAt: value });
+    }
+    assert.equal(rm.getPersistedState().cycleBuysLimitReachedAt, 500_000);
+  });
+
+  for (const clear of ['below-limit', 'cycle-reset', 'auto-reset']) {
+    it(`does not revive a finished ${clear} episode on repeated restore or restart`, (t) => {
+      const rm = setup(t);
+      rm.checkCycleBuysLimit(3);
+      const stale = rm.getPersistedState();
+      if (clear === 'below-limit') rm.checkCycleBuysLimit(0);
+      if (clear === 'cycle-reset') rm.resetCycleTracking();
+      if (clear === 'auto-reset') {
+        t.mock.timers.setTime(1_000_000 + HOUR_MS);
+        assert.equal(rm.checkCycleBuysLimit(3).shouldReset, true);
+      }
+      rm.restoreState(stale);
+      assert.equal(rm.getPersistedState().cycleBuysLimitReachedAt, null);
+      const replacement = createRiskManager('coinbase', makeConfig(), 'BTC-USDC');
+      replacement.restoreState(JSON.parse(JSON.stringify(rm.getPersistedState())));
+      t.mock.timers.setTime(1_000_000 + HOUR_MS * 5);
+      assert.equal(replacement.checkCycleBuysLimit(0).shouldReset, false);
+      assert.equal(replacement.checkCycleBuysLimit(3).shouldReset, false);
+      // Even after recurrence, an old snapshot cannot shorten this new episode.
+      rm.checkCycleBuysLimit(3);
+      const newTime = rm.getPersistedState().cycleBuysLimitReachedAt;
+      rm.restoreState(stale);
+      assert.equal(rm.getPersistedState().cycleBuysLimitReachedAt, newTime);
+    });
+  }
+});

@@ -38,6 +38,8 @@ const createRiskManager = (exchange, config, productId) => {
   let lastDrawdownPercent = 0; // drawdown on the most recent observation (dashboard)
   let isEquityDepleted = false; // true while paused because fund equity is <= 0 (fail-closed; no auto-reset — see updateDrawdown)
   let cycleBuysLimitReachedAt = null; // Timestamp when ladder limit was first reached
+  // Once an episode ends, a repeated restore of its old snapshot must not revive it.
+  let cycleBuysTrackingCleared = false;
 
   /**
    * Check if entry would exceed asset exposure cap
@@ -104,7 +106,7 @@ const createRiskManager = (exchange, config, productId) => {
   const checkCycleBuysLimit = (currentStep) => {
     if (currentStep >= config.maxCycleBuys) {
       // Track when limit was first reached
-      if (!cycleBuysLimitReachedAt) {
+      if (cycleBuysLimitReachedAt === null) {
         cycleBuysLimitReachedAt = Date.now();
         logger.warn(`⚠️ [${exchange}] Cycle buys limit reached: ${currentStep}/${config.maxCycleBuys}, waiting for TP or auto-reset`, {
           currentStep, maxSteps: config.maxCycleBuys,
@@ -112,14 +114,14 @@ const createRiskManager = (exchange, config, productId) => {
       }
 
       // Check for time-based auto-reset
-      if (cycleBuysLimitReachedAt && config.cycleResetHours > 0) {
+      if (cycleBuysLimitReachedAt !== null && config.cycleResetHours > 0) {
         const atLimitMs = Date.now() - cycleBuysLimitReachedAt;
         const atLimitHours = atLimitMs / (1000 * 60 * 60);
         if (atLimitHours >= config.cycleResetHours) {
           logger.info(`🔄 [${exchange}] Auto-resetting cycle buys after ${config.cycleResetHours}h at limit`, {
             currentStep, maxSteps: config.maxCycleBuys, resetHours: config.cycleResetHours,
           });
-          cycleBuysLimitReachedAt = null;
+          resetCycleTracking();
           return {
             allowed: true,
             reason: null,
@@ -140,7 +142,7 @@ const createRiskManager = (exchange, config, productId) => {
     }
 
     // Not at limit, clear the timestamp
-    cycleBuysLimitReachedAt = null;
+    resetCycleTracking();
 
     return {
       allowed: true,
@@ -417,7 +419,10 @@ const createRiskManager = (exchange, config, productId) => {
    * forceResume. (Under the old market-value equity the reset was required
    * because equity collapsed to ~0 after a TP.)
    */
-  const resetCycleTracking = () => {};
+  const resetCycleTracking = () => {
+    cycleBuysLimitReachedAt = null;
+    cycleBuysTrackingCleared = true;
+  };
 
   /**
    * Get current risk state
@@ -445,9 +450,9 @@ const createRiskManager = (exchange, config, productId) => {
   };
 
   /**
-   * Snapshot of the drawdown tracker for persistence in positionState, so a
+   * Snapshot of the risk trackers for persistence in positionState, so a
    * restart neither clears an active pause nor forgets the peak.
-   * @returns {{peakEquity: number|null, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, capitalBase: number|null, equityDepleted: boolean}}
+   * @returns {{peakEquity: number|null, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, capitalBase: number|null, equityDepleted: boolean, cycleBuysLimitReachedAt: number|null}}
    */
   const getPersistedState = () => ({
     peakEquity,
@@ -456,6 +461,7 @@ const createRiskManager = (exchange, config, productId) => {
     drawdownPausedAt,
     capitalBase: lastCapitalBase,
     equityDepleted: isEquityDepleted,
+    cycleBuysLimitReachedAt,
   });
 
   /**
@@ -466,6 +472,11 @@ const createRiskManager = (exchange, config, productId) => {
   const restoreState = (saved) => {
     if (!saved || typeof saved !== 'object') return;
     const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const savedCycleLimitAt = num(saved.cycleBuysLimitReachedAt);
+    if (!cycleBuysTrackingCleared && savedCycleLimitAt !== null) {
+      cycleBuysLimitReachedAt = cycleBuysLimitReachedAt === null
+        ? savedCycleLimitAt : Math.min(cycleBuysLimitReachedAt, savedCycleLimitAt);
+    }
     const savedPeak = num(saved.peakEquity);
     if (savedPeak !== null && savedPeak > 0) peakEquity = savedPeak;
     const savedMax = num(saved.maxDrawdownSeen);
