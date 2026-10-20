@@ -1,0 +1,123 @@
+// @ts-check
+//
+// Characterization tests for repairHistoricalFillAnnotations (issue #1230).
+// Pins steps 1-3 of the boot-time repair at the exported boundary with a real
+// fill ledger; step 0 (orphan buy recovery) is pinned in reset-cycle-buys.test.js.
+const { describe, it, after } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+
+const { repairHistoricalFillAnnotations } = require('../src/regime-engine');
+const { createFillLedger } = require('../src/fill-ledger');
+
+// Each test gets its own pair: persist() writes the ledger to disk and a new
+// createFillLedger on the same pair would reload it.
+const PAIRS = [];
+after(() => {
+  for (const pair of PAIRS) fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', pair), { recursive: true, force: true });
+});
+
+const T0 = Date.parse('2026-01-01T00:00:00.000Z');
+const at = (h) => new Date(T0 + h * 3600_000).toISOString();
+
+const makeLedger = () => {
+  const pair = `__test1230_${PAIRS.length}__`;
+  PAIRS.push(pair);
+  const ledger = createFillLedger('coinbase', pair, pair);
+  ledger.setCurrentCycleId('cycle-1', T0);
+  let persists = 0;
+  const realPersist = ledger.persist;
+  ledger.persist = (...args) => { persists++; return realPersist.apply(ledger, args); };
+  return { ledger, persistCount: () => persists };
+};
+
+const run = (ledger, positionState, logs = []) => repairHistoricalFillAnnotations({
+  fillLedger: ledger,
+  positionState,
+  config: {},
+  logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m) },
+  baseCurrency: 'BTC',
+  priceIncrement: 0.01,
+  exchange: 'coinbase',
+  celestialHierarchy: { findMergeTarget: () => null },
+  calculateDynamicTpPercent: () => 1,
+  roundPrice: (p) => p,
+  roundAsset: (q) => Math.round(q * 1e8) / 1e8,
+  fmtPrice: String,
+});
+
+const byTrade = (ledger, tradeId) => ledger.getAllFills().find(f => f.tradeId === tradeId);
+
+describe('repairHistoricalFillAnnotations', () => {
+  it('stamps body ownership on buy rows listed in sourceOrderIds / buyOrders', () => {
+    const { ledger, persistCount } = makeLedger();
+    ledger.ingestFill({ tradeId: 'a-src', orderId: 'a-src-buy', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'a-bo', orderId: 'a-bo-buy', side: 'buy', price: '50000', size: '0.01', tradeTime: at(2) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'a-mig', orderId: 'core-migration', side: 'buy', price: '50000', size: '0.01', tradeTime: at(3) }, null, { skipPersist: true });
+    const positionState = {
+      activeTpOrderId: null,
+      celestialBodies: [{
+        id: 'body-1', tier: 'moon', tpOrderId: 'tp-1',
+        sourceOrderIds: ['a-src-buy'],
+        buyOrders: [{ orderId: 'a-src-buy' }, { orderId: 'a-bo-buy' }, { orderId: 'core-migration' }],
+      }],
+    };
+    run(ledger, positionState);
+
+    for (const id of ['a-src', 'a-bo']) {
+      const f = byTrade(ledger, id);
+      assert.equal(f.isBodyOwned, true, id);
+      assert.equal(f.bodyId, 'body-1', id);
+      assert.equal(f.bodyTier, 'moon', id);
+      assert.equal(f.sellOrderId, 'tp-1', id);
+    }
+    assert.ok(!byTrade(ledger, 'a-mig').bodyId, 'core-migration buyOrders entry is skipped');
+    assert.equal(persistCount(), 1);
+  });
+
+  it('pairs an unannotated body sell with the size-matching earlier buy', () => {
+    const { ledger, persistCount } = makeLedger();
+    ledger.ingestFill({ tradeId: 'b-buy', orderId: 'b-buy-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'b-sell', orderId: 'b-sell-o', side: 'sell', price: '60000', size: '0.01', tradeTime: at(2) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'b-buy2', orderId: 'b-buy2-o', side: 'buy', price: '50000', size: '0.0105', tradeTime: at(3) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'b-sell2', orderId: 'b-sell2-o', side: 'sell', price: '40000', size: '0.0105', tradeTime: at(4) }, null, { skipPersist: true });
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+
+    const sell = byTrade(ledger, 'b-sell');
+    const buy = byTrade(ledger, 'b-buy');
+    assert.equal(sell.isBodyOwned, true);
+    assert.ok(sell.bodyPnl > 0);
+    assert.equal(sell.bodyHoldbackAsset, 0);
+    assert.equal(sell.bodyBtcQty, 0.01);
+    assert.equal(sell.bodyAvgPrice, 50000);
+    assert.equal(buy.sellOrderId, 'b-sell-o');
+
+    // Losing match: only marked body-owned, no computed values.
+    const losing = byTrade(ledger, 'b-sell2');
+    assert.equal(losing.isBodyOwned, true);
+    assert.equal(losing.bodyPnl, undefined);
+    assert.equal(persistCount(), 1);
+  });
+
+  it('moves -recovered- cycle fills inside the current cycle range only', () => {
+    const { ledger, persistCount } = makeLedger();
+    ledger.ingestFill({ tradeId: 'c-live', orderId: 'c-live-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(5) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'c-in', orderId: 'c-in-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(6) }, null, { cycleId: 'old-recovered-1', skipPersist: true });
+    ledger.ingestFill({ tradeId: 'c-out', orderId: 'c-out-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { cycleId: 'old-recovered-2', skipPersist: true });
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+
+    assert.equal(byTrade(ledger, 'c-in').cycleId, 'cycle-1');
+    assert.equal(byTrade(ledger, 'c-out').cycleId, 'old-recovered-2');
+    assert.equal(persistCount(), 1);
+  });
+
+  it('does nothing without a current cycle', () => {
+    const { ledger } = makeLedger();
+    ledger.setCurrentCycleId(null);
+    let persists = 0;
+    ledger.persist = () => { persists++; };
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+    assert.equal(persists, 0);
+  });
+});
