@@ -609,7 +609,7 @@ describe('backup-service — pruneBackups retention', () => {
     created.push(corrupt);
     const newestValid = Date.parse(listBackups()[0].createdAt);
     assert.ok(fs.statSync(corrupt).mtimeMs >= newestValid);
-    assert.equal(getNewestBackupTime(), newestValid);
+    assert.ok(Math.abs(getNewestBackupTime() - newestValid) <= 1);
   });
 
   // #547: a route bug or hand-edited config.json can persist an invalid

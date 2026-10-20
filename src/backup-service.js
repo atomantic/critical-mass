@@ -704,7 +704,7 @@ const getNewestBackupTime = () => {
     if (!filename.startsWith('backup-') || !filename.endsWith('.zip')) continue;
     const filePath = path.join(BACKUPS_DIR, filename);
     const stats = fs.lstatSync(filePath);
-    if (stats.isFile()) candidates.push({ filePath, mtimeMs: stats.mtimeMs, size: stats.size });
+    if (stats.isFile()) candidates.push({ filePath, mtimeMs: Math.round(stats.mtimeMs), size: stats.size });
   }
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
   // Only the newest candidates are integrity-tested (not every retained ZIP), and
