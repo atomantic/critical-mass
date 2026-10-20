@@ -239,8 +239,14 @@ function Overview() {
     expectedCycleGain: acc.expectedCycleGain + c.expectedCycleGain,
   }), { deployed: 0, available: 0, unrealized: 0, realized: 0, expectedCycleGain: 0 })
 
-  // Aggregate realized USD + per-asset breakdown
-  const totalRealizedUsdc = cards.reduce((sum, c) => sum + c.realizedUsdcPnL, 0)
+  // Keep quote profits grouped by currency alongside the per-asset breakdown.
+  const quoteBreakdown = cards.reduce((acc, card) => {
+    const quote = card.quoteCurrency
+    if (!acc[quote]) acc[quote] = { realized: 0, annual: 0 }
+    acc[quote].realized += card.realizedUsdcPnL
+    acc[quote].annual += card.estimatedDailyUsdc * 365
+    return acc
+  }, {})
   const assetBreakdown = cards.reduce((acc, c) => {
     if (c.realizedAssetPnL > 0) {
       if (!acc[c.baseCurrency]) acc[c.baseCurrency] = { qty: 0, usd: 0 }
@@ -330,7 +336,9 @@ function Overview() {
           <div className={`text-base sm:text-lg font-bold truncate ${totals.realized >= 0 ? 'text-green-400' : 'text-red-400'}`}>
             {totals.realized >= 0 ? '+' : ''}{formatCurrency(totals.realized)}
           </div>
-          <div className="text-xs text-white font-mono truncate">{formatCurrency(totalRealizedUsdc)} USD</div>
+          {Object.entries(quoteBreakdown).map(([quote, amounts]) => (
+            <div key={quote} className="text-xs text-white font-mono truncate">{formatCurrency(amounts.realized)} {quote}</div>
+          ))}
           {Object.entries(assetBreakdown).map(([asset, { qty, usd }]) => (
             <div key={asset} className="text-xs text-orange-400 font-mono truncate">+{formatAsset(qty, asset)} ({formatCurrency(usd)})</div>
           ))}
@@ -345,7 +353,9 @@ function Overview() {
               <div className={`text-xs sm:text-sm font-mono font-semibold truncate ${totalAnnualLiquid >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
                 {formatCurrency(totalAnnualLiquid)}/yr
               </div>
-              <div className="text-xs text-white font-mono truncate">{formatCurrency(totalAnnualUsdc)} USD</div>
+              {Object.entries(quoteBreakdown).map(([quote, amounts]) => (
+                <div key={quote} className="text-xs text-white font-mono truncate">{formatCurrency(amounts.annual)} {quote}</div>
+              ))}
               {Object.entries(annualAssetBreakdown).map(([asset, { qty, usd }]) => (
                 <div key={asset} className="text-xs text-orange-400 font-mono truncate">
                   +{qty.toFixed(6)} {asset} ({formatCurrency(usd)})
@@ -457,7 +467,7 @@ function Overview() {
                         ? `${card.realizedUsdcPnL >= 0 ? '+' : ''}${formatCurrency(card.realizedUsdcPnL)}`
                         : '-'}
                   </div>
-                  <div className="text-xs text-white font-mono truncate">{formatCurrency(card.realizedUsdcPnL)} USD</div>
+                  <div className="text-xs text-white font-mono truncate">{formatCurrency(card.realizedUsdcPnL)} {card.quoteCurrency}</div>
                   {card.realizedAssetPnL > 0 && (
                     <div className="text-xs text-orange-400 truncate">+{card.realizedAssetPnL.toFixed(8)} {card.baseCurrency}</div>
                   )}
@@ -489,7 +499,7 @@ function Overview() {
                       <div className="font-mono text-xs text-green-400 truncate">
                         {formatCurrency(card.estimatedDailyUsdc + (card.estimatedDailyAsset * card.lastPrice))}
                       </div>
-                      <div className="text-white text-[10px] font-mono truncate">{formatCurrency(card.estimatedDailyUsdc)} USD</div>
+                      <div className="text-white text-[10px] font-mono truncate">{formatCurrency(card.estimatedDailyUsdc)} {card.quoteCurrency}</div>
                       {card.estimatedDailyAsset > 0 && (
                         <div className="text-orange-400 text-[10px] font-mono truncate">
                           +{formatAsset(card.estimatedDailyAsset, card.baseCurrency)} ({formatCurrency(card.estimatedDailyAsset * card.lastPrice)})
@@ -501,7 +511,7 @@ function Overview() {
                       <div className="font-mono text-xs text-cyan-400 truncate">
                         {formatCurrency((card.estimatedDailyUsdc * 365) + (card.estimatedDailyAsset * 365 * card.lastPrice))}/yr
                       </div>
-                      <div className="text-white text-[10px] font-mono truncate">{formatCurrency(card.estimatedDailyUsdc * 365)} USD</div>
+                      <div className="text-white text-[10px] font-mono truncate">{formatCurrency(card.estimatedDailyUsdc * 365)} {card.quoteCurrency}</div>
                       {card.estimatedDailyAsset > 0 && (
                         <div className="text-orange-400 text-[10px] font-mono truncate">
                           +{(card.estimatedDailyAsset * 365).toFixed(6)} {card.baseCurrency} ({formatCurrency(card.estimatedDailyAsset * 365 * card.lastPrice)})

@@ -1,6 +1,6 @@
 import React from 'react'
 
-export default function RiskLimitsPanel({ risk, position, config, committedUsdc, asset, setDrawdownResumeConfirm }) {
+export default function RiskLimitsPanel({ quoteCurrency, risk, position, config, committedUsdc, asset, setDrawdownResumeConfirm }) {
   return (
     <>
       <div className="bg-gray-800 rounded-lg p-3">
@@ -32,7 +32,7 @@ export default function RiskLimitsPanel({ risk, position, config, committedUsdc,
             <div className="text-[9px] text-gray-400">{config?.maxAssetExposure ? `/ ${config.maxAssetExposure}` : 'uncapped'}</div>
           </div>
           <div className="text-center">
-            <div className="text-[10px] text-gray-400 mb-1">USDC</div>
+            <div className="text-[10px] text-gray-400 mb-1">{quoteCurrency}</div>
             {(() => {
               const filled = position.totalCostBasis || 0
               const committed = committedUsdc || 0
