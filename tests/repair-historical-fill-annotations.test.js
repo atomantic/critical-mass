@@ -26,10 +26,10 @@ const makeLedger = () => {
   PAIRS.push(pair);
   const ledger = createFillLedger('coinbase', pair, pair);
   ledger.setCurrentCycleId('cycle-1', T0);
-  let persists = 0;
-  const realPersist = ledger.persist;
-  ledger.persist = (...args) => { persists++; return realPersist.apply(ledger, args); };
-  return { ledger, persistCount: () => persists };
+  // Counts real disk writes, including internal persist() calls the ledger makes
+  // through its closure (a spy on ledger.persist would miss those).
+  const baseline = ledger._test.getWriteCount();
+  return { ledger, persistCount: () => ledger._test.getWriteCount() - baseline };
 };
 
 const run = (ledger, positionState, logs = []) => repairHistoricalFillAnnotations({
@@ -73,7 +73,7 @@ describe('repairHistoricalFillAnnotations', () => {
       assert.equal(f.sellOrderId, 'tp-1', id);
     }
     assert.ok(!byTrade(ledger, 'a-mig').bodyId, 'core-migration buyOrders entry is skipped');
-    assert.equal(persistCount(), 1);
+    assert.equal(persistCount(), 2);
   });
 
   it('pairs an unannotated body sell with the size-matching earlier buy', () => {
@@ -97,7 +97,7 @@ describe('repairHistoricalFillAnnotations', () => {
     const losing = byTrade(ledger, 'b-sell2');
     assert.equal(losing.isBodyOwned, true);
     assert.equal(losing.bodyPnl, undefined);
-    assert.equal(persistCount(), 1);
+    assert.equal(persistCount(), 2);
   });
 
   it('moves -recovered- cycle fills inside the current cycle range only', () => {
@@ -115,9 +115,8 @@ describe('repairHistoricalFillAnnotations', () => {
   it('does nothing without a current cycle', () => {
     const { ledger } = makeLedger();
     ledger.setCurrentCycleId(null);
-    let persists = 0;
-    ledger.persist = () => { persists++; };
+    const before = ledger._test.getWriteCount();
     run(ledger, { celestialBodies: [], activeTpOrderId: null });
-    assert.equal(persists, 0);
+    assert.equal(ledger._test.getWriteCount() - before, 0);
   });
 });
