@@ -1,0 +1,2 @@
+- **[issue-1213] UpDown contract saves report errors** — Show server validation and network errors beside Save, and always re-enable the button after a failed request.
+- **[issue-1213] Sentinel contrast guard recognizes disabled Start styles** — Update the guard to allow its disabled text colors and cursor class.
