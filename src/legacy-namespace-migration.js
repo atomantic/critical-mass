@@ -42,6 +42,7 @@ const os = require('os');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { fsyncDir } = require('./fsync-dir');
+const { fsyncFile } = require('./durable-write');
 
 /** The single exchange that existed before namespacing. */
 const LEGACY_EXCHANGE = 'coinbase';
@@ -346,12 +347,7 @@ const ensureBackup = (source) => {
   const tmp = `${backup}.${process.pid}.${randomUUID()}.tmp`;
   try {
     fs.copyFileSync(source, tmp, fs.constants.COPYFILE_EXCL);
-    const fd = fs.openSync(tmp, 'r+');
-    try {
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
+    fsyncFile(tmp);
     try {
       fs.linkSync(tmp, backup);
     } catch (err) {

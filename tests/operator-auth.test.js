@@ -106,12 +106,9 @@ describe('operator authentication bootstrap', () => {
     });
   });
 
-  it('guards Socket.IO while bootstrap is incomplete', async () => {
+  it('guards realtime upgrades while bootstrap is incomplete', async () => {
     const auth = createOperatorAuth({});
-    const error = await new Promise((resolve) => {
-      auth.socketMiddleware({ handshake: { headers: {}, auth: {} } }, (err) => resolve(err));
-    });
-    assert.equal(error?.data?.code, 'UNAUTHORIZED');
+    assert.equal(await auth.authorizeUpgrade({ headers: {}, socket: { remoteAddress: '127.0.0.1' } }), false);
   });
 
   it('recognizes only direct loopback addresses as locally trusted', () => {
@@ -121,15 +118,34 @@ describe('operator authentication bootstrap', () => {
     assert.equal(isLoopbackAddress('100.83.147.46'), false);
     assert.equal(isLoopbackAddress('::ffff:192.168.1.10'), false);
 
-    const request = (remoteAddress, forwardedFor = '', host = 'localhost:5570') => ({
+    const request = (remoteAddress, forwardedFor = '', host = 'localhost:5570', forwardedHost = '') => ({
       socket: { remoteAddress },
-      get: (name) => name === 'x-forwarded-for' ? forwardedFor : name === 'host' ? host : '',
+      get: (name) => name === 'x-forwarded-for' ? forwardedFor
+        : name === 'x-forwarded-host' ? forwardedHost
+          : name === 'host' ? host : '',
     });
     assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1')), true);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '::1, 127.0.0.1')), true);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '100.83.147.46')), false);
     assert.equal(isLoopbackRequest(request('100.83.147.46', '127.0.0.1')), false);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '', 'critical-mass.example')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'evil.example:5571', 'evil.example:5571')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'localhost:5571', 'evil.example:5571')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'evil.example:5571', 'localhost:5571')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'localhost:5571', 'localhost:5571, evil.example:5571')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'evil.example:5571')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', 'localhost:5571', 'localhost:5571')), true);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1', '127.0.0.1:5571')), true);
+    assert.equal(isLoopbackRequest(request('::1', '', '[::1]:5571')), true);
+    const rebindingRequest = {
+      socket: { remoteAddress: '127.0.0.1' },
+      headers: {
+        'x-forwarded-for': '127.0.0.1',
+        'x-forwarded-host': 'evil.example:5571',
+        origin: 'http://evil.example:5571',
+      },
+    };
+    assert.equal(isLoopbackRequest(rebindingRequest), false);
 
     const requestWithOrigin = (remoteAddress, host, origin) => ({
       socket: { remoteAddress },
@@ -517,15 +533,16 @@ describe('operator authentication boundary', () => {
     });
   });
 
-  it('guards Socket.IO handshakes with the panel password', async () => {
+  it('guards realtime upgrades with the panel password and the gateway origin', async () => {
     const authFile = tmpAuthFile();
     seedPassword(authFile);
     const auth = createOperatorAuth({ authFile, readJSON, writeJSON });
-    const invoke = (headers = {}, handshakeAuth = {}) => new Promise((resolve) => {
-      auth.socketMiddleware({ handshake: { headers, auth: handshakeAuth } }, (error) => resolve(error));
-    });
-    assert.equal((await invoke())?.data?.code, 'UNAUTHORIZED');
-    assert.equal(await invoke({}, { token: PASSWORD }), undefined);
+    const invoke = (headers = {}) => auth.authorizeUpgrade({ headers: { host: '127.0.0.1:5570', ...headers }, socket: { remoteAddress: '127.0.0.1' } });
+    assert.equal(await invoke(), false);
+    assert.equal(await invoke({ authorization: `Bearer ${PASSWORD}` }), true);
+    assert.equal(await invoke({ authorization: `Bearer ${PASSWORD}`, origin: 'http://127.0.0.1:5570' }), true);
+    // A page on another origin cannot open the bus even with valid credentials.
+    assert.equal(await invoke({ authorization: `Bearer ${PASSWORD}`, origin: 'https://attacker.invalid' }), false);
   });
 });
 
@@ -716,15 +733,15 @@ describe('operator authentication resource bounds', () => {
     const hash = t.mock.method(crypto, 'scrypt');
     await withServer({ authFile, readJSON, writeJSON, now: () => time }, async ({ auth, baseUrl }) => {
       const headers = { Authorization: 'Bearer wrong-password' };
-      const socketAttempt = () => new Promise((resolve) => auth.socketMiddleware({
-        conn: { remoteAddress: '127.0.0.1' },
-        handshake: { headers: { 'x-forwarded-for': '192.0.2.10' }, auth: { token: 'wrong-password' } },
-      }, resolve));
+      const socketAttempt = () => auth.authorizeUpgrade({
+        socket: { remoteAddress: '127.0.0.1' },
+        headers: { 'x-forwarded-for': '192.0.2.10', authorization: 'Bearer wrong-password' },
+      }).catch((error) => error);
       for (let i = 0; i < 2; i++) {
         assert.equal((await fetch(baseUrl + '/api/providers', { headers })).status, 401);
         assert.equal((await fetch(baseUrl + '/api/auth/session', { headers })).status, 200);
       }
-      assert.equal((await socketAttempt()).message, 'Operator authentication required');
+      assert.equal(await socketAttempt(), false);
       assert.equal((await fetch(baseUrl + '/api/providers', { headers })).status, 429);
       assert.equal((await fetch(baseUrl + '/api/auth/session', { headers })).status, 429);
       assert.equal((await socketAttempt()).status, 429);
@@ -789,55 +806,53 @@ describe('operator authentication resource bounds', () => {
   });
 });
 
-// Use real Engine.IO/WebSocket transports through Node's global WebSocket client.
+// Real realtime-bus upgrades through Node's global WebSocket client. The
+// operator check refuses the HTTP upgrade itself, so a refused client only
+// sees a failed connection.
 const connectOperatorSocket = (baseUrl, { cookie, token } = {}) => new Promise((resolve, reject) => {
-  const socket = new WebSocket(`${baseUrl.replace('http:', 'ws:')}/socket.io/?EIO=4&transport=websocket`, {
-    headers: cookie ? { Cookie: cookie } : {},
-  });
+  const headers = {};
+  if (cookie) headers.Cookie = cookie;
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const socket = new WebSocket(`${baseUrl.replace('http:', 'ws:')}/realtime`, { headers });
   socket.packets = [];
-  socket.addEventListener('error', () => reject(new Error('operator socket failed')));
+  socket.addEventListener('error', () => reject(new Error('UNAUTHORIZED')));
   socket.addEventListener('message', ({ data }) => {
     const packet = String(data);
     socket.packets.push(packet);
-    if (packet.startsWith('0')) socket.send(`40${JSON.stringify(token ? { token } : {})}`);
-    if (packet === '2') socket.send('3');
-    if (packet.startsWith('40')) resolve(socket);
-    if (packet.startsWith('44')) {
-      socket.close();
-      reject(new Error('UNAUTHORIZED'));
-    }
+    const frame = JSON.parse(packet);
+    if (frame.t === 'ping') socket.send(JSON.stringify({ t: 'pong' }));
+    if (frame.t === 'open') resolve(socket);
   });
 });
 
+const sendEvent = (socket, event, payload) => socket.send(JSON.stringify({ t: 'event', e: event, p: payload }));
+
 const socketEvent = (socket, name) => new Promise((resolve) => {
   const onMessage = ({ data }) => {
-    const packet = String(data);
-    if (!packet.startsWith('42')) return;
-    const [event, payload] = JSON.parse(packet.slice(2));
-    if (event !== name) return;
+    const frame = JSON.parse(String(data));
+    if (frame.t !== 'event' || frame.e !== name) return;
     socket.removeEventListener('message', onMessage);
-    resolve(payload);
+    resolve(frame.p);
   };
   socket.addEventListener('message', onMessage);
 });
 
 const withSocketGateway = async (run, { failPersistence = false } = {}) => {
-  const { Server } = require('socket.io');
+  const { createRealtimeBus } = require('../src/realtime-bus');
   const { EventEmitter } = require('node:events');
   const { createLogStreamRegistry, registerLogStreamHandlers, disconnectLogStream } = require('../src/log-stream-manager');
   const authFile = tmpAuthFile();
   seedPassword(authFile);
   const app = express();
   const servers = [http.createServer(app), http.createServer(app)];
-  const io = new Server(servers[0]);
-  const engines = [io.engine];
+  let auth = null;
+  const io = createRealtimeBus({ httpServer: servers[0], authorize: (req) => auth.authorizeUpgrade(req) });
   io.attach(servers[1]);
-  engines.push(io.engine);
   const registry = createLogStreamRegistry();
   const children = [];
   let changes = 0;
   let now = Date.now();
-  const auth = createOperatorAuth({
+  auth = createOperatorAuth({
     now: () => now,
     authFile, readJSON,
     writeJSON: (...args) => {
@@ -848,14 +863,13 @@ const withSocketGateway = async (run, { failPersistence = false } = {}) => {
       changes += 1;
       const saved = readJSON(authFile);
       assert.equal(saved.hash, crypto.scryptSync(NEW_PASSWORD, Buffer.from(saved.salt, 'hex'), 32).toString('hex'));
-      io.disconnectSockets(true);
+      io.disconnectSockets();
     },
   });
   app.use(express.json());
   auth.registerSessionRoutes(app);
   app.get('/api/protected', auth.requireAuth, (req, res) => res.json({ ok: true }));
   app.use((err, req, res, next) => res.status(500).json({ error: err.message }));
-  io.use(auth.socketMiddleware);
   io.on('connection', (socket) => {
     socket.on('disconnect', () => disconnectLogStream({ socket, registry, log: () => {} }));
     registerLogStreamHandlers({
@@ -884,11 +898,44 @@ const withSocketGateway = async (run, { failPersistence = false } = {}) => {
     await run({ urls, connect, io, registry, children, authFile, changes: () => changes, expireAttempts: () => { now += 60_001; } });
   } finally {
     for (const client of clients) client.close();
-    io.disconnectSockets(true);
-    for (const engine of engines) engine.close();
-    await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+    await Promise.all([io.close(), ...servers.map((server) => new Promise((resolve) => server.close(resolve)))]);
   }
 };
+
+describe('operator realtime upgrade origin boundary', () => {
+  it('checks session origins on realtime upgrades', async (t) => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    await withServer({ authFile, readJSON, writeJSON }, async ({ auth, baseUrl }) => {
+      const login = await fetch(`${baseUrl}/api/auth/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      assert.equal(login.status, 200);
+      const cookie = login.headers.get('set-cookie').split(';')[0];
+      const host = new URL(baseUrl).host;
+      const devHost = 'localhost:5571';
+      const tailscaleHost = 'gateway.example.ts.net:5570';
+      const cases = [
+        { name: 'rejects a same-site sibling port', headers: { host, origin: 'http://127.0.0.1:3000' }, allowed: false },
+        { name: 'accepts the production page origin', headers: { host, origin: baseUrl }, allowed: true },
+        { name: 'accepts the Vite forwarded page host', headers: { host, origin: `http://${devHost}`, 'x-forwarded-host': devHost }, allowed: true },
+        { name: 'accepts a forwarded Tailscale page host', headers: { host, origin: `https://${tailscaleHost}`, 'x-forwarded-host': `${tailscaleHost}, internal:5570` }, allowed: true },
+        { name: 'rejects a mismatch against the forwarded host', headers: { host, origin: baseUrl, 'x-forwarded-host': devHost }, allowed: false },
+        { name: 'rejects a malformed origin', headers: { host, origin: 'null' }, allowed: false },
+        { name: 'rejects a foreign origin even with bearer credentials', headers: { host, origin: 'https://attacker.invalid', authorization: `Bearer ${PASSWORD}` }, allowed: false, bearerOnly: true },
+        { name: 'accepts a session without an Origin header', headers: { host }, allowed: true },
+      ];
+      for (const { name, headers, allowed, bearerOnly } of cases) {
+        await t.test(name, async () => {
+          const req = { headers: bearerOnly ? headers : { cookie, ...headers }, socket: { remoteAddress: '127.0.0.1' } };
+          assert.equal(await auth.authorizeUpgrade(req), allowed);
+        });
+      }
+    });
+  });
+});
 
 describe('established operator socket revocation', () => {
   it('revokes every listener, cleans log streams and permits only replacement credentials', { timeout: 10000 }, async () => {
@@ -901,7 +948,7 @@ describe('established operator socket revocation', () => {
       const clients = [await connect(0, { cookie }), await connect(1, { token: PASSWORD })];
       for (const client of clients) {
         const subscribed = socketEvent(client, 'logs:subscribed');
-        client.send(`42${JSON.stringify(['logs:subscribe', { processName: 'critical-mass' }])}`);
+        sendEvent(client, 'logs:subscribe', { processName: 'critical-mass' });
         await subscribed;
       }
       const originalRecord = readJSON(authFile);
@@ -917,7 +964,7 @@ describe('established operator socket revocation', () => {
         assert.equal(response.status, status);
         assert.equal(changes(), 0);
         assert.deepEqual(readJSON(authFile), originalRecord);
-        assert.equal(io.of('/').sockets.size, 2);
+        assert.equal(io.sockets.size, 2);
         assert.ok(children.every((child) => !child.killed));
         const delivered = socketEvent(clients[0], 'trade:event');
         io.emit('trade:event', { valid: true });
@@ -932,7 +979,7 @@ describe('established operator socket revocation', () => {
       assert.equal(changes(), 1);
       assert.notDeepEqual(readJSON(authFile), originalRecord);
       // Cleanup is synchronous and complete before the HTTP success response.
-      assert.equal(io.of('/').sockets.size, 0);
+      assert.equal(io.sockets.size, 0);
       assert.deepEqual([...registry.entries()], []);
       assert.ok(children.every((child) => child.killed));
       await Promise.all(closed);
@@ -943,8 +990,8 @@ describe('established operator socket revocation', () => {
         // A closed transport cannot dispatch another PM2 subscribe or flush
         // (a closed global WebSocket drops sends silently).
         assert.equal(client.readyState, WebSocket.CLOSED);
-        client.send(`42${JSON.stringify(['logs:flush', { processName: 'critical-mass' }])}`);
-        client.send(`42${JSON.stringify(['logs:subscribe', { processName: 'critical-mass' }])}`);
+        sendEvent(client, 'logs:flush', { processName: 'critical-mass' });
+        sendEvent(client, 'logs:subscribe', { processName: 'critical-mass' });
       }
       assert.equal(children.length, 2);
       assert.deepEqual(clients.map((client) => client.packets.length), packetCounts);
@@ -955,7 +1002,7 @@ describe('established operator socket revocation', () => {
       const newCookie = response.headers.get('set-cookie').split(';')[0];
       await connect(0, { cookie: newCookie });
       await connect(1, { token: NEW_PASSWORD });
-      assert.equal(io.of('/').sockets.size, 2);
+      assert.equal(io.sockets.size, 2);
     });
   });
 

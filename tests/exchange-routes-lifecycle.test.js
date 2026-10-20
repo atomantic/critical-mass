@@ -20,6 +20,7 @@
 const { describe, it, beforeEach, afterEach, after, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const { supportConfigDescriptors } = require('./helpers/config-fs-descriptors');
 const os = require('os');
 const path = require('path');
 
@@ -31,6 +32,7 @@ const originalDataDir = pathsModule.DATA_DIR;
 const configDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exchange-routes-config-'));
 pathsModule.DATA_DIR = configDataDir;
 const configUtils = require('../src/config-utils');
+const stateTracker = require('../src/state-tracker');
 const migration = require('../src/migration');
 const adapters = require('../src/adapters');
 const registerExchangeRoutes = require('../src/routes/exchange-routes');
@@ -101,6 +103,8 @@ const setupFsMocks = (base) => {
     if (String(dir) === path.dirname(USER_CONFIG_FILE)) return;
     return realFs.mkdirSync(dir, ...rest);
   });
+
+  supportConfigDescriptors(USER_CONFIG_FILE);
 
   return { user: () => userData };
 };
@@ -191,6 +195,44 @@ describe('fund lifecycle routes', () => {
       assert.equal(res.body.success, true);
       assert.equal(res.body.config.enabled, false, 'new fund must default enabled:false');
       assert.equal(res.body.config.dryRun, true, 'new fund must default dryRun:true');
+    });
+
+    it('returns 409 when the requested fund already exists', async () => {
+      mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
+      const { app } = setup();
+      const res = await invoke(app, 'POST /api/:exchange/funds', {
+        params: { exchange: 'coinbase' }, body: { pair: 'BTC-USDC' },
+      });
+      assert.equal(res.statusCode, 409, JSON.stringify(res.body));
+      assert.match(res.body.error, /already exists/i);
+    });
+
+    it('allows creation when the pair directory contains only operational files', async () => {
+      mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
+      const { app } = setup();
+      const dir = fundDir('coinbase', 'CHART-USD');
+      realFs.mkdirSync(dir, { recursive: true });
+      realFs.writeFileSync(path.join(dir, 'chart-data-buffer.json'), '{}');
+      realFs.writeFileSync(path.join(dir, 'placement-intents.json'), '[]');
+
+      const res = await invoke(app, 'POST /api/:exchange/funds', {
+        params: { exchange: 'coinbase' },
+        body: { pair: 'CHART-USD' },
+      });
+
+      assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+      assert.equal(res.body.success, true);
+    });
+
+    it('guards direct addFund callers when durable state remains', () => {
+      const { fsMocks } = setup();
+      writeRegimeState('coinbase', 'DIRECT-USD', { lifecycle: 'closed' });
+
+      assert.throws(
+        () => configUtils.addFund('coinbase', 'DIRECT-USD'),
+        (error) => error.code === 'FUND_STATE_EXISTS' && /Move or archive that directory/.test(error.message),
+      );
+      assert.ok(!fsMocks.user(), 'direct refusal must not write config');
     });
 
     it('does not let a caller override dryRun:false on creation (still defaults safe)', async () => {
@@ -389,6 +431,41 @@ describe('fund lifecycle routes', () => {
   });
 
   describe('DELETE /api/:exchange/funds/:pair', () => {
+    it('returns 404 for an unconfigured fund without reading fund state', async () => {
+      const { app } = setup();
+      const loadState = mock.method(stateTracker, 'loadFundRegimeState', () => {
+        throw new Error('must not read state for an unknown pair');
+      });
+      const res = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
+        params: { exchange: 'coinbase', pair: 'NOPE-USDC' },
+      });
+      assert.equal(res.statusCode, 404);
+      assert.equal(loadState.mock.callCount(), 0);
+    });
+
+    it('returns 400 for a malformed pair before reading fund state', async () => {
+      const { app } = setup();
+      const loadState = mock.method(stateTracker, 'loadFundRegimeState', () => {
+        throw new Error('must not read state for a malformed pair');
+      });
+      const res = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
+        params: { exchange: 'coinbase', pair: '../../x' },
+      });
+      assert.equal(res.statusCode, 400);
+      assert.equal(loadState.mock.callCount(), 0);
+    });
+
+    it('resolves case-insensitive requests to the canonical configured pair', async () => {
+      const { app } = setup();
+      const loadState = mock.method(stateTracker, 'loadFundRegimeState', () => ({ position: { lifecycle: 'draining' } }));
+      const res = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
+        params: { exchange: 'coinbase', pair: 'btc-usdc' },
+      });
+      assert.equal(res.statusCode, 400);
+      assert.match(res.body.error, /lifecycle is 'draining'/);
+      assert.equal(loadState.mock.calls[0].arguments[1], 'BTC-USDC');
+    });
+
     it('refuses deletion (400) when the fund lifecycle is active (default, no state file)', async () => {
       const { app, fsMocks } = setup();
 
@@ -436,14 +513,14 @@ describe('fund lifecycle routes', () => {
       // BASE config.json, which saveConfig's diff persistence used to
       // resurrect — is covered by the base-config-fund test below (#441).
       mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
-      const { app } = setup();
+      const { app, fsMocks } = setup();
       const created = await invoke(app, 'POST /api/:exchange/funds', {
         params: { exchange: 'coinbase' },
         body: { pair: 'SOL-USDC' },
       });
       assert.equal(created.statusCode, 200, JSON.stringify(created.body));
 
-      writeRegimeState('coinbase', 'SOL-USDC', { lifecycle: 'closed' });
+      writeRegimeState('coinbase', 'SOL-USDC', { lifecycle: 'closed', cyclesCompleted: 7, realizedPnL: 123 });
       // No running flag written -> shouldAutoResumeRegime is false.
 
       const res = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
@@ -452,10 +529,42 @@ describe('fund lifecycle routes', () => {
 
       assert.equal(res.statusCode, 200, JSON.stringify(res.body));
       assert.equal(res.body.success, true);
+      assert.match(res.body.note, /Re-adding coinbase\/SOL-USDC is refused until that directory is moved or archived/);
+
+      // The deletion leaves both lifecycle and ledger history intact. A later
+      // add cannot silently inherit it; after the operator archives the old
+      // directory, the same pair can be created with a fresh active lifecycle.
+      const ledgerPath = path.join(fundDir('coinbase', 'SOL-USDC'), 'fill-ledger.json');
+      realFs.writeFileSync(ledgerPath, JSON.stringify({ rows: [{ orderId: 'old-order' }] }));
+      const refused = await invoke(app, 'POST /api/:exchange/funds', {
+        params: { exchange: 'coinbase' },
+        body: { pair: 'SOL-USDC' },
+      });
+      assert.equal(refused.statusCode, 409, JSON.stringify(refused.body));
+      assert.match(refused.body.error, /Fund data for coinbase\/SOL-USDC already exists/);
+      assert.match(refused.body.error, /Move or archive that directory/);
+      assert.ok(!fsMocks.user().exchanges.coinbase.pairs?.['SOL-USDC'], 'refused re-add must not modify config');
+      assert.ok(realFs.existsSync(ledgerPath), 'refused re-add must preserve old ledger');
+
+      const archiveDir = path.join(tempRoot, 'archive', 'SOL-USDC');
+      realFs.mkdirSync(path.dirname(archiveDir), { recursive: true });
+      realFs.renameSync(fundDir('coinbase', 'SOL-USDC'), archiveDir);
+      const readded = await invoke(app, 'POST /api/:exchange/funds', {
+        params: { exchange: 'coinbase' },
+        body: { pair: 'SOL-USDC' },
+      });
+      assert.equal(readded.statusCode, 200, JSON.stringify(readded.body));
+      assert.equal(readded.body.config.enabled, false);
+      assert.equal(readded.body.config.dryRun, true);
+      const freshState = stateTracker.loadFundRegimeState('coinbase', 'SOL-USDC');
+      assert.equal(freshState.position.lifecycle, 'active', 'fresh fund must start active');
+      assert.equal(freshState.position.cyclesCompleted, 0, 'fresh fund must not inherit old cycle history');
+      assert.equal(freshState.position.realizedPnL, 0, 'fresh fund must not inherit old realized P&L');
+      assert.ok(!realFs.existsSync(path.join(fundDir('coinbase', 'SOL-USDC'), 'fill-ledger.json')), 'fresh fund must not inherit the old ledger');
 
       const remaining = await invoke(app, 'GET /api/:exchange/funds', { params: { exchange: 'coinbase' } });
       const pairs = remaining.body.funds.map((f) => f.pair);
-      assert.ok(!pairs.includes('SOL-USDC'), 'deleted fund must be gone');
+      assert.ok(pairs.includes('SOL-USDC'), 'the pair should be available again after its old directory is archived');
       assert.ok(pairs.includes('BTC-USDC') && pairs.includes('ETH-USDC'), 'other funds on the exchange must survive');
     });
 
@@ -489,8 +598,8 @@ describe('fund lifecycle routes', () => {
       const again = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
         params: { exchange: 'coinbase', pair: 'ETH-USDC' },
       });
-      assert.equal(again.statusCode, 400);
-      assert.match(again.body.error, /not found/i);
+      assert.equal(again.statusCode, 404);
+      assert.match(again.body.error, /unknown configured fund/i);
     });
   });
 

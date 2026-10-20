@@ -1,13 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { plural } from '../utils/plural.mjs'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
-import { getBaseCurrency } from '../App'
+import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
-import { compareCycleIds } from '../utils/regimeFillGroups.mjs'
 
 function CostBasisRegime({ exchange = 'coinbase', pair }) {
   const [status, setStatus] = useState(null)
-  const [fills, setFills] = useState([])
+  const [fillAggregates, setFillAggregates] = useState(null)
   const [loading, setLoading] = useState(true)
   const [currentPrice, setCurrentPrice] = useState(0)
   const [productId, setProductId] = useState(null)
@@ -36,7 +35,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
       // cannot overlap a still-pending request from the failed batch.
       const results = await Promise.allSettled([
         read('regime/status', 'Status'),
-        read('regime/fills', 'Fills'),
+        read('regime/fills/cycles', 'Fill cycles'),
         session.config ? Promise.resolve(session.config) : read('config', 'Config'),
       ])
       if (!session.active) return
@@ -49,7 +48,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
       session.hasSnapshot = true
       setStatus(statusData.status)
       setCurrentPrice(statusData.status?.market?.lastPrice || 0)
-      setFills(fillsData.fills || [])
+      setFillAggregates(fillsData)
       setProductId(configData.config?.productId || configData.productId || null)
       setError(null)
       setStale(false)
@@ -70,7 +69,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
     const session = { active: true, inFlight: false, hasSnapshot: false, config: null, controller: null }
     readState.current = session
     setStatus(null)
-    setFills([])
+    setFillAggregates(null)
     setCurrentPrice(0)
     setProductId(null)
     setError(null)
@@ -110,35 +109,13 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
   const position = status?.position || {}
   const isDryRun = status?.isDryRun
   const baseCurrency = getBaseCurrency(productId)
+  const quoteCurrency = getQuoteCurrency(productId || pair)
 
-  // Calculate cycle-based P&L from fills
-  const cycleData = fills.reduce((acc, fill) => {
-    const cycleId = fill.cycleId || 'current'
-    if (!acc[cycleId]) {
-      acc[cycleId] = {
-        cycleId,
-        entries: [],
-        exits: [],
-        totalBought: 0,
-        totalSold: 0,
-        totalCost: 0,
-        totalProceeds: 0,
-        holdback: 0,
-      }
-    }
-    if (fill.side === 'buy') {
-      acc[cycleId].entries.push(fill)
-      acc[cycleId].totalBought += fill.size
-      acc[cycleId].totalCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || 0)
-    } else {
-      acc[cycleId].exits.push(fill)
-      acc[cycleId].totalSold += fill.size
-      acc[cycleId].totalProceeds += (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || 0)
-    }
-    return acc
-  }, {})
-
-  const cycles = Object.values(cycleData).sort((a, b) => compareCycleIds(a.cycleId, b.cycleId))
+  const cycles = (fillAggregates?.cycles || []).map(cycle => ({
+    ...cycle,
+    entries: (fillAggregates.detailFills || []).filter(fill => (fill.cycleId || 'current') === cycle.cycleId && fill.side === 'buy'),
+    exits: (fillAggregates.detailFills || []).filter(fill => (fill.cycleId || 'current') === cycle.cycleId && fill.side === 'sell'),
+  }))
 
   // Calculate totals
   const totalAsset = position.totalAsset || 0
@@ -234,7 +211,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
           <h3 className="min-w-0 wrap-break-word text-lg font-semibold text-green-400 mb-3">Realized P&L</h3>
           <div className="space-y-2">
             <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
-              <span className="min-w-0 wrap-break-word text-gray-400">USDC Profit:</span>
+              <span className="min-w-0 wrap-break-word text-gray-400">{quoteCurrency} Profit:</span>
               <span className={`min-w-0 max-w-full wrap-break-word text-right text-2xl font-bold ${realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                 {realizedPnL >= 0 ? '+' : ''}{formatCurrency(realizedPnL)}
               </span>
@@ -272,6 +249,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
       {/* Cycle History */}
       <div className="min-w-0 bg-gray-800 rounded-lg p-4">
         <h3 className="text-lg font-semibold mb-4">Cycle-Based Cost Breakdown</h3>
+        {fillAggregates?.cyclesTruncated && <p className="text-sm text-gray-400 mb-3">Showing the latest {cycles.length} of {fillAggregates.cycleCount} cycles. Position totals include all history.</p>}
         {cycles.length === 0 ? (
           <div className="text-center text-gray-400 py-8">
             No cycle data available. Start the regime engine to begin trading.
@@ -298,7 +276,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
                         {cycle.cycleId === 'current' ? 'Current Cycle' : cycle.cycleId}
                       </span>
                       <span className="min-w-0 wrap-break-word text-sm text-gray-400">
-                        {plural(cycle.entries.length, "entry", "entries")}, {plural(cycle.exits.length, "exit")}
+                        {plural(cycle.entryCount, "entry", "entries")}, {plural(cycle.exitCount, "exit")}
                       </span>
                     </div>
                     {isComplete && (
@@ -332,6 +310,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
                   {/* Fill details (collapsed by default for completed cycles) */}
                   {cycle.cycleId === 'current' && cycle.entries.length > 0 && (
                     <div className="mt-3 pt-3 border-t border-gray-700">
+                      {cycle.entryCount + cycle.exitCount > cycle.entries.length + cycle.exits.length && <p className="text-xs text-gray-400 mb-2">Recent fill details shown; cycle totals include all fills.</p>}
                       <div className="overflow-x-auto">
                         <table className="w-full text-xs">
                           <thead>
@@ -378,7 +357,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
           <li><strong>Cycle-based</strong>: Each trading cycle (entry to TP fill) is tracked separately</li>
           <li><strong>Position</strong>: Current {baseCurrency} held from active entries</li>
           <li><strong>{baseCurrency} Reserves</strong>: Accumulated holdback from profitable take-profit fills</li>
-          <li><strong>Realized P&L</strong>: USDC profit from completed cycles</li>
+          <li><strong>Realized P&L</strong>: {quoteCurrency} profit from completed cycles</li>
           <li><strong>Total Value</strong>: Combines position + reserves + realized profit</li>
         </ul>
       </div>

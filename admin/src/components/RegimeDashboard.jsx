@@ -37,7 +37,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const pairQuery = buildPairQuery(pair)
   const { addToast } = useToast()
   const {
-    status, config, loading, error, liveFills, presets, isRunning, prevPriceRef,
+    status, config, loading, error, stale, retry, fillsUnavailable, liveFills, fillAggregates, presets, isRunning, prevPriceRef,
     priceHistory, atrHistory, regimeHistory, setSocketStatus, fetchStatus, fetchConfig, fetchFills,
   } = useRegimeDashboardData(exchange, pair, pairQuery)
   const {
@@ -64,6 +64,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   }
 
   const asset = getBaseCurrency(config?.productId)
+  const quoteCurrency = getQuoteCurrency(config?.productId || pair)
   const {
     isDryRun, market, position, regime, health, dryRunState, pendingOrdersList, placementIntents,
     buysPaused, isDrainingOrClosed, apy, tpOptimizer, sizeOptimizer, risk, riskPosition, riskConfig, macroConfig,
@@ -73,14 +74,15 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     <div className="space-y-6">
       {/* Error display */}
       {error && (
-        <div className="p-3 bg-red-900/50 border border-red-700 rounded-sm text-red-200 text-sm">
-          {error}
+        <div role="alert" className="p-3 bg-red-900/50 border border-red-700 rounded-sm text-red-200 text-sm">
+          {error}. {stale && 'Showing last good data (stale). '}
+          <button type="button" onClick={retry} className="ml-2 underline">Retry</button>
         </div>
       )}
 
       {/* Stopped banner when engine is not running but we have data */}
-      <StoppedBanner isRunning={isRunning} lastPrice={market.lastPrice} totalAsset={position.totalAsset}
-        engineDown={status?.engineDown} stale={market.stale} />
+      {status && !error && <StoppedBanner isRunning={isRunning} lastPrice={market.lastPrice} totalAsset={position.totalAsset}
+        engineDown={status?.engineDown} stale={market.stale} />}
 
       {/* API-key-denied banner: the exchange rejected the key (commonly the
           server IP is not on the key's allowlist). New orders are halted until
@@ -90,9 +92,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
       {/* Buys-paused banner: cycle buy-limit reached, new entries paused */}
       <BuysPausedBanner buysPaused={buysPaused} cycleBuys={position.cycleBuys} maxCycleBuys={config?.maxCycleBuys} isRunning={isRunning} isDrainingOrClosed={isDrainingOrClosed} setResetCycleConfirm={setResetCycleConfirm} resettingCycle={resettingCycle} />
 
-      {(!isRunning && !market.lastPrice && !position.totalAsset) ? (
+      {(status && !error && !isRunning && !market.lastPrice && !position.totalAsset) ? (
         <EmptyRegimeState isDryRun={isDryRun} dcaState={dcaState} handlePreviewConvert={handlePreviewConvert} />
-      ) : (
+      ) : status ? (
         <>
           {/* Live Status Bar */}
           <LiveStatusBar asset={asset} market={market} position={position} config={config}
@@ -125,7 +127,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             <OptimalTpAnalysis isDryRun={isDryRun} optimalTpAnalytics={dryRunState?.optimalTpAnalytics} tpMinPercent={config?.tpMinPercent} tpMaxPercent={config?.tpMaxPercent} />
 
             {/* Risk Limits */}
-            <RiskLimitsPanel risk={risk} position={riskPosition} config={riskConfig} committedUsdc={status?.ladder?.committedUsdc} asset={asset} setDrawdownResumeConfirm={setDrawdownResumeConfirm} />
+            <RiskLimitsPanel quoteCurrency={quoteCurrency} risk={risk} position={riskPosition} config={riskConfig} committedUsdc={status?.ladder?.committedUsdc} asset={asset} setDrawdownResumeConfirm={setDrawdownResumeConfirm} />
           </div>
 
           {/* Middle Column: Position & Risk */}
@@ -241,6 +243,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 buttons row above so opening it never shifts Cancel Ladder /
                 Collapse All / the order filter input. */}
             <LadderPanel
+              quoteCurrency={quoteCurrency}
               config={config}
               status={status}
               exchange={exchange}
@@ -251,7 +254,8 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             />
             <OpenOrdersTable
               pendingOrdersList={pendingOrdersList}
-              liveFills={liveFills}
+              liveFills={fillAggregates?.openFillsTruncated ? [] : fillAggregates?.openFills || liveFills}
+              openFillsTruncated={fillAggregates?.openFillsTruncated}
               dryRunFilled={dryRunState?.filledOrders}
               isDryRun={isDryRun}
               celestialBodies={status?.celestial?.bodies || EMPTY_BODIES}
@@ -269,17 +273,21 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
           {/* Unresolved placement intents — while any exist the fund refuses new placements */}
           <PlacementIntentsPanel placementIntents={placementIntents} asset={asset} exchange={exchange} pairQuery={pairQuery} addToast={addToast} setSocketStatus={setSocketStatus} fetchStatus={fetchStatus} fetchFills={fetchFills} />
 
-          <FilledOrdersSection
-            liveFills={liveFills}
-            isDryRun={isDryRun}
-            dryRunFilled={dryRunState?.filledOrders}
-            pendingOrdersList={pendingOrdersList}
-            market={market}
-            asset={asset}
-          />
         </div>
         </>
-      )}
+      ) : null}
+
+      <FilledOrdersSection
+        fillsUnavailable={fillsUnavailable}
+        retry={retry}
+        liveFills={liveFills}
+        fillAggregates={fillAggregates}
+        isDryRun={isDryRun}
+        dryRunFilled={dryRunState?.filledOrders}
+        pendingOrdersList={pendingOrdersList}
+        market={market}
+        asset={asset}
+      />
 
       {/* Operational confirmation modals */}
       <RegimeActionModals

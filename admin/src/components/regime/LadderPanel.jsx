@@ -15,7 +15,7 @@ import { formatPriceByMagnitude, formatCurrency } from '../charts/chartUtils'
  * the toggle button is gated by `entryMode === 'ladder' && isRunning`; the
  * settings/preview panel's own visibility is independent of that guard.
  */
-function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfig, setSocketStatus }) {
+function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addToast, fetchConfig, setSocketStatus }) {
   const athDropId = useId()
   const spacingModeId = useId()
   const sizeModeId = useId()
@@ -343,7 +343,7 @@ function LadderPanel({ config, status, exchange, pairQuery, addToast, fetchConfi
                     <tr className="text-gray-400 border-b border-gray-700">
                       <th className="text-left py-1 pr-2">#</th>
                       <th className="text-right py-1 pr-2">Price</th>
-                      <th className="text-right py-1 pr-2">Size (USDC)</th>
+                      <th className="text-right py-1 pr-2">Size ({quoteCurrency})</th>
                       <th className="text-right py-1 pr-2">Qty</th>
                       <th className="text-right py-1">Distance</th>
                     </tr>

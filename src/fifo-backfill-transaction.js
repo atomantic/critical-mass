@@ -4,6 +4,8 @@ const path = require('path');
 const { createHash, randomUUID } = require('crypto');
 const { execFileSync } = require('child_process');
 const { DATA_DIR, APP_ROOT } = require('./paths');
+const { atomicWriteSync, fsyncFile } = require('./durable-write');
+const { fsyncDir } = require('./fsync-dir');
 
 const JOURNAL_FILENAME = '.fifo-backfill-journal.json';
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -11,17 +13,6 @@ const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 // Presence, including an unreadable journal, is fail-closed. Completed journals
 // are archived before this marker is removed, so no parsing is needed by guards.
 const hasPendingBackfill = (dataDir = DATA_DIR) => fs.existsSync(path.join(dataDir, JOURNAL_FILENAME));
-
-const flush = (file) => {
-  const fd = fs.openSync(file, 'r');
-  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-};
-
-const durableWrite = (file, bytes, write) => {
-  write(file, bytes);
-  flush(file);
-  flush(path.dirname(file));
-};
 
 const validateEntry = (entry, dataDir) => {
   if (!entry || typeof entry.file !== 'string' || typeof entry.before !== 'string' || typeof entry.after !== 'string') {
@@ -57,10 +48,19 @@ const readJournal = (file, dataDir) => {
   return journal;
 };
 
-const applyCohort = ({ dataDir = DATA_DIR, mode = 'apply', stage, assertStopped = () => {}, write = require('./state-tracker').atomicWriteSync }) => {
+const applyCohort = ({ dataDir = DATA_DIR, mode = 'apply', stage, assertStopped = () => {}, write = atomicWriteSync }) => {
   dataDir = fs.realpathSync(dataDir);
   const journalFile = path.join(dataDir, JOURNAL_FILENAME);
-  const save = (journal) => durableWrite(journalFile, JSON.stringify(journal, null, 2), write);
+  // Preserve injected write/failure hooks; flush their result just as the
+  // default writer does before acknowledging any journal transition.
+  const persist = (file, bytes) => {
+    write(file, bytes);
+    if (write !== atomicWriteSync) {
+      fsyncFile(file);
+      fsyncDir(path.dirname(file));
+    }
+  };
+  const save = (journal) => persist(journalFile, JSON.stringify(journal, null, 2));
   if (fs.existsSync(path.join(dataDir, '.restore-journal.json'))) throw new Error('Backup restore recovery is pending; resolve it before backfill');
   let journal;
   if (hasPendingBackfill(dataDir)) {
@@ -73,9 +73,7 @@ const applyCohort = ({ dataDir = DATA_DIR, mode = 'apply', stage, assertStopped 
     // Exclusive marker before staging prevents another repair or process startup
     // from racing the cohort. A pre-staging crash can safely roll back an empty set.
     journal = { version: 1, id: randomUUID(), status: 'staging', entries: [] };
-    const fd = fs.openSync(journalFile, 'wx', 0o600);
-    try { fs.writeFileSync(fd, JSON.stringify(journal)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    flush(dataDir);
+    atomicWriteSync(journalFile, JSON.stringify(journal), { exclusive: true });
     try {
       assertStopped();
       journal.entries = stage().map((entry) => ({
@@ -89,7 +87,7 @@ const applyCohort = ({ dataDir = DATA_DIR, mode = 'apply', stage, assertStopped 
     } catch (error) {
       // No target has changed. Remove only this repair's pre-staging marker.
       fs.unlinkSync(journalFile);
-      flush(dataDir);
+      fsyncDir(dataDir);
       throw error;
     }
   }
@@ -108,7 +106,7 @@ const applyCohort = ({ dataDir = DATA_DIR, mode = 'apply', stage, assertStopped 
   journal.entries.forEach((entry, index) => {
     const bytes = rollback ? entry.before : entry.after;
     const expected = rollback ? entry.beforeHash : entry.afterHash;
-    if (hash(fs.readFileSync(targets[index])) !== expected) durableWrite(targets[index], bytes, write);
+    if (hash(fs.readFileSync(targets[index])) !== expected) persist(targets[index], bytes);
     if (hash(fs.readFileSync(targets[index])) !== expected) throw new Error('Backfill target verification failed');
     entry.status = rollback ? 'rolled-back' : 'committed';
     save(journal);
@@ -120,9 +118,9 @@ const applyCohort = ({ dataDir = DATA_DIR, mode = 'apply', stage, assertStopped 
   const historyDir = path.join(dataDir, '.fifo-backfill-history');
   fs.mkdirSync(historyDir, { recursive: true, mode: 0o700 });
   const archive = path.join(historyDir, `${journal.id}.json`);
-  durableWrite(archive, JSON.stringify(journal, null, 2), write);
+  persist(archive, JSON.stringify(journal, null, 2));
   fs.unlinkSync(journalFile);
-  flush(dataDir);
+  fsyncDir(dataDir);
   return { status: journal.status, count: journal.entries.length };
 };
 

@@ -2,7 +2,7 @@
 /**
  * Tests for src/regime-status.js — the canonical "regime engine not
  * running" status synthesizer (issue #357). Before this, the engine's
- * IPC handler, the HTTP gateway's offline fallback, and the Socket.IO
+ * IPC handler, the HTTP gateway's offline fallback, and the realtime
  * stream each rebuilt this payload independently and drifted; these
  * tests cover the shared helper's contract: P&L re-derivation from the
  * fill ledger, payload shape compatibility across modes, and edge-case

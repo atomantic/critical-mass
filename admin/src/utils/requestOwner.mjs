@@ -57,5 +57,5 @@ export const createRequestOwner = ({
     return { owned: true, ok, data }
   }
 
-  return { read, claim, owns, invalidate }
+  return { read, claim, owns, invalidate, getSignal: () => state.controller?.signal }
 }

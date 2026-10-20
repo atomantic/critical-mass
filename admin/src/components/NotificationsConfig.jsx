@@ -137,7 +137,8 @@ function NotificationsConfig() {
         await fetchConfig({ silent: true, saved: true })
         fetchStats()
       } else {
-        setMessage({ type: 'error', text: 'Failed to save settings' })
+        const data = await res.json().catch(() => ({}))
+        setMessage({ type: 'error', text: data.errors?.join('; ') || data.error || `Failed to save settings (HTTP ${res.status})` })
       }
     } catch (err) {
       setMessage({ type: 'error', text: err.message || 'Failed to save settings' })
@@ -346,7 +347,7 @@ function NotificationsConfig() {
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label htmlFor="rate-limit-ms" className="block text-sm font-medium text-gray-300 mb-1">Rate Limit (ms)</label>
+                  <label htmlFor="rate-limit-ms" className="block text-sm font-medium text-gray-300 mb-1">Batch Window (ms)</label>
                   <input
                     id="rate-limit-ms"
                     type="number"
@@ -372,7 +373,7 @@ function NotificationsConfig() {
                     max={23}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
                   />
-                  <p className="mt-1 text-xs text-gray-400">Hour (0-23) for daily summary</p>
+                  <p className="mt-1 text-xs text-gray-400">Hour (0-23) for daily summary (server time, {config.timezone || 'timezone unavailable'})</p>
                 </div>
               </div>
 
@@ -393,8 +394,9 @@ function NotificationsConfig() {
                     <div className="w-11 h-6 bg-gray-600 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
                     <span className="ml-3 text-sm font-medium">Quiet Hours</span>
                   </label>
-                  <span className="text-xs text-gray-400">(critical events still sent)</span>
+                  <span className="text-xs text-gray-400">(enabled critical events still sent)</span>
                 </div>
+                <p className="mb-3 text-xs text-gray-400">Start and end hours use server time ({config.timezone || 'timezone unavailable'}).</p>
                 {config.quietHours.enabled && (
                   <div className="grid grid-cols-2 gap-4 ml-14">
                     <div>
@@ -446,7 +448,10 @@ function NotificationsConfig() {
           <div className="space-y-5">
             {Object.entries(EVENT_GROUPS).map(([group, events]) => (
               <div key={group}>
-                <h4 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-2">{group}</h4>
+                <h4 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-2">{group === 'Critical' ? 'Critical events (always sent, even during quiet hours, when enabled)' : group}</h4>
+                {group === 'Critical' && (
+                  <p className="mb-2 text-xs text-gray-400">Sentinel critical alerts and fatal errors also bypass quiet hours. Notification delivery must be enabled and configured; event filters still apply.</p>
+                )}
                 <div className="grid grid-cols-2 gap-2">
                   {events.map(evt => (
                     <label key={evt.key} className="flex items-center gap-2 text-sm cursor-pointer hover:text-white text-gray-300">

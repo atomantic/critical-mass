@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useId } from 'react'
 import { FileText, Save, Camera, Upload, Check, X, Loader2 } from '../icons'
+import { createRequestOwner } from '../../utils/requestOwner.mjs'
 
 const LS_PROVIDER_KEY = 'updown-screenshot-provider'
 const LS_MODEL_KEY = 'updown-screenshot-model'
@@ -18,6 +19,7 @@ export default function ContractSetup({ initialContract }) {
   const [direction, setDirection] = useState('Up')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState('')
 
   // Screenshot AI state
   const [providers, setProviders] = useState([])
@@ -30,6 +32,16 @@ export default function ContractSetup({ initialContract }) {
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef(null)
   const dropZoneRef = useRef(null)
+  const screenshotRequestOwner = useRef(null)
+  if (!screenshotRequestOwner.current) screenshotRequestOwner.current = createRequestOwner()
+
+  useEffect(() => () => screenshotRequestOwner.current.invalidate(), [])
+  useEffect(() => {
+    screenshotRequestOwner.current.invalidate()
+    setAnalyzing(false)
+    setPreview(null)
+    setScreenshotError('')
+  }, [selectedProvider, selectedModel])
 
   // Only update form when the server-side contract actually changes
   const prevContractRef = useRef(null)
@@ -81,22 +93,30 @@ export default function ContractSetup({ initialContract }) {
   const handleSave = async () => {
     setSaving(true)
     setSaved(false)
-    const res = await fetch('/api/updown/contract', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        expiry,
-        target: parseFloat(target),
-        stop: parseFloat(stop),
-        range: parseInt(range, 10),
-        direction: direction.toLowerCase(),
-      }),
-    })
-    if (res.ok) {
+    setSaveError('')
+    try {
+      const res = await fetch('/api/updown/contract', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expiry,
+          target: parseFloat(target),
+          stop: parseFloat(stop),
+          range: parseInt(range, 10),
+          direction: direction.toLowerCase(),
+        }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to save contract')
+      }
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
+    } catch (err) {
+      setSaveError(err.message || 'Failed to save contract')
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const analyzeScreenshot = useCallback(async (file) => {
@@ -113,6 +133,8 @@ export default function ContractSetup({ initialContract }) {
       return
     }
 
+    const owner = screenshotRequestOwner.current
+    const token = owner.claim()
     setAnalyzing(true)
     setScreenshotError('')
     setScreenshotNotice('')
@@ -125,14 +147,18 @@ export default function ContractSetup({ initialContract }) {
       method: 'POST',
       headers: { 'Content-Type': file.type },
       body: file,
+      signal: owner.getSignal(),
     }).catch(err => {
-      setScreenshotError(`Request failed: ${err.message}`)
-      setAnalyzing(false)
+      if (owner.owns(token)) {
+        setScreenshotError(`Request failed: ${err.message}`)
+        setAnalyzing(false)
+      }
       return null
     })
-    if (!res) return
+    if (!owner.owns(token) || !res) return
 
     const data = await res.json().catch(() => null)
+    if (!owner.owns(token)) return
     setAnalyzing(false)
 
     if (!res.ok || !data?.success) {
@@ -549,6 +575,7 @@ export default function ContractSetup({ initialContract }) {
           <Save size={14} />
           {saving ? 'Saving...' : saved ? 'Saved' : 'Save Contract'}
         </button>
+        {saveError && <div className="text-xs text-red-400" role="alert">{saveError}</div>}
       </div>
     </div>
   )

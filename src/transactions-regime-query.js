@@ -2,6 +2,7 @@
 // or paging. This owner never writes ledger rows or persists trading state.
 const { computeFillsWithPnL } = require('../shared/transactions-regime-pnl.mjs');
 const { sortFills, summarizeFills, paginate } = require('../shared/transactions-regime-page.mjs');
+const { aggregateRegimeFills } = require('../shared/regime-fill-aggregates.mjs');
 
 // Page rows contain only table fields. Ledger ownership annotations and raw
 // exchange records remain server-side; accounting still uses the full ledger.
@@ -12,7 +13,7 @@ const SORT_FIELDS = new Set(['timestamp', 'cycleId', 'side', 'size', 'price', 'q
 const badQuery = error => ({ success: false, statusCode: 400, error });
 
 function parseFillsQuery(input = {}) {
-  if (input.paged === undefined) return { paged: false };
+  if (input.paged === undefined) return badQuery('paged=true required');
   if (input.paged !== 'true' && input.paged !== true) return badQuery('paged must be true');
   const integer = (value, fallback) => value === undefined ? fallback
     : (typeof value === 'string' && /^\d+$/.test(value)) || typeof value === 'number'
@@ -47,21 +48,26 @@ function createTransactionsReadView(readFills, readRevision) {
   let snapshot;
   let recomputations = 0;
   const queries = new Map();
+  const currentSnapshot = () => {
+    const revision = readRevision();
+    if (!snapshot || snapshot.revision !== revision) {
+      const fills = readFills();
+      const rows = computeFillsWithPnL(fills);
+      snapshot = { revision, rows, fills, cycleIds: [...new Set(rows.map(row => row.cycleId || 'current'))].sort(compareCycles), aggregates: null };
+      queries.clear();
+      recomputations++;
+    }
+    return snapshot;
+  };
   return {
     query(input) {
       const query = parseFillsQuery(input);
       if (query.success === false) return query;
-      if (!query.paged) return badQuery('Paged query required');
       const revision = readRevision();
       if (query.revision !== undefined && query.revision !== revision) {
         return { success: false, statusCode: 409, code: 'STALE_FILL_REVISION', revision, error: 'Fill history changed; reload page one' };
       }
-      if (!snapshot || snapshot.revision !== revision) {
-        const rows = computeFillsWithPnL(readFills());
-        snapshot = { revision, rows, cycleIds: [...new Set(rows.map(row => row.cycleId || 'current'))].sort(compareCycles) };
-        queries.clear();
-        recomputations++;
-      }
+      currentSnapshot();
       const key = JSON.stringify([query.side, query.cycle, query.sortField, query.sortDir]);
       let result = queries.get(key);
       if (!result) {
@@ -74,6 +80,11 @@ function createTransactionsReadView(readFills, readRevision) {
       }
       const { rows, ...pageInfo } = paginate(result.rows, query.page, query.pageSize);
       return { fills: rows.map(projectPageRow), pageInfo, summary: { ...result.summary }, cycleIds: [...snapshot.cycleIds], revision };
+    },
+    aggregates() {
+      const current = currentSnapshot();
+      if (!current.aggregates) current.aggregates = { ...aggregateRegimeFills(current.fills), revision: current.revision };
+      return current.aggregates;
     },
     getRecomputeCount: () => recomputations,
   };

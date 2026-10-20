@@ -34,6 +34,8 @@ const fs = require('fs');
 const path = require('path');
 const { createHash, randomUUID } = require('crypto');
 const migration = require('./migration');
+const { atomicWriteSync } = require('./durable-write');
+const { fsyncDir } = require('./fsync-dir');
 const { log } = require('./logger');
 
 const JOURNAL_FILENAME = '.dca-import-journal.json';
@@ -65,68 +67,10 @@ const liveFundDir = (exchange, pair) => migration.resolveFundDataDir(exchange, r
 /** @param {string} file */
 const readOptional = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null);
 
-/** @param {string} target */
-const fsyncPath = (target) => {
-  const fd = fs.openSync(target, 'r');
-  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-};
-
-/** @param {string} file */
-const tmpPathFor = (file) => `${file}.${process.pid}.${randomUUID()}.tmp`;
-
-/**
- * Write bytes to a fresh temp file and fsync it.
- * @param {string} tmp
- * @param {string} bytes
- */
-const writeSynced = (tmp, bytes) => {
-  const fd = fs.openSync(tmp, 'wx', 0o600);
-  try {
-    fs.writeFileSync(fd, bytes);
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-};
-
-/**
- * Durable atomic replacement: fsynced temp file, rename, fsync the directory.
- * @param {string} file
- * @param {string} bytes
- */
-const durableReplace = (file, bytes) => {
-  const tmp = tmpPathFor(file);
-  try {
-    writeSynced(tmp, bytes);
-    fs.renameSync(tmp, file);
-  } catch (err) {
-    fs.rmSync(tmp, { force: true });
-    throw err;
-  }
-  fsyncPath(path.dirname(file));
-};
-
-/**
- * Durably create `file` only if it does not exist yet (link() is exclusive and
- * atomic, so a crash can never leave a torn journal behind).
- * @param {string} file
- * @param {string} bytes
- */
-const durableCreateExclusive = (file, bytes) => {
-  const tmp = tmpPathFor(file);
-  try {
-    writeSynced(tmp, bytes);
-    fs.linkSync(tmp, file);
-  } finally {
-    fs.rmSync(tmp, { force: true });
-  }
-  fsyncPath(path.dirname(file));
-};
-
 /** @param {string} dir */
 const removeJournal = (dir) => {
   fs.rmSync(path.join(dir, JOURNAL_FILENAME), { force: true });
-  fsyncPath(dir);
+  fsyncDir(dir);
 };
 
 /**
@@ -230,7 +174,7 @@ const publishEntries = (dir, journal) => {
   });
   for (const { file, entry, done } of targets) {
     if (done) continue;
-    durableReplace(file, entry.after);
+    atomicWriteSync(file, entry.after);
     if (hash(fs.readFileSync(file, 'utf8')) !== entry.afterHash) {
       throw new Error(`${entry.file} verification failed after DCA import publication`);
     }
@@ -313,7 +257,7 @@ const runDcaImportTransaction = ({ exchange, pair, kind, sourceOrders, stage, va
     sourceOrders: sourceOrders.map((o) => ({ orderId: o.orderId ?? null, buyOrderId: o.buyOrderId ?? null })),
     entries: /** @type {Array<Object>} */ ([]),
   };
-  durableCreateExclusive(journalFile, JSON.stringify(journal, null, 2));
+  atomicWriteSync(journalFile, JSON.stringify(journal, null, 2), { exclusive: true });
 
   const stagingDir = path.join(dir, `${STAGING_PREFIX}${importId}`);
   let result;
@@ -352,7 +296,7 @@ const runDcaImportTransaction = ({ exchange, pair, kind, sourceOrders, stage, va
     if (validate) validate(docs);
 
     journal.status = 'publishing';
-    durableReplace(journalFile, JSON.stringify(journal, null, 2));
+    atomicWriteSync(journalFile, JSON.stringify(journal, null, 2));
   } catch (err) {
     // Nothing live has been replaced yet: discarding the journal is exact.
     try {
