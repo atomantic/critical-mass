@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useId } from 'react'
 import { FileText, Save, Camera, Upload, Check, X, Loader2 } from '../icons'
+import { createRequestOwner } from '../../utils/requestOwner.mjs'
 
 const LS_PROVIDER_KEY = 'updown-screenshot-provider'
 const LS_MODEL_KEY = 'updown-screenshot-model'
@@ -30,6 +31,16 @@ export default function ContractSetup({ initialContract }) {
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef(null)
   const dropZoneRef = useRef(null)
+  const screenshotRequestOwner = useRef(null)
+  if (!screenshotRequestOwner.current) screenshotRequestOwner.current = createRequestOwner()
+
+  useEffect(() => () => screenshotRequestOwner.current.invalidate(), [])
+  useEffect(() => {
+    screenshotRequestOwner.current.invalidate()
+    setAnalyzing(false)
+    setPreview(null)
+    setScreenshotError('')
+  }, [selectedProvider, selectedModel])
 
   // Only update form when the server-side contract actually changes
   const prevContractRef = useRef(null)
@@ -113,6 +124,8 @@ export default function ContractSetup({ initialContract }) {
       return
     }
 
+    const owner = screenshotRequestOwner.current
+    const token = owner.claim()
     setAnalyzing(true)
     setScreenshotError('')
     setScreenshotNotice('')
@@ -125,14 +138,18 @@ export default function ContractSetup({ initialContract }) {
       method: 'POST',
       headers: { 'Content-Type': file.type },
       body: file,
+      signal: owner.getSignal(),
     }).catch(err => {
-      setScreenshotError(`Request failed: ${err.message}`)
-      setAnalyzing(false)
+      if (owner.owns(token)) {
+        setScreenshotError(`Request failed: ${err.message}`)
+        setAnalyzing(false)
+      }
       return null
     })
-    if (!res) return
+    if (!owner.owns(token) || !res) return
 
     const data = await res.json().catch(() => null)
+    if (!owner.owns(token)) return
     setAnalyzing(false)
 
     if (!res.ok || !data?.success) {
