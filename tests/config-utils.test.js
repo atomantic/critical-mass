@@ -2,6 +2,7 @@
 const { describe, it, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const { supportConfigDescriptors } = require('./helpers/config-fs-descriptors');
 const path = require('path');
 const os = require('os');
 const pathsModule = require('../src/paths');
@@ -122,6 +123,8 @@ const setupFsMocks = ({ base = null, user = null } = {}) => {
   mock.method(fs, 'renameSync', () => {});
 
   mock.method(fs, 'mkdirSync', () => {});
+
+  supportConfigDescriptors(USER_CONFIG_FILE);
 
   return {
     written: () => writtenData,
