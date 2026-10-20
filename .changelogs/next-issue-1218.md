@@ -1,0 +1,1 @@
+- **[issue-1218] The Cancel Ladder dialog no longer has two "Cancel" buttons** — the dismiss button now reads "Keep ladder" and the confirm button "Cancel ladder orders" (busy "Cancelling orders…"). The body says the fund's Entry mode switches from LADDER to REACTIVE instead of showing the `entryMode` config key.

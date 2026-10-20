@@ -142,7 +142,7 @@ describe('RegimeActionModals.jsx body/regime dialogs use ModalDialog (issue #434
   })
 
   const confirmations = [
-    { name: 'Cancel Ladder', titleId: 'cancel-ladder-title', descId: 'cancel-ladder-description', dismissible: '!cancellingLadder', cancelDisabled: 'cancellingLadder' },
+    { name: 'Cancel Ladder', titleId: 'cancel-ladder-title', descId: 'cancel-ladder-description', dismissible: '!cancellingLadder', cancelDisabled: 'cancellingLadder', dismissLabel: 'Keep ladder' },
     { name: 'Collapse All', titleId: 'collapse-all-title', descId: 'collapse-all-description', dismissible: '!collapsingAll', cancelDisabled: 'collapsingAll' },
     { name: 'Reset Cycle', titleId: 'reset-cycle-title', descId: 'reset-cycle-description', dismissible: '!resettingCycle', cancelDisabled: 'resettingCycle' },
     { name: 'Roll Up', titleId: 'roll-up-title', descId: 'roll-up-description', dismissible: '!rollingUp', cancelDisabled: 'rollingUp' },
@@ -150,14 +150,14 @@ describe('RegimeActionModals.jsx body/regime dialogs use ModalDialog (issue #434
     { name: 'placement-intent reconcile', titleId: 'reconcile-intent-title', descId: 'reconcile-intent-description', dismissible: '!reconcilingIntent', cancelDisabled: 'reconcilingIntent' },
   ]
 
-  for (const { name, titleId, descId, dismissible, cancelDisabled } of confirmations) {
-    it(`labels the ${name} dialog and focuses Cancel first, gated on its pending flag`, () => {
+  for (const { name, titleId, descId, dismissible, cancelDisabled, dismissLabel = 'Cancel' } of confirmations) {
+    it(`labels the ${name} dialog and focuses the dismiss button first, gated on its pending flag`, () => {
       assert.match(regimeActionModalsSource, new RegExp(`dismissible={${dismissible.replace('!', '!')}}`))
       assert.match(regimeActionModalsSource, new RegExp(`<h3 id="${titleId}"`))
       assert.match(regimeActionModalsSource, new RegExp(`<p id="${descId}"`))
       assert.match(
         regimeActionModalsSource,
-        new RegExp(`disabled={${cancelDisabled}}\\s*\\n\\s*autoFocus\\s*\\n\\s*>\\s*\\n\\s*Cancel`),
+        new RegExp(`disabled={${cancelDisabled}}\\s*\\n\\s*autoFocus\\s*\\n\\s*>\\s*\\n\\s*${dismissLabel}\\n`),
       )
     })
   }
@@ -297,5 +297,14 @@ describe('Destructive executors are reachable only from a dialog confirm action 
     assert.match(backupRestoreSource, /fundStateBlockedBy \? 'Retry Restore' : 'Restore Fund State'/)
     assert.match(backupRestoreSource, /Force Restore Anyway/)
     assert.match(backupRestoreSource, /body: JSON\.stringify\({ force }\)/)
+  })
+})
+
+describe('Cancel Ladder dialog copy (issue #1218)', () => {
+  it('uses distinct dismiss/confirm labels and operator wording instead of the entryMode key', () => {
+    assert.match(regimeActionModalsSource, />Cancel ladder orders\?</)
+    assert.match(regimeActionModalsSource, /'Cancelling orders…' : 'Cancel ladder orders'/)
+    assert.match(regimeActionModalsSource, /Entry mode from LADDER to REACTIVE/)
+    assert.doesNotMatch(regimeActionModalsSource, /<span className="font-mono">entryMode<\/span>/)
   })
 })

@@ -66,6 +66,31 @@ const parseBoughtAt = (value, now = Date.now()) => {
   return ms;
 };
 
+const parseTradeDate = (value) => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const ms = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === value;
+};
+
+const parseTradeTime = (value, now = Date.now()) => {
+  if (value == null || value === '') return { absent: true };
+  if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) || !parseTradeDate(value.slice(0, 10)))) return { error: true };
+  const ms = typeof value === 'number' ? value : Date.parse(value);
+  if (!Number.isFinite(ms) || Math.abs(ms) > 8.64e15 || ms > now) return { error: true };
+  return { ms, iso: new Date(ms).toISOString() };
+};
+
+const validateTradeDescription = (body) => {
+  if (body.date != null && !parseTradeDate(body.date)) return 'date must be a valid YYYY-MM-DD date';
+  if (body.note != null && (typeof body.note !== 'string' || body.note.length > 500)) return 'note must be a string of at most 500 characters';
+  if (body.direction != null && body.direction !== 'up' && body.direction !== 'down') return 'direction must be "up" or "down"';
+  if (body.exitTime != null) {
+    const time = parseTradeTime(body.exitTime);
+    if (time.error || time.absent) return 'exitTime must be a valid time that is not in the future';
+  }
+  return null;
+};
+
 // Promisified child_process.exec for use in async routes
 const execAsync = promisify(exec);
 
@@ -106,6 +131,43 @@ const ALLOWED_EXTRACTED_KEYS = new Set([
   'contractPrice', 'contracts', 'maxProfitAmount', 'maxLossAmount',
   'youPay', 'priceToClose', 'unrealizedPnl', 'entryPrice', 'expiresOn',
 ]);
+
+const EXTRACTED_NUMERIC_KEYS = new Set([
+  'currentPrice', 'range', 'target', 'stop', 'upPrice', 'downPrice',
+  'contractPrice', 'contracts', 'maxProfitAmount', 'maxLossAmount',
+  'youPay', 'priceToClose', 'unrealizedPnl', 'entryPrice',
+]);
+const EXTRACTED_STRING_KEYS = new Set(['expiresIn', 'expiresOn', 'maxProfit', 'maxLoss']);
+const EXTRACTED_SCREEN_TYPES = new Set(['select', 'order', 'position']);
+const EXTRACTED_DIRECTIONS = new Set(['Up', 'Down']);
+
+/**
+ * Keep model-produced screenshot fields inside the types expected by the UI.
+ * Invalid or unreadable values are represented as null, matching the prompt.
+ * @param {unknown} value
+ * @returns {Record<string, unknown>}
+ */
+const sanitizeExtractedFields = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+
+  const extracted = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (!ALLOWED_EXTRACTED_KEYS.has(key)) continue;
+    if (raw == null) {
+      extracted[key] = null;
+    } else if (EXTRACTED_NUMERIC_KEYS.has(key)) {
+      const number = parseFiniteNumber(raw);
+      extracted[key] = Number.isFinite(number) && (key === 'unrealizedPnl' || number > 0) ? number : null;
+    } else if (EXTRACTED_STRING_KEYS.has(key)) {
+      extracted[key] = typeof raw === 'string' && raw.length <= 64 ? raw : null;
+    } else if (key === 'screenType') {
+      extracted[key] = typeof raw === 'string' && EXTRACTED_SCREEN_TYPES.has(raw) ? raw : null;
+    } else if (key === 'direction') {
+      extracted[key] = typeof raw === 'string' && EXTRACTED_DIRECTIONS.has(raw) ? raw : null;
+    }
+  }
+  return extracted;
+};
 
 const VISION_PROMPT = `You are analyzing a screenshot from the Crypto.com UpDown Bitcoin options trading interface.
 
@@ -357,13 +419,9 @@ module.exports = (app, deps) => {
       if (!jsonMatch) throw new Error('No JSON object found');
       const raw = JSON.parse(jsonMatch[0]);
 
-      // Sanitize: only keep expected keys
-      extracted = {};
-      for (const key of Object.keys(raw)) {
-        if (ALLOWED_EXTRACTED_KEYS.has(key)) {
-          extracted[key] = raw[key];
-        }
-      }
+      // Sanitize key names and value types before the fields reach expiry
+      // conversion or the operator-facing contract and position forms.
+      extracted = sanitizeExtractedFields(raw);
     } catch (err) {
       logger.error(`❌ 🤖 UpDown screenshot parse failed`, {
         action: 'screenshot',
@@ -376,18 +434,22 @@ module.exports = (app, deps) => {
 
     // Convert expiry to absolute ms timestamp
     // "Expires in Xd Xh Ym" → relative offset from now
-    if (extracted.expiresIn) {
+    if (typeof extracted.expiresIn === 'string' && extracted.expiresIn) {
       const match = extracted.expiresIn.match(/(?:(\d+)d)?\s*(?:(\d+)h)?\s*(?:(\d+)m)?/);
       if (match && (match[1] || match[2] || match[3])) {
         const days = parseInt(match[1] || '0', 10);
         const hours = parseInt(match[2] || '0', 10);
         const minutes = parseInt(match[3] || '0', 10);
-        extracted.expiryMs = Date.now() + days * 86400000 + hours * 3600000 + minutes * 60000;
-        extracted.expiryISO = new Date(extracted.expiryMs).toISOString();
+        const expiryMs = Date.now() + days * 86400000 + hours * 3600000 + minutes * 60000;
+        const expiryDate = new Date(expiryMs);
+        if (Number.isFinite(expiryMs) && Number.isFinite(expiryDate.getTime())) {
+          extracted.expiryMs = expiryMs;
+          extracted.expiryISO = expiryDate.toISOString();
+        }
       }
     }
     // "Expires on Feb 28, 2026 at 1:00:00 AM" → parse absolute date
-    if (!extracted.expiryMs && extracted.expiresOn) {
+    if (!extracted.expiryMs && typeof extracted.expiresOn === 'string' && extracted.expiresOn) {
       const ms = new Date(extracted.expiresOn.replace(' at ', ' ')).getTime();
       if (Number.isFinite(ms)) {
         extracted.expiryMs = ms;
@@ -515,13 +577,17 @@ module.exports = (app, deps) => {
     if (direction !== 'up' && direction !== 'down') {
       return res.status(400).json({ success: false, error: 'direction must be "up" or "down"' });
     }
+    const parsedEntryTime = parseTradeTime(entryTime);
+    if (parsedEntryTime.error || (Object.hasOwn(req.body || {}, 'entryTime') && parsedEntryTime.absent)) {
+      return res.status(400).json({ success: false, error: 'entryTime must be a valid time that is not in the future' });
+    }
     // Reject numeric-prefix junk and non-positive values before persistence.
     const px = parseFiniteNumber(entryPrice);
     const qty = parseFiniteNumber(contracts);
     if (!Number.isFinite(px) || px <= 0 || !Number.isFinite(qty) || qty <= 0) {
       return res.status(400).json({ success: false, error: 'entryPrice and contracts must be positive numbers' });
     }
-    updownService.setPosition({ entryPrice: px, contracts: qty, direction, entryTime });
+    updownService.setPosition({ entryPrice: px, contracts: qty, direction, entryTime: parsedEntryTime.ms });
     res.json({ success: true });
   });
 
@@ -677,6 +743,9 @@ module.exports = (app, deps) => {
     if (!Number.isFinite(costNum) || !Number.isFinite(returnNum)) {
       return res.status(400).json({ success: false, error: 'cost and returnAmount must be numbers' });
     }
+    const descriptionError = validateTradeDescription(req.body || {});
+    if (descriptionError) return res.status(400).json({ success: false, error: descriptionError });
+    const exitTime = req.body?.exitTime == null ? null : parseTradeTime(req.body.exitTime).iso;
     const boughtAtMs = parseBoughtAt(req.body?.boughtAt);
     if (boughtAtMs === null) {
       return res.status(400).json({ success: false, error: 'boughtAt must be a valid time that is not in the future' });
@@ -697,14 +766,14 @@ module.exports = (app, deps) => {
         cost: costNum,
         returnAmount: returnNum,
         pnl: returnNum - costNum,
-        note: note || '',
+        note: note ?? '',
         direction: inferredDirection || null,
         // Without an operator buy time, entryTime/btcPriceAtEntry are the log
         // moment (usually after the exit) — entryTimeSource says which.
         entryTime: new Date(boughtAtMs ?? Date.now()).toISOString(),
         entryTimeSource: boughtAtMs != null ? 'operator' : 'logged',
         loggedAt: new Date().toISOString(),
-        exitTime: null,
+        exitTime,
         btcPriceAtEntry: boughtAtMs != null
           ? (updownService.getPriceAt?.(boughtAtMs) ?? null)
           : (ctx.lastPrice || null),
@@ -748,6 +817,9 @@ module.exports = (app, deps) => {
       const trade = data.trades.find(t => t.id === id);
       if (!trade) return res.status(404).json({ success: false, error: 'Trade not found' });
 
+      const descriptionError = validateTradeDescription(body);
+      if (descriptionError) return res.status(400).json({ success: false, error: descriptionError });
+
       // Reject non-numeric updates before mutating the trade (issue #151).
       for (const field of ['cost', 'returnAmount', 'btcPriceAtExit']) {
         if (body[field] != null && !Number.isFinite(parseFiniteNumber(body[field]))) {
@@ -770,7 +842,7 @@ module.exports = (app, deps) => {
       if (body.returnAmount != null) trade.returnAmount = parseFiniteNumber(body.returnAmount);
       if (body.note != null) trade.note = body.note;
       if (body.direction != null) trade.direction = body.direction;
-      if (body.exitTime != null) trade.exitTime = body.exitTime;
+      if (body.exitTime != null) trade.exitTime = parseTradeTime(body.exitTime).iso;
       if (body.btcPriceAtExit != null) trade.btcPriceAtExit = parseFiniteNumber(body.btcPriceAtExit);
       trade.pnl = trade.returnAmount - trade.cost;
       writeTrades(data);
@@ -807,3 +879,4 @@ module.exports.MAX_SCREENSHOT_BYTES = MAX_SCREENSHOT_BYTES;
 module.exports.buildIndicatorTimeframeHeatmap = buildIndicatorTimeframeHeatmap;
 module.exports.parseFiniteNumber = parseFiniteNumber;
 module.exports.parseBoughtAt = parseBoughtAt;
+module.exports.sanitizeExtractedFields = sanitizeExtractedFields;

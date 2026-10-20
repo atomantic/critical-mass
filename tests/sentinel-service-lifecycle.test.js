@@ -180,7 +180,7 @@ describe('Sentinel timestamp refresh (issue #695)', () => {
         return false;
       });
 
-      // Just verify we got alerts emitted — the socket.IO event structure is abstracted
+      // Just verify we got alerts emitted — the realtime event structure is abstracted
       assert.equal(
         service.getStatus().totalAlerts,
         2,

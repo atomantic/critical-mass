@@ -1,0 +1,1 @@
+- **[issue-1205] Regime views read bounded fill aggregates** — Dashboard, charts, and cost basis now share a revision-cached engine projection with exact cycle totals and capped detail/chart rows. The raw fills route requires paging, avoiding multi-megabyte ledger transfers on every dashboard refresh.

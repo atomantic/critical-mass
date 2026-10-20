@@ -50,7 +50,7 @@ const lastPriceFromLedger = (ledger) => {
  * regime-state.json can be stale (engine stopped before a bugfix landed, or
  * an operator-edited ledger) — and assembles the same payload shape a
  * running engine's `getStatus()` returns, so downstream consumers (IPC
- * callers, HTTP routes, the Socket.IO stream, and the dashboard hooks that
+ * callers, HTTP routes, the realtime stream, and the dashboard hooks that
  * read all three) never need to branch on running vs. stopped.
  *
  * @param {string} exchange

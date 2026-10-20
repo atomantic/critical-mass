@@ -137,7 +137,8 @@ function NotificationsConfig() {
         await fetchConfig({ silent: true, saved: true })
         fetchStats()
       } else {
-        setMessage({ type: 'error', text: 'Failed to save settings' })
+        const data = await res.json().catch(() => ({}))
+        setMessage({ type: 'error', text: data.errors?.join('; ') || data.error || `Failed to save settings (HTTP ${res.status})` })
       }
     } catch (err) {
       setMessage({ type: 'error', text: err.message || 'Failed to save settings' })

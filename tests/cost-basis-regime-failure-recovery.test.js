@@ -125,7 +125,11 @@ function createView(props = {}) {
           if (failure?.endpoint === endpoint && failure.kind === 'parse') throw new Error('Invalid JSON')
           // Newly parsed object identities reproduce the original feedback loop.
           return endpoint === 'status' ? { status: { market: { lastPrice: price }, position: {} } }
-            : endpoint === 'fills' ? { fills: structuredClone(fills) } : { config: { productId } }
+            : endpoint === 'fills' ? { fillCount: fills.length, cycles: fills.length ? [{
+              cycleId: 'cycle-1', entryCount: fills.length, exitCount: 0,
+              totalBought: fills.length * 0.001, totalSold: 0,
+              totalCost: fills.length * 0.1, totalProceeds: 0,
+            }] : [], detailFills: [] } : { config: { productId } }
         },
       })
     }

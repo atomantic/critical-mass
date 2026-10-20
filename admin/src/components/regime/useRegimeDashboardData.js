@@ -7,8 +7,13 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   const [localStatus, setLocalStatus] = useState(null)
   const [config, setConfig] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [reads, setReads] = useState({
+    status: { state: 'loading', hasData: false },
+    config: { state: 'loading', hasData: false },
+    fills: { state: 'loading', hasData: false },
+  })
   const [liveFills, setLiveFills] = useState([])
+  const [fillAggregates, setFillAggregates] = useState(null)
   const [presets, setPresets] = useState(null)
   const prevPriceRef = useRef(null)
   // Per-mount ownership fence for fills reads (#508). Initial load, the live
@@ -16,7 +21,13 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   // the newest read may commit, so a slow older response cannot resurrect a
   // pre-fill snapshot over a newer one.
   const [fillsOwner] = useState(createRequestOwner)
-  useEffect(() => () => fillsOwner.invalidate(), [fillsOwner])
+  const [statusOwner] = useState(createRequestOwner)
+  const [configOwner] = useState(createRequestOwner)
+  useEffect(() => () => {
+    fillsOwner.invalidate()
+    statusOwner.invalidate()
+    configOwner.invalidate()
+  }, [fillsOwner, statusOwner, configOwner])
   const { status: socketStatus, setStatus: setSocketStatus } = useRegimeEvents(exchange, pair)
 
   // Use socket status when available, fall back to local status (for initial load / when engine stopped)
@@ -40,31 +51,37 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   }, [status?.market?.lastPrice])
 
 
-  // Fetch status (only used for initial load and when engine is stopped)
-  const fetchStatus = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/status${pairQuery}`)
-    if (res.ok) {
-      const data = await res.json()
-      setLocalStatus(data.status)
-      setError(null)
-    }
-  }, [exchange])
+  // Each resource keeps its last good snapshot independently. An unsuccessful
+  // owned read records an error without replacing that snapshot with empty data.
+  const readSnapshot = useCallback(async (name, owner, commit) => {
+    setReads(prev => ({ ...prev, [name]: { ...prev[name], state: 'loading' } }))
+    const { owned, ok, data } = await owner.read(`/api/${exchange}/regime/${name === 'fills' ? 'fills/cycles' : name}${pairQuery}`)
+    if (!owned) return false
+    const value = name === 'fills' ? data : data?.[name]
+    const valid = ok && (name === 'fills' ? Array.isArray(value?.detailFills) : value && typeof value === 'object')
+    if (valid) commit(value)
+    setReads(prev => ({ ...prev, [name]: valid
+      ? { state: 'ready', hasData: true }
+      : { ...prev[name], state: 'error', error: `${name === 'fills' ? 'Fills' : name === 'status' ? 'Status' : 'Configuration'} request failed` },
+    }))
+    return Boolean(valid)
+  }, [exchange, pairQuery])
 
-  // Fetch config
-  const fetchConfig = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`)
-    if (res.ok) {
-      const data = await res.json()
-      setConfig(data.config)
-    }
-  }, [exchange])
-
-  // Fetch live fills from fill ledger. Reads go through the per-mount request
-  // owner so overlapping refreshes always commit in request order (#508).
-  const fetchFills = useCallback(async () => {
-    const { owned, data } = await fillsOwner.read(`/api/${exchange}/regime/fills${pairQuery}`)
-    if (owned && data) setLiveFills(data.fills || [])
-  }, [exchange, pairQuery, fillsOwner])
+  const fetchStatus = useCallback(() => readSnapshot('status', statusOwner, setLocalStatus), [readSnapshot, statusOwner])
+  const fetchConfig = useCallback(() => readSnapshot('config', configOwner, setConfig), [readSnapshot, configOwner])
+  // Keep fillsOwner.read's ownership fence for concurrent marker/action reads.
+  const fetchFills = useCallback(() => readSnapshot('fills', fillsOwner, data => {
+    setFillAggregates(data)
+    setLiveFills(data.detailFills)
+  }), [readSnapshot, fillsOwner])
+  const retry = useCallback(() => Promise.all([
+    ...(reads.status.state === 'error' ? [fetchStatus()] : []),
+    ...(reads.config.state === 'error' ? [fetchConfig()] : []),
+    ...(reads.fills.state === 'error' ? [fetchFills()] : []),
+  ]), [reads, fetchStatus, fetchConfig, fetchFills])
+  const failedReads = Object.values(reads).filter(read => read.error)
+  const error = failedReads.map(read => read.error).join('. ')
+  const stale = failedReads.some(read => read.hasData)
 
   // Refresh the Filled Orders table when a fill lands. fetchFills otherwise ran
   // only on mount + manual actions, so the realized-P&L bar and cycle groupings
@@ -93,7 +110,7 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
         initializeFromCache(data.data)
       }
     }
-  }, [exchange, initializeFromCache])
+  }, [exchange, pairQuery, initializeFromCache])
 
   // Fetch aggressiveness presets
   const fetchPresets = useCallback(async () => {
@@ -109,17 +126,11 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   useEffect(() => {
     const load = async () => {
       setLoading(true)
-      try {
-        await Promise.all([fetchStatus(), fetchConfig(), fetchFills(), fetchCachedChartData(), fetchPresets()])
-      } catch {
-        // Leave whatever state the individual fetches already set — loading
-        // below still clears so the page never gets stuck on "Loading…".
-      } finally {
-        setLoading(false)
-      }
+      await Promise.allSettled([fetchStatus(), fetchConfig(), fetchFills(), fetchCachedChartData(), fetchPresets()])
+      setLoading(false)
     }
     load()
   }, [exchange, fetchStatus, fetchConfig, fetchFills, fetchCachedChartData, fetchPresets])
 
-  return { status, config, loading, error, liveFills, presets, isRunning, prevPriceRef, priceHistory, atrHistory, regimeHistory, setSocketStatus, fetchStatus, fetchConfig, fetchFills }
+  return { status, config, loading, error, stale, retry, reads, fillsUnavailable: Boolean(reads.fills.error), liveFills, fillAggregates, presets, isRunning, prevPriceRef, priceHistory, atrHistory, regimeHistory, setSocketStatus, fetchStatus, fetchConfig, fetchFills }
 }
