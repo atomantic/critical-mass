@@ -836,6 +836,7 @@ describe('maskSecret / isMaskedSecret', () => {
   it('returns empty string for empty/undefined', () => {
     assert.equal(maskSecret(''), '');
     assert.equal(maskSecret(undefined), '');
+    assert.equal(maskSecret(12345), '');
   });
 
   it('detects masked values and rejects real tokens', () => {

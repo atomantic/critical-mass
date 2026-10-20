@@ -774,7 +774,9 @@ const resolveRegimeConfig = (fundBlock) => {
  * @param {string} [secret]
  * @returns {string}
  */
-const maskSecret = (secret) => secret ? `${secret.slice(0, 6)}...${secret.slice(-4)}` : '';
+const maskSecret = (secret) => typeof secret === 'string' && secret
+  ? `${secret.slice(0, 6)}...${secret.slice(-4)}`
+  : '';
 
 /**
  * Detect a previously-masked secret being echoed back by a client
