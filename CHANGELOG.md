@@ -4,8 +4,6 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-- **[issue-1194] Fund repairs share engine checks and backups** — Repair apply paths verify the engine is stopped before reading their snapshot, back up existing destination files, and write atomically. Incident tools require their explicit fund pair; unsafe file-age checks are removed.
-
 ### Added
 - **[issue-1000] React 19 admin rendering** — Upgrade the dashboard chart and 3D ecosystems together, preserve candlesticks, cloud overlays and signal markers through public Recharts coordinates, and add isolated browser rendering coverage.
 - **[issue-935] Authenticated browser performance coverage** — A disposable real gateway/IPC fixture and headless Chrome scenario measure protected Transactions load, Config idle traffic for 60 seconds, consumer cleanup and reconnect recovery. Page responses now omit ledger metadata; incomplete browser evidence and protocol-only replays report UNVERIFIED. See `docs/perf-route-audit.md`.
@@ -46,6 +44,8 @@ All notable changes to this project will be documented in this file.
 - **[issue-1140] Fill ingestion groups rollback, coverage and index steps** — Name the reconciliation rollback snapshot and restore, synthetic coverage replacement, and fill index updates while preserving persistence and mutation order.
 
 ### Fixed
+
+- **[issue-1194] Fund repairs share engine checks and backups** — Repair apply paths verify the engine is stopped before reading their snapshot, back up existing destination files, and write atomically. Incident tools require their explicit fund pair; unsafe file-age checks are removed.
 - **[issue-1175] Sentinel reads feeds with an owned parser; numeric text and guids stay verbatim** — `fast-xml-parser` and its eight exclusively-owned packages are replaced by `src/sentinel/feed-xml.js`, a single forward scan over the RSS/Atom subset Sentinel reads. Feed text is no longer coerced (`007`, `1e5`, `true` and numeric guids stay as written), so numeric guids such as CNBC's now match the string keys `seenGuids` reloads after a restart instead of re-alerting every item. Numeric character references (`&#39;`, `&#8217;`) are decoded, DOCTYPE entities are never expanded, and unterminated markup or nesting past 100 elements ends the document instead of throwing — a body that used to fail as `network` now yields its complete items or a `parse` failure, and an item cut off by a truncated body is dropped rather than marked seen. `tests/sentinel-feed-parity.test.js` pins every fixture to the output recorded before the swap.
 - **Fund startup failures degrade gateway health** — `/api/health` now reports enabled funds that are starting, retrying or blocked as unavailable instead of treating their synthesized STOPPED status as an intentional stop. Fund and exchange summaries retain the startup state, error and retry deadline, and return to healthy after a successful start. Disabled-fund failures remain visible without degrading enabled funds.
 - **[issue-1023] Manual imports verify order side and product** — Buy, sell, pair-leg, linked-buy and pending-recovery imports now confirm each fill (or the exchange order record when a fill omits identity) matches the requested role, order id and the fund's canonical product before any ledger, store, body or order change; unverifiable identity fails closed.
