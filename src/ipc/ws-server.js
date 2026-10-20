@@ -34,6 +34,7 @@ const CLOSED = 3;
 const OPCODE = { CONTINUATION: 0x0, TEXT: 0x1, BINARY: 0x2, CLOSE: 0x8, PING: 0x9, PONG: 0xa };
 const DEFAULT_MAX_PAYLOAD = 100 * 1024 * 1024;
 const DEFAULT_CLOSE_TIMEOUT = 5000;
+const REFUSAL_FLUSH_TIMEOUT = 5000;
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 /** RFC 6455 §7.4 — codes a peer may send on the wire. */
@@ -372,15 +373,23 @@ const handshakeRefusal = (req) => {
 };
 
 /**
- * Answer an upgrade request with a plain HTTP error and end the socket.
+ * Answer an upgrade request with a plain HTTP error and destroy the socket.
+ * HTTP servers allow half-open sockets, so end() alone would keep a refused
+ * peer's read side (and server.close()) open for as long as the peer likes:
+ * destroy once the response is flushed, or after a bounded wait.
  * @param {import('node:stream').Duplex} socket
  * @param {number} status
  * @param {Record<string, string>} [headers]
  */
 const refuseUpgrade = (socket, status, headers = {}) => {
+  if (socket.destroyed) return;
   const body = http.STATUS_CODES[status] || '';
   const lines = [`HTTP/1.1 ${status} ${body}`, 'Connection: close', 'Content-Type: text/plain', `Content-Length: ${Buffer.byteLength(body)}`];
   for (const [name, value] of Object.entries(headers)) lines.push(`${name}: ${value}`);
+  const fallback = setTimeout(() => socket.destroy(), REFUSAL_FLUSH_TIMEOUT);
+  fallback.unref();
+  socket.once('close', () => clearTimeout(fallback));
+  socket.once('finish', () => socket.destroy());
   socket.end(`${lines.join('\r\n')}\r\n\r\n${body}`);
 };
 

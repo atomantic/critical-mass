@@ -11,6 +11,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const http = require('node:http');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const express = require('express');
@@ -159,6 +160,29 @@ describe('realtime bus: operator check at upgrade', () => {
   it('answers a rate-limited credential check with its status', async (t) => {
     const { hosts: [host] } = await startBus(t, { authorize: () => Promise.reject(Object.assign(new Error('busy'), { status: 429, headers: { 'Retry-After': '1' } })) });
     assert.equal(await upgradeStatus(host), 429);
+  });
+
+  it('releases a refused socket even when the peer never closes its side', async (t) => {
+    const { servers: [server], hosts: [host] } = await startBus(t, { auth: true });
+    const [hostname, port] = host.split(':');
+    // allowHalfOpen: the peer keeps writing open after the gateway's FIN.
+    const peer = net.connect({ host: hostname, port: Number(port), allowHalfOpen: true });
+    const connections = () => new Promise((resolve, reject) => server.getConnections((err, n) => (err ? reject(err) : resolve(n))));
+    try {
+      let response = '';
+      peer.on('data', (chunk) => { response += chunk; });
+      peer.write([
+        'GET /realtime HTTP/1.1', `Host: ${host}`, 'Connection: Upgrade', 'Upgrade: websocket',
+        'Sec-WebSocket-Version: 13', `Sec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}`, '', '',
+      ].join('\r\n'));
+      await new Promise((resolve) => peer.once('end', resolve));
+      assert.match(response, /^HTTP\/1\.1 401 /);
+      for (let i = 0; i < 200 && await connections() > 0; i++) await settle(5);
+      assert.equal(await connections(), 0, 'the gateway released the refused socket');
+    } finally {
+      // Before teardown: a still-open refused socket would stall server.close().
+      peer.destroy();
+    }
   });
 });
 
