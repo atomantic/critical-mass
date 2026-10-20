@@ -54,4 +54,5 @@ it('prefers a non-blank error over message and ignores blank text', () => {
   expect(describeActionFailure(400, { error: ' Fund is closed ', message: 'ignored' })).toBe('Fund is closed')
   expect(describeActionFailure(500, { error: '  ', message: 'Engine busy' })).toBe('Engine busy')
   expect(describeActionFailure(undefined, null)).toBe('The server sent an unreadable response. Check the engine logs.')
+  expect(describeActionFailure(200, { success: false })).toBe('The server reported a failure (HTTP 200) without giving a reason. Check the engine logs.')
 })

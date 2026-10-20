@@ -4,7 +4,8 @@ export function describeActionFailure(status, body) {
   const data = body && typeof body === 'object' ? body : {}
   const reason = [data.error, data.message].find(text => typeof text === 'string' && text.trim())
   if (reason) return reason.trim()
-  return status
-    ? `The server rejected the request (HTTP ${status}) without giving a reason. Check the engine logs.`
-    : 'The server sent an unreadable response. Check the engine logs.'
+  if (!status) return 'The server sent an unreadable response. Check the engine logs.'
+  // A 2xx reply can still carry { success: false } or a body that is not JSON.
+  const outcome = status < 400 ? 'reported a failure' : 'rejected the request'
+  return `The server ${outcome} (HTTP ${status}) without giving a reason. Check the engine logs.`
 }
