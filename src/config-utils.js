@@ -627,6 +627,19 @@ const productIdMatchesPair = (pair, productId) => {
   return { ok: pairBase === incomingBase, pairBase, incomingBase };
 };
 
+/** Return the conflict raised when a removed pair still has durable state. */
+const getFundStateConflict = (exchange, pair) => {
+  // A configured pair is an ordinary duplicate, and malformed identities are
+  // left to addFund's existing validation rather than used in path lookup.
+  if (getFundsForExchange(exchange).includes(pair) || !/^[A-Z0-9]{2,8}([-_][A-Z0-9]{2,8})?$/.test(pair)) return null;
+  const fundDir = require('./migration').resolveFundDataDir(exchange, pair);
+  const retainedStateFiles = ['state.json', 'regime-state.json', 'fill-ledger.json'];
+  if (!retainedStateFiles.some((name) => fs.existsSync(path.join(fundDir, name)))) return null;
+  const error = new Error(`Fund data for ${exchange}/${pair} already exists at data/${exchange}/${pair}/. Move or archive that directory (or choose another pair) before re-adding.`);
+  error.code = 'FUND_STATE_EXISTS';
+  return error;
+};
+
 /** Keys that stay at the exchange level (shared across all funds on that exchange) */
 const EXCHANGE_LEVEL_KEYS = new Set([
   'pairs',
@@ -1104,6 +1117,13 @@ const addFund = (exchange, pair, initialConfig = {}) => {
   if (existing.includes(pair)) {
     throw new Error(`Fund ${exchange}/${pair} already exists`);
   }
+
+  // Removing a fund deliberately preserves its financial history. Refuse to
+  // reuse that identity while durable fund state remains, even for callers
+  // that bypass the HTTP route. Operational files such as chart buffers and
+  // placement intents do not carry the retired fund's accounting state.
+  const stateConflict = getFundStateConflict(exchange, pair);
+  if (stateConflict) throw stateConflict;
 
   // Defensive invariant: a fund's pair IS its identity, so a supplied
   // productId must trade the same base asset (quote-only differences, e.g.
@@ -1592,6 +1612,7 @@ module.exports = {
   getBaseCurrency,
   getQuoteCurrency,
   productIdMatchesPair,
+  getFundStateConflict,
   USER_CONFIG_FILE,
   deepMerge,
   writeUserConfigFile,

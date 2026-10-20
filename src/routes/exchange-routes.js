@@ -25,6 +25,7 @@ const {
   getBaseCurrency,
   getQuoteCurrency,
   productIdMatchesPair,
+  getFundStateConflict,
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
@@ -184,6 +185,13 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: `Unknown exchange: ${exchange}` });
     }
 
+    // Prevent a re-add before product lookup or any configuration write. The
+    // addFund implementation repeats this guard for non-route callers.
+    const stateConflict = getFundStateConflict(exchange, pair);
+    if (stateConflict) {
+      return res.status(409).json({ success: false, error: stateConflict.message });
+    }
+
     // Verify the productId is valid on this exchange by hitting the API.
     // This catches typos before we persist anything to disk.
     const resolvedProductId = productId || pair;
@@ -251,13 +259,13 @@ module.exports = (app, deps) => {
         config: getFundConfig(exchange, pair),
       });
     } catch (err) {
-      res.status(400).json({ success: false, error: err.message });
+      res.status(err.code === 'FUND_STATE_EXISTS' ? 409 : 400).json({ success: false, error: err.message });
     }
   });
 
   // Remove a fund. Refuses unless the fund is closed (lifecycle === 'closed')
   // and the engine is not running. Does NOT delete on-disk state files —
-  // operator must remove data/<exchange>/<pair>/ manually if desired.
+  // the directory must be moved or archived before this pair can be re-added.
   app.delete('/api/:exchange/funds/:pair', (req, res) => {
     const { exchange, pair } = req.params;
     const regimeState = stateTracker.loadFundRegimeState(exchange, pair);
@@ -281,7 +289,7 @@ module.exports = (app, deps) => {
         success: true,
         exchange,
         pair,
-        note: `On-disk state at data/${exchange}/${pair}/ was NOT deleted. Remove manually if no longer needed.`,
+        note: `On-disk state at data/${exchange}/${pair}/ was not deleted. Re-adding ${exchange}/${pair} is refused until that directory is moved or archived.`,
       });
     } catch (err) {
       res.status(400).json({ success: false, error: err.message });

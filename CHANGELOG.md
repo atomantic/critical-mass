@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **[issue-1193] Re-adding a removed fund cannot inherit retained state** — Reject creation with HTTP 409 while `state.json`, `regime-state.json`, or `fill-ledger.json` remains for the pair, preserving financial history and explaining that the directory must be moved or archived. Operational chart buffers and placement intents do not block a new fund.
+
 ### Added
 - **[issue-1208] Overview reports unavailable fund reads honestly** — Exchange-list failures show a retryable error instead of an empty state, and failed per-fund status reads render unavailable cards excluded from aggregate totals with an explicit count. Retrying reloads the exchange list and fund statuses.
 - **[issue-1000] React 19 admin rendering** — Upgrade the dashboard chart and 3D ecosystems together, preserve candlesticks, cloud overlays and signal markers through public Recharts coordinates, and add isolated browser rendering coverage.
