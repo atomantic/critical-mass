@@ -16,7 +16,7 @@ beforeEach(() => {
   writes = []; fail = false; failMessage = 'Delete failed'; release = null
   providers = [{ id: 'provider-1', name: 'OpenAI', type: 'api', enabled: true, endpoint: 'https://api.example.com' }]
   vi.stubGlobal('fetch', vi.fn(async (url, options) => {
-    if (options) {
+    if (options?.method) {
       writes.push({ url, ...options })
       if (release) await release
       if (options.method === 'DELETE' && !fail) providers = []

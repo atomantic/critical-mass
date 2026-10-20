@@ -24,6 +24,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve))
 const setup = async (method, request) => {
   const { runDashboardAction } = await import('../admin/src/utils/dashboardAction.mjs')
   const { parseTradeAmountExpression } = await import('../admin/src/components/updown/tradeAmountExpression.js')
+  const { createRequestOwner } = await import('../admin/src/utils/requestOwner.mjs')
   const state = []
   const changes = []
   const calls = []
@@ -31,11 +32,15 @@ const setup = async (method, request) => {
   let cursor = 0
   let idCursor = 0
   let mounted = false
+  const fetchStub = async (url, options) => {
+    calls.push({ url, ...options })
+    return options?.method ? request() : response(true, { success: true, trades: [trade], summary: null })
+  }
   const component = vm.runInNewContext(componentSource, {
     useId: () => `trade-control-${idCursor++}`,
     useState: initial => {
       const index = cursor++
-      if (!(index in state)) state[index] = initial
+      if (!(index in state)) state[index] = typeof initial === 'function' ? initial() : initial
       return [state[index], value => {
         state[index] = typeof value === 'function' ? value(state[index]) : value
         changes.push(state[index])
@@ -46,10 +51,9 @@ const setup = async (method, request) => {
     useToast: () => ({ addToast: toast => toasts.push(toast) }),
     runDashboardAction,
     parseTradeAmountExpression,
-    fetch: async (url, options) => {
-      calls.push({ url, ...options })
-      return options ? request() : response(true, { success: true, trades: [trade], summary: null })
-    },
+    // The owner's default transport is this realm's global fetch; route it to the stub.
+    createRequestOwner: () => createRequestOwner({ fetchImpl: (...args) => fetchStub(...args) }),
+    fetch: (...args) => fetchStub(...args),
   })
   const render = () => { cursor = 0; idCursor = 0; const result = component(); mounted = true; return result }
   render()

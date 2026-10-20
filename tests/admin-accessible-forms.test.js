@@ -89,7 +89,7 @@ function createView(component, extraStubs = {}, fetchResponse = null) {
     return result
   }
   const render = () => renderComponent(context.module.exports)
-  return { render, writes, executed,
+  return { render, writes, executed, fetch,
     renderChild: element => renderComponent(element.type, element.props, 'modal'),
     async mount() {
       render()
@@ -263,8 +263,15 @@ describe('admin accessible operational forms', () => {
 
   it('connects trade labels to unique controls and submits entered amount expressions', async () => {
     const { parseTradeAmountExpression } = await import(pathToFileURL(path.join(__dirname, '..', 'admin/src/components/updown/tradeAmountExpression.js')).href)
-    const stubs = { './tradeAmountExpression': { parseTradeAmountExpression } }
+    const { createRequestOwner } = await import(pathToFileURL(path.join(__dirname, '..', 'admin/src/utils/requestOwner.mjs')).href)
+    // The owner's default transport is this realm's global fetch; route it to the view's stub.
+    const fetchViaView = { current: null }
+    const stubs = {
+      './tradeAmountExpression': { parseTradeAmountExpression },
+      '../../utils/requestOwner.mjs': { createRequestOwner: () => createRequestOwner({ fetchImpl: (...args) => fetchViaView.current(...args) }) },
+    }
     const view = createView('updown/TradeHistory.jsx', stubs)
+    fetchViaView.current = view.fetch
     let tree = await view.mount()
     find(tree, node => node.type === 'button' && text(node).trim() === 'Add Trade').props.onClick()
     tree = view.render()
@@ -279,6 +286,7 @@ describe('admin accessible operational forms', () => {
     await find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} })
     assert.deepEqual(view.writes[0].body, { date: '2026-09-20', cost: 500, returnAmount: 700, note: 'Regression fixture' })
     const other = createView('updown/TradeHistory.jsx', stubs)
+    fetchViaView.current = other.fetch
     let otherTree = await other.mount()
     find(otherTree, node => node.type === 'button' && text(node).trim() === 'Add Trade').props.onClick()
     otherTree = other.render()
