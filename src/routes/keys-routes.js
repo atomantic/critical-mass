@@ -144,7 +144,7 @@ module.exports = (app, deps) => {
       return res.json({ success: false, exchange, error: balance._error });
     }
 
-    res.json({ success: true, exchange, balance, quoteCurrency });
+    res.json({ success: true, exchange, balance, quoteCurrency, productId });
   });
 
   // Delete keys for an exchange
