@@ -3054,6 +3054,89 @@ describe('Fill Ledger', () => {
       assert.deepEqual(plans[1].replacements, []);
     });
 
+    for (const side of ['buy', 'sell']) {
+      for (const mode of ['replace', 'preserve']) {
+        it(`characterizes ${side} ${mode} economics through ingestFill (#1229)`, () => {
+          const originalNow = Date.now;
+          Date.now = () => 1792195200000;
+          try {
+            const ledger = createTestLedger(`${side}-${mode}`);
+            const handledCorrections = [];
+            ledger.setSellCorrectionHandler(correction => handledCorrections.push(structuredClone(correction)));
+            const seed = structuredClone(ledger.ingestFill({
+              tradeId: 'synthetic-covered', orderId: 'covered', side, size: 2, price: 16,
+              fee: 2, netFee: 1.5, rebate: 0.5,
+              syntheticCoverage: { orderId: 'covered' },
+            }).fill);
+            const size = mode === 'preserve' ? 3 : 1;
+            const reported = { ...seed, tradeId: 'actual', size, price: 20,
+              quoteAmount: size * 20, fee: size * 1.5, netFee: size, rebate: size * 0.5 };
+            delete reported.syntheticCoverage;
+            const coveredSize = mode === 'preserve' ? 2 : 1;
+            const correction = side === 'buy'
+              ? { id: 'actual', orderId: 'covered', size: 2, costDelta: coveredSize * 4.25,
+                consumedQty: 0, owned: false, sells: [], status: 'pending' }
+              : { id: 'actual', orderId: 'covered', quoteDelta: coveredSize * 4,
+                netFeeDelta: coveredSize * 0.25, bodyPnlDelta: 0, satellitePnlDelta: 0,
+                capitalDelta: 0, auditProceedsDelta: 0, auditFeesDelta: 0, auditPnlDelta: 0,
+                status: 'pending' };
+            const priorEconomics = { quoteAmount: coveredSize * 16, fee: coveredSize,
+              netFee: coveredSize * 0.75, rebate: coveredSize * 0.25 };
+            const allocation = { row: seed, tradeId: seed.tradeId, size: coveredSize,
+              quoteAmount: coveredSize * 20, fee: coveredSize * 1.5,
+              netFee: coveredSize, rebate: coveredSize * 0.5, priorEconomics };
+            const residual = { ...seed, size: 1, quoteAmount: 16, fee: 1, netFee: 0.75, rebate: 0.25 };
+            const economicCorrection = { [`${side}EconomicCorrection`]: correction };
+            const identity = { replacesSyntheticTradeIds: [seed.tradeId] };
+            const expectedExecution = mode === 'replace'
+              ? { ...reported, ...economicCorrection, ...identity }
+              : { ...reported, ...economicCorrection,
+                reportedExecution: { size: 3, price: 20, quoteAmount: 60, fee: 4.5, netFee: 3, rebate: 1.5 },
+                syntheticCoverageReconciliation: {
+                  coveredSize: 2, newSize: 1, coveredQuoteAmount: 40, newQuoteAmount: 20,
+                  coveredFee: 3, newFee: 1.5, coveredNetFee: 2, newNetFee: 1,
+                  coveredRebate: 1, newRebate: 0.5,
+                  allocations: [{ tradeId: seed.tradeId, size: 2, quoteAmount: 40, fee: 3, netFee: 2, rebate: 1 }],
+                }, ...identity, size: 1, quoteAmount: 20, fee: 1.5, netFee: 1, rebate: 0.5 };
+            const expectedPlan = {
+              mode, ledgerExecution: expectedExecution, reportedExecution: reported,
+              annotations: mode === 'replace' ? { cycleId: null } : {},
+              allocations: mode === 'preserve' ? [allocation] : [],
+              replacements: mode === 'replace' ? [{ old: seed, residual }] : [],
+              corrections: { buy: side === 'buy' ? correction : undefined,
+                sell: side === 'sell' ? correction : undefined },
+              coveredSize, newSize: mode === 'preserve' ? 1 : 0,
+            };
+            // Pin the entire plan before ingestion mutates its row references and journal.
+            assert.deepEqual(ledger._test.reconcileSyntheticCoverage(reported), expectedPlan);
+            const result = ledger.ingestFill({ tradeId: 'actual', orderId: 'covered', side,
+              size, price: 20, fee: size * 1.5, netFee: size, rebate: size * 0.5 });
+            const expectedFill = { ...expectedExecution,
+              [`${side}EconomicCorrections`]: [{ ...correction, status: 'applied' }] };
+            delete expectedFill[`${side}EconomicCorrection`];
+            const coveredRow = mode === 'replace' ? residual : {
+              ...seed, price: 20, quoteAmount: 40, fee: 3, netFee: 2, rebate: 1,
+              syntheticCoverage: { orderId: 'covered', originalEconomics: {
+                quoteAmount: 32, fee: 2, netFee: 1.5, rebate: 0.5 },
+              reconciledTrades: [{ tradeId: 'actual', size: 2, quoteAmount: 40, fee: 3, netFee: 2, rebate: 1 }] },
+            };
+            assert.deepEqual(result, { ingested: true, fill: expectedFill,
+              identityReplacement: mode === 'replace', newQuantity: mode === 'preserve' ? 1 : 0,
+              bookableFills: mode === 'replace' ? [] : [
+                { ...coveredRow, syntheticCoverageAllocation: true }, expectedFill,
+              ] });
+            assert.deepEqual(ledger.getAllFills(), [coveredRow, expectedFill]);
+            assert.deepEqual(createTestLedger(`${side}-${mode}`).getAllFills(), [coveredRow, expectedFill]);
+            assert.deepEqual(handledCorrections, side === 'sell' ? [correction] : []);
+            assert.deepEqual(ledger.ingestFill({ tradeId: 'actual', orderId: 'covered', side,
+              size, price: 20 }), { ingested: false, fill: null });
+          } finally {
+            Date.now = originalNow;
+          }
+        });
+      }
+    }
+
     it('keeps persisted ordinary, replacement and excess rows byte-identical to the old ledger', () => {
       // Hashes were captured from the pre-refactor main implementation with
       // these fixed fixtures; hashing the on-disk bytes also detects field order.
