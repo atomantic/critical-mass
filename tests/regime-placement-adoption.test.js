@@ -154,6 +154,72 @@ describe('automatic placement recovery', () => {
   });
 });
 
+describe('automatic placement recovery from exchange evidence', () => {
+  const HOUR = 60 * 60_000;
+  /** Rewrite one intent so it looks hours old, optionally left by a dead process with no client id. */
+  const ageIntent = (intentId, patch = {}) => {
+    const intents = state.loadPlacementIntents('coinbase', PAIR)
+      .map(i => (i.id === intentId ? { ...i, createdAt: Date.now() - HOUR, ...patch } : i));
+    state.savePlacementIntents(intents, 'coinbase', PAIR);
+    return intents.find(i => i.id === intentId);
+  };
+  const strandedEntry = () => {
+    const intent = state.recordPlacementIntent({ exchange: 'coinbase', pair: PAIR, action: 'entry_bid', side: 'buy', price: 120, size: 0.9, sizeUsdc: 108 });
+    return ageIntent(intent.id, { instanceId: 'a-process-that-died' });
+  };
+  const withExchange = ({ openOrders = [], fills = [], order = null } = {}) => {
+    adapter.getOpenOrders = async () => openOrders;
+    adapter.getReconciliationFills = async () => fills;
+    adapter.getOrder = async (orderId) => order ?? { orderId, side: 'BUY', status: 'OPEN', filledSize: 0 };
+  };
+
+  it('clears an intent with no client order id when the exchange shows no matching order or fill', async () => {
+    strandedEntry();
+    withExchange();
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(executor.getPendingCounts().total, 0);
+  });
+
+  it('adopts the one resting order that matches an intent with no client order id', async () => {
+    const intent = strandedEntry();
+    withExchange({ openOrders: [{ orderId: 'resting', side: 'BUY', price: 120, size: 0.9, originalSize: 0.9, createdTime: new Date(intent.createdAt + 500).toISOString() }] });
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(executor.getPendingCounts().total, 1);
+    assert.ok(diskPosition().pendingEntryOrders.some(o => o.orderId === 'resting'));
+  });
+
+  it('corroborates an empty client-id lookup before clearing it', async () => {
+    ageIntent(makeIntent('entry_bid', { side: 'buy' }));
+    adapter.findOrderByClientOrderId = async () => null;
+    withExchange();
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+  });
+
+  it('keeps the intent when the exchange evidence is ambiguous, and does not rescan immediately', async () => {
+    const intent = strandedEntry();
+    const resting = (orderId) => ({ orderId, side: 'BUY', price: 120, size: 0.9, originalSize: 0.9, createdTime: new Date(intent.createdAt + 500).toISOString() });
+    withExchange({ openOrders: [resting('a'), resting('b')] });
+    let scans = 0;
+    const listOpen = adapter.getOpenOrders;
+    adapter.getOpenOrders = async (...args) => { scans += 1; return listOpen(...args); };
+    await engine._test.reconcilePendingPlacements();
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+    assert.equal(scans, 1);
+  });
+
+  it('keeps the intent when the exchange search fails', async () => {
+    strandedEntry();
+    withExchange();
+    adapter.getReconciliationFills = async () => { throw new Error('rate limited'); };
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+  });
+});
+
 // Exercise the production scheduler entry point, including its overlap guard.
 it('periodic reconciliation holds its lock through recovery and adopts before fill polling', async () => {
   makeIntent('entry_bid');

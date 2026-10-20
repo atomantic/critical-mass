@@ -688,6 +688,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const rawFills = [];
     const seenCursors = new Set();
     let cursor = null;
+    let truncated = false;
 
     while (true) {
       const apiPath = cursor ? `${basePath}&cursor=${encodeURIComponent(cursor)}` : basePath;
@@ -706,6 +707,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
           productId: normalizedProductId,
           fills: rawFills.length,
         });
+        truncated = true;
         break;
       }
       if (seenCursors.has(nextCursor)) {
@@ -716,7 +718,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
     }
 
     const seenTrades = new Set();
-    return rawFills.flatMap(raw => {
+    const fills = rawFills.flatMap(raw => {
       const tradeId = String(raw.trade_id || '');
       if (!tradeId || seenTrades.has(tradeId)) return [];
       seenTrades.add(tradeId);
@@ -737,6 +739,10 @@ const createCoinbaseAdapter = (keysPath = null) => {
         liquidityIndicator: raw.liquidity_indicator || 'TAKER',
       }];
     });
+    // Callers that must prove a fill is absent (placement-evidence) check this;
+    // non-enumerable so the array still compares and serializes as before.
+    if (truncated) Object.defineProperty(fills, 'incomplete', { value: true });
+    return fills;
   };
 
   adapter.capabilities.fillReconciliation = true;
