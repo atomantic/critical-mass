@@ -23,8 +23,8 @@ const deferred = () => {
 let read
 
 // The first fund switch in this file pays a one-time first-navigation cost
-// (~100ms on an idle machine) that later tests do not. Run one throwaway switch
-// before any test so that cost lands outside the first test's budget.
+// (~100ms on an idle machine) that the first test absorbs. Run one throwaway
+// switch before any test so that cost lands outside the first test's budget.
 beforeAll(async () => {
   window.history.replaceState({}, '', '/coinbase/BTC-USDC/config')
   vi.stubGlobal('fetch', vi.fn((url, options) => {
