@@ -85,7 +85,7 @@ export default function PlacementIntentsPanel({ placementIntents, asset, exchang
                 </div>
                 <div className="mt-2 text-gray-400">{intent.recoveryHint}</div>
                 <div className="mt-1 text-gray-400 font-mono">
-                  {intent.clientOrderId ? `client_order_id ${intent.clientOrderId} · ` : ''}
+                  {intent.clientOrderId ? `client order ${intent.clientOrderId} · ` : ''}
                   {formatTimestamp(intent.createdAt)}
                   {intent.reason ? ` · ${intent.reason}` : ''}
                 </div>

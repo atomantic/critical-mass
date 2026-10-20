@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { plural } from '../../utils/plural.mjs'
+import { describeActionFailure } from '../../utils/actionFailure.mjs'
 
 export default function useDcaConversion({ exchange, pairQuery, isRunning, addToast, fetchStatus, fetchFills }) {
   const [dcaState, setDcaState] = useState(null)
@@ -26,7 +27,7 @@ export default function useDcaConversion({ exchange, pairQuery, isRunning, addTo
       })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        addToast({ type: 'error', title: 'Preview Failed', message: err.error || 'Could not preview conversion' })
+        addToast({ type: 'error', title: 'Preview Failed', message: describeActionFailure(res.status, err) })
         return
       }
       const data = await res.json()
@@ -38,6 +39,10 @@ export default function useDcaConversion({ exchange, pairQuery, isRunning, addTo
   }, [exchange, addToast])
 
   const handleExecuteConvert = useCallback(async () => {
+    // Same verb as the confirmation dialog the operator just accepted.
+    const [doneTitle, failedTitle] = convertPreview?.merge
+      ? ['DCA Orders Imported', 'Import Failed']
+      : ['DCA Orders Upgraded', 'Upgrade Failed']
     setConverting(true)
     try {
       const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
@@ -50,14 +55,14 @@ export default function useDcaConversion({ exchange, pairQuery, isRunning, addTo
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        addToast({ type: 'error', title: 'Conversion Failed', message: err.error || 'Could not convert DCA orders' })
+        addToast({ type: 'error', title: failedTitle, message: describeActionFailure(res.status, err) })
         return
       }
 
       const data = await res.json()
       addToast({
         type: 'success',
-        title: data.summary?.totalBodies ? 'DCA Orders Merged' : 'DCA Orders Converted',
+        title: doneTitle,
         message: `${plural(data.summary?.pendingOrders || 0, "position")} imported. ${data.summary?.totalBodies ? `Total bodies: ${data.summary.totalBodies}.` : ''} Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.`,
       })
       // Refresh status and fills
@@ -67,7 +72,7 @@ export default function useDcaConversion({ exchange, pairQuery, isRunning, addTo
     } catch (err) {
       setShowConvertConfirm(false)
       setConvertPreview(null)
-      addToast({ type: 'error', title: 'Conversion Failed', message: err.message || 'Network error' })
+      addToast({ type: 'error', title: failedTitle, message: err.message || 'Network error' })
     } finally {
       setConverting(false)
     }
