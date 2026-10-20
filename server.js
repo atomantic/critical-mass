@@ -32,7 +32,8 @@ const {
 } = require('./src/interval-utils');
 const { runIntervalCycle } = require('./src/dca-engine');
 const { createNotifier } = require('./src/notifier');
-const { createBackup, pruneBackups, createFundStateBackup } = require('./src/backup-service');
+const { createBackup, pruneBackups, createFundStateBackup, getNewestBackupTime, getNewestFundStateBackupTime } = require('./src/backup-service');
+const { createBackupScheduler } = require('./src/backup-scheduler');
 const { DATA_DIR } = require('./src/paths');
 const {
   readJSON,
@@ -109,8 +110,9 @@ let schedulerTimer = null;
 let tailscaleWatcher = null;
 const gatewayShutdown = createGatewayShutdown({
   cancelSchedules: () => {
-    for (const timer of [schedulerTimer, exchangeRefreshTimer, backupTimer, fundStateBackupTimer]) clearInterval(timer);
-    schedulerTimer = backupTimer = fundStateBackupTimer = null;
+    for (const timer of [schedulerTimer, exchangeRefreshTimer]) clearInterval(timer);
+    schedulerTimer = null;
+    backupScheduler.stop();
     tailscaleWatcher?.stop();
   },
   stopProducers: () => {
@@ -176,9 +178,6 @@ app.param('exchange', (req, res, next, exchange) => {
 
 // ============ Backup Scheduler ============
 
-let backupTimer = null;
-let fundStateBackupTimer = null;
-
 const runBackup = (kind, create) => performBackup({
   kind, create, exchangeIPCMap,
   configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
@@ -194,68 +193,52 @@ const runBackup = (kind, create) => performBackup({
   logger: createContextLogger({ module: 'backup-coordinator' }),
 });
 
-const rescheduleBackupTimer = () => {
-  if (gatewayShutdown.isStopping()) return;
-  if (backupTimer) {
-    clearInterval(backupTimer);
-    backupTimer = null;
-  }
-  if (fundStateBackupTimer) {
-    clearInterval(fundStateBackupTimer);
-    fundStateBackupTimer = null;
-  }
-
-  const backupConfig = getBackupConfig();
-  if (!backupConfig.enabled) {
-    log('INFO', '💾 Backup scheduler disabled');
-    return;
-  }
-
-  backupTimer = setInterval(() => {
-    if (gatewayShutdown.isStopping()) return;
-    gatewayShutdown.track((async () => {
-      const config = getBackupConfig();
-      if (!config.enabled) return;
-
-      log('INFO', '💾 Running scheduled backup...');
-      const result = await runBackup('full archive', () => createBackup({ includePriceCache: config.includePriceCache }));
-      if (result.success) {
-        const sizeMB = (result.sizeBytes / 1024 / 1024).toFixed(1);
-        log('INFO', `💾 Scheduled backup created: ${result.filename} (${sizeMB} MB)`);
-        const pruneResult = pruneBackups(config.maxBackups);
-        if (pruneResult.pruned > 0) {
-          log('INFO', `💾 Pruned ${pruneResult.pruned} old backups, ${pruneResult.remaining} remaining`);
+const backupScheduler = createBackupScheduler({
+  getConfig: getBackupConfig,
+  isStopping: () => gatewayShutdown.isStopping(),
+  track: (promise) => gatewayShutdown.track(promise),
+  log,
+  kinds: {
+    archive: {
+      label: 'full archive',
+      failLabel: 'Scheduled backup',
+      intervalKey: 'intervalMs',
+      newest: getNewestBackupTime,
+      run: async (config) => {
+        log('INFO', '💾 Running scheduled backup...');
+        const result = await runBackup('full archive', () => createBackup({ includePriceCache: config.includePriceCache }));
+        if (result.success) {
+          const sizeMB = (result.sizeBytes / 1024 / 1024).toFixed(1);
+          log('INFO', `💾 Scheduled backup created: ${result.filename} (${sizeMB} MB)`);
+          const pruneResult = pruneBackups(config.maxBackups);
+          if (pruneResult.pruned > 0) {
+            log('INFO', `💾 Pruned ${pruneResult.pruned} old backups, ${pruneResult.remaining} remaining`);
+          }
         }
-      } else {
-        log('ERROR', `💾 Scheduled backup failed: ${result.error}`);
-      }
-    })()).catch((err) => log('ERROR', `💾 Scheduled backup failed: ${err.message}`));
-  }, backupConfig.intervalMs);
-
-  fundStateBackupTimer = setInterval(() => {
-    if (gatewayShutdown.isStopping()) return;
-    gatewayShutdown.track((async () => {
-      const config = getBackupConfig();
-      if (!config.enabled) return;
-
-      const result = await runBackup('fund state', () => createFundStateBackup({ maxBackups: config.fundStateMaxBackups }));
-      if (result.success) {
-        if (result.snapshotId) {
+        return result;
+      },
+    },
+    fundState: {
+      label: 'fund state',
+      failLabel: 'Fund-state snapshot',
+      intervalKey: 'fundStateIntervalMs',
+      // Keeps the first snapshot off the archive's instant when both are due at boot.
+      startupOffsetMs: 2 * 60_000,
+      newest: getNewestFundStateBackupTime,
+      run: async (config) => {
+        const result = await runBackup('fund state', () => createFundStateBackup({ maxBackups: config.fundStateMaxBackups }));
+        if (result.success && result.snapshotId) {
           log('INFO', `💾 Fund-state snapshot created: ${result.snapshotId} (${result.files} files, ${result.funds.length} funds)`);
           if (result.pruned > 0) {
             log('INFO', `💾 Pruned ${result.pruned} old fund-state snapshots, ${result.remaining} remaining`);
           }
         }
-      } else {
-        log('ERROR', `💾 Fund-state snapshot failed: ${result.error}`);
-      }
-    })()).catch((err) => log('ERROR', `💾 Fund-state snapshot failed: ${err.message}`));
-  }, backupConfig.fundStateIntervalMs);
-
-  const hours = (backupConfig.intervalMs / 3600000).toFixed(1);
-  const stateHours = (backupConfig.fundStateIntervalMs / 3600000).toFixed(1);
-  log('INFO', `💾 Backup scheduler started: full archive every ${hours}h, max ${backupConfig.maxBackups} archives; fund state every ${stateHours}h, max ${backupConfig.fundStateMaxBackups} snapshots`);
-};
+        return result;
+      },
+    },
+  },
+});
+const rescheduleBackupTimer = () => backupScheduler.reschedule();
 
 // ============ Crypto Exchange Engine IPC ============
 

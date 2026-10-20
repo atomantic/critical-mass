@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **[issue-1238] Gateway stop no longer fails with `activeLogStreams is not iterable`** — `stopProducers` iterated the log-stream registry object directly and threw on every shutdown, skipping the notifier flush, IPC disconnect and listener close and exiting 1. The registry now exposes `stopAll()`, and a test drives the real registry through `createGatewayShutdown`.
+- **[issue-1236] Backup schedule survives gateway restarts** — The full-archive and fund-state timers are now disk-anchored (`src/backup-scheduler.js`): the next run is due `newest artifact + interval` after the last one, so frequent deploys and settings saves no longer postpone archives. A fund-state snapshot that hits the shared maintenance lock retries in 60s instead of logging an ERROR, and its first boot run is offset by 2 minutes from the archive.
 
 ### Changed
 - **[issue-1232] Legacy regime-state field renames are table-driven** — `loadRegimeState` applies the BTC-named -> asset-agnostic renames (position, `celestialState`, each body) and the `ladderStep` move through one `LEGACY_FIELD_RENAMES` table and `migrateLegacyPositionFields`, replacing eight hand-written copies. A characterization test pins every legacy key at the load boundary.

@@ -691,6 +691,44 @@ const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 };
 
+const archiveValidityCache = new Map();
+
+/**
+ * Epoch ms of the newest valid archive, or null when none exist. Anchors the schedule.
+ * @returns {number | null}
+ */
+const getNewestBackupTime = () => {
+  ensureBackupsDir();
+  const candidates = [];
+  for (const filename of fs.readdirSync(BACKUPS_DIR)) {
+    if (!filename.startsWith('backup-') || !filename.endsWith('.zip')) continue;
+    const filePath = path.join(BACKUPS_DIR, filename);
+    const stats = fs.lstatSync(filePath);
+    if (stats.isFile()) candidates.push({ filePath, mtimeMs: Math.round(stats.mtimeMs), size: stats.size });
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  // Only the newest candidates are integrity-tested (not every retained ZIP), and
+  // verdicts are cached so a corrupt partial never anchors the schedule nor re-tests.
+  for (const { filePath, mtimeMs, size } of candidates) {
+    const key = `${filePath}:${mtimeMs}:${size}`;
+    if (!archiveValidityCache.has(key)) {
+      archiveValidityCache.set(key, validateBackupArchive(filePath, { allowLegacy: true }).ok);
+    }
+    if (archiveValidityCache.get(key)) return mtimeMs;
+  }
+  return null;
+};
+
+/**
+ * Epoch ms of the newest fund-state snapshot, or null when none exist.
+ * @returns {number | null}
+ */
+const getNewestFundStateBackupTime = () => {
+  const newest = listFundStateBackups()[0];
+  const time = newest ? Date.parse(newest.createdAt) : NaN;
+  return Number.isNaN(time) ? null : time;
+};
+
 /**
  * Prune hourly fund-state snapshots independently from the full archive
  * retention policy.
@@ -1193,6 +1231,8 @@ module.exports = {
   createFundStateBackup,
   listBackups,
   listFundStateBackups,
+  getNewestBackupTime,
+  getNewestFundStateBackupTime,
   deleteBackup,
   pruneBackups,
   pruneFundStateBackups,
