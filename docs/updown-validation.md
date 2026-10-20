@@ -70,7 +70,7 @@ Put pure outcome interpretation, legacy compatibility, semantic journal deduplic
 and historical aggregation in `src/updown/scorecard-analytics.js`. Reuse the indicator
 catalog in `indicator-config.js`, signal-engine timeframes, and perp-contract sizing.
 `scorecard.js` owns prediction/outcome construction, scheduling, hydration/recovery,
-retention, journal health, adaptive weights, and Socket.IO lifecycle.
+retention, journal health, adaptive weights, and realtime lifecycle.
 `routes/updown-routes.js` owns request/date handling, journal reads, and response delivery.
 Live ring-buffer windows, prediction-hour buckets, and weighted indicator training
 remain distinct from historical date ranges, settlement-hour buckets, and raw trends.

@@ -265,15 +265,13 @@ const createOperatorAuth = ({
     next();
   };
 
-  const socketMiddleware = (socket, next) => {
-    const headers = { ...socket.handshake.headers };
-    if (socket.handshake.auth?.token) headers.authorization = `Bearer ${socket.handshake.auth.token}`;
-    authenticate(headers, socket.conn?.remoteAddress || socket.request?.socket?.remoteAddress).then((auth) => {
-      if (auth) return next();
-      const error = new Error('Operator authentication required');
-      error.data = { code: 'UNAUTHORIZED' };
-      next(error);
-    }, next);
+  // Realtime bus upgrade check (src/realtime-bus.js): the same session cookie
+  // or bearer password as requireAuth. A browser always sends Origin on a
+  // WebSocket handshake, and it must name this gateway — the same rule as a
+  // session-cookie mutation, so another page cannot ride the operator's cookie.
+  const authorizeUpgrade = async (req) => {
+    if (!requestOriginMatches(req)) return false;
+    return Boolean(await authenticate(req.headers, req.socket?.remoteAddress));
   };
 
   const setSessionCookie = (req, res) => {
@@ -386,7 +384,7 @@ const createOperatorAuth = ({
     authenticate,
     registerSessionRoutes,
     requireAuth,
-    socketMiddleware,
+    authorizeUpgrade,
     hasPassword,
     hasRemoteBootstrap,
     isBootstrapping,

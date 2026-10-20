@@ -17,6 +17,10 @@
  *    `isBinary` flag), `ping`, `pong`, `error` and exactly one `close`
  *    (code, reason); it offers `send(data, callback)`, `close(code, reason)`,
  *    `terminate()`, `readyState` and `bufferedAmount`.
+ *
+ * `handshakeRefusal`, `refuseUpgrade` and `acceptUpgrade` are exported for the
+ * gateway's realtime bus (src/realtime-bus.js), which upgrades on the
+ * gateway's own HTTP listeners instead of a dedicated server.
  */
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -30,6 +34,7 @@ const CLOSED = 3;
 const OPCODE = { CONTINUATION: 0x0, TEXT: 0x1, BINARY: 0x2, CLOSE: 0x8, PING: 0x9, PONG: 0xa };
 const DEFAULT_MAX_PAYLOAD = 100 * 1024 * 1024;
 const DEFAULT_CLOSE_TIMEOUT = 5000;
+const REFUSAL_FLUSH_TIMEOUT = 5000;
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 /** RFC 6455 §7.4 — codes a peer may send on the wire. */
@@ -353,6 +358,67 @@ class WebSocketConnection extends EventEmitter {
   }
 }
 
+/**
+ * RFC 6455 §4.2.1 opening-handshake checks.
+ * @param {import('node:http').IncomingMessage} req
+ * @returns {{ status: number, headers?: Record<string, string> } | null} the refusal, or null for a valid handshake
+ */
+const handshakeRefusal = (req) => {
+  const key = req.headers['sec-websocket-key'];
+  if (req.method !== 'GET') return { status: 405 };
+  if (String(req.headers.upgrade).toLowerCase() !== 'websocket') return { status: 400 };
+  if (typeof key !== 'string' || !/^[A-Za-z0-9+/]{22}==$/.test(key)) return { status: 400 };
+  if (req.headers['sec-websocket-version'] !== '13') return { status: 426, headers: { 'Sec-WebSocket-Version': '13' } };
+  return null;
+};
+
+/**
+ * Answer an upgrade request with a plain HTTP error and destroy the socket.
+ * HTTP servers allow half-open sockets, so end() alone would keep a refused
+ * peer's read side (and server.close()) open for as long as the peer likes:
+ * destroy once the response is flushed, or after a bounded wait.
+ * @param {import('node:stream').Duplex} socket
+ * @param {number} status
+ * @param {Record<string, string>} [headers]
+ */
+const refuseUpgrade = (socket, status, headers = {}) => {
+  if (socket.destroyed) return;
+  const body = http.STATUS_CODES[status] || '';
+  const lines = [`HTTP/1.1 ${status} ${body}`, 'Connection: close', 'Content-Type: text/plain', `Content-Length: ${Buffer.byteLength(body)}`];
+  for (const [name, value] of Object.entries(headers)) lines.push(`${name}: ${value}`);
+  const fallback = setTimeout(() => socket.destroy(), REFUSAL_FLUSH_TIMEOUT);
+  fallback.unref();
+  socket.once('close', () => clearTimeout(fallback));
+  socket.once('finish', () => socket.destroy());
+  socket.end(`${lines.join('\r\n')}\r\n\r\n${body}`);
+};
+
+/**
+ * Complete a validated handshake. `onConnection` attaches its listeners before
+ * any frame that arrived with the upgrade request is parsed.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:net').Socket} socket
+ * @param {Buffer} head
+ * @param {{ maxPayload?: number, closeTimeout?: number }} options
+ * @param {(connection: WebSocketConnection) => void} onConnection
+ * @returns {WebSocketConnection | null} null when the peer already went away
+ */
+const acceptUpgrade = (req, socket, head, options, onConnection) => {
+  if (!socket.readable || !socket.writable) {
+    socket.destroy();
+    return null;
+  }
+  const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + GUID).digest('base64');
+  socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  const connection = new WebSocketConnection(socket, {
+    maxPayload: options.maxPayload ?? DEFAULT_MAX_PAYLOAD,
+    closeTimeout: options.closeTimeout ?? DEFAULT_CLOSE_TIMEOUT,
+  });
+  onConnection(connection);
+  if (head.length) connection._onData(head);
+  return connection;
+};
+
 class WebSocketServer extends EventEmitter {
   /**
    * @param {{
@@ -427,32 +493,16 @@ class WebSocketServer extends EventEmitter {
    */
   _onUpgrade(req, socket, head) {
     socket.on('error', () => {});
-    const abort = (status, headers = {}) => {
-      const body = http.STATUS_CODES[status] || '';
-      const lines = [`HTTP/1.1 ${status} ${body}`, 'Connection: close', 'Content-Type: text/plain', `Content-Length: ${Buffer.byteLength(body)}`];
-      for (const [name, value] of Object.entries(headers)) lines.push(`${name}: ${value}`);
-      socket.end(`${lines.join('\r\n')}\r\n\r\n${body}`);
-    };
-    const key = req.headers['sec-websocket-key'];
-    if (req.method !== 'GET') return abort(405);
-    if (String(req.headers.upgrade).toLowerCase() !== 'websocket') return abort(400);
-    if (typeof key !== 'string' || !/^[A-Za-z0-9+/]{22}==$/.test(key)) return abort(400);
-    if (req.headers['sec-websocket-version'] !== '13') return abort(426, { 'Sec-WebSocket-Version': '13' });
-    if (!this._verifyClient(req)) return abort(401);
-    if (!socket.readable || !socket.writable) return socket.destroy();
-
-    const accept = crypto.createHash('sha1').update(key + GUID).digest('base64');
-    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-    const connection = new WebSocketConnection(socket, this._connectionOptions);
-    this.clients.add(connection);
-    connection.once('close', () => {
-      this.clients.delete(connection);
-      this._maybeEmitClose();
+    const refusal = handshakeRefusal(req) ?? (this._verifyClient(req) ? null : { status: 401 });
+    if (refusal) return refuseUpgrade(socket, refusal.status, refusal.headers);
+    acceptUpgrade(req, socket, head, this._connectionOptions, (connection) => {
+      this.clients.add(connection);
+      connection.once('close', () => {
+        this.clients.delete(connection);
+        this._maybeEmitClose();
+      });
+      this.emit('connection', connection, req);
     });
-    this.emit('connection', connection, req);
-    // Frames that arrived with the upgrade request are parsed only now, so the
-    // connection listeners attached above see them.
-    if (head.length) connection._onData(head);
   }
 
   _maybeEmitClose() {
@@ -467,4 +517,7 @@ class WebSocketServer extends EventEmitter {
   }
 }
 
-module.exports = { WebSocketServer, WebSocketConnection, CONNECTING, OPEN, CLOSING, CLOSED };
+module.exports = {
+  WebSocketServer, WebSocketConnection, handshakeRefusal, refuseUpgrade, acceptUpgrade,
+  CONNECTING, OPEN, CLOSING, CLOSED,
+};
