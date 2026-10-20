@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Failed fund actions explain why** — Start, Stop, Close, Reopen, dry-run reset, ladder, roll-up, recalculate, placement reconcile, backup and optimizer failures now show the reason the server gave instead of a blank message, a bare "HTTP 400", "Bad response" or "Unknown error"; an unreadable reply names its HTTP status and points to the engine logs, and the ambiguous "Cancel Failed" and "Reset failed" titles name the action.
 - **Manual-trade import labels use the fund's own asset** — The unaccounted-fills table, import summary and recovery-buy form show the fund's base asset and quote currency instead of a fixed BTC and USD, spell out "good-till-cancelled", and pluralize the unaccounted-order count.
 - **[issue-1293] Clarify fund creation and Enabled switch copy** — Explain that new funds remain stopped until Start is pressed, and that Enabled only controls the Ready badge.
 - **[issue-1295] Test Connection identifies the checked balance currency** — Show the exchange, quote currency, amount precision and checked product pair for successful key tests, including an explicit zero-balance message and matching screen-reader announcement.

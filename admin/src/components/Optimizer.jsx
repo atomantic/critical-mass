@@ -3,6 +3,8 @@ import { formatCurrency } from './charts/chartUtils'
 import { useToast } from './Toast'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { getRealtimeClient } from '../lib/realtime'
+import { describeActionFailure } from '../utils/actionFailure.mjs'
+import { describeConfigSaveError } from '../utils/configSaveError.mjs'
 
 // Available options for optimizer
 const ALL_INTERVALS = ['5min', '10min', '30min', '1hour', '4hour', 'daily']
@@ -211,10 +213,10 @@ function Optimizer({ exchange = 'coinbase', pair }) {
         runId
       })
     })
-      .then(res => res.json())
-      .then(data => {
+      .then(async res => ({ status: res.status, data: await res.json().catch(() => ({})) }))
+      .then(({ status, data }) => {
         if (activeRunIdRef.current !== runId) return
-        if (!data.success) throw new Error(data.error || 'Unknown error')
+        if (!data.success) throw new Error(describeActionFailure(status, data))
         // Cached results come via HTTP response
         if (data.cached) {
           setResults(data)
@@ -256,8 +258,8 @@ function Optimizer({ exchange = 'coinbase', pair }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config)
     })
-      .then(res => res.json())
-      .then((data) => {
+      .then(async res => ({ status: res.status, data: await res.json().catch(() => ({})) }))
+      .then(({ status, data }) => {
         if (data.success) {
           addToast({
             type: 'success',
@@ -268,7 +270,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
           addToast({
             type: 'error',
             title: 'Apply Failed',
-            message: data.error || 'Unknown error'
+            message: describeConfigSaveError(status, data).message
           })
         }
       })

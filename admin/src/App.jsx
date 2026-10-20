@@ -29,6 +29,7 @@ import AlertBanner from './components/sentinel/AlertBanner'
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
 import { pairQuery as buildPairQuery } from './utils/api'
+import { describeActionFailure } from './utils/actionFailure.mjs'
 
 // Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "CRO_USD" -> "USD", "BTCUSD" -> "USD")
 export function getQuoteCurrency(productId) {
@@ -418,7 +419,7 @@ function AppContent() {
       } else {
         const err = await res.json().catch(() => ({}))
         if (!isCurrentFundAction(actionGeneration)) return
-        addToast({ type: 'error', title: 'Failed to start regime engine', message: err.error || 'Unknown error' })
+        addToast({ type: 'error', title: 'Failed to start regime engine', message: describeActionFailure(res.status, err) })
       }
     } catch (err) {
       if (!isCurrentFundAction(actionGeneration)) return
@@ -440,7 +441,7 @@ function AppContent() {
       } else {
         const err = await res.json().catch(() => ({}))
         if (!isCurrentFundAction(actionGeneration)) return
-        addToast({ type: 'error', title: 'Failed to stop regime engine', message: err.error || 'Unknown error' })
+        addToast({ type: 'error', title: 'Failed to stop regime engine', message: describeActionFailure(res.status, err) })
       }
     } catch (err) {
       if (!isCurrentFundAction(actionGeneration)) return
@@ -480,7 +481,7 @@ function AppContent() {
       } else {
         const err = await res.json().catch(() => ({}))
         if (!isCurrentFundAction(actionGeneration)) return
-        addToast({ type: 'error', title: 'Failed to close fund', message: err.error || 'Unknown error' })
+        addToast({ type: 'error', title: 'Failed to close fund', message: describeActionFailure(res.status, err) })
       }
     } catch (err) {
       if (!isCurrentFundAction(actionGeneration)) return
@@ -515,7 +516,7 @@ function AppContent() {
       } else {
         const err = await res.json().catch(() => ({}))
         if (!isCurrentFundAction(actionGeneration)) return
-        addToast({ type: 'error', title: 'Failed to reopen fund', message: err.error || 'Unknown error' })
+        addToast({ type: 'error', title: 'Failed to reopen fund', message: describeActionFailure(res.status, err) })
       }
     } catch (err) {
       if (!isCurrentFundAction(actionGeneration)) return
@@ -540,7 +541,7 @@ function AppContent() {
       } else {
         const err = await res.json().catch(() => ({}))
         if (!isCurrentFundAction(actionGeneration)) return
-        addToast({ type: 'error', title: 'Failed to reset dry-run state', message: err.error || 'Unknown error' })
+        addToast({ type: 'error', title: 'Failed to reset dry-run state', message: describeActionFailure(res.status, err) })
       }
     } catch (err) {
       if (!isCurrentFundAction(actionGeneration)) return

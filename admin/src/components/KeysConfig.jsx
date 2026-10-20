@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import ModalDialog from './ModalDialog'
 import { plural } from '../utils/plural.mjs'
+import { describeActionFailure } from '../utils/actionFailure.mjs'
 
 const EXCHANGE_DISPLAY_NAMES = { coinbase: 'Coinbase', gemini: 'Gemini', cryptocom: 'Crypto.com' }
 
@@ -191,7 +192,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
     setTestResult(null)
     try {
       const res = await fetch(`/api/${exchange}/test-connection`, { method: 'POST' })
-      const data = await res.json().catch(() => ({ success: false, error: 'Bad response' }))
+      const data = await res.json().catch(() => ({ success: false, error: describeActionFailure(res.status) }))
       setTestResult(data)
     } catch (err) {
       setTestResult({ success: false, error: err.message })
