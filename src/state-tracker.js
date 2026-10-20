@@ -86,6 +86,42 @@ const quarantineFile = (filePath, logger) => {
   }
 };
 
+/**
+ * Guard a gateway-owned JSON state load. A missing or empty file is "no saved
+ * state" and is left alone. A file that does not parse, or is not a JSON
+ * object, is moved aside as `<file>.corrupt-<ts>` (original bytes preserved)
+ * with one error log line, so the caller's empty start cannot overwrite it.
+ * Call before reading the file; the shared readJSON then sees it missing.
+ * @param {string} filePath - State file
+ * @param {{warn: Function, error: Function}} logger - Context logger
+ * @returns {string|null} Quarantine path, or null when nothing was quarantined
+ */
+const quarantineIfUnreadable = (filePath, logger) => {
+  let content;
+  try {
+    content = fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  if (!content.trim()) return null;
+  let reason;
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return null;
+    reason = 'not a JSON object';
+  } catch (err) {
+    reason = err.message;
+  }
+  const quarantinePath = quarantineFile(filePath, logger);
+  logger.error(`❌ ${path.basename(filePath)} is unreadable (${reason}); ${quarantinePath ? `moved aside to ${quarantinePath}` : 'could not be moved aside'} and starting empty`, {
+    filePath,
+    quarantinePath,
+    error: reason,
+  });
+  return quarantinePath;
+};
+
 /** @type {Map<string, number>} In-memory save version per file */
 const saveVersions = new Map();
 
@@ -1624,4 +1660,5 @@ module.exports = {
   describePlacementIntents,
   atomicWriteSync,
   quarantineFile,
+  quarantineIfUnreadable,
 };

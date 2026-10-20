@@ -15,6 +15,7 @@ const { createPerpBook } = require('./perp-book');
 const { PERP_CONTRACT_SIZE_BTC, calculatePerpPnl } = require('./perp-contract');
 const { resolveAction, labelHistoryActions } = require('./signal-actions');
 const { createContextLogger } = require('../logger');
+const { quarantineIfUnreadable } = require('../state-tracker');
 
 /**
  * UpDown runs a single paper-traded BTC perp book with no exchange behind it,
@@ -123,6 +124,7 @@ const createUpDownService = (io, deps) => {
    * Load persisted state from disk
    */
   const loadState = () => {
+    quarantineIfUnreadable(stateFilePath, updownLogger);
     const saved = readJSON(stateFilePath, null);
     if (!saved) return;
     if (saved.contract) contract = { ...contract, ...saved.contract };
