@@ -3,22 +3,25 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import TradeHistory from '../src/components/updown/TradeHistory'
 import SentinelDashboard from '../src/components/sentinel/Dashboard'
+import AIProviders from '../src/components/ai/Providers'
 vi.mock('../src/components/Toast', () => ({ useToast: () => ({ addToast: vi.fn() }) }))
 vi.mock('../src/hooks/useSentinelSocket', () => ({ default: () => ({ connected: true }) }))
 HTMLDialogElement.prototype.showModal = function () { this.open = true; this.querySelector('[autofocus]')?.focus() }
 HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event('close')) }
 const trade = { id: 7, date: '2026-09-09', direction: 'up', cost: 500, returnAmount: 600 }
-let alerts, writes, fail, release
+let alerts, writes, fail, failMessage, release, providers
 beforeEach(() => {
   alerts = [{ id: 1, title: 'News', severity: 'critical', dismissed: false }]
-  writes = []; fail = false; release = null
+  writes = []; fail = false; failMessage = 'Delete failed'; release = null
+  providers = [{ id: 'provider-1', name: 'OpenAI', type: 'api', enabled: true, endpoint: 'https://api.example.com' }]
   vi.stubGlobal('fetch', vi.fn(async (url, options) => {
     if (options) {
       writes.push({ url, ...options })
       if (release) await release
-      return { ok: !fail, json: async () => ({}) }
+      if (options.method === 'DELETE' && !fail) providers = []
+      return { ok: !fail, status: fail ? 400 : 200, json: async () => fail ? { error: failMessage } : ({}) }
     }
-    return { ok: true, json: async () => url.includes('updown') ? { success: true, trades: [trade] } : url.endsWith('status') ? { config: { feeds: [{ name: 'Example', url: 'https://example.com/rss', enabled: true }] } } : { alerts } }
+    return { ok: true, json: async () => url === '/api/providers' ? { providers, activeProvider: 'provider-1' } : url === '/api/runs?limit=20' ? { runs: [] } : url.includes('updown') ? { success: true, trades: [trade] } : url.endsWith('status') ? { config: { feeds: [{ name: 'Example', url: 'https://example.com/rss', enabled: true }] } } : { alerts } }
   }))
 })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
@@ -44,6 +47,33 @@ it('trade delete requires confirmation; Cancel and Escape preserve data; failed 
   expect(screen.getByRole('dialog')).toBeTruthy()
   expect(screen.getByRole('button', { name: /Delete trade from/ })).toBeTruthy()
   expect(writes).toHaveLength(1)
+})
+it('provider delete names the default provider, waits for confirmation, and stays open with the server error', async () => {
+  render(<AIProviders />)
+  const trigger = await screen.findByRole('button', { name: 'Delete' })
+  fireEvent.click(trigger)
+  expect(writes).toHaveLength(0)
+  expect(screen.getByRole('heading', { name: 'Delete provider "OpenAI"?' })).toBeTruthy()
+  expect(screen.getByText(/This is your default provider\./)).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  fireEvent.click(trigger)
+  act(() => { escape() })
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(writes).toHaveLength(0)
+  fireEvent.click(trigger)
+  fail = true
+  failMessage = 'Provider is in use by a running prompt'
+  fireEvent.click(screen.getByRole('button', { name: 'Delete provider' }))
+  expect((await screen.findByRole('alert')).textContent).toContain(failMessage)
+  expect(screen.getByRole('dialog')).toBeTruthy()
+  expect(screen.getByRole('heading', { name: 'Delete provider "OpenAI"?' })).toBeTruthy()
+  expect(writes).toHaveLength(1)
+  expect(writes[0]).toMatchObject({ url: '/api/providers/provider-1', method: 'DELETE' })
+  fail = false
+  fireEvent.click(screen.getByRole('button', { name: 'Delete provider' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  expect(writes).toHaveLength(2)
 })
 it.each([1, 3])('clear counts all %i alerts including those hidden by filtering and guards pending dismissal', async count => {
   alerts = Array.from({ length: count }, (_, id) => ({ id, title: 'News', severity: 'info', dismissed: id > 0 }))

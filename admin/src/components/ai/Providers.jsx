@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useId } from 'react'
 import ModalDialog from '../ModalDialog'
+import DestructiveConfirmation from '../DestructiveConfirmation'
 import { createRunLifecycle, RUN_NOTICE } from '../../utils/runLifecycle.mjs'
 
 const PROVIDER_TYPES = { cli: 'CLI (unavailable)', api: 'API' }
@@ -43,6 +44,7 @@ export default function AIProviders() {
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editingProvider, setEditingProvider] = useState(null)
+  const [deleteProvider, setDeleteProvider] = useState(null)
   const [testResults, setTestResults] = useState({})
   const [runs, setRuns] = useState([])
   const [showRunner, setShowRunner] = useState(false)
@@ -159,8 +161,18 @@ export default function AIProviders() {
     setTestResults(prev => ({ ...prev, [id]: result }))
   }
 
-  const handleDelete = async (id) => {
-    await runMutation(`delete:${id}`, () => fetch(`/api/providers/${id}`, { method: 'DELETE' }), loadData)
+  const handleDelete = async (provider) => {
+    const key = `delete:${provider.id}`
+    if (mutationLocks.current.has(key)) throw new Error('This provider is already being deleted.')
+    mutationLocks.current.add(key)
+    setMutationPending(prev => ({ ...prev, [key]: true }))
+    try {
+      await requireAcceptedResponse(await fetch(`/api/providers/${provider.id}`, { method: 'DELETE' }))
+      await loadData()
+    } finally {
+      mutationLocks.current.delete(key)
+      setMutationPending(prev => ({ ...prev, [key]: false }))
+    }
   }
 
   const handleToggleEnabled = async (provider) => {
@@ -252,6 +264,17 @@ export default function AIProviders() {
 
   return (
     <div className="space-y-6">
+      {deleteProvider && (
+        <DestructiveConfirmation
+          title={`Delete provider "${deleteProvider.name}"?`}
+          confirmLabel="Delete provider"
+          onClose={() => setDeleteProvider(null)}
+          onConfirm={() => handleDelete(deleteProvider)}
+        >
+          {deleteProvider.id === activeProviderId ? 'This is your default provider. ' : ''}
+          {`This removes ${deleteProvider.name} and its saved API key from Critical Mass. Features that use it (Sentinel AI classification, prompt runs) stop until another provider is set up. This can't be undone.`}
+        </DestructiveConfirmation>
+      )}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <h1 className="text-2xl font-bold text-white">AI Providers</h1>
         <div className="flex flex-wrap gap-2">
@@ -539,7 +562,7 @@ export default function AIProviders() {
                 </button>
 
                 <button
-                  onClick={() => handleDelete(provider.id)}
+                  onClick={() => setDeleteProvider(provider)}
                   disabled={Boolean(mutationPending[`delete:${provider.id}`])}
                   className="px-3 py-1.5 text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-sm transition-colors"
                 >

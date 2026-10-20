@@ -51,6 +51,7 @@ function createView(providers = [], activeProvider = null, runs = [], samples = 
     require: name => {
       if (name === 'react') return hooks
       if (name === '../ModalDialog') return { default: ({ children }) => children }
+      if (name === '../DestructiveConfirmation') return { default: ({ children }) => children }
       if (name === '../../utils/runLifecycle.mjs') return { createRunLifecycle: () => ({ execute() {}, dispose() {} }), RUN_NOTICE: {} }
       throw new Error(`Unexpected import ${name}`)
     },
