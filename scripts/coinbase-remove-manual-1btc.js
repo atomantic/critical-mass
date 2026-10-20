@@ -69,11 +69,6 @@ if (!APPLY) {
   process.exit(0);
 }
 
-const bpL = `${LEDGER_PATH}.backup-manual-${Date.now()}`;
-const bpC = `${CLOSED_PATH}.backup-manual-${Date.now()}`;
-fs.copyFileSync(LEDGER_PATH, bpL);
-fs.copyFileSync(CLOSED_PATH, bpC);
-console.log(`💾 Backups: ${path.basename(bpL)}, ${path.basename(bpC)}`);
 atomicWriteSync(LEDGER_PATH, JSON.stringify(ledgerSurvivors, null, 2));
 atomicWriteSync(CLOSED_PATH, JSON.stringify(closedSurvivors, null, 2));
 console.log('✅ Wrote both files. Engine will derive fresh P&L from corrected ledger on next status fetch.');

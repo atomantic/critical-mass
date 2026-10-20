@@ -65,9 +65,6 @@ if (!APPLY) {
   process.exit(0);
 }
 
-const bp = `${LEDGER_PATH}.backup-link-${Date.now()}`;
-fs.copyFileSync(LEDGER_PATH, bp);
-console.log(`💾 Backup: ${path.basename(bp)}`);
 atomicWriteSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
 console.log(`✅ Wrote ledger with ${touched} new buy→sell links`);
 

@@ -48,12 +48,6 @@ const DUST_THRESHOLD = 100; // CRO
 const round8 = (n) => Math.round(n * 1e8) / 1e8;
 const round2 = (n) => Math.round(n * 100) / 100;
 
-const backup = (p) => {
-  const bp = `${p}.backup-rectify-${Date.now()}`;
-  fs.copyFileSync(p, bp);
-  console.log(`💾 Backup: ${path.basename(bp)}`);
-};
-
 // ── Load inputs ─────────────────────────────────────────────────────────────
 await prepareApply({ files: [path.join(fundDir, 'fill-ledger.json'), path.join(fundDir, 'regime-state.json'), path.join(fundDir, 'closed-trades.json')] });
 
@@ -291,9 +285,6 @@ if (!APPLY) {
 
 // ── Apply ───────────────────────────────────────────────────────────────────
 console.log(`\n📝 Applying...`);
-backup(LEDGER_PATH);
-backup(STATE_PATH);
-backup(CLOSED_PATH);
 
 atomicWriteSync(LEDGER_PATH, JSON.stringify(newLedger, null, 2));
 console.log(`✅ Wrote ${newLedger.length} fills to ${path.basename(LEDGER_PATH)}`);

@@ -170,11 +170,6 @@ if (!APPLY) {
 }
 
 // ── Apply ───────────────────────────────────────────────────────────────────
-const bpLedger = `${LEDGER_PATH}.backup-orphan-${Date.now()}`;
-const bpState = `${STATE_PATH}.backup-orphan-${Date.now()}`;
-fs.copyFileSync(LEDGER_PATH, bpLedger);
-fs.copyFileSync(STATE_PATH, bpState);
-console.log(`\n💾 Backups: ${path.basename(bpLedger)}, ${path.basename(bpState)}`);
 
 // Update nebula body in state
 nebula.assetQty = newNebulaQty;

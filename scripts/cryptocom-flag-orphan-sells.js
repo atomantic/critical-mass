@@ -73,9 +73,6 @@ if (!APPLY) {
   process.exit(0);
 }
 
-const bp = `${LEDGER_PATH}.backup-flag-${Date.now()}`;
-fs.copyFileSync(LEDGER_PATH, bp);
-console.log(`💾 Backup: ${path.basename(bp)}`);
 atomicWriteSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
 console.log(`✅ Wrote ledger with ${orphans.length} sells flagged as untracked`);
 

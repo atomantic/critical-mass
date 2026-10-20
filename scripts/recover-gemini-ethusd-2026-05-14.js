@@ -250,11 +250,6 @@ async function main() {
   console.log(`${'═'.repeat(70)}\n`);
 
   const ts = Date.now();
-  fs.copyFileSync(statePath, `${statePath}.bak.${ts}`);
-  fs.copyFileSync(ledgerPath, `${ledgerPath}.bak.${ts}`);
-  console.log(`📁 Backups:`);
-  console.log(`   ${statePath}.bak.${ts}`);
-  console.log(`   ${ledgerPath}.bak.${ts}\n`);
 
   // Place TP first; abort state changes if it fails
   let tpOrderId = null;
@@ -336,9 +331,6 @@ async function main() {
   console.log(`  TP order:    ${tpOrderId || '(none — --no-place-tp)'}`);
   console.log(`  Position:    ${body.assetQty} ETH @ avg $${body.avgPrice.toFixed(2)} (cost basis $${body.costBasis})`);
   console.log(`  TP target:   $${tpRounded.toFixed(2)} (+${((tpRounded-body.avgPrice)/body.avgPrice*100).toFixed(3)}%)`);
-  console.log(`\n  Backups:`);
-  console.log(`    ${statePath}.bak.${ts}`);
-  console.log(`    ${ledgerPath}.bak.${ts}`);
   console.log(`\n  Next: restart engine → pm2 restart critical-mass-gemini\n`);
 }
 

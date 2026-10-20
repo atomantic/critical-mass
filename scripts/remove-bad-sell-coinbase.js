@@ -66,10 +66,8 @@ console.log(`  Unlinking ${unlinked} buy fill (cleared sellOrderId/body annotati
 console.log(`  Total fills after: ${kept.length}`);
 
 if (apply) {
-  const backup = `${LEDGER}.backup-remove-bad-sell-${Date.now()}`;
-  fs.copyFileSync(LEDGER, backup);
   atomicWriteSync(LEDGER, JSON.stringify(kept, null, 2));
-  console.log(`  ✓ written (backup: ${path.basename(backup)})`);
+  console.log(`  ✓ written`);
 } else {
   console.log(`  (Re-run with --apply to write.)`);
 }

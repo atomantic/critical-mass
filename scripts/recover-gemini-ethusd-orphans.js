@@ -41,13 +41,6 @@ const ALREADY_SOLD_BODY_ID = 'body-59257145-mntgr0hl';
 const ALREADY_SOLD_SELL_ORDER = '73771277724825964';
 const PLACEHOLDER_BODY_ID = 'body-69706885-mntmyzk5';
 
-function backup(filepath) {
-  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupPath = filepath + `.backup-recovery-${ts}`;
-  fs.copyFileSync(filepath, backupPath);
-  console.log(`  backed up -> ${path.basename(backupPath)}`);
-}
-
 function generateBodyId(orderId, timestamp) {
   const suffix = orderId.slice(-8);
   return `body-${suffix}-${timestamp.toString(36)}`;
@@ -368,12 +361,6 @@ async function main() {
     console.log('\n  *** DRY RUN -- no files modified ***\n');
     return;
   }
-
-  // ── Save ──
-  console.log('\nBacking up files...');
-  backup(LEDGER_PATH);
-  backup(STATE_PATH);
-  backup(CLOSED_PATH);
 
   // Update ledger
   ledger.push(...newFills);

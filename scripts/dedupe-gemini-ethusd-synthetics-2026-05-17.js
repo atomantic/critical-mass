@@ -186,10 +186,6 @@ if (!APPLY) {
   process.exit(0);
 }
 
-const backupPath = `${LEDGER_PATH}.backup-dedupe-synthetics-${Date.now()}`;
-fs.copyFileSync(LEDGER_PATH, backupPath);
-console.log(`\nBackup: ${backupPath}`);
-
 atomicWriteSync(LEDGER_PATH, JSON.stringify(newLedger, null, 2));
 console.log(`Wrote ${newLedger.length} fills to ${LEDGER_PATH}`);
 

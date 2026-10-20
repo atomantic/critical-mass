@@ -92,11 +92,6 @@ const fetchAllFills = async (startTimestamp) => {
 const isManualOrder = (orderId) => MANUAL_ORDER_PREFIXES.some(p => orderId.startsWith(p));
 
 // ── Helpers ────────────────────────────────────────────────────
-const backup = (filePath) => {
-  const backupPath = `${filePath}.backup-${Date.now()}`;
-  fs.copyFileSync(filePath, backupPath);
-  console.log(`💾 Backup: ${path.basename(backupPath)}`);
-};
 
 const writeJSON = (filePath, data) => {
   if (DRY_RUN) {
@@ -435,12 +430,6 @@ async function main() {
 
   // Sort ledger by timestamp before writing
   ledger.sort((a, b) => a.timestamp - b.timestamp);
-
-  if (!DRY_RUN) {
-    backup(LEDGER_PATH);
-    backup(STATE_PATH);
-    backup(USER_CONFIG_PATH);
-  }
 
   writeJSON(LEDGER_PATH, ledger);
   console.log(`✅ fill-ledger.json: ${ledger.length} fills`);

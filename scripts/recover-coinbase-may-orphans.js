@@ -244,13 +244,7 @@ async function main() {
   console.log(`  APPLYING CHANGES`);
   console.log(`${'═'.repeat(70)}\n`);
 
-  // Backup
   const ts = Date.now();
-  fs.copyFileSync(statePath, `${statePath}.bak.${ts}`);
-  fs.copyFileSync(ledgerPath, `${ledgerPath}.bak.${ts}`);
-  console.log(`📁 Backups written:`);
-  console.log(`   ${statePath}.bak.${ts}`);
-  console.log(`   ${ledgerPath}.bak.${ts}\n`);
 
   // Build new body
   const newBody = {
@@ -347,9 +341,6 @@ async function main() {
   console.log(`  TP order:    ${tpOrderId || '(none — --no-place-tp)'}`);
   console.log(`  Restored:    ${roundAsset(totalAsset)} BTC @ avg $${roundUSDC(avgPrice)}`);
   console.log(`  TP target:   $${roundUSDC(tpRounded)} (+${((tpRounded-avgPrice)/avgPrice*100).toFixed(3)}%)`);
-  console.log(`\n  Backups:`);
-  console.log(`    ${statePath}.bak.${ts}`);
-  console.log(`    ${ledgerPath}.bak.${ts}`);
   console.log(`\n  Next steps:`);
   console.log(`    1. Verify TP order is visible on Coinbase`);
   console.log(`    2. Re-run audit-fills.js to confirm orphan count dropped`);

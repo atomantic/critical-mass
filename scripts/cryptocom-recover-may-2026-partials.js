@@ -257,13 +257,6 @@ if (!APPLY) {
   process.exit(0);
 }
 
-// Backup
-fs.copyFileSync(stateFile, `${stateFile}.bak.${ts}`);
-fs.copyFileSync(ledgerFile, `${ledgerFile}.bak.${ts}`);
-console.log(`\n📁 Backups written:`);
-console.log(`   ${stateFile}.bak.${ts}`);
-console.log(`   ${ledgerFile}.bak.${ts}`);
-
 // Append new ledger rows (sorted by timestamp, after the existing rows)
 newLedgerRows.sort((a, b) => a.timestamp - b.timestamp);
 const newLedger = [...ledger, ...newLedgerRows];

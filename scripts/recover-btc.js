@@ -181,9 +181,6 @@ async function main() {
 
   // Sort and save
   ledger.sort((a, b) => a.timestamp - b.timestamp);
-  const backupPath = LEDGER_PATH + '.backup-recovery-' + Date.now();
-  fs.copyFileSync(LEDGER_PATH, backupPath);
-  console.log(`💾 Backup: ${path.basename(backupPath)}`);
   atomicWriteSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
   console.log('✅ fill-ledger.json updated');
 

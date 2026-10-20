@@ -372,9 +372,6 @@ async function main() {
     return;
   }
 
-  const backupPath = `${LEDGER_PATH}.backup-backfill-${Date.now()}`;
-  fs.copyFileSync(LEDGER_PATH, backupPath);
-  console.log(`\nBackup: ${backupPath}`);
   atomicWriteSync(LEDGER_PATH, JSON.stringify(repaired, null, 2));
   console.log(`Wrote ${repaired.length} fills to ${LEDGER_PATH}`);
   console.log('\nRestart the engine to pick up the repaired ledger.');

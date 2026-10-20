@@ -33,7 +33,6 @@
  *   node scripts/adopt-untracked-asset.js gemini ETHUSD --apply
  */
 
-const fs = require('fs');
 const path = require('path');
 const { getAdapter } = require('../src/adapters');
 const { parseFundCli } = require('./lib/fund-cli');
@@ -264,11 +263,6 @@ async function main() {
     console.log('\n(Dry run — re-run with --apply to write.)');
     return;
   }
-
-  const statePath = path.join(resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
-  const backupPath = `${statePath}.backup-adopt-${Date.now()}`;
-  fs.copyFileSync(statePath, backupPath);
-  console.log(`\nBackup: ${backupPath}`);
 
   saved.position.celestialBodies = after;
   syncPositionState(saved.position, saved.position.celestialBodies);
