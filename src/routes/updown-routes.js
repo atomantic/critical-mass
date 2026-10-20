@@ -66,6 +66,31 @@ const parseBoughtAt = (value, now = Date.now()) => {
   return ms;
 };
 
+const parseTradeDate = (value) => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const ms = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === value;
+};
+
+const parseTradeTime = (value, now = Date.now()) => {
+  if (value == null || value === '') return { absent: true };
+  if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) || !parseTradeDate(value.slice(0, 10)))) return { error: true };
+  const ms = typeof value === 'number' ? value : Date.parse(value);
+  if (!Number.isFinite(ms) || Math.abs(ms) > 8.64e15 || ms > now) return { error: true };
+  return { ms, iso: new Date(ms).toISOString() };
+};
+
+const validateTradeDescription = (body) => {
+  if (body.date != null && !parseTradeDate(body.date)) return 'date must be a valid YYYY-MM-DD date';
+  if (body.note != null && (typeof body.note !== 'string' || body.note.length > 500)) return 'note must be a string of at most 500 characters';
+  if (body.direction != null && body.direction !== 'up' && body.direction !== 'down') return 'direction must be "up" or "down"';
+  if (body.exitTime != null) {
+    const time = parseTradeTime(body.exitTime);
+    if (time.error || time.absent) return 'exitTime must be a valid time that is not in the future';
+  }
+  return null;
+};
+
 // Promisified child_process.exec for use in async routes
 const execAsync = promisify(exec);
 
@@ -515,13 +540,17 @@ module.exports = (app, deps) => {
     if (direction !== 'up' && direction !== 'down') {
       return res.status(400).json({ success: false, error: 'direction must be "up" or "down"' });
     }
+    const parsedEntryTime = parseTradeTime(entryTime);
+    if (parsedEntryTime.error || (Object.hasOwn(req.body || {}, 'entryTime') && parsedEntryTime.absent)) {
+      return res.status(400).json({ success: false, error: 'entryTime must be a valid time that is not in the future' });
+    }
     // Reject numeric-prefix junk and non-positive values before persistence.
     const px = parseFiniteNumber(entryPrice);
     const qty = parseFiniteNumber(contracts);
     if (!Number.isFinite(px) || px <= 0 || !Number.isFinite(qty) || qty <= 0) {
       return res.status(400).json({ success: false, error: 'entryPrice and contracts must be positive numbers' });
     }
-    updownService.setPosition({ entryPrice: px, contracts: qty, direction, entryTime });
+    updownService.setPosition({ entryPrice: px, contracts: qty, direction, entryTime: parsedEntryTime.ms });
     res.json({ success: true });
   });
 
@@ -677,6 +706,9 @@ module.exports = (app, deps) => {
     if (!Number.isFinite(costNum) || !Number.isFinite(returnNum)) {
       return res.status(400).json({ success: false, error: 'cost and returnAmount must be numbers' });
     }
+    const descriptionError = validateTradeDescription(req.body || {});
+    if (descriptionError) return res.status(400).json({ success: false, error: descriptionError });
+    const exitTime = req.body?.exitTime == null ? null : parseTradeTime(req.body.exitTime).iso;
     const boughtAtMs = parseBoughtAt(req.body?.boughtAt);
     if (boughtAtMs === null) {
       return res.status(400).json({ success: false, error: 'boughtAt must be a valid time that is not in the future' });
@@ -697,14 +729,14 @@ module.exports = (app, deps) => {
         cost: costNum,
         returnAmount: returnNum,
         pnl: returnNum - costNum,
-        note: note || '',
+        note: note ?? '',
         direction: inferredDirection || null,
         // Without an operator buy time, entryTime/btcPriceAtEntry are the log
         // moment (usually after the exit) — entryTimeSource says which.
         entryTime: new Date(boughtAtMs ?? Date.now()).toISOString(),
         entryTimeSource: boughtAtMs != null ? 'operator' : 'logged',
         loggedAt: new Date().toISOString(),
-        exitTime: null,
+        exitTime,
         btcPriceAtEntry: boughtAtMs != null
           ? (updownService.getPriceAt?.(boughtAtMs) ?? null)
           : (ctx.lastPrice || null),
@@ -748,6 +780,9 @@ module.exports = (app, deps) => {
       const trade = data.trades.find(t => t.id === id);
       if (!trade) return res.status(404).json({ success: false, error: 'Trade not found' });
 
+      const descriptionError = validateTradeDescription(body);
+      if (descriptionError) return res.status(400).json({ success: false, error: descriptionError });
+
       // Reject non-numeric updates before mutating the trade (issue #151).
       for (const field of ['cost', 'returnAmount', 'btcPriceAtExit']) {
         if (body[field] != null && !Number.isFinite(parseFiniteNumber(body[field]))) {
@@ -770,7 +805,7 @@ module.exports = (app, deps) => {
       if (body.returnAmount != null) trade.returnAmount = parseFiniteNumber(body.returnAmount);
       if (body.note != null) trade.note = body.note;
       if (body.direction != null) trade.direction = body.direction;
-      if (body.exitTime != null) trade.exitTime = body.exitTime;
+      if (body.exitTime != null) trade.exitTime = parseTradeTime(body.exitTime).iso;
       if (body.btcPriceAtExit != null) trade.btcPriceAtExit = parseFiniteNumber(body.btcPriceAtExit);
       trade.pnl = trade.returnAmount - trade.cost;
       writeTrades(data);
