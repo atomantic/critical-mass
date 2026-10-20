@@ -1,3 +1,4 @@
+import { describeConfigSaveError } from '../utils/configSaveError.mjs'
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { TIERS as CELESTIAL_TIERS, formatTierCapitalRange } from '../../../shared/celestial-tiers.mjs'
 import { useState, useEffect, useId, useRef } from 'react'
@@ -326,10 +327,10 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         })
         onSave?.()
       } else {
-        setMessage({ type: 'error', text: result.error || 'Failed to save' })
+        setMessage({ type: 'error', text: describeConfigSaveError(res.status, result).message })
       }
     } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Failed to save' })
+      setMessage({ type: 'error', text: describeConfigSaveError(null, err).message })
     } finally {
       pendingWriteRef.current -= 1
       setSaving(false)
@@ -380,11 +381,11 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         onSave?.()
       } else {
         revert()
-        setMessage({ type: 'error', text: result.error || `Failed to save ${label}` })
+        setMessage({ type: 'error', text: describeConfigSaveError(res.status, result).message })
       }
-    } catch {
+    } catch (err) {
       revert()
-      setMessage({ type: 'error', text: `Failed to save ${label}` })
+      setMessage({ type: 'error', text: describeConfigSaveError(null, err).message })
     } finally {
       pendingWriteRef.current -= 1
       setToggleBusy(false)
@@ -848,7 +849,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                   <div className="text-[10px] text-gray-400 mt-0.5 leading-tight">Switch from reactive to ladder when vol spikes</div>
                 </div>
                 {regimeConfig.ladderAutoSwitch && (
-                  <FormInput label="Auto-Switch Vol Mult" hint="realizedVol / volBaseline threshold to trigger switch (e.g. 1.5 = vol 50% above baseline)" value={regimeConfig.ladderAutoSwitchVolMult || 2.0} onChange={(v) => handleRegimeChange('ladderAutoSwitchVolMult', v)} type="number" />
+                  <FormInput label="Auto-Switch Vol Mult" hint="Switch to ladder when realized volatility reaches this multiple of its baseline (1.5 = 50% above)" value={regimeConfig.ladderAutoSwitchVolMult || 2.0} onChange={(v) => handleRegimeChange('ladderAutoSwitchVolMult', v)} type="number" />
                 )}
               </div>
               {(regimeConfig.entryMode === 'ladder' || regimeConfig.ladderAutoSwitch) && (

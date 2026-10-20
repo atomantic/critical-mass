@@ -23,7 +23,7 @@ before(async () => {
   const { rolldown } = await import(pathToFileURL(adminRequire.resolve('rolldown')).href)
   const bundle = await rolldown({
     input: path.join(__dirname, '..', 'admin', 'src', 'components', 'RegimeDashboard.jsx'),
-    external: id => !/\/(PositionCard|LadderPanel|CapitalAdjust|AggressivenessControl|ConfigurationSummary|aggressiveness|deriveDashboardStatus|useRegimeDashboardData|useDcaConversion|useRegimeDashboardActions)(\.jsx?)?$/.test(id),
+    external: id => !/\/(PositionCard|LadderPanel|CapitalAdjust|AggressivenessControl|ConfigurationSummary|aggressiveness|deriveDashboardStatus|useRegimeDashboardData|useDcaConversion|useRegimeDashboardActions|configSaveError)(\.(?:jsx?|mjs))?$/.test(id),
     transform: { jsx: 'react' },
   })
   try {
@@ -322,11 +322,12 @@ describe('RegimeDashboard expanded operational forms', () => {
     // Scripted network: PUT/preview/rebuild each pull from a queue of
     // deferred responses (or an immediate default), recording every call.
     async function openPanel() {
-      const net = { puts: [], previews: [], rebuilds: [], putQ: [], previewQ: [], rebuildQ: [] }
+      const net = { payloads: [], puts: [], previews: [], rebuilds: [], putQ: [], previewQ: [], rebuildQ: [] }
       const intercept = async (url, options = {}) => {
         const kind = options.method === 'PUT' ? 'puts' : options.method === 'POST' ? 'rebuilds' : url.includes('/preview-ladder') ? 'previews' : null
         if (!kind) return null
         net[kind].push(url)
+        if (kind === 'puts') net.payloads.push(JSON.parse(options.body))
         const q = net[kind.replace(/s$/, '') + 'Q'].shift()
         if (q) return q.promise
         if (kind === 'puts') return reply({ success: true, persisted: true, applied: true })
@@ -416,14 +417,15 @@ describe('RegimeDashboard expanded operational forms', () => {
       assert.equal(ui.net.rebuilds.length, 0)
     })
 
-    it('blocks placement after a rejected save and recovers via Revert or Retry', async () => {
+    it('blocks placement after a rejected save, offers only Revert, and recovers transport failures via Retry', async () => {
       const ui = await openPanel()
       ui.net.putQ.push({ promise: Promise.resolve(reply({ success: false, errors: ['bad'] }, { ok: false, status: 400 })) })
       ui.control('Size Mode').props.onChange({ target: { value: 'linear' } })
       await tick()
       assert.equal(ui.place(), undefined)
-      assert.equal(ui.dashboard.toasts.at(-1).title, 'Save Failed')
-      assert.ok(ui.button('Retry') && ui.button('Revert'))
+      assert.equal(ui.dashboard.toasts.at(-1).title, 'Ladder settings not saved')
+      assert.equal(ui.button('Retry'), undefined)
+      assert.ok(ui.button('Revert'))
       ui.button('Revert').props.onClick()
       await tick()
       assert.equal(ui.control('Size Mode').props.value, 'fibonacci')
@@ -439,6 +441,52 @@ describe('RegimeDashboard expanded operational forms', () => {
       assert.equal(ui.place().props.disabled, false)
     })
 
+    it('humanizes a rejected numeric draft and saves the full corrected draft before enabling Place', async () => {
+      const ui = await openPanel()
+      const stalePlace = ui.place().props.onClick
+      ui.net.putQ.push({ promise: Promise.resolve(reply({ errors: ['ladderMaxAthDropPct must be between 10 and 95'] }, { ok: false, status: 400 })) })
+      ui.control('ATH Drop %').props.onChange({ target: { value: '5' } })
+      ui.control('ATH Drop %').props.onBlur()
+      await tick()
+      assert.equal(ui.dashboard.toasts.at(-1).message, 'Max ATH Drop % must be between 10 and 95')
+      const message = ui.dashboard.elements(ui.dashboard.render()).find(n => n.type === 'span' && Array.isArray(n.props.children) && String(n.props.children[0]).startsWith('Not saved:'))
+      assert.match(message.props.children[0], /Not saved: Max ATH Drop % must be between 10 and 95\. Change the value or Revert\./)
+      assert.equal(ui.button('Retry'), undefined)
+      assert.ok(ui.button('Revert'))
+      await stalePlace()
+      assert.equal(ui.net.rebuilds.length, 0)
+      const save = deferred()
+      ui.net.putQ.push(save)
+      ui.control('ATH Drop %').props.onChange({ target: { value: '75' } })
+      ui.control('ATH Drop %').props.onBlur()
+      await tick()
+      assert.equal(ui.net.puts.length, 2)
+      assert.deepEqual(ui.net.payloads[1], { ladderMaxAthDropPct: 75, ladderSpacingMode: 'sqrt', ladderSizeMode: 'fibonacci', ladderMinSpacingPct: 0.5 })
+      assert.equal(ui.place(), undefined, 'correction is still pending')
+      await stalePlace()
+      assert.equal(ui.net.rebuilds.length, 0)
+      save.resolve(reply({ success: true }))
+      await tick()
+      assert.equal(ui.place().props.disabled, false)
+      const input = ui.control('ATH Drop %')
+      assert.ok(ui.dashboard.elements(ui.dashboard.render()).some(n => n.props.id === input.props['aria-describedby'] && n.props.children === 'Range: 10–95'))
+    })
+
+    it('offers Retry after a network failure without allowing a stale Place handler', async () => {
+      const ui = await openPanel()
+      const stalePlace = ui.place().props.onClick
+      ui.net.putQ.push({ promise: { then: (resolve, reject) => reject(new Error('Network offline')) } })
+      ui.control('Size Mode').props.onChange({ target: { value: 'flat' } })
+      await tick()
+      assert.equal(ui.dashboard.toasts.at(-1).message, 'Network offline')
+      assert.ok(ui.button('Retry'))
+      await stalePlace()
+      assert.equal(ui.net.rebuilds.length, 0)
+      ui.button('Retry').props.onClick()
+      await tick()
+      assert.equal(ui.place().props.disabled, false)
+    })
+
     it('keeps placement blocked when settings persisted but were not applied live', async () => {
       const ui = await openPanel()
       ui.net.putQ.push({ promise: Promise.resolve(reply({ success: false, persisted: true, applied: false, error: 'engine down' }, { ok: false, status: 503 })) })
@@ -447,9 +495,7 @@ describe('RegimeDashboard expanded operational forms', () => {
       assert.equal(ui.place(), undefined)
       assert.equal(ui.dashboard.toasts.at(-1).title, 'Not Applied')
       assert.equal(ui.button('Revert'), undefined, 'persisted values cannot be reverted locally')
-      ui.button('Retry').props.onClick()
-      await tick()
-      assert.equal(ui.place().props.disabled, false)
+      assert.equal(ui.button('Retry'), undefined, 'persisted settings require an engine restart')
     })
 
     it('revokes the preview while a numeric field is edited but not yet saved', async () => {
@@ -507,7 +553,7 @@ describe('RegimeDashboard expanded operational forms', () => {
       ui.level('Conservative').props.onClick()
       assert.equal(ui.puts.length, 0)
       assert.ok(ui.apply('Conservative'))
-      assert.ok(ui.dashboard.elements(ui.tree()).some(n => n.props.children === 'kFactor'))
+      assert.ok(ui.dashboard.elements(ui.tree()).some(n => n.props.children === 'k Factor'))
       assert.equal(ui.level('Conservative').props['aria-pressed'], true)
       assert.equal(ui.level('Conservative').props.onMouseEnter, undefined)
       assert.match(ui.level('Conservative').props.className, /min-h-11/)

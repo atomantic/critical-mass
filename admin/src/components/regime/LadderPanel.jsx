@@ -1,3 +1,4 @@
+import { describeConfigSaveError } from '../../utils/configSaveError.mjs'
 import React, { useId, useRef, useState } from 'react'
 import { plural } from '../../utils/plural.mjs'
 import { formatPriceByMagnitude, formatCurrency } from '../charts/chartUtils'
@@ -30,7 +31,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
   const [placingLadder, setPlacingLadder] = useState(false)
   // Why Place is (un)available. 'ready' is the ONLY state that enables it, and
   // is entered solely when a preview for the CURRENT generation has loaded:
-  // loading | saving | editing | ready | rejected | notApplied | previewFailed
+  // loading | saving | editing | ready | failed | rejected | notApplied | previewFailed
   const [panelState, setPanelState] = useState('loading')
   const [blockMessage, setBlockMessage] = useState('')
 
@@ -41,7 +42,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
   const saveChain = useRef(Promise.resolve())
   const pendingSaves = useRef(0)
   const dirty = useRef(false) // numeric field edited but not yet saved (blur)
-  const failed = useRef(false) // a save was rejected / not applied live
+  const failed = useRef(false) // false or the save error kind; all failures block Place
   const placing = useRef(false)
   const previewGen = useRef(-1) // generation the displayed preview belongs to
   const confirmed = useRef(null) // last settings known to be applied live
@@ -97,25 +98,28 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
         return
       }
       const data = await res.json().catch(() => ({}))
-      failed.current = true
+      const { kind, message } = describeConfigSaveError(res.status, data)
+      failed.current = kind
       previewGen.current = -1
       setLadderPreview(null)
-      if (data?.persisted && data?.applied === false) {
-        setPanelState('notApplied')
-        setBlockMessage('Saved, but the live engine did not apply it - restart the engine or retry before placing.')
-        addToast?.({ type: 'error', title: 'Not Applied', message: data.error || 'Ladder settings were saved but not applied to the live engine' })
+      setPanelState(kind)
+      if (kind === 'notApplied') {
+        setBlockMessage('Saved, but the live engine did not apply it. Restart the engine before placing.')
+        addToast?.({ type: 'error', title: 'Not Applied', message })
+      } else if (kind === 'rejected') {
+        setBlockMessage(`Not saved: ${message.replace(/\.$/, '')}. Change the value or Revert.`)
+        addToast?.({ type: 'error', title: 'Ladder settings not saved', message })
       } else {
-        setPanelState('rejected')
-        setBlockMessage(`Settings were not saved (HTTP ${res.status}). Retry or revert before placing.`)
-        addToast?.({ type: 'error', title: 'Save Failed', message: `Could not save ladder settings (HTTP ${res.status})` })
+        setBlockMessage(`Not saved: ${message}. Retry or Revert before placing.`)
+        addToast?.({ type: 'error', title: 'Save Failed', message })
       }
     } catch (err) {
-      failed.current = true
+      failed.current = 'failed'
       previewGen.current = -1
       setLadderPreview(null)
-      setPanelState('rejected')
-      setBlockMessage('Settings were not saved. Retry or revert before placing.')
-      addToast?.({ type: 'error', title: 'Save Failed', message: err.message })
+      setPanelState('failed')
+      setBlockMessage('Settings were not saved. Retry or Revert before placing.')
+      addToast?.({ type: 'error', title: 'Save Failed', message: describeConfigSaveError(null, err).message })
     } finally {
       pendingSaves.current--
     }
@@ -126,7 +130,14 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
     const myGen = ++gen.current
     dirty.current = false
     setLadderPreview(null)
-    if (failed.current) return // blocked until Retry/Revert
+    if (failed.current === 'rejected') {
+      // A correction must validate the entire retained draft, including edits
+      // made while the rejection was pending, before any preview can enable Place.
+      failed.current = false
+      edits = { ...ladderEdits, ...edits }
+      setBlockMessage('')
+    }
+    if (failed.current) return // transport failures need Retry; persisted failures need restart
     setPanelState('saving')
     pendingSaves.current++
     saveChain.current = saveChain.current.then(() => persist(edits, myGen))
@@ -252,6 +263,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
               <label htmlFor={athDropId} className="text-[10px] text-gray-400 block mb-1">ATH Drop %</label>
               <input
                 id={athDropId}
+                aria-describedby={`${athDropId}-hint`}
                 type="text"
                 inputMode="decimal"
                 value={ladderNumberDraft.ladderMaxAthDropPct ?? ladderEdits.ladderMaxAthDropPct}
@@ -268,6 +280,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
                 disabled={placingLadder}
                 className="w-full bg-gray-700 text-white text-xs rounded-sm px-2 py-1"
               />
+              <div id={`${athDropId}-hint`} className="text-[10px] text-gray-400 mt-0.5">Range: 10–95</div>
             </div>
             <div>
               <label htmlFor={spacingModeId} className="text-[10px] text-gray-400 block mb-1">Spacing Mode</label>
@@ -310,6 +323,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
               <label htmlFor={minSpacingId} className="text-[10px] text-gray-400 block mb-1">Min Spacing %</label>
               <input
                 id={minSpacingId}
+                aria-describedby={`${minSpacingId}-hint`}
                 type="text"
                 inputMode="decimal"
                 value={ladderNumberDraft.ladderMinSpacingPct ?? ladderEdits.ladderMinSpacingPct}
@@ -326,6 +340,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
                 disabled={placingLadder}
                 className="w-full bg-gray-700 text-white text-xs rounded-sm px-2 py-1"
               />
+              <div id={`${minSpacingId}-hint`} className="text-[10px] text-gray-400 mt-0.5">Range: 0.01–5</div>
             </div>
           </div>
           {/* Preview */}
@@ -375,11 +390,11 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
               {panelState === 'editing' && 'Unsaved changes - leave the field to save before placing.'}
               {panelState === 'loading' && 'Loading preview...'}
               {panelState === 'previewFailed' && 'Preview unavailable. Placement is blocked.'}
-              {(panelState === 'rejected' || panelState === 'notApplied') && (
+              {['failed', 'rejected', 'notApplied'].includes(panelState) && (
                 <span className="text-red-400">
                   {blockMessage}{' '}
-                  <button onClick={handleRetry} className="underline text-indigo-300">Retry</button>
-                  {panelState === 'rejected' && <>{' '}<button onClick={handleRevert} className="underline text-indigo-300">Revert</button></>}
+                  {panelState === 'failed' && <button onClick={handleRetry} className="underline text-indigo-300">Retry</button>}
+                  {panelState !== 'notApplied' && <>{' '}<button onClick={handleRevert} className="underline text-indigo-300">Revert</button></>}
                 </span>
               )}
               {panelState === 'previewFailed' && <>{' '}<button onClick={refreshPreview} className="underline text-indigo-300">Retry preview</button></>}

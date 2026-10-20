@@ -20,7 +20,7 @@ export const REGIME_TOOLTIPS = {
       <div className="font-semibold text-gray-200 mb-1">Micro Regime</div>
       <div className="mb-1">Short-term market state derived from 1m ATR, realized volatility vs baseline, and VWAP distance.</div>
       <div><span className="text-green-400">HARVEST</span>: calm / mean-reverting → full sizing (1.0x). The <em>most aggressive</em> buy/sell cycling mode — &quot;harvest&quot; refers to harvesting micro cycles, NOT selling out.</div>
-      <div><span className="text-yellow-400">CAUTION</span>: volatility expanding → sizing scaled by <code>cautionScale</code>.</div>
+      <div><span className="text-yellow-400">CAUTION</span>: volatility expanding → sizing scaled by Caution Scale.</div>
       <div><span className="text-red-400">TREND</span>: strong directional move → entries blocked unless <code>Trend Scale &gt; 0</code>.</div>
     </>
   ),
@@ -48,7 +48,7 @@ export const REGIME_TOOLTIPS = {
     <>
       <div className="font-semibold text-gray-200 mb-1">Entry Mode</div>
       <div><span className="text-gray-300">REACTIVE</span>: single buy order placed when the ATR trigger fires. Best for low-volatility / mean-reverting conditions.</div>
-      <div className="mt-1"><span className="text-indigo-400">LADDER</span>: multiple pre-positioned buy orders descending from current price. Auto-activates when volatility expansion exceeds <code>ladderAutoSwitchVolMult</code> (default 2.0x).</div>
+      <div className="mt-1"><span className="text-indigo-400">LADDER</span>: multiple pre-positioned buy orders descending from current price. Auto-activates when volatility expansion exceeds Auto-Switch Vol Mult (default 2.0x).</div>
     </>
   ),
 }

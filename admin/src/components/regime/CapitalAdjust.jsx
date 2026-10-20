@@ -1,3 +1,4 @@
+import { describeConfigSaveError } from '../../utils/configSaveError.mjs'
 import React, { useId, useState } from 'react'
 import { computeCapitalAdjustment } from '../../utils/capitalAdjustment.mjs'
 
@@ -32,7 +33,7 @@ function CapitalAdjust({ apy, exchange, pairQuery, fetchConfig, fetchStatus, add
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
       if (data.success) {
         // Report the values the server actually applied (data.config), not
         // just what we sent — the source of truth after persistence (#701).
@@ -45,10 +46,16 @@ function CapitalAdjust({ apy, exchange, pairQuery, fetchConfig, fetchStatus, add
         })
         await Promise.all([fetchConfig?.(), fetchStatus?.()])
       } else {
-        addToast?.({ type: 'error', title: 'Adjust Failed', message: data.errors?.join(', ') || 'Unknown error' })
+        const { kind, message } = describeConfigSaveError(res.status, data)
+        if (kind === 'notApplied') {
+          addToast?.({ type: 'warning', title: 'Capital saved, not yet live', message: 'Restart the engine to apply it.' })
+          await Promise.all([fetchConfig?.(), fetchStatus?.()])
+        } else {
+          addToast?.({ type: 'error', title: 'Adjust Failed', message })
+        }
       }
     } catch (err) {
-      addToast?.({ type: 'error', title: 'Adjust Failed', message: err.message })
+      addToast?.({ type: 'error', title: 'Adjust Failed', message: describeConfigSaveError(null, err).message })
     }
     setCapitalAdjusting(false)
     setCapitalAdjustMode(false)
