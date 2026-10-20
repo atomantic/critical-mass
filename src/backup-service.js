@@ -1109,7 +1109,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     if (removedFunds.length > 0 && !acceptFundRemoval) {
       const describe = removedFunds.map(({ exchange, pair }) => `${exchange}/${pair}`).join(', ');
       return abort(
-        `Restoring this archive would remove ${removedFunds.length} fund(s) this machine currently runs that the archive does not carry (${describe}). `
+        `Restoring this archive would remove ${removedFunds.length} fund${removedFunds.length === 1 ? "" : "s"} this machine currently runs that the archive does not carry (${describe}). `
         + 'They may still hold on-disk state or a live exchange order. Pass acceptFundRemoval to proceed. No files were changed.',
         'fund-removal-unacknowledged',
       );

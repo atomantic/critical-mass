@@ -1,4 +1,5 @@
 import React from 'react'
+import { plural } from '../../utils/plural.mjs'
 import { formatPriceByMagnitude } from '../charts/chartUtils'
 import HistoricalAnalytics from './HistoricalAnalytics'
 
@@ -10,7 +11,7 @@ export default function OptimalTpAnalysis({ isDryRun, optimalTpAnalytics, tpMinP
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-medium text-gray-400">Optimal TP Analysis</h3>
             <span className="text-[10px] text-purple-400">
-              {optimalTpAnalytics.cycleCount} cycles
+              {plural(optimalTpAnalytics.cycleCount, "cycle")}
             </span>
           </div>
 

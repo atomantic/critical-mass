@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useId } from 'react'
+import { plural } from '../../utils/plural.mjs'
 import { History, Plus, Trash2, Edit3, Check, X, ArrowUp, ArrowDown } from '../icons'
 import { useToast } from '../Toast'
 import { runDashboardAction } from '../../utils/dashboardAction.mjs'
@@ -160,7 +161,7 @@ export default function TradeHistory() {
           <History size={16} className="text-emerald-400" />
           <h3 className="text-sm font-semibold">Trade History</h3>
           {summary && (
-            <span className="text-xs text-gray-400">{summary.count} trades</span>
+            <span className="text-xs text-gray-400">{plural(summary.count, "trade")}</span>
           )}
         </div>
         <button

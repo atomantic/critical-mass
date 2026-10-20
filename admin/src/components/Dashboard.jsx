@@ -1,4 +1,5 @@
 import { getIntervalMs } from '../utils/intervals.mjs'
+import { plural } from '../utils/plural.mjs'
 import { useState, useEffect, useCallback, useId, useRef } from 'react'
 import ActivityFeed from './ActivityFeed'
 import FailedSellPlacements from './FailedSellPlacements'
@@ -274,7 +275,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
         addToast({
           type: 'success',
           title: 'Positions Exported to Regime',
-          message: `${data.summary?.pendingOrders || 0} positions exported. Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.`,
+          message: `${plural(data.summary?.pendingOrders || 0, "position")} exported. Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.`,
         })
         onRefresh?.()
       },

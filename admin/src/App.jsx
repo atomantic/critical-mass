@@ -894,7 +894,7 @@ function AppContent() {
             </h3>
             <p id="close-fund-description" className="text-gray-300 text-sm mb-2">
               This blocks all new entries immediately. The fund's existing take-profit
-              order(s) will remain in place, and the fund will close automatically
+              order will remain in place, and the fund will close automatically
               after the current cycle's TP fills.
             </p>
             <p className="text-gray-400 text-xs mb-4">

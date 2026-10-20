@@ -1,4 +1,5 @@
 import React from 'react'
+import { plural } from '../../utils/plural.mjs'
 
 export default function TpOptimizerPanel({ tpOptimizer }) {
   return (
@@ -35,7 +36,7 @@ export default function TpOptimizerPanel({ tpOptimizer }) {
             {/* Observed Percentiles */}
             {(tpOptimizer.totalCombinedSamples || tpOptimizer.sampleCount || 0) >= 3 && (
               <div className="p-2 bg-cyan-900/20 border border-cyan-700/30 rounded-sm">
-                <div className="text-cyan-400/70 text-[10px] mb-1">Observed Percentiles ({tpOptimizer.sampleCount || 0} cycles + {tpOptimizer.volSampleCount || 0} vol)</div>
+                <div className="text-cyan-400/70 text-[10px] mb-1">Observed Percentiles ({plural(tpOptimizer.sampleCount || 0, "cycle")} + {tpOptimizer.volSampleCount || 0} vol)</div>
                 <div className="grid grid-cols-3 gap-2">
                   <div>
                     <span className="text-gray-400">p25:</span>{' '}
@@ -57,8 +58,8 @@ export default function TpOptimizerPanel({ tpOptimizer }) {
             <div className="flex justify-between text-gray-400 text-[10px]">
               <span>Last eval: {tpOptimizer.lastVolEvaluationTime
                 ? `${Math.round((Date.now() - Math.max(tpOptimizer.lastEvaluationTime || 0, tpOptimizer.lastVolEvaluationTime || 0)) / 60000)}m ago`
-                : `${tpOptimizer.cyclesSinceEval || 0} cycles ago`}</span>
-              <span>{tpOptimizer.sampleCount || 0} cycles + {tpOptimizer.volSampleCount || 0} vol</span>
+                : `${plural(tpOptimizer.cyclesSinceEval || 0, "cycle")} ago`}</span>
+              <span>{plural(tpOptimizer.sampleCount || 0, "cycle")} + {tpOptimizer.volSampleCount || 0} vol</span>
             </div>
 
             {/* Recent Adjustments */}

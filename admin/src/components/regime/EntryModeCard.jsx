@@ -1,4 +1,5 @@
 import React from 'react'
+import { plural } from '../../utils/plural.mjs'
 import { ConfigTooltip, REGIME_TOOLTIPS } from './RegimeHelp'
 
 export default function EntryModeCard({ entryMode, ladder, autoSwitch, ladderAutoSwitch }) {
@@ -18,7 +19,7 @@ export default function EntryModeCard({ entryMode, ladder, autoSwitch, ladderAut
         </div>
         <div className="text-[10px] text-gray-400">
           {ladder?.active
-            ? `${ladder.pendingOrders} orders ($${ladder.committedUsdc?.toFixed(0) || 0})`
+            ? `${plural(ladder.pendingOrders, "order")} ($${ladder.committedUsdc?.toFixed(0) || 0})`
             : entryMode === 'ladder' ? 'Waiting for trigger' : 'Single order mode'}
         </div>
         {autoSwitch && (
