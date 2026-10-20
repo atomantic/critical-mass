@@ -16,6 +16,10 @@ const sentinelStatus = {
 }
 const sentinelAlert = { id: 'alert-1', severity: 'warning', source: 'Market News', title: 'Test alert', publishedAt: Date.now() }
 
+// jsdom does not implement <dialog> modality; the destructive confirmation relies on it.
+HTMLDialogElement.prototype.showModal = function () { this.open = true; this.querySelector('[autofocus]')?.focus() }
+HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event('close')) }
+
 function success(body = {}) { return { ok: true, status: 200, json: async () => body } }
 function failure(status, body) { return { ok: false, status, json: async () => body } }
 
