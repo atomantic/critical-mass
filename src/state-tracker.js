@@ -1018,6 +1018,48 @@ const createInitialRegimeState = () => ({
   trendConfirmationCount: 0,
 });
 
+// Old BTC-named keys on disk. Names are built by concatenation so refactoring
+// scripts do not rename them; this table is the only place they are spelled.
+const legacyKey = (prefix, suffix) => prefix + suffix;
+const LEGACY_FIELD_RENAMES = {
+  position: [
+    [legacyKey('total', 'BTC'), 'totalAsset'],
+    [legacyKey('realizedBtc', 'PnL'), 'realizedAssetPnL'],
+    [legacyKey('maxBtc', 'Exposure'), 'maxAssetExposure'],
+    [legacyKey('btcOn', 'Order'), 'assetOnOrder'],
+  ],
+  celestialState: [
+    [legacyKey('bodiesRealizedBtc', 'PnL'), 'bodiesRealizedAssetPnL'],
+  ],
+  celestialBody: [
+    [legacyKey('btc', 'Qty'), 'assetQty'],
+    [legacyKey('btcOn', 'Order'), 'assetOnOrder'],
+  ],
+};
+
+const renameLegacyFields = (obj, pairs) => {
+  for (const [oldKey, newKey] of pairs) {
+    if (oldKey in obj) {
+      obj[newKey] = obj[oldKey];
+      delete obj[oldKey];
+    }
+  }
+};
+
+// Mutates parsed regime-state data in place: ladderStep -> cycleBuys and the
+// BTC-named -> asset-agnostic renames on position, celestialState and each body.
+const migrateLegacyPositionFields = (data) => {
+  const p = data.position;
+  if (!p) return;
+  if (p.ladderStep !== undefined && p.cycleBuys === undefined) {
+    p.cycleBuys = p.ladderStep;
+    delete p.ladderStep;
+  }
+  renameLegacyFields(p, LEGACY_FIELD_RENAMES.position);
+  if (p.celestialState) renameLegacyFields(p.celestialState, LEGACY_FIELD_RENAMES.celestialState);
+  for (const body of p.celestialBodies || []) renameLegacyFields(body, LEGACY_FIELD_RENAMES.celestialBody);
+};
+
 /**
  * Load regime state from file
  * @param {string} exchange - Exchange name
@@ -1051,53 +1093,7 @@ const loadRegimeState = (exchange = 'coinbase', pair) => {
     throw new Error(`regime-state file at ${stateFile} did not parse to an object (got ${data === null ? 'null' : Array.isArray(data) ? 'array' : typeof data}). Repair or move the file aside before starting.`);
   }
 
-  // Migrate ladderStep -> cycleBuys if needed
-  if (data.position && data.position.ladderStep !== undefined && data.position.cycleBuys === undefined) {
-    data.position.cycleBuys = data.position.ladderStep;
-    delete data.position.ladderStep;
-  }
-
-  // Migrate BTC-named fields to asset-agnostic names (old regime-state.json on disk)
-  // NOTE: old key names are constructed to avoid being renamed by refactoring scripts
-  const _old = (prefix, suffix) => prefix + suffix;
-  if (data.position) {
-    const p = data.position;
-    if (_old('total', 'BTC') in p) {
-      p.totalAsset = p[_old('total', 'BTC')];
-      delete p[_old('total', 'BTC')];
-    }
-    if (_old('realizedBtc', 'PnL') in p) {
-      p.realizedAssetPnL = p[_old('realizedBtc', 'PnL')];
-      delete p[_old('realizedBtc', 'PnL')];
-    }
-    if (_old('maxBtc', 'Exposure') in p) {
-      p.maxAssetExposure = p[_old('maxBtc', 'Exposure')];
-      delete p[_old('maxBtc', 'Exposure')];
-    }
-    if (_old('btcOn', 'Order') in p) {
-      p.assetOnOrder = p[_old('btcOn', 'Order')];
-      delete p[_old('btcOn', 'Order')];
-    }
-    // Migrate celestialState BTC fields
-    const cs = p.celestialState;
-    if (cs && _old('bodiesRealizedBtc', 'PnL') in cs) {
-      cs.bodiesRealizedAssetPnL = cs[_old('bodiesRealizedBtc', 'PnL')];
-      delete cs[_old('bodiesRealizedBtc', 'PnL')];
-    }
-    // Migrate celestialBodies BTC fields
-    if (p.celestialBodies) {
-      for (const body of p.celestialBodies) {
-        if (_old('btc', 'Qty') in body) {
-          body.assetQty = body[_old('btc', 'Qty')];
-          delete body[_old('btc', 'Qty')];
-        }
-        if (_old('btcOn', 'Order') in body) {
-          body.assetOnOrder = body[_old('btcOn', 'Order')];
-          delete body[_old('btcOn', 'Order')];
-        }
-      }
-    }
-  }
+  migrateLegacyPositionFields(data);
 
   const position = { ...createInitialRegimePositionState(), ...data.position };
 
