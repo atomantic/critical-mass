@@ -191,6 +191,52 @@ const resolveEntryBudget = (requestedUsdc, availableQuote, minSize) => {
 };
 
 /**
+ * True when an exchange error/result message reports insufficient funds.
+ * @param {unknown} msg
+ * @returns {boolean}
+ */
+const isInsufficientFundsMessage = (msg) => {
+  if (typeof msg !== 'string') return false;
+  const m = msg.toLowerCase();
+  return (
+    m.includes('insufficientfunds') ||
+    m.includes('insufficient_available_balance') ||
+    m.includes('insufficient_fund') || // Coinbase enum: INSUFFICIENT_FUND / PREVIEW_INSUFFICIENT_FUND
+    m.includes('insufficient balance') || // Coinbase human msg: "Insufficient balance in source account"
+    m.includes('insufficient fund')
+  );
+};
+
+/**
+ * Final entry size after the macro multiplier: if the remaining budget can't fit
+ * 2 orders at minimum, spend it all in one last order (only when it is at least
+ * the minimum); otherwise floor at the minimum. Zero-size regimes stay zero.
+ * @param {{ sizing: { sizeUsdc: number }, macroMult: { sizeMult: number }, minSize: number, remainingBudget: number }} args
+ * @returns {number}
+ */
+const sizeEntry = ({ sizing, macroMult, minSize, remainingBudget }) => {
+  const sizeUsdc = roundUSDC(sizing.sizeUsdc * macroMult.sizeMult);
+  if (sizeUsdc <= 0) return sizeUsdc;
+  if (remainingBudget >= minSize && remainingBudget < minSize * 2) return remainingBudget;
+  return Math.max(sizeUsdc, minSize);
+};
+
+const ENTRY_OFFSET_KEY_BY_MOMENTUM = { up: 'entryOffsetUpBps', down: 'entryOffsetDownBps' };
+
+/**
+ * Entry offset in bps for the current momentum, scaled by the macro offset multiplier.
+ * UP momentum: smaller offset to get fills before price rises further.
+ * DOWN momentum: larger offset to catch the falling price.
+ * NEUTRAL: the default config offset.
+ * @param {string} momentumDirection
+ * @param {Record<string, number>} config
+ * @param {{ offsetMult: number }} macroMult
+ * @returns {number}
+ */
+const entryOffsetBps = (momentumDirection, config, macroMult) =>
+  Math.round(config[ENTRY_OFFSET_KEY_BY_MOMENTUM[momentumDirection] || 'entryOffsetBps'] * macroMult.offsetMult);
+
+/**
  * True when some celestial body already lists `orderId` among its constituent
  * buy orders — i.e. a prior handleOrderFill attempt already committed this buy
  * (issue #131). Used to make the buy-fill branch idempotent against a retry
@@ -7380,6 +7426,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     announcedCaps = new Set(blocking.keys());
   };
 
+  /** Arm the insufficient-funds cooldown; returns its duration in ms. */
+  const startInsufficientFundsCooldown = () => {
+    const cooldownMs = config.insufficientFundsCooldownMs || 60000;
+    insufficientFundsCooldownUntil = Date.now() + cooldownMs;
+    return cooldownMs;
+  };
+
+  const logInsufficientFundsPause = () => {
+    const cooldownMs = startInsufficientFundsCooldown();
+    logger.info(`⏸️ [${exchange}] Insufficient funds — pausing entries for ${cooldownMs / 1000}s`);
+  };
+
   /**
    * Execute entry
    * @param {string} triggerType - What triggered the entry
@@ -7397,22 +7455,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       avgCostBasis: positionState.avgCostBasis,
     });
 
-    // Apply macro regime size multiplier
+    // Apply macro regime size multiplier, then the minimum-size floor / last-order rule
     const macroMult = macroRegime ? macroRegime.getMultipliers() : { sizeMult: 1.0, tpMult: 1.0, offsetMult: 1.0 };
-    sizing.sizeUsdc = roundUSDC(sizing.sizeUsdc * macroMult.sizeMult);
-
-    // Enforce minimum order size floor (after all multipliers, skip zero-size regimes)
     const minSize = config.minOrderSizeUsdc || exchangeConfig.minOrderSize || 1;
     const remainingBudget = roundUSDC(Math.max(0, config.maxUsdcDeployed - positionState.totalCostBasis));
-    if (sizing.sizeUsdc > 0) {
-      // If remaining budget can't fit 2 orders at minimum, use it all in one last order
-      // But only if remaining budget is at least the minimum order size
-      if (remainingBudget >= minSize && remainingBudget < minSize * 2) {
-        sizing.sizeUsdc = remainingBudget;
-      } else if (sizing.sizeUsdc < minSize) {
-        sizing.sizeUsdc = minSize;
-      }
-    }
+    sizing.sizeUsdc = sizeEntry({ sizing, macroMult, minSize, remainingBudget });
 
     // Check risk caps
     const assetQty = positionSizer.calculateBTCQuantity(sizing.sizeUsdc, marketState.bid);
@@ -7461,8 +7508,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return;
     }
     if (budget.action === 'cooldown') {
-      const cooldownMs = config.insufficientFundsCooldownMs || 60000;
-      insufficientFundsCooldownUntil = Date.now() + cooldownMs;
+      const cooldownMs = startInsufficientFundsCooldown();
       // Log once per low-balance episode, not on every cooldown re-trigger — the
       // pause re-fires each cycle while the wallet stays underfunded (#187). The
       // flag resets below once an entry can be funded again.
@@ -7481,22 +7527,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return;
     }
 
-    // Calculate dynamic offset based on momentum direction
-    // UP momentum: smaller offset to get fills before price rises further
-    // DOWN momentum: larger offset to catch the falling price
-    // NEUTRAL: use default config offset
+    // Dynamic offset based on momentum direction, scaled by the macro offset multiplier
     const momentumDirection = marketState.momentum?.direction || 'neutral';
-    let effectiveOffsetBps;
-    if (momentumDirection === 'up') {
-      effectiveOffsetBps = config.entryOffsetUpBps;
-    } else if (momentumDirection === 'down') {
-      effectiveOffsetBps = config.entryOffsetDownBps;
-    } else {
-      effectiveOffsetBps = config.entryOffsetBps;
-    }
-
-    // Apply macro regime offset multiplier
-    effectiveOffsetBps = Math.round(effectiveOffsetBps * macroMult.offsetMult);
+    const effectiveOffsetBps = entryOffsetBps(momentumDirection, config, macroMult);
 
     // Give the bid time proportional to how far below mid it rests: a deep
     // momentum-down bid on the fixed orderStaleMs timer gets cancelled long
@@ -7506,25 +7539,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Place entry with dynamic offset
     let result;
-    const isInsufficientFundsMessage = (msg) => {
-      if (typeof msg !== 'string') return false;
-      const m = msg.toLowerCase();
-      return (
-        m.includes('insufficientfunds') ||
-        m.includes('insufficient_available_balance') ||
-        m.includes('insufficient_fund') || // Coinbase enum: INSUFFICIENT_FUND / PREVIEW_INSUFFICIENT_FUND
-        m.includes('insufficient balance') || // Coinbase human msg: "Insufficient balance in source account"
-        m.includes('insufficient fund')
-      );
-    };
-
     try {
       result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps, entryStaleMs, { isAdmitted });
     } catch (err) {
       if (isInsufficientFundsMessage(err.message) || err.status === 406) {
-        const cooldownMs = config.insufficientFundsCooldownMs || 60000;
-        insufficientFundsCooldownUntil = Date.now() + cooldownMs;
-        logger.info(`⏸️ [${exchange}] Insufficient funds — pausing entries for ${cooldownMs / 1000}s`);
+        logInsufficientFundsPause();
         return;
       }
       throw err; // Re-throw other errors
@@ -7533,9 +7552,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Coinbase returns insufficient-funds as {success:false, errorMessage:"INSUFFICIENT_FUND"}
     // rather than throwing — apply the same cooldown so we don't hot-loop on a drained wallet.
     if (result && result.success === false && isInsufficientFundsMessage(result.errorMessage)) {
-      const cooldownMs = config.insufficientFundsCooldownMs || 60000;
-      insufficientFundsCooldownUntil = Date.now() + cooldownMs;
-      logger.info(`⏸️ [${exchange}] Insufficient funds — pausing entries for ${cooldownMs / 1000}s`);
+      logInsufficientFundsPause();
       return;
     }
 
