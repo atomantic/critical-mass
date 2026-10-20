@@ -8,8 +8,13 @@ history without writing anything. Add `--apply` to explicitly publish them.
 Deploy the scorecard maintenance-lock code to every UpDown writer and restart
 those services before applying a replay. Older processes do not honor the lock.
 The script reports its mode, lock path and resume manifest. Apply refuses a busy
-lock; retry after the current writer finishes. Live appends wait while publication
-holds the lock, then append to the newly published daily file.
+lock; retry after the current writer finishes. Live appends wait up to two minutes
+while publication holds the lock, then append to the newly published daily file;
+an append that times out, or is still waiting when UpDown stops for a backup or
+restart, is dropped and marks the scorecard journal unhealthy.
+Retention pruning skips a busy lock after a few seconds and retries daily; UpDown
+startup waits up to two minutes for publication before loading history; if a
+replay publishes for longer than that, restart UpDown once it completes.
 
 Each day is staged beside its destination, flushed, validated and renamed
 atomically. The original bytes are retained in a hidden `.backfill-*.backup`
@@ -22,7 +27,8 @@ These backup and manifest files are not daily journals and are not automatically
 pruned; retain them until the replay has been checked.
 
 An interrupted process can leave `.maintenance-lock/` and hidden staging files.
-Locks are never automatically stolen. Stop every UpDown process and replay
+Locks are never automatically stolen; the gateway logs the lock path and owner
+when a journal write or prune gives up waiting. Stop every UpDown process and replay
 process, inspect the lock's `owner.json`, then remove the stale lock directory
 and obsolete `*.tmp` files before restarting or resuming. A lock without owner
 metadata must also be treated as occupied. Never clear it while a writer may

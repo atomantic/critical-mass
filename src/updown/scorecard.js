@@ -42,6 +42,12 @@ const EMIT_THROTTLE_MS = 5_000
 const DEDUP_WINDOW_MS = 55_000
 const WEIGHT_LOG_THROTTLE_MS = 300_000
 const EVAL_RETRY_MS = 5_000
+// Retention is housekeeping: skip a busy lock (the daily timer retries) rather
+// than hold scorecard startup behind a replay or a stale lock.
+const PRUNE_LOCK_WAIT_MS = 5_000
+// Hydration reads every recent day file; let an active replay finish publishing
+// first, but never wait unboundedly on a lock a killed process left behind.
+const HISTORY_LOCK_WAIT_MS = 120_000
 const MAX_EVAL_LAG_MS = 60_000
 
 const BASE_WEIGHTS = INDICATOR_WEIGHTS
@@ -144,8 +150,8 @@ const getJournalPath = () => {
  * Append a JSONL record (fire-and-forget)
  * @param {Object} record
  */
-const appendRecord = async (record) => {
-  await appendScorecardRecord(SCORECARD_DIR, getJournalPath(), record)
+const appendRecord = async (record, options) => {
+  await appendScorecardRecord(SCORECARD_DIR, getJournalPath(), record, options)
 }
 
 /**
@@ -480,14 +486,16 @@ const computeByHour = (outcomes) => {
  * @param {Object} opts.io - realtime bus (src/realtime-bus.js)
  * @param {Function} opts.lastPriceFn - Returns current BTC price
  * @param {Function} [opts.contractFn] - Returns current contract config
- * @param {Function} [opts.journalWriter] - Testable persistence boundary
+ * @param {Function} [opts.journalWriter] - Testable persistence boundary; receives (record, {signal})
  * @param {string} [opts.scorecardDir] - Testable history source directory
  * @param {(file: string) => Promise<void>} [opts.unlinkFile] - Testable history deletion boundary
  * @param {typeof scorecardLogger} [opts.retentionLogger] - Testable retention logging boundary
+ * @param {number} [opts.pruneLockWaitMs] - How long retention waits for the maintenance lock before skipping
+ * @param {number} [opts.historyLockWaitMs] - How long hydration waits for a replay before reading unlocked
  * @param {{snapshot: Function, hydrate: Function, isLong: Function, serialize: Function}|null} [opts.perpBook] - Shared 0.01-BTC-per-contract paper book
  * @returns {{recordPrediction: Function, recordPerpFill: Function, getMetrics: Function, start: Function, stop: Function}}
  */
-const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRecord, scorecardDir = SCORECARD_DIR, unlinkFile = unlink, retentionLogger = scorecardLogger, perpBook = null }) => {
+const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRecord, scorecardDir = SCORECARD_DIR, unlinkFile = unlink, retentionLogger = scorecardLogger, perpBook = null, pruneLockWaitMs = PRUNE_LOCK_WAIT_MS, historyLockWaitMs = HISTORY_LOCK_WAIT_MS }) => {
   /** @type {Array<Object>} Ring buffer of evaluated outcomes */
   const outcomeBuffer = []
 
@@ -508,6 +516,8 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
   let totalSkipped = 0
   let adaptiveWeights = { ...BASE_WEIGHTS }
   let running = false
+  // Aborted by stop() so lock waits never outlive the writer (backup drain).
+  let lockWaits = new AbortController()
   let lifecycleGeneration = 0
   const journal = {
     healthy: true,
@@ -516,23 +526,27 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     lastSuccessAt: null,
   }
 
-  const persistRecord = (record) => trackPendingWrite('updown-scorecard-journal', () => journalWriter(record))
-    .then(() => {
-      journal.healthy = true
-      journal.lastError = null
-      journal.lastErrorAt = null
-      journal.lastSuccessAt = new Date().toISOString()
-    })
-    .catch((err) => {
-      journal.healthy = false
-      journal.lastError = err?.message || String(err)
-      journal.lastErrorAt = new Date().toISOString()
-      scorecardLogger.error(`❌ 📊 Scorecard journal write failed type=${record?.type || 'unknown'} err=${journal.lastError}`, {
-        action: 'journal-write',
-        recordType: record?.type || 'unknown',
-        error: journal.lastError,
+  const persistRecord = (record) => {
+    // Bind now: a stop()+start() before the deferred write runs swaps lockWaits.
+    const { signal } = lockWaits
+    return trackPendingWrite('updown-scorecard-journal', () => journalWriter(record, { signal }))
+      .then(() => {
+        journal.healthy = true
+        journal.lastError = null
+        journal.lastErrorAt = null
+        journal.lastSuccessAt = new Date().toISOString()
       })
-    })
+      .catch((err) => {
+        journal.healthy = false
+        journal.lastError = err?.message || String(err)
+        journal.lastErrorAt = new Date().toISOString()
+        scorecardLogger.error(`❌ 📊 Scorecard journal write failed type=${record?.type || 'unknown'} err=${journal.lastError}`, {
+          action: 'journal-write',
+          recordType: record?.type || 'unknown',
+          error: journal.lastError,
+        })
+      })
+  }
 
   /**
    * Build a prediction record from signal engine output
@@ -1109,7 +1123,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       if (failures.length > 0) {
         throw new Error(`failed to delete ${failures.length} scorecard file(s): ${failures.join('; ')}`)
       }
-    })
+    }, { timeoutMs: pruneLockWaitMs, signal: lockWaits.signal })
   }
 
   const start = async (computeSignals) => {
@@ -1118,6 +1132,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       return
     }
     running = true
+    if (lockWaits.signal.aborted) lockWaits = new AbortController()
     const generation = ++lifecycleGeneration
     computeSignalsFn = computeSignals
 
@@ -1126,7 +1141,16 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     if (!running || generation !== lifecycleGeneration) return
 
     // Hydrate from disk and emit initial metrics
-    await loadHistory(generation).catch(err => scorecardLogger.warn(`⚠️ 📊 Scorecard history load failed err=${err.message}`, {
+    const hydrate = existsSync(scorecardDir)
+      ? withScorecardLock(scorecardDir, () => loadHistory(generation), { timeoutMs: historyLockWaitMs, signal: lockWaits.signal })
+        .catch(err => {
+          if (err?.code === 'SCORECARD_LOCK_CANCELLED') return
+          if (err?.code !== 'SCORECARD_LOCK_BUSY') throw err
+          retentionLogger.warn(`⚠️ 📊 Scorecard history loading without the lock err=${err.message}`, { action: 'load-history', error: err.message })
+          return loadHistory(generation)
+        })
+      : loadHistory(generation)
+    await hydrate.catch(err => scorecardLogger.warn(`⚠️ 📊 Scorecard history load failed err=${err.message}`, {
       action: 'load-history',
       error: err.message,
     }))
@@ -1168,6 +1192,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
   const stop = () => {
     running = false
     lifecycleGeneration++
+    lockWaits.abort()
     if (sampleInterval) {
       clearInterval(sampleInterval)
       sampleInterval = null

@@ -152,3 +152,99 @@ it('preserves a maintenance lock left by an interrupted process', (t) => {
   assert.equal(acquireScorecardLock(directory), null);
   assert.equal(fs.existsSync(lockPath(directory)), true);
 });
+
+// A stale lock must degrade loudly instead of wedging writers forever: before
+// the bound, scorecard.start() never resolved, so UpDown never began its cycles
+// and the gateway shutdown drain always ran to its deadline.
+describe('stale maintenance lock', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { withScorecardLock, lockPath } = require('../src/updown/scorecard-maintenance');
+  const { createScorecard } = require('../src/updown/scorecard');
+
+  const staleLock = (t) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scorecard-stale-lock-'));
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    fs.mkdirSync(lockPath(directory));
+    fs.writeFileSync(path.join(lockPath(directory), 'owner.json'), JSON.stringify({ pid: 4242, startedAt: '2026-01-01T00:00:00.000Z' }));
+    return directory;
+  };
+
+  it('gives up waiting with the owner named, without running the write or stealing the lock', async (t) => {
+    const directory = staleLock(t);
+    let ran = false;
+    await assert.rejects(
+      withScorecardLock(directory, async () => { ran = true; }, { timeoutMs: 60 }),
+      (err) => err.code === 'SCORECARD_LOCK_BUSY' && /owner pid 4242/.test(err.message),
+    );
+    assert.equal(ran, false);
+    assert.equal(fs.existsSync(path.join(lockPath(directory), 'owner.json')), true);
+  });
+
+  it('lets scorecard startup finish by skipping retention', async (t) => {
+    const directory = staleLock(t);
+    const lines = [];
+    const logger = { info: () => {}, warn: (message) => lines.push(message), error: (message) => lines.push(message) };
+    const scorecard = createScorecard({
+      io: { to: () => ({ emit: () => {} }) },
+      lastPriceFn: () => 100,
+      scorecardDir: directory,
+      retentionLogger: logger,
+      pruneLockWaitMs: 60,
+      historyLockWaitMs: 60,
+    });
+    t.after(() => scorecard.stop());
+
+    await scorecard.start(() => ({ score: 0, type: 'NEUTRAL', confidence: 0, timeframes: {} }));
+
+    assert.ok(lines.some((line) => line.includes('Scorecard prune failed') && line.includes('still held')));
+    assert.ok(lines.some((line) => line.includes('history loading without the lock')));
+    assert.equal(fs.existsSync(lockPath(directory)), true);
+  });
+
+  // A live replay holds the same lock while it swaps day files one by one;
+  // hydrating mid-publication would keep a partial history until next restart.
+  it('hydrates history only after an active replay releases the lock', async (t) => {
+    const directory = staleLock(t);
+    const scorecard = createScorecard({
+      io: { to: () => ({ emit: () => {} }) },
+      lastPriceFn: () => 100,
+      scorecardDir: directory,
+      retentionLogger: { info: () => {}, warn: () => {}, error: () => {} },
+      pruneLockWaitMs: 20,
+      historyLockWaitMs: 5000,
+    });
+    t.after(() => scorecard.stop());
+    setTimeout(() => {
+      const ts = new Date().toISOString();
+      fs.writeFileSync(path.join(directory, `${ts.slice(0, 10)}.jsonl`), JSON.stringify({ type: 'prediction', id: 'replayed', ts, price: 100, compositeDirection: 'up' }) + '\n');
+      fs.rmSync(lockPath(directory), { recursive: true });
+    }, 100);
+
+    await scorecard.start(() => ({ score: 0, type: 'NEUTRAL', confidence: 0, timeframes: {} }));
+
+    assert.equal(scorecard.getMetrics().totalPredictions, 1);
+  });
+
+  // Backups stop UpDown and then require every tracked write to drain within
+  // 30s; a journal append parked on the lock for its full wait would fail them.
+  it('cancels parked journal writes on stop so the pending-write drain completes', async (t) => {
+    const directory = staleLock(t);
+    const { drainPendingWrites } = require('../src/pending-writes');
+    const scorecard = createScorecard({
+      io: { to: () => ({ emit: () => {} }) },
+      lastPriceFn: () => 100,
+      journalWriter: (record, options) => withScorecardLock(directory, async () => {}, options),
+    });
+
+    scorecard.recordPrediction({ score: 20, type: 'BUY', confidence: 0.8, timeframes: {} }, 'signal_change');
+    scorecard.stop();
+
+    assert.equal((await drainPendingWrites(1000)).drained, true);
+    const { journal } = scorecard.getMetrics();
+    assert.equal(journal.healthy, false);
+    assert.match(journal.lastError, /cancelled: writer stopped/);
+    assert.equal(fs.existsSync(lockPath(directory)), true);
+  });
+});
