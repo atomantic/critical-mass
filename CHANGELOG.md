@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-1221] Confirm destructive history and Sentinel actions** — Deleting trades, clearing all alerts and removing feeds now require confirmation, with Cancel focused and failed writes preserving the displayed data.
 - **[issue-1214] UpDown screenshot analysis now honors request ownership** — newer screenshots supersede older work, and changing provider/model or unmounting invalidates pending results.
 - **[issue-1193] Re-adding a removed fund cannot inherit retained state** — Reject creation with HTTP 409 while `state.json`, `regime-state.json`, or `fill-ledger.json` remains for the pair, preserving financial history and explaining that the directory must be moved or archived. Operational chart buffers and placement intents do not block a new fund.
 

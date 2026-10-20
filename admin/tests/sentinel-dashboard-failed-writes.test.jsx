@@ -16,6 +16,10 @@ const sentinelStatus = {
 }
 const sentinelAlert = { id: 'alert-1', severity: 'warning', source: 'Market News', title: 'Test alert', publishedAt: Date.now() }
 
+// jsdom does not implement <dialog> modality; the destructive confirmation relies on it.
+HTMLDialogElement.prototype.showModal = function () { this.open = true; this.querySelector('[autofocus]')?.focus() }
+HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event('close')) }
+
 function success(body = {}) { return { ok: true, status: 200, json: async () => body } }
 function failure(status, body) { return { ok: false, status, json: async () => body } }
 
@@ -68,7 +72,7 @@ describe('Sentinel dashboard failed writes', () => {
     expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy()
   })
 
-  it('keeps alerts visible when Clear All fails', async () => {
+  it('keeps alerts visible when the confirmed clear fails', async () => {
     await renderDashboard()
     fetch.mockImplementation(async (url, options) => {
       if (url === '/api/sentinel/alerts' && options?.method === 'DELETE') return failure(503, { error: 'Storage unavailable' })
@@ -77,7 +81,8 @@ describe('Sentinel dashboard failed writes', () => {
       return success()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Clear All' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all alerts' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Clear alerts' }))
 
     expect((await screen.findByRole('alert')).textContent).toContain('Storage unavailable')
     expect(screen.getByText('Test alert')).toBeTruthy()

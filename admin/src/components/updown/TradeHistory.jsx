@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useId } from 'react'
+import DestructiveConfirmation from '../DestructiveConfirmation'
 import { plural } from '../../utils/plural.mjs'
 import { History, Plus, Trash2, Edit3, Check, X, ArrowUp, ArrowDown } from '../icons'
 import { useToast } from '../Toast'
@@ -49,6 +50,7 @@ export default function TradeHistory() {
   const costErrorId = useId()
   const returnErrorId = useId()
   const { addToast } = useToast()
+  const [deleteTrade, setDeleteTrade] = useState(null)
   const [busy, setBusy] = useState(false)
   const [trades, setTrades] = useState([])
   const [summary, setSummary] = useState(null)
@@ -141,7 +143,7 @@ export default function TradeHistory() {
 
   const handleDelete = async (id) => {
     if (busy) return
-    await runDashboardAction({
+    return runDashboardAction({
       setBusy,
       addToast,
       failureTitle: 'Delete trade failed',
@@ -156,6 +158,11 @@ export default function TradeHistory() {
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+      {deleteTrade && (
+        <DestructiveConfirmation title="Delete trade?" confirmLabel="Delete trade" onClose={() => setDeleteTrade(null)} onConfirm={async () => { if (!await handleDelete(deleteTrade.id)) throw new Error('Unable to delete trade. Please try again.') }}>
+          Trade from {deleteTrade.date} ({deleteTrade.direction || 'unspecified direction'}, cost {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(deleteTrade.cost)}) will be permanently deleted from UpDown history. This cannot be undone.
+        </DestructiveConfirmation>
+      )}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <History size={16} className="text-emerald-400" />
@@ -380,7 +387,7 @@ export default function TradeHistory() {
                       <button disabled={busy} onClick={() => handleEdit(t)} aria-label={`Edit trade from ${fmtDate(t.date)}`} className="trade-history-touch-target min-h-11 min-w-11 inline-flex items-center justify-center text-gray-400 hover:text-blue-400 transition-colors">
                         <Edit3 size={11} />
                       </button>
-                      <button disabled={busy} onClick={() => handleDelete(t.id)} aria-label={`Delete trade from ${fmtDate(t.date)}`} className="trade-history-touch-target min-h-11 min-w-11 inline-flex items-center justify-center text-gray-400 hover:text-red-400 transition-colors">
+                      <button disabled={busy} onClick={() => setDeleteTrade(t)} aria-label={`Delete trade from ${fmtDate(t.date)}`} className="trade-history-touch-target min-h-11 min-w-11 inline-flex items-center justify-center text-gray-400 hover:text-red-400 transition-colors">
                         <Trash2 size={11} />
                       </button>
                     </div>
