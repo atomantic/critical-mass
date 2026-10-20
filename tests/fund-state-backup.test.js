@@ -111,6 +111,25 @@ describe('hourly fund-state snapshots', () => {
     assert.deepEqual(restoredDryRunState, dryRunState);
   });
 
+  it('restores the recovery-buy records engine startup uses to spare open buys', () => {
+    // Without these files, startup classifies a manual or corrective recovery
+    // buy still open on the exchange as an orphan and cancels it.
+    const manualTrades = { trades: [{ id: 'mt-1', buyOrderId: 'buy-manual', status: 'buy_pending' }] };
+    const correctiveBuys = [{ buyOrderId: 'buy-corrective', filled: false, cancelled: false }];
+    writeJson(path.join(fundDir, 'manual-trades.json'), manualTrades);
+    writeJson(path.join(fundDir, 'pending-corrective-buys.json'), correctiveBuys);
+
+    const backup = createFundStateBackup({ paths, now: new Date('2026-09-20T04:00:00.000Z') });
+    assert.equal(backup.success, true, JSON.stringify(backup));
+
+    fs.rmSync(fundDir, { recursive: true, force: true });
+    const restored = restoreFundStateBackup(backup.snapshotId, 'coinbase', 'BTC-USDC', { paths });
+
+    assert.equal(restored.success, true, JSON.stringify(restored));
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fundDir, 'manual-trades.json'), 'utf8')), manualTrades);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fundDir, 'pending-corrective-buys.json'), 'utf8')), correctiveBuys);
+  });
+
   it('rejects path traversal before touching the data directory', () => {
     const result = restoreFundStateBackup('../outside', 'coinbase', 'BTC-USDC', { paths });
     assert.equal(result.success, false);
