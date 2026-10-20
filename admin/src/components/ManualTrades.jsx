@@ -1,6 +1,8 @@
 import { Fragment, useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { formatCurrency, formatPrice, formatDateTime } from './charts/chartUtils'
 import { pairQuery as buildPairQuery } from '../utils/api'
+import { plural } from '../utils/plural.mjs'
+import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { runUnaccountedFillsScan, describeScanProgress } from '../utils/unaccountedFillsScan.mjs'
 
 const STATUS_COLORS = {
@@ -111,6 +113,9 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   const tradesGeneration = useRef(0)
 
   const pairQuery = buildPairQuery(pair)
+  // Orders are labelled with this fund's own asset and quote currency, not a fixed BTC/USD.
+  const baseCurrency = getBaseCurrency(pair)
+  const quoteCurrency = getQuoteCurrency(pair)
 
   // Each fetch takes a generation; a newer fetch, a fund switch or unmount
   // supersedes it so a stale scan never commits its result (issue #966).
@@ -496,7 +501,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                 <span className="text-xs text-gray-400" role="status" aria-live="polite">{describeScanProgress(scanProgress)}</span>
               )}
               {unaccountedOrders.length > 0 && (
-                <span className="text-xs text-gray-400">{unaccountedOrders.length} unaccounted orders</span>
+                <span className="text-xs text-gray-400">{plural(unaccountedOrders.length, 'unaccounted order')}</span>
               )}
             </div>
 
@@ -514,7 +519,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                     <tr className="text-gray-400 text-left">
                       <th className="px-2 py-1">Order ID</th>
                       <th className="px-2 py-1">Side</th>
-                      <th className="px-2 py-1 text-right">Size (BTC)</th>
+                      <th className="px-2 py-1 text-right">Size ({baseCurrency})</th>
                       <th className="px-2 py-1 text-right">Avg Price</th>
                       <th className="px-2 py-1 text-right">Total</th>
                       <th className="px-2 py-1">Time</th>
@@ -566,7 +571,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
               <div className="grid grid-cols-3 gap-3 mb-3 text-xs">
                 <div>
                   <span className="text-gray-400">Size:</span>
-                  <span className="ml-1 text-gray-300">{importModal.totalBtc.toFixed(8)} BTC</span>
+                  <span className="ml-1 text-gray-300">{importModal.totalBtc.toFixed(8)} {baseCurrency}</span>
                 </div>
                 <div>
                   <span className="text-gray-400">Price:</span>
@@ -636,17 +641,17 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
 
                       {importMode === 'place' ? (
                         <div className="mb-3">
-                          <label htmlFor="recovery-buy-price" className="block text-[10px] text-gray-400 mb-1">Recovery Buy Limit Price (USD)</label>
+                          <label htmlFor="recovery-buy-price" className="block text-[10px] text-gray-400 mb-1">Recovery Buy Limit Price ({quoteCurrency})</label>
                           <input
                             id="recovery-buy-price"
                             type="number"
                             value={recoveryBuyPrice}
                             onChange={(e) => setRecoveryBuyPrice(e.target.value)}
-                            placeholder="e.g. 70000"
+                            placeholder={`Price per ${baseCurrency}`}
                             className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-xs text-gray-300"
                           />
                           <div className="text-[10px] text-gray-400 mt-0.5">
-                            Will place a GTC limit buy for {importModal.totalBtc.toFixed(8)} BTC
+                            Will place a good-till-cancelled limit buy for {importModal.totalBtc.toFixed(8)} {baseCurrency}
                           </div>
                         </div>
                       ) : (
@@ -699,7 +704,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                           <tr className="text-gray-400 text-left">
                             <th className="px-2 py-1"></th>
                             <th className="px-2 py-1">Order ID</th>
-                            <th className="px-2 py-1 text-right">Size</th>
+                            <th className="px-2 py-1 text-right">Size ({baseCurrency})</th>
                             <th className="px-2 py-1 text-right">Price</th>
                             <th className="px-2 py-1 text-right">Total</th>
                             <th className="px-2 py-1">Time</th>
@@ -847,7 +852,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                       <th className="px-2 py-1">Status</th>
                       <th className="px-2 py-1">Type</th>
                       <th className="px-2 py-1">Anchor</th>
-                      <th className="px-2 py-1 text-right">Size</th>
+                      <th className="px-2 py-1 text-right">Size ({baseCurrency})</th>
                       <th className="px-2 py-1 text-right">Buy Price</th>
                       <th className="px-2 py-1 text-right">Sell Price</th>
                       <th className="px-2 py-1 text-right">P&L</th>
@@ -955,7 +960,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                                 <div className="mt-1 flex flex-wrap items-end gap-2">
                                   <div>
                                     <label htmlFor={`recovery-${trade.id}`} className="block text-gray-400 mb-0.5">
-                                      {recoveryForm.mode === 'retry' ? 'Recovery Buy Limit Price (USD)' : 'Replacement Buy Order ID'}
+                                      {recoveryForm.mode === 'retry' ? `Recovery Buy Limit Price (${quoteCurrency})` : 'Replacement Buy Order ID'}
                                     </label>
                                     <input
                                       id={`recovery-${trade.id}`}
