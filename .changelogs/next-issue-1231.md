@@ -1,0 +1,1 @@
+- **[issue-1231] Share once-per-order sell annotations across cycle pairing and Transactions** — Fold P&L, holdback, reserves sold and cost basis in one pure helper, and split cycle pairing and per-row pricing into focused phases while preserving ledger versus chronological first-wins order and exact accounting arithmetic.
