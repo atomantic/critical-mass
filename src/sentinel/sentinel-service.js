@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const { fetchAllFeeds } = require('./feed-poller');
 const { classifyByKeywords, classifyByAI, resolveSeverity, sanitizeForTelegram } = require('./classifier');
 const { createContextLogger } = require('../logger');
+const { quarantineIfUnreadable } = require('../state-tracker');
 const { tradeEvents } = require('../trade-events');
 
 /**
@@ -77,6 +78,7 @@ const createSentinelService = (io, deps) => {
    * the pre-restore ones.
    */
   const loadState = () => {
+    quarantineIfUnreadable(stateFilePath, sentinelLogger);
     const saved = readJSON(stateFilePath, null);
     alerts = Array.isArray(saved?.alerts) ? saved.alerts : [];
     seenGuids = saved?.seenGuids ? new Map(Object.entries(saved.seenGuids)) : new Map();

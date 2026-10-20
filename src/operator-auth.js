@@ -133,6 +133,31 @@ const makeRecord = async (password) => {
  * @param {() => number} [opts.now] Clock for the peer attempt window
  * @param {(req: import('express').Request) => boolean} [opts.isTrustedBootstrapRequest]
  */
+const authFileUnreadableError = () => ({
+  error: 'Operator auth file is unreadable; move data/operator-auth.json aside and restart the gateway to re-enroll',
+});
+
+/**
+ * @param {string} file
+ * @returns {string|null} Why the file is unreadable, or null when it is
+ *   missing, empty or a parseable JSON object
+ */
+const unreadableAuthFileReason = (file) => {
+  let content;
+  try {
+    content = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    return err.code === 'ENOENT' ? null : err.message;
+  }
+  if (!content.trim()) return null;
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? null : 'not a JSON object';
+  } catch (err) {
+    return err.message;
+  }
+};
+
 const createOperatorAuth = ({
   authFile = null,
   readJSON = null,
@@ -180,9 +205,19 @@ const createOperatorAuth = ({
     next();
   };
   let record = null;
+  // A present-but-unreadable auth file must NOT look like "no password set":
+  // that would reopen bootstrap enrollment. Fail closed until the operator
+  // moves the file aside.
+  let authFileUnreadable = false;
   if (authFile && readJSON) {
-    const saved = readJSON(authFile, null);
-    if ((saved?.salt && saved?.hash) || saved?.state === 'bootstrap') record = saved;
+    const reason = unreadableAuthFileReason(authFile);
+    if (reason) {
+      authFileUnreadable = true;
+      log('ERROR', `🔐 ${authFile} is present but unreadable (${reason}). Operator sign-in and enrollment are refused. Move that file aside (do not delete it if it holds a password you need) and restart to re-enroll.`);
+    } else {
+      const saved = readJSON(authFile, null);
+      if ((saved?.salt && saved?.hash) || saved?.state === 'bootstrap') record = saved;
+    }
   }
 
   if (bootstrapSecret && Buffer.byteLength(bootstrapSecret) < MIN_BOOTSTRAP_SECRET_LENGTH) {
@@ -190,13 +225,13 @@ const createOperatorAuth = ({
   }
 
   const hasPassword = () => Boolean(record?.salt && record?.hash);
-  const isBootstrapping = () => !hasPassword();
+  const isBootstrapping = () => !hasPassword() && !authFileUnreadable;
   const isRequired = () => true;
   const bootstrapSecretHash = bootstrapSecret
     ? crypto.createHash('sha256').update(bootstrapSecret).digest('hex')
     : '';
   const hasRemoteBootstrap = () => Boolean(
-    bootstrapSecretHash && bootstrapSecretHash !== record?.bootstrapConsumedHash
+    !authFileUnreadable && bootstrapSecretHash && bootstrapSecretHash !== record?.bootstrapConsumedHash
   );
 
   const sessionSecret = () => crypto.createHash('sha256')
@@ -302,10 +337,12 @@ const createOperatorAuth = ({
         required: true,
         bootstrapRequired: isBootstrapping(),
         bootstrapSecretRequired: isBootstrapping() && !isTrustedBootstrapRequest(req),
+        ...(authFileUnreadable && { authFileUnreadable: true }),
       });
     });
 
     app.post('/api/auth/session', validatePasswords, limitAttempts, async (req, res) => {
+      if (authFileUnreadable) return res.status(503).json(authFileUnreadableError());
       if (isBootstrapping()) {
         return res.status(401).json({ error: 'Operator setup is required' });
       }
@@ -317,6 +354,7 @@ const createOperatorAuth = ({
     });
 
     app.put('/api/auth/password', validatePasswords, limitAttempts, async (req, res) => {
+      if (authFileUnreadable) return res.status(503).json(authFileUnreadableError());
       const previousRecord = record;
       const password = typeof req.body?.password === 'string' ? req.body.password : '';
       const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
@@ -357,6 +395,7 @@ const createOperatorAuth = ({
     });
 
     app.delete('/api/auth/password', validatePasswords, limitAttempts, async (req, res) => {
+      if (authFileUnreadable) return res.status(503).json(authFileUnreadableError());
       if (!hasPassword()) {
         return res.json({ authenticated: false, required: true, bootstrapRequired: true });
       }
