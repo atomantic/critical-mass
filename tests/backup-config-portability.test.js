@@ -132,6 +132,36 @@ afterEach(() => {
 });
 
 describe('backup config portability — manifest round-trip (#430)', () => {
+  it('excludes secret base snapshots and restores a destination baseline without changing reconstructed config', async () => {
+    const { BASE_SNAPSHOT_FILENAME, CONFIG_LOCK_DIR, reconcileBaseConfig } = require('../src/config-base-drift');
+    const source = makeInstall('source', SOURCE_BASE);
+    writeJson(path.join(source.dataDir, BASE_SNAPSHOT_FILENAME), { ...SOURCE_BASE, secret: 'never-archive-this' });
+    fs.mkdirSync(path.join(source.dataDir, CONFIG_LOCK_DIR));
+    const created = await createBackup({ paths: source.paths });
+    assert.equal(created.success, true, created.error);
+    const listing = spawnSync('unzip', ['-Z1', path.join(source.dataDir, 'backups', created.filename)], { encoding: 'utf8' });
+    assert.equal(listing.status, 0);
+    assert.equal(listing.stdout.includes(BASE_SNAPSHOT_FILENAME), false);
+    assert.equal(listing.stdout.includes(CONFIG_LOCK_DIR), false);
+    const dest = makeInstall('dest', DEST_BASE);
+    transferArchive(source, dest, created.filename);
+    // Even an older/foreign archive that carries a source baseline must not
+    // restore it over the destination baseline.
+    const staged = path.join(root, 'foreign');
+    fs.mkdirSync(staged);
+    writeJson(path.join(staged, BASE_SNAPSHOT_FILENAME), SOURCE_BASE);
+    const appended = spawnSync('zip', ['-q', '-g', path.join(dest.dataDir, 'backups', created.filename), BASE_SNAPSHOT_FILENAME], { cwd: staged });
+    assert.equal(appended.status, 0);
+    const restored = restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true });
+    assert.equal(restored.success, true, restored.error);
+    const before = effectiveConfig(dest);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dest.dataDir, BASE_SNAPSHOT_FILENAME), 'utf8')), DEST_BASE);
+    const result = reconcileBaseConfig({ ...dest.paths, logger: { warn() {} } });
+    assert.deepEqual(result.pins, []);
+    assert.deepEqual(effectiveConfig(dest), before);
+    assert.deepEqual(fundIdentities(dest), ['coinbase/ETH-USDC']);
+  });
+
   it('restores a v2.24.1 manifest that predates additive regime defaults', async () => {
     const source = makeInstall('source', SOURCE_BASE);
     const state = { position: { cycleBuys: 3, totalAsset: 2, totalCostBasis: 1234 } };

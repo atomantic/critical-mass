@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { createAuthenticatedRequest } = require('./auth');
 const { createBaseAdapter, createAmbiguousPlacementError, restQueueTiming } = require('../base-adapter');
+const { validateStandardExchangeKeys } = require('../key-validation');
 const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
@@ -83,14 +84,7 @@ const createCryptocomAdapter = (keysPath = null) => {
 
     try {
       const keys = JSON.parse(fs.readFileSync(resolvedKeysPath, 'utf8'));
-      const apiKey = keys.apiKey || keys.key;
-      const apiSecret = keys.apiSecret || keys.secret;
-
-      // Check for valid-looking credentials
-      if (!apiKey || !apiSecret) return false;
-      if (apiKey.length < 10 || apiSecret.length < 10) return false;
-
-      return true;
+      return validateStandardExchangeKeys(keys);
     } catch {
       return false;
     }

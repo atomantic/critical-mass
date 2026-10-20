@@ -1008,7 +1008,7 @@ const createMarketDataService = (exchange, pair) => {
   };
 
   /**
-   * Emit a throttled status update to the callback (for Socket.IO + chart buffer)
+   * Emit a throttled status update to the callback (for the realtime bus + chart buffer)
    */
   const emitStatus = () => {
     if (!onStatusUpdateCallback) return;
@@ -2084,7 +2084,7 @@ const createMarketDataService = (exchange, pair) => {
   };
 
   /**
-   * Set callback for status updates (used by Socket.IO + chart buffer)
+   * Set callback for status updates (used by the realtime bus + chart buffer)
    */
   const setOnStatusUpdate = (callback) => {
     onStatusUpdateCallback = callback;

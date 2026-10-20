@@ -169,7 +169,8 @@ describe('restore-apply — transactional application (#431)', () => {
     for (const dest of [path.join(dataDir, 'alpha.json'), path.join(dataDir, 'beta.json'), path.join(dataDir, 'sub', 'gamma.json')]) {
       const call = renames.find((r) => r.to === dest);
       assert.ok(call, `${path.basename(dest)} must be published by a rename, not written in place`);
-      assert.equal(path.dirname(call.from), path.dirname(dest), 'the temp file must sit on the destination filesystem');
+      assert.equal(call.from, path.join(path.dirname(dest), `.${path.basename(dest)}.restore-tmp`),
+        'restart recovery and backup exclusions must recognize the publisher temp path');
       assert.ok(!fs.existsSync(call.from), 'the temp file must not survive the rename');
     }
   });
@@ -411,6 +412,42 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.deepEqual(artifactNames(), [], 'recovery cleans the journal, the originals and the staging dir');
   });
 
+  it('removes orphaned restore temp copies left by a crash between copy and rename', async () => {
+    const alpha = path.join(dataDir, 'alpha.json');
+    const gamma = path.join(dataDir, 'sub', 'gamma.json');
+    breakRenameFor({ [alpha]: [2], [path.join(dataDir, 'beta.json')]: [1] });
+    applyStagedFiles({ dataDir, stageDir, filename: 'backup-torn.zip', logger: silentLogger });
+    mock.restoreAll();
+    // Process death after the temp copy was written, before its rename.
+    write(path.join(dataDir, '.beta.json.restore-tmp'), '{"gen":"archive-beta"}');
+    write(path.join(dataDir, 'sub', '.gamma.json.restore-tmp'), '{"gen":"archive-gamma"}');
+
+    recoverIncompleteRestore({ dataDir, logger: silentLogger });
+
+    assert.equal(fs.existsSync(path.join(dataDir, '.beta.json.restore-tmp')), false);
+    assert.equal(fs.existsSync(path.join(dataDir, 'sub', '.gamma.json.restore-tmp')), false);
+    assert.deepEqual(preRestoreState(), { alpha: '{"gen":"current-alpha"}', beta: '{"gen":"current-beta"}', gamma: null });
+    assert.equal(fs.existsSync(gamma), false);
+  });
+
+  it('reports incomplete rollback instead of throwing when a temp copy cannot be deleted', async () => {
+    breakRenameFor({ [path.join(dataDir, 'alpha.json')]: [2], [path.join(dataDir, 'beta.json')]: [1] });
+    applyStagedFiles({ dataDir, stageDir, filename: 'backup-torn.zip', logger: silentLogger });
+    mock.restoreAll();
+    const tmp = path.join(dataDir, '.beta.json.restore-tmp');
+    const realRm = fs.rmSync;
+    mock.method(fs, 'rmSync', (target, ...rest) => {
+      if (target === tmp) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      return realRm(target, ...rest);
+    });
+
+    const result = recoverIncompleteRestore({ dataDir, logger: silentLogger });
+    mock.restoreAll();
+
+    assert.equal(result.recovered, false);
+    assert.equal(result.blocked, true);
+  });
+
   it('is a no-op for a data directory with no journal', async () => {
     assert.deepEqual(recoverIncompleteRestore({ dataDir, logger: silentLogger }), { pending: false, recovered: false, blocked: false });
     assert.deepEqual(preRestoreState().alpha, '{"gen":"current-alpha"}');
@@ -535,6 +572,8 @@ describe('backup-service — restore failure leaves the install coherent (#431)'
   it('never archives its own restore bookkeeping', async () => {
     write(path.join(install.dataDir, JOURNAL_FILENAME), '{"journalVersion":1,"entries":[]}');
     write(path.join(install.dataDir, '.restore-originals-stale', 'alpha.json'), '{}');
+    write(path.join(install.dataDir, '.alpha.json.restore-tmp'), '{}');
+    write(path.join(install.dataDir, 'fund', '.state.json.restore-tmp'), '{}');
     const created = await createBackup({ paths: install });
     assert.equal(created.success, true, created.error);
 

@@ -128,7 +128,7 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
     }
     const data = url.includes('/preview-ladder')
       ? { success: true, preview: { levels: [{ price: 90, sizeUsdc: 10, assetQty: 0.1 }], levelCount: 1 } }
-      : { success: true, status, config, fills: [], presets: {} }
+      : { success: true, status, config, detailFills: [], fillCount: 0, fillCycleGroups: [], presets: {} }
     return { ok: true, status: 200, json: async () => data }
   }
   const stubs = {
@@ -143,7 +143,13 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../utils/api': { pairQuery: pair => `?pair=${encodeURIComponent(pair)}` },
-    '../utils/requestOwner.mjs': { createRequestOwner: () => ({ read: async () => ({ owned: true, data: { fills: [] } }), invalidate() {} }) },
+    '../utils/requestOwner.mjs': { createRequestOwner: () => ({
+      read: async url => {
+        const response = await fetch(url)
+        return { owned: true, ok: response.ok, data: response.ok ? await response.json() : null }
+      },
+      invalidate() {},
+    }) },
     '../utils/liveTimerElapsed.mjs': {},
     '../utils/capitalAdjustment.mjs': { computeCapitalAdjustment },
     // CapitalAdjust.jsx (admin/src/components/regime/CapitalAdjust.jsx) is

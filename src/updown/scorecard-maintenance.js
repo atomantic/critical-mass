@@ -1,7 +1,7 @@
 // @ts-check
 const fs = require('fs')
 const path = require('path')
-const { randomUUID } = require('crypto')
+const { atomicWriteSync } = require('../durable-write')
 const { setTimeout: delay } = require('timers/promises')
 
 const lockPath = (directory) => path.join(directory, '.maintenance-lock')
@@ -57,22 +57,8 @@ const validateJsonl = (content) => {
 }
 
 const atomicPublish = (file, content, validate = () => {}) => {
-  const temporary = `${file}.${randomUUID()}.tmp`
-  try {
-    const descriptor = fs.openSync(temporary, 'wx', 0o600)
-    try {
-      fs.writeFileSync(descriptor, content)
-      fs.fsyncSync(descriptor)
-    } finally {
-      fs.closeSync(descriptor)
-    }
-    validate(fs.readFileSync(temporary, 'utf8'))
-    fs.renameSync(temporary, file)
-    const directory = fs.openSync(path.dirname(file), 'r')
-    try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
-  } finally {
-    if (fs.existsSync(temporary)) fs.unlinkSync(temporary)
-  }
+  validate(content)
+  atomicWriteSync(file, content)
 }
 
 module.exports = { acquireScorecardLock, withScorecardLock, appendScorecardRecord, validateJsonl, atomicPublish, lockPath }

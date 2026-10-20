@@ -8,6 +8,18 @@ const { getExchangeKeysPath } = require('../migration');
 const { createContextLogger } = require('../logger');
 const { loadConfig } = require('../dca-engine');
 const { getQuoteCurrency } = require('../config-utils');
+const { validateCoinbaseKeys, validateStandardExchangeKeys } = require('../adapters/key-validation');
+
+const MAX_CREDENTIAL_LENGTH = 16 * 1024;
+
+const getAdapterConfiguredState = (exchange) => {
+  try {
+    const { getAdapter } = require('../adapters');
+    return Boolean(getAdapter(exchange).hasValidKeys());
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Context logger for the API-key routes. Every handler here is exchange-scoped
@@ -63,18 +75,36 @@ module.exports = (app, deps) => {
 
     let keysData;
     if (exchange === 'coinbase') {
-      if (!body.name || !body.privateKey) {
+      if (typeof body.name !== 'string' || typeof body.privateKey !== 'string') {
         const errorDetail = (body.apiKey || body.apiSecret)
           ? ' (Coinbase Advanced API / CDP keys are required, not regular Coinbase API keys)'
           : '';
         return res.status(400).json({ success: false, error: `name and privateKey are required for Coinbase${errorDetail}` });
       }
-      keysData = { name: body.name, privateKey: body.privateKey, createdAt: new Date().toISOString() };
+      const name = body.name.trim();
+      const privateKey = body.privateKey.trim();
+      if (name.length > MAX_CREDENTIAL_LENGTH || privateKey.length > MAX_CREDENTIAL_LENGTH) {
+        return res.status(400).json({ success: false, error: 'Credential fields exceed the maximum allowed length' });
+      }
+      keysData = { name, privateKey };
+      if (!validateCoinbaseKeys(keysData)) {
+        return res.status(400).json({ success: false, error: 'Invalid Coinbase credential shape: name must be at least 10 characters and privateKey must be PEM or at least 50 characters' });
+      }
+      keysData.createdAt = new Date().toISOString();
     } else {
-      if (!body.apiKey || !body.apiSecret) {
+      if (typeof body.apiKey !== 'string' || typeof body.apiSecret !== 'string') {
         return res.status(400).json({ success: false, error: 'apiKey and apiSecret are required' });
       }
-      keysData = { apiKey: body.apiKey, apiSecret: body.apiSecret, createdAt: new Date().toISOString() };
+      const apiKey = body.apiKey.trim();
+      const apiSecret = body.apiSecret.trim();
+      if (apiKey.length > MAX_CREDENTIAL_LENGTH || apiSecret.length > MAX_CREDENTIAL_LENGTH) {
+        return res.status(400).json({ success: false, error: 'Credential fields exceed the maximum allowed length' });
+      }
+      keysData = { apiKey, apiSecret };
+      if (!validateStandardExchangeKeys(keysData)) {
+        return res.status(400).json({ success: false, error: 'Invalid credential shape: apiKey and apiSecret must each be at least 10 characters' });
+      }
+      keysData.createdAt = new Date().toISOString();
     }
 
     const keysPath = getExchangeKeysPath(exchange);
@@ -83,7 +113,8 @@ module.exports = (app, deps) => {
       action: 'save-keys',
       method: req.method,
     });
-    res.json({ success: true, exchange, configured: true });
+    const configured = getAdapterConfiguredState(exchange);
+    res.json({ success: true, exchange, configured });
   };
   app.post('/api/:exchange/keys', saveExchangeKeys);
   app.put('/api/:exchange/keys', saveExchangeKeys);

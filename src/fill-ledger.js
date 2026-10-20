@@ -20,12 +20,36 @@ const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 // Canonical cycle pairing shared with the admin Filled Orders view (issue #697).
-const { pairCycleFills, buyPairKey } = require('../shared/cycle-pairing.mjs');
+const { pairCycleFills, buyPairKey, isBodyOwnedFill } = require('../shared/cycle-pairing.mjs');
 
 /**
  * @typedef {import('./types').Fill} Fill
  * @typedef {import('./types').RegimePositionState} RegimePositionState
  */
+
+const ECONOMIC_FIELDS = ['quoteAmount', 'fee', 'netFee', 'rebate'];
+
+const equivalent = (a, b) => Number.isFinite(a) && Number.isFinite(b)
+  && Math.abs(a - b) <= 1e-8;
+
+const sumEconomics = (parts) => {
+  const totals = { quoteAmount: 0, fee: 0, netFee: 0, rebate: 0 };
+  for (const part of parts) {
+    for (const key of ECONOMIC_FIELDS) totals[key] += part[key];
+  }
+  return totals;
+};
+
+const prorateEconomics = (economics, ratio) => {
+  const prorated = {};
+  for (const key of ECONOMIC_FIELDS) prorated[key] = economics[key] * ratio;
+  return prorated;
+};
+
+const economicCorrectionFields = ({ buyCorrection, sellCorrection }) => ({
+  ...(buyCorrection && { buyEconomicCorrection: buyCorrection }),
+  ...(sellCorrection && { sellEconomicCorrection: sellCorrection }),
+});
 
 /**
  * `consumedBy` key for consumption that sells recorded before per-order
@@ -510,9 +534,6 @@ const ORDER_LEVEL_FIELDS = {
   ],
 };
 
-/** @param {any} fill */
-const isOwnedFill = (fill) => Boolean(fill.isBodyOwned || fill.isSatellite || fill.bodyId);
-
 /**
  * Annotation patches for fills attributeOrphanFills placed into existing
  * cycles (issues #705, #752). Pure — returns patches, never mutates — so
@@ -563,7 +584,7 @@ const deriveAttributedAnnotations = (attributed, cycleMap) => {
   // 2. Linked-buy ownership for sibling-less sells (sees step-1 patches).
   const view = (f) => (patches.has(f) ? { ...f, ...patches.get(f) } : f);
   for (const { fill, cycleId } of attributed) {
-    if (fill.side !== 'sell' || !fill.orderId || patches.has(fill) || isOwnedFill(fill)) continue;
+    if (fill.side !== 'sell' || !fill.orderId || patches.has(fill) || isBodyOwnedFill(fill)) continue;
     const cycleFills = cycleMap.get(cycleId) || [];
     if (cycleFills.some(f => !attributedFills.has(f) && f.orderId === fill.orderId && f.side === 'sell')) continue;
     const linkedBuys = cycleFills.map(view).filter(f => f.side === 'buy' && (
@@ -571,7 +592,7 @@ const deriveAttributedAnnotations = (attributed, cycleMap) => {
       || (f.consumedBy && typeof f.consumedBy === 'object'
         && Object.prototype.hasOwnProperty.call(f.consumedBy, fill.orderId))
     ));
-    if (linkedBuys.length === 0 || !linkedBuys.every(isOwnedFill)) continue;
+    if (linkedBuys.length === 0 || !linkedBuys.every(isBodyOwnedFill)) continue;
     const bodyIds = new Set(linkedBuys.map(f => f.bodyId || null));
     if (bodyIds.size !== 1) continue;
     const [bodyId] = bodyIds;
@@ -763,185 +784,78 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     bumpLedgerVersion();
   };
 
-  const load = () => {
-    const filePath = getFillLedgerPath(exchange, pair);
-    // Reload-vs-cold-start signal. Either a prior successful load OR any
-    // already-ingested fills means there is in-memory state worth
-    // preserving. Without this distinction, a cold-start boot against a
-    // corrupt file would silently start with an empty ledger and the
-    // next persist would overwrite the recoverable file with only
-    // post-start fills — destroying the historical record.
-    const isReload = hasLoadedSuccessfully || fills.size > 0;
-    if (!fs.existsSync(filePath)) {
-      // Initial load (no file yet) leaves the freshly-constructed empty
-      // caches in place. SIGUSR1 reload (regime-engine.js calls load()
-      // on the live ledger) preserves whatever is in memory so a
-      // momentarily-missing file (e.g., operator's edit/rename window)
-      // doesn't wipe live data. To intentionally clear, write `[]` to
-      // the file — that loads cleanly to empty state.
-      if (!quiet) {
-        logger.info(`📖 [${exchange}] fill-ledger not found at ${filePath} — preserving in-memory state (${fills.size} fills)`, {
-          filePath,
-          fillCount: fills.size,
-        });
-      }
-      hasLoadedSuccessfully = true;
-      return;
+  // Refuse cold-start corruption before any persist can overwrite history.
+  // A live reload keeps its last known-good caches until the operator repairs
+  // the file and reloads again. The reason carries the legacy message grammar.
+  const refuseLoad = (filePath, isReload, reason, logFields) => {
+    if (!isReload) {
+      throw new Error(`fill-ledger at ${filePath} ${reason.coldStart}. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
     }
+    logger.error(`❌ [${exchange}] fill-ledger ${reason.reload} — keeping in-memory state (${fills.size} fills); operator must fix and reload`, {
+      filePath,
+      fillCount: fills.size,
+      ...logFields,
+    });
+  };
 
-    let data;
-    try {
-      data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    } catch (err) {
-      if (!isReload) {
-        // Cold-start corruption: throwing forces the operator to repair
-        // (or move aside) the file before the engine boots, so a
-        // post-start persist can't overwrite the recoverable contents.
-        throw new Error(`fill-ledger at ${filePath} is corrupted or unreadable on cold start: ${err.message}. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
-      }
-      // Corrupt/unreadable file: don't reset in-memory state. SIGUSR1
-      // reload on a live ledger could otherwise turn a bad manual edit
-      // or partial write into live data loss — the running process
-      // would forget its last known-good state and the next persist
-      // would rewrite the file with only the fills that arrive after
-      // the reload. Operator can fix the file and re-fire SIGUSR1.
-      logger.error(`❌ [${exchange}] fill-ledger corrupted or unreadable at ${filePath}: ${err.message} — keeping in-memory state (${fills.size} fills); operator must fix and reload`, {
-        filePath,
-        fillCount: fills.size,
-        error: err.message,
-      });
-      return;
+  // Legacy negative-holdback repair (issue #779): between #769 and #770
+  // (both unreleased — never shipped in v2.25.0 or earlier) the engine
+  // could book a stale-TP oversell (a sale beyond what the body/satellite
+  // still held) as a NEGATIVE bodyHoldbackAsset/satelliteHoldbackAsset
+  // annotation. #770 changed the engine to record this instead as
+  // holdback 0 + a non-negative bodyReservesSoldAsset (see
+  // docs/pnl-architecture.md "Reserves sold by an oversized stale TP").
+  // Rows written in that window still carry the old negative shape, and
+  // the pairing (shared/cycle-pairing.mjs) clamps a negative holdback to
+  // 0 rather than crediting the sold reserves — silently overstating
+  // realizedAssetPnL by the oversold quantity. Rewrite in place, on
+  // every load, so every reader (including a read-only diagnostic script
+  // or getCachedFillLedger's gateway instance) computes correct P&L
+  // immediately. Idempotent: a fill already carrying a positive
+  // bodyReservesSoldAsset is left untouched (already repaired, or an
+  // inconsistent state not ours to guess at), and a repaired row has a
+  // non-negative holdback on the next load, so it is never touched twice.
+  // Deliberately NOT auto-persisted here — same reasoning as the netFee
+  // backfill just below: `quiet`/no-quiet is a logging hint, not an
+  // ownership signal (several read-only scripts, e.g.
+  // scripts/analyze-unaccounted.js, construct a non-quiet ledger purely
+  // to inspect it), so writing back from inside load() would make ANY
+  // caller — not just the owning engine — a second, uncoordinated writer
+  // of a live fund's ledger file, racing a running engine's own persists
+  // (issue #779). The repair rides along on the
+  // owning engine's own next dirtying persist() instead, the same way
+  // the netFee backfill's in-memory-only fix eventually reaches disk.
+  const repairLegacyFill = (fill) => {
+    // Legacy-ledger backfill: pre-rebate-split fills only had `fee`,
+    // not `netFee`. The pre-pass validator accepts either; here we
+    // synthesize netFee from fee so the many downstream consumers
+    // that read fill.netFee directly (aggregateFills,
+    // rebuildPositionFromFills, recalculateCycles, etc.) never see
+    // undefined. The on-disk file isn't auto-rewritten — the next
+    // dirtying mutation will trigger the upgraded shape via persist.
+    if (typeof fill.netFee !== 'number' && typeof fill.fee === 'number') {
+      fill.netFee = fill.fee;
     }
-    // Validate shape BEFORE resetCaches. Valid JSON like `{}` or `null`
-    // would parse without throwing but the for-of below would crash —
-    // resetCaches() would have already wiped the live ledger by then,
-    // so the reload-on-malformed-payload would fall into the same data-
-    // loss mode that the catch-block above guards against.
-    if (!Array.isArray(data)) {
-      if (!isReload) {
-        throw new Error(`fill-ledger at ${filePath} is not an array on cold start (got ${data === null ? 'null' : typeof data}). Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
-      }
-      const actualType = data === null ? 'null' : typeof data;
-      logger.error(`❌ [${exchange}] fill-ledger at ${filePath} is not an array (got ${actualType}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`, {
-        filePath,
-        fillCount: fills.size,
-        actualType,
-      });
-      return;
-    }
-    // Element-level validation: even an array can contain malformed
-    // entries like `[null]` or `[{}]` that would crash on `fill.tradeId`
-    // mid-loop, leaving the live ledger half-populated after the
-    // already-run resetCaches. Pre-pass guarantees a clean reload-or-bail.
-    //
-    // Field-type validation is required, not just presence: the load-body
-    // below calls `fill.cycleId.match(/^cycle-(\d+)$/)` which throws on
-    // non-string cycleId (e.g. an object). A presence-only pre-pass would
-    // accept `{tradeId:"t1", cycleId:{}}` and we'd crash mid-load AFTER
-    // resetCaches has wiped the live ledger — re-introducing the data-loss
-    // mode the pre-validation is meant to prevent.
-    const invalidReason = findInvalidLedgerReason(data);
-    if (invalidReason) {
-      if (!isReload) {
-        throw new Error(`fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) on cold start. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
-      }
-      logger.error(`❌ [${exchange}] fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`, {
-        filePath,
-        fillCount: fills.size,
-        invalidReason,
-      });
-      return;
-    }
-    // Clean slate before re-reading. The successful-read path mirrors
-    // disk authoritatively (handles "operator removed fills via manual
-    // reconciliation, then reloaded" — those removals must take effect).
-    resetCaches();
-    // Legacy negative-holdback repair (issue #779): between #769 and #770
-    // (both unreleased — never shipped in v2.25.0 or earlier) the engine
-    // could book a stale-TP oversell (a sale beyond what the body/satellite
-    // still held) as a NEGATIVE bodyHoldbackAsset/satelliteHoldbackAsset
-    // annotation. #770 changed the engine to record this instead as
-    // holdback 0 + a non-negative bodyReservesSoldAsset (see
-    // docs/pnl-architecture.md "Reserves sold by an oversized stale TP").
-    // Rows written in that window still carry the old negative shape, and
-    // the pairing (shared/cycle-pairing.mjs) clamps a negative holdback to
-    // 0 rather than crediting the sold reserves — silently overstating
-    // realizedAssetPnL by the oversold quantity. Rewrite in place, on
-    // every load, so every reader (including a read-only diagnostic script
-    // or getCachedFillLedger's gateway instance) computes correct P&L
-    // immediately. Idempotent: a fill already carrying a positive
-    // bodyReservesSoldAsset is left untouched (already repaired, or an
-    // inconsistent state not ours to guess at), and a repaired row has a
-    // non-negative holdback on the next load, so it is never touched twice.
-    // Deliberately NOT auto-persisted here — same reasoning as the netFee
-    // backfill just below: `quiet`/no-quiet is a logging hint, not an
-    // ownership signal (several read-only scripts, e.g.
-    // scripts/analyze-unaccounted.js, construct a non-quiet ledger purely
-    // to inspect it), so writing back from inside load() would make ANY
-    // caller — not just the owning engine — a second, uncoordinated writer
-    // of a live fund's ledger file, racing a running engine's own persists
-    // (issue #779). The repair rides along on the
-    // owning engine's own next dirtying persist() instead, the same way
-    // the netFee backfill's in-memory-only fix eventually reaches disk.
-    let negativeHoldbackRepairCount = 0;
-    for (const fill of data) {
-      // Legacy-ledger backfill: pre-rebate-split fills only had `fee`,
-      // not `netFee`. The pre-pass validator accepts either; here we
-      // synthesize netFee from fee so the many downstream consumers
-      // that read fill.netFee directly (aggregateFills,
-      // rebuildPositionFromFills, recalculateCycles, etc.) never see
-      // undefined. The on-disk file isn't auto-rewritten — the next
-      // dirtying mutation will trigger the upgraded shape via persist.
-      if (typeof fill.netFee !== 'number' && typeof fill.fee === 'number') {
-        fill.netFee = fill.fee;
-      }
-      if (fill.side === 'sell') {
-        // Mirror the same body-first fallback shared/cycle-pairing.mjs
-        // uses to read the annotation, so we neutralize exactly the
-        // field the pairing would otherwise clamp to 0.
-        const annotatedHoldback = fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset;
-        if (typeof annotatedHoldback === 'number' && annotatedHoldback < 0
-          && !(Number(fill.bodyReservesSoldAsset) > 0)) {
-          if (fill.bodyHoldbackAsset != null) {
-            fill.bodyHoldbackAsset = 0;
-          } else {
-            fill.satelliteHoldbackAsset = 0;
-          }
-          fill.bodyReservesSoldAsset = roundAsset(Math.abs(annotatedHoldback));
-          negativeHoldbackRepairCount++;
+    if (fill.side === 'sell') {
+      // Mirror the same body-first fallback shared/cycle-pairing.mjs
+      // uses to read the annotation, so we neutralize exactly the
+      // field the pairing would otherwise clamp to 0.
+      const annotatedHoldback = fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset;
+      if (typeof annotatedHoldback === 'number' && annotatedHoldback < 0
+        && !(Number(fill.bodyReservesSoldAsset) > 0)) {
+        if (fill.bodyHoldbackAsset != null) {
+          fill.bodyHoldbackAsset = 0;
+        } else {
+          fill.satelliteHoldbackAsset = 0;
         }
-      }
-      fills.set(fill.tradeId, fill);
-      for (const allocation of fill.syntheticCoverage?.reconciledTrades || []) {
-        reconciledTradeIds.add(allocation.tradeId);
-      }
-      // Populate cycle index
-      if (fill.cycleId && fill.size > 1e-9) {
-        if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
-        cycleIndex.get(fill.cycleId).add(fill.tradeId);
+        fill.bodyReservesSoldAsset = roundAsset(Math.abs(annotatedHoldback));
+        return true;
       }
     }
-    if (negativeHoldbackRepairCount > 0 && !quiet) {
-      logger.warn(`🩹 [${exchange}] Repaired ${negativeHoldbackRepairCount} legacy negative-holdback fill(s) into bodyReservesSoldAsset in memory (issue #779) — not written to disk by this load; reaches disk whenever this ledger instance is next persisted`, {
-        repairedCount: negativeHoldbackRepairCount,
-      });
-    }
-    // Rebuild orderSizeIndex from the canonical fills Map AFTER population.
-    // load() can be called multiple times on a live ledger (regime-engine.js
-    // re-loads on state reload). If we accumulated inside the loop above,
-    // a second load() would double-count every persisted fill on top of
-    // the existing totals — making getRecordedSizeForOrder over-report
-    // and the market-data-service watermark believe orders are fully
-    // ingested when they're not. Rebuilding from `fills` is idempotent.
-    orderSizeIndex.clear();
-    for (const f of fills.values()) {
-      if (isUnresolvedSyntheticCoverage(f)) syntheticOrders.add(f.orderId);
-      if (f.orderId) {
-        const next = (orderSizeIndex.get(f.orderId) || 0) + (f.size || 0);
-        orderSizeIndex.set(f.orderId, roundAsset(next));
-      }
-    }
+    return false;
+  };
 
+  const restoreCycleState = () => {
     // Restore currentCycleId from loaded fills
     // Find the most recent cycle that's still active (sells haven't closed out the position)
     const cycleStats = new Map(); // cycleId -> { buysAsset, sellsAsset }
@@ -985,6 +899,116 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       }
     }
     nextCycleNumber = maxCycleNum + 1;
+  };
+
+  const rebuildLoadedOrderIndexes = () => {
+    // Rebuild orderSizeIndex from the canonical fills Map AFTER population.
+    // load() can be called multiple times on a live ledger (regime-engine.js
+    // re-loads on state reload). If we accumulated while populating fills,
+    // a second load() would double-count every persisted fill on top of
+    // the existing totals — making getRecordedSizeForOrder over-report
+    // and the market-data-service watermark believe orders are fully
+    // ingested when they're not. Rebuilding from `fills` is idempotent.
+    orderSizeIndex.clear();
+    for (const f of fills.values()) {
+      if (isUnresolvedSyntheticCoverage(f)) syntheticOrders.add(f.orderId);
+      if (f.orderId) {
+        const next = (orderSizeIndex.get(f.orderId) || 0) + (f.size || 0);
+        orderSizeIndex.set(f.orderId, roundAsset(next));
+      }
+    }
+  };
+
+  const load = () => {
+    const filePath = getFillLedgerPath(exchange, pair);
+    // Reload-vs-cold-start signal. Either a prior successful load OR any
+    // already-ingested fills means there is in-memory state worth
+    // preserving. Without this distinction, a cold-start boot against a
+    // corrupt file would silently start with an empty ledger and the
+    // next persist would overwrite the recoverable file with only
+    // post-start fills — destroying the historical record.
+    const isReload = hasLoadedSuccessfully || fills.size > 0;
+    if (!fs.existsSync(filePath)) {
+      // Initial load (no file yet) leaves the freshly-constructed empty
+      // caches in place. SIGUSR1 reload (regime-engine.js calls load()
+      // on the live ledger) preserves whatever is in memory so a
+      // momentarily-missing file (e.g., operator's edit/rename window)
+      // doesn't wipe live data. To intentionally clear, write `[]` to
+      // the file — that loads cleanly to empty state.
+      if (!quiet) {
+        logger.info(`📖 [${exchange}] fill-ledger not found at ${filePath} — preserving in-memory state (${fills.size} fills)`, {
+          filePath,
+          fillCount: fills.size,
+        });
+      }
+      hasLoadedSuccessfully = true;
+      return;
+    }
+
+    let data;
+    try {
+      data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (err) {
+      return refuseLoad(filePath, isReload, {
+        coldStart: `is corrupted or unreadable on cold start: ${err.message}`,
+        reload: `corrupted or unreadable at ${filePath}: ${err.message}`,
+      }, { error: err.message });
+    }
+    // Validate shape BEFORE resetCaches. Valid JSON like `{}` or `null`
+    // would parse without throwing but the for-of below would crash —
+    // resetCaches() would have already wiped the live ledger by then,
+    // so the reload-on-malformed-payload would fall into the same data-
+    // loss mode that the catch-block above guards against.
+    if (!Array.isArray(data)) {
+      const actualType = data === null ? 'null' : typeof data;
+      return refuseLoad(filePath, isReload, {
+        coldStart: `is not an array on cold start (got ${actualType})`,
+        reload: `at ${filePath} is not an array (got ${actualType})`,
+      }, { actualType });
+    }
+    // Element-level validation: even an array can contain malformed
+    // entries like `[null]` or `[{}]` that would crash on `fill.tradeId`
+    // mid-loop, leaving the live ledger half-populated after the
+    // already-run resetCaches. Pre-pass guarantees a clean reload-or-bail.
+    //
+    // Field-type validation is required, not just presence: cycle restore
+    // calls `fill.cycleId.match(/^cycle-(\d+)$/)` which throws on
+    // non-string cycleId (e.g. an object). A presence-only pre-pass would
+    // accept `{tradeId:"t1", cycleId:{}}` and we'd crash mid-load AFTER
+    // resetCaches has wiped the live ledger — re-introducing the data-loss
+    // mode the pre-validation is meant to prevent.
+    const invalidReason = findInvalidLedgerReason(data);
+    if (invalidReason) {
+      return refuseLoad(filePath, isReload, {
+        coldStart: `contains an invalid entry (${invalidReason}) on cold start`,
+        reload: `at ${filePath} contains an invalid entry (${invalidReason})`,
+      }, { invalidReason });
+    }
+    // Clean slate before re-reading. The successful-read path mirrors
+    // disk authoritatively (handles "operator removed fills via manual
+    // reconciliation, then reloaded" — those removals must take effect).
+    resetCaches();
+    let negativeHoldbackRepairCount = 0;
+    for (const fill of data) {
+      if (repairLegacyFill(fill)) negativeHoldbackRepairCount++;
+      fills.set(fill.tradeId, fill);
+      for (const allocation of fill.syntheticCoverage?.reconciledTrades || []) {
+        reconciledTradeIds.add(allocation.tradeId);
+      }
+      // Populate cycle index
+      if (fill.cycleId && fill.size > 1e-9) {
+        if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
+        cycleIndex.get(fill.cycleId).add(fill.tradeId);
+      }
+    }
+    if (negativeHoldbackRepairCount > 0 && !quiet) {
+      logger.warn(`🩹 [${exchange}] Repaired ${negativeHoldbackRepairCount} legacy negative-holdback fill(s) into bodyReservesSoldAsset in memory (issue #779) — not written to disk by this load; reaches disk whenever this ledger instance is next persisted`, {
+        repairedCount: negativeHoldbackRepairCount,
+      });
+    }
+    rebuildLoadedOrderIndexes();
+
+    restoreCycleState();
 
     hasLoadedSuccessfully = true;
     if (!quiet) {
@@ -1076,216 +1100,161 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   const isUnresolvedSyntheticCoverage = (fill) =>
     isSyntheticCoverage(fill) && unresolvedSyntheticSize(fill) > 1e-9;
 
-  /**
-   * Plan identity replacement without changing the reported execution. Equivalent coverage
-   * wholly contained in rows with the same annotations can still be replaced
-   * directly. When an execution crosses the remaining coverage or the covered
-   * rows carry different state, keep those rows as the quantity/ownership
-   * record and persist the real identity against them. Only the excess becomes
-   * a new ledger tranche. Buy and sell quote/fee corrections publish durable
-   * journals before their accounting targets are updated.
-   */
-  const reconcileSyntheticCoverage = (reportedExecution) => {
-    const fill = reportedExecution;
-    if (isSyntheticCoverage(fill) || !syntheticOrders.has(fill.orderId)) return null;
-    const covered = Array.from(fills.values())
-      .filter(row => row.orderId === fill.orderId && row.side === fill.side && isUnresolvedSyntheticCoverage(row))
-      .sort((a, b) => a.timestamp - b.timestamp);
-    if (!covered.length) return null;
-    const reject = (reason) => {
-      throw Object.assign(new Error(`Synthetic execution reconciliation required for order ${fill.orderId}: ${reason}`), {
-        syntheticReconciliationRequired: true,
-      });
-    };
-    const total = covered.reduce((sum, row) => sum + unresolvedSyntheticSize(row), 0);
-    if (!Number.isFinite(fill.size) || fill.size <= 0) reject('real execution has an invalid quantity');
-    const coveredSize = Math.min(fill.size, total);
-    const annotations = [...(ORDER_LEVEL_FIELDS[fill.side] || []),
-      'cycleId', 'bodyBooked', 'capitalCredited', 'capitalCreditedSize'];
-    const anchor = covered[0];
-    const sameAnnotations = covered.every(row => annotations.every(key =>
-      JSON.stringify(row[key]) === JSON.stringify(anchor[key])));
-    const hasPriorAllocations = covered.some(row =>
-      (row.syntheticCoverage?.reconciledTrades || []).length > 0);
-    const preserveCoverage = fill.size > total + 1e-9 || !sameAnnotations || hasPriorAllocations;
-    if (preserveCoverage) {
-      let remaining = coveredSize;
-      let syntheticQuote = 0;
-      let syntheticFee = 0;
-      let syntheticNetFee = 0;
-      let syntheticRebate = 0;
-      let rawCoveredQuote = 0;
-      let rawCoveredFee = 0;
-      let rawCoveredNetFee = 0;
-      let rawCoveredRebate = 0;
-      const allocations = [];
-      const reported = {
-        size: fill.size,
-        price: fill.price,
-        quoteAmount: fill.quoteAmount,
-        fee: fill.fee,
-        netFee: fill.netFee,
-        rebate: fill.rebate,
-      };
-      for (const row of covered) {
-        if (remaining <= 1e-9) break;
-        const quantity = Math.min(remaining, unresolvedSyntheticSize(row));
-        if (quantity <= 1e-9) continue;
-        const syntheticRatio = quantity / row.size;
-        const executionRatio = quantity / reported.size;
-        const original = row.syntheticCoverage?.originalEconomics || row;
-        const quoteAmount = original.quoteAmount * syntheticRatio;
-        const fee = original.fee * syntheticRatio;
-        const netFee = original.netFee * syntheticRatio;
-        const rebate = (original.rebate || 0) * syntheticRatio;
-        const executionQuote = reported.quoteAmount * executionRatio;
-        const executionFee = reported.fee * executionRatio;
-        const executionNetFee = reported.netFee * executionRatio;
-        const executionRebate = reported.rebate * executionRatio;
-        syntheticQuote += quoteAmount;
-        syntheticFee += fee;
-        syntheticNetFee += netFee;
-        syntheticRebate += rebate;
-        rawCoveredQuote += executionQuote;
-        rawCoveredFee += executionFee;
-        rawCoveredNetFee += executionNetFee;
-        rawCoveredRebate += executionRebate;
-        allocations.push({
-          row,
-          tradeId: row.tradeId,
-          size: quantity,
-          quoteAmount: executionQuote,
-          fee: executionFee,
-          netFee: executionNetFee,
-          rebate: executionRebate,
-          priorEconomics: { quoteAmount, fee, netFee, rebate },
-        });
-        remaining = roundAsset(Math.max(0, remaining - quantity));
+  const planCorrectionIfEconomicsDiffer = (fill, covered, executionTotals, allocations) => {
+    let buyCorrection;
+    let sellCorrection;
+    if (!ECONOMIC_FIELDS.every(key => equivalent(executionTotals[key], covered[key]))) {
+      if (fill.side === 'buy') {
+        buyCorrection = planBuyCorrection(Array.from(fills.values()), fill.orderId,
+          executionTotals.quoteAmount + executionTotals.netFee - covered.quoteAmount - covered.netFee, fill.tradeId);
+      } else {
+        sellCorrection = planSellCorrection(allocations, fill.tradeId);
       }
-      const equivalent = (a, b) => Number.isFinite(a) && Number.isFinite(b)
-        && Math.abs(a - b) <= 1e-8;
-      let buyCorrection;
-      let sellCorrection;
-      if (!equivalent(rawCoveredQuote, syntheticQuote) || !equivalent(rawCoveredFee, syntheticFee)
-        || !equivalent(rawCoveredNetFee, syntheticNetFee) || !equivalent(rawCoveredRebate, syntheticRebate)) {
-        if (fill.side === 'buy') {
-          buyCorrection = planBuyCorrection(Array.from(fills.values()), fill.orderId,
-            rawCoveredQuote + rawCoveredNetFee - syntheticQuote - syntheticNetFee, fill.tradeId);
-        } else {
-          sellCorrection = planSellCorrection(allocations, fill.tradeId);
-        }
-      }
-
-      const newSize = roundAsset(Math.max(0, reported.size - coveredSize));
-      const newQuote = Math.max(0, reported.quoteAmount - rawCoveredQuote);
-      const newFee = Math.max(0, reported.fee - rawCoveredFee);
-      const newNetFee = reported.netFee - rawCoveredNetFee;
-      const newRebate = reported.rebate - rawCoveredRebate;
-      const ledgerExecution = {
-        ...fill,
-        ...(buyCorrection && { buyEconomicCorrection: buyCorrection }),
-        ...(sellCorrection && { sellEconomicCorrection: sellCorrection }),
-        reportedExecution: reported,
-        syntheticCoverageReconciliation: {
-          coveredSize,
-          newSize,
-          coveredQuoteAmount: rawCoveredQuote,
-          newQuoteAmount: newQuote,
-          coveredFee: rawCoveredFee,
-          newFee,
-          coveredNetFee: rawCoveredNetFee,
-          newNetFee,
-          coveredRebate: rawCoveredRebate,
-          newRebate,
-          allocations: allocations.map(({ tradeId, size, quoteAmount, fee, netFee, rebate }) => ({
-            tradeId, size, quoteAmount, fee, netFee, rebate,
-          })),
-        },
-        replacesSyntheticTradeIds: [...new Set(allocations.map(allocation => allocation.tradeId))],
-        size: newSize > 1e-9 ? newSize : 0,
-        quoteAmount: newSize > 1e-9 ? newQuote : 0,
-        fee: newSize > 1e-9 ? newFee : 0,
-        netFee: newSize > 1e-9 ? newNetFee : 0,
-        rebate: newSize > 1e-9 ? newRebate : 0,
-        ...(newSize > 1e-9 ? { price: newQuote / newSize } : {}),
-      };
-      return { mode: 'preserve', ledgerExecution, reportedExecution,
-        annotations: {}, allocations, replacements: [],
-        corrections: { buy: buyCorrection, sell: sellCorrection }, coveredSize, newSize };
     }
+    return { buyCorrection, sellCorrection };
+  };
 
+  const planPreservedCoverage = (fill, covered, coveredSize) => {
+    let remaining = coveredSize;
+    const allocations = [];
+    const reported = {
+      size: fill.size,
+      price: fill.price,
+      quoteAmount: fill.quoteAmount,
+      fee: fill.fee,
+      netFee: fill.netFee,
+      rebate: fill.rebate,
+    };
+    for (const row of covered) {
+      if (remaining <= 1e-9) break;
+      const quantity = Math.min(remaining, unresolvedSyntheticSize(row));
+      if (quantity <= 1e-9) continue;
+      const original = row.syntheticCoverage?.originalEconomics || row;
+      allocations.push({
+        row,
+        tradeId: row.tradeId,
+        size: quantity,
+        ...prorateEconomics(reported, quantity / reported.size),
+        priorEconomics: prorateEconomics({ ...original, rebate: original.rebate || 0 }, quantity / row.size),
+      });
+      remaining = roundAsset(Math.max(0, remaining - quantity));
+    }
+    const syntheticTotals = sumEconomics(allocations.map(allocation => allocation.priorEconomics));
+    const executionTotals = sumEconomics(allocations);
+    const corrections = planCorrectionIfEconomicsDiffer(fill, syntheticTotals, executionTotals, allocations);
+    const newSize = roundAsset(Math.max(0, reported.size - coveredSize));
+    const newQuote = Math.max(0, reported.quoteAmount - executionTotals.quoteAmount);
+    const newFee = Math.max(0, reported.fee - executionTotals.fee);
+    const newNetFee = reported.netFee - executionTotals.netFee;
+    const newRebate = reported.rebate - executionTotals.rebate;
+    const ledgerExecution = {
+      ...fill,
+      ...economicCorrectionFields(corrections),
+      reportedExecution: reported,
+      syntheticCoverageReconciliation: {
+        coveredSize,
+        newSize,
+        coveredQuoteAmount: executionTotals.quoteAmount,
+        newQuoteAmount: newQuote,
+        coveredFee: executionTotals.fee,
+        newFee,
+        coveredNetFee: executionTotals.netFee,
+        newNetFee,
+        coveredRebate: executionTotals.rebate,
+        newRebate,
+        allocations: allocations.map(({ tradeId, size, quoteAmount, fee, netFee, rebate }) => ({
+          tradeId, size, quoteAmount, fee, netFee, rebate,
+        })),
+      },
+      replacesSyntheticTradeIds: [...new Set(allocations.map(allocation => allocation.tradeId))],
+      size: newSize > 1e-9 ? newSize : 0,
+      quoteAmount: newSize > 1e-9 ? newQuote : 0,
+      fee: newSize > 1e-9 ? newFee : 0,
+      netFee: newSize > 1e-9 ? newNetFee : 0,
+      rebate: newSize > 1e-9 ? newRebate : 0,
+      ...(newSize > 1e-9 ? { price: newQuote / newSize } : {}),
+    };
+    return { mode: 'preserve', ledgerExecution, reportedExecution: fill,
+      annotations: {}, allocations, replacements: [],
+      corrections: { buy: corrections.buyCorrection, sell: corrections.sellCorrection }, coveredSize, newSize };
+  };
+
+  const planReplacedCoverage = (fill, covered, annotations) => {
     let remaining = fill.size;
-    let quote = 0;
-    let fee = 0;
-    let netFee = 0;
-    let rebate = 0;
     const replacements = [];
-    const correctionAllocations = [];
+    const allocations = [];
     for (const row of covered) {
       if (remaining <= 1e-9) break;
       const quantity = Math.min(remaining, unresolvedSyntheticSize(row));
       const ratio = quantity / row.size;
-      const executionRatio = quantity / fill.size;
-      quote += row.quoteAmount * ratio;
-      fee += row.fee * ratio;
-      netFee += row.netFee * ratio;
-      rebate += (row.rebate || 0) * ratio;
-      correctionAllocations.push({
+      const economics = { ...row, rebate: row.rebate || 0 };
+      allocations.push({
         row,
         tradeId: row.tradeId,
         size: quantity,
-        quoteAmount: fill.quoteAmount * executionRatio,
-        fee: fill.fee * executionRatio,
-        netFee: fill.netFee * executionRatio,
-        rebate: fill.rebate * executionRatio,
-        priorEconomics: {
-          quoteAmount: row.quoteAmount * ratio,
-          fee: row.fee * ratio,
-          netFee: row.netFee * ratio,
-          rebate: (row.rebate || 0) * ratio,
-        },
+        ...prorateEconomics(fill, quantity / fill.size),
+        priorEconomics: prorateEconomics(economics, ratio),
       });
       const residualSize = roundAsset(row.size - quantity);
       replacements.push({ old: row, residual: residualSize > 1e-9 ? {
         ...row,
         size: residualSize,
-        quoteAmount: row.quoteAmount * (1 - ratio),
-        fee: row.fee * (1 - ratio),
-        netFee: row.netFee * (1 - ratio),
-        rebate: (row.rebate || 0) * (1 - ratio),
+        ...prorateEconomics(economics, 1 - ratio),
       } : null });
       remaining = roundAsset(remaining - quantity);
     }
-    const equivalent = (a, b) => Number.isFinite(a) && Number.isFinite(b)
-      && Math.abs(a - b) <= 1e-8;
-    let buyCorrection;
-    let sellCorrection;
-    if (!equivalent(fill.quoteAmount, quote) || !equivalent(fill.fee, fee)
-      || !equivalent(fill.netFee, netFee) || !equivalent(fill.rebate, rebate)) {
-      if (fill.side === 'buy') {
-        buyCorrection = planBuyCorrection(Array.from(fills.values()), fill.orderId,
-          fill.quoteAmount + fill.netFee - quote - netFee, fill.tradeId);
-      } else {
-        sellCorrection = planSellCorrection(correctionAllocations, fill.tradeId);
-      }
-    }
+    const syntheticTotals = sumEconomics(allocations.map(allocation => allocation.priorEconomics));
+    const corrections = planCorrectionIfEconomicsDiffer(fill, syntheticTotals, fill, allocations);
     const inheritedAnnotations = {};
+    const anchor = covered[0];
     for (const key of annotations) {
       if (anchor[key] !== undefined) inheritedAnnotations[key] = key === 'consumedBy'
         ? { ...anchor[key] } : anchor[key];
     }
-    // Persist the coverage identity on the real row for diagnostics. It is
-    // deliberately distinct from syntheticCoverage: real rows never cover
-    // another real trade ID, and replay remains the normal ID dedup.
+    // Real rows retain the replaced identities for diagnostics, never as coverage for another real ID.
     const ledgerExecution = { ...fill,
-      ...(buyCorrection && { buyEconomicCorrection: buyCorrection }),
-      ...(sellCorrection && { sellEconomicCorrection: sellCorrection }),
+      ...economicCorrectionFields(corrections),
       ...inheritedAnnotations,
       replacesSyntheticTradeIds: replacements.map(item => item.old.tradeId),
     };
-    return { mode: 'replace', ledgerExecution, reportedExecution,
+    return { mode: 'replace', ledgerExecution, reportedExecution: fill,
       annotations: inheritedAnnotations, allocations: [], replacements,
-      corrections: { buy: buyCorrection, sell: sellCorrection }, coveredSize: fill.size, newSize: 0 };
+      corrections: { buy: corrections.buyCorrection, sell: corrections.sellCorrection }, coveredSize: fill.size, newSize: 0 };
+  };
+
+  const coverageRequiresPreservation = (fill, covered, total, annotations) => {
+    const anchor = covered[0];
+    const sameAnnotations = covered.every(row => annotations.every(key =>
+      JSON.stringify(row[key]) === JSON.stringify(anchor[key])));
+    const hasPriorAllocations = covered.some(row =>
+      (row.syntheticCoverage?.reconciledTrades || []).length > 0);
+    return fill.size > total + 1e-9 || !sameAnnotations || hasPriorAllocations;
+  };
+
+  /**
+   * Equivalent coverage with matching annotations can be replaced directly. Keep
+   * quantity/ownership rows when executions cross coverage or annotations differ;
+   * only excess quantity becomes a new tranche. Both plans publish correction
+   * journals before their accounting targets are updated.
+   */
+  const reconcileSyntheticCoverage = (fill) => {
+    if (isSyntheticCoverage(fill) || !syntheticOrders.has(fill.orderId)) return null;
+    const covered = Array.from(fills.values())
+      .filter(row => row.orderId === fill.orderId && row.side === fill.side && isUnresolvedSyntheticCoverage(row))
+      .sort((a, b) => a.timestamp - b.timestamp);
+    if (!covered.length) return null;
+    const total = covered.reduce((sum, row) => sum + unresolvedSyntheticSize(row), 0);
+    if (!Number.isFinite(fill.size) || fill.size <= 0) {
+      throw Object.assign(new Error(`Synthetic execution reconciliation required for order ${fill.orderId}: real execution has an invalid quantity`), {
+        syntheticReconciliationRequired: true,
+      });
+    }
+    const annotations = [...(ORDER_LEVEL_FIELDS[fill.side] || []),
+      'cycleId', 'bodyBooked', 'capitalCredited', 'capitalCreditedSize'];
+    const preserveCoverage = coverageRequiresPreservation(fill, covered, total, annotations);
+    return preserveCoverage
+      ? planPreservedCoverage(fill, covered, Math.min(fill.size, total))
+      : planReplacedCoverage(fill, covered, annotations);
   };
 
   const recordPreservedCoverage = (fill, reconciliation, tradeId) => {
@@ -1369,7 +1338,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       for (const allocation of reconciliation.allocations) {
         const coveredFill = allocation.row;
         const alreadyAccounted = fill.side === 'buy'
-          ? Boolean(coveredFill.isBodyOwned || coveredFill.isSatellite || coveredFill.bodyId)
+          ? isBodyOwnedFill(coveredFill)
           : Boolean(coveredFill.bodyBooked || (coveredFill.bodyBooked == null && coveredFill.bodyPnl != null));
         if (!alreadyAccounted) {
           bookableFills.push({
@@ -1654,7 +1623,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
     for (const fill of cycleFills) {
       // Skip body-owned fills — they have independent P&L tracking
-      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+      if (isBodyOwnedFill(fill)) continue;
 
       if (fill.side === 'buy') {
         totalAsset += fill.size;
@@ -1734,7 +1703,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
     for (const fill of targetFills) {
       // Skip body-owned fills — they have independent position tracking
-      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+      if (isBodyOwnedFill(fill)) continue;
 
       // A buy recalculateCycles folded into this cycle by timestamp alone
       // (#705) counts toward the cycle's buy limit, but nothing links it to
@@ -2110,22 +2079,24 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // inherit a single owner from, would stamp unrelated core buys with
     // another order's sell (#752).
     const sellLinkOwnership = new Map(); // sell orderId -> { core, owned }
+    // Ownership is tested once per fill; the later passes only see core fills.
+    const coreFills = [];
     for (const fill of fills.values()) {
+      const owned = isBodyOwnedFill(fill);
+      if (!owned) coreFills.push(fill);
       if (fill.side !== 'buy') continue;
       const linkedSellIds = new Set();
       if (fill.sellOrderId) linkedSellIds.add(fill.sellOrderId);
       if (fill.consumedBy && typeof fill.consumedBy === 'object') {
         for (const id of Object.keys(fill.consumedBy)) linkedSellIds.add(id);
       }
-      const owned = Boolean(fill.isBodyOwned || fill.isSatellite || fill.bodyId);
       for (const id of linkedSellIds) {
         const entry = sellLinkOwnership.get(id) || { core: false, owned: false };
         if (owned) entry.owned = true; else entry.core = true;
         sellLinkOwnership.set(id, entry);
       }
     }
-    for (const fill of fills.values()) {
-      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+    for (const fill of coreFills) {
       if (fill.side === 'sell' && fill.cycleAttribution) {
         const links = sellLinkOwnership.get(fill.orderId);
         if (!links || !links.core || links.owned) continue;
@@ -2134,8 +2105,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         cycleSellIds.set(fill.cycleId, fill.orderId);
       }
     }
-    for (const fill of fills.values()) {
-      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+    for (const fill of coreFills) {
       if (fill.cycleId && fill.cycleId === currentCycleId) continue;
       // A buy folded in by timestamp alone (#705) was never part of the core
       // position the cycle's TP sold — stamping it would book its cost as
@@ -3063,7 +3033,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     const uniqueBuyOrders = new Set();
     for (const fill of cycleFills) {
       // Skip body-owned buys — they have independent position tracking
-      if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId) {
+      if (fill.side === 'buy' && !isBodyOwnedFill(fill)) {
         uniqueBuyOrders.add(fill.orderId);
       }
     }
@@ -3113,6 +3083,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     getFillCount,
     getAllFills,
     getFillPage: input => transactionsReadView.query(input),
+    getFillAggregates: () => transactionsReadView.aggregates(),
     getStats,
     getFillTimeStats,
     getFillsSince,
