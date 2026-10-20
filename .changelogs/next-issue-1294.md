@@ -1,0 +1,1 @@
+- **[issue-1294] Confirm AI provider deletion** — Provider deletion now names the provider, warns when it is the default, and explains the saved key and affected features before removing it. Failed deletes keep the confirmation open with the server's error.
