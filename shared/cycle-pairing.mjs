@@ -115,80 +115,118 @@ export const sellFillProceeds = (fill) => quoteOf(fill) - feeOf(fill);
  */
 
 /**
- * Pair buys to sells and price every sell. See the module header for the rules.
- * @param {Iterable<any>} fills - raw ledger fill rows (partials not pre-aggregated)
- * @returns {CyclePairing}
+ * Fold order-level annotations in the caller's iteration order. Pairing uses
+ * ledger order; Transactions supplies chronological rows. Zero is an annotation,
+ * while reservesSold takes the first positive coerced value. Never sum annotations.
+ * Quote/fee and per-row proceeds retain separate sums: subtracting aggregate fees
+ * would change floating-point results in the pairing path.
+ * @param {Iterable<any>} fills
+ * @returns {Map<string, {orderId: string, size: number, quote: number, fee: number,
+ *   proceeds: number, bodyId: string|null, timestamp: number, pnl: number|null,
+ *   holdback: number|null, reservesSold: number, costBasis: number|null}>}
  */
-export function pairCycleFills(fills) {
-  /** @type {Map<string, PairedBuy>} */
-  const buys = new Map();
-  /** @type {Map<string, PairedSell & {annotatedPnl: number, annotatedHoldback: number}>} */
+export function foldSellAnnotations(fills) {
   const sells = new Map();
+  for (const fill of fills) {
+    if (fill.side !== 'sell') continue;
+    const next = sellOrderOf(fill);
+    const previous = sells.get(fill.orderId);
+    if (!previous) {
+      sells.set(fill.orderId, next);
+      continue;
+    }
+    previous.size += next.size;
+    previous.quote += next.quote;
+    previous.fee += next.fee;
+    previous.proceeds += next.proceeds;
+    if (next.timestamp > previous.timestamp) previous.timestamp = next.timestamp;
+    if (next.bodyId && !previous.bodyId) previous.bodyId = next.bodyId;
+    mergeSellAnnotations(previous, next);
+  }
+  return sells;
+}
 
+function sellOrderOf(fill) {
+  return {
+    orderId: fill.orderId,
+    size: fill.size || 0,
+    quote: quoteOf(fill),
+    fee: feeOf(fill),
+    proceeds: sellFillProceeds(fill),
+    bodyId: fill.bodyId || null,
+    timestamp: fill.timestamp || 0,
+    pnl: fill.bodyPnl ?? fill.satellitePnl ?? null,
+    holdback: fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset ?? null,
+    reservesSold: Number(fill.bodyReservesSoldAsset) > 0 ? Number(fill.bodyReservesSoldAsset) : 0,
+    costBasis: fill.bodyCostBasis ?? fill.satelliteCostBasis ?? null,
+  };
+}
+
+function mergeSellAnnotations(previous, next) {
+  for (const field of ['pnl', 'holdback', 'costBasis']) {
+    if (previous[field] == null) previous[field] = next[field];
+  }
+  if (!(previous.reservesSold > 0) && next.reservesSold > 0) previous.reservesSold = next.reservesSold;
+}
+
+function consumedByOf(fill) {
+  return fill.consumedBy && typeof fill.consumedBy === 'object' ? { ...fill.consumedBy } : null;
+}
+
+function mergeBuyMetadata(buy, fill) {
+  if (fill.sellOrderId && !buy.sellOrderId) buy.sellOrderId = fill.sellOrderId;
+  if (fill.bodyId && !buy.bodyId) buy.bodyId = fill.bodyId;
+  const consumedBy = consumedByOf(fill);
+  if (consumedBy) buy.consumedBy = { ...(buy.consumedBy || {}), ...consumedBy };
+}
+
+/** @param {Iterable<any>} fills @returns {Map<string, PairedBuy>} */
+function aggregateBuys(fills) {
+  const buys = new Map();
   for (const f of fills) {
-    if (f.side === 'buy') {
-      const key = buyPairKey(f);
-      const ex = buys.get(key);
-      if (ex) {
-        ex.size += f.size || 0;
-        ex.cost += buyFillCost(f);
-        if (f.sellOrderId && !ex.sellOrderId) ex.sellOrderId = f.sellOrderId;
-        if (f.bodyId && !ex.bodyId) ex.bodyId = f.bodyId;
-        if (f.consumedBy && typeof f.consumedBy === 'object') ex.consumedBy = { ...(ex.consumedBy || {}), ...f.consumedBy };
-      } else {
-        buys.set(key, {
-          key,
-          size: f.size || 0,
-          cost: buyFillCost(f),
-          sellOrderId: f.sellOrderId || null,
-          bodyId: f.bodyId || null,
-          consumedBy: f.consumedBy && typeof f.consumedBy === 'object' ? { ...f.consumedBy } : null,
-          pairedSellOrderId: null,
-        });
-      }
-    } else if (f.side === 'sell') {
-      const annotatedPnl = f.bodyPnl ?? f.satellitePnl;
-      const annotatedHoldback = f.bodyHoldbackAsset ?? f.satelliteHoldbackAsset;
-      const annotatedReservesSold = Number(f.bodyReservesSoldAsset) > 0 ? Number(f.bodyReservesSoldAsset) : 0;
-      const ts = f.timestamp || 0;
-      const ex = sells.get(f.orderId);
-      if (ex) {
-        ex.size += f.size || 0;
-        ex.proceeds += sellFillProceeds(f);
-        if (ts > ex.timestamp) ex.timestamp = ts;
-        if (f.bodyId && !ex.bodyId) ex.bodyId = f.bodyId;
-        if (!ex.hasPnlAnnotation && annotatedPnl != null) {
-          ex.annotatedPnl = annotatedPnl;
-          ex.hasPnlAnnotation = true;
-        }
-        if (!ex.hasHoldbackAnnotation && annotatedHoldback != null) {
-          ex.annotatedHoldback = annotatedHoldback;
-          ex.hasHoldbackAnnotation = true;
-        }
-        // Order-level, like bodyPnl: take it once, never sum across partials.
-        if (!(ex.reservesSold > 0) && annotatedReservesSold > 0) ex.reservesSold = annotatedReservesSold;
-      } else {
-        sells.set(f.orderId, {
-          orderId: f.orderId,
-          size: f.size || 0,
-          proceeds: sellFillProceeds(f),
-          bodyId: f.bodyId || null,
-          timestamp: ts,
-          annotatedPnl: annotatedPnl ?? 0,
-          hasPnlAnnotation: annotatedPnl != null,
-          annotatedHoldback: annotatedHoldback ?? 0,
-          hasHoldbackAnnotation: annotatedHoldback != null,
-          buyKeys: [],
-          linkedSize: 0,
-          linkedCost: 0,
-          pnl: null,
-          holdback: 0,
-          reservesSold: annotatedReservesSold,
-        });
-      }
+    if (f.side !== 'buy') continue;
+    const key = buyPairKey(f);
+    const ex = buys.get(key);
+    if (ex) {
+      ex.size += f.size || 0;
+      ex.cost += buyFillCost(f);
+      mergeBuyMetadata(ex, f);
+    } else {
+      buys.set(key, {
+        key,
+        size: f.size || 0,
+        cost: buyFillCost(f),
+        sellOrderId: f.sellOrderId || null,
+        bodyId: f.bodyId || null,
+        consumedBy: consumedByOf(f),
+        pairedSellOrderId: null,
+      });
     }
   }
+  return buys;
+}
 
+function pairedSellOf(sell) {
+  return {
+    orderId: sell.orderId,
+    size: sell.size,
+    proceeds: sell.proceeds,
+    bodyId: sell.bodyId,
+    timestamp: sell.timestamp,
+    annotatedPnl: sell.pnl ?? 0,
+    hasPnlAnnotation: sell.pnl != null,
+    annotatedHoldback: sell.holdback ?? 0,
+    hasHoldbackAnnotation: sell.holdback != null,
+    buyKeys: [],
+    linkedSize: 0,
+    linkedCost: 0,
+    pnl: null,
+    holdback: 0,
+    reservesSold: sell.reservesSold,
+  };
+}
+
+function redirectOrphanSellIds(buys, sells) {
   // bodyId → latest filled sell of that body (TP re-placement target).
   /** @type {Map<string, {orderId: string, timestamp: number}>} */
   const latestSellByBodyId = new Map();
@@ -206,13 +244,17 @@ export function pairCycleFills(fills) {
     }
   }
 
+  return { latestSellByBodyId, bodyIdByOrphanSellId };
+}
+
+function linkBuysToSells(buys, sells, redirects) {
   for (const buy of buys.values()) {
     const sid = buy.sellOrderId;
     if (!sid) continue;
     let target = sells.has(sid) ? sid : null;
     if (!target) {
-      const bodyId = buy.bodyId || bodyIdByOrphanSellId.get(sid);
-      target = (bodyId && latestSellByBodyId.get(bodyId)?.orderId) || null;
+      const bodyId = buy.bodyId || redirects.bodyIdByOrphanSellId.get(sid);
+      target = (bodyId && redirects.latestSellByBodyId.get(bodyId)?.orderId) || null;
     }
     if (!target) continue;
     const sell = /** @type {any} */ (sells.get(target));
@@ -228,7 +270,9 @@ export function pairCycleFills(fills) {
     sell.linkedSize += buy.size * share;
     sell.linkedCost += buy.cost * share;
   }
+}
 
+function priceSells(sells) {
   let realizedPnL = 0;
   let realizedAssetPnL = 0;
   let unpairedSellQty = 0;
@@ -252,5 +296,20 @@ export function pairCycleFills(fills) {
     realizedAssetPnL += sell.holdback - sell.reservesSold;
   }
 
-  return { buys, sells, realizedPnL, realizedAssetPnL, unpairedSellQty };
+  return { realizedPnL, realizedAssetPnL, unpairedSellQty };
+}
+
+/**
+ * Pair buys to sells and price every sell. See the module header for the rules.
+ * @param {Iterable<any>} fills - raw ledger fill rows (partials not pre-aggregated)
+ * @returns {CyclePairing}
+ */
+export function pairCycleFills(fills) {
+  // Materialize once so single-pass iterables retain their public contract.
+  const rows = [...fills];
+  const buys = aggregateBuys(rows);
+  const sells = new Map([...foldSellAnnotations(rows)].map(([id, sell]) => [id, pairedSellOf(sell)]));
+  const redirects = redirectOrphanSellIds(buys, sells);
+  linkBuysToSells(buys, sells, redirects);
+  return { buys, sells, ...priceSells(sells) };
 }
