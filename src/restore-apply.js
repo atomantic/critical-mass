@@ -119,7 +119,7 @@ const replaceFileAtomic = (src, dest) => {
  * @param {Object} params
  * @param {string} params.stageDir - Extraction root
  * @param {string} params.dataDir - Destination root
- * @param {(name: string, isRoot: boolean) => boolean} [params.skip] - Entry filter (name, at-stage-root)
+ * @param {(name: string, isRoot: boolean, rel: string) => boolean} [params.skip] - Entry filter (name, at-stage-root, path relative to stage root)
  * @returns {{files: string[], dirs: string[]}} Relative file and directory paths
  */
 const collectStagedSet = ({ stageDir, dataDir, skip = () => false }) => {
@@ -129,8 +129,8 @@ const collectStagedSet = ({ stageDir, dataDir, skip = () => false }) => {
   const walk = (relDir) => {
     const entries = fs.readdirSync(path.join(stageDir, relDir), { withFileTypes: true });
     for (const entry of entries) {
-      if (skip(entry.name, relDir === '')) continue;
       const rel = relDir === '' ? entry.name : path.join(relDir, entry.name);
+      if (skip(entry.name, relDir === '', rel)) continue;
       if (entry.isDirectory()) {
         if (!fs.existsSync(path.join(dataDir, rel))) dirs.push(rel);
         walk(rel);
@@ -348,7 +348,7 @@ const revertAndSettle = ({ dataDir, journal, logger }) => {
  * @param {string} params.dataDir - Destination root
  * @param {string} params.stageDir - Extraction root (absolute, inside dataDir)
  * @param {string} [params.filename] - Archive filename, for journal/log context
- * @param {(name: string, isRoot: boolean) => boolean} [params.skip] - Staged-entry filter
+ * @param {(name: string, isRoot: boolean, rel: string) => boolean} [params.skip] - Staged-entry filter (name, at-stage-root, path relative to stage root)
  * @param {{info: Function, warn: Function, error: Function}} [params.logger] - Context logger
  * @returns {{success: true, filesRestored: number} |
  *   {success: false, code: string, error: string, rolledBack: boolean, recovery?: Object}} Application outcome.

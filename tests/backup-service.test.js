@@ -395,6 +395,55 @@ describe('backup-service — credential exclusion', () => {
   });
 });
 
+describe('backup-service — scorecard maintenance lock', () => {
+  const lockDir = path.join(DATA_DIR, 'updown', 'scorecard', '.maintenance-lock');
+  const createdBackups = [];
+
+  beforeEach(() => {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(TEST_FILE, JSON.stringify({ marker: 'scorecard-lock-test' }));
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(path.join(lockDir, 'owner.json'), JSON.stringify({ pid: process.pid, host: os.hostname() }));
+  });
+
+  afterEach(() => {
+    cleanupTestFile();
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    for (const filename of createdBackups.splice(0)) {
+      deleteBackup(filename);
+    }
+  });
+
+  it('omits the scorecard maintenance lock from the archive', async () => {
+    const result = await createBackup();
+    assert.equal(result.success, true);
+    createdBackups.push(result.filename);
+
+    const entries = listZipEntries(path.join(BACKUP_DIR, result.filename));
+    assert.ok(!entries.some(e => e.includes('.maintenance-lock')), `archive should not contain the scorecard lock, got: ${entries.join(', ')}`);
+  });
+
+  it('does not recreate the scorecard maintenance lock when restoring an archive that contains it', async () => {
+    const created = await createBackup();
+    assert.equal(created.success, true);
+    createdBackups.push(created.filename);
+
+    // Simulate an archive taken mid-backfill by injecting the lock entry.
+    const archivePath = path.join(BACKUP_DIR, created.filename);
+    const zipped = spawnSync('zip', ['-q', archivePath, 'updown/scorecard/.maintenance-lock/owner.json'], { cwd: DATA_DIR });
+    assert.equal(zipped.status, 0, zipped.stderr.toString());
+    assert.ok(listZipEntries(archivePath).some(e => e.includes('.maintenance-lock')));
+
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    cleanupTestFile();
+
+    const result = restoreBackup(created.filename);
+    assert.equal(result.success, true);
+    assert.equal(fs.existsSync(TEST_FILE), true);
+    assert.equal(fs.existsSync(lockDir), false, 'restore must not install a scorecard maintenance lock');
+  });
+});
+
 describe('backup-service — restoreBackup preserves existing credentials', () => {
   const liveKeys = path.join(DATA_DIR, '__backup_service_test_coinbase-keys.json');
   const liveCredentials = {
