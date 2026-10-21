@@ -13,6 +13,7 @@ const MAX_ATTEMPTS = 5;
 const MAX_TRACKED_PEERS = 1024;
 const MIN_BOOTSTRAP_SECRET_LENGTH = 32;
 const BOOTSTRAP_HEADER = 'x-operator-bootstrap';
+const PROXY_HEADERS = ['x-forwarded-for', 'forwarded', 'via', 'x-real-ip', 'x-forwarded-proto', 'x-forwarded-port', 'x-forwarded-server'];
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 const parseCookies = (header = '') => Object.fromEntries(
@@ -49,6 +50,7 @@ const isLoopbackRequest = (req) => {
   if (!requestOriginMatches(req)) return false;
   if (!isLoopbackHost(req?.socket?.remoteAddress)) return false;
   const getHeader = (name) => (typeof req?.get === 'function' ? req.get(name) : req?.headers?.[name]) || '';
+  const hasHeader = (name) => (req?.headers ? name in req.headers : Boolean(getHeader(name)));
   const isLoopbackHostHeader = (hostHeader) => {
     const host = hostHeader.trim();
     const hostname = host.startsWith('[')
@@ -63,14 +65,17 @@ const isLoopbackRequest = (req) => {
 
   // A loopback proxy may preserve the original client. Forwarding headers can
   // only downgrade trust: every reported hop must also be loopback.
-  const forwardedHeader = getHeader('x-forwarded-for');
-  const forwarded = forwardedHeader
+  const forwarded = getHeader('x-forwarded-for')
     .split(',')
     .map((address) => address.trim())
     .filter(Boolean);
   if (forwarded.length > 0) return forwarded.every(isLoopbackHost);
-  // A reverse proxy that erases X-Forwarded-For must not become a trusted
-  // bootstrap channel merely because its backend connection is loopback.
+  // Any other proxy marker (including an empty X-Forwarded-For) means a proxy
+  // is in front and the real client is unknown, so it is not a local browser.
+  if (PROXY_HEADERS.some(hasHeader)) return false;
+  // Residual limit: a proxy that adds no headers at all (e.g. bare nginx
+  // proxy_pass) is indistinguishable from a direct local browser. Such
+  // deployments must set X-Forwarded-For or use OPERATOR_BOOTSTRAP_SECRET.
   return true;
 };
 
@@ -160,6 +165,8 @@ const unreadableAuthFileReason = (file) => {
   }
 };
 
+const isBootstrapState = (record, unreadable) => !(record?.salt && record?.hash) && !unreadable;
+
 const createOperatorAuth = ({
   authFile = null,
   readJSON = null,
@@ -224,6 +231,10 @@ const createOperatorAuth = ({
 
   if (bootstrapSecret && Buffer.byteLength(bootstrapSecret) < MIN_BOOTSTRAP_SECRET_LENGTH) {
     throw new Error(`OPERATOR_BOOTSTRAP_SECRET must be at least ${MIN_BOOTSTRAP_SECRET_LENGTH} bytes`);
+  }
+
+  if (isBootstrapState(record, authFileUnreadable) && !bootstrapSecret) {
+    log('WARN', '🔐 Operator bootstrap is open to loopback requests. A local reverse proxy must send X-Forwarded-For with the real client address; otherwise set OPERATOR_BOOTSTRAP_SECRET.');
   }
 
   const hasPassword = () => Boolean(record?.salt && record?.hash);
