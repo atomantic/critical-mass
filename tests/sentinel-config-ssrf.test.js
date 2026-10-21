@@ -128,3 +128,25 @@ describe('GET /api/sentinel/status response structure (issue #456)', () => {
     assert.equal(res.body.running, false);
   });
 });
+
+describe('PUT /api/sentinel/config when stop() fails to save state (issue #1503)', () => {
+  it('still restarts Sentinel and names the failed state save', async () => {
+    let running = true;
+    const app = createFakeApp();
+    registerSentinelRoutes(app, {
+      sentinelService: {
+        getStatus: () => ({}),
+        stop: () => { running = false; throw new Error('ENOSPC disk full'); },
+        start: () => { running = true; },
+      },
+      getSentinelConfig: () => ({ feeds: [] }),
+      updateSentinelConfig: () => {},
+    });
+    const res = await invoke(app, { feeds: [] });
+    assert.equal(running, true, 'Sentinel must be running after the restart');
+    assert.equal(res.statusCode, 500);
+    assert.equal(res.body.success, false);
+    assert.match(res.body.error, /saved and Sentinel restarted/);
+    assert.match(res.body.error, /alert state could not be written/);
+  });
+});
