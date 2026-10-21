@@ -146,6 +146,44 @@ describe('repairHistoricalFillAnnotations', () => {
     assert.equal(byTrade(ledger, 'p-buy').sellOrderId, undefined);
   });
 
+  it('preserves a negatively booked sell carrying a booking marker', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'booked-buy', orderId: 'booked-buy-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'booked-sell', orderId: 'booked-sell-o', side: 'sell', price: '60000', size: '0.01', tradeTime: at(2) }, null, { skipPersist: true });
+    ledger.annotateFillsByOrderId('booked-sell-o', {
+      isBodyOwned: true,
+      bodyBookedSize: 0.01,
+      bodyPnl: -1,
+      bodyCostBasis: 601,
+      bodyBtcQty: 0.012,
+      bodyHoldbackAsset: 0,
+    });
+    const before = { ...byTrade(ledger, 'booked-sell') };
+
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+
+    assert.deepEqual(byTrade(ledger, 'booked-sell'), before);
+  });
+
+  it('preserves a negatively booked sell carrying the bodyBooked marker', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'booked-flag-buy', orderId: 'booked-flag-buy-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'booked-flag-sell', orderId: 'booked-flag-sell-o', side: 'sell', price: '60000', size: '0.01', tradeTime: at(2) }, null, { skipPersist: true });
+    ledger.annotateFillsByOrderId('booked-flag-sell-o', {
+      isBodyOwned: true,
+      bodyBooked: true,
+      bodyPnl: -1,
+      bodyCostBasis: 601,
+      bodyBtcQty: 0.012,
+      bodyHoldbackAsset: 0,
+    });
+    const before = { ...byTrade(ledger, 'booked-flag-sell') };
+
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+
+    assert.deepEqual(byTrade(ledger, 'booked-flag-sell'), before);
+  });
+
   it('only pairs a buy whose size is within 1% of the sell, and leaves other sells unannotated', () => {
     const { ledger } = makeLedger();
     // sell 0.01 BTC: 0.0102 is +2% and 0.0098 is -2% (both outside); 0.00995 / 0.01005 are inside.
