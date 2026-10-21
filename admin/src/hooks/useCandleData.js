@@ -251,6 +251,9 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
 
   const [chartData, setChartData] = useState([])
   const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [retryNonce, setRetryNonce] = useState(0)
+  const retry = useCallback(() => setRetryNonce(n => n + 1), [])
 
   const bucketsRef = useRef(new Map())
   const labelCacheRef = useRef(null)
@@ -402,12 +405,17 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     let controller = null
     retryRef.current = false
     setIsLoading(true)
+    setError(null)
     const doFetch = () => {
       controller = new AbortController()
       fetch(`/api/candles/${exchange}`, { signal: controller.signal })
-        .then(r => r.ok ? r.json() : null)
+        .then(r => {
+          if (!r.ok) throw new Error(`Candle history request failed (${r.status})`)
+          return r.json()
+        })
         .then(data => {
-          if (cancelled || !data?.candles) { if (!cancelled) setIsLoading(false); return }
+          if (cancelled) return
+          if (!data?.candles) { setIsLoading(false); return }
           historicalCandlesRef.current = data.candles
           // If the requested TF has data or we already retried, done loading
           if (data.candles[candleTf]?.length || retryRef.current) {
@@ -418,7 +426,11 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
             retryTimer = setTimeout(() => { if (!cancelled) doFetch() }, 5000)
           }
         })
-        .catch(() => { if (!cancelled) setIsLoading(false) })
+        .catch(err => {
+          if (cancelled || err?.name === 'AbortError') return
+          setError(err?.message || 'Candle history request failed')
+          setIsLoading(false)
+        })
     }
     doFetch()
     return () => {
@@ -426,7 +438,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       controller.abort()
       if (retryTimer !== null) clearTimeout(retryTimer)
     }
-  }, [exchange, candleTf])
+  }, [exchange, candleTf, retryNonce])
 
   // Re-populate from cached candles when view/interval/range changes or data arrives (isLoading → false)
   useEffect(() => {
@@ -510,6 +522,8 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     view,
     setView,
     isLoading,
+    error,
+    retry,
     viewConfig,
     views,
     // Interval/range mode returns

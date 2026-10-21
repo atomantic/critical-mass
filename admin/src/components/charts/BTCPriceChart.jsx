@@ -165,7 +165,7 @@ export default function BTCPriceChart({
   }, [defaultInterval, defaultRange, customViews, defaultView, signalAnnotations, maxBucketsOverride])
 
   const {
-    chartData, view, setView, isLoading, viewConfig, views,
+    chartData, view, setView, isLoading, error, retry, viewConfig, views,
     interval, setInterval, timeRange, setTimeRange, availableRanges,
   } = useCandleData(exchange, tickPrice, tickTimestamp, hookOptions)
 
@@ -386,7 +386,12 @@ export default function BTCPriceChart({
         )}
       </div>
 
-      {isLoading || displayData.length < 2 ? (
+      {error && !isLoading ? (
+        <div role="alert" className="flex flex-col items-center justify-center gap-3 py-12">
+          <div className="text-red-400 text-sm">Failed to load price history: {error}</div>
+          <button type="button" onClick={retry} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-sm">Retry</button>
+        </div>
+      ) : isLoading || displayData.length < 2 ? (
         <div className="text-gray-400 text-sm text-center py-12">
           {isLoading ? 'Loading chart data...' : 'Waiting for price data...'}
           {!isLoading && !isIntervalMode && (
