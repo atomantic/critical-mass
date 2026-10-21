@@ -7,7 +7,7 @@ const {
   getRunIdentifier,
   hasRunThisInterval
 } = require('./interval-utils');
-const { getExchangeDataDir, getFundDataDir, resolveFundDataDir } = require('./migration');
+const { getFundDataDir, resolveFundDataDir } = require('./migration');
 
 /**
  * @typedef {import('./types').BotState} BotState
@@ -28,7 +28,6 @@ const { createInitialFibState, resetFibState, getUncoveredFibBuys, getAverageCos
 const { migrateFromLegacy, createInitialCelestialState } = require('./celestial-hierarchy');
 const { loadRawConfig } = require('./config-utils');
 const { createContextLogger } = require('./logger');
-const { DATA_DIR } = require('./paths');
 const { atomicWriteSync } = require('./durable-write');
 
 const stateTrackerLogger = createContextLogger();
