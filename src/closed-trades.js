@@ -78,8 +78,22 @@ const createClosedTrades = (exchange, pair) => {
     const filePath = getClosedTradesPath(exchange, pair);
     if (!fs.existsSync(filePath)) return false;
 
+    // A transient read error leaves a valid file in place; only unparseable
+    // content is quarantined.
+    let text;
     try {
-      const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      text = fs.readFileSync(filePath, 'utf8');
+    } catch (err) {
+      if (err.code === 'ENOENT') return false;
+      logger.error(`❌ [${exchange}] Failed to read closed trades (file left in place): ${err.message}`, {
+        filePath,
+        error: err.message,
+      });
+      throw err;
+    }
+
+    try {
+      const raw = JSON.parse(text);
       const arr = Array.isArray(raw) ? raw : [];
       trades.length = 0;
       dedupKeys.clear();
