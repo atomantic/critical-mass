@@ -89,6 +89,8 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const [consolidating, setConsolidating] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [regimeRunning, setRegimeRunning] = useState(true)
+  const [regimeStatusError, setRegimeStatusError] = useState(false)
+  const [regimeStatusNonce, setRegimeStatusNonce] = useState(0)
   const [convertPreview, setConvertPreview] = useState(null)
   const [showConvertConfirm, setShowConvertConfirm] = useState(false)
   const [converting, setConverting] = useState(false)
@@ -244,13 +246,15 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
     const controller = new AbortController()
     fetch(`/api/${exchange}/regime/status${pairQuery}`, { signal: controller.signal })
       .then(async r => {
-        if (!r.ok) return // keep the Export button hidden: the engine state is unknown
+        // Keep the Export button hidden when the engine state is unknown
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
         const data = await r.json()
         setRegimeRunning(data.running || data.status?.isRunning || false)
+        setRegimeStatusError(false)
       })
-      .catch(() => {})
+      .catch(() => { if (!controller.signal.aborted) { setRegimeStatusError(true); setRegimeRunning(true) } })
     return () => controller.abort()
-  }, [exchange, pairQuery])
+  }, [exchange, pairQuery, regimeStatusNonce])
 
   const handlePreviewExport = useCallback(async () => {
     const data = await fetchConvertPreview({ exchange, pairQuery, addToast })
@@ -550,6 +554,12 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
                   >
                     {consolidating ? 'Consolidating...' : 'Consolidate'}
                   </button>
+                )}
+                {regimeStatusError && (
+                  <span role="alert" className="flex items-center gap-2 text-xs text-yellow-400">
+                    Regime status unavailable
+                    <button type="button" onClick={() => setRegimeStatusNonce(n => n + 1)} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-0.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-200">Retry</button>
+                  </span>
                 )}
                 {!regimeRunning && (
                   <button

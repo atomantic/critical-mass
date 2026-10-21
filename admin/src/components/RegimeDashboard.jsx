@@ -37,7 +37,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const pairQuery = buildPairQuery(pair)
   const { addToast } = useToast()
   const {
-    status, config, loading, error, stale, retry, fillsUnavailable, liveFills, fillAggregates, presets, isRunning, prevPriceRef,
+    status, config, loading, error, stale, retry, fillsUnavailable, liveFills, fillAggregates, presets, presetsError, retryPresets, isRunning, prevPriceRef,
     priceHistory, atrHistory, regimeHistory, setSocketStatus, fetchStatus, fetchConfig, fetchFills,
   } = useRegimeDashboardData(exchange, pair, pairQuery)
   const {
@@ -196,7 +196,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             />
 
             {/* Configuration Summary */}
-            <ConfigurationSummary config={config} exchange={exchange} pairQuery={pairQuery} fetchConfig={fetchConfig} presets={presets} addToast={addToast} />
+            <ConfigurationSummary config={config} exchange={exchange} pairQuery={pairQuery} fetchConfig={fetchConfig} presets={presets} presetsError={presetsError} retryPresets={retryPresets} addToast={addToast} />
           </div>
         </div>
 
