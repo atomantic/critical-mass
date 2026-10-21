@@ -71,11 +71,12 @@ describe('config save response handling', () => {
   })
 
   it.each([
-    ['manual', 400, { errors: ['kFactor: must be >= 0.2', 'minIntervalMs: must be >= 30000'] }, 'k Factor: must be >= 0.2; Min Interval: must be >= 30000'],
-    ['suggested', 400, { errors: ['kFactor: must be >= 0.2', 'minIntervalMs: must be >= 30000'] }, 'k Factor: must be >= 0.2; Min Interval: must be >= 30000'],
-    ['manual', 503, { persisted: true, applied: false, error: 'Saved, but engine unavailable. Restart required.' }, 'Saved, but engine unavailable. Restart required.'],
-    ['suggested', 503, { persisted: true, applied: false, error: 'Saved, but engine unavailable. Restart required.' }, 'Saved, but engine unavailable. Restart required.'],
-  ])('shows %s aggressiveness save reasons for HTTP %s', async (mode, status, body, message) => {
+    ['manual', 400, { errors: ['kFactor: must be >= 0.2', 'minIntervalMs: must be >= 30000'] }, 'k Factor: must be >= 0.2; Min Interval: must be >= 30000', 'error', false],
+    ['suggested', 400, { errors: ['kFactor: must be >= 0.2', 'minIntervalMs: must be >= 30000'] }, 'k Factor: must be >= 0.2; Min Interval: must be >= 30000', 'error', false],
+    // Saved but not applied: the saved level must be refetched so the control shows it.
+    ['manual', 503, { persisted: true, applied: false, error: 'Saved, but engine unavailable. Restart required.' }, 'Saved, but engine unavailable. Restart required.', 'warning', true],
+    ['suggested', 503, { persisted: true, applied: false, error: 'Saved, but engine unavailable. Restart required.' }, 'Saved, but engine unavailable. Restart required.', 'warning', true],
+  ])('shows %s aggressiveness save reasons for HTTP %s', async (mode, status, body, message, type, refresh) => {
     stubSave(status, body)
     const props = { config: { aggressiveness: 'moderate' }, exchange: 'coinbase', pairQuery: '', presets: { conservative: { kFactor: 0.8 } }, onConfigUpdate: vi.fn(), addToast: vi.fn() }
     if (mode === 'manual') {
@@ -88,7 +89,7 @@ describe('config save response handling', () => {
       render(<LongTermBiasPanel {...props} bias={{ ready: true, suggestedLevel: 'conservative', score: 0.5 }} />)
       fireEvent.click(screen.getByRole('button', { name: 'Apply Suggested (Conservative)' }))
     }
-    await waitFor(() => expect(props.addToast).toHaveBeenCalledWith(expect.objectContaining({ message })))
-    expect(props.onConfigUpdate).not.toHaveBeenCalled()
+    await waitFor(() => expect(props.addToast).toHaveBeenCalledWith(expect.objectContaining({ type, message })))
+    expect(props.onConfigUpdate).toHaveBeenCalledTimes(refresh ? 1 : 0)
   })
 })
