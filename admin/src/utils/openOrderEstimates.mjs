@@ -26,7 +26,7 @@ export { TIER_HOLDBACK_SCALE }
 // regime-engine.js placeBodyTp's `config.feeRate || DEFAULT_FEE_RATE_PER_SIDE`.
 export { DEFAULT_FEE_RATE_PER_SIDE }
 
-const isTpOrderType = (type) =>
+export const isTpOrderType = (type) =>
   type === 'take_profit' || type === 'satellite_tp' || type === 'body_tp'
 
 /**
