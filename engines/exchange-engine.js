@@ -395,11 +395,19 @@ const startup = async () => {
       continue;
     }
 
+    // Hand the first attempt to the start supervisor without awaiting it
+    // (issue #1554). The supervisor registers the fund's start entry
+    // synchronously, so a regime:stop landing mid-attempt is owned by
+    // wrapStop and backups quiesce on settleStarts. Awaiting here held the
+    // IPC gate closed for every fund's full exchange startup chain in turn.
     if (shouldAutoResumeRegime(exchange, fundPair)) {
-      await autoResumeFund(exchange, fundPair);
+      autoResumeFund(exchange, fundPair).catch((err) => {
+        fundLogger.error(`❌ [${label}] Auto-resume failed: ${err.message}`, { error: err.message });
+      });
     }
 
     // Start passive market data service for funds whose engine isn't running
+    // and that have no supervised start (the entry above exists synchronously).
     if (!regimeEngines.has(key) && !getStartStatus(exchange, fundPair)) {
       const regimeConfig = getRegimeConfig(exchange, fundPair);
       if (regimeConfig && Object.keys(regimeConfig).length > 0) {
@@ -413,6 +421,9 @@ const startup = async () => {
     }
   }
 
+  // Only the synchronous recovery above (restore, migrations, DCA import
+  // journals) holds requests back; in-flight fund starts admit stop/status
+  // and backup maintenance, as a manual regime:start already does.
   ipcServer.setInitializing(false);
 };
 

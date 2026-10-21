@@ -190,7 +190,8 @@ const createIPCServer = (port, name) => {
     }
 
     // Even reads may lazily load a ledger. Admit only liveness probes until
-    // restore recovery, migration and automatic fund startup have completed.
+    // restore recovery and migration have completed. Automatic fund starts
+    // run after the gate opens, under the start supervisor (issue #1554).
     if (initializing && (msg.type === MSG_TYPE.REQUEST || msg.type === MSG_TYPE.CONFIG_UPDATE)) {
       const refusal = {
         success: false,
