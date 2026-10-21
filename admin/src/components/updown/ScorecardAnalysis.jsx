@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Link } from '../../lib/router'
 import { ArrowLeft, RefreshCw } from '../icons'
 import { CartesianChart } from '../charts/primitives/CartesianChart'
+import { AXIS_TICK, GRID } from '../charts/chartUtils'
 import { INDICATORS, INDICATOR_LABELS } from '../../../../shared/indicator-config.mjs'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 
@@ -18,8 +19,6 @@ const INDICATOR_COLORS = {
 }
 const DEFAULT_TF_ORDER = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']
 
-const AXIS_TICK = { fontSize: 10, fill: '#9ca3af' }
-const GRID = { stroke: '#374151', strokeDasharray: '3 3' }
 const TOOLTIP_STYLE = { backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }
 const PERCENT_AXES = [{ domain: [0, 100], tick: AXIS_TICK }]
 const HOUR_X_AXIS = { dataKey: 'hour', tick: AXIS_TICK, tickFormatter: formatHour }
