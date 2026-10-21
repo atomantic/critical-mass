@@ -1235,9 +1235,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @param {number} assetQty - BTC quantity to sell
    * @param {number} tpPrice - Take-profit price
    * @param {string} bodyId - Celestial body ID
+   * @param {number} [_avgBuyPrice] - Dry-run executor only; positional parity
+   * @param {{onAccepted?: ((placement: {orderId: string, clientOrderId?: string|null}) => void|Promise<void>)|null}} [options] - `onAccepted` durably records the body's ownership of the accepted order before its dispatch intent is released
    * @returns {Promise<{success: boolean, orderId?: string, errorMessage?: string}>}
    */
-  const placeBodyTpOrder = async (assetQty, tpPrice, bodyId) => {
+  const placeBodyTpOrder = async (assetQty, tpPrice, bodyId, _avgBuyPrice, { onAccepted = null } = {}) => {
     const release = await acquireBodyTpMutex(bodyId);
     try {
       const roundedPrice = roundPrice(tpPrice, priceIncrement);
@@ -1258,7 +1260,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         adapter,
         productId,
         () => adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false }),
-        intentFor('body_tp', 'sell', { price: roundedPrice, size: roundedQty, bodyId }),
+        { ...intentFor('body_tp', 'sell', { price: roundedPrice, size: roundedQty, bodyId }), onAccepted },
       );
 
       if (result.success) {

@@ -833,7 +833,7 @@
  * @property {(orderId: string, type?: string) => void} markSettled
  * @property {(orderId: string) => boolean} isTrackedTpOrder - true when orderId is/was this executor's legacy core take_profit (issue #672)
  * @property {(orderId: string) => number|null} getOrderPlacedAt
- * @property {(assetQty: number, tpPrice: number, bodyId: string) => Promise<{success: boolean, orderId?: string, errorMessage?: string}>} placeBodyTpOrder
+ * @property {(assetQty: number, tpPrice: number, bodyId: string, avgBuyPrice?: number, options?: {onAccepted?: ((placement: {orderId: string, clientOrderId?: string|null}) => void|Promise<void>)|null}) => Promise<{success: boolean, orderId?: string, errorMessage?: string}>} placeBodyTpOrder
  * @property {(bodyId: string, tpOrderId: string) => Promise<{cancelled: boolean, filled: boolean, filledSize?: number}>} cancelBodyTpOrder
  * @property {(bodyId: string, tpOrderId: string, assetQty: number, tpPrice: number, placedAt?: number) => void} restoreBodyTpOrder
  * @property {(tpOrderId: string) => void} removeBodyTracking
