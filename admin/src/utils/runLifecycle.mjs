@@ -89,9 +89,10 @@ export const createRunLifecycle = ({
     return meta && typeof meta === 'object' ? { meta } : { error: 'Run status response was unreadable.' }
   }
 
+  // Returns null for a failed read, distinct from '' for a run with no output.
   const readOutput = async (runId) => {
     const response = await request(`/api/runs/${runId}/output`).catch(() => null)
-    return response?.ok ? response.text().catch(() => '') : ''
+    return response?.ok ? response.text().catch(() => null) : null
   }
 
   const schedulePoll = (token, runId) => {
@@ -129,6 +130,12 @@ export const createRunLifecycle = ({
 
     const output = await readOutput(runId)
     if (!owns(token)) return
+
+    // A failed output read is not "No output": keep ownership and offer a retry.
+    if (output === null) {
+      setNotice({ kind: RUN_NOTICE.READ, message: 'Run finished but its output could not be read.' })
+      return
+    }
 
     invalidate()
     setRunningId(null)
@@ -184,7 +191,7 @@ export const createRunLifecycle = ({
     pollRun(token, runId)
   }
 
-  // Re-read status after an unavailable-metadata notice.
+  // Re-read status (and output, once terminal) after a read notice.
   const refresh = () => {
     const runId = state.runId
     if (runId === null || state.polling) return
