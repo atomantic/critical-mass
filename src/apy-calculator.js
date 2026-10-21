@@ -214,6 +214,27 @@ const calculateApyMetrics = (positionState, config, marketState) => {
 };
 
 /**
+ * Single writer for the APY start-of-tracking fields. Moves engineStartTime back
+ * to `earliestTime` when the engine has no start or started later, and seeds
+ * initialCapital/originalCapital. Never touches depositedCapital (callers finish
+ * that with ensureDepositedCapital) and never overwrites an existing originalCapital.
+ * @param {Object} positionState - Position state (mutated in place)
+ * @param {Object} config - Regime config
+ * @param {number} earliestTime - Earliest fill/order timestamp (ms)
+ * @returns {boolean} true when the start time was moved back
+ */
+const backfillEngineStart = (positionState, config, earliestTime) => {
+  if (positionState.engineStartTime && positionState.engineStartTime <= earliestTime) return false;
+  positionState.engineStartTime = earliestTime;
+  positionState.initialCapital = config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
+  // Only set originalCapital if not already set (preserve true starting value)
+  if (!positionState.originalCapital) {
+    positionState.originalCapital = positionState.initialCapital;
+  }
+  return true;
+};
+
+/**
  * Initialize APY tracking if not already set
  * Backfills start time from existing filled orders if available
  * @param {Object} positionState - Position state (mutated in place)
@@ -253,32 +274,16 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders,
     });
   };
 
-  if (earliestOrderTime !== Infinity) {
-    if (!positionState.engineStartTime || positionState.engineStartTime > earliestOrderTime) {
-      positionState.engineStartTime = earliestOrderTime;
-      positionState.initialCapital = config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
-      if (!positionState.originalCapital) {
-        positionState.originalCapital = positionState.initialCapital;
-      }
-      ensureDepositedCapital();
-      logTrackingState(
-        'backfilled',
-        `📊 [${exchange}] APY tracking backfilled: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`
-      );
-      return;
-    }
-    if (!positionState.originalCapital) {
-      positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
-    }
+  if (earliestOrderTime !== Infinity && backfillEngineStart(positionState, config, earliestOrderTime)) {
     ensureDepositedCapital();
     logTrackingState(
-      'restored',
-      `📊 [${exchange}] APY tracking restored: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`
+      'backfilled',
+      `📊 [${exchange}] APY tracking backfilled: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`
     );
     return;
   }
 
-  if (positionState.engineStartTime) {
+  if (earliestOrderTime !== Infinity || positionState.engineStartTime) {
     if (!positionState.originalCapital) {
       positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
     }
@@ -300,4 +305,4 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders,
   );
 };
 
-module.exports = { calculateApyMetrics, initializeApyTracking };
+module.exports = { calculateApyMetrics, initializeApyTracking, backfillEngineStart };

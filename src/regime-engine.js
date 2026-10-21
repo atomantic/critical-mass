@@ -45,7 +45,7 @@ const { validateSizingFields } = require('./regime-sizing-contract');
 const { createLadderCalculator } = require('./ladder-calculator');
 const { applyMarketMetrics, clamp, computeAdaptiveStaleMs, roundAsset, roundUSDC, roundPrice } = require('./volatility-utils');
 const { createMacroRegime } = require('./macro-regime');
-const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking } = require('./apy-calculator');
+const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking, backfillEngineStart: _backfillEngineStart } = require('./apy-calculator');
 const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
 const {
@@ -3180,13 +3180,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const earliestFillTime = allFills.reduce((earliest, fill) => {
         return fill.timestamp < earliest ? fill.timestamp : earliest;
       }, Infinity);
-      if (earliestFillTime !== Infinity && (!positionState.engineStartTime || positionState.engineStartTime > earliestFillTime)) {
-        positionState.engineStartTime = earliestFillTime;
-        positionState.initialCapital = config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
-        // Only set originalCapital if not already set (preserve true starting value)
-        if (!positionState.originalCapital) {
-          positionState.originalCapital = positionState.initialCapital;
-        }
+      if (earliestFillTime !== Infinity && _backfillEngineStart(positionState, config, earliestFillTime)) {
         logger.info(`📊 [${exchange}] APY tracking backfilled to first fill: ${new Date(earliestFillTime).toISOString()}, original=$${positionState.originalCapital}`);
       }
     }
