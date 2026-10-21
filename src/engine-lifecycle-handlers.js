@@ -238,10 +238,15 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     // stop() flush the final state + ledger. Until that succeeds the engine
     // remains the fund's only ledger writer and stays registered, so a failed
     // drain or flush returns failure with no second consumer started.
+    // A drained callback (a metrics tick placing a TP) can finish AFTER stop()
+    // saved; publish that final generation as stop-all does, but never flush a
+    // partially started, unrecovered engine.
+    const wasRunning = engine.getStatus?.().isRunning === true;
     const stopResult = await engine.stop().then(async (result) => {
       if (result?.error) return result;
       const drain = await drainFundWrites(exchange, resolvedPair);
       if (!drain.drained) throw new Error('Fund writers are still draining');
+      if (wasRunning) engine.flushForBackup?.();
       return result;
     }).catch((err) => {
       fundLogger.error(`❌ [${label}] Error stopping engine: ${err.message}`, { error: err.message });
