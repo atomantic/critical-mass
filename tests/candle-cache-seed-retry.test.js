@@ -1,5 +1,5 @@
 // @ts-check
-const { describe, it, afterEach, mock } = require('node:test');
+const { describe, it, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const { createCandleCache } = require('../src/candle-cache');
 
@@ -25,7 +25,10 @@ const isCryptocom = (url) => String(url).includes('api.crypto.com');
 const tfOf = (url) => new URL(String(url)).searchParams.get('timeframe');
 
 describe('candle seed retry', () => {
-  afterEach(() => mock.restoreAll());
+  // The cache's timers are unref'd; a ref'd handle keeps the test runner's loop alive while they run.
+  let keepAlive;
+  beforeEach(() => { keepAlive = setInterval(() => {}, 1000); });
+  afterEach(() => { clearInterval(keepAlive); mock.restoreAll(); });
 
   it('keeps retrying in the background after the boot attempts are exhausted', async () => {
     let cryptocomCalls = 0;
