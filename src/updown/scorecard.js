@@ -1196,7 +1196,9 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       // computeSignalsFn/recordPrediction are synchronous; a throw here would
       // crash the process from the interval callback.
       try {
-        recordPrediction(computeSignalsFn(), 'interval')
+        // null: the caller has no trustworthy signal yet (e.g. candles still seeding).
+        const sampled = computeSignalsFn()
+        if (sampled) recordPrediction(sampled, 'interval')
       } catch (err) {
         scorecardLogger.warn(`⚠️ 📊 Scorecard sample failed err=${err.message}`, {
           action: 'sample',

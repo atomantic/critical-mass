@@ -4,7 +4,7 @@ const assert = require('node:assert/strict')
 const { createUpDownService, isFreshPrice, PRICE_STALE_MS } = require('../src/updown/updown-service')
 
 const io = { to: () => ({ emit: () => {} }) }
-const candleCache = { getCandles: () => [] }
+const candleCache = { getCandles: () => [], isSeeded: () => true }
 
 const signalResult = (type) => ({
   type,
@@ -97,6 +97,40 @@ describe('UpDown stale-price and lifecycle safety', () => {
     service.handlePriceTick(101, Date.now())
     t.mock.timers.tick(5_000)
     assert.equal(service.getStatus().priceFresh, true)
+    assert.equal(service.getStatus().perp.contracts, 1)
+    service.stop()
+  })
+
+  it('runs no signal cycle or scorecard sample until the candle cache has seeded after a restart', async (t) => {
+    t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: Date.UTC(2026, 0, 1) })
+    let seeded = false
+    let computeCalls = 0
+    let sampler
+    const service = createUpDownService(io, {
+      readJSON: () => null,
+      writeJSON: () => {},
+      DATA_DIR: '/tmp/updown-service-unseeded',
+      candleCache: { getCandles: () => [], isSeeded: () => seeded },
+      createSignalEngine: engineFactory(() => {
+        computeCalls++
+        return signalResult('BUY')
+      }),
+      createScorecard: () => scorecardStub({
+        start: (computeSignals) => { sampler = computeSignals; return Promise.resolve() },
+      }),
+    })
+
+    await service.start()
+    service.handlePriceTick(100, Date.now())
+    t.mock.timers.tick(5_000)
+    assert.equal(computeCalls, 0, 'empty history must not be scored')
+    assert.equal(sampler(), null, 'the scorecard sampler must not journal an unseeded prediction')
+    assert.equal(service.getStatus().perp.contracts, 0)
+
+    seeded = true
+    service.handlePriceTick(100, Date.now())
+    t.mock.timers.tick(5_000)
+    assert.ok(computeCalls > 0)
     assert.equal(service.getStatus().perp.contracts, 1)
     service.stop()
   })
