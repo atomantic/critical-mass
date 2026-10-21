@@ -13,6 +13,8 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
   const logs = [];
   const calls = [];
   const owners = new Map();
+  const hooks = {};
+  const runningFlags = [];
   class MockServer extends EventEmitter {
     constructor(options) { super(); this.options = options; this.closed = false; servers.push(this); }
     bind() {
@@ -92,7 +94,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
     '../src/shared-utils': {
       fundKey: (name, pair) => `${name}::${pair}`,
       fundLabel: (name, pair) => `${name}/${pair}`,
-      saveRegimeRunningFlag: () => {},
+      saveRegimeRunningFlag: (_, pair, running) => { runningFlags.push([pair, running]); },
       shouldAutoResumeRegime: () => { calls.push('running-flag'); return !stopped; },
     },
     '../src/engine-stop-all': { createEngineStopAllHandler: () => async () => ({ success: true }) },
@@ -105,7 +107,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
       guardLegacyMigration: () => { calls.push('namespace-migration'); return { blocked: false }; },
       migrateExchangeToPairs: () => { calls.push('migration'); return {}; },
     },
-    '../src/restore-apply': { guardIncompleteRestore: () => { calls.push('restore'); } },
+    '../src/restore-apply': { guardIncompleteRestore: () => { calls.push('restore'); hooks.onRecovery?.(); } },
     '../src/dca-conversion-transaction': { recoverDcaImport: () => ({ recovered: false }) },
     '../src/state-tracker': { LIFECYCLE: { CLOSED: 'closed' }, loadFundRegimeState: () => { calls.push('state'); return {}; }, loadRegimeStateSafe: () => { calls.push('state'); return {}; } },
     '../src/adapters': { getAdapter: () => { calls.push('adapter'); return { hasValidKeys: () => true }; } },
@@ -139,7 +141,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
     });
     return done;
   };
-  return { ipc, createIPCServer: ipcModule.exports.createIPCServer, servers, logs, calls, send, finishFund, exits, run, getLedgerCreations: () => ledgerCreations };
+  return { hooks, runningFlags, ipc, createIPCServer: ipcModule.exports.createIPCServer, servers, logs, calls, send, finishFund, exits, run, getLedgerCreations: () => ledgerCreations };
 };
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -217,30 +219,62 @@ describe('IPC bind ownership and exchange startup', () => {
       h.ipc.stop();
     });
 
-    it(`${exchange} starts once after binding and blocks requests until funds recover`, async () => {
+    it(`${exchange} starts once after binding and blocks requests only during boot recovery`, async () => {
       const h = createHarness(exchange);
+      let mutations = 0;
+      h.ipc.onRequest('mutate', async () => { mutations++; return { success: true }; });
+      h.ipc.onRequest('config_update', async () => { mutations++; });
+      const refusals = [];
+      h.hooks.onRecovery = () => {
+        for (const [type, channel] of [['request', 'mutate'], ['request', 'regime:fills'], ['request', 'regime:stop'], ['request', 'regime:status'], ['request', 'engine:maintenance'], ['config_update', 'config_update']]) {
+          refusals.push(h.send(type, channel)[0]?.payload?.code);
+        }
+        assert.equal(h.send('ping', 'ping')[0].type, 'pong');
+      };
       const done = h.run();
       assert.deepEqual(h.calls, []);
       h.servers[0].emit('listening');
       await settle();
-      assert.deepEqual(h.calls, ['restore', 'base-config', 'namespace-migration', 'migration', 'funds', 'running-flag', 'state', 'fund-config', 'adapter', 'construct', 'trade']);
-      let mutations = 0;
-      h.ipc.onRequest('mutate', async () => { mutations++; return { success: true }; });
-      h.ipc.onRequest('config_update', async () => { mutations++; });
-      for (const [type, channel] of [['request', 'mutate'], ['request', 'regime:fills'], ['request', 'engine:maintenance'], ['config_update', 'config_update']]) {
-        const [response] = h.send(type, channel);
-        assert.equal(response.payload.code, 'engine-initializing');
-      }
-      assert.equal(h.send('ping', 'ping')[0].type, 'pong');
+      assert.deepEqual(refusals, Array(6).fill('engine-initializing'));
       assert.equal(mutations, 0);
-      h.finishFund({ success: true });
+      assert.deepEqual(h.calls, ['restore', 'base-config', 'namespace-migration', 'migration', 'funds', 'running-flag', 'state', 'fund-config', 'adapter', 'construct', 'trade']);
       await done;
       assert.deepEqual(h.exits, []);
       const frames = h.send('request', 'mutate');
       await settle();
       assert.equal(frames[0].payload.success, true);
       assert.equal(mutations, 1);
+      h.finishFund({ success: true });
+      await settle();
       assert.equal(h.calls.filter((call) => call === 'trade').length, 1);
+      h.ipc.stop();
+    });
+
+    // Issue #1554: a slow first auto-resume must not hold the IPC gate shut.
+    it(`${exchange} admits stop and status while a fund's first auto-resume is pending`, async () => {
+      const h = createHarness(exchange);
+      const done = h.run();
+      h.servers[0].emit('listening');
+      await done;
+      await settle();
+      assert.equal(h.calls.filter((call) => call === 'trade').length, 1, 'engine.start() is in flight');
+      const statusFrames = h.send('request', 'regime:status');
+      const stopFrames = h.send('request', 'regime:stop');
+      const maintenanceFrames = h.send('request', 'engine:maintenance');
+      await settle();
+      assert.ok(maintenanceFrames[0]);
+      assert.notEqual(maintenanceFrames[0].payload?.code, 'engine-initializing');
+      assert.equal(statusFrames[0].payload.success, true, JSON.stringify(statusFrames[0]?.payload));
+      assert.notEqual(statusFrames[0].payload.code, 'engine-initializing');
+      // The stop is admitted and its intent recorded before the start resolves;
+      // it replies once the supervisor has torn the cancelled attempt down.
+      assert.deepEqual(h.runningFlags, [['BTC-USD', false]]);
+      assert.equal(stopFrames.length, 0);
+      h.finishFund({ success: true });
+      for (let i = 0; i < 5 && !stopFrames.length; i++) await settle();
+      assert.equal(stopFrames[0].payload.success, true, JSON.stringify(stopFrames[0]?.payload));
+      assert.equal(h.calls.filter((call) => call === 'cleanup').length, 1);
+      assert.equal(h.runningFlags.some(([, running]) => running), false);
       h.ipc.stop();
     });
   }
