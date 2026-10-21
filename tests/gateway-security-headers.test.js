@@ -13,6 +13,7 @@ describe('gateway security headers', () => {
     const app = express()
     app.disable('x-powered-by')
     app.use(createSecurityHeadersMiddleware())
+    app.use('/drain', (req, res) => res.status(503).json({ success: false }))
     app.get('/', (req, res) => res.send('<html></html>'))
     app.use((req, res) => res.status(404).json({ success: false, error: 'Not found' }))
     await new Promise((resolve) => {
@@ -41,6 +42,12 @@ describe('gateway security headers', () => {
   it('sets the same headers on a JSON 404 and drops x-powered-by', async () => {
     const res = await fetch(`${base}/api/missing`)
     assert.equal(res.status, 404)
+    expectHeaders(res)
+  })
+
+  it('sets the headers on responses short-circuited by later middleware', async () => {
+    const res = await fetch(`${base}/drain`)
+    assert.equal(res.status, 503)
     expectHeaders(res)
   })
 })

@@ -163,10 +163,11 @@ const routes = Object.fromEntries(Object.entries(shutdownRoutes).map(([method, r
 
 // ============ Middleware ============
 
-app.use(gatewayShutdown.middleware);
-
+// Security headers go first so responses short-circuited by later middleware (e.g. shutdown 503) carry them too.
 app.disable('x-powered-by');
 app.use(createSecurityHeadersMiddleware());
+
+app.use(gatewayShutdown.middleware);
 
 app.use(createCorsMiddleware(CORS_ORIGINS));
 
