@@ -1809,6 +1809,53 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 
+  // EXPIRED must behave like CANCELLED when it lands on a pending FILLED
+  // retry chain: the terminal cancel path owns catch-up, the order stays
+  // settled, and the FILLED retry timer no longer fires a fill.
+  for (const terminal of ['CANCELLED', 'EXPIRED']) {
+    it(`${terminal} arriving during a pending FILLED retry settles the order and stops the FILLED chain`, async (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      let calls = 0;
+      const svc = createMarketDataService('coinbase');
+      svc._test.injectAdapter({
+        getOrderFills: async () => {
+          calls += 1;
+          if (calls === 1) throw new Error('boom'); // FILLED attempt 0 fails -> retry armed
+          return [{ tradeId: 't1', orderId: 'order-Par', side: 'sell', price: 70000, size: 0.5, totalCommission: 0.05 }];
+        },
+      });
+      const ingested = new Set();
+      svc._test.injectFillLedger({
+        ingestFill: (fill) => {
+          if (ingested.has(fill.tradeId)) return { ingested: false, fill: null };
+          ingested.add(fill.tradeId);
+          return { ingested: true, fill };
+        },
+        getFillsForOrder: () => Array.from(ingested).map(() => ({ size: 0.5 })),
+        getRecordedSizeForOrder: () => ingested.size * 0.5,
+        persist: () => {},
+      });
+      svc._test.injectProductId('BTC-USDC');
+      svc.trackOrder('order-Par', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
+      const fills = [];
+      svc.setOnOrderFill(f => fills.push(f));
+
+      await svc._test.handleOrderUpdate({ orderId: 'order-Par', status: 'FILLED', filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0.05 });
+      assert.equal(fills.length, 0, 'FILLED catch-up failed; retry pending');
+      assert.ok(svc._test.pendingTerminalRetries.get('order-Par')?.timerId != null, 'FILLED retry timer armed');
+
+      await svc._test.handleOrderUpdate({ orderId: 'order-Par', status: terminal, filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0 });
+      assert.equal(svc.getOrderStatus('order-Par'), terminal.toLowerCase());
+      assert.equal(ingested.size, 1, 'terminal cancel path caught up the fills');
+
+      t.mock.timers.tick(10_000);
+      await tick();
+      assert.equal(fills.length, 0, `${terminal} must stop the FILLED chain; no fill callback`);
+      assert.equal(svc.getOrderStatus('order-Par'), terminal.toLowerCase(), 'order stays settled');
+      svc.stop();
+    });
+  }
+
   it('OPEN+completionPercentage=100 with zero aggregates is NOT classified as terminal (waits for FILLED with real data)', async () => {
     // Coinbase's WS can briefly emit an OPEN event with completion=100
     // before averageFilledPrice / totalFees are populated on that
