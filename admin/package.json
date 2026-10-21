@@ -10,7 +10,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@react-three/drei": "^10.7.9",
     "@react-three/fiber": "^9.8.1",
     "@react-three/postprocessing": "^3.2.0",
     "react": "^19.3.0",

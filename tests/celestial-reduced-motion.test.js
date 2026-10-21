@@ -61,9 +61,13 @@ describe('CelestialScene motion gating (issue #539)', () => {
     assert.match(celestialSceneSource, /autoRotate={!reducedMotion}/)
   })
 
-  it('stops starfield drift under reduced motion', () => {
-    const matches = celestialSceneSource.match(/speed={reducedMotion \? 0 : [\d.]+}/g) || []
-    assert.equal(matches.length, 3)
+  it('keeps the starfield static (no per-frame drift to gate under reduced motion)', () => {
+    const starfieldSource = fs.readFileSync(
+      path.join(__dirname, '..', 'admin', 'src', 'components', 'celestial', 'Starfield.jsx'),
+      'utf8',
+    )
+    assert.match(celestialSceneSource, /<Starfield /)
+    assert.doesNotMatch(starfieldSource, /useFrame/)
   })
 })
 

@@ -1,0 +1,1 @@
+- **[issue-1341] Replace `@react-three/drei` with three addons and small local components** — Celestial/Systems 3D views now use three's `OrbitControls` (via `OrbitControlsLite`), a local `Starfield` points shell and a local DOM `Html` tooltip anchor; drops drei and ~50 transitive packages from the admin lockfile. Starfield twinkle/fade is dropped (static stars).
