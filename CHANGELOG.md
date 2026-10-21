@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Exchange feeds reconnect when a WebSocket handshake never completes** — A market or user feed whose upgrade request hangs is now terminated after 15s and retried with the normal backoff, instead of staying dark and blocking every later reconnect.
 - **DCA transactions, UpDown trades and Sentinel alerts support paging** — `GET /api/:exchange/transactions`, `/api/updown/trades` and `/api/sentinel/alerts` accept opt-in `?limit=` (default and max 500) and `?offset=` and report `total`; the UpDown summary still covers every trade. Requests without paging params return the same responses as before.
 - **A finished AI provider run no longer shows "No output" when its output read fails** — The run panel keeps the run, shows a read notice and a Retry button that re-reads the output, instead of reporting an empty result.
 - **Restoring an old archive with its source config works as documented** — `POST /api/backups/:filename/restore` now passes `legacyBaseConfig` through to the restore, so the recommended path in UPGRADE.md for archives taken before configuration manifests existed no longer fails with "legacy-archive-missing-base".
