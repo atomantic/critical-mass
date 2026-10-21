@@ -6891,7 +6891,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     if (Math.abs(unmodelled) <= tolerance) return;
 
-    logger.warn(
+    // Account-wide balance includes holdings the engine never managed, so this
+    // is informational; the ledger-only gap above is the actionable warning.
+    logger.info(
       `⚖️ [${exchange}] Position coverage gap: exchange holds ${roundAsset(onExchange)} ${baseCurrency}, model accounts for ${roundAsset(inBodies + reserves)} `
       + `(${roundAsset(inBodies)} in ${(positionState.celestialBodies || []).length} bodies + ${roundAsset(reserves)} reserves) — ${unmodelled} ${baseCurrency} untracked`
       + (ledger.untrackedSold > 0 ? `; ${ledger.untrackedSold} ${baseCurrency} left via untracked (foreign) sells` : ''),
@@ -6954,8 +6956,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     };
 
     if (result.unaccountedCount > 0) {
-      logger.warn(
-        `🩸 [${exchange}] Ledger drift: ${result.unaccountedCount} exchange fill(s) across ${orders.length} order(s) missing from the ledger — net ${asset} ${baseCurrency} / $${usd} unaccounted since ${startDate}`,
+      // The exchange history is account-wide, so manual trades and other bots
+      // on this product land here too — expected, hence info rather than warn.
+      logger.info(
+        `🩸 [${exchange}] Ledger drift: ${result.unaccountedCount} exchange fill(s) across ${orders.length} order(s) not in the ledger (foreign activity expected) — net ${asset} ${baseCurrency} / $${usd} unaccounted since ${startDate}`,
         {
           pair: productId,
           unaccountedFills: result.unaccountedCount,

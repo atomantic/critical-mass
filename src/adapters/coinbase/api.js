@@ -672,7 +672,8 @@ const createCoinbaseAdapter = (keysPath = null) => {
         // complete responses. There is no safe request to make for a page the
         // API did not identify, so preserve the fills received and stop rather
         // than making every reconciliation pass fail on the inconsistent flag.
-        logger.warn(`⚠️ Coinbase reconciliation response for ${normalizedProductId} indicated more pages without a cursor; treating the current page as final`, {
+        // Routine API quirk, so info rather than warn — it repeats every sweep.
+        logger.info(`Coinbase reconciliation response for ${normalizedProductId} indicated more pages without a cursor; treating the current page as final`, {
           productId: normalizedProductId,
           fills: rawFills.length,
         });
