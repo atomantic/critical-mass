@@ -199,6 +199,50 @@ describe('restore writer quiescence gate', () => {
   });
 });
 
+describe('restore saves a pre-restore recovery archive', () => {
+  afterEach(() => {
+    maintenance.endMaintenance();
+    mock.restoreAll();
+  });
+
+  it('archives the live data after every writer stops and before any file is replaced', async () => {
+    const events = [];
+    const { status, body } = await runRestore({
+      gatewayWriters: [{ name: 'UpDown', stop: () => { events.push('stop UpDown'); }, resume: () => { events.push('resume UpDown'); } }],
+      createRecoveryPoint: async () => { events.push('archive'); return { success: true, filename: 'backup-pre.zip' }; },
+      restore: () => { events.push('apply'); return { success: true, filesRestored: 3 }; },
+    });
+    assert.equal(status, 200);
+    assert.deepEqual(events, ['stop UpDown', 'archive', 'apply', 'resume UpDown']);
+    assert.equal(body.recoveryPoint, 'backup-pre.zip');
+    assert.match(body.message, /saved as backup-pre\.zip; restore that backup to undo/);
+  });
+
+  it('still restores, with a warning, when the recovery archive cannot be created', async () => {
+    // A corrupt config is both a reason to restore and a reason archiving fails;
+    // refusing here would block the recovery.
+    const { status, body, restoreCalls } = await runRestore({
+      createRecoveryPoint: async () => { throw new Error('ENOSPC: no space left on device'); },
+    });
+    assert.equal(status, 200);
+    assert.equal(restoreCalls.length, 1);
+    assert.equal(body.recoveryPoint, undefined);
+    assert.equal(body.warnings.length, 1);
+    assert.match(body.warnings[0], /ENOSPC.*cannot be undone/);
+  });
+
+  it('archives nothing when the quiescence gate blocks the restore', async () => {
+    const archived = [];
+    const { status, restoreCalls } = await runRestore({
+      exchangeIPCMap: { coinbase: { isConnected: () => false, request: async () => ({}) } },
+      createRecoveryPoint: async () => { archived.push('archive'); return { success: true, filename: 'x.zip' }; },
+    });
+    assert.equal(status, 409);
+    assert.deepEqual(archived, []);
+    assert.deepEqual(restoreCalls, []);
+  });
+});
+
 describe('restore drains and reloads the gateway UpDown writer', () => {
   afterEach(() => maintenance.endMaintenance());
 
@@ -420,7 +464,7 @@ describe('settings route is wired to the quiescence gate', () => {
   const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
   const CONFIG = { exchanges: { coinbase: { pairs: { 'BTC-USDC': { productId: 'BTC-USDC' } } } } };
 
-  const setup = (ipc) => {
+  const setup = (ipc, recoveryCalls = []) => {
     configUtils._resetConfigCacheForTests();
     mock.method(fs, 'existsSync', (p) => p === BASE_CONFIG_FILE);
     mock.method(fs, 'readFileSync', (p) => {
@@ -441,7 +485,9 @@ describe('settings route is wired to the quiescence gate', () => {
       get: () => {}, put: () => {}, delete: () => {},
       post: (route, fn) => { if (route === '/api/backups/:filename/restore') handler = fn; },
     };
-    registerSettingsRoutes(app, { exchangeIPCMap: { coinbase: ipc }, rescheduleBackupTimer: () => {} });
+    // Stubbed so no test zips a real data directory into a real backups folder.
+    const createRecoveryPoint = async () => { recoveryCalls.push('archive'); return { success: true, filename: 'backup-pre-restore.zip' }; };
+    registerSettingsRoutes(app, { exchangeIPCMap: { coinbase: ipc }, rescheduleBackupTimer: () => {}, createRecoveryPoint });
     return async (body = {}) => {
       const res = { statusCode: 200, body: null, status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
       await handler({ params: { filename: 'backup-2026-01-01.zip' }, body }, res);
@@ -456,17 +502,21 @@ describe('settings route is wired to the quiescence gate', () => {
   });
 
   it('returns 409 without attempting extraction when the engine will not confirm', async () => {
-    const invoke = setup({ isConnected: () => true, request: async () => { throw new Error('socket hang up'); } });
+    const recoveryCalls = [];
+    const invoke = setup({ isConnected: () => true, request: async () => { throw new Error('socket hang up'); } }, recoveryCalls);
     const res = await invoke();
     assert.equal(res.statusCode, 409);
     assert.equal(res.body.code, 'writers-not-quiesced');
+    assert.deepEqual(recoveryCalls, [], 'a blocked restore archives nothing');
   });
 
   it('proceeds to the archive applier once the engine confirms', async () => {
     // existsSync is mocked false for the archive, so restoreBackup reports
     // "Backup not found" — reaching that error proves the gate let it through.
-    const invoke = setup(okIPC());
+    const recoveryCalls = [];
+    const invoke = setup(okIPC(), recoveryCalls);
     const res = await invoke();
+    assert.deepEqual(recoveryCalls, ['archive'], 'the live data is archived before the applier runs');
     assert.equal(res.statusCode, 500);
     assert.equal(res.body.code, 'restore-failed');
     assert.equal(res.body.error, 'Backup not found. Engines stopped for the restore are still stopped: coinbase BTC-USDC — restart them from the dashboard.');

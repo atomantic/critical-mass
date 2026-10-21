@@ -213,10 +213,13 @@ function BackupRestore() {
       const data = await res.json().catch(() => ({}))
       if (res.ok && data.success) {
         setMessage({
-          type: data.forced ? 'error' : 'success',
-          text: data.forced
-            ? `${data.message || `Restored ${plural(data.filesRestored, "file")} for ${exchange}/${pair}`} — FORCED past ${plural(data.unconfirmed?.length || 0, "unconfirmed writer")}; verify your data before restarting engines.`
-            : (data.message || `Restored ${plural(data.filesRestored, "file")} for ${exchange}/${pair}`),
+          type: data.forced || data.warnings?.length ? 'error' : 'success',
+          text: [
+            data.forced
+              ? `${data.message || `Restored ${plural(data.filesRestored, "file")} for ${exchange}/${pair}`} — FORCED past ${plural(data.unconfirmed?.length || 0, "unconfirmed writer")}; verify your data before restarting engines.`
+              : (data.message || `Restored ${plural(data.filesRestored, "file")} for ${exchange}/${pair}`),
+            ...(data.warnings || []),
+          ].join(' '),
         })
         fetchData({ silent: true })
       } else if (res.status === 409 && data.code === 'writers-not-quiesced') {
@@ -276,7 +279,7 @@ function BackupRestore() {
       const data = await res.json().catch(() => ({}))
       if (res.ok && data.success) {
         setMessage({
-          type: data.forced ? 'error' : 'success',
+          type: data.forced || data.warnings?.length ? 'error' : 'success',
           text: [
             data.forced
               ? `${data.message || `Restored ${plural(data.filesRestored, "file")}`} — FORCED past ${plural(data.unconfirmed?.length || 0, "unconfirmed writer")}; verify your data before restarting engines.`
@@ -284,6 +287,7 @@ function BackupRestore() {
             data.configRestored
               ? 'Fund configuration was restored from the archive manifest.'
               : 'Data files only — this machine kept its existing fund configuration.',
+            ...(data.warnings || []),
           ].join(' '),
         })
       } else if (res.status === 409 && data.code === 'writers-not-quiesced') {
