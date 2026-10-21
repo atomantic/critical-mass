@@ -121,16 +121,26 @@ const createUpDownService = (io, deps) => {
   const signalHistory = [];
 
   /**
-   * Load persisted state from disk
+   * Load persisted state from disk, fully REPLACING what is held in memory.
+   *
+   * This is also the post-restore reload hook: a backup restore rewrites the
+   * state file underneath us, and surviving in-memory position / paper book
+   * would otherwise be written straight back over the recovered file by the
+   * next persistState(). A restored file that lacks a field must clear it.
    */
   const loadState = () => {
     quarantineIfUnreadable(stateFilePath, updownLogger);
     const saved = readJSON(stateFilePath, null);
+    contract = { expiry: null, target: null, stop: null, range: null, direction: null };
+    position = null;
+    signalHistory.length = 0;
+    signalEngine.setStabilityState({});
+    signalEngine.setFlushSetupState?.({});
+    perpBook.hydrate({});
     if (!saved) return;
     if (saved.contract) contract = { ...contract, ...saved.contract };
     if (saved.position) position = saved.position;
     if (saved.signalHistory) {
-      signalHistory.length = 0;
       // Filter out only NO_TRADE_ZONE — keep NEUTRAL and all directional signals
       for (const s of saved.signalHistory) {
         if (s.type !== 'NO_TRADE_ZONE') {
