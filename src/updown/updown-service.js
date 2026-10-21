@@ -409,7 +409,16 @@ const createUpDownService = (io, deps) => {
       lastSignal = result.type;
       appendSignalHistory(result, action, lastPrice);
 
-      persistState();
+      // A failed save must not drop the prediction or the dashboard alert:
+      // lastSignal already matches, so the change would never be re-emitted.
+      try {
+        persistState();
+      } catch (err) {
+        updownLogger.error(`❌ 📊 UpDown state save failed on signal change err=${err.message}`, {
+          action: 'persist-state',
+          error: err.message,
+        });
+      }
 
       // Record signal change for scorecard tracking
       scorecard.recordPrediction(result, 'signal_change');

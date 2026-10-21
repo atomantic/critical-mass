@@ -129,12 +129,29 @@ module.exports = (app, deps) => {
 
     updateSentinelConfig(sanitized);
     // Restart service with new config
-    sentinelService.stop();
+    // stop() clears timers before persisting alert state and rethrows a save
+    // failure; start() must still run so Sentinel is not left stopped.
+    let stopError = null;
+    try {
+      sentinelService.stop();
+    } catch (err) {
+      stopError = err;
+    }
     sentinelService.start();
     logger.info('ℹ️ Sentinel config updated via API', {
       action: 'update-config',
       keys: Object.keys(sanitized),
     });
+    if (stopError) {
+      logger.error(`❌ Sentinel alert state could not be saved during restart: ${stopError.message}`, {
+        action: 'update-config',
+        error: stopError.message,
+      });
+      return res.status(500).json({
+        success: false,
+        error: `Config saved and Sentinel restarted, but its alert state could not be written: ${stopError.message}`,
+      });
+    }
     res.json({ success: true, config: getSentinelConfig() });
   }));
 

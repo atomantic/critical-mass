@@ -356,3 +356,13 @@ describe('UpDown reload replaces in-memory state', () => {
     assert.equal(last.perpBook.lots.length, 0)
   })
 })
+
+describe('UpDown signal change survives a state save failure (issue #1503)', () => {
+  it('still records the prediction and emits updown:signal when persistState throws', async t => {
+    const { cycle } = await cycleHarness(t, { failAt: 'persist' })
+    const out = cycle({}, [100]) // NEUTRAL: signal change without a paper fill
+    assert.ok(out.some(c => c.name === 'persist'), 'persist was attempted')
+    assert.ok(out.some(c => c.name === 'prediction' && c.payload.source === 'signal_change'))
+    assert.ok(out.some(c => c.name === 'updown:signal'))
+  })
+})
