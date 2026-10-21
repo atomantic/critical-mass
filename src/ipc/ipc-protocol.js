@@ -18,6 +18,55 @@ const MSG_TYPE = {
   PONG: 'pong',
 };
 
+/**
+ * Request channel names shared by the gateway (clients calling
+ * `ipc.request(...)`) and the engine (`ipcServer.onRequest(...)`). Using one
+ * table on both sides means a rename fails at require time instead of as a
+ * runtime request timeout.
+ */
+const IPC_CHANNELS = Object.freeze({
+  REGIME_START: 'regime:start',
+  REGIME_STOP: 'regime:stop',
+  REGIME_RECALCULATE: 'regime:recalculate',
+  REGIME_CANCEL_LADDER: 'regime:cancel-ladder',
+  REGIME_CHART_DATA: 'regime:chart-data',
+  REGIME_CLOSE: 'regime:close',
+  REGIME_CONFIG: 'regime:config',
+  REGIME_CONVERT_DCA: 'regime:convert-dca',
+  REGIME_DISMISS_FILLS: 'regime:dismiss-fills',
+  REGIME_DRY_RUN_LOG: 'regime:dry-run-log',
+  REGIME_DRY_RUN_PNL: 'regime:dry-run-pnl',
+  REGIME_DRY_RUN_RESET: 'regime:dry-run-reset',
+  REGIME_DRY_RUN_STATE: 'regime:dry-run-state',
+  REGIME_FILLS: 'regime:fills',
+  REGIME_FILLS_CYCLES: 'regime:fills:cycles',
+  REGIME_FORCE_REGIME: 'regime:force-regime',
+  REGIME_MANUAL_TRADE: 'regime:manual-trade',
+  REGIME_MANUAL_TRADE_BUY: 'regime:manual-trade-buy',
+  REGIME_MANUAL_TRADE_CHECK: 'regime:manual-trade-check',
+  REGIME_MANUAL_TRADE_PAIR: 'regime:manual-trade-pair',
+  REGIME_MANUAL_TRADE_RESUME: 'regime:manual-trade-resume',
+  REGIME_MANUAL_TRADE_RETRY: 'regime:manual-trade-retry',
+  REGIME_MANUAL_TRADES: 'regime:manual-trades',
+  REGIME_OPEN_ORDERS: 'regime:open-orders',
+  REGIME_PAUSE: 'regime:pause',
+  REGIME_PREVIEW_LADDER: 'regime:preview-ladder',
+  REGIME_REBUILD_LADDER: 'regime:rebuild-ladder',
+  REGIME_RECONCILE_PLACEMENT_INTENT: 'regime:reconcile-placement-intent',
+  REGIME_REOPEN: 'regime:reopen',
+  REGIME_RESET_CYCLE: 'regime:reset-cycle',
+  REGIME_RESUME: 'regime:resume',
+  REGIME_RESUME_DRAWDOWN: 'regime:resume-drawdown',
+  REGIME_ROLLUP_ALL: 'regime:rollup-all',
+  REGIME_ROLLUP_BODY: 'regime:rollup-body',
+  REGIME_SET_BODY_TP: 'regime:set-body-tp',
+  REGIME_SET_BODY_TP_PRICE: 'regime:set-body-tp-price',
+  REGIME_STATUS: 'regime:status',
+  REGIME_UNACCOUNTED_FILLS: 'regime:unaccounted-fills',
+  REGIME_UNACCOUNTED_FILLS_STATUS: 'regime:unaccounted-fills-status',
+  REGIME_UPDATE_CONFIG: 'regime:update-config',
+});
+
 const DEFAULT_TIMEOUT = 10_000; // 10s for request/response
 
 /**
@@ -59,4 +108,4 @@ const serialize = (msg) => JSON.stringify(msg);
  */
 const deserialize = (data) => JSON.parse(data);
 
-module.exports = { MSG_TYPE, DEFAULT_TIMEOUT, createMessage, serialize, deserialize };
+module.exports = { MSG_TYPE, IPC_CHANNELS, DEFAULT_TIMEOUT, createMessage, serialize, deserialize };

@@ -11,7 +11,7 @@ const {
 } = require('../src/engine-shutdown');
 
 const read = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
-const watchdogMs = Number(/const SHUTDOWN_WATCHDOG_MS = (\d+);/.exec(read('engines/coinbase-engine.js'))[1]);
+const watchdogMs = Number(/const SHUTDOWN_WATCHDOG_MS = (\d+);/.exec(read('engines/exchange-engine.js'))[1]);
 const graceMs = (() => {
   const m = /stop_grace_period:\s*(\d+)(s|m)/.exec(read('docker-compose.yml'));
   return Number(m[1]) * (m[2] === 'm' ? 60000 : 1000);

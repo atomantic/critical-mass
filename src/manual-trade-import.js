@@ -7,7 +7,7 @@
  * documented source of truth for realized P&L — see CLAUDE.md) and, on the
  * sell-first recovery path, place a live exchange order.
  *
- * Extracted from engines/coinbase-engine.js so the behavior is testable: the
+ * Extracted from engines/exchange-engine.js so the behavior is testable: the
  * engine module calls startup() and registers process signal handlers at module
  * scope, so it can never be require()d from a test. The engine keeps only the
  * IPC wiring that resolves the fund's adapter/ledger/store and delegates here.

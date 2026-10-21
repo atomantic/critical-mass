@@ -64,9 +64,9 @@ disconnected, and 1–30 second exponential backoff.
 
 | Engine | File | Env | IPC Port | Notes |
 |---|---|---|---|---|
-| Coinbase | `coinbase-engine.js` | `EXCHANGE_NAME=coinbase` | 5572 | Regime engine, market data, chart buffer |
-| Gemini | `gemini-engine.js` | `EXCHANGE_NAME=gemini` | 5573 | Thin wrapper around coinbase-engine |
-| Crypto.com | `cryptocom-engine.js` | `EXCHANGE_NAME=cryptocom` | 5574 | Thin wrapper around coinbase-engine |
+| Coinbase | `exchange-engine.js` | `EXCHANGE_NAME=coinbase` (default) | 5572 | Regime engine, market data, chart buffer |
+| Gemini | `gemini-engine.js` | `EXCHANGE_NAME=gemini` | 5573 | Thin wrapper around exchange-engine |
+| Crypto.com | `cryptocom-engine.js` | `EXCHANGE_NAME=cryptocom` | 5574 | Thin wrapper around exchange-engine |
 
 ## Gateway Routing
 
@@ -165,7 +165,7 @@ restart, drain the gateway before stopping exchange engine processes so admitted
 IPC operations can finish; stopping all engines simultaneously cannot provide
 that dependency guarantee. The exchange engines (`critical-mass-coinbase`, `-gemini`, `-cryptocom`) set
 `kill_timeout: 25000` (`ENGINE_KILL_TIMEOUT_MS`), above their 22 s in-process
-force-exit watchdog (`SHUTDOWN_WATCHDOG_MS` in `engines/coinbase-engine.js`). The watchdog
+force-exit watchdog (`SHUTDOWN_WATCHDOG_MS` in `engines/exchange-engine.js`). The watchdog
 covers the bounded pre-stop steps in `src/engine-shutdown.js` (IPC drain 3 s, fund-start and
 market-data-start joins 2 s each — a hung start is abandoned, not awaited), the single 10 s
 flash-cancel/in-flight-fill wait that `regime-engine` `stop()` performs before saving state

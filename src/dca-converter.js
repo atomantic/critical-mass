@@ -571,7 +571,7 @@ const stageConversion = (exchange, pair, importId) => {
     fillLedger = createFillLedger(exchange, pair, pair);
   } catch (err) {
     log('ERROR', `❌ [${fundLabel(exchange, pair)}] Fill ledger init failed during conversion: ${err.message} — conversion aborted`);
-    // Throw a sanitized message: the IPC handler at coinbase-engine.js:
+    // Throw a sanitized message: the IPC handler at exchange-engine.js:
     // regime:convert-dca surfaces this back to the client. Keeping the
     // absolute ledger path / parser internals out of the API surface
     // mirrors the regime:start sanitization. Full detail stays in the

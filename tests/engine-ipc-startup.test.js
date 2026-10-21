@@ -87,6 +87,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
     '../src/manual-trade-import': {},
     '../src/unaccounted-fills-jobs': require('../src/unaccounted-fills-jobs'),
     '../src/ipc/ipc-server': { createIPCServer: () => ipc },
+    '../src/ipc/regime-ipc-handlers': require('../src/ipc/regime-ipc-handlers'),
     '../src/ipc/realtime-proxy': { createRealtimeProxy: () => ({}), forwardTradeEvents: () => {} },
     '../src/shared-utils': {
       fundKey: (name, pair) => `${name}::${pair}`,
@@ -117,7 +118,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
   const exits = [];
   const processMock = { env: {}, on: () => {}, exit: (code) => exits.push(code) };
   const runShared = () => vm.runInNewContext(
-    fs.readFileSync(path.join(__dirname, '../engines/coinbase-engine.js'), 'utf8')
+    fs.readFileSync(path.join(__dirname, '../engines/exchange-engine.js'), 'utf8')
       .replace('startup().catch', 'const startupDone = startup().catch') + '\nstartupDone;',
     { process: processMock, require: (name) => {
       assert.ok(name in dependencies, `unexpected engine dependency ${name}`);
@@ -131,7 +132,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
       process: processMock,
       require: (name) => {
         if (name === '../src/ipc-port-defaults') return dependencies[name];
-        assert.equal(name, './coinbase-engine');
+        assert.equal(name, './exchange-engine');
         done = runShared();
         return {};
       },

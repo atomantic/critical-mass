@@ -6,4 +6,4 @@ process.env.EXCHANGE_NAME = 'gemini';
 // literal — a stale literal here is what let this fall back to the Vite dev
 // server's port outside PM2 (issue #690).
 process.env.EXCHANGE_IPC_PORT = String(resolveIpcPort('gemini'));
-require('./coinbase-engine');
+require('./exchange-engine');
