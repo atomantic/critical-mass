@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { BarChart3 } from '../icons'
 import useCandleData, { DEFAULT_VIEWS } from '../../hooks/useCandleData'
-import { BTC_TOOLTIP_STYLE, formatBTCPrice } from './chartUtils'
+import { BTC_TOOLTIP_STYLE, formatBTCPrice, AXIS_TICK, GRID } from './chartUtils'
 import { CartesianChart } from './primitives/CartesianChart'
 import AtomokuCloudRenderer from './AtomokuCloudRenderer'
 import HeikinAshiRenderer from './HeikinAshiRenderer'
@@ -10,12 +10,10 @@ import SignalAnnotationRenderer from './SignalAnnotationRenderer'
 // Stable empty arrays to avoid re-render loops from default prop values
 const EMPTY_ARRAY = []
 
-const AXIS_TICK = { fontSize: 10, fill: '#9ca3af' }
 const SUB_AXIS_TICK = { fontSize: 9, fill: '#6b7280' }
 const SUB_MARGIN = { top: 2, right: 5, bottom: 0, left: 5 }
 const SUB_X_AXIS = { dataKey: 'label', hide: true }
 const MAIN_MARGIN = { top: 5, right: 5, bottom: 0, left: 5 }
-const GRID = { stroke: '#374151', strokeDasharray: '3 3' }
 
 const SERIES_LABELS = {
   price: 'Price', bollingerUpper: 'BB Upper', bollingerLower: 'BB Lower',

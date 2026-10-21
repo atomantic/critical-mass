@@ -179,6 +179,10 @@ export const colors = {
 // Faint dashed horizontal grid behind the time-series charts
 export const DASHED_GRID = { stroke: colors.gridLine, strokeDasharray: '3,3', strokeOpacity: 0.5 }
 
+// Shared recharts axis tick + grid styles (dark theme)
+export const AXIS_TICK = { fontSize: 10, fill: '#9ca3af' }
+export const GRID = { stroke: '#374151', strokeDasharray: '3 3' }
+
 // Opacity variants for fills
 export const colorWithOpacity = (color, opacity = 0.3) => {
   const hex = color.replace('#', '')
