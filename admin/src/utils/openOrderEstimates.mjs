@@ -19,11 +19,12 @@
 
 // Holdback scale per tier comes from the shared tier table (shared/celestial-tiers.mjs).
 import { TIER_HOLDBACK_SCALE } from '../../../shared/celestial-tiers.mjs'
+import { DEFAULT_FEE_RATE_PER_SIDE } from '../../../shared/fee-defaults.mjs'
 export { TIER_HOLDBACK_SCALE }
 
-// Matches the engine's conservative default in regime-engine.js placeBodyTp
-// (`config.feeRate || 0.001`).
-export const DEFAULT_FEE_RATE_PER_SIDE = 0.001
+// Same fallback the engine uses (shared/fee-defaults.mjs), so the estimates match
+// regime-engine.js placeBodyTp's `config.feeRate || DEFAULT_FEE_RATE_PER_SIDE`.
+export { DEFAULT_FEE_RATE_PER_SIDE }
 
 const isTpOrderType = (type) =>
   type === 'take_profit' || type === 'satellite_tp' || type === 'body_tp'

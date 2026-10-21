@@ -15,6 +15,7 @@
 const { roundAsset, roundPrice } = require('./volatility-utils');
 const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, ENTRY_NOT_ADMITTED } = require('./shared-utils');
+const { DEFAULT_FEE_RATE_PER_SIDE } = require('../shared/fee-defaults.mjs');
 const { createContextLogger } = require('./logger');
 
 /**
@@ -415,7 +416,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       // Hardcoding 0 (assuming free maker fills) systematically inflated dry-run
       // P&L vs live and was wrong for Gemini/Crypto.com, which charge maker fees
       // — the dry-run executor is shared across exchanges (#109).
-      const feeRate = config.feeRate ?? 0.001; // ?? so an explicit 0 (zero-fee dry run) is honored, not replaced
+      const feeRate = config.feeRate ?? DEFAULT_FEE_RATE_PER_SIDE; // ?? so an explicit 0 (zero-fee dry run) is honored, not replaced
       const estimatedFee = order.size * fillPrice * feeRate;
       const costBasis = (order.size * fillPrice) + estimatedFee;
 
@@ -472,7 +473,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       // avgBuyPrice already carries the buy-side fee. We can therefore fee-adjust
       // the sell proceeds too — mirroring live's `proceeds = quoteAmount - netFee`
       // — for full round-trip fee parity (both legs accounted).
-      const feeRate = config.feeRate ?? 0.001; // ?? honors an explicit 0 (zero-fee dry run)
+      const feeRate = config.feeRate ?? DEFAULT_FEE_RATE_PER_SIDE; // ?? honors an explicit 0 (zero-fee dry run)
       const bodyInfo = getBodyByTpOrderId(orderId);
       const avgBuyPrice = bodyInfo ? (bodyInfo.costBasis / bodyInfo.assetQty) : getAverageEntryPrice();
       const costBasis = order.size * avgBuyPrice;
@@ -519,7 +520,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       // Calculate simulated P&L for this TP
       const proceeds = order.size * fillPrice;
       // Apply the configured per-side fee rate (see entry-fill note above) (#109).
-      const feeRate = config.feeRate ?? 0.001; // ?? so an explicit 0 (zero-fee dry run) is honored, not replaced
+      const feeRate = config.feeRate ?? DEFAULT_FEE_RATE_PER_SIDE; // ?? so an explicit 0 (zero-fee dry run) is honored, not replaced
       const estimatedFee = proceeds * feeRate;
       const netProceeds = proceeds - estimatedFee;
 
@@ -703,7 +704,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     // netFee`: derive entry notional from the average filled-buy price and fold
     // in the per-side entry fee. Falls back to the TP price only when no buy
     // fills exist yet (e.g. core migration), since there's no entry to price.
-    const feeRate = config.feeRate ?? 0.001; // ?? honors an explicit 0 (zero-fee dry run)
+    const feeRate = config.feeRate ?? DEFAULT_FEE_RATE_PER_SIDE; // ?? honors an explicit 0 (zero-fee dry run)
     const avgEntryPrice = avgBuyPrice || getAverageEntryPrice() || roundedPrice;
     const entryNotional = roundedQty * avgEntryPrice;
     const costBasis = entryNotional + (entryNotional * feeRate);
