@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-1326] UpDown trade log extracted from the route file** — Trade persistence (corrupt-file detection, `.tmp` recovery hint, id allocation), trade-record construction and summary stats now live in `src/updown/trade-log.js` (`createTradeLog`), unit-testable without Express. Route behavior is unchanged. The screenshot vision-provider client extraction remains.
 - **[issue-1361] Re-declared small helpers hoisted** — Coinbase order-result mapping (`mapOrderResponse`), `safeJsonParse` (websocket modules), and sha256/UUID helpers (journal transactions) now live once. TP-optimizer adjustment and ladder-order merges remain.
 
 ### Fixed
