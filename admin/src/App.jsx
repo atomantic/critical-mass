@@ -2,6 +2,7 @@ import { Component, useState, useEffect, useLayoutEffect, useRef, lazy, Suspense
 import { Routes, Route, Link, useLocation, useNavigate, Navigate } from './lib/router'
 import ExchangeSelector from './components/ExchangeSelector'
 import AddFundModal from './components/AddFundModal'
+import RetryBanner from './components/ui/RetryBanner'
 import ModalDialog from './components/ModalDialog'
 const Dashboard = lazy(() => import('./components/Dashboard'))
 const ConfigEditor = lazy(() => import('./components/ConfigEditor'))
@@ -1097,22 +1098,10 @@ function AppContent() {
         {/* Main Content */}
         <main id="main-content" tabIndex={-1} className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6 focus:outline-hidden">
           {currentStrategy === 'regime' && statusError && (
-            <div role="alert" className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200">
-              {statusError}
-              <button type="button" onClick={fetchRegimeStatus} className="ml-3 underline">Retry engine status</button>
-            </div>
+            <RetryBanner message={statusError} onRetry={fetchRegimeStatus} retryLabel="Retry engine status" />
           )}
           {error && (!isActiveTab('/config') || summary?.config) && (
-            <div role="alert" className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200 flex items-center justify-between gap-4">
-              <span>{error}</span>
-              <button
-                type="button"
-                className="px-3 py-1 text-sm bg-red-800 hover:bg-red-700 rounded"
-                onClick={fetchData}
-              >
-                Retry
-              </button>
-            </div>
+            <RetryBanner message={error} onRetry={fetchData} />
           )}
 
           {loading && !summary && !isActiveTab('/config') && !isOverview && !isAI && !isUpDown && !isSentinel && !isGateway ? (
