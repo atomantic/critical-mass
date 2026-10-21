@@ -65,6 +65,7 @@ const celestialHierarchy = require('./celestial-hierarchy');
 const { DEFAULT_FEE_RATE_PER_SIDE } = require('../shared/fee-defaults.mjs');
 const { fmtCurrency: fmtPrice, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
+const { DEFAULT_MAX_USDC_DEPLOYED } = require('./fund-defaults');
 const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
 const { createTtlStore } = require('./ttl-store');
 
@@ -3163,7 +3164,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }, Infinity);
       if (earliestFillTime !== Infinity && (!positionState.engineStartTime || positionState.engineStartTime > earliestFillTime)) {
         positionState.engineStartTime = earliestFillTime;
-        positionState.initialCapital = config.maxUsdcDeployed || 10000;
+        positionState.initialCapital = config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
         // Only set originalCapital if not already set (preserve true starting value)
         if (!positionState.originalCapital) {
           positionState.originalCapital = positionState.initialCapital;

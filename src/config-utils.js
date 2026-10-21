@@ -7,6 +7,7 @@
  */
 
 const { DEFAULT_AGGRESSIVENESS_PRESETS, MERGE_PROXIMITY_BOUNDS } = require('./regime-preset-contract');
+const { DEFAULT_MAX_USDC_DEPLOYED } = require('./fund-defaults');
 const fs = require('fs');
 const { atomicWriteSync } = require('./durable-write');
 const path = require('path');
@@ -196,7 +197,7 @@ const REGIME_DEFAULTS = {
   // Risk Caps
   maxAssetExposure: 0,  // 0 = uncapped
   depositedCapital: 0,  // Total user deposits (0 = auto-derive from maxUsdcDeployed - realizedPnL)
-  maxUsdcDeployed: 10000,
+  maxUsdcDeployed: DEFAULT_MAX_USDC_DEPLOYED,
   maxDrawdownPercent: 20,
   drawdownResetHours: 72, // Auto-reset peak after 72 hours (3 days) of drawdown pause
 
