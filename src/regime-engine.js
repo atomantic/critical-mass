@@ -1391,6 +1391,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   // Create Ladder calculator for pre-positioned liquidity ladder mode
   const ladderCalculator = createLadderCalculator(exchange, config);
+  // Single source of truth for ladder market inputs: placement, preview and re-ladder
+  // must feed the calculator identically (#851 gates placement on the preview).
+  const buildLadderFromMarket = (marketState, budget, priceIncrement) =>
+    ladderCalculator.buildLadder(marketState.lastPrice, budget, {
+      atr: marketState.atr1m,
+      volBaseline: marketState.volBaseline,
+      realizedVol: marketState.realizedVol,
+      athDistance: marketState.athDistance || 0,
+      ath: marketState.ath || 0,
+      priceIncrement,
+    });
 
   // Create Macro Regime detector (multi-timeframe EMA overlay)
   const macroRegime = config.macroEnabled
@@ -7529,18 +7540,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       const placeLadder = async () => {
         // Build ladder first to determine actual level count (may be fewer than config due to min-size filtering)
-        const ladder = ladderCalculator.buildLadder(
-          marketState.lastPrice,
-          remainingBudget,
-          {
-            atr: marketState.atr1m,
-            volBaseline: marketState.volBaseline,
-            realizedVol: marketState.realizedVol,
-            athDistance: marketState.athDistance || 0,
-            ath: marketState.ath || 0,
-            priceIncrement,
-          }
-        );
+        const ladder = buildLadderFromMarket(marketState, remainingBudget, priceIncrement);
 
         if (ladder.levels.length === 0) {
           if (!budgetExhaustedWarningLogged) {
@@ -9946,18 +9946,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: false, message: `Exchange ${quoteCurrency} balance (${balanceStr}) below min order ($${config.baseSizeUsdc || 50}). Budget shows $${budgetRemaining} remaining but exchange only has ${balanceStr} ${quoteCurrency}.` };
     }
 
-    const ladder = ladderCalculator.buildLadder(
-      marketState.lastPrice,
-      remainingBudget,
-      {
-        atr: marketState.atr1m,
-        volBaseline: marketState.volBaseline,
-        realizedVol: marketState.realizedVol,
-        athDistance: marketState.athDistance || 0,
-        ath: marketState.ath || 0,
-        priceIncrement,
-      }
-    );
+    const ladder = buildLadderFromMarket(marketState, remainingBudget, priceIncrement);
 
     return {
       success: true,
@@ -10141,18 +10130,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     // Build new ladder
-    const ladder = ladderCalculator.buildLadder(
-      marketState.lastPrice,
-      remainingBudget,
-      {
-        atr: marketState.atr1m,
-        volBaseline: marketState.volBaseline,
-        realizedVol: marketState.realizedVol,
-        athDistance: marketState.athDistance || 0,
-        ath: marketState.ath || 0,
-        priceIncrement,
-      }
-    );
+    const ladder = buildLadderFromMarket(marketState, remainingBudget, priceIncrement);
 
     if (ladder.levels.length === 0) {
       return { success: false, message: 'Ladder build produced 0 levels — price may be at or below floor' };
