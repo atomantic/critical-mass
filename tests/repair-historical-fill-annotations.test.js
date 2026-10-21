@@ -33,7 +33,7 @@ const makeLedger = () => {
   return { ledger, persistCount: () => ledger._test.getWriteCount() - baseline };
 };
 
-const run = (ledger, positionState, logs = []) => repairHistoricalFillAnnotations({
+const run = (ledger, positionState, logs = [], extraDeps = {}) => repairHistoricalFillAnnotations({
   fillLedger: ledger,
   positionState,
   config: {},
@@ -46,6 +46,7 @@ const run = (ledger, positionState, logs = []) => repairHistoricalFillAnnotation
   roundPrice: (p) => p,
   roundAsset: (q) => Math.round(q * 1e8) / 1e8,
   fmtPrice: String,
+  ...extraDeps,
 });
 
 const byTrade = (ledger, tradeId) => ledger.getAllFills().find(f => f.tradeId === tradeId);
@@ -94,11 +95,14 @@ describe('repairHistoricalFillAnnotations', () => {
     assert.equal(sell.bodyAvgPrice, 50000);
     assert.equal(buy.sellOrderId, 'b-sell-o');
 
-    // Losing match: only marked body-owned, no computed values.
+    // Losing match is no pairing (#1398): the sell stays unannotated, so the
+    // fill path can still flag it untrackedSell, and the buy stays unclosed.
     const losing = byTrade(ledger, 'b-sell2');
-    assert.equal(losing.isBodyOwned, true);
+    assert.equal(losing.isBodyOwned, undefined);
     assert.equal(losing.bodyPnl, undefined);
-    assert.equal(persistCount(), 2);
+    assert.equal(byTrade(ledger, 'b-buy2').sellOrderId, undefined);
+    // The buy's sellOrderId link persists; nothing is left dirty for the final flush.
+    assert.equal(persistCount(), 1);
   });
 
   it('does not re-book a foreign (untrackedSell) sell as a body sell or close the matching buy', () => {
@@ -154,8 +158,8 @@ describe('repairHistoricalFillAnnotations', () => {
       { id: 'n-hi', buySize: '0.0102', paired: false },
       { id: 'n-lo', buySize: '0.0098', paired: false },
       { id: 'n-in-hi', buySize: '0.01005', paired: true },
-      // In band but smaller than the sell (negative holdback): matched, then only marked body-owned.
-      { id: 'n-in-lo', buySize: '0.00995', paired: false, markedOnly: true },
+      // In band but smaller than the sell (negative holdback): rejected, left unannotated (#1398).
+      { id: 'n-in-lo', buySize: '0.00995', paired: false },
     ];
     cases.forEach(({ id, buySize }, i) => {
       ledger.ingestFill({ tradeId: `${id}-buy`, orderId: `${id}-buy-o`, side: 'buy', price: '50000', size: buySize, tradeTime: at(10 * i + 1) }, null, { skipPersist: true });
@@ -163,18 +167,14 @@ describe('repairHistoricalFillAnnotations', () => {
     });
     run(ledger, { celestialBodies: [], activeTpOrderId: null });
 
-    for (const { id, paired, markedOnly } of cases) {
+    for (const { id, paired } of cases) {
       const sell = byTrade(ledger, `${id}-sell`);
       const buy = byTrade(ledger, `${id}-buy`);
       if (paired) {
         assert.equal(sell.isBodyOwned, true, `${id}: sell is booked`);
         assert.equal(buy.sellOrderId, `${id}-sell-o`, `${id}: buy is closed by its sell`);
-      } else if (markedOnly) {
-        assert.equal(sell.isBodyOwned, true, `${id}: in-band sell is matched`);
-        assert.equal(sell.bodyPnl, undefined, `${id}: invalid holdback books no pnl`);
-        assert.equal(buy.sellOrderId, undefined, id);
       } else {
-        assert.equal(sell.isBodyOwned, undefined, `${id}: out-of-band sell stays unannotated`);
+        assert.equal(sell.isBodyOwned, undefined, `${id}: unpaired sell stays unannotated`);
         assert.equal(sell.bodyPnl, undefined, id);
         assert.equal(buy.sellOrderId, undefined, `${id}: out-of-band buy is not closed`);
       }
@@ -233,6 +233,86 @@ describe('repairHistoricalFillAnnotations', () => {
 
     assert.equal(byTrade(ledger, 'i-buy2').sellOrderId, 'i-y-o', 'the earlier-completing sell claims the nearest earlier buy');
     assert.equal(byTrade(ledger, 'i-buy1').sellOrderId, 'i-x-o');
+  });
+
+  // Issue #1398: rows of a still-resting body TP recovered at boot are owed
+  // their real booking; a guessed pairing would book them against a rung.
+  it('leaves a live body TP\'s recovered partial unannotated even when a rung matches its size', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'lt-rung1', orderId: 'lt-rung1-o', side: 'buy', price: '50000', size: '0.005', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'lt-rung2', orderId: 'lt-rung2-o', side: 'buy', price: '49000', size: '0.005', tradeTime: at(2) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'lt-p1', orderId: 'lt-tp', side: 'sell', price: '60000', size: '0.005', tradeTime: at(3) }, null, { skipPersist: true });
+    const positionState = {
+      activeTpOrderId: null,
+      celestialBodies: [{
+        id: 'body-live', tier: 'moon', tpOrderId: 'lt-tp',
+        sourceOrderIds: ['lt-rung1-o', 'lt-rung2-o'],
+        buyOrders: [{ orderId: 'lt-rung1-o' }, { orderId: 'lt-rung2-o' }],
+      }],
+    };
+    run(ledger, positionState);
+
+    const partial = byTrade(ledger, 'lt-p1');
+    assert.equal(partial.isBodyOwned, undefined);
+    assert.equal(partial.bodyPnl, undefined);
+    assert.equal(partial.bodyHoldbackAsset, undefined);
+    assert.equal(ledger.getSellBooking('lt-tp'), null);
+    // Step 1 still links the rungs to the live TP; nothing else touches them.
+    for (const id of ['lt-rung1', 'lt-rung2']) {
+      assert.equal(byTrade(ledger, id).sellOrderId, 'lt-tp', id);
+      assert.equal(byTrade(ledger, id).consumedBy, undefined, id);
+    }
+  });
+
+  it('skips sells of a merge-snapshot TP passed in by the caller', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'ms-buy', orderId: 'ms-buy-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'ms-sell', orderId: 'ms-tp', side: 'sell', price: '60000', size: '0.01', tradeTime: at(2) }, null, { skipPersist: true });
+    run(ledger, { celestialBodies: [], activeTpOrderId: null }, [], { mergeSnapshotTpOrderIds: ['ms-tp'] });
+
+    assert.equal(byTrade(ledger, 'ms-sell').bodyPnl, undefined);
+    assert.equal(byTrade(ledger, 'ms-sell').isBodyOwned, undefined);
+    assert.equal(byTrade(ledger, 'ms-buy').sellOrderId, undefined);
+  });
+
+  it('never re-pairs a buy that carries a consumption record', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'cb-buy', orderId: 'cb-buy-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.annotateFillsByOrderId('cb-buy-o', { isBodyOwned: true, bodyId: 'body-dead', sellOrderId: 'cb-old-sell' });
+    ledger.recordBuyConsumption('cb-buy-o', 'cb-old-sell', 0.01);
+    ledger.ingestFill({ tradeId: 'cb-sell', orderId: 'cb-sell-o', side: 'sell', price: '60000', size: '0.01', tradeTime: at(2) }, null, { skipPersist: true });
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+
+    assert.equal(byTrade(ledger, 'cb-sell').bodyPnl, undefined);
+    assert.equal(byTrade(ledger, 'cb-sell').isBodyOwned, undefined);
+    assert.equal(byTrade(ledger, 'cb-buy').sellOrderId, 'cb-old-sell');
+    assert.deepEqual(byTrade(ledger, 'cb-buy').consumedBy, { 'cb-old-sell': 0.01 });
+  });
+
+  it('never pairs a buy a live body owns by bodyId', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'lb-buy', orderId: 'lb-buy-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.annotateFillsByOrderId('lb-buy-o', { isBodyOwned: true, bodyId: 'body-live' });
+    ledger.ingestFill({ tradeId: 'lb-sell', orderId: 'lb-sell-o', side: 'sell', price: '60000', size: '0.01', tradeTime: at(2) }, null, { skipPersist: true });
+    run(ledger, { activeTpOrderId: null, celestialBodies: [{ id: 'body-live', tier: 'moon', tpOrderId: null, sourceOrderIds: [], buyOrders: [] }] });
+
+    assert.equal(byTrade(ledger, 'lb-sell').bodyPnl, undefined);
+    assert.equal(byTrade(ledger, 'lb-buy').sellOrderId, undefined);
+  });
+
+  it('keeps a buy whose pairing was rejected available for a later valid sell', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'rj-buy', orderId: 'rj-buy-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    // Losing size-match first, then the real TP.
+    ledger.ingestFill({ tradeId: 'rj-loss', orderId: 'rj-loss-o', side: 'sell', price: '40000', size: '0.01', tradeTime: at(2) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'rj-tp', orderId: 'rj-tp-o', side: 'sell', price: '60000', size: '0.01', tradeTime: at(3) }, null, { skipPersist: true });
+    const logs = [];
+    run(ledger, { celestialBodies: [], activeTpOrderId: null }, logs);
+
+    assert.equal(byTrade(ledger, 'rj-loss').isBodyOwned, undefined);
+    assert.ok(byTrade(ledger, 'rj-tp').bodyPnl > 0);
+    assert.equal(byTrade(ledger, 'rj-buy').sellOrderId, 'rj-tp-o');
+    assert.equal(logs.filter(m => m.includes('unannotated')).length, 1, 'rejections are summarized in one line');
   });
 
   it('moves -recovered- cycle fills inside the current cycle range only', () => {

@@ -165,3 +165,31 @@ test('concurrent processes serialize startup and settings saves', async (t) => {
   assert.deepEqual(f.read(f.snapshotFile), f.read(f.baseConfigFile));
   assert.equal(fs.existsSync(path.join(f.dataDir, CONFIG_LOCK_DIR)), false);
 });
+
+// Issue #1396: the read-modify-write must happen under the lock. Two writer
+// processes update different keys in a tight loop; a read taken outside the
+// lock would re-apply a stale copy of the other writer's key and lose it.
+test('concurrent update*Config writers on different keys keep both keys', async (t) => {
+  const f = fixture(t, { global: { schedulerInterval: 30000 } });
+  const ROUNDS = 25;
+  const script = `const options=JSON.parse(process.argv[1]);
+    const paths=require(${JSON.stringify(require.resolve('../src/paths'))}); paths.DATA_DIR=options.dataDir;
+    const config=require(${JSON.stringify(require.resolve('../src/config-utils'))});
+    const fs=require('fs'); const read=fs.readFileSync; const base=config.resolveBaseConfigFile();
+    fs.readFileSync=(file,...args)=>read(file===base?options.baseConfigFile:file,...args);
+    for (let i=1;i<=${ROUNDS};i++) {
+      config.loadConfig();
+      config.updateGlobalConfig({ [options.key]: i });
+    }`;
+  const children = ['writerA', 'writerB'].map((key) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', script, JSON.stringify({ dataDir: f.dataDir, baseConfigFile: f.baseConfigFile, key })], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let error = '';
+    child.stderr.on('data', chunk => { error += chunk; });
+    child.on('error', reject);
+    child.on('close', code => code === 0 ? resolve() : reject(new Error(error)));
+  }));
+  await Promise.all(children);
+  const { writerA, writerB } = f.read(f.userFile).global;
+  assert.deepEqual({ writerA, writerB }, { writerA: ROUNDS, writerB: ROUNDS });
+  assert.equal(fs.existsSync(path.join(f.dataDir, CONFIG_LOCK_DIR)), false);
+});
