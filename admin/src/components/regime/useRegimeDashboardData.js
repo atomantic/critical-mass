@@ -15,6 +15,8 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   const [liveFills, setLiveFills] = useState([])
   const [fillAggregates, setFillAggregates] = useState(null)
   const [presets, setPresets] = useState(null)
+  // null = not failed; string = the presets read failed (presets stay null)
+  const [presetsError, setPresetsError] = useState(null)
   const prevPriceRef = useRef(null)
   // Per-mount ownership fence for fills reads (#508). Initial load, the live
   // fill marker refresh and action handlers all refetch fills concurrently; only
@@ -74,11 +76,25 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
     setFillAggregates(data)
     setLiveFills(data.detailFills)
   }), [readSnapshot, fillsOwner])
+  // Fetch aggressiveness presets
+  const fetchPresets = useCallback(async () => {
+    try {
+      const res = await fetch('/api/presets/aggressiveness')
+      const data = res.ok ? await res.json() : null
+      if (data?.presets && typeof data.presets === 'object') {
+        setPresets(data.presets)
+        setPresetsError(null)
+      } else setPresetsError(`Presets unavailable${res.ok ? '' : ` (HTTP ${res.status})`}`)
+    } catch {
+      setPresetsError('Presets unavailable: request failed')
+    }
+  }, [])
   const retry = useCallback(() => Promise.all([
+    ...(presetsError ? [fetchPresets()] : []),
     ...(reads.status.state === 'error' ? [fetchStatus()] : []),
     ...(reads.config.state === 'error' ? [fetchConfig()] : []),
     ...(reads.fills.state === 'error' ? [fetchFills()] : []),
-  ]), [reads, fetchStatus, fetchConfig, fetchFills])
+  ]), [reads, presetsError, fetchPresets, fetchStatus, fetchConfig, fetchFills])
   const failedReads = Object.values(reads).filter(read => read.error)
   const error = failedReads.map(read => read.error).join('. ')
   const stale = failedReads.some(read => read.hasData)
@@ -112,15 +128,6 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
     }
   }, [exchange, pairQuery, initializeFromCache])
 
-  // Fetch aggressiveness presets
-  const fetchPresets = useCallback(async () => {
-    const res = await fetch('/api/presets/aggressiveness')
-    if (res.ok) {
-      const data = await res.json()
-      setPresets(data.presets)
-    }
-  }, [])
-
   const isRunning = status?.isRunning
   // Initial load only - no polling needed, socket provides live updates
   useEffect(() => {
@@ -132,5 +139,5 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
     load()
   }, [exchange, fetchStatus, fetchConfig, fetchFills, fetchCachedChartData, fetchPresets])
 
-  return { status, config, loading, error, stale, retry, reads, fillsUnavailable: Boolean(reads.fills.error), liveFills, fillAggregates, presets, isRunning, prevPriceRef, priceHistory, atrHistory, regimeHistory, setSocketStatus, fetchStatus, fetchConfig, fetchFills }
+  return { status, config, loading, error, stale, retry, reads, fillsUnavailable: Boolean(reads.fills.error), liveFills, fillAggregates, presets, presetsError, retryPresets: fetchPresets, isRunning, prevPriceRef, priceHistory, atrHistory, regimeHistory, setSocketStatus, fetchStatus, fetchConfig, fetchFills }
 }
