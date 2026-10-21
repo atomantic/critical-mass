@@ -198,6 +198,19 @@ describe('automatic placement recovery from exchange evidence', () => {
     assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
   });
 
+  it('never clears an intent from an operator adopt, which does not search exchange evidence', async () => {
+    const stranded = strandedEntry();
+    ageIntent(makeIntent('entry_bid', { side: 'buy' }));
+    adapter.findOrderByClientOrderId = async () => null;
+    withExchange();
+    for (const intent of state.loadPlacementIntents('coinbase', PAIR)) {
+      const result = await engine.reconcilePlacementIntent(intent.id, 'adopt');
+      assert.equal(result.success, false);
+      assert.match(result.error, intent.id === stranded.id ? /no client order id/ : /reports no order/);
+    }
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 2);
+  });
+
   it('keeps the intent when the exchange evidence is ambiguous, and does not rescan immediately', async () => {
     const intent = strandedEntry();
     const resting = (orderId) => ({ orderId, side: 'BUY', price: 120, size: 0.9, originalSize: 0.9, createdTime: new Date(intent.createdAt + 500).toISOString() });
