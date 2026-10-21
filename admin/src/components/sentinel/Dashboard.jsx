@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import DestructiveConfirmation from '../DestructiveConfirmation'
 import useSentinelSocket from '../../hooks/useSentinelSocket'
+import { createRequestOwner } from '../../utils/requestOwner.mjs'
 
 const TOUCH_BTN = 'min-h-11 min-w-11 shrink-0 inline-flex items-center justify-center'
 
@@ -19,14 +20,22 @@ const SEVERITY_BADGES = {
 export default function SentinelDashboard() {
   const { connected, latestAlert } = useSentinelSocket()
   const [status, setStatus] = useState(null)
-  const [alerts, setAlerts] = useState([])
+  const [statusError, setStatusError] = useState(null)
+  // The alert list remembers which filter it answers, so a filter switch never
+  // shows the previous filter's alerts (or a failed read) as the new selection.
+  const [alertsView, setAlertsView] = useState(null)
+  const [alertsError, setAlertsError] = useState(null)
   const [filter, setFilter] = useState('all')
-  const [loading, setLoading] = useState(true)
   const [polling, setPolling] = useState(false)
   const [mutationError, setMutationError] = useState('')
   const [feedWritePending, setFeedWritePending] = useState(false)
   const feedWriteLock = useRef(false)
   const configRevision = useRef(0)
+  // The poll, socket alerts, filter switches and post-action refreshes overlap;
+  // only the newest read of each snapshot may commit.
+  const [statusOwner] = useState(createRequestOwner)
+  const [alertsOwner] = useState(createRequestOwner)
+  const alerts = alertsView?.filter === filter ? alertsView.alerts : null
 
   const [confirmation, setConfirmation] = useState(null)
   const [confirmationError, setConfirmationError] = useState('')
@@ -37,26 +46,27 @@ export default function SentinelDashboard() {
 
   const fetchStatus = useCallback(async () => {
     const revision = configRevision.current
-    try {
-      const res = await fetch('/api/sentinel/status')
-      if (res.ok) {
-        const data = await res.json()
-        if (revision === configRevision.current) setStatus(data)
-      }
-    } catch { /* ignore */ }
-  }, [])
+    const { owned, data } = await statusOwner.read('/api/sentinel/status')
+    if (!owned) return
+    if (!data?.config) {
+      setStatusError('Could not load Sentinel status.')
+      return
+    }
+    setStatusError(null)
+    if (revision === configRevision.current) setStatus(data)
+  }, [statusOwner])
 
   const fetchAlerts = useCallback(async () => {
-    try {
-      const url = filter !== 'all' ? `/api/sentinel/alerts?severity=${filter}` : '/api/sentinel/alerts'
-      const res = await fetch(url)
-      if (res.ok) {
-        const data = await res.json()
-        setAlerts(data.alerts || [])
-      }
-    } catch { /* ignore */ }
-    setLoading(false)
-  }, [filter])
+    const url = filter !== 'all' ? `/api/sentinel/alerts?severity=${filter}` : '/api/sentinel/alerts'
+    const { owned, data } = await alertsOwner.read(url)
+    if (!owned) return
+    if (!Array.isArray(data?.alerts)) {
+      setAlertsError('Could not load alerts.')
+      return
+    }
+    setAlertsError(null)
+    setAlertsView({ filter, alerts: data.alerts })
+  }, [filter, alertsOwner])
 
   // `throwOnError` lets a confirmation dialog own the failure message instead of the page banner.
   const request = async (label, send, { throwOnError = false } = {}) => {
@@ -87,11 +97,16 @@ export default function SentinelDashboard() {
   }
 
   useEffect(() => {
+    setAlertsError(null)
     fetchStatus()
     fetchAlerts()
     const interval = setInterval(() => { fetchStatus(); fetchAlerts() }, 15000)
-    return () => clearInterval(interval)
-  }, [fetchStatus, fetchAlerts])
+    return () => {
+      clearInterval(interval)
+      statusOwner.invalidate()
+      alertsOwner.invalidate()
+    }
+  }, [fetchStatus, fetchAlerts, statusOwner, alertsOwner])
 
   // Re-fetch alerts when new alert arrives via socket (status comes via socket already)
   useEffect(() => {
@@ -114,14 +129,15 @@ export default function SentinelDashboard() {
 
   const handleDismiss = async (alertId) => {
     if (await request('Could not dismiss alert', () => fetch(`/api/sentinel/dismiss/${alertId}`, { method: 'POST' }))) {
-      setAlerts(prev => prev.map(a => a.id === alertId ? { ...a, dismissed: true } : a))
+      setAlertsView(prev => prev && { ...prev, alerts: prev.alerts.map(a => a.id === alertId ? { ...a, dismissed: true } : a) })
       fetchStatus()
     }
   }
 
   const handleClearAll = async () => {
     await request('Could not clear alerts', () => fetch('/api/sentinel/alerts', { method: 'DELETE' }), { throwOnError: true })
-    setAlerts([])
+    alertsOwner.invalidate()
+    setAlertsView({ filter, alerts: [] })
     fetchStatus()
   }
 
@@ -178,7 +194,9 @@ export default function SentinelDashboard() {
   }
 
   const handleAddFeed = async () => {
-    if (!newFeedName.trim() || !newFeedUrl.trim()) return
+    // Feeds are saved as a whole list; without the loaded list this would
+    // replace every configured feed with the new one.
+    if (!status?.config || !newFeedName.trim() || !newFeedUrl.trim()) return
     if (await updateFeeds([...(status?.config?.feeds || []), { name: newFeedName.trim(), url: newFeedUrl.trim(), enabled: true }])) {
       setNewFeedName('')
       setNewFeedUrl('')
@@ -214,7 +232,9 @@ export default function SentinelDashboard() {
   }
 
   const serviceEnabled = !!status?.config?.enabled
-  const stateLabel = !serviceEnabled
+  const stateLabel = !status
+    ? (statusError ? 'Status unavailable' : 'Loading...')
+    : !serviceEnabled
     ? 'Disabled'
     : status?.feedState === 'no-feeds'
       ? 'Enabled — no feeds configured'
@@ -258,13 +278,15 @@ export default function SentinelDashboard() {
             </span>
           </div>
 
-          <div className="text-sm text-gray-400 space-x-4">
-            <span>Polls: {status?.pollCount || 0}</span>
-            <span>Alerts: {status?.totalAlerts || 0}</span>
-            <span>Active: {status?.activeAlerts || 0}</span>
-            <span>Last poll: {formatTime(status?.lastPollAt)}</span>
-            <span>Last successful fetch: {formatTime(status?.lastSuccessfulFetchAt)}</span>
-          </div>
+          {status && (
+            <div className="text-sm text-gray-400 space-x-4">
+              <span>Polls: {status.pollCount || 0}</span>
+              <span>Alerts: {status.totalAlerts || 0}</span>
+              <span>Active: {status.activeAlerts || 0}</span>
+              <span>Last poll: {formatTime(status.lastPollAt)}</span>
+              <span>Last successful fetch: {formatTime(status.lastSuccessfulFetchAt)}</span>
+            </div>
+          )}
 
           {(status?.feedState === 'unavailable' || status?.feedState === 'degraded') && (
             <span className={`text-sm px-2 py-0.5 rounded-sm ${status.feedState === 'unavailable' ? 'bg-red-900 text-red-200' : 'bg-yellow-900 text-yellow-200'}`}>
@@ -303,6 +325,14 @@ export default function SentinelDashboard() {
             </button>
           </div>
         </div>
+        {statusError && (
+          <div role="alert" className="mt-3 flex items-center justify-between gap-2 text-sm text-red-400">
+            <span>{status ? `${statusError} Showing the last loaded status.` : statusError}</span>
+            <button onClick={fetchStatus} className={`${TOUCH_BTN} px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm`}>
+              Retry
+            </button>
+          </div>
+        )}
         <p className="mt-3 text-xs text-gray-400">
           Enable turns the service on and saves that choice; Start/Stop runs or pauses polling now.
         </p>
@@ -352,7 +382,7 @@ export default function SentinelDashboard() {
           />
           <button
             onClick={handleAddFeed}
-            disabled={feedWritePending || !newFeedName.trim() || !newFeedUrl.trim()}
+            disabled={feedWritePending || !status?.config || !newFeedName.trim() || !newFeedUrl.trim()}
             className="px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded-sm text-sm min-h-[44px]"
           >
             Add Feed
@@ -378,7 +408,7 @@ export default function SentinelDashboard() {
               <option value="warning">Warning</option>
               <option value="info">Info</option>
             </select>
-            {alerts.length > 0 && (
+            {alerts?.length > 0 && (
               <button onClick={requestClearAll} className={`${TOUCH_BTN} text-red-400 hover:text-red-300 text-sm px-2`}>
                 Clear all alerts
               </button>
@@ -386,8 +416,16 @@ export default function SentinelDashboard() {
           </div>
         </div>
 
-        {loading ? (
-          <div className="text-gray-400 text-center py-8">Loading...</div>
+        {alertsError && (
+          <div role="alert" className="flex items-center justify-between gap-2 mb-3 text-sm text-red-400">
+            <span>{alerts ? `${alertsError} Showing the last loaded alerts.` : alertsError}</span>
+            <button onClick={fetchAlerts} className={`${TOUCH_BTN} px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm`}>
+              Retry
+            </button>
+          </div>
+        )}
+        {!alerts ? (
+          !alertsError && <div className="text-gray-400 text-center py-8">Loading...</div>
         ) : alerts.length === 0 ? (
           <div className="text-gray-400 text-center py-8">No alerts yet. Enable the service, add at least one RSS feed, then Start.</div>
         ) : (

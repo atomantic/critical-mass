@@ -39,11 +39,13 @@ export default function LongTermBiasPanel({ bias, config, presets, exchange, pai
         onConfigUpdate()
       } else {
         const err = await res.json().catch(() => ({}))
+        // persisted: saved to disk but not applied live — refetch so the saved level shows.
         addToast?.({
-          type: 'error',
-          title: 'Could not apply suggested level',
+          type: err.persisted === true ? 'warning' : 'error',
+          title: err.persisted === true ? 'Suggested level saved, not applied' : 'Could not apply suggested level',
           message: describeConfigSaveError(res.status, err).message,
         })
+        if (err.persisted === true) onConfigUpdate()
       }
     } catch (err) {
       addToast?.({ type: 'error', title: 'Could not apply suggested level', message: describeConfigSaveError(null, err).message })

@@ -31,7 +31,13 @@ export default function AggressivenessControl({ config, exchange, pairQuery, onC
         onConfigUpdate()
       } else {
         const err = await res.json().catch(() => ({}))
-        addToast?.({ type: 'error', title: 'Could not update aggressiveness', message: describeConfigSaveError(res.status, err).message })
+        if (err.persisted === true) {
+          // Saved to disk but not applied live: show the saved level, not the old one.
+          addToast?.({ type: 'warning', title: 'Aggressiveness saved, not applied', message: describeConfigSaveError(res.status, err).message })
+          onConfigUpdate()
+        } else {
+          addToast?.({ type: 'error', title: 'Could not update aggressiveness', message: describeConfigSaveError(res.status, err).message })
+        }
       }
     } catch (err) {
       addToast?.({ type: 'error', title: 'Could not update aggressiveness', message: describeConfigSaveError(null, err).message })

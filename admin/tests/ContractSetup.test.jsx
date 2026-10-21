@@ -118,6 +118,25 @@ function mockFetchForSave(saveResponse) {
 }
 
 describe('ContractSetup save feedback', () => {
+  it('keeps a second save\'s "Saved" for its full two seconds', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      mockFetchForSave(() => Promise.resolve({ ok: true, json: async () => ({ success: true }) }))
+      render(<ContractSetup />)
+      const save = () => act(async () => { fireEvent.click(screen.getByRole('button', { name: /Save Contract|Saved/ })) })
+
+      await save()
+      await act(async () => { vi.advanceTimersByTime(1500) })
+      await save()
+      await act(async () => { vi.advanceTimersByTime(1000) })
+      expect(screen.getByRole('button', { name: 'Saved' })).toBeTruthy()
+      await act(async () => { vi.advanceTimersByTime(1000) })
+      expect(screen.getByRole('button', { name: 'Save Contract' })).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows the server validation error and re-enables Save', async () => {
     mockFetchForSave(() => Promise.resolve({
       ok: false,
