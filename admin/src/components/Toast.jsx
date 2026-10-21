@@ -80,7 +80,7 @@ function Toast({ id, type, title, message, onClose }) {
         aria-label="Dismiss notification"
         className="shrink-0 -m-2 p-2 min-h-11 min-w-11 flex items-center justify-center opacity-70 hover:opacity-100 transition-opacity"
       >
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
         </svg>
       </button>

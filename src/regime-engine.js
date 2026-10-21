@@ -62,6 +62,7 @@ const {
 const { resolveFundDataDir } = require('./migration');
 const { findPlacementOnExchange } = require('./placement-evidence');
 const celestialHierarchy = require('./celestial-hierarchy');
+const { DEFAULT_FEE_RATE_PER_SIDE } = require('../shared/fee-defaults.mjs');
 const { fmtCurrency: fmtPrice, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
@@ -6626,7 +6627,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const baseMinSize = parseFloat(productDetails.baseMinSize);
     const baseIncrement = parseFloat(productDetails.baseIncrement) || 0.00000001;
 
-    const feeRate = config.feeRate || 0.001;
+    const feeRate = config.feeRate || DEFAULT_FEE_RATE_PER_SIDE;
     const dust = bodies.find(b => isStrandedDustBody(b, baseMinSize, baseIncrement, {
       effectiveMaxTpPct: config.tpMaxPercent * (celestialHierarchy.getTierConfig(b.tier)?.tpMaxScale || 1),
       feeRate,
@@ -7851,7 +7852,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Minimum profit floor: TP% must clear round-trip fees + $0.01 net USDC profit.
     // Because holdback retains BTC, only (1-h) of gross profit becomes USDC proceeds,
     // so the required TP% = (roundTripFees + minProfit/costBasis) / (1-h)
-    const feeRatePerSide = config.feeRate || 0.001; // conservative 10 bps default
+    const feeRatePerSide = config.feeRate || DEFAULT_FEE_RATE_PER_SIDE; // conservative 10 bps default
     const feeFloorPct = ((2 * feeRatePerSide) + (0.01 / body.costBasis)) / (1 - holdbackRatio) * 100;
 
     // Holdback floor: TP% must generate enough profit for at least 1 satoshi holdback
@@ -8756,7 +8757,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Same fee the engine actually budgets when sizing/gating a TP (placeBodyTp's
       // feeFloorPct) — exposed so the dashboard's Open Orders "est." columns never
       // hard-code a fee guess of their own. See issue #698.
-      feeRatePerSide: config.feeRate || 0.001,
+      feeRatePerSide: config.feeRate || DEFAULT_FEE_RATE_PER_SIDE,
       entryMode: config.entryMode || 'reactive',
       ladderAutoSwitch: config.ladderAutoSwitch || false,
       ladderMaxAthDropPct: config.ladderMaxAthDropPct || 80,
