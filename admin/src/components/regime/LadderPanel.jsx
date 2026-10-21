@@ -251,7 +251,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
       {showToggle && (
         <button
           onClick={handleToggle}
-          className="px-2 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-sm transition-colors"
+          className="px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded-sm transition-colors"
         >
           {showLadderPanel ? 'Close' : 'Rebuild Ladder'}
         </button>
@@ -380,7 +380,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
               <button
                 onClick={handlePlaceLadder}
                 disabled={placingLadder || panelState !== 'ready'}
-                className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-sm transition-colors"
+                className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-sm transition-colors"
               >
                 {placingLadder ? 'Placing...' : `Place ${plural(ladderPreview.levelCount, 'Order')}`}
               </button>

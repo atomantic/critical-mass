@@ -461,7 +461,7 @@ const RegimeActionModals = ({
               Cancel
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-indigo-600 hover:bg-indigo-500 rounded-sm transition-colors disabled:opacity-50"
+              className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded-sm transition-colors disabled:opacity-50"
               onClick={onExecuteConvert}
               disabled={converting}
             >

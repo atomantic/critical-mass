@@ -27,7 +27,7 @@ export default function EmptyRegimeState({ isDryRun, dcaState, dcaStateError, re
           )}
           {dcaState?.orders?.some(o => o.status === 'pending') && (
             <button
-              className="mt-4 px-5 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors"
+              className="mt-4 px-5 py-2.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
               onClick={handlePreviewConvert}
             >
               Upgrade DCA Orders to Regime Engine
