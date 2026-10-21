@@ -307,6 +307,20 @@ describe('findMergeTarget', () => {
     assert.equal(result.id, 'b1');
   });
 
+  it('recover-orphan-buys call shape (options object) forces merge at capacity', () => {
+    const bodies = [
+      makeBody({ id: 'b1', tpPrice: 102000 }),
+      makeBody({ id: 'b2', tpPrice: 108000 }),
+    ];
+    // Mirrors scripts/cryptocom-recover-orphan-buys.js: capacity-full body set must
+    // pick the closest-TP body, same as the engine's pickOrphanMergeTarget.
+    const maxCelestialBodies = 2;
+    const result = findMergeTarget(bodies, makeNewBuy(), {
+      candidateTpPrice: 101000, maxBodies: maxCelestialBodies, pendingOrderCount: 0, maxOpenOrders: 20, proximityScale: 1.0,
+    });
+    assert.equal(result.id, 'b1');
+  });
+
   it('forced merge falls back to highest costBasis when no bodies have tpPrice', () => {
     const bodies = [
       makeBody({ id: 'b1', tpPrice: 0, costBasis: 50 }),
