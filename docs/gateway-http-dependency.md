@@ -25,19 +25,19 @@ The gateway uses more than method-and-path dispatch:
 | Middleware ordering, exchange path parameters, API JSON 404s, static admin assets and SPA fallback | [`server.js`](../server.js) uses `app.use`, `app.param`, `express.static`, `res.sendFile` and wildcard routes. |
 | JSON parsing and error propagation | `express.json()` feeds the shared [`route utilities`](../src/routes/route-utils.js) and [`JSON error boundary`](../src/error-middleware.js), including malformed bodies, rejected handlers and response headers. |
 | Operator bootstrap and sessions | [`operator-auth.js`](../src/operator-auth.js) uses request header access, Origin/forwarded-header checks, cookie serialization and response helpers. Framework changes must preserve the application's own trust checks. |
-| AI provider, run and prompt routes | [`ai-routes.js`](../src/routes/ai-routes.js) mounts Express routers supplied by `portos-ai-toolkit`. The locked toolkit version declares Express as a peer dependency, so removing only the gateway's direct dependency would not complete a framework migration. |
+| AI provider and run routes | [`ai-routes.js`](../src/routes/ai-routes.js) registers owned Express handlers over [`provider-store.js`](../src/ai/provider-store.js) and [`run-recorder.js`](../src/ai/run-recorder.js). Since [issue #1347](https://github.com/atomantic/critical-mass/issues/1347) no third-party router is mounted, so these routes follow the same path-matching rules as every other gateway route. |
 | Shutdown and admitted mutations | [`gateway-shutdown.js`](../src/gateway-shutdown.js) and `server.js` wrap route registration and track handler promises so shutdown can drain accepted work. |
 
 An owned replacement would need to preserve those observable behaviors,
 including path matching and decoding, parser limits, cookie flags, static-file
-responses, middleware/error ordering and toolkit integration. A small router
+responses and middleware/error ordering. A small router
 alone would leave much of the compatibility work outstanding. Keeping Express
 lets application work use the established boundary and its regression tests.
 
 ## Maintenance and transport scope
 
 Continue reviewing manifest and lockfile updates, assessing dependency
-advisories, and testing the HTTP boundary when upgrading Express or the toolkit.
+advisories, and testing the HTTP boundary when upgrading Express.
 Accepting the framework is not an exemption from security fixes or updates.
 
 HTTP framework ownership and realtime transport ownership are separate choices.
@@ -51,9 +51,14 @@ coupling migrations.
 
 Reopen this decision for an evidenced need: an unmitigated framework security
 issue, an unsupported runtime, measured HTTP overhead that blocks a product
-requirement, or a concrete toolkit/transport change that removes substantial
-framework coupling. Compare an owned implementation with updating or replacing
-the framework, including ongoing compatibility and maintenance costs.
+requirement, or a concrete transport change that removes substantial framework
+coupling. Compare an owned implementation with updating or replacing the
+framework, including ongoing compatibility and maintenance costs.
+
+Removing `portos-ai-toolkit` ([issue #1347](https://github.com/atomantic/critical-mass/issues/1347))
+took away its Express peer dependency, so Express is now the gateway's only
+runtime package dependency and a revisit weighs Express alone. That removal does
+not by itself reopen this decision.
 
 Before a replacement ships, exercise real HTTP requests against both
 implementations and preserve the contracts above. Existing starting coverage
@@ -63,4 +68,5 @@ includes [`operator-auth.test.js`](../tests/operator-auth.test.js),
 [`gateway-shutdown.test.js`](../tests/gateway-shutdown.test.js) and
 [`route-utils.test.js`](../tests/route-utils.test.js). These suites are a starting
 point, not a complete replacement-compatibility specification; static serving,
-path matching and the toolkit's mounted routers also need parity coverage.
+path matching and the AI routes ([`ai-routes.test.js`](../tests/ai-routes.test.js))
+also need parity coverage.

@@ -1,33 +1,17 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const os = require('os');
-const fs = require('fs');
-const path = require('path');
 const http = require('http');
 
-const { REDACTED, createAiSecurity, redactSecrets, resolveWorkspace, restoreRedactedValues } = require('../src/ai-security');
+const { REDACTED, createAllowlistedFetch, redactSecrets, restoreRedactedValues, validateProvider } = require('../src/ai-security');
 
-const callMiddleware = (middleware, req) => new Promise((resolve, reject) => {
-  const res = {
-    statusCode: 200,
-    body: null,
-    status(code) { this.statusCode = code; return this; },
-    json(body) { this.body = body; resolve({ next: false, res: this }); return this; },
-  };
-  middleware(req, res, (error) => error ? reject(error) : resolve({ next: true, res }));
-});
+const listen = async (handler) => {
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { server, origin: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
+};
 
-describe('AI toolkit security boundary', () => {
-  const providers = {
-    api: { id: 'api', type: 'api', endpoint: 'https://api.example.com/v1', apiKey: 'secret', envVars: { SERVICE_CREDENTIAL: 'real' } },
-    cli: { id: 'cli', type: 'cli', command: 'codex' },
-  };
-  const providerService = { getProviderById: async (id) => providers[id] || null };
-  const security = createAiSecurity({
-    providerService,
-    workspaceRoots: [process.cwd()],
-    allowedOrigins: new Set(['https://api.example.com']),
-  });
+describe('AI provider security policy', () => {
+  const allowed = new Set(['https://api.example.com']);
 
   it('redacts provider secrets recursively', () => {
     assert.deepEqual(redactSecrets({ provider: { apiKey: 'secret', secretEnvVars: ['SERVICE_CREDENTIAL'], envVars: { OPENAI_API_KEY: 'nested', SERVICE_CREDENTIAL: 'declared', SAFE_MODE: '1' }, name: 'safe' }, token: 'other' }), {
@@ -45,240 +29,53 @@ describe('AI toolkit security boundary', () => {
     });
   });
 
-  it('preserves redacted credentials through provider update middleware', async () => {
-    const req = {
-      method: 'PUT',
-      path: '/api',
-      body: { type: 'api', endpoint: 'https://api.example.com/v1', apiKey: REDACTED, envVars: { SERVICE_CREDENTIAL: REDACTED } },
-    };
-    const result = await callMiddleware(security.guardProviderMutation, req);
-    assert.equal(result.next, true);
-    assert.equal(req.body.apiKey, 'secret');
-    assert.equal(req.body.envVars.SERVICE_CREDENTIAL, 'real');
+  it('accepts only allowlisted http(s) API providers without endpoint credentials', () => {
+    assert.equal(validateProvider({ type: 'api', endpoint: 'https://api.example.com/v1' }, allowed), null);
+    assert.match(validateProvider({ type: 'cli', command: 'codex' }, allowed), /CLI providers are not supported/);
+    assert.match(validateProvider({ type: 'other' }, allowed), /type must be api/);
+    assert.match(validateProvider(null, allowed), /type must be api/);
+    assert.match(validateProvider({ type: 'api', endpoint: 'not a url' }, allowed), /valid URL/);
+    assert.match(validateProvider({ type: 'api', endpoint: 'https://user:pw@api.example.com/v1' }, allowed), /credentials/);
+    assert.match(validateProvider({ type: 'api', endpoint: 'https://metadata.invalid/v1' }, allowed), /not allowlisted/);
+    assert.match(validateProvider({ type: 'api', endpoint: 'file:///etc/passwd' }, new Set(['null'])), /http or https/);
   });
 
-  it('rejects CLI execution and unapproved outbound origins', async () => {
-    const cli = await callMiddleware(security.guardRun, {
-      method: 'POST', path: '/', body: { providerId: 'cli', workspacePath: process.cwd() },
-    });
-    assert.equal(cli.res.statusCode, 400);
-    assert.match(cli.res.body.error, /CLI providers are disabled/);
-
-    providers.unknown = { id: 'unknown', type: 'api', endpoint: 'https://metadata.invalid/v1' };
-    const endpoint = await callMiddleware(security.guardRun, {
-      method: 'POST', path: '/', body: { providerId: 'unknown', workspacePath: process.cwd() },
-    });
-    assert.equal(endpoint.res.statusCode, 400);
-    assert.match(endpoint.res.body.error, /not allowlisted/);
+  it('refuses a non-allowlisted origin before contacting it', async () => {
+    let calls = 0;
+    const guarded = createAllowlistedFetch(allowed, async () => { calls += 1; return new Response('unexpected'); });
+    await assert.rejects(guarded('https://metadata.invalid/v1/models'), /origin is not allowlisted/);
+    assert.equal(calls, 0);
   });
 
-  it('filters blocked providers out of the sample response', async () => {
-    const req = { method: 'GET', path: '/samples' };
-    const response = await new Promise((resolve) => {
-      const res = { json(body) { resolve(body); } };
-      security.filterProviderSamples(req, res, () => res.json({ providers: [providers.api, providers.cli] }));
-    });
-    assert.deepEqual(response.providers.map((provider) => provider.id), ['api']);
-  });
-
-  it('blocks a redirect from an allowed provider to an unapproved origin', async () => {
-    const target = http.createServer((req, res) => res.end('should not be reached'));
-    await new Promise((resolve) => target.listen(0, '127.0.0.1', resolve));
+  it('blocks a redirect from an allowed provider to an unapproved origin', async (t) => {
     let targetReached = false;
-    target.removeAllListeners('request');
-    target.on('request', (req, res) => { targetReached = true; res.end('unexpected'); });
-    const targetUrl = `http://127.0.0.1:${target.address().port}`;
-
-    const redirector = http.createServer((req, res) => {
-      res.writeHead(307, { Location: targetUrl });
+    const target = await listen((req, res) => { targetReached = true; res.end('unexpected'); });
+    t.after(target.close);
+    const redirector = await listen((req, res) => {
+      res.writeHead(307, { Location: `${target.origin}/models` });
       res.end();
     });
-    await new Promise((resolve) => redirector.listen(0, '127.0.0.1', resolve));
-    const redirectUrl = `http://127.0.0.1:${redirector.address().port}`;
-    const scopedSecurity = createAiSecurity({
-      providerService,
-      workspaceRoots: [process.cwd()],
-      allowedOrigins: new Set([redirectUrl]),
-    });
+    t.after(redirector.close);
 
-    const error = await new Promise((resolve) => {
-      scopedSecurity.constrainOutboundRequests({}, {}, () => {
-        fetch(`${redirectUrl}/start`).then(() => resolve(null)).catch(resolve);
-      });
-    });
-    assert.match(error.message, /redirect origin is not allowlisted/);
+    const guarded = createAllowlistedFetch(new Set([redirector.origin]));
+    await assert.rejects(guarded(`${redirector.origin}/start`), /redirect origin is not allowlisted/);
     assert.equal(targetReached, false);
-    await Promise.all([
-      new Promise((resolve) => redirector.close(resolve)),
-      new Promise((resolve) => target.close(resolve)),
-    ]);
   });
 
-  it('rejects path traversal in run ID sub-routes and allows normal IDs', async () => {
-    const traversalPaths = ['/..%2Fcoinbase', '/../backups', '/..%2f..%2f.git'];
-    for (const traversalPath of traversalPaths) {
-      for (const method of ['GET', 'DELETE']) {
-        // eslint-disable-next-line no-await-in-loop
-        const result = await callMiddleware(security.guardRun, { method, path: decodeURIComponent(traversalPath) });
-        assert.equal(result.res.statusCode, 400, `expected 400 for ${method} ${traversalPath}`);
-        assert.match(result.res.body.error, /Invalid run ID/);
-      }
-    }
-
-    const subRoutes = ['/run-123', '/run-123/output', '/run-123/prompt'];
-    for (const subRoute of subRoutes) {
-      // eslint-disable-next-line no-await-in-loop
-      const result = await callMiddleware(security.guardRun, { method: 'GET', path: subRoute });
-      assert.equal(result.next, true, `expected pass-through for GET ${subRoute}`);
-    }
-
-    const stop = await callMiddleware(security.guardRun, { method: 'POST', path: '/run-123/stop' });
-    assert.equal(stop.next, true);
-
-    const del = await callMiddleware(security.guardRun, { method: 'DELETE', path: '/run-123' });
-    assert.equal(del.next, true);
-
-    const badId = await callMiddleware(security.guardRun, { method: 'DELETE', path: '/../etc' });
-    assert.equal(badId.res.statusCode, 400);
-  });
-
-  it('guards mixed-case routes accepted by the real toolkit routers without changing identifiers', async (t) => {
-    const express = require('express');
-    const { createProvidersRoutes } = await import('portos-ai-toolkit/server');
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-route-guards-'));
-    t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
-    const configured = {
-      cli: providers.cli,
-      MiXeD: { ...providers.api, id: 'MiXeD' },
-      unapproved: { id: 'unapproved', type: 'api', endpoint: 'https://unapproved.example/v1' },
-    };
-    const calls = [];
-    const service = {
-      getProviderById: async (id) => configured[id] || null,
-      getSampleProviders: async () => Object.values(configured),
-      testProvider: async (id) => { calls.push(['test', id]); return { success: true }; },
-      refreshProviderModels: async (id) => { calls.push(['refresh', id]); return configured[id]; },
-      setActiveProvider: async (id) => { calls.push(['active', id]); return configured[id]; },
-    };
-    const scopedSecurity = createAiSecurity({
-      providerService: service, workspaceRoots: [temp],
-      allowedOrigins: new Set(['https://api.example.com']),
+  it('follows allowlisted redirects and drops Authorization across origins', async (t) => {
+    const seen = [];
+    const target = await listen((req, res) => { seen.push({ method: req.method, auth: req.headers.authorization }); res.end('ok'); });
+    t.after(target.close);
+    const redirector = await listen((req, res) => {
+      seen.push({ method: req.method, auth: req.headers.authorization });
+      res.writeHead(303, { Location: `${target.origin}/done` });
+      res.end();
     });
-    const app = express();
-    app.use(express.json());
-    app.use('/api/providers', scopedSecurity.filterProviderSamples, scopedSecurity.redactJsonResponses,
-      scopedSecurity.guardProviderMutation, scopedSecurity.guardProviderExecution, createProvidersRoutes(service));
-    const server = app.listen(0, '127.0.0.1');
-    await new Promise((resolve) => server.once('listening', resolve));
-    t.after(() => new Promise((resolve) => server.close(resolve)));
-    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+    t.after(redirector.close);
 
-    for (const id of ['cli', 'unapproved']) {
-      for (const suffix of ['test', 'TeSt', 'TEST/', 'refresh-models', 'ReFrEsH-MoDeLs/']) {
-        const response = await fetch(`${baseUrl}/api/providers/${id}/${suffix}`, { method: 'POST' });
-        assert.equal(response.status, 400, `${id}/${suffix}`);
-        await response.arrayBuffer();
-      }
-    }
-    assert.deepEqual(calls, [], 'blocked CLI requests must never reach execution');
-    for (const spelling of ['samples', 'SaMpLeS/']) {
-      const response = await fetch(`${baseUrl}/api/providers/${spelling}`);
-      assert.equal(response.status, 200);
-      assert.deepEqual((await response.json()).providers.map((provider) => provider.id), ['MiXeD']);
-    }
-
-    for (const suffix of ['TeSt', 'ReFrEsH-MoDeLs/']) {
-      const response = await fetch(`${baseUrl}/api/providers/MiXeD/${suffix}`, { method: 'POST' });
-      assert.equal(response.status, 200);
-      await response.arrayBuffer();
-    }
-    const active = await fetch(`${baseUrl}/api/providers/AcTiVe/`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'MiXeD' }),
-    });
-    assert.equal(active.status, 200);
-    assert.equal((await active.json()).apiKey, REDACTED);
-    assert.deepEqual(calls, [['test', 'MiXeD'], ['refresh', 'MiXeD'], ['active', 'MiXeD']]);
-  });
-
-  it('confines HTTP run screenshots before any downstream file reads', async (t) => {
-    const express = require('express');
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-screenshots-'));
-    t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
-    const screenshotsDir = path.join(temp, 'screenshots');
-    fs.mkdirSync(screenshotsDir);
-    fs.mkdirSync(path.join(screenshotsDir, 'nested'));
-    fs.mkdirSync(path.join(screenshotsDir, 'directory.png'));
-    fs.writeFileSync(path.join(screenshotsDir, 'nested', 'image.PNG'), 'image fixture');
-    fs.writeFileSync(path.join(screenshotsDir, 'keys.json'), 'secret fixture');
-    fs.writeFileSync(path.join(temp, 'outside.png'), 'outside fixture');
-    fs.mkdirSync(path.join(temp, 'screenshots-sibling'));
-    fs.writeFileSync(path.join(temp, 'screenshots-sibling', 'image.png'), 'outside fixture');
-    fs.symlinkSync(path.join(temp, 'outside.png'), path.join(screenshotsDir, 'escape.png'));
-    fs.symlinkSync(path.join(screenshotsDir, 'keys.json'), path.join(screenshotsDir, 'keys.png'));
-    fs.symlinkSync(path.join(temp, 'missing.png'), path.join(screenshotsDir, 'broken.png'));
-    fs.symlinkSync(path.join(temp, 'screenshots-sibling'), path.join(screenshotsDir, 'escape-dir'));
-    fs.symlinkSync(path.join(screenshotsDir, 'nested', 'image.PNG'), path.join(screenshotsDir, 'safe.png'));
-    const scopedSecurity = createAiSecurity({
-      providerService, workspaceRoots: [temp], screenshotsDir,
-      allowedOrigins: new Set(['https://api.example.com']),
-    });
-    let reads = 0;
-    const app = express();
-    app.use(express.json());
-    app.use('/api/runs', scopedSecurity.guardRun);
-    app.post('/api/runs', (req, res) => {
-      for (const image of req.body.screenshots || []) {
-        fs.readFileSync(image);
-        reads += 1;
-      }
-      res.json({ screenshots: req.body.screenshots });
-    });
-    const server = app.listen(0, '127.0.0.1');
-    await new Promise((resolve) => server.once('listening', resolve));
-    t.after(() => new Promise((resolve) => server.close(resolve)));
-    const post = (screenshots) => fetch(`http://127.0.0.1:${server.address().port}/api/runs`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ providerId: 'api', workspacePath: temp, screenshots }),
-    });
-    const invalid = [
-      null, 'image.png', {}, [1], [''], Array(11).fill('safe.png'),
-      ['../outside.png'], ['nested/../safe.png'], ['nested//image.PNG'],
-      ['./safe.png'], ['safe.png/'], ['bad\0.png'], ['..\\outside.png'],
-      [path.join(temp, 'outside.png')], [path.join(temp, 'screenshots-sibling', 'image.png')],
-      ['keys.json'], ['keys.png'], ['escape.png'], ['escape-dir/image.png'],
-      ['broken.png'], ['missing.png'], ['directory.png'], ['safe.png', 'escape.png'],
-    ];
-    for (const screenshots of invalid) {
-      const response = await post(screenshots);
-      assert.equal(response.status, 400, JSON.stringify(screenshots));
-      await response.arrayBuffer();
-      assert.equal(reads, 0);
-    }
-    for (const screenshots of [undefined, [], ['nested/image.PNG'], ['safe.png'], [path.join(screenshotsDir, 'safe.png')]]) {
-      const response = await post(screenshots);
-      assert.equal(response.status, 200);
-      const body = await response.json();
-      if (screenshots?.length) {
-        assert.deepEqual(body.screenshots, [fs.realpathSync(path.join(screenshotsDir, 'safe.png'))]);
-      }
-    }
-    assert.equal(reads, 3);
-    fs.renameSync(screenshotsDir, path.join(temp, 'moved'));
-    const missingRoot = await post(['safe.png']);
-    assert.equal(missingRoot.status, 400);
-    await missingRoot.arrayBuffer();
-    assert.equal(reads, 3);
-  });
-
-  it('normalizes allowed workspaces and blocks escapes', async () => {
-    assert.equal(resolveWorkspace('.', [process.cwd()]), process.cwd());
-    const outside = resolveWorkspace(os.tmpdir(), [path.join(process.cwd(), 'data')]);
-    assert.equal(outside, null);
-
-    const result = await callMiddleware(security.guardRun, {
-      method: 'POST', path: '/', body: { providerId: 'api', workspacePath: process.cwd() },
-    });
-    assert.equal(result.next, true);
-    assert.equal(result.res.statusCode, 200);
+    const guarded = createAllowlistedFetch(new Set([redirector.origin, target.origin]));
+    const response = await guarded(`${redirector.origin}/start`, { method: 'POST', body: 'x', headers: { Authorization: 'Bearer secret' } });
+    assert.equal(await response.text(), 'ok');
+    assert.deepEqual(seen, [{ method: 'POST', auth: 'Bearer secret' }, { method: 'GET', auth: undefined }]);
   });
 });
