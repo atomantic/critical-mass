@@ -163,23 +163,24 @@ describe('migrateExchangeToPairs — completeness and idempotency (issue #425)',
 
     writeLegacyFile(exchangeDir, 'state.json', 'legacy-state');
     writeLegacyFile(exchangeDir, 'regime-state.json', 'legacy-regime');
-    writeLegacyFile(exchangeDir, 'fill-ledger.json', 'legacy-ledger');
+    writeLegacyFile(exchangeDir, 'chart-data-buffer.json', 'legacy-buffer');
 
     // Simulate a previous partial migration: the target already has its own
-    // fill-ledger.json.
+    // chart-data-buffer.json (a rebuildable cache — a ledger/state collision
+    // refuses instead, see issue #1399 below).
     fs.mkdirSync(fundDir, { recursive: true });
-    fs.writeFileSync(path.join(fundDir, 'fill-ledger.json'), 'already-migrated-ledger');
+    fs.writeFileSync(path.join(fundDir, 'chart-data-buffer.json'), 'already-migrated-buffer');
 
     const result = migration.migrateExchangeToPairs(EXCHANGE);
 
     assert.equal(result.migrated, true);
     assert.equal(result.movedFiles, 2, 'state.json and regime-state.json should still move');
-    assert.deepEqual(result.skippedFiles, ['fill-ledger.json']);
+    assert.deepEqual(result.skippedFiles, ['chart-data-buffer.json']);
 
     // The collision must not destroy either copy — split-brain is surfaced,
     // not silently resolved by discarding data.
-    assert.equal(fs.readFileSync(path.join(exchangeDir, 'fill-ledger.json'), 'utf8'), 'legacy-ledger');
-    assert.equal(fs.readFileSync(path.join(fundDir, 'fill-ledger.json'), 'utf8'), 'already-migrated-ledger');
+    assert.equal(fs.readFileSync(path.join(exchangeDir, 'chart-data-buffer.json'), 'utf8'), 'legacy-buffer');
+    assert.equal(fs.readFileSync(path.join(fundDir, 'chart-data-buffer.json'), 'utf8'), 'already-migrated-buffer');
   });
 
   it('preserves a non-empty sibling pair subdirectory and removes an empty one during cleanup', () => {
@@ -475,6 +476,73 @@ describe('needsPairMigration (issue #425)', () => {
     writeLegacyFile(path.join(tmpDir, EXCHANGE), 'regime-state.json', '{}');
     assert.equal(migration.needsPairMigration(EXCHANGE), true);
   });
+
+  it('is true when only fill-ledger.json is left at the exchange level (issue #1399)', () => {
+    const exchangeDir = path.join(tmpDir, EXCHANGE);
+    writeLegacyFile(path.join(exchangeDir, PAIR), 'state.json', '{}');
+    writeLegacyFile(exchangeDir, 'fill-ledger.json', '{}');
+    assert.equal(migration.needsPairMigration(EXCHANGE), true);
+  });
+
+  it('ignores a lone exchange-level transactions.tsv and non-per-fund files', () => {
+    const exchangeDir = path.join(tmpDir, EXCHANGE);
+    writeLegacyFile(path.join(exchangeDir, PAIR), 'state.json', '{}');
+    writeLegacyFile(exchangeDir, 'transactions.tsv', 'header\n');
+    writeLegacyFile(exchangeDir, 'long-term-candles-btc-usdc.json', '{}');
+    assert.equal(migration.needsPairMigration(EXCHANGE), false);
+  });
+});
+
+describe('pair migration resumes after an interruption and refuses ledger/state conflicts (issue #1399)', () => {
+  it('moves a fill-ledger.json left at the exchange level after the state files already moved', () => {
+    const exchangeDir = path.join(tmpDir, EXCHANGE);
+    const fundDir = path.join(exchangeDir, PAIR);
+    // Interrupted run: both state files reached the fund dir, the ledger did not.
+    writeLegacyFile(fundDir, 'state.json', 'migrated-state');
+    writeLegacyFile(fundDir, 'regime-state.json', 'migrated-regime');
+    writeLegacyFile(exchangeDir, 'fill-ledger.json', 'legacy-ledger');
+    writeLegacyFile(exchangeDir, 'pending-corrective-buys.json', 'legacy-pending');
+
+    const result = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.equal(result.migrated, true);
+    assert.equal(result.movedFiles, 2);
+    assert.deepEqual(result.skippedFiles, []);
+    assert.equal(fs.readFileSync(path.join(fundDir, 'fill-ledger.json'), 'utf8'), 'legacy-ledger');
+    assert.equal(fs.readFileSync(path.join(fundDir, 'pending-corrective-buys.json'), 'utf8'), 'legacy-pending');
+    assert.equal(fs.readFileSync(path.join(fundDir, 'state.json'), 'utf8'), 'migrated-state');
+    assert.ok(!fs.existsSync(path.join(exchangeDir, 'fill-ledger.json')));
+
+    const again = migration.migrateExchangeToPairs(EXCHANGE);
+    assert.equal(again.migrated, false);
+    assert.match(again.reason, /^no-op/);
+  });
+
+  for (const name of ['fill-ledger.json', 'state.json', 'regime-state.json']) {
+    it(`refuses, naming both paths and moving nothing, when ${name} exists at both levels`, () => {
+      const exchangeDir = path.join(tmpDir, EXCHANGE);
+      const fundDir = path.join(exchangeDir, PAIR);
+      writeLegacyFile(exchangeDir, name, 'legacy-copy');
+      writeLegacyFile(fundDir, name, 'fund-copy');
+      // A non-conflicting straggler must not be moved either: refusal happens
+      // before any rename so the tree is left exactly as found.
+      writeLegacyFile(exchangeDir, 'optimizer-cache.json', 'legacy-cache');
+
+      const result = migration.migrateExchangeToPairs(EXCHANGE);
+
+      assert.equal(result.migrated, false);
+      assert.ok(!result.reason.startsWith('no-op'), 'a conflict must not read as a no-op (the engine exits on any other reason)');
+      const exchangePath = path.join(exchangeDir, name);
+      const fundPath = path.join(fundDir, name);
+      assert.ok(result.reason.includes(exchangePath), 'reason names the exchange-level path');
+      assert.ok(result.reason.includes(fundPath), 'reason names the fund-level path');
+      assert.deepEqual(result.conflicts, [{ name, exchangePath, fundPath }]);
+      assert.equal(fs.readFileSync(exchangePath, 'utf8'), 'legacy-copy');
+      assert.equal(fs.readFileSync(fundPath, 'utf8'), 'fund-copy');
+      assert.equal(fs.readFileSync(path.join(exchangeDir, 'optimizer-cache.json'), 'utf8'), 'legacy-cache');
+      assert.ok(!fs.existsSync(path.join(fundDir, 'optimizer-cache.json')));
+    });
+  }
 });
 
 describe('resolveFundPath (issue #425)', () => {

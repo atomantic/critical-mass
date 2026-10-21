@@ -543,15 +543,39 @@ const normalizeExchangeTreeToPairs = ({ root, exchange, pair }) => {
  * @returns {boolean} True if migration is needed
  */
 const needsPairMigration = (exchange) => {
-  // Use module.exports so tests that patch getExchangeDataDir take effect.
-  // (We don't call getExchangeDataDir directly because it would create the
-  // directory as a side-effect; we want a pure existence check.)
+  // Pure existence check — getExchangeDataDir would create the directory.
   const exchangeDir = path.join(DATA_DIR, exchange);
   if (!fs.existsSync(exchangeDir)) return false;
-  // If a state file already lives at the exchange level, migration is needed.
-  return fs.existsSync(path.join(exchangeDir, 'state.json'))
-      || fs.existsSync(path.join(exchangeDir, 'regime-state.json'));
+  // Any per-fund file left at the exchange level means the migration has
+  // work to do — not only the two state files. A run interrupted after
+  // state.json/regime-state.json moved but before fill-ledger.json did must
+  // resume and move the ledger on the next start (issue #1399).
+  // transactions.tsv is excluded: repairStrandedTransactionLog reconciles it
+  // on every start, migrated or not (issue #543).
+  return fs.readdirSync(exchangeDir, { withFileTypes: true })
+    .some((entry) => entry.isFile() && entry.name !== 'transactions.tsv' && isPerFundFile(entry.name));
 };
+
+/**
+ * Per-fund files whose skip on a both-copies collision would leave the fund
+ * trading on the wrong accounting: a missing fund-level ledger loads as a
+ * fresh install (empty realized P&L and consumption records), and a state
+ * file decides which bodies and orders the engine resumes. When both copies
+ * exist the migration cannot know which generation is authoritative, so it
+ * refuses rather than skip (issue #1399).
+ */
+const PAIR_MIGRATION_CONFLICT_FILES = ['state.json', 'regime-state.json', 'fill-ledger.json'];
+
+/**
+ * List the conflict-guarded per-fund files present at BOTH the exchange level
+ * and the fund directory.
+ * @param {string} exchangeDir
+ * @param {string} fundDir
+ * @returns {{name: string, exchangePath: string, fundPath: string}[]}
+ */
+const findPairMigrationConflicts = (exchangeDir, fundDir) => PAIR_MIGRATION_CONFLICT_FILES
+  .map((name) => ({ name, exchangePath: path.join(exchangeDir, name), fundPath: path.join(fundDir, name) }))
+  .filter(({ exchangePath, fundPath }) => fs.existsSync(exchangePath) && fs.existsSync(fundPath));
 
 /**
  * Walk every pair subdirectory under `data/<exchange>/` and rename any file
@@ -880,7 +904,7 @@ const repairStrandedTransactionLog = (exchange, pair) => {
  * do, so an already-migrated exchange still gets reconciled.
  *
  * @param {string} exchange
- * @returns {{migrated: boolean, defaultPair: string|null, movedFiles: number, reason?: string, skippedFiles?: string[], repairedFiles?: number, skippedRepairFiles?: string[], priceCacheRepair?: {repairedFiles: number, mergedFiles: number, skippedFiles: string[]}, transactionLogRepair?: {repaired: boolean, action: string, rowsAppended: number}}}
+ * @returns {{migrated: boolean, defaultPair: string|null, movedFiles: number, reason?: string, conflicts?: {name: string, exchangePath: string, fundPath: string}[], skippedFiles?: string[], repairedFiles?: number, skippedRepairFiles?: string[], priceCacheRepair?: {repairedFiles: number, mergedFiles: number, skippedFiles: string[]}, transactionLogRepair?: {repaired: boolean, action: string, rowsAppended: number}}}
  */
 const migrateExchangeToPairs = (exchange) => {
   const { repairedFiles, skippedFiles: skippedRepairFiles } = repairStrandedLongTermCandles(exchange);
@@ -933,6 +957,26 @@ const migrateExchangeToPairs = (exchange) => {
   // resolveFundPath (not path.join) so a pair that would escape the exchange
   // directory is rejected BEFORE anything is created on disk.
   const fundDir = resolveFundPath(exchangeDir, defaultPair);
+
+  // Both generations of a ledger/state file on disk: refuse before moving
+  // anything, naming both paths, so the engine does not start on whichever
+  // copy happened to win (issue #1399). Nothing is moved, so the operator's
+  // fix (remove or archive one copy) resumes the migration on the next start.
+  const conflicts = findPairMigrationConflicts(exchangeDir, fundDir);
+  if (conflicts.length > 0) {
+    const detail = conflicts.map((c) => `${c.exchangePath} and ${c.fundPath}`).join('; ');
+    return {
+      migrated: false,
+      defaultPair,
+      movedFiles: 0,
+      reason: `Both legacy and per-fund copies exist (${detail}) — keep the authoritative copy, move the other out of data/, then restart`,
+      conflicts,
+      repairedFiles,
+      skippedRepairFiles,
+      priceCacheRepair,
+      transactionLogRepair: { repaired: false, action: 'none', rowsAppended: 0 },
+    };
+  }
 
   // If the target subdirectory exists but is empty (e.g. accidentally
   // created by the API server reading per-fund paths before migration ran),
@@ -1007,6 +1051,7 @@ module.exports = {
   getExchangeDataDir,
   getFundDataDir,
   needsPairMigration,
+  PAIR_MIGRATION_CONFLICT_FILES,
   resolveFundDataDir,
   resolveFundPath,
   withFundDataDirOverride,
