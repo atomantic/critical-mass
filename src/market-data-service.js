@@ -871,6 +871,17 @@ const createMarketDataService = (exchange, pair) => {
       return { success: false, error: `Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details` };
     }
 
+    // load() guesses the current cycle as the latest one with sells < buys, but
+    // holdback leaves every finished cycle in that state — so after a cycle
+    // closes (or an operator reset) it would pick the finished cycle and file
+    // fills recorded while stopped there. Anchor on the persisted boundary the
+    // engine itself restores at boot (regime-engine restorePersistedCycleId).
+    const persistedPosition = loadFundRegimeState(exchange, resolvedPair)?.position;
+    const persistedCycleId = persistedPosition?.activeCycleId;
+    if (typeof persistedCycleId === 'string' && /^cycle-\d+$/.test(persistedCycleId)) {
+      fillLedger.setCurrentCycleId(persistedCycleId, persistedPosition.activeCycleStartedAt ?? null);
+    }
+
     // Create the health monitor BEFORE the first adapter call so
     // getActiveAdapter() (used below and by every REST call site) wraps the
     // adapter with REST error/rate-limit/latency instrumentation from the

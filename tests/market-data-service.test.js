@@ -3163,6 +3163,28 @@ describe('fenceMarketDataService + handover gap recovery (issue #1008)', () => {
     assert.deepEqual(tradeIdsOnDisk(), ['A', 'G1'], 'no duplicate booking from the replay');
   });
 
+  it('anchors the ledger on the persisted active cycle instead of the finished one with holdback', async () => {
+    // cycle-1 closed with holdback (sells < buys) — load()'s guess picks it.
+    openLedger().ingestFill({ tradeId: 'S0', orderId: 'sell-0', side: 'sell', price: 110, size: 0.9, totalCommission: 0.1 });
+    const state = require('../src/state-tracker');
+    require.cache[STUBBED.stateTracker].exports = { ...state, loadFundRegimeState: () => ({
+      position: {
+        activeCycleId: 'cycle-2',
+        activeCycleStartedAt: Date.now(),
+        celestialBodies: [{ id: 'body-1', tpOrderId: TP, tpPrice: 110, assetOnOrder: 1 }],
+      },
+    }) };
+    delete require.cache[MDS_PATH];
+    mds = require('../src/market-data-service');
+    adapter.getOrderFills = async () => [tpFill];
+
+    assert.equal((await mds.startMarketDataService(EXCHANGE)).success, true);
+    await feedConfig.onOrderUpdate(filled);
+
+    const g1 = openLedger().getAllFills().find((f) => f.tradeId === 'G1');
+    assert.equal(g1.cycleId, 'cycle-2');
+  });
+
   it('reports orders it could not confirm without failing the start', async () => {
     adapter.getOrder = async () => { throw new Error('API 503'); };
 
