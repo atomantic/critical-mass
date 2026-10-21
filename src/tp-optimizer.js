@@ -288,6 +288,29 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
   };
 
   /**
+   * Record an applied adjustment in history (capped at 50) and notify the callback
+   * @param {TpAdjustment} adjustment
+   * @param {number} now - Timestamp of the adjustment
+   */
+  const recordAdjustment = (adjustment, now) => {
+    adjustmentHistory.push({
+      timestamp: now,
+      tpMin: adjustment.tpMinPercent,
+      tpMax: adjustment.tpMaxPercent,
+      holdbackRatio: adjustment.holdbackRatio,
+      reason: adjustment.reason,
+    });
+
+    if (adjustmentHistory.length > 50) {
+      adjustmentHistory.shift();
+    }
+
+    if (callbacks.onAdjustment) {
+      callbacks.onAdjustment(adjustment);
+    }
+  };
+
+  /**
    * Evaluate if TP adjustment is needed
    * @returns {TpAdjustment|null}
    */
@@ -326,23 +349,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
       // Apply time decay to histogram after evaluation
       applyTimeDecay();
 
-      // Record adjustment
-      adjustmentHistory.push({
-        timestamp: now,
-        tpMin: adjustment.tpMinPercent,
-        tpMax: adjustment.tpMaxPercent,
-        holdbackRatio: adjustment.holdbackRatio,
-        reason: adjustment.reason,
-      });
-
-      // Keep history manageable
-      if (adjustmentHistory.length > 50) {
-        adjustmentHistory.shift();
-      }
-
-      if (callbacks.onAdjustment) {
-        callbacks.onAdjustment(adjustment);
-      }
+      recordAdjustment(adjustment, now);
     }
 
     return adjustment;
@@ -406,21 +413,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
 
       applyTimeDecay();
 
-      adjustmentHistory.push({
-        timestamp: now,
-        tpMin: adjustment.tpMinPercent,
-        tpMax: adjustment.tpMaxPercent,
-        holdbackRatio: adjustment.holdbackRatio,
-        reason: adjustment.reason,
-      });
-
-      if (adjustmentHistory.length > 50) {
-        adjustmentHistory.shift();
-      }
-
-      if (callbacks.onAdjustment) {
-        callbacks.onAdjustment(adjustment);
-      }
+      recordAdjustment(adjustment, now);
     }
 
     return adjustment;
