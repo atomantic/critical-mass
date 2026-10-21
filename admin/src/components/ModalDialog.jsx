@@ -51,6 +51,14 @@ function ModalDialog({ onClose, labelledBy, describedBy, dismissible = true, max
       if (!dismissibleRef.current) event.preventDefault()
     }
     const handleClose = () => {
+      // Chrome only honors preventDefault() on 'cancel' once per user
+      // interaction, so a second Escape closes the dialog anyway. While a
+      // pending action guard is active, put it straight back instead of
+      // letting the trigger become clickable again (double submit).
+      if (!dismissibleRef.current) {
+        dialog.showModal()
+        return
+      }
       previouslyFocusedRef.current?.focus?.()
       onCloseRef.current?.()
     }
