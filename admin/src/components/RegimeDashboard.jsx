@@ -10,7 +10,7 @@ import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
 import RegimeActionModals from './regime/RegimeActionModals'
-import OpenOrdersTable from './regime/OpenOrdersTable'
+import OpenOrdersTable, { REGIME_ORDER_TOUCH_TARGET } from './regime/OpenOrdersTable'
 import FilledOrdersSection from './regime/FilledOrdersSection'
 import PositionCard from './regime/PositionCard'
 import LadderPanel from './regime/LadderPanel'
@@ -204,15 +204,15 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
         <div className="space-y-4">
           {/* Open Orders */}
           <div className="bg-gray-800 rounded-lg p-4">
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 mb-3">
               <h3 className="text-sm font-medium text-gray-400">Open Orders</h3>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {isDryRun && <span className="text-xs text-purple-400">(Simulated)</span>}
                 {status?.position?.ladderActive && status?.isRunning && (
                   <button
                     onClick={handleCancelLadder}
                     disabled={cancellingLadder}
-                    className="px-2 py-1 text-xs bg-red-700 hover:bg-red-800 text-white rounded-sm transition-colors disabled:opacity-50"
+                    className={`px-2 py-1 text-xs bg-red-700 hover:bg-red-800 text-white rounded-sm transition-colors disabled:opacity-50 ${REGIME_ORDER_TOUCH_TARGET}`}
                   >
                     {cancellingLadder ? 'Cancelling…' : 'Cancel Ladder → Reactive'}
                   </button>
@@ -222,7 +222,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     onClick={() => setCollapseAllConfirm(true)}
                     disabled={collapsingAll}
                     title="Cancel all body TP orders, combine into one body, place a single TP"
-                    className="px-2 py-1 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-sm transition-colors disabled:opacity-50"
+                    className={`px-2 py-1 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-sm transition-colors disabled:opacity-50 ${REGIME_ORDER_TOUCH_TARGET}`}
                   >
                     {collapsingAll ? 'Collapsing…' : `Collapse All (${status.celestial.bodies.length})`}
                   </button>

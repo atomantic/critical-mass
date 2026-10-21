@@ -537,17 +537,17 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                         <td className="px-2 py-1 text-right text-gray-300">{formatPrice(order.avgPrice)}</td>
                         <td className="px-2 py-1 text-right text-gray-300">{formatCurrency(order.totalUsdc)}</td>
                         <td className="px-2 py-1 text-gray-400">{fmtDate(order.time)}</td>
-                        <td className="px-2 py-1 flex gap-1">
+                        <td className="px-2 py-1 flex flex-wrap gap-2">
                           <button
                             onClick={() => openImportModal(order)}
-                            className="px-2 py-0.5 rounded-sm text-[10px] bg-blue-600/30 text-blue-400 hover:bg-blue-600/50 border border-blue-500/30"
+                            className="trade-history-touch-target min-h-11 min-w-11 px-3 py-1 rounded-sm text-xs bg-blue-600/30 text-blue-400 hover:bg-blue-600/50 border border-blue-500/30"
                           >
                             Import
                           </button>
                           <button
                             onClick={() => handleDismiss(order.orderId)}
                             disabled={dismissing === order.orderId}
-                            className="px-2 py-0.5 rounded-sm text-[10px] bg-gray-600/30 text-gray-400 hover:bg-gray-600/50 border border-gray-500/30"
+                            className="trade-history-touch-target min-h-11 min-w-11 px-3 py-1 rounded-sm text-xs bg-gray-600/30 text-gray-400 hover:bg-gray-600/50 border border-gray-500/30"
                           >
                             {dismissing === order.orderId ? '...' : 'Dismiss'}
                           </button>
