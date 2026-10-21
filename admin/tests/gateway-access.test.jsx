@@ -24,7 +24,7 @@ describe('GatewayAccess', () => {
     expect(screen.getByRole('status').textContent).toBe('Checking…')
     expect(screen.queryByLabelText('Current password')).toBeNull()
 
-    resolveSession({ ok: false })
+    resolveSession({ ok: false, status: 500, json: async () => ({}) })
     expect(await screen.findByRole('alert')).toBeTruthy()
     expect(screen.queryByLabelText('Current password')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
