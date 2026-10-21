@@ -189,6 +189,13 @@ const createSentinelService = (io, deps) => {
       if (!isCurrent()) return;
       const items = fetched.items;
       let newAlerts = 0;
+      let suppressed = 0;
+      // Seen records older than MAX_SEEN_AGE_MS are pruned, so after a gap that long
+      // (Sentinel disabled, or every feed failing) the feed's old items look new. Mark
+      // them seen without alerting; likewise any item published before the retention window.
+      const gapSinceFetch = lastSuccessfulFetchAt ? Date.now() - Date.parse(lastSuccessfulFetchAt) : 0;
+      const afterLongGap = gapSinceFetch > MAX_SEEN_AGE_MS;
+      const staleBefore = Date.now() - MAX_SEEN_AGE_MS;
 
       for (const item of items) {
         if (!isCurrent()) return;
@@ -198,6 +205,13 @@ const createSentinelService = (io, deps) => {
           // Without this, items that remain in the feed for >7 days get pruned and re-alerted
           // on the next poll (issue #695).
           seenGuids.set(guid, Date.now());
+          continue;
+        }
+
+        const publishedAt = Date.parse(item.pubDate);
+        if (afterLongGap || publishedAt < staleBefore) {
+          seenGuids.set(guid, Date.now());
+          suppressed++;
           continue;
         }
 
@@ -271,7 +285,7 @@ const createSentinelService = (io, deps) => {
           items: items.length,
         });
       }
-      if (newAlerts > 0 || fetched.failed > 0) persistState();
+      if (newAlerts > 0 || suppressed > 0 || fetched.failed > 0) persistState();
 
       // Emit status update
       io.to('sentinel').emit('sentinel:status', getStatus());
