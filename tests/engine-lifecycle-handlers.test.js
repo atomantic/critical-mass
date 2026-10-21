@@ -20,6 +20,7 @@ const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { registerEngineLifecycleHandlers } = require('../src/engine-lifecycle-handlers');
+const { createEngineShutdown } = require('../src/engine-shutdown');
 const { fundKey, fundLabel } = require('../src/shared-utils');
 const { LIFECYCLE } = require('../src/state-tracker');
 
@@ -413,7 +414,8 @@ describe('engine-lifecycle-handlers', () => {
 
       assert.ok(stopIdx > -1 && startIdx > -1 && wireIdx > -1 && flagIdx > -1);
       assert.ok(stopIdx < startIdx, 'the consumer must not load the ledger until the engine has flushed it');
-      assert.ok(startIdx < wireIdx && wireIdx < flagIdx);
+      assert.ok(stopIdx < flagIdx && flagIdx < startIdx, 'stop intent is persisted before the handover (#1552)');
+      assert.ok(startIdx < wireIdx);
       assert.equal(h.calls[startIdx].engineRegistered, true, 'the engine keeps the fund until the transfer completes');
       assert.ok(firstIndex(h.calls, 'invalidateStandaloneLedger', PAIR_A) > startIdx);
 
@@ -528,6 +530,101 @@ describe('engine-lifecycle-handlers', () => {
       assert.equal(h.regimeEngines.get(fundKey(EXCHANGE, PAIR_B)), engineB);
       assert.equal(h.runningFlags.get(fundKey(EXCHANGE, PAIR_B)), true);
       assert.equal(callsFor(h.calls, PAIR_B).length, 0);
+    });
+
+    // issue #1552 — the handover to the standalone consumer can take minutes
+    // on a slow exchange. A restart inside it must not resume the fund on the
+    // next boot, nor flush the stopped engine's stale ledger over fills the
+    // consumer recovered.
+    describe('restart during the standalone handover (#1552)', () => {
+      /** A fund engine that reports isRunning until stop() and flushes into `calls`. */
+      const createStatefulEngine = (calls) => {
+        let running = true;
+        return {
+          start: async () => ({ success: true }),
+          stop: async () => { calls.push({ op: 'engine.stop', pair: PAIR_A }); running = false; return {}; },
+          getStatus: () => ({ isRunning: running }),
+          flushForBackup: () => calls.push({ op: 'flush', pair: PAIR_A, running }),
+        };
+      };
+
+      it('clears the running flag before the handover completes', async () => {
+        const handover = deferred();
+        const h = createHarness({
+          startMarketDataService: async (exchange, pair) => {
+            h.calls.push({ op: 'startMarketDataService', pair });
+            return handover.promise;
+          },
+        });
+        h.runningFlags.set(fundKey(EXCHANGE, PAIR_A), true);
+        h.regimeEngines.set(fundKey(EXCHANGE, PAIR_A), createStatefulEngine(h.calls));
+
+        const stopping = h.stop({}, EXCHANGE, PAIR_A);
+        await settle();
+
+        assert.equal(countOf(h.calls, 'startMarketDataService', PAIR_A), 1, 'handover is in progress');
+        assert.equal(h.runningFlags.get(fundKey(EXCHANGE, PAIR_A)), false, 'stop intent is durable before the handover resolves');
+        assert.equal(h.regimeEngines.has(fundKey(EXCHANGE, PAIR_A)), true, 'the engine still holds the fund during the transfer');
+
+        handover.resolve({ success: true });
+        assert.equal((await stopping).success, true);
+        assert.equal(h.regimeEngines.has(fundKey(EXCHANGE, PAIR_A)), false);
+        assert.equal(countOf(h.calls, 'saveRegimeRunningFlag', PAIR_A), 1, 'the flag is written once');
+      });
+
+      it('a shutdown during a pending handover leaves the flag cleared and does not flush the stopped engine', async () => {
+        const handover = deferred();
+        const h = createHarness({
+          startMarketDataService: async (exchange, pair) => {
+            h.calls.push({ op: 'startMarketDataService', pair });
+            return handover.promise;
+          },
+        });
+        h.runningFlags.set(fundKey(EXCHANGE, PAIR_A), true);
+        h.regimeEngines.set(fundKey(EXCHANGE, PAIR_A), createStatefulEngine(h.calls));
+        // A second fund that is genuinely running still owes its final flush.
+        let otherFlushed = 0;
+        h.regimeEngines.set(fundKey(EXCHANGE, PAIR_B), {
+          stop: async () => ({}),
+          getStatus: () => ({ isRunning: true }),
+          flushForBackup: () => { otherFlushed++; },
+        });
+
+        void h.stop({}, EXCHANGE, PAIR_A);
+        await settle();
+        assert.equal(countOf(h.calls, 'flush', PAIR_A), 1, 'stopFund published the final generation once');
+
+        const exitCodes = [];
+        const coordinator = createEngineShutdown({
+          regimeEngines: h.regimeEngines,
+          cancelStarts: h.cancelStarts,
+          settleStarts: h.settleStarts,
+          // The accepted regime:stop never finishes inside the IPC drain window.
+          drainPendingWrites: async () => ({ drained: false, pending: [{ label: 'ipc:regime:stop' }] }),
+          logger: { info: () => {}, warn: () => {}, error: () => {} },
+          exit: (code) => exitCodes.push(code),
+          watchdogMs: 1000,
+        });
+        await coordinator.shutdown('SIGTERM');
+
+        assert.deepEqual(exitCodes, [0]);
+        assert.equal(h.runningFlags.get(fundKey(EXCHANGE, PAIR_A)), false, 'the fund must not auto-resume on the next boot');
+        assert.equal(countOf(h.calls, 'flush', PAIR_A), 1, 'shutdown must not flush the already-stopped engine');
+        assert.equal(otherFlushed, 1, 'running engines still receive the post-drain flush');
+        handover.resolve({ success: true });
+      });
+
+      it('keeps the stopped engine registered and starts no consumer when the flag write fails', async () => {
+        const h = createHarness({
+          saveRegimeRunningFlag: () => { throw new Error('EACCES'); },
+        });
+        h.regimeEngines.set(fundKey(EXCHANGE, PAIR_A), createStatefulEngine(h.calls));
+
+        await assert.rejects(h.stop({}, EXCHANGE, PAIR_A), /EACCES/);
+
+        assert.equal(h.regimeEngines.has(fundKey(EXCHANGE, PAIR_A)), true, 'retrying Stop completes the handover');
+        assert.equal(countOf(h.calls, 'startMarketDataService', PAIR_A), 0);
+      });
     });
   });
 });

@@ -258,6 +258,14 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
       return { success: false, error: stopResult.error };
     }
 
+    // The engine is stopped and its final generation is on disk, so record the
+    // operator's stop intent before the handover below. That handover waits on
+    // candle fetches and gap recovery and can take minutes on a slow exchange;
+    // a restart inside it must not leave the fund set to auto-resume (#1552).
+    // If this write throws, the stopped engine stays registered with no
+    // consumer started, so retrying Stop completes the handover.
+    saveRegimeRunningFlag(exchange, resolvedPair, false);
+
     // Only now may the standalone consumer load the ledger: it reads the
     // engine's final generation (stop's force-persist also repairs a ledger
     // file that became unreadable mid-run) and recovers any fill that landed
@@ -269,7 +277,6 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
 
     regimeEngines.delete(key);
     invalidateStandaloneLedger(exchange, resolvedPair);
-    saveRegimeRunningFlag(exchange, resolvedPair, false);
 
     fundLogger.info(`ℹ️ ✅ [${label}] Regime engine stopped successfully`);
     return { success: true, exchange, pair: resolvedPair, stopped: true };

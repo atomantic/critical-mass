@@ -28,6 +28,7 @@ describe('coinbase engine graceful shutdown', () => {
           callLog.push('eth-stop');
           return undefined;
         },
+        getStatus: () => ({ isRunning: true }),
         flushForBackup: () => {
           callLog.push('eth-flush');
         },
@@ -79,6 +80,7 @@ describe('coinbase engine graceful shutdown', () => {
           await tick(10);
           callLog.push('btc-stop');
         },
+        getStatus: () => ({ isRunning: true }),
         flushForBackup: () => callLog.push('btc-flush'),
       }],
     ]);
@@ -200,6 +202,7 @@ describe('coinbase engine graceful shutdown', () => {
         stop: async () => {
           callLog.push('engine-stop');
         },
+        getStatus: () => ({ isRunning: true }),
         flushForBackup: () => {
           callLog.push('engine-flush');
         },
@@ -277,6 +280,7 @@ describe('coinbase engine graceful shutdown', () => {
     const coordinator = createEngineShutdown({
       regimeEngines: new Map([['btc-usdc', {
         stop: async () => callLog.push('btc-stop'),
+        getStatus: () => ({ isRunning: true }),
         flushForBackup: () => callLog.push('btc-flush'),
       }]]),
       cancelStarts: async () => callLog.push('cancelStarts'),
@@ -338,6 +342,7 @@ describe('coinbase engine graceful shutdown', () => {
     const coordinator = createEngineShutdown({
       regimeEngines: new Map([['btc-usdc', {
         stop: async () => callLog.push('btc-stop'),
+        getStatus: () => ({ isRunning: true }),
         flushForBackup: () => callLog.push('btc-flush'),
       }]]),
       // cancelAll marks shutdown synchronously, then awaits every start promise.
