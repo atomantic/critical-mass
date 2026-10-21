@@ -57,7 +57,7 @@ const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
 const { buildRuntimeHealth } = require('./src/runtime-health');
 const { createOperatorAuth } = require('./src/operator-auth');
-const { resolveListenHosts, createCorsMiddleware, bindGatewayListeners, watchTailscaleListeners } = require('./src/gateway-listen');
+const { resolveListenHosts, createCorsMiddleware, createSecurityHeadersMiddleware, bindGatewayListeners, watchTailscaleListeners } = require('./src/gateway-listen');
 const { registerProcessGuards } = require('./src/process-guard');
 const { resolveIpcPort } = require('./src/ipc-port-defaults');
 const { PORTS } = require('./ecosystem.config.cjs');
@@ -164,6 +164,9 @@ const routes = Object.fromEntries(Object.entries(shutdownRoutes).map(([method, r
 // ============ Middleware ============
 
 app.use(gatewayShutdown.middleware);
+
+app.disable('x-powered-by');
+app.use(createSecurityHeadersMiddleware());
 
 app.use(createCorsMiddleware(CORS_ORIGINS));
 

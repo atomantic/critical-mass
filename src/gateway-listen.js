@@ -82,6 +82,21 @@ const isGatewayOrigin = (origin, allowlist = []) => {
 }
 
 /**
+ * Baseline anti-framing and hardening headers for every gateway response.
+ * The operator UI is never meant to be framed, so frame-ancestors/X-Frame-Options
+ * block clickjacking from any other origin on the same site (ports do not
+ * separate sites). A full default-src CSP is intentionally not set here: the
+ * admin build needs inline styles, data: images and blob workers.
+ */
+const createSecurityHeadersMiddleware = () => (req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+};
+
+/**
  * Express CORS middleware honoring isGatewayOrigin.
  * @param {string[]} [allowlist]
  */
@@ -196,6 +211,7 @@ module.exports = {
   resolveListenHosts,
   isGatewayOrigin,
   createCorsMiddleware,
+  createSecurityHeadersMiddleware,
   bindGatewayListeners,
   watchTailscaleListeners,
 }
