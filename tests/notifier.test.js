@@ -552,6 +552,34 @@ describe('createNotifier() integration (fs-mocked config, stubbed fetch)', () =>
       assert.deepEqual(calls.map(c => /batch ([AB])/.exec(c.body.text)[1]), ['A', 'A', 'B']);
     });
 
+    it('flush() sends its batch immediately instead of queueing behind a batch that is sleeping between retries', async (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      setupFsMocks(RUNNING_CONFIG);
+      const releaseSleep = [];
+      let first = true;
+      const calls = stubFetch(async () => {
+        if (first) { first = false; return response(502, { description: 'Bad Gateway' }); }
+        return response(200);
+      });
+      notifier = createNotifier({ sleep: () => new Promise((resolve) => releaseSleep.push(resolve)) });
+      notifier.start();
+
+      emit('buy_filled', 'batch A');
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      await flushMicrotasks();
+      assert.equal(releaseSleep.length, 1, 'batch A is sleeping before its retry');
+
+      // The process-guard path: a fatal-fault alert is flushed while A is still backing off
+      emit('sentinel_critical', 'fatal fault');
+      const fatalFlush = notifier.flush();
+      await flushMicrotasks();
+      assert.equal(calls.length, 2, 'the urgent batch is sent without waiting for A');
+      assert.ok(calls[1].body.text.includes('fatal fault'));
+
+      releaseSleep[0]();
+      assert.equal(await fatalFlush, true);
+    });
+
     it('stop() during a retry sleep abandons the retry and resolves promptly', async (t) => {
       t.mock.timers.enable({ apis: ['setTimeout'] });
       setupFsMocks(RUNNING_CONFIG);

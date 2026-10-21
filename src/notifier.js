@@ -317,7 +317,11 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
    * @param {string} text - Message text
    * @returns {Promise<boolean>}
    */
-  const sendTelegram = (text) => {
+  const sendTelegram = (text, { urgent = false } = {}) => {
+    // Urgent sends (the last-resort process guards) must not queue behind an
+    // earlier batch that is in retry backoff or a slow attempt: the process
+    // is about to exit and the drain window is only seconds.
+    if (urgent) return trackSend(deliverTelegram(text));
     const run = sendTail.then(() => deliverTelegram(text));
     sendTail = run.catch(() => {});
     return trackSend(run);
@@ -382,7 +386,7 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
   /**
    * Flush queued messages
    */
-  const flushQueue = () => {
+  const flushQueue = ({ urgent = false } = {}) => {
     if (queue.length === 0) return;
 
     const messages = queue.splice(0);
@@ -403,9 +407,17 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
     }
     if (batch) batches.push(batch);
 
+    if (urgent) {
+      // Bypass the serialized tail but keep this flush's own batches in order
+      return trackSend(batches.reduce(
+        (chain, b) => chain.then(async (sent) => (await sendTelegram(b, { urgent })) && sent),
+        Promise.resolve(true)
+      ));
+    }
+
     // Queue every batch on the serialized send tail; a failed batch does not
     // stop the later ones
-    return trackSend(Promise.all(batches.map(sendTelegram)).then((results) => results.every(Boolean)));
+    return trackSend(Promise.all(batches.map((b) => sendTelegram(b))).then((results) => results.every(Boolean)));
   };
 
   /**
@@ -428,15 +440,18 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
    * Flush the pending queue immediately, cancelling the rate-limit timer.
    * Used by shutdown and by the last-resort process guards (issue #532), where
    * waiting out `config.rateLimitMs` would mean the operator never hears about
-   * the fault that is killing the process.
+   * the fault that is killing the process. The queued batches are sent
+   * urgently: they do not wait behind earlier batches that are retrying.
    * @returns {Promise<boolean>}
    */
-  const flush = async () => {
+  const flush = async () => drainQueue({ urgent: true });
+
+  const drainQueue = async ({ urgent }) => {
     if (flushTimer) {
       clearTimeout(flushTimer);
       flushTimer = null;
     }
-    flushQueue();
+    flushQueue({ urgent });
     let successful = true;
     while (pendingSends.size) {
       const results = await Promise.allSettled([...pendingSends]);
@@ -581,7 +596,7 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
       }, STOP_DRAIN_DEADLINE_MS);
       deadlineTimer.unref?.();
     });
-    const drain = Promise.race([flush(), deadline]).finally(() => clearTimeout(deadlineTimer)).catch((err) => {
+    const drain = Promise.race([drainQueue({ urgent: false }), deadline]).finally(() => clearTimeout(deadlineTimer)).catch((err) => {
       notifierLogger.error(`❌ 📨 Flush on stop failed: ${err.message}`, { action: 'stop', error: err.message });
       return false;
     }).then((sent) => {
