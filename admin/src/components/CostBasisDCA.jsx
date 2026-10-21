@@ -14,7 +14,7 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
   const fetchPrice = useCallback(async () => {
     try {
       const res = await apiGet(`/api/${exchange}/status${pairQuery}`)
-      if (!res.ok) throw new Error(res.status ? `Status request failed (${res.status})` : res.error)
+      if (!res.ok) throw new Error(res.error)
       const data = res.data
       const price = Number(data.currentPrice)
       setCurrentPrice(price > 0 ? price : null)

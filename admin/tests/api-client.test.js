@@ -43,6 +43,12 @@ describe('apiClient', () => {
     expect(result.error).toContain('HTTP 502')
   })
 
+  it('treats a 200 non-JSON body as a failure unless an empty reply is allowed', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(200, '<html>proxy</html>')))
+    expect(await apiGet('/api/x')).toMatchObject({ ok: false, status: 200, data: null })
+    expect(await apiDelete('/api/x', { allowEmpty: true })).toMatchObject({ ok: true, data: null, error: null })
+  })
+
   it('reports a network error as a failed result', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
     expect(await apiGet('/api/x')).toEqual({ ok: false, status: 0, data: null, error: 'Failed to fetch' })

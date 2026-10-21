@@ -6,7 +6,7 @@
  * false for `!res.ok` AND for a 2xx body carrying `success: false`; `error` is
  * then the operator-facing reason from `describeActionFailure`. The one thing
  * that does throw is an AbortError, so callers using an AbortSignal can ignore
- * it the way they already do.
+ * it the way they already do. Pass `allowEmpty: true` for replies that legitimately carry no body.
  *
  * The wire format is plain fetch, so the global 401 hook in OperatorLogin keeps
  * working and call sites can adopt this file by file.
@@ -16,7 +16,7 @@ import { describeActionFailure } from './actionFailure.mjs'
 // A non-JSON body (proxy 5xx page, empty 204) reads as null rather than throwing.
 const parseBody = (res) => res.json().catch(() => null)
 
-export async function apiRequest(method, url, { body, signal } = {}) {
+export async function apiRequest(method, url, { body, signal, allowEmpty = false } = {}) {
   const init = { method, signal }
   if (body !== undefined) {
     init.headers = { 'Content-Type': 'application/json' }
@@ -30,8 +30,10 @@ export async function apiRequest(method, url, { body, signal } = {}) {
     return { ok: false, status: 0, data: null, error: err?.message || 'Network error' }
   }
   const data = await parseBody(res)
-  const ok = res.ok && data?.success !== false
-  return { ok, status: res.status, data, error: ok ? null : describeActionFailure(res.status, data) }
+  // A 2xx page that is not JSON (a proxy HTML page) is a failure unless the caller expects an empty reply.
+  const ok = res.ok && data?.success !== false && (allowEmpty || data !== null)
+  if (ok) return { ok, status: res.status, data, error: null }
+  return { ok, status: res.status, data, error: describeActionFailure(res.ok && data === null ? 0 : res.status, data) }
 }
 
 export const apiGet = (url, opts) => apiRequest('GET', url, opts)
