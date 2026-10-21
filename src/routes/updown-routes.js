@@ -92,6 +92,7 @@ const validateTradeDescription = (body) => {
 
 // Promisified child_process.exec for use in async routes
 const execAsync = promisify(exec);
+const PM2_PREFLIGHT_TIMEOUT_MS = 10_000;
 
 /**
  * Read a request body stream into a Buffer, aborting once `maxBytes` is
@@ -678,9 +679,12 @@ module.exports = (app, deps) => {
 
     // Pre-flight check: verify PM2 is managing this process
     try {
-      await execAsync(`pm2 describe ${processName}`);
+      // A wedged PM2 daemon would otherwise hold this request open forever.
+      await execAsync(`pm2 describe ${processName}`, { timeout: PM2_PREFLIGHT_TIMEOUT_MS });
     } catch (err) {
-      const errorMsg = 'PM2 is not managing this process — restart it from the host (see README)';
+      const errorMsg = err.killed
+        ? `PM2 did not respond within ${PM2_PREFLIGHT_TIMEOUT_MS / 1000}s — check the PM2 daemon on the host, then retry`
+        : 'PM2 is not managing this process — restart it from the host (see README)';
       logger.error(`❌ 🔄 PM2 pre-flight check failed code=${err.code} err=${err.message}`, {
         action: 'restart-preflight',
         processName,

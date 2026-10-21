@@ -29,6 +29,7 @@ const {
   hasRunThisInterval,
   formatInterval,
   getTimeUntilNext,
+  planScheduledRetry,
 } = require('./src/interval-utils');
 const { runIntervalCycle } = require('./src/dca-engine');
 const { createNotifier } = require('./src/notifier');
@@ -126,10 +127,19 @@ const gatewayShutdown = createGatewayShutdown({
     backupScheduler.stop();
     tailscaleWatcher?.stop();
   },
+  // Each producer is stopped on its own, so one failing to persist its state
+  // (e.g. a full disk) still lets the others persist and stop; any failure is
+  // rethrown so the shutdown reports it.
   stopProducers: () => {
-    updownService.stop();
-    sentinelService.stop();
-    activeLogStreams.stopAll();
+    const failures = [];
+    for (const [name, stop] of [['UpDown', () => updownService.stop()], ['Sentinel', () => sentinelService.stop()], ['log streams', () => activeLogStreams.stopAll()]]) {
+      try {
+        stop();
+      } catch (err) {
+        failures.push(`${name}: ${err.message}`);
+      }
+    }
+    if (failures.length) throw new Error(failures.join('; '));
   },
   stopNotifier: () => notifier.stop(),
   disconnectIPC: () => {
@@ -460,15 +470,38 @@ const checkAndRunIntervalTrade = () => {
     if (now >= nextExec) {
       const intervalLabel = formatInterval(intervalType);
       log('INFO', `[${label}] Scheduled ${intervalLabel} trade starting at ${new Date().toISOString()}`);
-      schedulerState[key].lastRunId = getRunIdentifier(intervalType);
-      schedulerState[key].nextExecutionTime = getNextExecutionTime(intervalType);
+      const runId = getRunIdentifier(intervalType);
+      const intervalEnd = getNextExecutionTime(intervalType);
+      schedulerState[key].lastRunId = runId;
+      schedulerState[key].nextExecutionTime = intervalEnd;
 
       gatewayShutdown.track(runIntervalCycle(exchange, pair))
         .then(result => {
+          schedulerState[key].lastAlertAt = null;
           log('INFO', `[${label}] Scheduled trade complete: ${result.status}`);
         })
         .catch(err => {
-          log('ERROR', `[${label}] Scheduled trade failed: ${err.message}`);
+          // A transient exchange error (price, balance or order-status read)
+          // would otherwise skip this fund's buy for the whole interval with
+          // nothing but a console line. Re-running is safe: runIntervalCycle
+          // re-checks the persisted interval, pending buy and placement
+          // intents — the manual trade route relies on the same guarantee.
+          const entry = schedulerState[key];
+          const now = Date.now();
+          const { failures, retryAt, alert } = planScheduledRetry(entry, { runId, now, intervalEnd });
+          entry.retryRunId = runId;
+          entry.retryCount = failures;
+          let next = `no further automatic retry this ${intervalLabel} interval — trigger the trade manually once the cause is fixed`;
+          if (retryAt !== null && entry.lastRunId === runId) {
+            entry.lastRunId = null;
+            entry.nextExecutionTime = retryAt;
+            next = `retrying at ${new Date(retryAt).toISOString()}`;
+          }
+          log('ERROR', `[${label}] Scheduled trade failed: ${err.message}; ${next}`);
+          if (alert) {
+            entry.lastAlertAt = now;
+            tradeEvents.error(exchange, `[${label}] Scheduled ${intervalLabel} trade failed: ${err.message}; ${next}`, { pair, failures });
+          }
         });
     }
   }

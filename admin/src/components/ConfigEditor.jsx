@@ -401,23 +401,38 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // This is the only way a dryRun change actually takes effect — the engine
   // captures dryRun (and picks its live vs paper order executor) at construction
   // and never re-derives it on a config update. start refuses if already
-  // running, so stop first (best-effort: a stopped engine just starts fresh).
+  // running, so stop first; an engine that is already stopped just starts fresh.
   const handleRestartEngine = async () => {
     setRestarting(true)
     setMessage(null)
-    await fetch(`/api/${exchange}/regime/stop${pairQuery}`, { method: 'POST' }).catch(() => {})
+    const stop = await fetch(`/api/${exchange}/regime/stop${pairQuery}`, { method: 'POST' }).catch(() => null)
+    if (!stop?.ok) {
+      const stopErr = stop ? await stop.json().catch(() => ({})) : {}
+      const alreadyStopped = typeof stopErr.error === 'string' && stopErr.error.includes('not running')
+      if (!alreadyStopped) {
+        // Starting now would only answer "already running" and hide why the
+        // stop failed, while the engine keeps trading in its previous mode.
+        const reason = stop
+          ? (stopErr.error || `HTTP ${stop.status}`)
+          : 'the server is unreachable'
+        setMessage({ type: 'error', text: `Could not stop the engine to apply the change (${reason}). It may still be running with its previous Dry Run setting — retry the restart.` })
+        onRestart?.()
+        setRestarting(false)
+        return
+      }
+    }
     const start = await fetch(`/api/${exchange}/regime/start${pairQuery}`, { method: 'POST' }).catch(() => null)
     if (start && start.ok) {
       setMessage({ type: 'success', text: 'Engine restarted — change applied' })
       onSave?.()
       onRestart?.() // refresh engine status so the derived restart banner clears
     } else {
-      // Stop is best-effort but may have succeeded, so the engine can now be
-      // STOPPED rather than running its old mode. Say so explicitly — "failed to
-      // restart" alone would imply nothing changed. The banner stays (derived
-      // from the still-mismatched / now-stopped engine state) for a retry.
+      // Stop succeeded, so the engine is now STOPPED rather than running its
+      // old mode. Say so explicitly — "failed to restart" alone would imply
+      // nothing changed.
       const err = start ? await start.json().catch(() => ({})) : {}
-      setMessage({ type: 'error', text: err.error || 'Engine may now be stopped — start it manually from the dashboard' })
+      const reason = err.error || (start ? `HTTP ${start.status}` : 'the server is unreachable')
+      setMessage({ type: 'error', text: `Engine stopped but did not start again (${reason}) — start it manually from the dashboard.` })
       onRestart?.() // refresh engine status to reflect the stop
     }
     setRestarting(false)

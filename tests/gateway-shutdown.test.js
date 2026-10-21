@@ -134,10 +134,10 @@ describe('gateway shutdown owns admitted work', () => {
     assert.deepEqual(calls, ['cancel', 'exit:1']);
   });
 
-  it('reports teardown rejection as failure without an unhandled rejection', async () => {
+  it('reports teardown rejection as failure without an unhandled rejection, still draining the notifier', async () => {
     const { gateway, calls } = makeGateway({ stopProducers: () => Promise.reject(new Error('persist failed')) });
     assert.equal(await gateway.shutdown('SIGTERM'), 1);
-    assert.deepEqual(calls, ['cancel', 'exit:1']);
+    assert.deepEqual(calls, ['cancel', 'notifier', 'disconnect', 'listeners', 'exit:1']);
   });
 
   it('waits for the realtime bus and every HTTP listener, including an already closed listener', async () => {

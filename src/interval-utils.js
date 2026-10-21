@@ -106,6 +106,29 @@ const formatInterval = (intervalType) => {
   return config.label;
 };
 
+/** Delays before re-running a scheduled cycle that rejected within its interval. */
+const SCHEDULED_RETRY_DELAYS_MS = Object.freeze([5 * 60_000, 15 * 60_000, 45 * 60_000]);
+/** Minimum gap between operator alerts while scheduled cycles keep failing. */
+const SCHEDULED_FAILURE_ALERT_INTERVAL_MS = 60 * 60_000;
+
+/**
+ * Plan the response to a scheduled cycle that rejected. Retries are counted per
+ * run identifier and only scheduled before the interval ends: past that point
+ * the next interval's own run takes over, and a later retry would skip it.
+ * Alerts go out on the first failure after a success, then at most hourly, so a
+ * persistent outage on a short interval cannot page every few minutes.
+ * @param {{retryRunId?: string|null, retryCount?: number, lastAlertAt?: number|null}} entry - The fund's scheduler entry
+ * @param {{runId: string, now: number, intervalEnd: number}} attempt - The failed run and when its interval ends
+ * @returns {{failures: number, retryAt: number|null, alert: boolean}} retryAt is null when no retry fits in this interval
+ */
+const planScheduledRetry = (entry, { runId, now, intervalEnd }) => {
+  const failures = (entry.retryRunId === runId ? entry.retryCount || 0 : 0) + 1;
+  const delay = SCHEDULED_RETRY_DELAYS_MS[failures - 1];
+  const retryAt = delay !== undefined && now + delay < intervalEnd ? now + delay : null;
+  const alert = entry.lastAlertAt == null || now - entry.lastAlertAt >= SCHEDULED_FAILURE_ALERT_INTERVAL_MS;
+  return { failures, retryAt, alert };
+};
+
 /**
  * Get time until next execution
  * @param {IntervalType} intervalType - Interval type
@@ -178,6 +201,9 @@ module.exports = {
   getIntervalAmount,
   formatInterval,
   getTimeUntilNext,
+  SCHEDULED_RETRY_DELAYS_MS,
+  SCHEDULED_FAILURE_ALERT_INTERVAL_MS,
+  planScheduledRetry,
   getConsolidationRunId,
   shouldRunConsolidation,
 };

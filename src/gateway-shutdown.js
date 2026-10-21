@@ -79,12 +79,20 @@ const createGatewayShutdown = ({
       await cancelSchedules();
       await drain();
       if (finished) return;
-      await stopProducers();
-      await stopNotifier();
-      await disconnectIPC();
-      await closeListeners();
-      log('INFO', 'Gateway shutdown complete');
-      complete(0);
+      // Every teardown step runs even when an earlier one fails: a producer
+      // that cannot persist its state (e.g. a full disk) must not skip the
+      // notifier drain, which would drop the queued alerts about that fault.
+      let failed = false;
+      for (const [name, step] of [['producers', stopProducers], ['notifier', stopNotifier], ['IPC', disconnectIPC], ['listeners', closeListeners]]) {
+        try {
+          await step();
+        } catch (err) {
+          failed = true;
+          log('ERROR', `Gateway shutdown: stopping ${name} failed: ${err.message}`);
+        }
+      }
+      log(failed ? 'ERROR' : 'INFO', failed ? 'Gateway shutdown finished with errors' : 'Gateway shutdown complete');
+      complete(failed ? 1 : 0);
     }).catch((err) => {
       log('ERROR', `Gateway shutdown failed: ${err.message}`);
       complete(1);

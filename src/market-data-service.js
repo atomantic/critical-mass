@@ -732,6 +732,9 @@ const createMarketDataService = (exchange, pair) => {
   let cachedRegimeState = null;
   let cachedRegimeStateTime = 0;
   const REGIME_STATE_CACHE_MS = 10_000; // Reload from disk at most every 10s
+  // Last status-synthesis failure, so an unreadable state file logs once
+  // rather than on every tick.
+  let statusEmitError = null;
 
   // Trade flow tracking — rolling window of recent trades for imbalance calculation
   const tradeFlowWindow = [] // { price, size, side, timestamp }
@@ -1016,12 +1019,7 @@ const createMarketDataService = (exchange, pair) => {
     // buildStoppedRegimeStatus so lifecycle/P&L changes (e.g. an operator
     // edit, or another process closing the fund) aren't held stale for up
     // to REGIME_STATE_CACHE_MS.
-    if (!cachedRegimeState || now - cachedRegimeStateTime > REGIME_STATE_CACHE_MS) {
-      cachedRegimeState = loadFundRegimeState(exchange, resolvedPair);
-      cachedRegimeStateTime = now;
-      trackPersistedOrders(cachedRegimeState?.position);
-    }
-
+    //
     // Delegate to the shared stopped/offline status synthesizer (issue #357)
     // so this socket stream re-derives realizedPnL / realizedAssetPnL /
     // heldAssetCostBasis from the fill ledger on every tick, the same as
@@ -1031,13 +1029,35 @@ const createMarketDataService = (exchange, pair) => {
     // already confirmed are no longer open (filled/cancelled while the
     // engine was stopped) via getOrderStatus — the engine can't refresh
     // state until it restarts, but we should not show phantom rows.
-    const market = getMarketState();
-    const status = buildStoppedRegimeStatus(exchange, resolvedPair, {
-      market,
-      regime: getRegimeState(),
-      getOrderStatus,
-      mode: 'STOPPED',
-    });
+    //
+    // This runs inside the WebSocket message listener, where a throw is an
+    // uncaughtException that exits the whole engine process — every fund on
+    // it, not just this stopped one. A corrupt regime-state.json (it throws by
+    // design, issue #108) must only pause this fund's stopped-status stream.
+    let status;
+    try {
+      if (!cachedRegimeState || now - cachedRegimeStateTime > REGIME_STATE_CACHE_MS) {
+        cachedRegimeState = loadFundRegimeState(exchange, resolvedPair);
+        cachedRegimeStateTime = now;
+        trackPersistedOrders(cachedRegimeState?.position);
+      }
+      status = buildStoppedRegimeStatus(exchange, resolvedPair, {
+        market: getMarketState(),
+        regime: getRegimeState(),
+        getOrderStatus,
+        mode: 'STOPPED',
+      });
+    } catch (err) {
+      cachedRegimeState = null;
+      if (statusEmitError === err.message) return;
+      statusEmitError = err.message;
+      logger.error(`❌ [${exchange}] Stopped-fund status unavailable, live status updates paused until it loads: ${err.message}`, {
+        action: 'emit-status',
+        error: err.message,
+      });
+      return;
+    }
+    statusEmitError = null;
     if (status) onStatusUpdateCallback(status);
   };
 

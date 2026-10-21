@@ -20,7 +20,15 @@ const { createAiSecurity } = require('../ai-security');
  */
 const aiRoutesLogger = createContextLogger({ module: 'ai-routes' });
 
-module.exports = (app, sharedDeps) => {
+const TOOLKIT_ROUTES = ['/providers', '/runs', '/prompts'];
+
+/**
+ * @param {import('express').Express} app
+ * @param {{ io: any }} sharedDeps
+ * @param {{ loadToolkit?: () => Promise<any> }} [options] - loadToolkit is injectable for tests
+ * @returns {Promise<void>} settles once the toolkit routes (or their failure stub) are mounted
+ */
+module.exports = (app, sharedDeps, { loadToolkit = () => import('portos-ai-toolkit/server') } = {}) => {
   const { io } = sharedDeps;
 
   // Mount a placeholder router synchronously so it sits in the right
@@ -29,7 +37,7 @@ module.exports = (app, sharedDeps) => {
   app.use('/api', aiRouter);
 
   // Async load ESM portos-ai-toolkit
-  import('portos-ai-toolkit/server').then(({ createAIToolkit }) => {
+  return loadToolkit().then(({ createAIToolkit }) => {
     const dataDir = path.join(__dirname, '..', '..', 'data');
 
     // DEFAULT_PROVIDERS_SAMPLE has a wrong path in the toolkit (src/server/defaults/
@@ -83,6 +91,14 @@ module.exports = (app, sharedDeps) => {
     aiRoutesLogger.warn(`⚠️ [${ts()}] ⚠️ AI toolkit failed to load: ${err.message}`, {
       action: 'mount',
       error: err.message,
+    });
+    // Without this the AI pages fall through to the generic "Not found" 404,
+    // which reads as a missing feature rather than a broken install.
+    aiRouter.use(TOOLKIT_ROUTES, (_req, res) => {
+      res.status(503).json({
+        success: false,
+        error: 'AI providers are unavailable because the AI toolkit failed to load. Check the gateway log, reinstall dependencies (npm install), then restart.',
+      });
     });
   });
 };

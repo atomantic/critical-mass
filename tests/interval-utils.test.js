@@ -10,6 +10,9 @@ const {
   getRunIdentifier,
   hasRunThisInterval,
   normalizeConfig,
+  SCHEDULED_RETRY_DELAYS_MS,
+  SCHEDULED_FAILURE_ALERT_INTERVAL_MS,
+  planScheduledRetry,
   getIntervalAmount,
   formatInterval,
   getTimeUntilNext,
@@ -361,5 +364,38 @@ describe('shared admin trading intervals', () => {
     for (const value of [undefined, null, '', 'unknown', 'hourly', 'weekly', 'toString']) {
       assert.equal(getIntervalMs(value), 86_400_000);
     }
+  });
+});
+
+describe('planScheduledRetry', () => {
+  const HOUR = 60 * 60_000;
+
+  it('retries a failed cycle with growing delays inside its interval, then stops', () => {
+    const entry = {};
+    const now = 1_000_000;
+    const intervalEnd = now + 24 * HOUR;
+    const retryAts = [];
+    for (let i = 0; i <= SCHEDULED_RETRY_DELAYS_MS.length; i += 1) {
+      const { failures, retryAt } = planScheduledRetry(entry, { runId: 'daily-1', now, intervalEnd });
+      Object.assign(entry, { retryRunId: 'daily-1', retryCount: failures });
+      retryAts.push(retryAt);
+    }
+    assert.deepEqual(retryAts, [...SCHEDULED_RETRY_DELAYS_MS.map((ms) => now + ms), null]);
+    assert.equal(planScheduledRetry(entry, { runId: 'daily-2', now, intervalEnd }).retryAt, now + SCHEDULED_RETRY_DELAYS_MS[0],
+      'a new interval starts with a fresh retry budget');
+  });
+
+  it('never schedules a retry past the end of the interval, which would skip the next run', () => {
+    const now = 1_000_000;
+    const { retryAt } = planScheduledRetry({}, { runId: '10min-1', now, intervalEnd: now + SCHEDULED_RETRY_DELAYS_MS[0] });
+    assert.equal(retryAt, null);
+  });
+
+  it('alerts on the first failure, then at most once per alert interval', () => {
+    const now = 1_000_000;
+    const intervalEnd = now + HOUR;
+    assert.equal(planScheduledRetry({}, { runId: 'a', now, intervalEnd }).alert, true);
+    assert.equal(planScheduledRetry({ lastAlertAt: now - 60_000 }, { runId: 'b', now, intervalEnd }).alert, false);
+    assert.equal(planScheduledRetry({ lastAlertAt: now - SCHEDULED_FAILURE_ALERT_INTERVAL_MS }, { runId: 'c', now, intervalEnd }).alert, true);
   });
 });

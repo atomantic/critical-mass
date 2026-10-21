@@ -175,6 +175,18 @@ const describeFund = (entry) => {
 };
 
 /**
+ * Engines are stopped (and their running flags cleared) before the restore can
+ * refuse, so a "no files were changed" refusal still leaves those funds
+ * stopped. Say so in the operator-facing error, or they stay down unnoticed.
+ * @param {string} error
+ * @param {string[]} stoppedEngines
+ * @returns {string}
+ */
+const noteStoppedEngines = (error, stoppedEngines) => (stoppedEngines.length > 0
+  ? `${error}${/[.!?]$/.test(error) ? '' : '.'} Engines stopped for the restore are still stopped: ${stoppedEngines.join(', ')} — restart them from the dashboard.`
+  : error);
+
+/**
  * The restore body, run while the maintenance lock is held: confirm every
  * writer stopped, apply the archive, then reload the gateway's writers and
  * drop the caches that still mirror the pre-restore files.
@@ -251,7 +263,7 @@ const applyRestoreUnderLock = async ({
       return { status: 409, body: {
         success: false,
         code: 'writers-not-quiesced',
-        error: `Cannot restore: ${unconfirmed.length} writer(s) did not confirm shutdown (${summary}). No files were changed.`,
+        error: noteStoppedEngines(`Cannot restore: ${unconfirmed.length} writer(s) did not confirm shutdown (${summary}). No files were changed.`, stoppedEngines),
         unconfirmed,
         stoppedEngines,
       } };
@@ -330,7 +342,8 @@ const applyRestoreUnderLock = async ({
       success: false,
       code,
       ...(unconfirmed.length > 0 ? { unconfirmed } : {}),
-      error,
+      // A failed rollback keeps engines down until recovery; never invite a restart then.
+      error: applied.ok && applied.result?.rolledBack === false ? error : noteStoppedEngines(error, stoppedEngines),
       stoppedEngines,
       ...(applied.ok && applied.result?.rolledBack === false ? { rolledBack: false } : {}),
       ...(applied.result?.recovery ? { recovery: applied.result.recovery } : {}),

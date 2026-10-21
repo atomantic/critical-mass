@@ -87,6 +87,19 @@ describe('restore writer quiescence gate', () => {
     assert.equal(maintenance.isMaintenanceActive(), false, 'maintenance lock released');
   });
 
+  it('names the engines it already stopped when another engine blocks the restore', async () => {
+    const { status, body, restoreCalls } = await runRestore({
+      exchangeIPCMap: {
+        coinbase: okIPC(),
+        gemini: { isConnected: () => true, request: async () => { throw new Error('socket hang up'); } },
+      },
+      configuredExchanges: ['coinbase', 'gemini'],
+    });
+    assert.equal(status, 409);
+    assert.deepEqual(restoreCalls, []);
+    assert.match(body.error, /No files were changed\. Engines stopped for the restore are still stopped: coinbase BTC-USDC — restart them from the dashboard\.$/);
+  });
+
   it('treats an IPC timeout as "still writing", never as stopped', async () => {
     const restoreCalls = [];
     const { status, body } = await performRestore({
@@ -456,7 +469,7 @@ describe('settings route is wired to the quiescence gate', () => {
     const res = await invoke();
     assert.equal(res.statusCode, 500);
     assert.equal(res.body.code, 'restore-failed');
-    assert.equal(res.body.error, 'Backup not found');
+    assert.equal(res.body.error, 'Backup not found. Engines stopped for the restore are still stopped: coinbase BTC-USDC — restart them from the dashboard.');
     assert.deepEqual(res.body.stoppedEngines, ['coinbase BTC-USDC']);
   });
 
@@ -905,6 +918,7 @@ describe('release review restore failure boundaries', () => {
     });
     assert.equal(result.status, 500);
     assert.equal(result.body.rolledBack, false);
+    assert.equal(result.body.error, 'rollback failed', 'a failed rollback must not invite an engine restart');
     assert.deepEqual(result.body.recovery, recovery);
     assert.deepEqual(order, ['stop']);
     assert.equal(maintenance.isMaintenanceActive(), true);
