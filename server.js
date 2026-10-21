@@ -380,7 +380,7 @@ routes.get('/api/health', asyncRoute(async (req, res) => {
 
 // Catch-all for unhandled API routes — return JSON 404 instead of falling through to HTML
 app.all('/api/*splat', (req, res) => {
-  res.status(404).json({ error: 'Not found' });
+  res.status(404).json({ success: false, error: 'Not found' });
 });
 
 app.use(express.static(path.join(__dirname, 'admin', 'dist')));
