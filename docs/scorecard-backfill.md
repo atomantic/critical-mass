@@ -5,6 +5,14 @@ for a dry run. It computes and validates replay records and existing daily
 history without writing anything. Add `--apply` to explicitly publish them.
 `--step 5` controls minutes between predictions.
 
+UpDown keeps only the newest 30 daily journals (`SCORECARD_RETENTION_DAYS` in
+`src/updown/scorecard.js`) and prunes the rest at every start and daily. The
+script therefore clamps `--from` to the oldest retained UTC day (today and the
+previous 29) and prints when it does; older days would be deleted on the next
+UpDown start. A rerun after such a prune treats completed manifest days older
+than the window as satisfied rather than failing with "Completed backfill day is
+missing records".
+
 Deploy the scorecard maintenance-lock code to every UpDown writer and restart
 those services before applying a replay. Older processes do not honor the lock.
 The script reports its mode, lock path and resume manifest. Apply refuses a busy
@@ -27,7 +35,9 @@ These backup and manifest files are not daily journals and are not automatically
 pruned; retain them until the replay has been checked.
 
 An interrupted process can leave `.maintenance-lock/` and hidden staging files.
-Locks are never automatically stolen; the gateway logs the lock path and owner
+A lock whose `owner.json` names a dead process on this host (older than 5s) is
+reclaimed automatically and logged. Locks with a live, foreign-host or unreadable
+owner are never stolen; the gateway logs the lock path and owner
 when a journal write or prune gives up waiting. Stop every UpDown process and replay
 process, inspect the lock's `owner.json`, then remove the stale lock directory
 and obsolete `*.tmp` files before restarting or resuming. A lock without owner

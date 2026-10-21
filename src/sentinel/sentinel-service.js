@@ -81,7 +81,11 @@ const createSentinelService = (io, deps) => {
     quarantineIfUnreadable(stateFilePath, sentinelLogger);
     const saved = readJSON(stateFilePath, null);
     alerts = Array.isArray(saved?.alerts) ? saved.alerts : [];
-    seenGuids = saved?.seenGuids ? new Map(Object.entries(saved.seenGuids)) : new Map();
+    // Entries are { ts, source }; legacy state stored a bare timestamp (no feed owner).
+    seenGuids = new Map(Object.entries(saved?.seenGuids || {}).map(([guid, v]) => [
+      guid,
+      typeof v === 'number' ? { ts: v, source: null } : { ts: Number(v?.ts) || 0, source: v?.source ?? null },
+    ]));
     lastPollAt = saved?.lastPollAt || null;
     pollCount = saved?.pollCount || 0;
     lastSuccessfulFetchAt = saved?.lastSuccessfulFetchAt || null;
@@ -104,11 +108,6 @@ const createSentinelService = (io, deps) => {
    */
   const persistState = () => {
     const config = getSentinelConfig();
-    // Prune old seen GUIDs
-    const cutoff = Date.now() - MAX_SEEN_AGE_MS;
-    for (const [guid, ts] of seenGuids) {
-      if (ts < cutoff) seenGuids.delete(guid);
-    }
     // Trim alerts
     const maxAlerts = config.maxAlerts || 200;
     if (alerts.length > maxAlerts) {
@@ -124,6 +123,29 @@ const createSentinelService = (io, deps) => {
       failedPollCount,
       feedFailureCount,
     });
+  };
+
+  /**
+   * Prune seen GUIDs that are older than the retention window AND whose feed
+   * succeeded in this poll without listing them (gone from the feed). Only called
+   * from a poll: dismiss/clear/stop persists must never forget seen items, and a
+   * failing feed's items must survive until it recovers. Legacy entries with no
+   * recorded feed are pruned only when every enabled feed succeeded.
+   * @returns {number} pruned count
+   */
+  const pruneSeenGuids = (feeds, failures) => {
+    const enabled = new Set((feeds || []).filter(f => f.enabled !== false).map(f => f.name));
+    const failed = new Set(failures.map(f => f.feed));
+    const cutoff = Date.now() - MAX_SEEN_AGE_MS;
+    let pruned = 0;
+    for (const [guid, { ts, source }] of seenGuids) {
+      if (ts >= cutoff) continue;
+      const feedOk = source === null
+        ? enabled.size > 0 && failed.size === 0
+        : enabled.has(source) && !failed.has(source);
+      if (feedOk) { seenGuids.delete(guid); pruned++; }
+    }
+    return pruned;
   };
 
   /**
@@ -189,6 +211,13 @@ const createSentinelService = (io, deps) => {
       if (!isCurrent()) return;
       const items = fetched.items;
       let newAlerts = 0;
+      let suppressed = 0;
+      // Seen records older than MAX_SEEN_AGE_MS are pruned, so after a gap that long
+      // (Sentinel disabled, or every feed failing) the feed's old items look new. Mark
+      // them seen without alerting; likewise any item published before the retention window.
+      const gapSinceFetch = lastSuccessfulFetchAt ? Date.now() - Date.parse(lastSuccessfulFetchAt) : 0;
+      const afterLongGap = gapSinceFetch > MAX_SEEN_AGE_MS;
+      const staleBefore = Date.now() - MAX_SEEN_AGE_MS;
 
       for (const item of items) {
         if (!isCurrent()) return;
@@ -197,7 +226,14 @@ const createSentinelService = (io, deps) => {
           // Refresh timestamp so items still in feed don't expire after MAX_SEEN_AGE_MS.
           // Without this, items that remain in the feed for >7 days get pruned and re-alerted
           // on the next poll (issue #695).
-          seenGuids.set(guid, Date.now());
+          seenGuids.set(guid, { ts: Date.now(), source: item.source ?? null });
+          continue;
+        }
+
+        const publishedAt = Date.parse(item.pubDate);
+        if (afterLongGap || publishedAt < staleBefore) {
+          seenGuids.set(guid, { ts: Date.now(), source: item.source ?? null });
+          suppressed++;
           continue;
         }
 
@@ -207,7 +243,7 @@ const createSentinelService = (io, deps) => {
         // Mark the item seen only after its asynchronous classification
         // finishes under the current lifecycle. stop() can then persist safely
         // without recording an item whose alert was never committed.
-        seenGuids.set(guid, Date.now());
+        seenGuids.set(guid, { ts: Date.now(), source: item.source ?? null });
         if (!alert) continue;
 
         alerts.push(alert);
@@ -271,7 +307,8 @@ const createSentinelService = (io, deps) => {
           items: items.length,
         });
       }
-      if (newAlerts > 0 || fetched.failed > 0) persistState();
+      const pruned = pruneSeenGuids(config.feeds, fetched.failures);
+      if (newAlerts > 0 || suppressed > 0 || pruned > 0 || fetched.failed > 0) persistState();
 
       // Emit status update
       io.to('sentinel').emit('sentinel:status', getStatus());

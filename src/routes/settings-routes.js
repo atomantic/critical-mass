@@ -34,10 +34,14 @@ const settingsLogger = (route) => createContextLogger({
 
 /**
  * @param {import('express').Express} app
- * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, runBackup: Function, updownService?: Object, sentinelService?: Object, candleCache?: Object}} deps
+ * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, runBackup: Function, updownService?: Object, sentinelService?: Object, candleCache?: Object, getBackupSchedulerStatus?: Function, createRecoveryPoint?: Function}} deps
  */
 module.exports = (app, deps) => {
-  const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService, sentinelService, candleCache, runBackup } = deps;
+  const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService, sentinelService, candleCache, runBackup, getBackupSchedulerStatus } = deps;
+  // Both restore paths archive the live data (writers already stopped) before
+  // replacing it, so a wrong restore can be undone from the Backups page.
+  // Not pruned here: the next scheduled backup applies the retention count.
+  const createRecoveryPoint = deps.createRecoveryPoint || (() => createBackup());
 
   /**
    * Gateway services that own files inside the archive. Each is stopped before
@@ -139,10 +143,10 @@ module.exports = (app, deps) => {
     res.json({ success: true });
   });
 
-  app.post('/api/notifications/test', (req, res) => {
+  app.post('/api/notifications/test', (req, res, next) => {
     notifier.sendTest()
       .then(result => res.json(result))
-      .catch(err => res.status(500).json({ success: false, error: err.message }));
+      .catch(next);
   });
 
   app.get('/api/notifications/stats', (req, res) => {
@@ -155,7 +159,7 @@ module.exports = (app, deps) => {
     const backups = listBackups();
     const fundStateBackups = listFundStateBackups();
     const config = getBackupConfig();
-    res.json({ success: true, backups, fundStateBackups, config });
+    res.json({ success: true, backups, fundStateBackups, config, schedulerStatus: getBackupSchedulerStatus?.() ?? null });
   });
 
   app.get('/api/backups/config', (req, res) => {
@@ -245,6 +249,7 @@ module.exports = (app, deps) => {
       restore: () => restoreFundStateBackup(snapshotId, exchange, pair, { logger }),
       gatewayWriters: gatewayWriters(),
       drainPendingWrites,
+      createRecoveryPoint,
       invalidateCaches: () => {
         invalidateConfigCache();
         candleCache?.invalidate();
@@ -293,6 +298,7 @@ module.exports = (app, deps) => {
       }),
       gatewayWriters: gatewayWriters(),
       drainPendingWrites,
+      createRecoveryPoint,
       invalidateCaches: () => {
         invalidateConfigCache();
         // Reseeding is network work — kick it off, don't hold the lock on it.

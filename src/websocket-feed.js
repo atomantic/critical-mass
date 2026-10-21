@@ -15,9 +15,11 @@
  */
 
 const { createWebSocketLifecycle } = require('./websocket-lifecycle');
-const { signJwt } = require('./jwt');
+// Called through the module object so tests can stub signing failures.
+const jwt = require('./jwt');
 const crypto = require('crypto');
 const { preparePrivateKey } = require('./adapters/coinbase/auth');
+const { safeJsonParse } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 
 /**
@@ -36,6 +38,13 @@ const { createContextLogger } = require('./logger');
 
 const COINBASE_WS_URL = 'wss://advanced-trade-ws.coinbase.com';
 
+// User-channel recovery (issue #1382): a failed user subscription is retried on
+// the same socket with capped exponential backoff; after MAX_USER_RETRIES failed
+// retries the socket is terminated so the lifecycle's normal reconnect runs.
+const USER_RETRY_BASE_DELAY = 30000;
+const USER_RETRY_MAX_DELAY = 10 * 60 * 1000;
+const MAX_USER_RETRIES = 3;
+
 /**
  * Generate JWT for WebSocket authentication
  * @param {string} apiKey - API key
@@ -45,7 +54,7 @@ const COINBASE_WS_URL = 'wss://advanced-trade-ws.coinbase.com';
 const generateWsJWT = (apiKey, apiSecret) => {
   const pemKey = preparePrivateKey(apiSecret);
 
-  return signJwt(
+  return jwt.signJwt(
     {
       iss: 'cdp',
       nbf: Math.floor(Date.now() / 1000),
@@ -68,9 +77,6 @@ const generateWsJWT = (apiKey, apiSecret) => {
  * @param {string} data - JSON string
  * @returns {Object|null} Parsed object or null
  */
-const safeJsonParse = (data) => {
-  try { return JSON.parse(data); } catch { return null; }
-};
 
 /**
  * Create WebSocket feed manager
@@ -89,6 +95,65 @@ const createWebSocketFeed = (exchange, config) => {
   }
 
   const logger = createContextLogger({ exchange, pair: config.productId });
+
+  const userEnabled = Boolean(!config.publicOnly && config.apiKey && config.apiSecret);
+  /** @type {'subscribed' | 'degraded' | null} null when the user channel is not configured */
+  let userChannel = userEnabled ? 'degraded' : null;
+  let userSocket = null;
+  let userRetryAttempts = 0;
+  let userRetryTimer = null;
+
+  const clearUserRetry = () => {
+    clearTimeout(userRetryTimer);
+    userRetryTimer = null;
+  };
+
+  /**
+   * The user subscription on `ws` failed (JWT signing threw, or Coinbase sent
+   * an error frame). Mark detection degraded, then retry on the same socket or,
+   * once retries are exhausted, terminate it so the lifecycle reconnects.
+   */
+  const handleUserFailure = (ws, reason) => {
+    userChannel = 'degraded';
+    clearUserRetry();
+    if (userRetryAttempts >= MAX_USER_RETRIES) {
+      logger.error(`❌ [${exchange}] User channel still failing after ${MAX_USER_RETRIES} retries — terminating WebSocket to reconnect`, {
+        channel: 'user', userChannel, retries: userRetryAttempts, reason,
+      });
+      ws.terminate('user channel subscription failed');
+      return;
+    }
+    const delay = Math.min(USER_RETRY_BASE_DELAY * Math.pow(2, userRetryAttempts), USER_RETRY_MAX_DELAY);
+    userRetryAttempts++;
+    logger.warn(`⚠️ [${exchange}] User channel degraded (${reason}) — retrying subscription in ${delay / 1000}s (attempt ${userRetryAttempts}/${MAX_USER_RETRIES})`, {
+      channel: 'user', userChannel, delayMs: delay, retryAttempt: userRetryAttempts, reason,
+    });
+    userRetryTimer = setTimeout(() => {
+      userRetryTimer = null;
+      if (userSocket !== ws || !ws.isOpen()) return;
+      subscribeUser(ws);
+    }, delay);
+  };
+
+  /** @returns {boolean} whether the user subscription frame was sent */
+  const subscribeUser = (ws) => {
+    let jwtToken;
+    try {
+      jwtToken = generateWsJWT(config.apiKey, config.apiSecret);
+    } catch (err) {
+      logger.warn(`⚠️ [${exchange}] Failed to subscribe to user channel (JWT error): ${err.message}`, { error: err.message, channel: 'user' });
+      handleUserFailure(ws, `JWT error: ${err.message}`);
+      return false;
+    }
+    ws.send(JSON.stringify({
+      type: 'subscribe',
+      product_ids: [config.productId],
+      channel: 'user',
+      jwt: jwtToken,
+    }));
+    userChannel = 'subscribed';
+    return true;
+  };
 
   const subscribe = (ws) => {
     const productIds = [config.productId];
@@ -120,25 +185,15 @@ const createWebSocketFeed = (exchange, config) => {
     ws.send(JSON.stringify(heartbeatSub));
 
     // Subscribe to user channel (authenticated) - only if not public-only mode
-    if (!config.publicOnly && config.apiKey && config.apiSecret) {
-      try {
-        const jwtToken = generateWsJWT(config.apiKey, config.apiSecret);
-        const userSub = {
-          type: 'subscribe',
-          product_ids: productIds,
-          channel: 'user',
-          jwt: jwtToken,
-        };
-        ws.send(JSON.stringify(userSub));
-        logger.info(`📡 [${exchange}] Subscribed to ticker, market_trades, heartbeats, user channels for ${config.productId}`, {
-          channels: ['ticker', 'market_trades', 'heartbeats', 'user'],
-        });
-      } catch (err) {
-        logger.warn(`⚠️ [${exchange}] Failed to subscribe to user channel (JWT error): ${err.message}`, { error: err.message, channel: 'user' });
-        logger.info(`📡 [${exchange}] Subscribed to ticker, market_trades, heartbeats channels for ${config.productId}`, {
-          channels: ['ticker', 'market_trades', 'heartbeats'],
-        });
-      }
+    if (userEnabled) {
+      // A fresh socket starts a fresh retry budget.
+      clearUserRetry();
+      userSocket = ws;
+      userRetryAttempts = 0;
+      const channels = subscribeUser(ws)
+        ? ['ticker', 'market_trades', 'heartbeats', 'user']
+        : ['ticker', 'market_trades', 'heartbeats'];
+      logger.info(`📡 [${exchange}] Subscribed to ${channels.join(', ')} channels for ${config.productId}`, { channels });
     } else {
       logger.info(`📡 [${exchange}] Subscribed to ticker, market_trades, heartbeats channels for ${config.productId}`, {
         channels: ['ticker', 'market_trades', 'heartbeats'],
@@ -149,8 +204,9 @@ const createWebSocketFeed = (exchange, config) => {
   /**
    * Handle incoming WebSocket message
    * @param {string} data - Message data
+   * @param {Object} [socket] - Socket the frame arrived on
    */
-  const handleMessage = (data) => {
+  const handleMessage = (data, socket) => {
     const message = safeJsonParse(data);
     if (!message) {
       logger.warn(`⚠️ [${exchange}] Received invalid JSON from WebSocket`, { error: 'invalid_json' });
@@ -164,6 +220,12 @@ const createWebSocketFeed = (exchange, config) => {
       logger.error(`❌ [${exchange}] WebSocket error: ${errorMsg}`, { error: errorMsg });
       if (config.onError) {
         config.onError(new Error(errorMsg));
+      }
+      // Coinbase error frames do not name a channel; after a user subscription
+      // on this socket, treat one as a rejected user subscription (issue #1382)
+      // unless a retry is already pending.
+      if (userEnabled && socket && userSocket === socket && !userRetryTimer) {
+        handleUserFailure(socket, errorMsg);
       }
       return;
     }
@@ -310,9 +372,31 @@ const createWebSocketFeed = (exchange, config) => {
     }
   };
 
-  return createWebSocketLifecycle({
-    url: COINBASE_WS_URL, exchange, logger, config, subscribe, handleMessage,
+  const lifecycle = createWebSocketLifecycle({
+    url: COINBASE_WS_URL,
+    exchange,
+    logger,
+    config: {
+      ...config,
+      onDisconnect: () => {
+        clearUserRetry();
+        userSocket = null;
+        if (userEnabled) userChannel = 'degraded';
+        config.onDisconnect?.();
+      },
+    },
+    subscribe,
+    handleMessage,
   });
+
+  return {
+    ...lifecycle,
+    disconnect: () => {
+      clearUserRetry();
+      lifecycle.disconnect();
+    },
+    getStatus: () => ({ ...lifecycle.getStatus(), userChannel }),
+  };
 };
 
 module.exports = {

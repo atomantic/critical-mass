@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const fs = require('fs');
+const path = require('path');
 const { signJwt, verifyHs256Jwt } = require('./jwt');
 const { isLoopbackHost } = require('./gateway-listen');
 const { log } = require('./logger');
@@ -13,6 +14,7 @@ const MAX_ATTEMPTS = 5;
 const MAX_TRACKED_PEERS = 1024;
 const MIN_BOOTSTRAP_SECRET_LENGTH = 32;
 const BOOTSTRAP_HEADER = 'x-operator-bootstrap';
+const PROXY_HEADERS = ['x-forwarded-for', 'forwarded', 'via', 'x-real-ip', 'x-forwarded-proto', 'x-forwarded-port', 'x-forwarded-server'];
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 const parseCookies = (header = '') => Object.fromEntries(
@@ -49,6 +51,7 @@ const isLoopbackRequest = (req) => {
   if (!requestOriginMatches(req)) return false;
   if (!isLoopbackHost(req?.socket?.remoteAddress)) return false;
   const getHeader = (name) => (typeof req?.get === 'function' ? req.get(name) : req?.headers?.[name]) || '';
+  const hasHeader = (name) => (req?.headers ? name in req.headers : Boolean(getHeader(name)));
   const isLoopbackHostHeader = (hostHeader) => {
     const host = hostHeader.trim();
     const hostname = host.startsWith('[')
@@ -63,14 +66,17 @@ const isLoopbackRequest = (req) => {
 
   // A loopback proxy may preserve the original client. Forwarding headers can
   // only downgrade trust: every reported hop must also be loopback.
-  const forwardedHeader = getHeader('x-forwarded-for');
-  const forwarded = forwardedHeader
+  const forwarded = getHeader('x-forwarded-for')
     .split(',')
     .map((address) => address.trim())
     .filter(Boolean);
   if (forwarded.length > 0) return forwarded.every(isLoopbackHost);
-  // A reverse proxy that erases X-Forwarded-For must not become a trusted
-  // bootstrap channel merely because its backend connection is loopback.
+  // Any other proxy marker (including an empty X-Forwarded-For) means a proxy
+  // is in front and the real client is unknown, so it is not a local browser.
+  if (PROXY_HEADERS.some(hasHeader)) return false;
+  // Residual limit: a proxy that adds no headers at all (e.g. bare nginx
+  // proxy_pass) is indistinguishable from a direct local browser. Such
+  // deployments must set X-Forwarded-For or use OPERATOR_BOOTSTRAP_SECRET.
   return true;
 };
 
@@ -128,6 +134,9 @@ const makeRecord = async (password) => {
  * @param {Function} [opts.writeJSON]
  * @param {string} [opts.bootstrapSecret]
  * @param {string} [opts.bootstrapSecretFile]
+ * @param {string} [opts.localBootstrapSecretFile] While bootstrapping with no
+ *   configured secret, a generated owner-only secret file that enrollment must
+ *   present (X-Operator-Bootstrap). It never enables a remote listener.
  * @param {Function} [opts.onPasswordChanged] Called after successful credential persistence
  * @param {Function} [opts.onPasswordRemoved]
  * @param {() => number} [opts.now] Clock for the peer attempt window
@@ -160,12 +169,30 @@ const unreadableAuthFileReason = (file) => {
   }
 };
 
+const loadOrCreateLocalSecret = (file) => {
+  try {
+    const existing = fs.readFileSync(file, 'utf8').split('\n')[0].trim();
+    if (Buffer.byteLength(existing) >= MIN_BOOTSTRAP_SECRET_LENGTH) {
+      fs.chmodSync(file, 0o600);
+      return existing;
+    }
+  } catch { /* missing or unreadable: generate a fresh one */ }
+  const secret = crypto.randomBytes(32).toString('hex');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${secret}\n`, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+  return secret;
+};
+
+const isBootstrapState = (record, unreadable) => !(record?.salt && record?.hash) && !unreadable;
+
 const createOperatorAuth = ({
   authFile = null,
   readJSON = null,
   writeJSON = null,
   bootstrapSecret = '',
   bootstrapSecretFile = '',
+  localBootstrapSecretFile = '',
   onPasswordChanged = null,
   onPasswordRemoved = null,
   isTrustedBootstrapRequest = isLoopbackRequest,
@@ -226,6 +253,18 @@ const createOperatorAuth = ({
     throw new Error(`OPERATOR_BOOTSTRAP_SECRET must be at least ${MIN_BOOTSTRAP_SECRET_LENGTH} bytes`);
   }
 
+  if (isBootstrapState(record, authFileUnreadable) && !bootstrapSecret && !localBootstrapSecretFile) {
+    log('WARN', '🔐 Operator bootstrap is open to loopback requests. A local reverse proxy must send X-Forwarded-For with the real client address; otherwise set OPERATOR_BOOTSTRAP_SECRET.');
+  }
+
+  // Locality cannot be proven from headers (a bare reverse proxy adds none), so
+  // the generated file is the only proof a host operator can give.
+  let localBootstrapSecret = '';
+  if (localBootstrapSecretFile && !bootstrapSecret && isBootstrapState(record, authFileUnreadable)) {
+    localBootstrapSecret = loadOrCreateLocalSecret(localBootstrapSecretFile);
+    log('WARN', `🔐 Operator enrollment requires the bootstrap secret in ${localBootstrapSecretFile} (owner-only; enter it in the setup screen).`);
+  }
+
   const hasPassword = () => Boolean(record?.salt && record?.hash);
   const isBootstrapping = () => !hasPassword() && !authFileUnreadable;
   const isRequired = () => true;
@@ -258,8 +297,8 @@ const createOperatorAuth = ({
   };
 
   const bootstrapSecretMatches = (req) => {
-    if (!hasRemoteBootstrap()) return false;
-    return timingSafeEqual(req.get(BOOTSTRAP_HEADER), bootstrapSecret);
+    const expected = hasRemoteBootstrap() ? bootstrapSecret : localBootstrapSecret;
+    return Boolean(expected) && timingSafeEqual(req.get(BOOTSTRAP_HEADER), expected);
   };
 
   const canBootstrap = (req) => (
@@ -388,8 +427,9 @@ const createOperatorAuth = ({
         bootstrapConsumedHash: bootstrapSecretHash || record?.bootstrapConsumedHash || null,
       });
       onPasswordChanged?.();
-      if (bootstrapSecretFile) {
-        try { fs.unlinkSync(bootstrapSecretFile); } catch { /* already consumed in the auth record */ }
+      for (const file of [bootstrapSecretFile, localBootstrapSecretFile]) {
+        if (!file) continue;
+        try { fs.unlinkSync(file); } catch { /* already consumed in the auth record */ }
       }
       setSessionCookie(req, res);
       log('INFO', '🔐 Operator password set — gateway sign-in is now required');

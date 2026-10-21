@@ -45,7 +45,7 @@ const { validateSizingFields } = require('./regime-sizing-contract');
 const { createLadderCalculator } = require('./ladder-calculator');
 const { applyMarketMetrics, clamp, computeAdaptiveStaleMs, roundAsset, roundUSDC, roundPrice } = require('./volatility-utils');
 const { createMacroRegime } = require('./macro-regime');
-const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking } = require('./apy-calculator');
+const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking, backfillEngineStart: _backfillEngineStart } = require('./apy-calculator');
 const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
 const {
@@ -62,8 +62,10 @@ const {
 const { resolveFundDataDir } = require('./migration');
 const { findPlacementOnExchange } = require('./placement-evidence');
 const celestialHierarchy = require('./celestial-hierarchy');
+const { DEFAULT_FEE_RATE_PER_SIDE } = require('../shared/fee-defaults.mjs');
 const { fmtCurrency: fmtPrice, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
+const { DEFAULT_MAX_USDC_DEPLOYED } = require('./fund-defaults');
 const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
 const { createTtlStore } = require('./ttl-store');
 
@@ -732,9 +734,14 @@ const recoverOrphanBuys = (deps, cycleFills) => {
  */
 const pickOrphanMergeTarget = (eligibleBodies, newBuy, candidateTpPrice, { config, celestialHierarchy }) => {
   const target = celestialHierarchy.findMergeTarget(
-    eligibleBodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
-    config.maxCelestialBodies || 10, 0, config.maxOpenOrders,
-    config.mergeProximityScale ?? 1.0
+    eligibleBodies, newBuy, {
+      maxUsdcDeployed: config.maxUsdcDeployed,
+      candidateTpPrice,
+      maxBodies: config.maxCelestialBodies || 10,
+      pendingOrderCount: 0,
+      maxOpenOrders: config.maxOpenOrders,
+      proximityScale: config.mergeProximityScale ?? 1.0
+    }
   );
   if (target) return target;
   let closest = null;
@@ -1384,6 +1391,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   // Create Ladder calculator for pre-positioned liquidity ladder mode
   const ladderCalculator = createLadderCalculator(exchange, config);
+  // Single source of truth for ladder market inputs: placement, preview and re-ladder
+  // must feed the calculator identically (#851 gates placement on the preview).
+  const buildLadderFromMarket = (marketState, budget, priceIncrement) =>
+    ladderCalculator.buildLadder(marketState.lastPrice, budget, {
+      atr: marketState.atr1m,
+      volBaseline: marketState.volBaseline,
+      realizedVol: marketState.realizedVol,
+      athDistance: marketState.athDistance || 0,
+      ath: marketState.ath || 0,
+      priceIncrement,
+    });
 
   // Create Macro Regime detector (multi-timeframe EMA overlay)
   const macroRegime = config.macroEnabled
@@ -1784,11 +1802,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Save dry-run state to disk
+   * Build the dry-run state bundle. Single source for the periodic save, the
+   * shutdown save and the backup flush so they cannot drift (#113, #1357).
    */
-  const saveDryRunState = () => {
-    if (!isDryRun) return;
-
+  const snapshotDryRunState = () => {
     persistEpisodeState();
 
     // Persist macro regime state into position for recovery
@@ -1796,13 +1813,40 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.macroRegime = macroRegime.getState();
     }
 
-    dryRunState.saveState(exchange, {
+    return {
       isDryRun: true,
       executor: orderExecutor.exportState(),
       position: { ...positionState },
       tpOptimizer: tpOptimizer.exportState(),
       sizeOptimizer: sizeOptimizer.exportState(),
-    }, pair);
+    };
+  };
+
+  /**
+   * Save dry-run state to disk
+   */
+  const saveDryRunState = () => {
+    if (!isDryRun) return;
+    dryRunState.saveState(exchange, snapshotDryRunState(), pair);
+  };
+
+  /**
+   * Dry-run counterpart of saveLiveStateGuarded for the save timer. Dry-run is
+   * a per-fund setting, so live funds share this process: a full disk must not
+   * turn a dry-run save into an uncaughtException that exits them all (#532).
+   * @param {string} source - Caller label for the log line
+   * @returns {boolean} Whether the save succeeded
+   */
+  const saveDryRunStateGuarded = (source) => {
+    try {
+      saveDryRunState();
+      return true;
+    } catch (err) {
+      logger.error(`❌ [${fundLabel}] Dry-run state save failed from ${source}: ${err.message}`, {
+        action: 'save-dry-run-state', source, error: err.message,
+      });
+      return false;
+    }
   };
 
   /**
@@ -3136,13 +3180,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const earliestFillTime = allFills.reduce((earliest, fill) => {
         return fill.timestamp < earliest ? fill.timestamp : earliest;
       }, Infinity);
-      if (earliestFillTime !== Infinity && (!positionState.engineStartTime || positionState.engineStartTime > earliestFillTime)) {
-        positionState.engineStartTime = earliestFillTime;
-        positionState.initialCapital = config.maxUsdcDeployed || 10000;
-        // Only set originalCapital if not already set (preserve true starting value)
-        if (!positionState.originalCapital) {
-          positionState.originalCapital = positionState.initialCapital;
-        }
+      if (earliestFillTime !== Infinity && _backfillEngineStart(positionState, config, earliestFillTime)) {
         logger.info(`📊 [${exchange}] APY tracking backfilled to first fill: ${new Date(earliestFillTime).toISOString()}, original=$${positionState.originalCapital}`);
       }
     }
@@ -3483,7 +3521,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       startFillDriftSweep();
     } else {
       // Start periodic state saving for dry-run (every 60 seconds)
-      stateSaveInterval = setInterval(saveDryRunState, 60000);
+      stateSaveInterval = setInterval(() => saveDryRunStateGuarded('state-save-timer'), 60000);
     }
 
     invalidateEntryAdmission();
@@ -3571,6 +3609,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // A flash-cancel sweep (#1028) routes the fills it discovers through the
       // fill gate, so let it settle before the gate closes. Bounded like the
       // fill drain; the fund drain after stop() still joins its pending write.
+      // The sweep and the fill drain share ONE fillDrainMs budget, so stop()'s
+      // waits stay inside the shutdown watchdog's budget (engine-shutdown.js).
+      const drainDeadline = Date.now() + fillDrainMs;
       if (flashCancelSweep) {
         let timer;
         const settled = await Promise.race([
@@ -3588,7 +3629,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // top-level fills are refused first; the drain is bounded so a hung
       // exchange call cannot block shutdown.
       engineLocks.closeFillGate();
-      const drain = await engineLocks.waitForFillsIdle(fillDrainMs);
+      const drain = await engineLocks.waitForFillsIdle(Math.max(0, drainDeadline - Date.now()));
       if (!drain.idle) {
         logger.warn(
           `⚠️ [${exchange}] Shutdown: ${drain.pending} fill handler(s) still in flight after ${fillDrainMs / 1000}s (orders: ${drain.orderIds.join(', ')}) — saving state anyway; startup recovery will repair`,
@@ -3597,16 +3638,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
       // Save state before stopping
       if (isDryRun) {
-        persistEpisodeState();
-        dryRunState.forceSave(exchange, {
-          isDryRun: true,
-          executor: orderExecutor.exportState(),
-          position: { ...positionState },
-          tpOptimizer: tpOptimizer.exportState(),
-          // Include sizeOptimizer so dry-run restarts don't lose sizing
-          // adjustments (saveDryRunState persists it; forceSave omitted it) (#113).
-          sizeOptimizer: sizeOptimizer.exportState(),
-        }, pair);
+        dryRunState.forceSave(exchange, snapshotDryRunState(), pair);
       } else {
         // Save live state on shutdown
         saveLiveState();
@@ -5934,9 +5966,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Find merge target among existing celestial bodies
     const bodies = positionState.celestialBodies || [];
     const mergeTarget = celestialHierarchy.findMergeTarget(
-      bodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
-      config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders,
-      config.mergeProximityScale ?? 1.0
+      bodies, newBuy, {
+        maxUsdcDeployed: config.maxUsdcDeployed,
+        candidateTpPrice,
+        maxBodies: config.maxCelestialBodies || 10,
+        pendingOrderCount: orderExecutor.getPendingCounts().total,
+        maxOpenOrders: config.maxOpenOrders,
+        proximityScale: config.mergeProximityScale ?? 1.0
+      }
     );
 
     return { summary, newBuy, mergeTarget, commitBuyAccounting, isLadderFill,
@@ -6347,13 +6384,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Start periodic metrics updater
    */
   const startMetricsUpdater = () => {
+    // A stalled exchange can outlast the interval (each candle request may take
+    // minutes with retries); never stack metrics runs on top of each other.
+    let metricsInFlight = false;
     // updateMetrics is async and awaits exchange/order calls that can reject;
     // an unhandled rejection in a bare interval callback would crash the
     // process, so guard every invocation.
-    const runMetrics = () =>
-      trackPendingWrite(`engine-metrics:${fundLabel}`, () => updateMetrics()).catch((err) =>
-        logger.error(`❌ [${exchange}] Metrics update crashed: ${err.message}`, { error: err.message })
-      );
+    const runMetrics = () => {
+      if (metricsInFlight) return;
+      metricsInFlight = true;
+      trackPendingWrite(`engine-metrics:${fundLabel}`, () => updateMetrics())
+        .catch((err) =>
+          logger.error(`❌ [${exchange}] Metrics update crashed: ${err.message}`, { error: err.message })
+        )
+        .finally(() => {
+          metricsInFlight = false;
+        });
+    };
     metricsInterval = setInterval(runMetrics, METRICS_INTERVAL_MS);
     // Initial update
     runMetrics();
@@ -6597,7 +6644,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const baseMinSize = parseFloat(productDetails.baseMinSize);
     const baseIncrement = parseFloat(productDetails.baseIncrement) || 0.00000001;
 
-    const feeRate = config.feeRate || 0.001;
+    const feeRate = config.feeRate ?? DEFAULT_FEE_RATE_PER_SIDE;
     const dust = bodies.find(b => isStrandedDustBody(b, baseMinSize, baseIncrement, {
       effectiveMaxTpPct: config.tpMaxPercent * (celestialHierarchy.getTierConfig(b.tier)?.tpMaxScale || 1),
       feeRate,
@@ -6614,7 +6661,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     if (!target) return;
 
-    const result = await manualMergeBody(dust.id, { targetId: target.id, label: 'Auto-consolidation (dust)' });
+    const result = await manualMergeBody(dust.id, { targetId: target.id, label: 'Auto-consolidation (dust)' })
+      .catch((err) => ({ success: false, message: err.message }));
     if (!result.success) {
       dustMergeRetryAfter = Date.now() + 300000; // 5 min backoff (bounds failure re-log)
       logger.warn(`⚠️ [${exchange}] Dust auto-consolidation deferred: ${result.message}`);
@@ -7494,18 +7542,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       const placeLadder = async () => {
         // Build ladder first to determine actual level count (may be fewer than config due to min-size filtering)
-        const ladder = ladderCalculator.buildLadder(
-          marketState.lastPrice,
-          remainingBudget,
-          {
-            atr: marketState.atr1m,
-            volBaseline: marketState.volBaseline,
-            realizedVol: marketState.realizedVol,
-            athDistance: marketState.athDistance || 0,
-            ath: marketState.ath || 0,
-            priceIncrement,
-          }
-        );
+        const ladder = buildLadderFromMarket(marketState, remainingBudget, priceIncrement);
 
         if (ladder.levels.length === 0) {
           if (!budgetExhaustedWarningLogged) {
@@ -7822,7 +7859,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Minimum profit floor: TP% must clear round-trip fees + $0.01 net USDC profit.
     // Because holdback retains BTC, only (1-h) of gross profit becomes USDC proceeds,
     // so the required TP% = (roundTripFees + minProfit/costBasis) / (1-h)
-    const feeRatePerSide = config.feeRate || 0.001; // conservative 10 bps default
+    const feeRatePerSide = config.feeRate ?? DEFAULT_FEE_RATE_PER_SIDE; // ?? so an explicit 0 (zero-fee) is honored, matching dry-run-executor
     const feeFloorPct = ((2 * feeRatePerSide) + (0.01 / body.costBasis)) / (1 - holdbackRatio) * 100;
 
     // Holdback floor: TP% must generate enough profit for at least 1 satoshi holdback
@@ -7926,6 +7963,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
     }
 
+    // The body owns its TP from the moment the exchange accepts it. Live mode
+    // persists that ownership inside the placement handoff, before the dispatch
+    // intent is released: otherwise the order id lived only in memory until the
+    // 5-minute save, and a crash in that window restarted the body with no TP,
+    // so startup placed a second sell beside the untracked original.
+    const adoptTpOrder = (orderId) => {
+      body.tpOrderId = orderId;
+      body.tpPrice = tpPrice;
+      body.assetOnOrder = sellQty;
+
+      // Re-aggregate position-level fields so positionState.assetOnOrder reflects
+      // ALL bodies' TP orders, not just the most-recently-placed one. Without this,
+      // satellite bodies created after the main body's TP leave assetOnOrder stale,
+      // making the dashboard's "On Order" panel under-report by the satellite size.
+      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+    };
+
     let result;
     try {
       // body.avgPrice is the body's real, already-tracked average buy price —
@@ -7936,7 +7990,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // engine, since it never trades through the legacy single-cycle path
       // that resets it). No-op for the live executor, which already tracks
       // cost basis on `body.costBasis` independently of order placement.
-      result = await orderExecutor.placeBodyTpOrder(sellQty, tpPrice, body.id, body.avgPrice);
+      result = await orderExecutor.placeBodyTpOrder(sellQty, tpPrice, body.id, body.avgPrice, {
+        // Guarded: the order is already resting, so a failed save must not
+        // turn it into a pending placement the executor stops tracking; the
+        // failure counts toward the health monitor's persistence limit instead.
+        onAccepted: isDryRun ? null : ({ orderId }) => {
+          adoptTpOrder(orderId);
+          saveLiveStateGuarded('body-tp-placed');
+        },
+      });
     } catch (err) {
       logger.warn(
         `⚠️ [${exchange}] Body TP placement error for ${body.id.slice(-8)}: ${err.message}`,
@@ -7946,15 +8008,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     if (result.success) {
-      body.tpOrderId = result.orderId;
-      body.tpPrice = tpPrice;
-      body.assetOnOrder = sellQty;
-
-      // Re-aggregate position-level fields so positionState.assetOnOrder reflects
-      // ALL bodies' TP orders, not just the most-recently-placed one. Without this,
-      // satellite bodies created after the main body's TP leave assetOnOrder stale,
-      // making the dashboard's "On Order" panel under-report by the satellite size.
-      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+      adoptTpOrder(result.orderId);
 
       // Link all source buy fills to this sell order (use both sourceOrderIds and buyOrders for coverage)
       // A large merged body can own hundreds of buys. Persist all links in one
@@ -8397,9 +8451,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       const bodies = positionState.celestialBodies || [];
       let mergeTarget = celestialHierarchy.findMergeTarget(
-        bodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
-        config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders,
-        config.mergeProximityScale ?? 1.0
+        bodies, newBuy, {
+          maxUsdcDeployed: config.maxUsdcDeployed,
+          candidateTpPrice,
+          maxBodies: config.maxCelestialBodies || 10,
+          pendingOrderCount: orderExecutor.getPendingCounts().total,
+          maxOpenOrders: config.maxOpenOrders,
+          proximityScale: config.mergeProximityScale ?? 1.0
+        }
       );
 
       positionState.cycleBuys += 1;
@@ -8705,7 +8764,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Same fee the engine actually budgets when sizing/gating a TP (placeBodyTp's
       // feeFloorPct) — exposed so the dashboard's Open Orders "est." columns never
       // hard-code a fee guess of their own. See issue #698.
-      feeRatePerSide: config.feeRate || 0.001,
+      feeRatePerSide: config.feeRate ?? DEFAULT_FEE_RATE_PER_SIDE,
       entryMode: config.entryMode || 'reactive',
       ladderAutoSwitch: config.ladderAutoSwitch || false,
       ladderMaxAthDropPct: config.ladderMaxAthDropPct || 80,
@@ -9568,27 +9627,42 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { outcome };
     };
 
-    const sourceCancel = await cancelMergeLeg({
-      leg: 'Source', body: source, snapshot: sourceSnapshot,
-      dropSnapshots: [source, target], restoreSource: false,
-    });
-    if (sourceCancel.abort) return sourceCancel.abort;
+    // A throw (e.g. a rejected cancelOrder) must not leave the Race-3 snapshots
+    // registered: handleOrderFillImpl checks pendingMergeTpOrders BEFORE the live
+    // body, so a stale entry would book a later full TP fill without closing the
+    // cycle (#1342). Entries already moved by completeMergeSnapshot are gone from
+    // pending, so this only drops the unconsumed ones.
+    let merged;
+    try {
+      const sourceCancel = await cancelMergeLeg({
+        leg: 'Source', body: source, snapshot: sourceSnapshot,
+        dropSnapshots: [source, target], restoreSource: false,
+      });
+      if (sourceCancel.abort) return sourceCancel.abort;
 
-    const targetCancel = await cancelMergeLeg({
-      leg: 'Target', body: target, snapshot: targetSnapshot,
-      dropSnapshots: [sourceSnapshot, target], restoreSource: true,
-    });
-    if (targetCancel.abort) return targetCancel.abort;
+      const targetCancel = await cancelMergeLeg({
+        leg: 'Target', body: target, snapshot: targetSnapshot,
+        dropSnapshots: [sourceSnapshot, target], restoreSource: true,
+      });
+      if (targetCancel.abort) return targetCancel.abort;
 
-    // Merge bodies (pure data)
-    const merged = celestialHierarchy.mergeBodies(target, source, config.maxUsdcDeployed, logger);
+      // Merge bodies (pure data)
+      merged = celestialHierarchy.mergeBodies(target, source, config.maxUsdcDeployed, logger);
 
-    // Remove source from celestialBodies
-    positionState.celestialBodies = positionState.celestialBodies.filter(b => b.id !== source.id);
+      // Remove source from celestialBodies
+      positionState.celestialBodies = positionState.celestialBodies.filter(b => b.id !== source.id);
 
-    // Retain both snapshots for late-arriving fills (5-minute TTL).
-    completeMergeSnapshot(sourceSnapshot);
-    completeMergeSnapshot(targetSnapshot);
+      // Retain both snapshots for late-arriving fills (5-minute TTL).
+      completeMergeSnapshot(sourceSnapshot);
+      completeMergeSnapshot(targetSnapshot);
+    } catch (err) {
+      for (const snap of [sourceSnapshot, targetSnapshot]) {
+        if (snap.tpOrderId && pendingMergeTpOrders.get(snap.tpOrderId) === snap) {
+          pendingMergeTpOrders.delete(snap.tpOrderId);
+        }
+      }
+      throw err;
+    }
 
     // Check cascading promotions and sync aggregates
     celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
@@ -9874,18 +9948,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: false, message: `Exchange ${quoteCurrency} balance (${balanceStr}) below min order ($${config.baseSizeUsdc || 50}). Budget shows $${budgetRemaining} remaining but exchange only has ${balanceStr} ${quoteCurrency}.` };
     }
 
-    const ladder = ladderCalculator.buildLadder(
-      marketState.lastPrice,
-      remainingBudget,
-      {
-        atr: marketState.atr1m,
-        volBaseline: marketState.volBaseline,
-        realizedVol: marketState.realizedVol,
-        athDistance: marketState.athDistance || 0,
-        ath: marketState.ath || 0,
-        priceIncrement,
-      }
-    );
+    const ladder = buildLadderFromMarket(marketState, remainingBudget, priceIncrement);
 
     return {
       success: true,
@@ -10069,18 +10132,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     // Build new ladder
-    const ladder = ladderCalculator.buildLadder(
-      marketState.lastPrice,
-      remainingBudget,
-      {
-        atr: marketState.atr1m,
-        volBaseline: marketState.volBaseline,
-        realizedVol: marketState.realizedVol,
-        athDistance: marketState.athDistance || 0,
-        ath: marketState.ath || 0,
-        priceIncrement,
-      }
-    );
+    const ladder = buildLadderFromMarket(marketState, remainingBudget, priceIncrement);
 
     if (ladder.levels.length === 0) {
       return { success: false, message: 'Ladder build produced 0 levels — price may be at or below floor' };
@@ -10377,10 +10429,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     start,
     stop,
     flushForBackup: () => {
-      if (isDryRun) dryRunState.forceSave(exchange, {
-        isDryRun: true, executor: orderExecutor.exportState(), position: { ...positionState },
-        tpOptimizer: tpOptimizer.exportState(), sizeOptimizer: sizeOptimizer.exportState(),
-      }, pair);
+      if (isDryRun) dryRunState.forceSave(exchange, snapshotDryRunState(), pair);
       else { saveLiveState(); fillLedger.persist({ force: true }); }
     },
     getState,
@@ -10434,6 +10483,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       evaluateEntryTrigger: () => evaluateEntryTrigger(),
       evaluateLadderEntry: () => evaluateLadderEntry(),
       setRecoveryModule: (v) => { recoveryModule = v; },
+      startMetricsUpdater: () => startMetricsUpdater(),
       setMergeInProgress: engineLocks._test.setMergeInProgress,
       setReconcileInProgress: engineLocks._test.setReconcileInProgress,
       setFillInProgress: engineLocks._test.setFillInProgress,
@@ -10463,6 +10513,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       checkOfflineOrderFills,
       // Background persistence guards (issue #532)
       saveLiveStateGuarded,
+      saveDryRunStateGuarded,
       reloadStateFromDisk,
       getHealth: () => healthMonitor.getState(),
       healthMonitor,

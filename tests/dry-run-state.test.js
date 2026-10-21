@@ -429,3 +429,32 @@ describe('dry-run-state clearState — fences debounced snapshots', () => {
     assert.equal(readFund(fileFor('gemini', 'ETH-USD')).tag, 'keep-me');
   });
 });
+
+describe('dry-run-state debounced flush survives a write failure (#532)', () => {
+  it('logs instead of throwing from the timer, and keeps the fund queued for the next save', (t) => {
+    const stateTracker = require('../src/state-tracker');
+    const realWrite = stateTracker.atomicWriteSync;
+    let diskFull = false;
+    t.mock.method(stateTracker, 'atomicWriteSync', (...args) => {
+      if (diskFull) throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+      return realWrite(...args);
+    });
+    const { saveState, fileFor } = setup(t);
+
+    saveState('coinbase', mkState('A'), 'BTC-USD');     // immediate, lastSaveTime=10_000
+    t.mock.timers.setTime(11_000);
+    saveState('coinbase', mkState('A2'), 'BTC-USD');    // debounced -> timer
+    diskFull = true;
+
+    let lines;
+    assert.doesNotThrow(() => { lines = captureLogs(() => t.mock.timers.tick(5_000)); },
+      'a timer-tick throw is an uncaughtException that exits every live fund in the process');
+    assert.ok(lines.some(line => line.includes('Debounced dry-run state save failed: ENOSPC')));
+    assert.equal(readFund(fileFor('coinbase', 'BTC-USD'))?.tag, 'A');
+
+    diskFull = false;
+    t.mock.timers.setTime(30_000);
+    saveState('kraken', mkState('B'), 'ETH-USD');       // immediate branch flushes the queue
+    assert.equal(readFund(fileFor('coinbase', 'BTC-USD'))?.tag, 'A2', 'the failed snapshot is written once the disk recovers');
+  });
+});

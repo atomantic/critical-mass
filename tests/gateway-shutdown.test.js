@@ -56,13 +56,30 @@ describe('gateway shutdown owns admitted work', () => {
     vm.runInContext('checkAndRunIntervalTrade()', context);
     await settle();
     assert.equal(runs, 1);
-    assert.deepEqual(calls, ['cancel']);
+    assert.deepEqual(calls, ['cancel', 'producers']);
     cycle.resolve({ status: 'booked-and-sell-ready' });
     await settle();
-    assert.deepEqual(calls, ['cancel', 'producers'], 'IPC stays connected through notification drain');
+    assert.deepEqual(calls, ['cancel', 'producers', 'producers', 'disconnect'], 'IPC disconnects before the notification drain so engines hold later events');
     notification.resolve(true);
     assert.equal(await shutdown, 0);
-    assert.deepEqual(calls, ['cancel', 'producers', 'disconnect', 'listeners', 'exit:0']);
+    assert.deepEqual(calls, ['cancel', 'producers', 'producers', 'disconnect', 'listeners', 'exit:0']);
+  });
+
+  it('production producer stop leaves restore-owned writers alone so it cannot persist over restored files', () => {
+    const source = fs.readFileSync(require.resolve('../server'), 'utf8');
+    const start = source.indexOf('  stopProducers: () => {');
+    const block = source.slice(start, source.indexOf('\n  },', start) + '\n  },'.length);
+    for (const maintenance of [true, false]) {
+      const calls = [];
+      const context = vm.createContext({
+        isMaintenanceActive: () => maintenance,
+        updownService: { stop: () => calls.push('updown') },
+        sentinelService: { stop: () => calls.push('sentinel') },
+        activeLogStreams: { stopAll: () => calls.push('logs') },
+      });
+      vm.runInContext(`({${block}}).stopProducers()`, context);
+      assert.deepEqual(calls, maintenance ? ['logs'] : ['updown', 'sentinel', 'logs']);
+    }
   });
 
   it('keeps IPC alive for a route promise even when its client disconnects', async () => {
@@ -85,7 +102,7 @@ describe('gateway shutdown owns admitted work', () => {
     req.destroy();
     const shutdown = gateway.shutdown('SIGTERM');
     await settle();
-    assert.deepEqual(calls, ['cancel']);
+    assert.deepEqual(calls, ['cancel', 'producers']);
     work.resolve();
     assert.equal(await shutdown, 0);
     await new Promise((resolve) => server.close(resolve));
@@ -115,7 +132,7 @@ describe('gateway shutdown owns admitted work', () => {
     gateway.middleware({}, res, () => {});
     const shutdown = gateway.shutdown('SIGTERM');
     await settle();
-    assert.deepEqual(calls, ['cancel']);
+    assert.deepEqual(calls, ['cancel', 'producers']);
     res.emit('finish');
     await shutdown;
     assert.equal(calls.at(-1), 'exit:0');
@@ -127,17 +144,42 @@ describe('gateway shutdown owns admitted work', () => {
     const { gateway, calls } = makeGateway({ timeoutMs: 10 });
     gateway.track(work.promise);
     assert.equal(await gateway.shutdown('SIGTERM'), 1);
-    assert.deepEqual(calls, ['cancel', 'exit:1']);
+    assert.deepEqual(calls, ['cancel', 'producers', 'exit:1'], 'producers saved their state before the deadline exit');
     assert.deepEqual(recovery, { placementIntent: 'persisted' });
     work.resolve();
     await settle();
-    assert.deepEqual(calls, ['cancel', 'exit:1']);
+    assert.deepEqual(calls, ['cancel', 'producers', 'exit:1']);
   });
 
-  it('reports teardown rejection as failure without an unhandled rejection, still draining the notifier', async () => {
+  it('does not let a producer startup that only its stop can cancel hold the drain', async () => {
+    // UpDown's tracked start() waits on the scorecard lock until UpDown stops.
+    let cancelStartup;
+    const startup = new Promise((resolve) => { cancelStartup = resolve; });
+    const { gateway, calls } = makeGateway({
+      timeoutMs: 1000,
+      stopProducers: () => { calls.push('producers'); cancelStartup(); },
+    });
+    gateway.track(startup);
+    assert.equal(await gateway.shutdown('SIGTERM'), 0);
+    assert.deepEqual(calls, ['cancel', 'producers', 'producers', 'disconnect', 'notifier', 'listeners', 'exit:0']);
+  });
+
+  it('reports a producer stop failure without an unhandled rejection, still draining work and the notifier', async () => {
+    const work = deferred();
     const { gateway, calls } = makeGateway({ stopProducers: () => Promise.reject(new Error('persist failed')) });
+    gateway.track(work.promise);
+    const shutdown = gateway.shutdown('SIGTERM');
+    await settle();
+    assert.deepEqual(calls, ['cancel'], 'admitted work is still drained');
+    work.resolve();
+    assert.equal(await shutdown, 1);
+    assert.deepEqual(calls, ['cancel', 'disconnect', 'notifier', 'listeners', 'exit:1']);
+  });
+
+  it('keeps tearing down after an IPC disconnect failure', async () => {
+    const { gateway, calls } = makeGateway({ disconnectIPC: () => Promise.reject(new Error('socket failed')) });
     assert.equal(await gateway.shutdown('SIGTERM'), 1);
-    assert.deepEqual(calls, ['cancel', 'notifier', 'disconnect', 'listeners', 'exit:1']);
+    assert.deepEqual(calls, ['cancel', 'producers', 'producers', 'notifier', 'listeners', 'exit:1']);
   });
 
   it('waits for the realtime bus and every HTTP listener, including an already closed listener', async () => {

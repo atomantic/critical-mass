@@ -126,10 +126,30 @@ runs the production start block against that contract.
 
 The gateway handles SIGTERM and SIGINT through one drain coordinator. It stops
 admitting HTTP requests and realtime client commands, cancels the DCA and backup timers,
-and waits for accepted request handlers and scheduled DCA cycles before stopping
-local producers. An aborted HTTP client does not cancel the handler's ownership.
-IPC remains connected through that drain; queued and already-sending Telegram
-notifications then settle before IPC, the realtime bus and every HTTP listener close.
+and stops the local producers (UpDown, Sentinel, log tails), which save their own
+state, before it waits for accepted request handlers and scheduled DCA cycles. A
+deadline exit therefore never skips the producers' final save, and UpDown's startup
+lock wait, which only its stop cancels, cannot hold the drain. Producers are stopped
+again after the drain in case drained work restarted one. A failed teardown step
+(a producer that cannot persist, an IPC disconnect) is reported and exits 1, but
+every later step, the drain and the notifier included, still runs. While a restore
+holds the maintenance lock it owns UpDown and Sentinel (and keeps them stopped after
+an incomplete rollback), so shutdown leaves them alone rather than persisting
+pre-restore memory over restored files. An aborted HTTP client does not cancel the
+handler's ownership.
+IPC remains connected through that drain. IPC then disconnects, so an engine
+event raised from here on is held by the engine for the next gateway instead of
+reaching a notifier that has stopped listening; queued and already-sending
+Telegram notifications settle before the realtime bus and every HTTP listener close.
+
+Engines hold `trade:event` frames (fills, TP placements, SAFE-mode and fault
+alerts) broadcast while no gateway is connected — an engine boot that finishes
+before the gateway's reconnect backoff, or a gateway restart — and replay them
+in order when the next gateway subscribes on connect (`MSG_TYPE.SUBSCRIBE`). The
+hold is in memory and keeps the newest 200 events (`MAX_HELD_EVENTS` in
+`src/ipc/ipc-server.js`); an engine exit discards it. An older gateway never
+subscribes and an older engine ignores the subscription, so mixed versions keep
+the previous drop-while-disconnected behavior.
 
 The internal deadline is **30 seconds** (`SHUTDOWN_TIMEOUT_MS` in
 `src/gateway-shutdown.js`). Deadline expiry or a teardown failure exits with code
@@ -144,10 +164,12 @@ configuration uses `stop_grace_period: 70s` (see
 restart, drain the gateway before stopping exchange engine processes so admitted
 IPC operations can finish; stopping all engines simultaneously cannot provide
 that dependency guarantee. The exchange engines (`critical-mass-coinbase`, `-gemini`, `-cryptocom`) set
-`kill_timeout: 25000` (`ENGINE_KILL_TIMEOUT_MS`), above their 15 s in-process
-force-exit watchdog (`SHUTDOWN_WATCHDOG_MS` in `engines/coinbase-engine.js`), which in
-turn outlasts the 10 s bounded wait for in-flight fill handlers that
-`regime-engine` `stop()` performs before saving state (`FILL_DRAIN_MS` in `src/engine-locks.js`).
+`kill_timeout: 25000` (`ENGINE_KILL_TIMEOUT_MS`), above their 22 s in-process
+force-exit watchdog (`SHUTDOWN_WATCHDOG_MS` in `engines/coinbase-engine.js`). The watchdog
+covers the bounded pre-stop steps in `src/engine-shutdown.js` (IPC drain 3 s, fund-start and
+market-data-start joins 2 s each — a hung start is abandoned, not awaited), the single 10 s
+flash-cancel/in-flight-fill wait that `regime-engine` `stop()` performs before saving state
+(`FILL_DRAIN_MS` in `src/engine-locks.js`), and the 3 s post-stop process drain.
 PM2's 1600 ms default would SIGKILL an engine mid state-save. Required ordering:
 in-process deadline < PM2 `kill_timeout`, and Docker `stop_grace_period` (70 s)
 > gateway `kill_timeout` + engine `kill_timeout` (35 s + 25 s, the ordered

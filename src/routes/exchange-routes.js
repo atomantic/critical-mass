@@ -6,19 +6,14 @@
 const stateTracker = require('../state-tracker');
 const { buildFundSummary, buildDcaFundSummary } = require('../fund-summary');
 const {
-  getExchangeConfig,
   getFundConfig,
   getGlobalConfig,
-  getConfiguredExchanges,
   getConfiguredFunds,
   getEnabledExchanges,
-  getEnabledFunds,
   getFundsForExchange,
   getDefaultPair,
   resolveConfiguredPair,
   getRegimeConfig,
-  updateExchangeConfig,
-  updateFundConfig,
   setFundEnabled,
   setFundDryRun,
   addFund,
@@ -28,13 +23,12 @@ const {
   productIdMatchesPair,
   getFundStateConflict,
 } = require('../config-utils');
-const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
-const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
+const { createContextLogger, getLogFile } = require('../logger');
 const { syncFundOrders, runIntervalCycle, resumePendingBuy, executeConsolidation, reconcilePlacementIntent, retryFailedSell } = require('../dca-engine');
 const { shouldAutoResumeRegime, readBooleanFlag } = require('../shared-utils');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { prepareConfigUpdate, persistConfigUpdate } = require('./config-update');
-const { resolvePairParam, getSafeIPC, asyncRoute, tradeResultStatusCode } = require('./route-utils');
+const { resolvePairParam, getSafeIPC, asyncRoute, tradeResultStatusCode, parsePaging } = require('./route-utils');
 
 /**
  * Tag a rejected promise's error with an HTTP status before rethrowing, so
@@ -320,7 +314,7 @@ module.exports = (app, deps) => {
     if (pairError) return res.status(400).json({ success: false, error: pairError });
     const logger = exchangeLogger(exchange, pair, '/api/:exchange/config');
     const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
-    if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
+    if (errors.length > 0) return res.status(400).json({ success: false, error: errors.join('; ') });
 
     const prepared = prepareConfigUpdate({
       exchange, pair, updates, fullConfig: true, rawRegime: req.body?.regime,
@@ -335,7 +329,7 @@ module.exports = (app, deps) => {
         });
       },
     });
-    if (!prepared.valid) return res.status(400).json({ error: prepared.errors.join('; ') });
+    if (!prepared.valid) return res.status(400).json({ success: false, error: prepared.errors.join('; ') });
 
     const result = await persistConfigUpdate(exchange, pair, prepared, getIPC(exchange));
     if (!result.applied) {
@@ -425,7 +419,15 @@ module.exports = (app, deps) => {
     if (error) return res.status(400).json({ success: false, error });
     const logFile = getLogFile(exchange, pair);
     const transactions = parseTSV(logFile);
-    res.json(transactions);
+    const paging = parsePaging(req.query);
+    if (!paging) return res.json(transactions);
+    res.json({
+      success: true,
+      items: transactions.slice(paging.offset, paging.offset + paging.limit),
+      total: transactions.length,
+      limit: paging.limit,
+      offset: paging.offset,
+    });
   });
 
   // Get live status for an exchange

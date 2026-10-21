@@ -7,7 +7,7 @@
 
 const { createContextLogger } = require('../logger');
 const { validateEndpointUrl } = require('../url-validator');
-const { asyncRoute } = require('./route-utils');
+const { asyncRoute, parsePaging } = require('./route-utils');
 const { validateConfigUpdate, SENTINEL_CONFIG_SCHEMA, validateSentinelConfigUpdate } = require('../config-validator');
 
 /**
@@ -36,7 +36,16 @@ module.exports = (app, deps) => {
   app.get('/api/sentinel/alerts', (req, res) => {
     const filter = {};
     if (req.query.severity) filter.severity = req.query.severity;
-    res.json({ success: true, alerts: sentinelService.getAlerts(filter) });
+    const alerts = sentinelService.getAlerts(filter);
+    const paging = parsePaging(req.query);
+    if (!paging) return res.json({ success: true, alerts });
+    res.json({
+      success: true,
+      alerts: alerts.slice(paging.offset, paging.offset + paging.limit),
+      total: alerts.length,
+      limit: paging.limit,
+      offset: paging.offset,
+    });
   });
 
   app.post('/api/sentinel/poll', asyncRoute(async (req, res) => {
@@ -120,12 +129,29 @@ module.exports = (app, deps) => {
 
     updateSentinelConfig(sanitized);
     // Restart service with new config
-    sentinelService.stop();
+    // stop() clears timers before persisting alert state and rethrows a save
+    // failure; start() must still run so Sentinel is not left stopped.
+    let stopError = null;
+    try {
+      sentinelService.stop();
+    } catch (err) {
+      stopError = err;
+    }
     sentinelService.start();
     logger.info('ℹ️ Sentinel config updated via API', {
       action: 'update-config',
       keys: Object.keys(sanitized),
     });
+    if (stopError) {
+      logger.error(`❌ Sentinel alert state could not be saved during restart: ${stopError.message}`, {
+        action: 'update-config',
+        error: stopError.message,
+      });
+      return res.status(500).json({
+        success: false,
+        error: `Config saved and Sentinel restarted, but its alert state could not be written: ${stopError.message}`,
+      });
+    }
     res.json({ success: true, config: getSentinelConfig() });
   }));
 

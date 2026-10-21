@@ -1,24 +1,83 @@
 // @ts-check
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
 const { atomicWriteSync } = require('../durable-write')
 const { setTimeout: delay } = require('timers/promises')
 
 const lockPath = (directory) => path.join(directory, '.maintenance-lock')
 
-// Never steal a stale lock automatically: a paused writer may still own it.
-// After a crash, stop every scorecard writer before removing this directory.
+// A lock is reclaimed only when its owner.json is readable, names a pid on this
+// host, that pid is provably gone (ESRCH), and the lock is past a short grace
+// period. Anything else (live owner, EPERM, unreadable or malformed metadata,
+// another host) is treated as held: a paused writer may still own the lock.
+const STALE_LOCK_GRACE_MS = 5_000
+
+const isOwnerDead = (directory) => {
+  const lock = lockPath(directory)
+  let owner
+  let ageMs
+  try {
+    owner = JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8'))
+    ageMs = Date.now() - fs.statSync(lock).mtimeMs
+  } catch {
+    return null
+  }
+  if (!Number.isInteger(owner?.pid) || owner.pid <= 0) return null
+  if (owner.host !== undefined && owner.host !== os.hostname()) return null
+  if (ageMs < STALE_LOCK_GRACE_MS) return null
+  try {
+    process.kill(owner.pid, 0)
+    return null
+  } catch (error) {
+    return error.code === 'ESRCH' ? owner.pid : null
+  }
+}
+
+// Rename aside first so concurrent reclaimers cannot remove a lock another
+// process just re-acquired; verify the moved directory is still the dead owner's.
+const reclaimStaleLock = (directory) => {
+  const pid = isOwnerDead(directory)
+  if (pid === null) return false
+  const lock = lockPath(directory)
+  const aside = `${lock}.stale-${process.pid}-${Date.now()}`
+  try {
+    fs.renameSync(lock, aside)
+  } catch {
+    return false
+  }
+  let movedPid
+  try {
+    movedPid = JSON.parse(fs.readFileSync(path.join(aside, 'owner.json'), 'utf8'))?.pid
+  } catch {
+    movedPid = undefined
+  }
+  if (movedPid !== pid) {
+    try { fs.renameSync(aside, lock) } catch { /* lock was re-created; leave the moved directory for inspection */ }
+    return false
+  }
+  fs.rmSync(aside, { recursive: true, force: true })
+  console.warn(`Reclaimed stale scorecard maintenance lock ${lock} from dead pid ${pid}`)
+  return true
+}
+
 const acquireScorecardLock = (directory) => {
   fs.mkdirSync(directory, { recursive: true })
   const lock = lockPath(directory)
   try {
     fs.mkdirSync(lock, { mode: 0o700 })
   } catch (error) {
-    if (error.code === 'EEXIST') return null
-    throw error
+    if (error.code !== 'EEXIST') throw error
+    if (!reclaimStaleLock(directory)) return null
+    try {
+      fs.mkdirSync(lock, { mode: 0o700 })
+    } catch (retryError) {
+      if (retryError.code === 'EEXIST') return null
+      throw retryError
+    }
   }
   try {
-    fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }), { mode: 0o600 })
+    fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, host: os.hostname(), startedAt: new Date().toISOString() }), { mode: 0o600 })
   } catch (error) {
     fs.rmSync(lock, { recursive: true })
     throw error
@@ -45,7 +104,7 @@ const describeLockOwner = (directory) => {
   }
 }
 
-// Bounded because the lock is never stolen: an unbounded wait on a lock left by
+// Bounded because a live owner's lock is never stolen: an unbounded wait on a lock left by
 // a killed process wedged scorecard startup (and with it UpDown and the gateway
 // shutdown drain) silently and forever. Fail with the recovery pointer instead.
 // `signal` lets a stopping writer cancel its waits, so a backup or shutdown

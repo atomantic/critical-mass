@@ -140,15 +140,16 @@ const createNewBody = (newBuy, buyOrderId) => {
  * @param {number} newBuy.totalValue - USDC value
  * @param {number} newBuy.totalFees - Fees paid
  * @param {number} newBuy.avgPrice - Average fill price
- * @param {number} maxUsdcDeployed - Maximum capital deployed (unused, kept for call-site consistency)
- * @param {number} candidateTpPrice - What TP price the new buy would get
- * @param {number} maxBodies - Maximum allowed bodies
- * @param {number} [pendingOrderCount] - Current pending order count
- * @param {number} [maxOpenOrders] - Maximum open orders allowed
- * @param {number} [proximityScale=1.0] - Scale factor for tier proximity thresholds (0.25=conservative..3.0=aggressive)
+ * @param {Object} opts - Options (named to avoid positional-number mixups)
+ * @param {number} [opts.maxUsdcDeployed] - Maximum capital deployed (unused, accepted for call-site consistency)
+ * @param {number} opts.candidateTpPrice - What TP price the new buy would get
+ * @param {number} opts.maxBodies - Maximum allowed bodies
+ * @param {number} [opts.pendingOrderCount] - Current pending order count
+ * @param {number} [opts.maxOpenOrders] - Maximum open orders allowed
+ * @param {number} [opts.proximityScale=1.0] - Scale factor for tier proximity thresholds (0.25=conservative..3.0=aggressive)
  * @returns {CelestialBody|null}
  */
-const findMergeTarget = (bodies, newBuy, maxUsdcDeployed, candidateTpPrice, maxBodies, pendingOrderCount, maxOpenOrders, proximityScale = 1.0) => {
+const findMergeTarget = (bodies, newBuy, { candidateTpPrice, maxBodies, pendingOrderCount, maxOpenOrders, proximityScale = 1.0 }) => {
   if (bodies.length === 0) return null;
 
   // Forced merge when at body capacity or order slot budget is full

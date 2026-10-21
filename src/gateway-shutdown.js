@@ -75,21 +75,35 @@ const createGatewayShutdown = ({
       complete(1);
     }, timeoutMs);
 
+    // Every teardown step runs even when an earlier one fails: a producer
+    // that cannot persist its state (e.g. a full disk) must not skip the
+    // notifier drain, which would drop the queued alerts about that fault.
+    let failed = false;
+    const runStep = async (name, step) => {
+      try {
+        await step();
+      } catch (err) {
+        failed = true;
+        log('ERROR', `Gateway shutdown: stopping ${name} failed: ${err.message}`);
+      }
+    };
+
     Promise.resolve().then(async () => {
       await cancelSchedules();
+      // Producers (UpDown, Sentinel, log tails) run on their own timers and
+      // save their own state when stopped. Stop them before the drain so a
+      // drain that hits the deadline cannot skip that save — and because
+      // UpDown's tracked startup lock wait ends only when UpDown stops, which
+      // would otherwise hold the drain until the deadline. They are stopped
+      // again below in case drained work (a backup's writer resume) restarted one.
+      await runStep('producers', stopProducers);
       await drain();
       if (finished) return;
-      // Every teardown step runs even when an earlier one fails: a producer
-      // that cannot persist its state (e.g. a full disk) must not skip the
-      // notifier drain, which would drop the queued alerts about that fault.
-      let failed = false;
-      for (const [name, step] of [['producers', stopProducers], ['notifier', stopNotifier], ['IPC', disconnectIPC], ['listeners', closeListeners]]) {
-        try {
-          await step();
-        } catch (err) {
-          failed = true;
-          log('ERROR', `Gateway shutdown: stopping ${name} failed: ${err.message}`);
-        }
+      // IPC disconnects before the notifier stops: an engine event arriving
+      // during the notifier drain would reach no listener, while a
+      // disconnected engine holds it for the next gateway.
+      for (const [name, step] of [['producers', stopProducers], ['IPC', disconnectIPC], ['notifier', stopNotifier], ['listeners', closeListeners]]) {
+        await runStep(name, step);
       }
       log(failed ? 'ERROR' : 'INFO', failed ? 'Gateway shutdown finished with errors' : 'Gateway shutdown complete');
       complete(failed ? 1 : 0);

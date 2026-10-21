@@ -1,6 +1,6 @@
 import React from 'react'
 
-export default function EmptyRegimeState({ isDryRun, dcaState, handlePreviewConvert }) {
+export default function EmptyRegimeState({ isDryRun, dcaState, dcaStateError, retryDcaState, handlePreviewConvert }) {
   return (
     <>
       <div className="bg-gray-800 rounded-lg p-8 text-center">
@@ -19,6 +19,12 @@ export default function EmptyRegimeState({ isDryRun, dcaState, handlePreviewConv
               ' Click Start in the header to begin adaptive trading.'
             )}
           </p>
+          {dcaStateError && (
+            <p role="alert" className="mt-4 text-sm text-red-400">
+              Could not check for DCA orders to upgrade: {dcaStateError}{' '}
+              <button type="button" onClick={retryDcaState} className="ml-1 min-h-11 min-w-11 md:min-h-0 md:min-w-0 px-2 py-1 rounded-sm bg-gray-700 hover:bg-gray-600 text-white">Retry</button>
+            </p>
+          )}
           {dcaState?.orders?.some(o => o.status === 'pending') && (
             <button
               className="mt-4 px-5 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors"

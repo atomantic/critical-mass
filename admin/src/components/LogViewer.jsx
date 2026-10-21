@@ -87,7 +87,7 @@ export default function LogViewer({ processName }) {
             {!subscribed && terminal && (
               <button
                 onClick={retry}
-                className="px-2 py-0.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-sm transition-colors"
+                className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-0.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-sm transition-colors"
               >
                 Retry
               </button>
@@ -96,7 +96,7 @@ export default function LogViewer({ processName }) {
 
           <button
             onClick={clear}
-            className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-sm transition-colors"
+            className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-sm transition-colors"
           >
             Clear
           </button>
@@ -104,14 +104,14 @@ export default function LogViewer({ processName }) {
           <button
             onClick={flush}
             disabled={flushing}
-            className="px-2 py-1 text-xs bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:text-gray-500 text-yellow-100 rounded-sm transition-colors"
+            className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 text-xs bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:text-gray-500 text-yellow-100 rounded-sm transition-colors"
           >
             {flushing ? 'Flushing...' : 'Flush'}
           </button>
 
           <button
             onClick={() => setFullscreen(!fullscreen)}
-            className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-sm transition-colors"
+            className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-sm transition-colors"
           >
             {fullscreen ? 'Close' : 'Fullscreen'}
           </button>

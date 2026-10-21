@@ -329,6 +329,11 @@ describe('validateRegimeConfig', () => {
     assert.equal(validateRegimeConfig({ atrPeriod: 14 }).valid, true);
   });
 
+  it('uses the shared DEFAULT_MAX_USDC_DEPLOYED as the regime default cap', () => {
+    const { DEFAULT_MAX_USDC_DEPLOYED } = require('../src/fund-defaults');
+    assert.equal(REGIME_DEFAULTS.maxUsdcDeployed, DEFAULT_MAX_USDC_DEPLOYED);
+  });
+
   it('re-exports the preset contract and accepts all complete defaults', () => {
     const contract = require('../src/regime-preset-contract');
     assert.equal(DEFAULT_AGGRESSIVENESS_PRESETS, contract.DEFAULT_AGGRESSIVENESS_PRESETS);
@@ -1356,6 +1361,30 @@ describe('updateAggressivenessPresets', () => {
       result.global.aggressivenessPresets.aggressive.kFactor,
       DEFAULT_AGGRESSIVENESS_PRESETS.aggressive.kFactor,
     );
+  });
+});
+
+describe('aggressiveness preset override persistence (#1400)', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('persists only the edited key, not every level and key', () => {
+    const fsm = setupFsMocks({ base: { exchanges: {}, global: {} }, user: null });
+    updateAggressivenessPresets({ moderate: { ...DEFAULT_AGGRESSIVENESS_PRESETS.moderate, cautionScale: 0.42 } });
+    assert.deepStrictEqual(fsm.written().global.aggressivenessPresets, { moderate: { cautionScale: 0.42 } });
+  });
+
+  it('picks up a later default change for keys that were not overridden', () => {
+    setupFsMocks({ base: { exchanges: {}, global: {} }, user: { global: { aggressivenessPresets: { moderate: { cautionScale: 0.42 } } } } });
+    const result = getAggressivenessPresets();
+    assert.equal(result.moderate.cautionScale, 0.42);
+    assert.equal(result.aggressive.kFactor, DEFAULT_AGGRESSIVENESS_PRESETS.aggressive.kFactor);
+  });
+
+  it('ignores stored out-of-range legacy values and falls back to the default', () => {
+    setupFsMocks({ base: { exchanges: {}, global: {} }, user: { global: { aggressivenessPresets: { moderate: { kFactor: 0.9 } } } } });
+    mock.method(console, 'warn', () => {});
+    mock.method(console, 'log', () => {});
+    assert.equal(getAggressivenessPresets().moderate.kFactor, DEFAULT_AGGRESSIVENESS_PRESETS.moderate.kFactor);
   });
 });
 

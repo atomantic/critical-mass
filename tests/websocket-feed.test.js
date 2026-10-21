@@ -76,6 +76,99 @@ describe('coinbase user-channel authentication', () => {
   });
 });
 
+describe('coinbase user-channel recovery (#1382)', () => {
+  const crypto = require('node:crypto');
+  const jwt = require('../src/jwt');
+  const { privateKey } = crypto.generateKeyPairSync('ec', {
+    namedCurve: 'prime256v1',
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+  const USER_RETRY = 30000;
+  const userSubs = (sock) => sock.frames.filter(message => message.channel === 'user');
+
+  const openUserFeed = (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    FakeWebSocket.reset();
+    const feed = createWebSocketFeed('coinbase', { productId: 'BTC-USD', apiKey: 'organizations/o/apiKeys/k', apiSecret: privateKey });
+    return feed;
+  };
+
+  it('retries the user subscription after a JWT signing failure and reports degraded meanwhile', (t) => {
+    const realSign = jwt.signJwt;
+    let calls = 0;
+    t.mock.method(jwt, 'signJwt', (...args) => {
+      calls++;
+      if (calls === 1) throw new Error('signer unavailable');
+      return realSign(...args);
+    });
+    const feed = openUserFeed(t);
+    assert.equal(feed.getStatus().userChannel, 'degraded', 'not subscribed before connect');
+    feed.connect();
+    const sock = FakeWebSocket.instances[0];
+    sock.open();
+    assert.equal(userSubs(sock).length, 0);
+    assert.equal(feed.getStatus().userChannel, 'degraded');
+
+    t.mock.timers.tick(USER_RETRY - 1);
+    assert.equal(userSubs(sock).length, 0);
+    t.mock.timers.tick(1);
+    assert.equal(userSubs(sock).length, 1, 'user subscription retried on the same socket');
+    assert.equal(feed.getStatus().userChannel, 'subscribed');
+    assert.equal(FakeWebSocket.instances.length, 1, 'no reconnect needed');
+    feed.disconnect();
+  });
+
+  it('resubscribes after an error frame with doubling backoff, then reconnects after three failed retries', (t) => {
+    const feed = openUserFeed(t);
+    feed.connect();
+    const sock = FakeWebSocket.instances[0];
+    sock.open();
+    assert.equal(userSubs(sock).length, 1);
+    assert.equal(feed.getStatus().userChannel, 'subscribed');
+
+    const reject = () => sock.receive(JSON.stringify({ type: 'error', message: 'authentication failure' }));
+    let expected = 1;
+    for (const delay of [30000, 60000, 120000]) {
+      reject();
+      assert.equal(feed.getStatus().userChannel, 'degraded');
+      reject(); // a duplicate error while a retry is pending does not reschedule
+      // Keep the liveness watchdog fed while we wait.
+      for (let second = 1; second < delay / 1000; second++) { t.mock.timers.tick(1000); sock.receive('{}'); }
+      t.mock.timers.tick(999);
+      assert.equal(userSubs(sock).length, expected, `no resubscribe before ${delay}ms`);
+      t.mock.timers.tick(1);
+      expected++;
+      assert.equal(userSubs(sock).length, expected, `resubscribed after ${delay}ms`);
+      assert.equal(feed.getStatus().userChannel, 'subscribed');
+    }
+    assert.equal(sock.closeCalls.length, 0);
+    reject();
+    assert.equal(sock.closeCalls.length, 1, 'socket terminated after retries are exhausted');
+    assert.equal(feed.getStatus().userChannel, 'degraded');
+    t.mock.timers.tick(1000);
+    assert.equal(FakeWebSocket.instances.length, 2, 'lifecycle reconnects');
+    const replacement = FakeWebSocket.instances[1];
+    replacement.open();
+    assert.equal(userSubs(replacement).length, 1, 'fresh socket resubscribes the user channel');
+    assert.equal(feed.getStatus().userChannel, 'subscribed');
+    feed.disconnect();
+    assert.equal(feed.getStatus().userChannel, 'degraded');
+  });
+
+  it('reports no user channel in public-only mode', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    FakeWebSocket.reset();
+    const feed = createWebSocketFeed('coinbase', { productId: 'BTC-USD', publicOnly: true });
+    feed.connect();
+    FakeWebSocket.instances[0].open();
+    FakeWebSocket.instances[0].receive(JSON.stringify({ type: 'error', message: 'bad product' }));
+    t.mock.timers.tick(USER_RETRY * 10);
+    assert.equal(feed.getStatus().userChannel, null);
+    feed.disconnect();
+  });
+});
+
 describe('coinbase ticker bid/ask guard (#1336)', () => {
   it('withholds ticks with a missing, zero, or crossed side', (t) => {
     t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
@@ -95,6 +188,25 @@ describe('coinbase ticker bid/ask guard (#1336)', () => {
     assert.equal(ticks.length, 1);
     assert.equal(ticks[0].bid, 99);
     assert.equal(ticks[0].ask, 101);
+  });
+
+  it('withholds ticks with a zero, negative, or missing price (#110 M1)', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    FakeWebSocket.reset();
+    const ticks = [];
+    const feed = createWebSocketFeed('coinbase', { productId: 'BTC-USD', publicOnly: true, onTicker: (d) => ticks.push(d) });
+    feed.connect();
+    const sock = FakeWebSocket.instances[0];
+    sock.open();
+    const send = (t2) => sock.receive(JSON.stringify({ channel: 'ticker', events: [{ type: 'update', tickers: [{ product_id: 'BTC-USD', best_bid: '99', best_ask: '101', ...t2 }] }] }));
+    send({ price: '0' });
+    send({ price: '-5' });
+    send({});
+    assert.equal(ticks.length, 0);
+    send({ price: '100' });
+    feed.disconnect();
+    assert.equal(ticks.length, 1);
+    assert.equal(ticks[0].price, 100);
   });
 });
 
@@ -246,7 +358,7 @@ for (const variant of VARIANTS) {
       assert.equal(sock.closeCalls.length, 0);
     });
 
-    it('uses capped exponential reconnect backoff and resets it on open', (t) => {
+    it('uses capped exponential reconnect backoff and resets it on the first frame after subscribe', (t) => {
       const { feed, sock } = openFeed(t, variant);
       let current = sock;
       for (const delay of [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000]) {
@@ -259,7 +371,52 @@ for (const variant of VARIANTS) {
       }
       assert.equal(feed.getStatus().reconnectAttempts, 8);
       current.open();
+      if (variant.openDelayMs > 0) t.mock.timers.tick(variant.openDelayMs);
+      assert.equal(feed.getStatus().reconnectAttempts, 8, 'open alone does not reset the backoff');
+      current.receive(variant.heartbeat);
       assert.equal(feed.getStatus().reconnectAttempts, 0);
+      feed.disconnect();
+    });
+
+    it('keeps growing the backoff when the socket opens and closes straight away', (t) => {
+      const { feed, sock } = openFeed(t, variant);
+      let current = sock;
+      for (const delay of [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000]) {
+        const count = FakeWebSocket.instances.length;
+        current.peerClose(1008, 'rejected');
+        t.mock.timers.tick(delay - 1);
+        assert.equal(FakeWebSocket.instances.length, count, `waits the full ${delay}ms`);
+        t.mock.timers.tick(1);
+        current = FakeWebSocket.instances[count];
+        current.open();
+        if (variant.openDelayMs > 0) t.mock.timers.tick(variant.openDelayMs);
+      }
+      feed.disconnect();
+    });
+
+    it('resets the backoff after the connection stays open for the stability window', (t) => {
+      const { feed, sock } = openFeed(t, variant);
+      sock.peerClose(1006, 'lost');
+      t.mock.timers.tick(1000);
+      FakeWebSocket.instances[1].open();
+      t.mock.timers.tick(30000);
+      assert.equal(feed.getStatus().reconnectAttempts, 0);
+      feed.disconnect();
+    });
+
+    it('reconnects at the base delay after a socket that received a frame later drops', (t) => {
+      const { feed, sock } = openFeed(t, variant);
+      sock.peerClose(1006, 'lost');
+      t.mock.timers.tick(1000);
+      const second = FakeWebSocket.instances[1];
+      second.open();
+      if (variant.openDelayMs > 0) t.mock.timers.tick(variant.openDelayMs);
+      second.receive(variant.heartbeat);
+      second.peerClose(1006, 'lost');
+      t.mock.timers.tick(999);
+      assert.equal(FakeWebSocket.instances.length, 2);
+      t.mock.timers.tick(1);
+      assert.equal(FakeWebSocket.instances.length, 3);
       feed.disconnect();
     });
 
@@ -289,6 +446,49 @@ for (const variant of VARIANTS) {
   });
 }
 
+
+describe('WebSocket handshake timeout (#1413)', () => {
+  const HANDSHAKE_TIMEOUT = 15000;
+  const makeFeed = (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    FakeWebSocket.reset();
+    const events = { disconnects: 0 };
+    const feed = createWebSocketFeed('gemini', {
+      productId: 'BTC-USD', publicOnly: true, onDisconnect: () => { events.disconnects++; },
+    });
+    feed.connect();
+    return { feed, events };
+  };
+
+  it('terminates a socket that never opens and schedules a reconnect', (t) => {
+    const { feed, events } = makeFeed(t);
+    const sock = FakeWebSocket.instances[0];
+    t.mock.timers.tick(HANDSHAKE_TIMEOUT - 1);
+    assert.equal(sock.closeCalls.length, 0);
+    t.mock.timers.tick(1);
+    assert.equal(sock.closeCalls.length, 1, 'the hung socket is terminated');
+    assert.equal(events.disconnects, 1);
+    t.mock.timers.tick(1000);
+    assert.equal(FakeWebSocket.instances.length, 2, 'reconnect creates a new socket');
+    feed.disconnect();
+  });
+
+  it('does not terminate a socket that opened in time', (t) => {
+    const { feed } = makeFeed(t);
+    const sock = FakeWebSocket.instances[0];
+    sock.open();
+    t.mock.timers.tick(HANDSHAKE_TIMEOUT);
+    assert.equal(sock.closeCalls.length, 0);
+    feed.disconnect();
+  });
+
+  it('disconnect cancels the handshake timer', (t) => {
+    const { feed } = makeFeed(t);
+    feed.disconnect();
+    t.mock.timers.tick(HANDSHAKE_TIMEOUT * 4);
+    assert.equal(FakeWebSocket.instances.length, 1, 'no reconnect after disconnect');
+  });
+});
 
 describe('Crypto.com delayed subscription session ownership (issue #1003)', () => {
   for (const shutdown of ['close', 'disconnect']) {

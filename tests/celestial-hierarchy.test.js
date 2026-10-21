@@ -284,7 +284,7 @@ describe('createNewBody', () => {
 // ============================================================================
 describe('findMergeTarget', () => {
   it('returns null for empty bodies array', () => {
-    const result = findMergeTarget([], makeNewBuy(), 10000, 101000, 10);
+    const result = findMergeTarget([], makeNewBuy(), { maxUsdcDeployed: 10000, candidateTpPrice: 101000, maxBodies: 10 });
     assert.equal(result, null);
   });
 
@@ -293,7 +293,7 @@ describe('findMergeTarget', () => {
       makeBody({ tpPrice: 110000 }), // far from candidateTpPrice
     ];
     // candidateTpPrice = 101000, body TP at 110000 => ~8.9% away, satellite proximity is 0.5%
-    const result = findMergeTarget(bodies, makeNewBuy(), 10000, 101000, 10);
+    const result = findMergeTarget(bodies, makeNewBuy(), { maxUsdcDeployed: 10000, candidateTpPrice: 101000, maxBodies: 10 });
     assert.equal(result, null);
   });
 
@@ -303,7 +303,21 @@ describe('findMergeTarget', () => {
       makeBody({ id: 'b2', tpPrice: 108000 }),
     ];
     // maxBodies = 2, so at capacity — forced merge picks closest to candidateTpPrice=101000
-    const result = findMergeTarget(bodies, makeNewBuy(), 10000, 101000, 2);
+    const result = findMergeTarget(bodies, makeNewBuy(), { maxUsdcDeployed: 10000, candidateTpPrice: 101000, maxBodies: 2 });
+    assert.equal(result.id, 'b1');
+  });
+
+  it('recover-orphan-buys call shape (options object) forces merge at capacity', () => {
+    const bodies = [
+      makeBody({ id: 'b1', tpPrice: 102000 }),
+      makeBody({ id: 'b2', tpPrice: 108000 }),
+    ];
+    // Mirrors scripts/cryptocom-recover-orphan-buys.js: capacity-full body set must
+    // pick the closest-TP body, same as the engine's pickOrphanMergeTarget.
+    const maxCelestialBodies = 2;
+    const result = findMergeTarget(bodies, makeNewBuy(), {
+      candidateTpPrice: 101000, maxBodies: maxCelestialBodies, pendingOrderCount: 0, maxOpenOrders: 20, proximityScale: 1.0,
+    });
     assert.equal(result.id, 'b1');
   });
 
@@ -312,7 +326,7 @@ describe('findMergeTarget', () => {
       makeBody({ id: 'b1', tpPrice: 0, costBasis: 50 }),
       makeBody({ id: 'b2', tpPrice: 0, costBasis: 200 }),
     ];
-    const result = findMergeTarget(bodies, makeNewBuy(), 10000, 101000, 2);
+    const result = findMergeTarget(bodies, makeNewBuy(), { maxUsdcDeployed: 10000, candidateTpPrice: 101000, maxBodies: 2 });
     assert.equal(result.id, 'b2');
   });
 
@@ -323,7 +337,7 @@ describe('findMergeTarget', () => {
     const bodies = [
       makeBody({ id: 'close', tpPrice: withinProximity }),
     ];
-    const result = findMergeTarget(bodies, makeNewBuy(), 10000, candidateTp, 10);
+    const result = findMergeTarget(bodies, makeNewBuy(), { maxUsdcDeployed: 10000, candidateTpPrice: candidateTp, maxBodies: 10 });
     assert.equal(result.id, 'close');
   });
 
@@ -333,7 +347,7 @@ describe('findMergeTarget', () => {
       makeBody({ id: 'has-tp', tpPrice: 100100 }),
     ];
     // 100100 vs 100000 = 0.1% away, within satellite 0.5% proximity
-    const result = findMergeTarget(bodies, makeNewBuy(), 10000, 100000, 10);
+    const result = findMergeTarget(bodies, makeNewBuy(), { maxUsdcDeployed: 10000, candidateTpPrice: 100000, maxBodies: 10 });
     assert.equal(result.id, 'has-tp');
   });
 
@@ -342,7 +356,7 @@ describe('findMergeTarget', () => {
       makeBody({ id: 'b1', tpPrice: 102000 }),
     ];
     // bodies.length < maxBodies, but pendingOrderCount + 1 >= maxOpenOrders
-    const result = findMergeTarget(bodies, makeNewBuy(), 10000, 101000, 10, 19, 20);
+    const result = findMergeTarget(bodies, makeNewBuy(), { maxUsdcDeployed: 10000, candidateTpPrice: 101000, maxBodies: 10, pendingOrderCount: 19, maxOpenOrders: 20 });
     assert.equal(result.id, 'b1');
   });
 
@@ -352,7 +366,7 @@ describe('findMergeTarget', () => {
       makeBody({ id: 'far', tpPrice: candidateTp * 1.004 }),   // 0.4%
       makeBody({ id: 'near', tpPrice: candidateTp * 1.001 }),  // 0.1%
     ];
-    const result = findMergeTarget(bodies, makeNewBuy(), 10000, candidateTp, 10);
+    const result = findMergeTarget(bodies, makeNewBuy(), { maxUsdcDeployed: 10000, candidateTpPrice: candidateTp, maxBodies: 10 });
     assert.equal(result.id, 'near');
   });
 });

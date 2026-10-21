@@ -12,9 +12,13 @@
 
 const { tradeEvents } = require('../trade-events');
 
-/** Bridge process-local engine events into the gateway's IPC transport. */
+/**
+ * Bridge process-local engine events into the gateway's IPC transport. Held
+ * while no gateway is connected, so fills and alerts from an engine boot or a
+ * gateway restart still reach the notifier once it reconnects.
+ */
 const forwardTradeEvents = (ipcServer, emitter = tradeEvents) => {
-  const listener = (event) => ipcServer.broadcast('trade:event', event);
+  const listener = (event) => ipcServer.broadcast('trade:event', event, { hold: true });
   emitter.on('trade', listener);
   return () => emitter.removeListener('trade', listener);
 };

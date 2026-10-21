@@ -1,10 +1,10 @@
 import React, { Component } from 'react'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import ChartsRegime from '../src/components/ChartsRegime'
+import ChartsRegime, { deriveFillMarker } from '../src/components/ChartsRegime'
 
-const fixture = vi.hoisted(() => ({ initializeFromCache: vi.fn() }))
-vi.mock('../src/hooks/useTradeEvents', () => ({ useRegimeEvents: () => ({ connected: false, status: null }) }))
+const fixture = vi.hoisted(() => ({ initializeFromCache: vi.fn(), status: null, connected: false }))
+vi.mock('../src/hooks/useTradeEvents', () => ({ useRegimeEvents: () => ({ connected: fixture.connected, status: fixture.status }) }))
 vi.mock('../src/hooks/useChartDataBuffer', () => ({ useChartDataBuffer: () => ({ priceHistory: [], atrHistory: [], regimeHistory: [], initializeFromCache: fixture.initializeFromCache }) }))
 vi.mock('../src/components/charts/RegimePriceChart', () => ({ default: () => <div>Price chart</div> }))
 vi.mock('../src/components/charts/VolatilityChart', () => ({ default: () => <div>Volatility chart</div> }))
@@ -16,7 +16,14 @@ class RenderBoundary extends Component {
   render() { return this.state.error ? <p role="alert">{this.state.error.message}</p> : this.props.children }
 }
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+  fixture.status = null
+  fixture.connected = false
+})
 
 it('renders the regime charts after the initial loading transition', async () => {
   let releaseFetch
@@ -91,4 +98,178 @@ it('reports optional candle and cache failures while retaining the dashboard', a
   render(<ChartsRegime />)
   expect(await screen.findByText('Price history unavailable.')).toBeTruthy()
   expect(screen.getByText('Engine Running')).toBeTruthy()
+})
+
+describe('deriveFillMarker', () => {
+  it('returns empty string when status is absent', () => {
+    expect(deriveFillMarker(null)).toBe('')
+    expect(deriveFillMarker(undefined)).toBe('')
+  })
+
+  it('encodes position and fill tracking fields into a stable key', () => {
+    const marker = deriveFillMarker({
+      position: { cyclesCompleted: 2, cycleBuys: 5, realizedPnL: 123.45, realizedAssetPnL: 0.001 },
+      lastFillId: 'fill-99',
+      lastFillTime: 1700000000,
+      fillCount: 7,
+    })
+    expect(marker).toBe('2:5:123.45:0.001:fill-99:1700000000:7')
+  })
+
+  it('stays unchanged when unrelated status fields change', () => {
+    const initial = {
+      position: { cyclesCompleted: 1, cycleBuys: 2, realizedPnL: 50 },
+      market: { lastPrice: 60000, atr1m: 100 },
+      regime: { mode: 'HARVEST' },
+    }
+    const updated = {
+      position: { cyclesCompleted: 1, cycleBuys: 2, realizedPnL: 50 },
+      market: { lastPrice: 62000, atr1m: 150 },
+      regime: { mode: 'CAUTION' },
+      health: { mode: 'ACTIVE' },
+    }
+    expect(deriveFillMarker(initial)).toBe(deriveFillMarker(updated))
+  })
+})
+
+describe('live fill marker refreshes', () => {
+  it('triggers exactly one fills refetch and updates TPs Filled when socket fill marker advances', async () => {
+    let fillsCount = 1
+    const fetchMock = vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        return { ok: true, json: async () => ({ status: { isRunning: true, position: { cyclesCompleted: 1, cycleBuys: 3, realizedPnL: 10 } } }) }
+      }
+      if (url.includes('/regime/config')) {
+        return { ok: true, json: async () => ({ config: {} }) }
+      }
+      if (url.includes('/regime/fills/cycles')) {
+        return { ok: true, json: async () => ({ buyCount: 3, sellCount: fillsCount, pnlPoints: [] }) }
+      }
+      return { ok: true, json: async () => ({ candles: [] }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('1')
+
+    const initialFillsCalls = fetchMock.mock.calls.filter(([url]) => url.includes('/regime/fills/cycles')).length
+    expect(initialFillsCalls).toBe(1)
+
+    vi.useFakeTimers()
+
+    // Simulate socket status update with advanced fill marker (TP filled, realizedPnL bumped)
+    fillsCount = 2
+    fixture.status = {
+      isRunning: true,
+      position: { cyclesCompleted: 2, cycleBuys: 3, realizedPnL: 25 },
+    }
+    rerender(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
+
+    // Advance timers by the full debounce duration
+    await act(async () => {
+      vi.advanceTimersByTime(1500)
+    })
+
+    const laterFillsCalls = fetchMock.mock.calls.filter(([url]) => url.includes('/regime/fills/cycles')).length
+    expect(laterFillsCalls).toBe(initialFillsCalls + 1)
+    expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('2')
+  })
+
+  it('does not refetch fills when unrelated status fields change', async () => {
+    const fetchMock = vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        return { ok: true, json: async () => ({ status: { isRunning: true, position: { cyclesCompleted: 2, cycleBuys: 3, realizedPnL: 25 } } }) }
+      }
+      if (url.includes('/regime/config')) {
+        return { ok: true, json: async () => ({ config: {} }) }
+      }
+      if (url.includes('/regime/fills/cycles')) {
+        return { ok: true, json: async () => ({ buyCount: 3, sellCount: 2, pnlPoints: [] }) }
+      }
+      return { ok: true, json: async () => ({ candles: [] }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    fixture.status = {
+      isRunning: true,
+      position: { cyclesCompleted: 2, cycleBuys: 3, realizedPnL: 25 },
+      market: { lastPrice: 60000 },
+    }
+    const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+
+    const fillsCallsBefore = fetchMock.mock.calls.filter(([url]) => url.includes('/regime/fills/cycles')).length
+
+    vi.useFakeTimers()
+
+    // Update socket status with price tick and regime change, but identical position
+    fixture.status = {
+      ...fixture.status,
+      market: { lastPrice: 61500, atr1m: 120 },
+      regime: { mode: 'TREND' },
+    }
+    rerender(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
+
+    await act(async () => {
+      vi.advanceTimersByTime(1500)
+    })
+
+    const fillsCallsAfter = fetchMock.mock.calls.filter(([url]) => url.includes('/regime/fills/cycles')).length
+    expect(fillsCallsAfter).toBe(fillsCallsBefore)
+  })
+
+  it('debounces rapid bursts of fill marker updates into a single fills refetch', async () => {
+    let fillsCount = 1
+    const fetchMock = vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        return { ok: true, json: async () => ({ status: { isRunning: true, position: { cyclesCompleted: 1, cycleBuys: 1, realizedPnL: 10 } } }) }
+      }
+      if (url.includes('/regime/config')) {
+        return { ok: true, json: async () => ({ config: {} }) }
+      }
+      if (url.includes('/regime/fills/cycles')) {
+        return { ok: true, json: async () => ({ buyCount: 3, sellCount: fillsCount, pnlPoints: [] }) }
+      }
+      return { ok: true, json: async () => ({ candles: [] }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+
+    const initialFillsCalls = fetchMock.mock.calls.filter(([url]) => url.includes('/regime/fills/cycles')).length
+    expect(initialFillsCalls).toBe(1)
+
+    vi.useFakeTimers()
+
+    // Rapid burst 1: partial fill 1 at t=0
+    fixture.status = { isRunning: true, position: { cyclesCompleted: 1, cycleBuys: 2, realizedPnL: 15 } }
+    rerender(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
+    await act(async () => {
+      vi.advanceTimersByTime(500)
+    })
+
+    // Rapid burst 2: partial fill 2 at t=500ms (before 1500ms debounce)
+    fixture.status = { isRunning: true, position: { cyclesCompleted: 1, cycleBuys: 3, realizedPnL: 20 } }
+    rerender(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
+    await act(async () => {
+      vi.advanceTimersByTime(500)
+    })
+
+    // Rapid burst 3: terminal fill at t=1000ms
+    fillsCount = 3
+    fixture.status = { isRunning: true, position: { cyclesCompleted: 2, cycleBuys: 3, realizedPnL: 35 } }
+    rerender(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
+
+    // Wait for the final debounce to settle (1500ms from the last burst at t=1000ms)
+    await act(async () => {
+      vi.advanceTimersByTime(1500)
+    })
+
+    const finalFillsCalls = fetchMock.mock.calls.filter(([url]) => url.includes('/regime/fills/cycles')).length
+    // Exactly ONE refetch occurred despite 3 rapid updates
+    expect(finalFillsCalls).toBe(initialFillsCalls + 1)
+    expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('3')
+  })
 })

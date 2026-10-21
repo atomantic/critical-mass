@@ -1,5 +1,11 @@
 // @ts-check
-const { describe, it, mock, afterEach } = require('node:test');
+const { describe, it, mock, afterEach, after } = require('node:test');
+const { createIsolatedDataDir } = require('./test-data-dir');
+
+// Placement intents are persisted per fund. Without this root the BTC-USDC
+// executors below read and rewrite the live fund's placement-intents.json.
+const isolatedData = createIsolatedDataDir('cm-order-executor-test');
+after(() => isolatedData.cleanup());
 const assert = require('node:assert/strict');
 
 const { createOrderExecutor } = require('../src/order-executor');
@@ -909,11 +915,15 @@ describe('order-executor placement paths — unknown-outcome reconciliation (iss
     };
     const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
 
-    const result = await exec.placeBodyTpOrder(0.01, 55000, 'body-x');
+    const handedOff = [];
+    const result = await exec.placeBodyTpOrder(0.01, 55000, 'body-x', undefined, {
+      onAccepted: ({ orderId }) => { handedOff.push(orderId); },
+    });
 
     assert.equal(placeCalls, 1);
     assert.equal(result.success, true);
     assert.equal(result.orderId, 'real-body-1');
+    assert.deepEqual(handedOff, ['real-body-1'], 'the adopted order is handed to its body before the intent is released');
   });
 
   it('placeLadderOrders adopts a reconciled order for a ladder level', async () => {

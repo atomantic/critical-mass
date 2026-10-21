@@ -116,6 +116,36 @@ describe('backup scheduler', () => {
     assert.ok(h.pending.filter((t) => t.live).at(-1).ms < 24 * HOUR);
   });
 
+  it('backs off exponentially up to the interval, alerts once, and resets on success', async () => {
+    let fail = true;
+    const alerts = [];
+    const h = harness({ config: { fundStateIntervalMs: 30 * 60_000 } });
+    const pending = [];
+    let clock = 1_000_000_000_000;
+    const s2 = require('../src/backup-scheduler').createBackupScheduler({
+      getConfig: () => h.state.config, now: () => clock, log: () => {},
+      alert: (m, d) => alerts.push([m, d]),
+      setTimer: (fn, ms) => { const t = { fn, ms, live: true }; pending.push(t); return t; },
+      clearTimer: (t) => { t.live = false; },
+      kinds: { fundState: { label: 'f', failLabel: 'f', intervalKey: 'fundStateIntervalMs', newest: () => null, run: async () => (fail ? { success: false, error: 'no zip' } : { success: true }) } },
+    });
+    s2.reschedule();
+    const delays = [];
+    for (let i = 0; i < 5; i += 1) {
+      pending.filter((t) => t.live)[0].fn();
+      await h.flush();
+      delays.push(pending.filter((t) => t.live).at(-1).ms);
+    }
+    assert.deepEqual(delays, [5, 10, 20, 30, 30].map((m) => m * 60_000));
+    assert.equal(alerts.length, 2); // first failure + cap reached
+    assert.equal(s2.getStatus().fundState.lastFailure.error, 'no zip');
+    fail = false;
+    pending.filter((t) => t.live)[0].fn();
+    await h.flush();
+    assert.equal(s2.getStatus().fundState.lastFailure, null);
+    assert.equal(alerts.length, 2);
+  });
+
   it('arms nothing when disabled and stop() clears timers', () => {
     const h = harness({ config: { enabled: false } });
     h.scheduler.reschedule();

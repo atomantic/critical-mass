@@ -203,3 +203,33 @@ describe('Closed Trades unreadable file', () => {
     }
   });
 });
+
+describe('Closed Trades transient read error', () => {
+  it('does not quarantine a valid closed-trades.json when readFileSync throws EIO', (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'closed-trades-eio-'));
+    migration.getExchangeDataDir = (exchange) => {
+      const d = path.join(dir, exchange);
+      fs.mkdirSync(d, { recursive: true });
+      return d;
+    };
+    try {
+      const { createClosedTrades } = freshModule();
+      const ct = createClosedTrades('coinbase', 'BTC-USDC');
+      const filePath = path.join(migration.getExchangeDataDir('coinbase'), 'BTC-USDC', 'closed-trades.json');
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, '[]');
+      const realRead = fs.readFileSync;
+      t.mock.method(fs, 'readFileSync', (p, ...rest) => {
+        if (p === filePath) throw Object.assign(new Error('EIO'), { code: 'EIO' });
+        return realRead(p, ...rest);
+      });
+      assert.throws(() => ct.load(), /EIO/);
+      assert.equal(fs.existsSync(filePath), true);
+      assert.equal(fs.readdirSync(path.dirname(filePath)).some(f => f.includes('.corrupt-')), false);
+    } finally {
+      migration.getExchangeDataDir = originalGetExchangeDataDir;
+      delete require.cache[closedTradesPath];
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

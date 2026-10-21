@@ -1,5 +1,4 @@
 // @ts-check
-const fs = require('fs');
 const path = require('path');
 const { getAdapter } = require('./adapters');
 const stateTracker = require('./state-tracker');
@@ -8,7 +7,7 @@ const logger = require('./logger');
 const { createContextLogger } = logger;
 const { consolidatePendingOrders } = require('./order-manager');
 const { getFundConfig, getDefaultPair, getBaseCurrency, getQuoteCurrency } = require('./config-utils');
-const { normalizeConfig, formatInterval, shouldRunConsolidation, getConsolidationRunId, getRunIdentifier } = require('./interval-utils');
+const { formatInterval, shouldRunConsolidation, getConsolidationRunId, getRunIdentifier } = require('./interval-utils');
 const { tradeEvents } = require('./trade-events');
 const { getFibonacciBuyAmount } = require('./fibonacci-utils');
 const { trackPendingWrite } = require('./pending-writes');

@@ -14,6 +14,8 @@ const { createContextLogger } = require('../logger');
 const { UPDOWN_DATA_DIR } = require('../paths');
 const { validateEndpointUrl, safeFetch } = require('../url-validator');
 const { parseAllowedOrigins } = require('../ai-security');
+const { parsePaging } = require('./route-utils');
+const { createTradeLog } = require('../updown/trade-log');
 const {
   buildScorecardAnalysis,
   buildIndicatorTimeframeHeatmap,
@@ -734,63 +736,25 @@ module.exports = (app, deps) => {
   // --- Trade History ---
   const TRADES_PATH = path.join(DATA_DIR, 'updown-trades.json');
 
-  const readTrades = () => {
-    const defaultValue = { trades: [], nextId: 1 };
-    // Missing or empty file is OK — return default. Corrupt file is an error.
-    if (fs.existsSync(TRADES_PATH)) {
-      const content = fs.readFileSync(TRADES_PATH, 'utf8');
-      if (content && content.trim() !== '') {
-        // File exists with content — it must be valid JSON, not silently corrupt.
-        try {
-          return JSON.parse(content);
-        } catch (err) {
-          const tmpPath = `${TRADES_PATH}.tmp`;
-          const tmpExists = fs.existsSync(tmpPath);
-          throw new Error(
-            `Trades file is corrupted or incomplete: ${err.message}. ` +
-            `Please restore from backup or repair ${TRADES_PATH}.` +
-            (tmpExists ? ` A recovery file may exist at ${tmpPath}.` : '')
-          );
-        }
-      }
-    }
-    return defaultValue;
-  };
+  const tradeLog = createTradeLog({ path: TRADES_PATH, writeJSON });
 
-  const writeTrades = (data) => writeJSON(TRADES_PATH, data);
-  app.get('/api/updown/trades', (req, res) => {
+  app.get('/api/updown/trades', (req, res, next) => {
     try {
-      const data = readTrades();
-      const trades = data.trades || [];
-      const totalCost = trades.reduce((s, t) => s + (t.cost || 0), 0);
-      const totalReturn = trades.reduce((s, t) => s + (t.returnAmount || 0), 0);
-      const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
-      const wins = trades.filter(t => t.pnl > 0).length;
-      const losses = trades.filter(t => t.pnl <= 0).length;
+      const trades = tradeLog.list();
 
-      // Directional win rates
-      const upTrades = trades.filter(t => t.direction === 'up');
-      const downTrades = trades.filter(t => t.direction === 'down');
-      const upWins = upTrades.filter(t => t.pnl > 0).length;
-      const downWins = downTrades.filter(t => t.pnl > 0).length;
-
+      const paging = parsePaging(req.query);
       res.json({
         success: true,
-        trades,
-        summary: {
-          totalCost, totalReturn, totalPnl, wins, losses, count: trades.length,
-          upWinRate: upTrades.length > 0 ? Math.round(upWins / upTrades.length * 10000) / 100 : null,
-          downWinRate: downTrades.length > 0 ? Math.round(downWins / downTrades.length * 10000) / 100 : null,
-          upCount: upTrades.length,
-          downCount: downTrades.length,
-        },
+        trades: paging ? trades.slice(paging.offset, paging.offset + paging.limit) : trades,
+        ...(paging && { total: trades.length, limit: paging.limit, offset: paging.offset }),
+        summary: tradeLog.summarize(trades),
       });
     } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
+      next(err);
     }
   });
 
-  app.post('/api/updown/trades', (req, res) => {
+  app.post('/api/updown/trades', (req, res, next) => {
     const { date, cost, returnAmount, note, direction: bodyDirection } = req.body || {};
     if (cost == null || returnAmount == null) {
       return res.status(400).json({ success: false, error: 'cost and returnAmount are required' });
@@ -808,50 +772,10 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: 'boughtAt must be a valid time that is not in the future' });
     }
     try {
-      const data = readTrades();
-
-      // Auto-capture trade context from service
-      const ctx = updownService.getTradeContext?.() ?? {};
-      // UP-only: SELL is CLOSE, never a DOWN entry.
-      const signalDirection = ctx.latestSignal?.type?.includes('BUY') ? 'up' : null;
-      const inferredDirection = bodyDirection || ctx.position?.direction || ctx.contract?.direction || signalDirection;
-      const manualOverride = bodyDirection && signalDirection ? bodyDirection !== signalDirection : false;
-
-      const trade = {
-        id: data.nextId || (data.trades.length + 1),
-        date: date || new Date().toISOString().slice(0, 10),
-        cost: costNum,
-        returnAmount: returnNum,
-        pnl: returnNum - costNum,
-        note: note ?? '',
-        direction: inferredDirection || null,
-        // Without an operator buy time, entryTime/btcPriceAtEntry are the log
-        // moment (usually after the exit) — entryTimeSource says which.
-        entryTime: new Date(boughtAtMs ?? Date.now()).toISOString(),
-        entryTimeSource: boughtAtMs != null ? 'operator' : 'logged',
-        loggedAt: new Date().toISOString(),
-        exitTime,
-        btcPriceAtEntry: boughtAtMs != null
-          ? (updownService.getPriceAt?.(boughtAtMs) ?? null)
-          : (ctx.lastPrice || null),
-        btcPriceAtExit: null,
-        contract: ctx.contract?.target ? {
-          target: ctx.contract.target,
-          stop: ctx.contract.stop,
-          range: ctx.contract.range,
-          direction: ctx.contract.direction,
-          expiry: ctx.contract.expiry,
-        } : null,
-        signal: ctx.latestSignal ? {
-          type: ctx.latestSignal.type,
-          score: ctx.latestSignal.score,
-          confidence: ctx.latestSignal.confidence,
-        } : null,
-        manualOverride,
-      };
-      data.trades.push(trade);
-      data.nextId = trade.id + 1;
-      writeTrades(data);
+      const trade = tradeLog.add(
+        { date, cost: costNum, returnAmount: returnNum, note, direction: bodyDirection, exitTime, boughtAtMs },
+        { ctx: updownService.getTradeContext?.() ?? {}, getPriceAt: (ms) => updownService.getPriceAt?.(ms) }
+      );
       updownRouteLogger('/api/updown/trades').info(`ℹ️ 📊 UpDown trade added: id=${trade.id} cost=${trade.cost} return=${trade.returnAmount} pnl=${trade.pnl} dir=${trade.direction}`, {
         action: 'add-trade',
         tradeId: trade.id,
@@ -862,17 +786,15 @@ module.exports = (app, deps) => {
       });
       res.json({ success: true, trade });
     } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
+      next(err);
     }
   });
 
-  app.put('/api/updown/trades/:id', (req, res) => {
+  app.put('/api/updown/trades/:id', (req, res, next) => {
     const id = parseInt(req.params.id, 10);
     const body = req.body || {};
     try {
-      const data = readTrades();
-      const trade = data.trades.find(t => t.id === id);
-      if (!trade) return res.status(404).json({ success: false, error: 'Trade not found' });
+      if (!tradeLog.has(id)) return res.status(404).json({ success: false, error: 'Trade not found' });
 
       const descriptionError = validateTradeDescription(body);
       if (descriptionError) return res.status(400).json({ success: false, error: descriptionError });
@@ -889,41 +811,33 @@ module.exports = (app, deps) => {
         return res.status(400).json({ success: false, error: 'boughtAt must be a valid time that is not in the future' });
       }
 
-      if (boughtAtMs !== undefined) {
-        trade.entryTime = new Date(boughtAtMs).toISOString();
-        trade.entryTimeSource = 'operator';
-        trade.btcPriceAtEntry = updownService.getPriceAt?.(boughtAtMs) ?? null;
-      }
-      if (body.date != null) trade.date = body.date;
-      if (body.cost != null) trade.cost = parseFiniteNumber(body.cost);
-      if (body.returnAmount != null) trade.returnAmount = parseFiniteNumber(body.returnAmount);
-      if (body.note != null) trade.note = body.note;
-      if (body.direction != null) trade.direction = body.direction;
-      if (body.exitTime != null) trade.exitTime = parseTradeTime(body.exitTime).iso;
-      if (body.btcPriceAtExit != null) trade.btcPriceAtExit = parseFiniteNumber(body.btcPriceAtExit);
-      trade.pnl = trade.returnAmount - trade.cost;
-      writeTrades(data);
+      const trade = tradeLog.update(id, {
+        boughtAtMs,
+        date: body.date,
+        cost: body.cost != null ? parseFiniteNumber(body.cost) : undefined,
+        returnAmount: body.returnAmount != null ? parseFiniteNumber(body.returnAmount) : undefined,
+        note: body.note,
+        direction: body.direction,
+        exitTime: body.exitTime != null ? parseTradeTime(body.exitTime).iso : undefined,
+        btcPriceAtExit: body.btcPriceAtExit != null ? parseFiniteNumber(body.btcPriceAtExit) : undefined,
+      }, { getPriceAt: (ms) => updownService.getPriceAt?.(ms) });
       res.json({ success: true, trade });
     } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
+      next(err);
     }
   });
 
-  app.delete('/api/updown/trades/:id', (req, res) => {
+  app.delete('/api/updown/trades/:id', (req, res, next) => {
     const id = parseInt(req.params.id, 10);
     try {
-      const data = readTrades();
-      const idx = data.trades.findIndex(t => t.id === id);
-      if (idx === -1) return res.status(404).json({ success: false, error: 'Trade not found' });
-      data.trades.splice(idx, 1);
-      writeTrades(data);
+      if (!tradeLog.remove(id)) return res.status(404).json({ success: false, error: 'Trade not found' });
       updownRouteLogger('/api/updown/trades/:id').info(`ℹ️ 📊 UpDown trade deleted: id=${id}`, {
         action: 'delete-trade',
         tradeId: id,
       });
       res.json({ success: true });
     } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
+      next(err);
     }
   });
 };

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
@@ -6,22 +6,30 @@ import { pairQuery as buildPairQuery } from '../utils/api'
 function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', pair }) {
   const baseCurrency = getBaseCurrency(summary?.config?.productId)
   const pairQuery = buildPairQuery(pair)
-  const [currentPrice, setCurrentPrice] = useState(0)
+  // null = unknown (never 0, which would render $0 value and -100% P&L)
+  const [currentPrice, setCurrentPrice] = useState(null)
+  const [priceError, setPriceError] = useState(null)
+
+  const fetchPrice = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/${exchange}/status${pairQuery}`)
+      if (!res.ok) throw new Error(`Status request failed (${res.status})`)
+      const data = await res.json()
+      const price = Number(data.currentPrice)
+      setCurrentPrice(price > 0 ? price : null)
+      setPriceError(data.apiError || (price > 0 ? null : 'Price unavailable.'))
+    } catch (err) {
+      console.error('Failed to fetch price:', err)
+      setCurrentPrice(null)
+      setPriceError(err.message || 'Could not load price.')
+    }
+  }, [exchange, pairQuery])
 
   useEffect(() => {
-    const fetchPrice = async () => {
-      try {
-        const res = await fetch(`/api/${exchange}/status${pairQuery}`)
-        const data = await res.json()
-        setCurrentPrice(data.currentPrice || 0)
-      } catch (err) {
-        console.error('Failed to fetch price:', err)
-      }
-    }
     fetchPrice()
     const interval = setInterval(fetchPrice, 10000)
     return () => clearInterval(interval)
-  }, [exchange, pairQuery])
+  }, [fetchPrice])
 
   if (!summary?.costBasis) {
     return (
@@ -34,14 +42,18 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
   }
 
   const { costBasis } = summary
+  const priceKnown = currentPrice !== null
+  const NA = '—'
+  const price = currentPrice || 0
+  const pct = (v) => `(${v >= 0 ? '+' : ''}${v.toFixed(2)}%)`
   // Calculate unrealized P&L
-  const reservesCurrentValue = costBasis.reservesAsset * currentPrice
+  const reservesCurrentValue = costBasis.reservesAsset * price
   const reservesUnrealizedPnL = reservesCurrentValue - costBasis.reservesCostBasis
   const reservesPnLPercent = costBasis.reservesCostBasis > 0
     ? ((reservesCurrentValue / costBasis.reservesCostBasis) - 1) * 100
     : 0
 
-  const pendingCurrentValue = costBasis.pendingAsset * currentPrice
+  const pendingCurrentValue = costBasis.pendingAsset * price
   const pendingUnrealizedPnL = pendingCurrentValue - costBasis.pendingCostBasis
   const pendingPnLPercent = costBasis.pendingCostBasis > 0
     ? ((pendingCurrentValue / costBasis.pendingCostBasis) - 1) * 100
@@ -61,11 +73,17 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
 
   return (
     <div className="space-y-6">
+      {priceError && (
+        <div role="alert" className="flex items-center justify-between gap-2 text-sm text-red-400">
+          <span>{priceError}</span>
+          <button type="button" onClick={fetchPrice} className="px-2 py-1 rounded bg-gray-700 text-white">Retry</button>
+        </div>
+      )}
       {/* Current Price Banner */}
       <div className="bg-gray-800 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div>
           <span className="text-gray-400">Current {baseCurrency} Price:</span>
-          <span className="text-2xl sm:text-3xl font-bold ml-2 sm:ml-4">{formatPrice(currentPrice)}</span>
+          <span className="text-2xl sm:text-3xl font-bold ml-2 sm:ml-4">{priceKnown ? formatPrice(currentPrice) : NA}</span>
         </div>
         <div>
           <span className="text-gray-400">Avg Cost Basis:</span>
@@ -93,14 +111,16 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Current Value:</span>
-              <span>{formatCurrency(reservesCurrentValue)}</span>
+              <span>{priceKnown ? formatCurrency(reservesCurrentValue) : NA}</span>
             </div>
             <div className="flex justify-between border-t border-gray-700 pt-2 mt-2">
               <span className="text-gray-400">Unrealized P&L:</span>
-              <span className={reservesUnrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
-                {reservesUnrealizedPnL >= 0 ? '+' : ''}{formatCurrency(reservesUnrealizedPnL)}
-                <span className="text-sm ml-1">({reservesPnLPercent >= 0 ? '+' : ''}{reservesPnLPercent.toFixed(2)}%)</span>
-              </span>
+              {priceKnown ? (
+                <span className={reservesUnrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
+                  {reservesUnrealizedPnL >= 0 ? '+' : ''}{formatCurrency(reservesUnrealizedPnL)}
+                  <span className="text-sm ml-1">{pct(reservesPnLPercent)}</span>
+                </span>
+              ) : <span className="text-gray-400">{NA}</span>}
             </div>
           </div>
         </div>
@@ -123,14 +143,16 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Current Value:</span>
-              <span>{formatCurrency(pendingCurrentValue)}</span>
+              <span>{priceKnown ? formatCurrency(pendingCurrentValue) : NA}</span>
             </div>
             <div className="flex justify-between border-t border-gray-700 pt-2 mt-2">
               <span className="text-gray-400">Unrealized P&L:</span>
-              <span className={pendingUnrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
-                {pendingUnrealizedPnL >= 0 ? '+' : ''}{formatCurrency(pendingUnrealizedPnL)}
-                <span className="text-sm ml-1">({pendingPnLPercent >= 0 ? '+' : ''}{pendingPnLPercent.toFixed(2)}%)</span>
-              </span>
+              {priceKnown ? (
+                <span className={pendingUnrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
+                  {pendingUnrealizedPnL >= 0 ? '+' : ''}{formatCurrency(pendingUnrealizedPnL)}
+                  <span className="text-sm ml-1">{pct(pendingPnLPercent)}</span>
+                </span>
+              ) : <span className="text-gray-400">{NA}</span>}
             </div>
           </div>
         </div>
@@ -153,14 +175,16 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Current Value:</span>
-              <span>{formatCurrency(totalCurrentValue)}</span>
+              <span>{priceKnown ? formatCurrency(totalCurrentValue) : NA}</span>
             </div>
             <div className="flex justify-between border-t border-gray-700 pt-2 mt-2">
               <span className="text-gray-400">Unrealized P&L:</span>
-              <span className={totalUnrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
-                {totalUnrealizedPnL >= 0 ? '+' : ''}{formatCurrency(totalUnrealizedPnL)}
-                <span className="text-sm ml-1">({totalPnLPercent >= 0 ? '+' : ''}{totalPnLPercent.toFixed(2)}%)</span>
-              </span>
+              {priceKnown ? (
+                <span className={totalUnrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
+                  {totalUnrealizedPnL >= 0 ? '+' : ''}{formatCurrency(totalUnrealizedPnL)}
+                  <span className="text-sm ml-1">{pct(totalPnLPercent)}</span>
+                </span>
+              ) : <span className="text-gray-400">{NA}</span>}
             </div>
           </div>
         </div>
@@ -204,7 +228,7 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
                 </tr>
               ) : (
                 costBasis.orderBreakdown.map((order, i) => {
-                  const currentOrderValue = (order.assetBought || order.btcBought || 0) * currentPrice
+                  const currentOrderValue = (order.assetBought || order.btcBought || 0) * price
                   const unrealized = currentOrderValue - order.costBasis
                   const unrealizedPercent = order.costBasis > 0
                     ? ((currentOrderValue / order.costBasis) - 1) * 100
@@ -236,6 +260,8 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
                           <span className={order.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
                             {order.realizedPnL >= 0 ? '+' : ''}{formatCurrency(order.realizedPnL)}
                           </span>
+                        ) : !priceKnown ? (
+                          <span className="text-gray-400">{NA}</span>
                         ) : (
                           <span className={unrealized >= 0 ? 'text-green-400' : 'text-red-400'}>
                             {unrealized >= 0 ? '+' : ''}{unrealizedPercent.toFixed(1)}%

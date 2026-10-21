@@ -57,7 +57,7 @@ const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
 const { buildRuntimeHealth } = require('./src/runtime-health');
 const { createOperatorAuth } = require('./src/operator-auth');
-const { resolveListenHosts, createCorsMiddleware, bindGatewayListeners, watchTailscaleListeners } = require('./src/gateway-listen');
+const { resolveListenHosts, createCorsMiddleware, createSecurityHeadersMiddleware, bindGatewayListeners, watchTailscaleListeners } = require('./src/gateway-listen');
 const { registerProcessGuards } = require('./src/process-guard');
 const { resolveIpcPort } = require('./src/ipc-port-defaults');
 const { PORTS } = require('./ecosystem.config.cjs');
@@ -81,12 +81,23 @@ guardLegacyMigration({ processLabel: 'gateway', logger: createContextLogger({ mo
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || PORTS.API;
+// Loopback is not proof of a local browser: a same-host reverse proxy that adds
+// no forwarding headers looks identical (#1328). By default enrollment therefore
+// needs the generated data/operator-bootstrap-secret; set
+// OPERATOR_TRUST_LOOPBACK_BOOTSTRAP=true only when no reverse proxy is in front.
+const TRUST_LOOPBACK_BOOTSTRAP = process.env.OPERATOR_TRUST_LOOPBACK_BOOTSTRAP === 'true';
 const operatorAuth = createOperatorAuth({
   authFile: path.join(DATA_DIR, 'operator-auth.json'),
   readJSON,
   writeJSON,
   bootstrapSecret: process.env.OPERATOR_BOOTSTRAP_SECRET,
   bootstrapSecretFile: process.env.OPERATOR_BOOTSTRAP_SECRET_FILE,
+  ...(TRUST_LOOPBACK_BOOTSTRAP
+    ? {}
+    : {
+      isTrustedBootstrapRequest: () => false,
+      localBootstrapSecretFile: path.join(DATA_DIR, 'operator-bootstrap-secret'),
+    }),
   // Every attached listener shares the bus and its disconnect cleanup.
   onPasswordChanged: () => io.disconnectSockets(),
   onPasswordRemoved: () => {
@@ -126,13 +137,22 @@ const gatewayShutdown = createGatewayShutdown({
     schedulerTimer = null;
     backupScheduler.stop();
     tailscaleWatcher?.stop();
+    candleCache.stop();
   },
   // Each producer is stopped on its own, so one failing to persist its state
   // (e.g. a full disk) still lets the others persist and stop; any failure is
   // rethrown so the shutdown reports it.
   stopProducers: () => {
+    // A restore owns UpDown and Sentinel from its stop through its reload, and
+    // keeps them stopped after an incomplete rollback. stop() always persists,
+    // so stopping them inside that window would write pre-restore memory over
+    // the restored files.
+    const restoreOwnsWriters = isMaintenanceActive();
     const failures = [];
-    for (const [name, stop] of [['UpDown', () => updownService.stop()], ['Sentinel', () => sentinelService.stop()], ['log streams', () => activeLogStreams.stopAll()]]) {
+    for (const [name, stop] of [
+      ...(restoreOwnsWriters ? [] : [['UpDown', () => updownService.stop()], ['Sentinel', () => sentinelService.stop()]]),
+      ['log streams', () => activeLogStreams.stopAll()],
+    ]) {
       try {
         stop();
       } catch (err) {
@@ -162,6 +182,10 @@ const routes = Object.fromEntries(Object.entries(shutdownRoutes).map(([method, r
 ]));
 
 // ============ Middleware ============
+
+// Security headers go first so responses short-circuited by later middleware (e.g. shutdown 503) carry them too.
+app.disable('x-powered-by');
+app.use(createSecurityHeadersMiddleware());
 
 app.use(gatewayShutdown.middleware);
 
@@ -217,6 +241,7 @@ const backupScheduler = createBackupScheduler({
   isStopping: () => gatewayShutdown.isStopping(),
   track: (promise) => gatewayShutdown.track(promise),
   log,
+  alert: (message, data) => tradeEvents.error('system', message, data),
   kinds: {
     archive: {
       label: 'full archive',
@@ -339,7 +364,7 @@ const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSO
 
 require('./src/routes/sentinel-routes')(routes, { ...sharedDeps, sentinelService, getSentinelConfig, updateSentinelConfig });
 require('./src/routes/ai-routes')(routes, sharedDeps);
-require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, candleCache, runBackup });
+require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, candleCache, runBackup, getBackupSchedulerStatus: () => backupScheduler.getStatus() });
 require('./src/routes/candle-routes')(routes, { candleCache });
 require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache });
 require('./src/routes/exchange-routes')(routes, sharedDeps);
@@ -372,7 +397,7 @@ routes.get('/api/health', asyncRoute(async (req, res) => {
 
 // Catch-all for unhandled API routes — return JSON 404 instead of falling through to HTML
 app.all('/api/*splat', (req, res) => {
-  res.status(404).json({ error: 'Not found' });
+  res.status(404).json({ success: false, error: 'Not found' });
 });
 
 app.use(express.static(path.join(__dirname, 'admin', 'dist')));
@@ -523,6 +548,11 @@ const attachExtraServer = (s) => {
   io.attach(s);
   extraServers.push(s);
 };
+const detachExtraServer = (s) => {
+  io.detach(s);
+  const i = extraServers.indexOf(s);
+  if (i !== -1) extraServers.splice(i, 1);
+};
 
 // Default (HOST unset) mode only: a Tailscale address that comes up after the
 // gateway (tailscaled starts slower than PM2 after a reboot) is bound without
@@ -534,6 +564,7 @@ const watchLateTailscale = () => {
     port: PORT,
     createServer: () => http.createServer(app),
     onExtra: attachExtraServer,
+    onExtraFailed: detachExtraServer,
     isStopping: gatewayShutdown.isStopping,
     log,
   });

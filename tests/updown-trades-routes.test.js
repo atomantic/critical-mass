@@ -354,7 +354,7 @@ describe('Atomic write safety (issue #417) — corrupt trades file is detected a
   const os = require('os');
   afterEach(() => mock.restoreAll());
 
-  it('truncated trades file causes GET /api/updown/trades to error with 500', async () => {
+  it('truncated trades file causes GET /api/updown/trades to forward the error to next()', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trades-test-'));
     const tradesPath = path.join(tmpDir, 'updown-trades.json');
     // Write a truncated (incomplete) JSON file
@@ -383,9 +383,12 @@ describe('Atomic write safety (issue #417) — corrupt trades file is detected a
       },
     });
 
-    const res = await invoke(app, 'GET /api/updown/trades');
-    assert.equal(res.statusCode, 500, 'Expected 500 error for corrupt file');
-    assert.ok(res.body.error || res.body.message, 'Error response should contain error message');
+    // Failures are forwarded to the shared error middleware (#1329), not answered inline.
+    const forwarded = [];
+    const res = createRes();
+    await app.handlers['GET /api/updown/trades']({ body: {}, params: {}, query: {} }, res, (err) => forwarded.push(err));
+    assert.equal(forwarded.length, 1, 'Expected corrupt file error to be passed to next()');
+    assert.equal(res.body, null, 'Route should not answer the failure itself');
 
     // Verify truncated file is unchanged after the error
     const contentAfter = fs.readFileSync(tradesPath, 'utf8');

@@ -27,10 +27,9 @@
  */
 import { pairCycleFills, buyPairKey, isBodyOwnedFill } from '../../../shared/cycle-pairing.mjs'
 import { deriveDryRunFillGroups } from './regimeFillGroups.mjs'
-import { computeOpenOrderEstimate } from './openOrderEstimates.mjs'
+import { computeOpenOrderEstimate, isTpOrderType } from './openOrderEstimates.mjs'
 
-export const isTpOrderType = (type) =>
-  type === 'take_profit' || type === 'satellite_tp' || type === 'body_tp'
+export { isTpOrderType }
 
 const fillQuote = (fill) => fill.quoteAmount || fill.size * fill.price
 

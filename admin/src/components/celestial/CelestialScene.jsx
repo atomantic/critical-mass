@@ -1,6 +1,7 @@
 import { useMemo, useState, useCallback } from 'react'
-import { Stars, OrbitControls } from '@react-three/drei'
-import { EffectComposer, Bloom } from '@react-three/postprocessing'
+import BloomEffect from './BloomEffect'
+import OrbitControlsLite from './OrbitControlsLite'
+import Starfield from './Starfield'
 import HierarchicalOrbit from './HierarchicalOrbit'
 import IncomingOrder from './IncomingOrder'
 import { TIER_RANK } from './celestialConstants'
@@ -30,7 +31,7 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
   return (
     <>
       {/* Camera controls — pan enabled for better navigation */}
-      <OrbitControls
+      <OrbitControlsLite
         ref={controlsRef}
         autoRotate={!reducedMotion}
         autoRotateSpeed={0.3}
@@ -67,9 +68,9 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
       <directionalLight position={[-4, 2, 6]} intensity={0.2} color="#FDBA74" />
 
       {/* Multi-layer starfield background */}
-      <Stars radius={60} depth={50} count={1800} factor={3.2} saturation={0.15} fade speed={reducedMotion ? 0 : 0.3} />
-      <Stars radius={100} depth={80} count={1600} factor={2.1} saturation={0.25} fade speed={reducedMotion ? 0 : 0.1} />
-      <Stars radius={140} depth={110} count={2400} factor={1.2} saturation={0.4} fade speed={reducedMotion ? 0 : 0.05} />
+      <Starfield radius={60} depth={50} count={1800} factor={3.2} saturation={0.15} seed={1} />
+      <Starfield radius={100} depth={80} count={1600} factor={2.1} saturation={0.25} seed={2} />
+      <Starfield radius={140} depth={110} count={2400} factor={1.2} saturation={0.4} seed={3} />
 
       {/* Hierarchical celestial bodies - largest at center, each smaller orbits the next-larger */}
       <HierarchicalOrbit
@@ -91,15 +92,7 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
       ))}
 
       {/* Bloom post-processing */}
-      <EffectComposer>
-        <Bloom
-          luminanceThreshold={0.26}
-          luminanceSmoothing={0.78}
-          intensity={0.85}
-          radius={0.62}
-          mipmapBlur
-        />
-      </EffectComposer>
+      <BloomEffect threshold={0.26} strength={0.85} radius={0.62} />
     </>
   )
 }

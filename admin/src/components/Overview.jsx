@@ -6,35 +6,10 @@ import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import AddFundModal from './AddFundModal'
 import ClosedFundCard from './ClosedFundCard'
+import { EXCHANGE_ICONS, EXCHANGE_COLORS } from './exchangeStyles'
+import { REGIME_COLORS, HEALTH_COLORS } from './regime/regimeStyles'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
-
-const EXCHANGE_ICONS = {
-  coinbase: '\u20bf',
-  gemini: '\u264a',
-  cryptocom: '\ud83d\udd37',
-}
-
-const EXCHANGE_COLORS = {
-  coinbase: 'bg-blue-600',
-  gemini: 'bg-cyan-600',
-  cryptocom: 'bg-indigo-600',
-}
-
-const REGIME_COLORS = {
-  HARVEST: { bg: 'bg-green-900/50', border: 'border-green-500', text: 'text-green-400' },
-  CAUTION: { bg: 'bg-yellow-900/50', border: 'border-yellow-500', text: 'text-yellow-400' },
-  TREND: { bg: 'bg-red-900/50', border: 'border-red-500', text: 'text-red-400' },
-}
-
-const HEALTH_COLORS = {
-  ACTIVE: 'text-green-400',
-  SAFE: 'text-yellow-400',
-  PAUSED: 'text-gray-400',
-  AUTH_DENIED: 'text-red-300',
-  STOPPED: 'text-red-400',
-  ENGINE_DOWN: 'text-orange-400',
-}
 
 const getEngineStatus = (isRunning, isDryRun, lifecycle) => {
   if (lifecycle === 'closed') {
@@ -402,7 +377,7 @@ function Overview() {
           }
           const engineStatus = getEngineStatus(card.isRunning, card.isDryRun, card.lifecycle)
           const regimeColor = REGIME_COLORS[card.regimeMode] || {}
-          const healthColor = HEALTH_COLORS[card.healthMode] || 'text-gray-400'
+          const healthColor = HEALTH_COLORS[card.healthMode]?.text || 'text-gray-400'
 
           return (
             <div

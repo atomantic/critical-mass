@@ -1809,6 +1809,53 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 
+  // EXPIRED must behave like CANCELLED when it lands on a pending FILLED
+  // retry chain: the terminal cancel path owns catch-up, the order stays
+  // settled, and the FILLED retry timer no longer fires a fill.
+  for (const terminal of ['CANCELLED', 'EXPIRED']) {
+    it(`${terminal} arriving during a pending FILLED retry settles the order and stops the FILLED chain`, async (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      let calls = 0;
+      const svc = createMarketDataService('coinbase');
+      svc._test.injectAdapter({
+        getOrderFills: async () => {
+          calls += 1;
+          if (calls === 1) throw new Error('boom'); // FILLED attempt 0 fails -> retry armed
+          return [{ tradeId: 't1', orderId: 'order-Par', side: 'sell', price: 70000, size: 0.5, totalCommission: 0.05 }];
+        },
+      });
+      const ingested = new Set();
+      svc._test.injectFillLedger({
+        ingestFill: (fill) => {
+          if (ingested.has(fill.tradeId)) return { ingested: false, fill: null };
+          ingested.add(fill.tradeId);
+          return { ingested: true, fill };
+        },
+        getFillsForOrder: () => Array.from(ingested).map(() => ({ size: 0.5 })),
+        getRecordedSizeForOrder: () => ingested.size * 0.5,
+        persist: () => {},
+      });
+      svc._test.injectProductId('BTC-USDC');
+      svc.trackOrder('order-Par', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
+      const fills = [];
+      svc.setOnOrderFill(f => fills.push(f));
+
+      await svc._test.handleOrderUpdate({ orderId: 'order-Par', status: 'FILLED', filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0.05 });
+      assert.equal(fills.length, 0, 'FILLED catch-up failed; retry pending');
+      assert.ok(svc._test.pendingTerminalRetries.get('order-Par')?.timerId != null, 'FILLED retry timer armed');
+
+      await svc._test.handleOrderUpdate({ orderId: 'order-Par', status: terminal, filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0 });
+      assert.equal(svc.getOrderStatus('order-Par'), terminal.toLowerCase());
+      assert.equal(ingested.size, 1, 'terminal cancel path caught up the fills');
+
+      t.mock.timers.tick(10_000);
+      await tick();
+      assert.equal(fills.length, 0, `${terminal} must stop the FILLED chain; no fill callback`);
+      assert.equal(svc.getOrderStatus('order-Par'), terminal.toLowerCase(), 'order stays settled');
+      svc.stop();
+    });
+  }
+
   it('OPEN+completionPercentage=100 with zero aggregates is NOT classified as terminal (waits for FILLED with real data)', async () => {
     // Coinbase's WS can briefly emit an OPEN event with completion=100
     // before averageFilledPrice / totalFees are populated on that
@@ -2710,6 +2757,17 @@ describe('createMarketDataService: health monitor wiring (issue #228)', () => {
     assert.equal(svc.getHealthState(), null);
   });
 
+  it('getHealthState() surfaces the feed user-channel status (issue #1382)', () => {
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectHealthMonitor({ getState: () => ({ mode: 'ACTIVE' }) });
+    assert.equal(svc.getHealthState().userChannel, null, 'null with no feed');
+    let userChannel = 'degraded';
+    svc._test.injectWsFeed({ getStatus: () => ({ connected: true, reconnectAttempts: 0, userChannel }) });
+    assert.deepEqual(svc.getHealthState(), { mode: 'ACTIVE', userChannel: 'degraded' });
+    userChannel = 'subscribed';
+    assert.equal(svc.getHealthState().userChannel, 'subscribed');
+  });
+
   it('a REST error from getOrderFills (via handleOrderUpdate -> ingestNewFillsForOrder) reaches the injected health monitor', async () => {
     const monitor = makeHealthSpy();
     const svc = createMarketDataService('coinbase');
@@ -3161,6 +3219,28 @@ describe('fenceMarketDataService + handover gap recovery (issue #1008)', () => {
 
     await feedConfig.onOrderUpdate(filled);
     assert.deepEqual(tradeIdsOnDisk(), ['A', 'G1'], 'no duplicate booking from the replay');
+  });
+
+  it('anchors the ledger on the persisted active cycle instead of the finished one with holdback', async () => {
+    // cycle-1 closed with holdback (sells < buys) — load()'s guess picks it.
+    openLedger().ingestFill({ tradeId: 'S0', orderId: 'sell-0', side: 'sell', price: 110, size: 0.9, totalCommission: 0.1 });
+    const state = require('../src/state-tracker');
+    require.cache[STUBBED.stateTracker].exports = { ...state, loadFundRegimeState: () => ({
+      position: {
+        activeCycleId: 'cycle-2',
+        activeCycleStartedAt: Date.now(),
+        celestialBodies: [{ id: 'body-1', tpOrderId: TP, tpPrice: 110, assetOnOrder: 1 }],
+      },
+    }) };
+    delete require.cache[MDS_PATH];
+    mds = require('../src/market-data-service');
+    adapter.getOrderFills = async () => [tpFill];
+
+    assert.equal((await mds.startMarketDataService(EXCHANGE)).success, true);
+    await feedConfig.onOrderUpdate(filled);
+
+    const g1 = openLedger().getAllFills().find((f) => f.tradeId === 'G1');
+    assert.equal(g1.cycleId, 'cycle-2');
   });
 
   it('reports orders it could not confirm without failing the start', async () => {

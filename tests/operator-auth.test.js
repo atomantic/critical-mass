@@ -147,6 +147,16 @@ describe('operator authentication bootstrap', () => {
     };
     assert.equal(isLoopbackRequest(rebindingRequest), false);
 
+    const proxied = (headers) => ({
+      socket: { remoteAddress: '127.0.0.1' },
+      headers: { host: '127.0.0.1:5570', ...headers },
+    });
+    assert.equal(isLoopbackRequest(proxied({})), true);
+    assert.equal(isLoopbackRequest(proxied({ 'x-forwarded-for': '' })), false);
+    for (const header of ['forwarded', 'via', 'x-real-ip', 'x-forwarded-proto', 'x-forwarded-port']) {
+      assert.equal(isLoopbackRequest(proxied({ [header]: 'x' })), false, header);
+    }
+
     const requestWithOrigin = (remoteAddress, host, origin) => ({
       socket: { remoteAddress },
       get: (name) => name === 'host' ? host : name === 'origin' ? origin : '',
@@ -185,6 +195,46 @@ describe('operator authentication bootstrap', () => {
         assert.equal(response.status, 403);
       }
     });
+  });
+
+  it('requires the generated local secret when loopback is not trusted (headerless proxy, #1328)', async () => {
+    const authFile = tmpAuthFile();
+    const secretFile = tmpAuthFile();
+    await withServer({
+      authFile,
+      readJSON,
+      writeJSON,
+      localBootstrapSecretFile: secretFile,
+      isTrustedBootstrapRequest: () => false,
+    }, async ({ baseUrl }) => {
+      assert.equal(fs.statSync(secretFile).mode & 0o777, 0o600);
+      const secret = fs.readFileSync(secretFile, 'utf8').trim();
+      assert.ok(Buffer.byteLength(secret) >= MIN_BOOTSTRAP_SECRET_LENGTH);
+      const session = await fetch(`${baseUrl}/api/auth/session`).then((r) => r.json());
+      assert.equal(session.bootstrapSecretRequired, true);
+
+      // Loopback socket + loopback Host, no X-Forwarded-For, no Origin, no secret.
+      const put = (headers = {}) => fetch(`${baseUrl}/api/auth/password`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      assert.equal((await put()).status, 403);
+      assert.equal((await put({ [BOOTSTRAP_HEADER]: 'wrong' })).status, 403);
+      const enrolled = await put({ [BOOTSTRAP_HEADER]: secret });
+      assert.equal(enrolled.status, 200);
+      assert.doesNotMatch(await enrolled.text(), new RegExp(secret));
+      assert.equal(fs.existsSync(secretFile), false);
+    });
+  });
+
+  it('reuses an existing local secret file and does not open remote listening', () => {
+    const secretFile = tmpAuthFile();
+    const existing = 'e'.repeat(40);
+    fs.writeFileSync(secretFile, existing, { mode: 0o600 });
+    const auth = createOperatorAuth({ localBootstrapSecretFile: secretFile, isTrustedBootstrapRequest: () => false });
+    assert.equal(fs.readFileSync(secretFile, 'utf8'), existing);
+    assert.equal(auth.hasRemoteBootstrap(), false);
   });
 
   it('accepts a valid remote bootstrap secret once without returning it', async () => {

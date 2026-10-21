@@ -33,11 +33,13 @@ const makeHarness = (assetQty, baseMinSize = '0.29') => {
     priceIncrement: 0.01, calculateDynamicTpPercent: () => 1,
     tpPlacementInFlight: inFlight, dustWaitLoggedQty: new Map(),
     exchange: 'test', baseCurrency: 'TEST', fmtPrice: String,
+    isDryRun: false, saveLiveStateGuarded: () => true,
     logger: { info() {}, warn() {} },
     positionState: { celestialBodies: [body] },
     orderExecutor: {
+      // The trailing options bag carries the ownership handoff, not order shape.
       placeBodyTpOrder: async (...args) => {
-        calls.push(args);
+        calls.push(args.slice(0, 4));
         return { success: true, orderId: 'tp-1' };
       },
     },

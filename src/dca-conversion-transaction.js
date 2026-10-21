@@ -32,7 +32,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { createHash, randomUUID } = require('crypto');
+const { randomUUID } = require('crypto');
+const { sha256Hex: hash, UUID_RE } = require('./shared-utils');
 const migration = require('./migration');
 const { atomicWriteSync } = require('./durable-write');
 const { fsyncDir } = require('./fsync-dir');
@@ -44,10 +45,7 @@ const STAGING_PREFIX = '.dca-import-staging-';
 // from it, then the source consumption that makes the import non-repeatable.
 const TARGET_FILES = Object.freeze(['fill-ledger.json', 'regime-state.json', 'state.json']);
 const JOURNAL_STATUSES = new Set(['staging', 'publishing']);
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** @param {string} bytes */
-const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 /**
  * Resolve the fund pair the same way migration.resolveFundDataDir does.

@@ -82,6 +82,21 @@ const isGatewayOrigin = (origin, allowlist = []) => {
 }
 
 /**
+ * Baseline anti-framing and hardening headers for every gateway response.
+ * The operator UI is never meant to be framed, so frame-ancestors/X-Frame-Options
+ * block clickjacking from any other origin on the same site (ports do not
+ * separate sites). A full default-src CSP is intentionally not set here: the
+ * admin build needs inline styles, data: images and blob workers.
+ */
+const createSecurityHeadersMiddleware = () => (req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+};
+
+/**
  * Express CORS middleware honoring isGatewayOrigin.
  * @param {string[]} [allowlist]
  */
@@ -148,11 +163,11 @@ const bindGatewayListeners = ({ hosts, port, server, createServer, onExtra = () 
  * shutdown path closes it. Addresses that disappear are not unbound (the OS
  * closes those sockets). A failed bind is retried on the next scan.
  *
- * @param {{bound: string[], port: number|string, createServer: () => import('http').Server, onExtra?: (server: import('http').Server) => void, isStopping?: () => boolean, scan?: () => string[], intervalMs?: number, log?: (level: string, message: string) => void}} options
+ * @param {{bound: string[], port: number|string, createServer: () => import('http').Server, onExtra?: (server: import('http').Server) => void, onExtraFailed?: (server: import('http').Server) => void, isStopping?: () => boolean, scan?: () => string[], intervalMs?: number, log?: (level: string, message: string) => void}} options
  * @returns {{scan: () => Promise<string[]>, stop: () => void}} `scan` runs one pass and resolves the newly bound addresses
  */
 const watchTailscaleListeners = ({
-  bound, port, createServer, onExtra = () => {}, isStopping = () => false,
+  bound, port, createServer, onExtra = () => {}, onExtraFailed = () => {}, isStopping = () => false,
   scan = tailscaleIpv4s, intervalMs = 30_000, log = () => {},
 }) => {
   const claimed = new Set(bound)
@@ -162,7 +177,13 @@ const watchTailscaleListeners = ({
     const server = createServer()
     onExtra(server)
     claimed.add(host)
-    await bindGatewayListeners({ hosts: [host], port, server, createServer, log })
+    try {
+      await bindGatewayListeners({ hosts: [host], port, server, createServer, log })
+    } catch (err) {
+      // bindGatewayListeners already closed it; untrack so retries don't accumulate.
+      onExtraFailed(server)
+      throw err
+    }
     return host
   }
   const scanOnce = async () => {
@@ -196,6 +217,7 @@ module.exports = {
   resolveListenHosts,
   isGatewayOrigin,
   createCorsMiddleware,
+  createSecurityHeadersMiddleware,
   bindGatewayListeners,
   watchTailscaleListeners,
 }

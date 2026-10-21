@@ -7,6 +7,7 @@ const { getExchangeDataDir } = require('./migration');
 const { getAdapter } = require('./adapters');
 const { atomicWriteSync } = require('./state-tracker');
 const { getFibonacciBuyAmount, getAverageCostBasis, getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
+const { createContextLogger } = require('./logger');
 
 const BASE_URL = 'https://api.coinbase.com';
 
@@ -201,6 +202,7 @@ const fetchPriceData = async (intervals, intervalType = 'daily', exchange = 'coi
   const granConfig = GRANULARITY[intervalType];
   const { aggregateFactor } = config;
   const effectiveProductId = productId || DEFAULT_PRODUCT_IDS[exchange] || DEFAULT_PRODUCT_IDS.coinbase;
+  const logger = createContextLogger({ exchange, pair: effectiveProductId });
 
   // Calculate raw candles needed (accounting for aggregation)
   const rawCandlesNeeded = intervals * aggregateFactor;
@@ -210,7 +212,7 @@ const fetchPriceData = async (intervals, intervalType = 'daily', exchange = 'coi
   const now = Math.floor(Date.now() / 1000);
   const allCandles = [];
 
-  console.log(`Fetching ${rawCandlesNeeded} ${granConfig.value} candles for ${effectiveProductId} from ${exchange} (${intervals} ${intervalType} intervals)...`);
+  logger.info(`Fetching ${rawCandlesNeeded} ${granConfig.value} candles for ${effectiveProductId} from ${exchange} (${intervals} ${intervalType} intervals)...`);
 
   let end = now;
   let remaining = rawCandlesNeeded;
@@ -221,13 +223,13 @@ const fetchPriceData = async (intervals, intervalType = 'daily', exchange = 'coi
 
     const candles = await fetchCandles(exchange, start, end, granConfig.value, effectiveProductId)
       .catch(err => {
-        console.error(`Error fetching candles from ${exchange}: ${err.message}`);
+        logger.error(`Error fetching candles from ${exchange}: ${err.message}`);
         return []; // Return empty to continue with partial data
       });
 
     if (candles.length === 0 && exchange !== 'coinbase') {
       // Non-Coinbase exchanges may have limited historical data
-      console.warn(`No more candles available from ${exchange} (may have reached API limit)`);
+      logger.warn(`No more candles available from ${exchange} (may have reached API limit)`);
       break;
     }
 
@@ -339,6 +341,7 @@ const writePriceCache = (file, { intervalType, exchange, productId, prices }) =>
 const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinbase', options = {}) => {
   const { preferCache = false, productId = null } = options;
   const effectiveProductId = productId || DEFAULT_PRODUCT_IDS[exchange] || DEFAULT_PRODUCT_IDS.coinbase;
+  const logger = createContextLogger({ exchange, pair: effectiveProductId });
   const cacheFile = getCacheFile(intervalType, exchange, effectiveProductId);
   const granConfig = GRANULARITY[intervalType];
   const config = getIntervalConfig(intervalType);
@@ -352,7 +355,7 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
 
   // If preferCache is set and we have enough cached data, use it without fetching
   if (preferCache && cachedPrices.length >= intervals) {
-    console.log(`Using cached ${intervalType} data for ${effectiveProductId} from ${exchange} (${cachedPrices.length} intervals, preferCache=true)`);
+    logger.info(`Using cached ${intervalType} data for ${effectiveProductId} from ${exchange} (${cachedPrices.length} intervals, preferCache=true)`);
     return cachedPrices.slice(-intervals);
   }
 
@@ -389,7 +392,7 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
   }
 
   if (needsFetch) {
-    console.log(`${intervalType} cache: ${fetchReason}`);
+    logger.info(`${intervalType} cache: ${fetchReason}`);
 
     if (fetchStartSeconds) {
       // Incremental fetch - only get new data
@@ -423,7 +426,7 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
         // Drop the in-progress boundary bucket so a partial candle is never
         // persisted (#206).
         cachedPrices = merged.filter(c => isCompleteBucket(c.timestamp, config.ms, now));
-        console.log(`Refreshed ${intervalType} cache for ${effectiveProductId} on ${exchange}: ${formatted.length} bucket(s) upserted, ${cachedPrices.length} total`);
+        logger.info(`Refreshed ${intervalType} cache for ${effectiveProductId} on ${exchange}: ${formatted.length} bucket(s) upserted, ${cachedPrices.length} total`);
       }
     } else {
       // Full fetch. MERGE into the existing cache instead of replacing it:
@@ -445,7 +448,7 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
       prices: cachedPrices
     });
   } else {
-    console.log(`Using cached ${intervalType} data for ${effectiveProductId} from ${exchange} (${cachedPrices.length} intervals)`);
+    logger.info(`Using cached ${intervalType} data for ${effectiveProductId} from ${exchange} (${cachedPrices.length} intervals)`);
   }
 
   // Return the requested number of intervals from the end
@@ -507,7 +510,6 @@ const runBacktest = async (params, preFetchedPrices = null) => {
   let fibTotalBuys = 0;
 
   // Calculated rates
-  const netFeePercent = feePercent - rebatePercent;
   const sellMultiplier = 1 + (sellMarkupPercent / 100);
   const holdbackRate = holdbackPercent / 100;
 

@@ -114,10 +114,9 @@ for (const [orderId, fills] of Object.entries(orphansByOrderId)) {
   // Only consider bodies that existed at the orphan's fill time — this is what
   // would have happened if the live engine hadn't been interrupted mid-flow.
   const eligibleBodies = bodies.filter(b => !b.createdAt || b.createdAt <= fillTime);
-  let target = findMergeTarget(
-    eligibleBodies, newBuy, maxUsdcDeployed, candidateTpPrice,
-    maxCelestialBodies, 0, maxOpenOrders, proximityScale
-  );
+  let target = findMergeTarget(eligibleBodies, newBuy, {
+    candidateTpPrice, maxBodies: maxCelestialBodies, pendingOrderCount: 0, maxOpenOrders, proximityScale,
+  });
   // Fallback: no tier-proximity match. The orphan still has to go somewhere,
   // so pick the historically-eligible body whose tpPrice is closest to the
   // orphan's candidate TP (same rule the engine uses when at body capacity).

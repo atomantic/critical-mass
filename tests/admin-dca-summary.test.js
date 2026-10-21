@@ -35,6 +35,7 @@ before(async () => {
       './ModalDialog': () => null,
       '../utils/requestOwner.mjs': { createRequestOwner: () => ({}) },
       './Toast': { useToast: () => ({ addToast() {} }) },
+      './regime/useDcaConversion': { fetchConvertPreview: async () => null },
       './charts/chartUtils': { formatCurrency: n => `$${n.toFixed(2)}`, formatPrice: String, formatAsset: String },
       '../App': { getBaseCurrency: () => 'ETH', getQuoteCurrency: () => 'USDC' },
       '../utils/api': { pairQuery: () => '?pair=ETH-USDC' },

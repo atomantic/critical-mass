@@ -131,8 +131,22 @@ const readFundStateFile = (stateFile, key, logger) => {
   // A corrupt state file must not crash the process — this also runs from a
   // debounced setTimeout flush. Quarantine it rather than leaving it in place
   // for the next save to overwrite, so the operator can still recover it.
+  let text;
   try {
-    payload = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    text = fs.readFileSync(stateFile, 'utf8');
+  } catch (err) {
+    // Transient read failure: the file may be perfectly valid, so leave it alone.
+    if (err.code !== 'ENOENT') {
+      logger.error(`❌ [${key}] Dry-run state read failed (${err.message}) — file left in place`, {
+        fundKey: key,
+        stateFile,
+        error: err.message,
+      });
+    }
+    return null;
+  }
+  try {
+    payload = JSON.parse(text);
   } catch (err) {
     const quarantinePath = quarantineFile(stateFile, logger);
     logger.warn(`⚠️ [${key}] Dry-run state unreadable (${err.message}) — quarantined to ${quarantinePath ? path.basename(quarantinePath) : '(rename failed)'}, starting fresh`, {
@@ -342,7 +356,19 @@ const saveState = (exchange, exchangeState, pair) => {
     if (!pendingSave) {
       pendingSave = setTimeout(() => {
         pendingSave = null;
-        const fundCount = flushPendingStates();
+        // A timer callback: a write error (ENOSPC/EACCES/EROFS) thrown here is
+        // an uncaughtException that exits the engine process and every live
+        // fund in it (#532). Unwritten funds stay queued for the next save.
+        let fundCount;
+        try {
+          fundCount = flushPendingStates();
+        } catch (err) {
+          dryRunStateLogger.error(`❌ Debounced dry-run state save failed: ${err.message}`, {
+            saveMode: 'debounced',
+            error: err.message,
+          });
+          return;
+        }
         lastSaveTime = Date.now();
         dryRunStateLogger.info(`💾 Dry-run state saved for ${fundCount} fund(s)`, {
           fundCount,

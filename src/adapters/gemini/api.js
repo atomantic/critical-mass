@@ -1,10 +1,9 @@
 // @ts-check
-const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { getWebSocketAuthHeaders, getRestAuthHeaders } = require('./auth');
+const { getRestAuthHeaders } = require('./auth');
 const { createBaseAdapter, createAmbiguousPlacementError, restQueueTiming } = require('../base-adapter');
-const { validateStandardExchangeKeys } = require('../key-validation');
+const { validateStandardExchangeKeys, createKeyFileLoader } = require('../key-validation');
 const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
@@ -24,8 +23,6 @@ const { createContextLogger } = require('../../logger');
  */
 
 const REST_BASE_URL = 'https://api.gemini.com';
-const WS_FAST_API_URL = 'wss://api.gemini.com/v1/order/events';
-const WS_MARKET_DATA_URL = 'wss://api.gemini.com/v1/marketdata';
 
 // Gemini private REST limit is ~5 req/s. Spacing every 200ms keeps a reconcile
 // burst (order/status × N + balances + mytrades) from tripping the rate limiter
@@ -109,54 +106,18 @@ const createGeminiAdapter = (keysPath = null) => {
   const adapter = createBaseAdapter('gemini');
   const logger = createContextLogger({ exchange: 'gemini' });
 
-  // WebSocket connection state
-  let wsConnection = null;
-  let wsConnected = false;
-  const pendingOrders = new Map();
-  const orderUpdates = new Map();
-
   // Serializes all private REST calls to ~5 req/s (issue #193).
   const acquireRestSlot = createRestThrottle({ minIntervalMs: REST_MIN_INTERVAL_MS });
 
-  /**
-   * Check if keys file exists and contains valid-looking credentials
-   * @returns {boolean}
-   */
-  adapter.hasValidKeys = () => {
-    if (!fs.existsSync(resolvedKeysPath)) return false;
-
-    try {
-      const keys = JSON.parse(fs.readFileSync(resolvedKeysPath, 'utf8'));
-      return validateStandardExchangeKeys(keys);
-    } catch {
-      return false;
-    }
-  };
-
-  /**
-   * Load API credentials from keys file
-   * @returns {ApiCredentials}
-   */
-  adapter.loadCredentials = () => {
-    if (!fs.existsSync(resolvedKeysPath)) {
-      throw new Error('API keys not configured. Please add your Gemini API keys.');
-    }
-
-    let keys;
-    try {
-      keys = JSON.parse(fs.readFileSync(resolvedKeysPath, 'utf8'));
-    } catch (err) {
-      throw new Error('Failed to parse API keys file: corrupted or invalid JSON');
-    }
-    const apiKey = keys.apiKey || keys.key;
-    const apiSecret = keys.apiSecret || keys.secret;
-
-    if (!apiKey || !apiSecret) {
-      throw new Error('Invalid API keys. Both API key and secret are required.');
-    }
-
-    return { apiKey, apiSecret };
-  };
+  const keyLoader = createKeyFileLoader({
+    keysPath: resolvedKeysPath,
+    label: 'Gemini',
+    validate: validateStandardExchangeKeys,
+    pick: (keys) => ({ apiKey: keys.apiKey || keys.key, apiSecret: keys.apiSecret || keys.secret }),
+    requiredMessage: 'Invalid API keys. Both API key and secret are required.',
+  });
+  adapter.hasValidKeys = keyLoader.hasValidKeys;
+  adapter.loadCredentials = keyLoader.loadCredentials;
 
   /**
    * Gemini's "this order does not exist" signal: HTTP 404, or a reason code of

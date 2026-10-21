@@ -2,8 +2,32 @@ import { useState, useEffect, useCallback } from 'react'
 import { plural } from '../../utils/plural.mjs'
 import { describeActionFailure } from '../../utils/actionFailure.mjs'
 
+// Shared by Dashboard and the regime dashboard: POST the merge preview and toast on
+// failure. Resolves to the preview payload, or null when it failed.
+export async function fetchConvertPreview({ exchange, pairQuery, addToast }) {
+  try {
+    const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preview: true, merge: true }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      addToast({ type: 'error', title: 'Preview Failed', message: describeActionFailure(res.status, err) })
+      return null
+    }
+    return await res.json()
+  } catch (err) {
+    addToast({ type: 'error', title: 'Preview Failed', message: err.message || 'Network error' })
+    return null
+  }
+}
+
 export default function useDcaConversion({ exchange, pairQuery, isRunning, addToast, fetchStatus, fetchFills }) {
   const [dcaState, setDcaState] = useState(null)
+  const [dcaStateError, setDcaStateError] = useState(null)
+  const [dcaStateAttempt, setDcaStateAttempt] = useState(0)
+  const retryDcaState = useCallback(() => setDcaStateAttempt(n => n + 1), [])
   const [convertPreview, setConvertPreview] = useState(null)
   const [converting, setConverting] = useState(false)
   const [showConvertConfirm, setShowConvertConfirm] = useState(false)
@@ -11,32 +35,31 @@ export default function useDcaConversion({ exchange, pairQuery, isRunning, addTo
   useEffect(() => {
     if (!isRunning) {
       const controller = new AbortController()
-      fetch(`/api/${exchange}/state${pairQuery}`, { signal: controller.signal }).then(r => r.json()).then(setDcaState).catch(() => {})
+      setDcaStateError(null)
+      fetch(`/api/${exchange}/state${pairQuery}`, { signal: controller.signal })
+        .then(async r => {
+          const data = await r.json().catch(() => ({}))
+          if (!r.ok) throw new Error(describeActionFailure(r.status, data))
+          setDcaState(data)
+        })
+        .catch(err => {
+          if (err.name === 'AbortError') return
+          setDcaState(null)
+          setDcaStateError(err.message || 'Network error')
+        })
       return () => controller.abort()
     } else {
       setDcaState(null)
+      setDcaStateError(null)
     }
-  }, [exchange, isRunning, pairQuery])
+  }, [exchange, isRunning, pairQuery, dcaStateAttempt])
   // DCA conversion handlers
   const handlePreviewConvert = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ preview: true, merge: true }),
-      })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        addToast({ type: 'error', title: 'Preview Failed', message: describeActionFailure(res.status, err) })
-        return
-      }
-      const data = await res.json()
-      setConvertPreview(data)
-      setShowConvertConfirm(true)
-    } catch (err) {
-      addToast({ type: 'error', title: 'Preview Failed', message: err.message || 'Network error' })
-    }
-  }, [exchange, addToast])
+    const data = await fetchConvertPreview({ exchange, pairQuery, addToast })
+    if (!data) return
+    setConvertPreview(data)
+    setShowConvertConfirm(true)
+  }, [exchange, pairQuery, addToast])
 
   const handleExecuteConvert = useCallback(async () => {
     // Same verb as the confirmation dialog the operator just accepted.
@@ -78,5 +101,5 @@ export default function useDcaConversion({ exchange, pairQuery, isRunning, addTo
     }
   }, [exchange, addToast, fetchStatus, fetchFills, convertPreview?.merge])
 
-  return { dcaState, convertPreview, converting, showConvertConfirm, setShowConvertConfirm, handlePreviewConvert, handleExecuteConvert }
+  return { dcaState, dcaStateError, retryDcaState, convertPreview, converting, showConvertConfirm, setShowConvertConfirm, handlePreviewConvert, handleExecuteConvert }
 }

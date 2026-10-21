@@ -3,7 +3,8 @@ const assert = require('node:assert/strict')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
-const { publishBackfill } = require('../scripts/backfill-scorecard')
+const { publishBackfill, retentionCutoffDay, clampFromToRetention } = require('../scripts/backfill-scorecard')
+const { SCORECARD_RETENTION_DAYS } = require('../src/updown/scorecard')
 const { acquireScorecardLock, appendScorecardRecord, atomicPublish, validateJsonl, lockPath } = require('../src/updown/scorecard-maintenance')
 
 const fixture = (t) => {
@@ -113,5 +114,52 @@ describe('scorecard backfill publication', () => {
     const before = fs.readFileSync(f.file, 'utf8')
     assert.throws(() => publishBackfill(f.buffers, { directory: f.directory, apply: true }))
     assert.equal(fs.readFileSync(f.file, 'utf8'), before)
+  })
+
+  describe('retention window', () => {
+    const NOW = Date.parse('2026-03-31T12:00:00Z')
+    const dayOffset = n => new Date(NOW - n * 86_400_000).toISOString().slice(0, 10)
+
+    it('retentionCutoffDay is the oldest UTC day the live prune keeps', () => {
+      assert.equal(retentionCutoffDay(NOW), dayOffset(SCORECARD_RETENTION_DAYS - 1))
+    })
+
+    it('clamps --from earlier than the window and leaves later starts alone', () => {
+      const cutoff = retentionCutoffDay(NOW)
+      const early = clampFromToRetention(Date.parse('2025-11-01T00:00:00Z'), NOW)
+      assert.deepEqual(early, { fromTs: Date.parse(`${cutoff}T00:00:00Z`), clamped: cutoff })
+      const inside = Date.parse(`${dayOffset(3)}T00:00:00Z`)
+      assert.deepEqual(clampFromToRetention(inside, NOW), { fromTs: inside, clamped: null })
+    })
+
+    it('resumes after the prune deleted completed days older than the window', (t) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scorecard-retention-'))
+      t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+      const buffers = {}
+      for (let n = 0; n < 40; n++) {
+        const day = dayOffset(n)
+        buffers[day] = [JSON.stringify({ type: 'prediction', trigger: 'backfill', id: `backfill_${n}`, ts: `${day}T00:05:00Z` })]
+      }
+      publishBackfill(buffers, { directory, apply: true, now: NOW })
+      // Model UpDown's startup prune: keep only the newest N daily journals.
+      const journals = fs.readdirSync(directory).filter(f => f.endsWith('.jsonl')).sort()
+      for (const f of journals.slice(0, journals.length - SCORECARD_RETENTION_DAYS)) fs.unlinkSync(path.join(directory, f))
+      const kept = fs.readdirSync(directory).filter(f => f.endsWith('.jsonl'))
+      assert.equal(kept.length, SCORECARD_RETENTION_DAYS)
+      const snapshot = Object.fromEntries(kept.map(f => [f, fs.readFileSync(path.join(directory, f), 'utf8')]))
+
+      const result = publishBackfill(buffers, { directory, apply: true, now: NOW })
+      assert.equal(result.totalLines, 0)
+      const after = fs.readdirSync(directory).filter(f => f.endsWith('.jsonl'))
+      assert.deepEqual(after.sort(), kept.sort())
+      for (const f of after) assert.equal(fs.readFileSync(path.join(directory, f), 'utf8'), snapshot[f])
+    })
+
+    it('still fails when a completed day inside the window lost its records', (t) => {
+      const f = fixture(t)
+      publishBackfill(f.buffers, { directory: f.directory, apply: true, now: Date.parse(`${f.day}T12:00:00Z`) })
+      fs.unlinkSync(f.file)
+      assert.throws(() => publishBackfill(f.buffers, { directory: f.directory, apply: true, now: Date.parse(`${f.day}T12:00:00Z`) }), /missing records/)
+    })
   })
 })

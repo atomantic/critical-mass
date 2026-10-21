@@ -19,7 +19,7 @@ describe('ContractSetup screenshot request ownership', () => {
   it('lets only the latest overlapping analysis set preview and busy state', async () => {
     const requests = []
     vi.stubGlobal('fetch', vi.fn((url, options = {}) => {
-      if (url === '/api/updown/providers') return Promise.resolve({ json: async () => ({ success: true, providers: [{ id: 'provider-a', models: ['model-a', 'model-b'] }] }) })
+      if (url === '/api/updown/providers') return Promise.resolve({ ok: true, json: async () => ({ success: true, providers: [{ id: 'provider-a', models: ['model-a', 'model-b'] }] }) })
       const pending = deferred()
       requests.push({ ...pending, signal: options.signal })
       return pending.promise
@@ -45,7 +45,7 @@ describe('ContractSetup screenshot request ownership', () => {
   it('keeps the newer preview when its older predecessor resolves late', async () => {
     const requests = []
     vi.stubGlobal('fetch', vi.fn((url, options = {}) => {
-      if (url === '/api/updown/providers') return Promise.resolve({ json: async () => ({ success: true, providers: [{ id: 'provider-a', models: ['model-a', 'model-b'] }] }) })
+      if (url === '/api/updown/providers') return Promise.resolve({ ok: true, json: async () => ({ success: true, providers: [{ id: 'provider-a', models: ['model-a', 'model-b'] }] }) })
       const pending = deferred()
       requests.push({ ...pending, signal: options.signal })
       return pending.promise
@@ -70,7 +70,7 @@ describe('ContractSetup screenshot request ownership', () => {
     const pending = deferred()
     let requestSignal
     vi.stubGlobal('fetch', vi.fn((url, options = {}) => {
-      if (url === '/api/updown/providers') return Promise.resolve({ json: async () => ({ success: true, providers: [{ id: 'provider-a', models: ['model-a'] }, { id: 'provider-b', models: ['model-b'] }] }) })
+      if (url === '/api/updown/providers') return Promise.resolve({ ok: true, json: async () => ({ success: true, providers: [{ id: 'provider-a', models: ['model-a'] }, { id: 'provider-b', models: ['model-b'] }] }) })
       requestSignal = options.signal
       return pending.promise
     }))
@@ -90,7 +90,7 @@ describe('ContractSetup screenshot request ownership', () => {
   it('aborts a pending analysis when the component unmounts', async () => {
     let requestSignal
     vi.stubGlobal('fetch', vi.fn((url, options = {}) => {
-      if (url === '/api/updown/providers') return Promise.resolve({ json: async () => ({ success: true, providers: [{ id: 'provider-a', models: ['model-a'] }] }) })
+      if (url === '/api/updown/providers') return Promise.resolve({ ok: true, json: async () => ({ success: true, providers: [{ id: 'provider-a', models: ['model-a'] }] }) })
       requestSignal = options.signal
       return new Promise(() => {})
     }))
@@ -111,7 +111,7 @@ function mockFetchForSave(saveResponse) {
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} })
   vi.stubGlobal('fetch', vi.fn((url) => {
     if (url === '/api/updown/providers') {
-      return Promise.resolve({ json: async () => ({ success: false }) })
+      return Promise.resolve({ ok: true, json: async () => ({ success: true, providers: [] }) })
     }
     return saveResponse()
   }))
@@ -168,5 +168,43 @@ describe('ContractSetup save feedback', () => {
 
     expect(await screen.findByRole('button', { name: 'Saved' })).toBeTruthy()
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+describe('ContractSetup failure recovery', () => {
+  it('reports a failed AI provider list with Retry instead of an empty dropdown', async () => {
+    let down = true
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} })
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url !== '/api/updown/providers') throw new Error(`unexpected ${url}`)
+      if (down) return { ok: false, status: 502, json: async () => { throw new Error('not json') } }
+      return { ok: true, json: async () => ({ success: true, providers: [{ id: 'provider-a', name: 'Provider A', models: ['model-a'] }] }) }
+    }))
+    render(<ContractSetup />)
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not load AI providers (server error 502)')
+    down = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('option', { name: 'Provider A' })).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('re-enables Save and explains the unsaved form when Apply cannot reach the server', async () => {
+    const values = new Map([['updown-screenshot-provider', 'provider-a']])
+    vi.stubGlobal('localStorage', { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, value) })
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url === '/api/updown/providers') return { ok: true, json: async () => ({ success: true, providers: [{ id: 'provider-a', models: ['model-a'] }] }) }
+      if (url.startsWith('/api/updown/screenshot')) return { ok: true, json: async () => ({ success: true, extracted: { screenType: 'select', target: 70000, stop: 65000, range: 500, direction: 'Up' } }) }
+      if (url === '/api/updown/contract') throw new Error('gateway unavailable')
+      throw new Error(`unexpected ${url}`)
+    }))
+    render(<ContractSetup />)
+    fireEvent.change(document.querySelector('input[type="file"]'), { target: { files: [new File(['x'], 'x.png', { type: 'image/png' })] } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    expect((await screen.findByRole('alert')).textContent).toContain('gateway unavailable')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save Contract' }).disabled).toBe(false))
+    expect(screen.getByText(/applied to the form but not saved/)).toBeTruthy()
+    expect(screen.getByLabelText(/Target/).value).toBe('70000')
   })
 })

@@ -293,6 +293,16 @@ const CANCEL_RETRY_MAX_MS = 300000; // 5 min cap on backoff
 // in retry indefinitely; an operator can manually reconcile if needed.
 const CANCEL_RETRY_TIME_BUDGET_MS = 6 * 60 * 60 * 1000; // 6 hours
 
+// Stored trackedOrder.status values for orders a terminal event already
+// finalized. CANCEL_FAMILY_STATUSES is what settleCancelledOrder writes
+// (status.toLowerCase() of CANCELLED/FAILED/EXPIRED, matching
+// classifyTerminal); SETTLED adds 'filled'. Every "already settled" guard,
+// including both retry guards, uses the same set: the terminal handler owns
+// catch-up, so an EXPIRED event stops a FILLED retry chain just as CANCELLED does.
+const CANCEL_FAMILY_STATUSES = new Set(['cancelled', 'failed', 'expired']);
+const SETTLED_ORDER_STATUSES = new Set(['filled', ...CANCEL_FAMILY_STATUSES]);
+const isSettledStatus = (status) => SETTLED_ORDER_STATUSES.has(status);
+
 /**
  * Settle a tracked order on a CANCELLED/FAILED WS event, catching up any
  * unrecorded partial fills before marking it settled.
@@ -871,6 +881,17 @@ const createMarketDataService = (exchange, pair) => {
       return { success: false, error: `Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details` };
     }
 
+    // load() guesses the current cycle as the latest one with sells < buys, but
+    // holdback leaves every finished cycle in that state — so after a cycle
+    // closes (or an operator reset) it would pick the finished cycle and file
+    // fills recorded while stopped there. Anchor on the persisted boundary the
+    // engine itself restores at boot (regime-engine restorePersistedCycleId).
+    const persistedPosition = loadFundRegimeState(exchange, resolvedPair)?.position;
+    const persistedCycleId = persistedPosition?.activeCycleId;
+    if (typeof persistedCycleId === 'string' && /^cycle-\d+$/.test(persistedCycleId)) {
+      fillLedger.setCurrentCycleId(persistedCycleId, persistedPosition.activeCycleStartedAt ?? null);
+    }
+
     // Create the health monitor BEFORE the first adapter call so
     // getActiveAdapter() (used below and by every REST call site) wraps the
     // adapter with REST error/rate-limit/latency instrumentation from the
@@ -1256,7 +1277,7 @@ const createMarketDataService = (exchange, pair) => {
     if (timerTracker.isStopped()) return;
     // Skip if a terminal event finalized the order — the FILLED/CANCELLED
     // path will own catch-up.
-    if (trackedOrder.status === 'filled' || trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed') {
+    if (isSettledStatus(trackedOrder.status)) {
       return;
     }
     if (filledSize <= (trackedOrder.lastIngestedFilledSize || 0)) return; // already covered
@@ -1363,7 +1384,7 @@ const createMarketDataService = (exchange, pair) => {
   const retryFilledIngest = async (orderId, trackedOrder, target, attempt) => {
     if (!trackedOrders.has(orderId)) return; // already removed by another path
     if (timerTracker.isStopped()) return;
-    if (trackedOrder.status === 'filled' || trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed') {
+    if (isSettledStatus(trackedOrder.status)) {
       return;
     }
     if (attempt === 1 && !trackedOrder._filledRetryStartedAt) {
@@ -1687,10 +1708,7 @@ const createMarketDataService = (exchange, pair) => {
         // guard, re-running finalizeFilledOrder and re-firing
         // onOrderFillCallback for the same execution.
         const tracked = trackedOrders.get(orderId);
-        const alreadySettled = tracked && (
-          tracked.status === 'filled' || tracked.status === 'cancelled'
-          || tracked.status === 'failed' || tracked.status === 'expired'
-        );
+        const alreadySettled = tracked && isSettledStatus(tracked.status);
         if (!alreadySettled) {
           target = { filledSize, averageFilledPrice, totalFees, timerScheduled: false };
           pendingTerminalRetries.set(orderId, target);
@@ -1754,7 +1772,7 @@ const createMarketDataService = (exchange, pair) => {
     // settle short of the real cancelled quantity. Same for FILLED via
     // the partial-retry pendingPartialRetries.
     const inRetryChain = pendingTerminalRetries.has(orderId) || pendingPartialRetries.has(orderId);
-    if (!inRetryChain && (trackedOrder.status === 'filled' || trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed' || trackedOrder.status === 'expired')) {
+    if (!inRetryChain && isSettledStatus(trackedOrder.status)) {
       return;
     }
 
@@ -1813,7 +1831,7 @@ const createMarketDataService = (exchange, pair) => {
       // leaving the FILLED retry chain stuck and onOrderFillCallback
       // never firing. The status field is the engine-facing display state
       // and finalizeFilledOrder will set it to 'filled' on success.
-      if (trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed' || trackedOrder.status === 'expired') {
+      if (CANCEL_FAMILY_STATUSES.has(trackedOrder.status)) {
         trackedOrder.status = 'open';
       }
 
@@ -2118,7 +2136,11 @@ const createMarketDataService = (exchange, pair) => {
     setOnStatusUpdate,
     // Health state (issue #228) — null until start() creates the monitor (or
     // a test injects one via _test.injectHealthMonitor).
-    getHealthState: () => (healthMonitor ? healthMonitor.getState() : null),
+    // `userChannel` ('subscribed' | 'degraded' | null when not configured)
+    // surfaces lost real-time fill detection on the user channel (issue #1382).
+    getHealthState: () => (healthMonitor
+      ? { ...healthMonitor.getState(), userChannel: wsFeed?.getStatus?.().userChannel ?? null }
+      : null),
     // Resolves once order work accepted before stop() has finished. Queued
     // work re-checks the stopped flag after every await, so after stop()
     // this only waits out REST calls already in flight.
@@ -2136,6 +2158,7 @@ const createMarketDataService = (exchange, pair) => {
       injectAdapter: (a) => { _adapterOverride = a; },
       injectRegimeDetector: (d) => { regimeDetector = d; },
       injectHealthMonitor: (hm) => { healthMonitor = hm; },
+      injectWsFeed: (feed) => { wsFeed = feed; },
       getActiveAdapter,
       pendingTerminalRetries,
       pendingPartialRetries,

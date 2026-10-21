@@ -6,7 +6,7 @@ const path = require('path');
 const configUtils = require('../src/config-utils');
 const { TradeEventEmitter, tradeEvents } = require('../src/trade-events');
 const { createFaultReporter } = require('../src/process-guard');
-const { createIPCServer } = require('../src/ipc/ipc-server');
+const { createIPCServer, MAX_HELD_EVENTS } = require('../src/ipc/ipc-server');
 const { createIPCClient } = require('../src/ipc/ipc-client');
 const { forwardTradeEvents, forwardIPCEvent } = require('../src/ipc/realtime-proxy');
 const { createNotifier } = require('../src/notifier');
@@ -132,4 +132,70 @@ it('carries regime notification events across IPC with their exchange and pair (
     ['safe_mode', 'coinbase', 'ETH-USDC'],
     ['cap_reached', 'coinbase', 'ETH-USDC'],
   ]);
+});
+
+const reserveTestPort = async () => {
+  const reservation = net.createServer();
+  await new Promise((resolve) => reservation.listen(0, '127.0.0.1', resolve));
+  const { port } = reservation.address();
+  await new Promise((resolve) => reservation.close(resolve));
+  return port;
+};
+
+const connectGateway = async (t, port, options = {}) => {
+  let connected;
+  const connection = new Promise((resolve) => { connected = resolve; });
+  const client = createIPCClient(`ws://127.0.0.1:${port}`, 'test-gateway', { ...options, onConnect: () => connected() });
+  t.after(() => client.disconnect());
+  client.connect();
+  await connection;
+  return client;
+};
+
+const waitFor = async (predicate, timeoutMs = 2000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('condition not met before timeout');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};
+
+it('holds engine trade events raised with no gateway connected and replays them once, in order, to the next subscribing gateway', { timeout: 5000 }, async (t) => {
+  const port = await reserveTestPort();
+  const server = createIPCServer(port, 'test-engine');
+  await server.start();
+  t.after(() => server.stop());
+  const engineEvents = new TradeEventEmitter();
+  t.after(forwardTradeEvents(server, engineEvents));
+
+  // Engine boot (or a gateway restart): alerts fire before any gateway attaches.
+  engineEvents.safeMode('coinbase', 'startup_recovery_failed', { pair: 'BTC-USDC' });
+  engineEvents.tpFilled('coinbase', 0.01, 50000, 12.5, 3);
+  server.broadcast('regime:status', { pair: 'BTC-USDC' }); // transient status is never held
+  assert.equal(server.getHeldEventCount(), 2);
+
+  // A request-only tool (no event consumer) must not swallow the held events.
+  await connectGateway(t, port);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(server.getHeldEventCount(), 2);
+
+  const received = [];
+  await connectGateway(t, port, { onEvent: (msg) => received.push(msg) });
+  await waitFor(() => received.length >= 2);
+  assert.deepEqual(received.map((msg) => [msg.channel, msg.payload.type]), [
+    ['trade:event', 'safe_mode'],
+    ['trade:event', 'tp_filled'],
+  ]);
+  assert.equal(server.getHeldEventCount(), 0);
+
+  // Connected: live events go straight out and are not held for a later replay.
+  engineEvents.safeMode('coinbase', 'ws_disconnected', { pair: 'BTC-USDC' });
+  await waitFor(() => received.length === 3);
+  assert.equal(server.getHeldEventCount(), 0);
+});
+
+it('keeps only the newest held events so a long gateway outage cannot grow engine memory', () => {
+  const server = createIPCServer(0, 'test-engine');
+  for (let i = 0; i < MAX_HELD_EVENTS + 5; i++) server.broadcast('trade:event', { type: 'error', i }, { hold: true });
+  assert.equal(server.getHeldEventCount(), MAX_HELD_EVENTS);
 });

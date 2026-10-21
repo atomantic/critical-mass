@@ -276,18 +276,6 @@ const getChartDataBuffer = (exchange, pair) => {
 };
 
 /**
- * Clear chart data buffer for a fund (exchange + pair).
- * @param {string} exchange - Exchange name
- * @param {string} [pair] - Pair name; defaults to the exchange's default pair
- */
-const clearChartDataBuffer = (exchange, pair) => {
-  const buffer = chartBuffers.get(bufferKey(exchange, pair));
-  if (buffer) {
-    buffer.clear();
-  }
-};
-
-/**
  * Get chart data for a fund (exchange + pair).
  * @param {string} exchange - Exchange name
  * @param {string} [pair] - Pair name; defaults to the exchange's default pair
@@ -333,7 +321,6 @@ const shutdownAllBuffers = () => {
 module.exports = {
   createChartDataBuffer,
   getChartDataBuffer,
-  clearChartDataBuffer,
   removeChartDataBuffer,
   getChartData,
   shutdownAllBuffers,

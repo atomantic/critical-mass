@@ -502,6 +502,35 @@
  * @property {number} ingestedAt - When fill was ingested
  * @property {string|null} cycleId - Trading cycle ID
  * @property {'order'|'link'|'timeframe'} [cycleAttribution] - How recalculateCycles placed a null-cycle fill into an existing cycle (#705)
+ *
+ * Order-level annotations (ORDER_LEVEL_FIELDS in fill-ledger.js; docs/pnl-architecture.md).
+ * They are written by annotateFillsByOrderId to EVERY partial-fill row of one orderId, so
+ * readers must take each value ONCE per orderId, never sum across rows (summing multiplies
+ * P&L by the partial count). All are optional; legacy rows may lack them.
+ * @property {boolean} [isBodyOwned] - Fill belongs to a celestial body (not the core position)
+ * @property {string} [bodyId] - Owning body id
+ * @property {string} [bodyTier] - Owning body tier
+ * @property {boolean} [isSatellite] - Fill belongs to a satellite body
+ * @property {string} [sellOrderId] - Buy only: TP sell order stamped when the TP is placed; the buy counts as closed only once that sell has fills
+ * @property {Object<string, number>} [consumedBy] - Buy only: per-sell-order size consumed (sold + booked holdback), keyed by sell orderId; unconsumed remainder stays held open (#607)
+ * @property {number} [consumedCostFraction] - Buy only, legacy: fraction of cost already consumed, used when no consumedBy record exists
+ * @property {number} [bodyCostBasis] - Sell only: prorated body cost basis attributed to this sell
+ * @property {number} [bodyAvgPrice] - Sell only: bodyCostBasis / bodyBtcQty
+ * @property {number} [bodyBtcQty] - Sell only: body asset quantity the cost basis covers
+ * @property {number} [bodyHoldbackAsset] - Sell only: zero-cost asset reserve retained from the body (Σ per sell = realizedAssetPnL)
+ * @property {number} [bodyReservesSoldAsset] - Sell only: excess a stale TP sold out of reserves, subtracted from realizedAssetPnL (#770)
+ * @property {number} [bodyPnl] - Sell only: sell proceeds minus prorated cost; summed once per orderId into realizedPnL
+ * @property {number} [bodyBookedSize] - Sell only: cumulative size booked so far, the marker for additive partial-fill bookings
+ * @property {number} [satellitePnl] - Sell only: satellite equivalent of bodyPnl
+ * @property {number} [satelliteHoldbackAsset] - Sell only: satellite equivalent of bodyHoldbackAsset
+ * @property {number} [sellCorrectionPnlRemainder] - Sell only: sub-rounding P&L remainder carried when exchange-truth reconciliation corrects economics
+ * @property {boolean} [partialFill] - Sell only: latest booking filled less than the TP's planned size
+ * @property {boolean} [mergeSnapshot] - Sell only: booked from a pre-merge body snapshot (stale TP fired after a merge/cancel)
+ * @property {boolean} [untrackedSell] - Sell only: foreign (manual/tooling) sell that closed no cycle (#672/#750)
+ *
+ * Row-level markers (not copied across rows of an order):
+ * @property {boolean} [bodyBooked] - Row was covered by a committed sell booking
+ * @property {{reconciledTrades?: Array<{tradeId: string, size: number, quoteAmount: number, fee: number, netFee: number}>, originalEconomics?: {quoteAmount: number, fee: number, netFee: number, rebate: number}}} [syntheticCoverage] - Present on a synthetic row later covered by real exchange trades; records the allocations and the pre-correction economics
  */
 
 /**
@@ -734,6 +763,7 @@
  * @property {number} score - Current composite score (-100 to +100)
  * @property {{h21: number, h50: number, h200: number, d20: number}} emas - EMA values
  * @property {number} lastUpdate - Timestamp of last macro update
+ * @property {boolean} [stale] - True when the mode is too old to size on (multipliers neutral)
  * @property {{hourly: number, daily: number}} candles - Number of candles used
  */
 
@@ -833,7 +863,7 @@
  * @property {(orderId: string, type?: string) => void} markSettled
  * @property {(orderId: string) => boolean} isTrackedTpOrder - true when orderId is/was this executor's legacy core take_profit (issue #672)
  * @property {(orderId: string) => number|null} getOrderPlacedAt
- * @property {(assetQty: number, tpPrice: number, bodyId: string) => Promise<{success: boolean, orderId?: string, errorMessage?: string}>} placeBodyTpOrder
+ * @property {(assetQty: number, tpPrice: number, bodyId: string, avgBuyPrice?: number, options?: {onAccepted?: ((placement: {orderId: string, clientOrderId?: string|null}) => void|Promise<void>)|null}) => Promise<{success: boolean, orderId?: string, errorMessage?: string}>} placeBodyTpOrder
  * @property {(bodyId: string, tpOrderId: string) => Promise<{cancelled: boolean, filled: boolean, filledSize?: number}>} cancelBodyTpOrder
  * @property {(bodyId: string, tpOrderId: string, assetQty: number, tpPrice: number, placedAt?: number) => void} restoreBodyTpOrder
  * @property {(tpOrderId: string) => void} removeBodyTracking

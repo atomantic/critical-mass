@@ -220,6 +220,17 @@ describe('Crypto.com getOrderFills completeness (issue #679)', () => {
   it('paces day-walk pages and accounts for both pacing and retry waits', async () => {
     const requestTimes = [];
     const created = Date.now() - 2 * 24 * 60 * 60 * 1000;
+    // Virtual clock: timers advance Date.now() instead of sleeping, so the
+    // recorded fetch times reflect the adapter's pacing slots exactly and
+    // cannot be skewed by event-loop load.
+    const realNow = Date.now;
+    const realSetTimeout = global.setTimeout;
+    let virtualNow = realNow();
+    Date.now = () => virtualNow;
+    global.setTimeout = (fn, ms = 0, ...args) => realSetTimeout(() => {
+      virtualNow += ms;
+      fn(...args);
+    }, 0, ...args);
     global.fetch = async (_url, options) => {
       const { method } = JSON.parse(options.body);
       if (method === 'private/get-order-detail') return {
@@ -239,7 +250,13 @@ describe('Crypto.com getOrderFills completeness (issue #679)', () => {
       throw new Error(`unexpected method ${method}`);
     };
     const timing = { queuedMs: 0 };
-    const fills = await restQueueTiming.run(timing, () => createCryptocomAdapter(writeKeys('cryptocom')).getOrderFills(ORDER_ID));
+    let fills;
+    try {
+      fills = await restQueueTiming.run(timing, () => createCryptocomAdapter(writeKeys('cryptocom')).getOrderFills(ORDER_ID));
+    } finally {
+      Date.now = realNow;
+      global.setTimeout = realSetTimeout;
+    }
     assert.equal(fills.length, 1);
     assert.ok(requestTimes.length >= 6);
     for (let i = 1; i < requestTimes.length; i++) {

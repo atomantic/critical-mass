@@ -7,7 +7,7 @@ const {
   getRunIdentifier,
   hasRunThisInterval
 } = require('./interval-utils');
-const { getExchangeDataDir, getFundDataDir, resolveFundDataDir } = require('./migration');
+const { getFundDataDir, resolveFundDataDir } = require('./migration');
 
 /**
  * @typedef {import('./types').BotState} BotState
@@ -28,7 +28,7 @@ const { createInitialFibState, resetFibState, getUncoveredFibBuys, getAverageCos
 const { migrateFromLegacy, createInitialCelestialState } = require('./celestial-hierarchy');
 const { loadRawConfig } = require('./config-utils');
 const { createContextLogger } = require('./logger');
-const { DATA_DIR } = require('./paths');
+const { DEFAULT_MAX_USDC_DEPLOYED } = require('./fund-defaults');
 const { atomicWriteSync } = require('./durable-write');
 
 const stateTrackerLogger = createContextLogger();
@@ -1135,7 +1135,7 @@ const loadRegimeState = (exchange = 'coinbase', pair) => {
     if (hasCorePosition || hasSatellites) {
       const configUtils = require('./config-utils');
       const regimeConfig = configUtils.getRegimeConfig(exchange, pair);
-      const maxUsdcDeployed = regimeConfig.maxUsdcDeployed || 10000;
+      const maxUsdcDeployed = regimeConfig.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
 
       position.celestialBodies = migrateFromLegacy(position, maxUsdcDeployed);
       if (!position.celestialState) {

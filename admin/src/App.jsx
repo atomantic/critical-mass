@@ -186,6 +186,11 @@ function AppContent() {
   const [addFundDialogOpen, setAddFundDialogOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [simpleDcaEnabled, setSimpleDcaEnabled] = useState(false)
+  // Fund list load state. Until the list has loaded once, strategy/badge
+  // defaults are guesses, so a failed load must not render default-derived
+  // fund controls (see fundsUnavailable below).
+  const [exchangesLoaded, setExchangesLoaded] = useState(false)
+  const [exchangesError, setExchangesError] = useState(null)
 
   // The exchanges array now contains one entry per (exchange, pair) fund.
   // Look up the fund matching both the current exchange AND pair from the URL.
@@ -283,35 +288,56 @@ function AppContent() {
   const tabs = getTabsForStrategy(currentStrategy)
 
   // Fetch list of configured exchanges
+  // Resolves true when the list loaded, false when it did not (never rejects).
   const fetchExchanges = async (autoSelect = false) => {
-    const res = await fetch('/api/exchanges')
-    if (res.ok) {
-      const data = await res.json()
-      setExchanges(data.exchanges || [])
-      setSimpleDcaEnabled(data.simpleDcaEnabled ?? false)
-      // Only auto-select exchange on initial load if not already in URL
-      // On root "/" (overview page), just set defaults without navigating away
-      if (autoSelect && !urlExchange) {
-        const enabled = data.exchanges?.find(e => e.enabled || e.regimeEnabled)
-        const first = data.exchanges?.[0]
-        const targetExchange = enabled?.name || first?.name || 'coinbase'
-        const exchangeConfig = enabled || first
-        const targetPair = exchangeConfig?.productId || 'BTC-USDC'
-        setLastExchange(targetExchange)
-        // Don't redirect away from non-exchange pages (overview, notifications, etc.)
-        const nonExchangePaths = ['/', '/updown', '/sentinel', '/gateway', '/notifications', '/backups', '/systems', '/ai']
-        const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
-        if (!isNonExchangePage) {
-          navigate(`/${targetExchange}/${targetPair}`, { replace: true })
-        }
-      } else if (autoSelect && urlExchange && !urlPair) {
-        // URL has exchange but no pair - redirect to pair path
-        const exchangeConfig = data.exchanges?.find(e => e.name === urlExchange)
-        const targetPair = exchangeConfig?.productId || 'BTC-USDC'
-        navigate(`/${urlExchange}/${targetPair}`, { replace: true })
+    let data
+    try {
+      const res = await fetch('/api/exchanges')
+      if (!res.ok) {
+        setExchangesError(`Gateway returned ${res.status}`)
+        return false
       }
+      data = await res.json()
+    } catch (err) {
+      setExchangesError(err?.message || 'Network error')
+      return false
+    }
+    setExchangesError(null)
+    setExchangesLoaded(true)
+    setExchanges(data.exchanges || [])
+    setSimpleDcaEnabled(data.simpleDcaEnabled ?? false)
+    // Only auto-select exchange on initial load if not already in URL
+    // On root "/" (overview page), just set defaults without navigating away
+    if (autoSelect && !urlExchange) {
+      const enabled = data.exchanges?.find(e => e.enabled || e.regimeEnabled)
+      const first = data.exchanges?.[0]
+      const targetExchange = enabled?.name || first?.name || 'coinbase'
+      const exchangeConfig = enabled || first
+      const targetPair = exchangeConfig?.productId || 'BTC-USDC'
+      setLastExchange(targetExchange)
+      // Don't redirect away from non-exchange pages (overview, notifications, etc.)
+      const nonExchangePaths = ['/', '/updown', '/sentinel', '/gateway', '/notifications', '/backups', '/systems', '/ai']
+      const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
+      if (!isNonExchangePage) {
+        navigate(`/${targetExchange}/${targetPair}`, { replace: true })
+      }
+    } else if (autoSelect && urlExchange && !urlPair) {
+      // URL has exchange but no pair - redirect to pair path
+      const exchangeConfig = data.exchanges?.find(e => e.name === urlExchange)
+      const targetPair = exchangeConfig?.productId || 'BTC-USDC'
+      navigate(`/${urlExchange}/${targetPair}`, { replace: true })
+    }
+    return true
+  }
+
+  // Manual refresh/retry: surface a failure instead of staying silent.
+  const retryExchanges = async () => {
+    const loaded = await fetchExchanges(!exchangesLoaded)
+    if (!loaded) {
+      addToast({ type: 'error', title: 'Could not load funds', message: 'The fund list is still unavailable. Try again shortly.' })
     }
   }
+  const fundsUnavailable = !!exchangesError && !exchangesLoaded
 
   // Handle exchange change from selector - update URL with pair
   const handleExchangeChange = (newExchange, newPair) => {
@@ -615,7 +641,7 @@ function AppContent() {
   const buildPath = (tabPath) => `/${currentExchange}/${currentPair}${tabPath}`
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-dvh">
         <a
           href="#main-content"
           className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-2 focus:left-2 focus:px-4 focus:py-2 focus:rounded-sm focus:bg-blue-600 focus:text-white"
@@ -793,7 +819,7 @@ function AppContent() {
             <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
               <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2">
                 <div className="flex gap-1 overflow-x-auto min-w-0">
-                  {tabs.map(tab => (
+                  {!fundsUnavailable && tabs.map(tab => (
                     <Link
                       key={tab.path}
                       to={buildPath(tab.path)}
@@ -809,15 +835,27 @@ function AppContent() {
                   ))}
                 </div>
                 <div className="flex items-center gap-2 md:gap-3 flex-wrap max-w-full px-3 md:px-0 py-1.5 shrink-0 md:ml-auto">
-                  <ExchangeSelector
-                    currentExchange={currentExchange}
-                    currentPair={currentPair}
-                    exchanges={exchanges}
-                    onChange={handleExchangeChange}
-                    onRefresh={fetchExchanges}
-                    onAddFund={() => setAddFundDialogOpen(true)}
-                  />
-                {currentStrategy === 'regime' && regimeRunning !== null && (<>
+                  {fundsUnavailable ? (
+                    <div role="alert" className="flex items-center gap-2 text-xs md:text-sm text-red-300">
+                      <span>Could not load funds ({exchangesError})</span>
+                      <button
+                        onClick={retryExchanges}
+                        className="min-h-11 px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  ) : (
+                    <ExchangeSelector
+                      currentExchange={currentExchange}
+                      currentPair={currentPair}
+                      exchanges={exchanges}
+                      onChange={handleExchangeChange}
+                      onRefresh={retryExchanges}
+                      onAddFund={() => setAddFundDialogOpen(true)}
+                    />
+                  )}
+                {!fundsUnavailable && currentStrategy === 'regime' && regimeRunning !== null && (<>
 
                     {regimeDryRun && (
                       <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-[10px] md:text-xs font-medium rounded-sm">
@@ -964,13 +1002,20 @@ function AppContent() {
           onClose={() => setAddFundDialogOpen(false)}
           exchanges={exchanges}
           onCreated={async ({ exchange, pair }) => {
-            await fetchExchanges()
+            const refreshed = await fetchExchanges()
             navigate(`/${exchange}/${pair}/config`)
             addToast({
               type: 'success',
               title: `Fund created: ${exchange}/${pair}`,
               message: 'Review the config, then press Start in the fund header to begin trading.',
             })
+            if (!refreshed) {
+              addToast({
+                type: 'warning',
+                title: 'Fund list not refreshed',
+                message: `${exchange}/${pair} was created, but the fund list could not be reloaded. Do not create it again; use Refresh Exchanges.`,
+              })
+            }
           }}
         />
 

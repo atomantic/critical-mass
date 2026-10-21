@@ -13,6 +13,7 @@ const MSG_TYPE = {
   REQUEST: 'request',             // Two-way: gateway -> engine (expects response)
   RESPONSE: 'response',          // Two-way: engine -> gateway (reply to request)
   CONFIG_UPDATE: 'config_update', // One-way: gateway -> engine (config changed)
+  SUBSCRIBE: 'subscribe',         // One-way: gateway -> engine (deliver events held while no gateway was connected)
   PING: 'ping',
   PONG: 'pong',
 };

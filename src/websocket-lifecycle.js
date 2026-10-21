@@ -3,6 +3,8 @@ const { connectWebSocket } = require('./websocket-connection');
 
 const HEARTBEAT_INTERVAL = 30000;
 const MAX_SILENT_INTERVALS = 2;
+const HANDSHAKE_TIMEOUT = 15000;
+const STABLE_CONNECTION_MS = 30000;
 const RECONNECT_BASE_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 60000;
 
@@ -15,7 +17,9 @@ const MAX_RECONNECT_DELAY = 60000;
  * `public/heartbeat`), so a socket that stays silent for MAX_SILENT_INTERVALS
  * heartbeat intervals is dead (NAT timeout, sleep, partition) even though the
  * runtime still reports it open. It is terminated so the usual close →
- * reconnect/backoff path runs.
+ * reconnect/backoff path runs. A socket still CONNECTING after
+ * HANDSHAKE_TIMEOUT (endpoint accepts TCP but never answers the upgrade) is
+ * terminated the same way, since connect() refuses to replace a connecting one.
  */
 const createWebSocketLifecycle = ({
   url, exchange, logger, config, subscribe, handleMessage,
@@ -34,7 +38,9 @@ const createWebSocketLifecycle = ({
   };
 
   const retireSession = current => {
+    clearTimeout(current.handshakeTimeout);
     clearTimeout(current.subscribeTimeout);
+    clearTimeout(current.stableTimeout);
     clearInterval(current.heartbeatInterval);
     session = null;
   };
@@ -50,6 +56,17 @@ const createWebSocketLifecycle = ({
       reconnectAttempts++;
       connect();
     }, delay);
+  };
+
+  // Backoff resets only once a connection proves stable, so an exchange that
+  // accepts the upgrade and then drops us (auth/subscribe rejection, rate limit)
+  // keeps growing the delay instead of retrying at the base delay forever.
+  const markStable = current => {
+    if (current.stable || !isCurrent(current)) return;
+    current.stable = true;
+    clearTimeout(current.stableTimeout);
+    current.stableTimeout = null;
+    reconnectAttempts = 0;
   };
 
   const startHeartbeat = current => {
@@ -75,20 +92,31 @@ const createWebSocketLifecycle = ({
     clearReconnect();
     logger.info(`🔌 [${exchange}] Connecting to ${name}...`, { lifecycle: 'connecting' });
     const socket = connectWebSocket(url);
-    const current = { socket, connected: false, silentIntervals: 0, subscribeTimeout: null, heartbeatInterval: null };
+    const current = { socket, connected: false, silentIntervals: 0, subscribeTimeout: null, stableTimeout: null, stable: false, subscribed: false, heartbeatInterval: null, handshakeTimeout: null };
     session = current;
+    current.handshakeTimeout = setTimeout(() => {
+      current.handshakeTimeout = null;
+      if (!isCurrent(current) || !socket.isConnecting()) return;
+      logger.error(`⏱️ [${exchange}] ${name} handshake not complete after ${HANDSHAKE_TIMEOUT / 1000}s — terminating to trigger reconnect`, {
+        lifecycle: 'handshake-timeout', timeoutMs: HANDSHAKE_TIMEOUT,
+      });
+      socket.terminate();
+    }, HANDSHAKE_TIMEOUT);
 
     socket.on('open', () => {
       if (!isOpen(current) || current.connected) return;
+      clearTimeout(current.handshakeTimeout);
+      current.handshakeTimeout = null;
       logger.info(`✅ [${exchange}] ${name} connected`, { lifecycle: 'connected' });
       current.connected = true;
-      reconnectAttempts = 0;
+      current.stableTimeout = setTimeout(() => markStable(current), STABLE_CONNECTION_MS);
       onOpen();
       const finishConnect = () => {
         current.subscribeTimeout = null;
         if (!isOpen(current)) return;
         subscribe(socket);
         if (!isOpen(current)) return;
+        current.subscribed = true;
         startHeartbeat(current);
         config.onConnect?.();
       };
@@ -98,6 +126,7 @@ const createWebSocketLifecycle = ({
     socket.on('message', data => {
       if (!isOpen(current)) return;
       current.silentIntervals = 0;
+      if (current.subscribed) markStable(current);
       handleMessage(typeof data === 'string' ? data : data.toString(), socket);
     });
     socket.on('close', (code, reason) => {
