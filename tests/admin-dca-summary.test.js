@@ -45,6 +45,7 @@ before(async () => {
       './charts/chartUtils': { formatCurrency: n => `$${n.toFixed(2)}`, formatPrice: String, formatAsset: String },
       '../App': { getBaseCurrency: () => 'ETH', getQuoteCurrency: () => 'USDC' },
       '../utils/api': { pairQuery: () => '?pair=ETH-USDC' },
+      '../utils/apiClient': { apiGet: async url => { const res = await fetch(url); const data = await res.json(); return { ok: res.ok, status: res.status, data, error: res.ok ? null : `HTTP ${res.status}` } } },
       '../utils/dashboardAction.mjs': { runDashboardAction() {} },
     }
     const m = { exports: {} }
