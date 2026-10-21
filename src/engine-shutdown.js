@@ -53,6 +53,18 @@ const joinBounded = async (label, fn, timeoutMs, logger) => {
 };
 
 /**
+ * Race `promise` against `timeoutMs`; resolves 'timeout' when it expires first.
+ * A rejection still propagates so the caller records the stop failure.
+ */
+const raceTimeout = async (promise, timeoutMs) => {
+  let timer;
+  const expired = new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs, 'timeout'); });
+  const outcome = await Promise.race([promise, expired]);
+  clearTimeout(timer);
+  return outcome;
+};
+
+/**
  * Create engine shutdown coordinator
  *
  * @param {Object} options
@@ -157,10 +169,28 @@ const createEngineShutdown = ({
       const engineEntries = regimeEngines ? [...regimeEngines.entries()] : [];
       for (const [key, engine] of engineEntries) {
         shutdownLogger?.info?.(`ℹ️ Stopping regime engine for ${key}...`, { fundKey: key });
-        stopPromises.push(Promise.resolve().then(() => engine.stop()));
+        const stopped = Promise.resolve().then(() => engine.stop());
+        // An engine that is not running yet is still starting: its stop() first
+        // awaits the start, which a slow exchange can hold for minutes. Bound that
+        // join (the supervisor's shutdown flag fences the abandoned start) so it
+        // cannot starve the drain/flush steps; running engines stay unbounded.
+        const starting = engine.getStatus && engine.getStatus().isRunning !== true;
+        stopPromises.push(starting ? raceTimeout(stopped, startJoinTimeoutMs) : stopped);
       }
 
       const results = await Promise.allSettled(stopPromises);
+      // A timed-out stop never completed, so its engine is not flushed below.
+      const abandoned = new Set();
+      results.forEach((result, i) => {
+        if (result.status === 'fulfilled' && result.value === 'timeout') {
+          abandoned.add(i);
+          const fundKey = engineEntries[i][0];
+          shutdownLogger?.warn?.(`⚠️ Engine stop for ${fundKey} still waiting on its start after ${startJoinTimeoutMs}ms — abandoning the join`, {
+            fundKey,
+            timeout: startJoinTimeoutMs,
+          });
+        }
+      });
       for (let i = 0; i < results.length; i++) {
         if (results[i].status === 'rejected') {
           const fundKey = engineEntries[i][0];
@@ -185,7 +215,7 @@ const createEngineShutdown = ({
       // 8. Publish final state & ledger for engines that stopped cleanly,
       // capturing writes that settled during the post-stop drain.
       for (let i = 0; i < results.length; i++) {
-        if (results[i].status === 'fulfilled') {
+        if (results[i].status === 'fulfilled' && !abandoned.has(i)) {
           const [fundKey, engine] = engineEntries[i];
           try {
             engine?.flushForBackup?.();

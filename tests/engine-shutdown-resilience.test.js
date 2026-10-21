@@ -298,6 +298,40 @@ describe('coinbase engine graceful shutdown', () => {
     assert.ok(callLog.some((c) => c.includes('Market data start drain still running')), 'abandoned market join logged');
   });
 
+  it('bounds the stop of an engine still starting so running engines are flushed before the watchdog', async () => {
+    const callLog = [];
+    const exitCodes = [];
+    const coordinator = createEngineShutdown({
+      regimeEngines: new Map([
+        ['btc-usdc', {
+          getStatus: () => ({ isRunning: true }),
+          stop: async () => callLog.push('btc-stop'),
+          flushForBackup: () => callLog.push('btc-flush'),
+        }],
+        ['eth-usdc', {
+          getStatus: () => ({ isRunning: false }),
+          stop: () => new Promise(() => {}),
+          flushForBackup: () => callLog.push('eth-flush'),
+        }],
+      ]),
+      shutdownAllBuffers: () => callLog.push('shutdownAllBuffers'),
+      ipcServer: { flush: async () => callLog.push('ipc-flush'), stop: () => callLog.push('ipc-stop') },
+      logger: { info: () => {}, error: () => {}, warn: (msg) => callLog.push(`warn:${msg}`) },
+      exit: (code) => exitCodes.push(code),
+      startJoinTimeoutMs: 20,
+      watchdogMs: 1000,
+    });
+
+    await coordinator.shutdown('SIGTERM');
+
+    assert.deepEqual(exitCodes, [0], 'exits cleanly before the watchdog');
+    assert.ok(callLog.includes('btc-stop') && callLog.includes('btc-flush'), 'running engine stopped and flushed');
+    assert.ok(!callLog.includes('eth-flush'), 'abandoned starting engine is not flushed');
+    assert.ok(callLog.includes('shutdownAllBuffers'), 'chart buffers flushed');
+    assert.ok(callLog.includes('ipc-flush') && callLog.includes('ipc-stop'), 'IPC flushed and closed');
+    assert.ok(callLog.some((c) => c.includes('Engine stop for eth-usdc still waiting')), 'abandoned stop logged');
+  });
+
   it('bounds a cancelStarts that waits on an in-flight start, as the supervisor cancelAll does', async () => {
     const callLog = [];
     const exitCodes = [];
