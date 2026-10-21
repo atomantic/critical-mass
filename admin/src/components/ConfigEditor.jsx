@@ -1,7 +1,7 @@
 import { describeConfigSaveError } from '../utils/configSaveError.mjs'
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { TIERS as CELESTIAL_TIERS, formatTierCapitalRange } from '../../../shared/celestial-tiers.mjs'
-import { useState, useEffect, useId, useRef } from 'react'
+import { useState, useEffect, useId, useRef, useCallback } from 'react'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 
 // Input component defined OUTSIDE ConfigEditor to prevent re-creation on every render
@@ -130,6 +130,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const [isDirty, setIsDirty] = useState(false)
   const [presets, setPresets] = useState(null)
   const [editingPresets, setEditingPresets] = useState(null)
+  const [presetsError, setPresetsError] = useState(null)
   const [presetsDirty, setPresetsDirty] = useState(false)
   const [savingPresets, setSavingPresets] = useState(false)
   const [presetsMessage, setPresetsMessage] = useState(null)
@@ -191,18 +192,26 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   }, [initialConfig]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch aggressiveness presets for regime mode
+  const loadPresets = useCallback(async (isStale = () => false) => {
+    try {
+      const res = await fetch('/api/presets/aggressiveness')
+      const data = res.ok ? await res.json() : null
+      if (isStale()) return
+      if (data?.presets) {
+        setPresets(data.presets)
+        setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
+        setPresetsError(null)
+      } else setPresetsError(res.ok ? 'Presets unavailable' : `Presets unavailable (HTTP ${res.status})`)
+    } catch (err) {
+      if (!isStale()) setPresetsError('Presets unavailable: request failed')
+    }
+  }, [])
   useEffect(() => {
     if (!isRegime) return
-    fetch('/api/presets/aggressiveness')
-      .then(res => res.json())
-      .then(data => {
-        if (data.presets) {
-          setPresets(data.presets)
-          setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
-        }
-      })
-      .catch(() => {})
-  }, [isRegime])
+    let stale = false
+    loadPresets(() => stale)
+    return () => { stale = true }
+  }, [isRegime, loadPresets])
 
   // Do not render editable defaults or retain a previous draft when this fund's
   // summary has not arrived. All hooks stay above this gate so Retry can mount
@@ -1160,6 +1169,12 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             </fieldset>
 
             {/* Aggressiveness Presets Editor — full width */}
+            {presetsError && !editingPresets && (
+              <div role="alert" className="lg:col-span-2 flex items-center gap-3 text-sm text-yellow-400">
+                <span>{presetsError}</span>
+                <button type="button" onClick={() => loadPresets()} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-0.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs">Retry</button>
+              </div>
+            )}
             {editingPresets && (
               <SectionCard title="Aggressiveness Presets" className="lg:col-span-2">
                 <div className="text-xs text-gray-400 mb-3">

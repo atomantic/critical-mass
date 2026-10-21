@@ -18,10 +18,10 @@ export function createTransactionsReader(fetchImpl = (...args) => fetch(...args)
         fills = await fetchImpl(`/api/${exchange}/regime/fills?${params}`, { signal })
       }
       const [fillsData, statusData, ordersData] = await Promise.all([
-        fills.json().catch(() => null), status.ok ? status.json() : null,
+        fills.json().catch(() => null), status.ok ? status.json().catch(() => null) : null,
         orders.json().catch(() => null),
       ])
-      return { ok: true, json: async () => ({ fillsOk: fills.ok, fillsStatus: fills.status, fillsData, statusData, ordersOk: orders.ok, ordersStatus: orders.status, ordersData }) }
+      return { ok: true, json: async () => ({ fillsOk: fills.ok, fillsStatus: fills.status, fillsData, statusOk: status.ok, statusStatus: status.status, statusData, ordersOk: orders.ok, ordersStatus: orders.status, ordersData }) }
     },
   })
   return {
