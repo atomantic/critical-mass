@@ -126,6 +126,14 @@ const createUpDownService = (io, deps) => {
   const loadState = () => {
     quarantineIfUnreadable(stateFilePath, updownLogger);
     const saved = readJSON(stateFilePath, null);
+    // A reload is a replacement, not a merge: after a restore, fields absent from
+    // the restored file must not keep pre-restore in-memory values.
+    contract = { expiry: null, target: null, stop: null, range: null, direction: null };
+    position = null;
+    signalHistory.length = 0;
+    signalEngine.setStabilityState({});
+    signalEngine.setFlushSetupState?.({});
+    perpBook.hydrate({});
     if (!saved) return;
     if (saved.contract) contract = { ...contract, ...saved.contract };
     if (saved.position) position = saved.position;
