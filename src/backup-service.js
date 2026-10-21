@@ -1292,14 +1292,18 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     // The applier cleans staging itself once a journal exists; this covers the
     // earlier refusals (invalid staged set, snapshot or journal write failure),
     // which return before one is written.
-    if (applied.success || applied.rolledBack) fs.rmSync(tempDir, { recursive: true, force: true });
+    // Post-commit: a failure here must not turn a committed restore into an error.
+    const cleanStage = () => {
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (e) {
+        logger.warn(`⚠️ 💾 Could not remove restore staging directory for ${filename}: ${e.message}`, { action: "restore-stage-cleanup", filename });
+      }
+    };
+    if (applied.success && override) invalidateConfigCache();
+    if (applied.success || applied.rolledBack) cleanStage();
 
     if (!applied.success) {
       return { success: false, code: applied.code, error: applied.error, rolledBack: applied.rolledBack, ...(applied.recovery ? { recovery: applied.recovery } : {}) };
     }
-
-    // Only now can a reader see the new config.json.
-    if (override) invalidateConfigCache();
 
     return { success: true, filesRestored: applied.filesRestored, configRestored: Boolean(override), legacy, droppedFields };
   } catch (error) {
