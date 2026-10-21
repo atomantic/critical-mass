@@ -1,6 +1,6 @@
 import React from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import Dashboard from '../src/components/Dashboard'
 import ManualTrades from '../src/components/ManualTrades'
 import { ToastProvider } from '../src/components/Toast'
@@ -37,6 +37,39 @@ it('renders the DCA Export to Regime confirmation through the shared modal dialo
   expect(within(dialog).getByRole('button', { name: 'Confirm Export' })).toBeTruthy()
 
   fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+})
+
+it('keeps the DCA export dialog open while the export is in flight and sends the confirmed payload', async () => {
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const exportBodies = []
+  vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
+    if (url.includes('convert-dca')) {
+      const body = JSON.parse(options.body)
+      if (body.preview) return { ok: true, status: 200, json: async () => preview }
+      exportBodies.push(body)
+      await gate
+      return { ok: true, status: 200, json: async () => ({ summary: { pendingOrders: 2 } }) }
+    }
+    return { ok: true, status: 200, json: async () => (url.includes('regime/status') ? { running: false } : {}) }
+  }))
+  render(<ToastProvider><Dashboard summary={summary} exchange="coinbase" /></ToastProvider>)
+  fireEvent.click(await screen.findByRole('button', { name: 'Export to Regime' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Export to Regime Engine' })
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm Export' }))
+  await waitFor(() => expect(exportBodies).toHaveLength(1))
+  expect(exportBodies[0]).toEqual({ preview: false, merge: true })
+
+  const cancel = new Event('cancel', { cancelable: true })
+  act(() => { dialog.dispatchEvent(cancel) })
+  expect(cancel.defaultPrevented).toBe(true)
+  fireEvent.click(dialog)
+  expect(screen.getByRole('dialog', { name: 'Export to Regime Engine' })).toBeTruthy()
+  expect(within(dialog).getByRole('button', { name: 'Cancel' }).disabled).toBe(true)
+  expect(within(dialog).getByRole('button', { name: 'Exporting...' }).disabled).toBe(true)
+
+  release()
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
 })
 
