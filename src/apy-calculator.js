@@ -8,6 +8,7 @@
 
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { createContextLogger } = require('./logger');
+const { DEFAULT_MAX_USDC_DEPLOYED } = require('./fund-defaults');
 
 /**
  * Calculate APY and return metrics.
@@ -46,7 +47,7 @@ const { createContextLogger } = require('./logger');
 const calculateApyMetrics = (positionState, config, marketState) => {
   const now = Date.now();
   const startTime = positionState.engineStartTime;
-  const maxUsdcDeployed = config.maxUsdcDeployed || 10000;
+  const maxUsdcDeployed = config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
   const realizedReturn = positionState.realizedPnL || 0;
 
   const autoDerivedCapital = Math.max(0, roundUSDC(maxUsdcDeployed - realizedReturn));
@@ -58,7 +59,7 @@ const calculateApyMetrics = (positionState, config, marketState) => {
             ? positionState.originalCapital
             : autoDerivedCapital));
 
-  const initialCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
+  const initialCapital = positionState.initialCapital || config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
 
   // Cost basis of currently-held position (bodies + reserves).
   const bodyCost = (positionState.celestialBodies || [])
@@ -235,7 +236,7 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders,
 
   const ensureDepositedCapital = () => {
     if (!positionState.depositedCapital || positionState.depositedCapital === 0) {
-      const maxUsdc = config.maxUsdcDeployed || 10000;
+      const maxUsdc = config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
       const profits = positionState.realizedPnL || 0;
       positionState.depositedCapital = positionState.originalCapital > 0
         ? positionState.originalCapital
@@ -255,7 +256,7 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders,
   if (earliestOrderTime !== Infinity) {
     if (!positionState.engineStartTime || positionState.engineStartTime > earliestOrderTime) {
       positionState.engineStartTime = earliestOrderTime;
-      positionState.initialCapital = config.maxUsdcDeployed || 10000;
+      positionState.initialCapital = config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
       if (!positionState.originalCapital) {
         positionState.originalCapital = positionState.initialCapital;
       }
@@ -267,7 +268,7 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders,
       return;
     }
     if (!positionState.originalCapital) {
-      positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
+      positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
     }
     ensureDepositedCapital();
     logTrackingState(
@@ -279,7 +280,7 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders,
 
   if (positionState.engineStartTime) {
     if (!positionState.originalCapital) {
-      positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
+      positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
     }
     ensureDepositedCapital();
     logTrackingState(
@@ -290,7 +291,7 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders,
   }
 
   positionState.engineStartTime = Date.now();
-  positionState.initialCapital = config.maxUsdcDeployed || 10000;
+  positionState.initialCapital = config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
   positionState.originalCapital = positionState.initialCapital;
   positionState.depositedCapital = positionState.initialCapital;
   logTrackingState(

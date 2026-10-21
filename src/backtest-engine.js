@@ -510,7 +510,6 @@ const runBacktest = async (params, preFetchedPrices = null) => {
   let fibTotalBuys = 0;
 
   // Calculated rates
-  const netFeePercent = feePercent - rebatePercent;
   const sellMultiplier = 1 + (sellMarkupPercent / 100);
   const holdbackRate = holdbackPercent / 100;
 

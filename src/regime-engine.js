@@ -65,6 +65,7 @@ const celestialHierarchy = require('./celestial-hierarchy');
 const { DEFAULT_FEE_RATE_PER_SIDE } = require('../shared/fee-defaults.mjs');
 const { fmtCurrency: fmtPrice, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
+const { DEFAULT_MAX_USDC_DEPLOYED } = require('./fund-defaults');
 const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
 const { createTtlStore } = require('./ttl-store');
 
@@ -3163,7 +3164,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }, Infinity);
       if (earliestFillTime !== Infinity && (!positionState.engineStartTime || positionState.engineStartTime > earliestFillTime)) {
         positionState.engineStartTime = earliestFillTime;
-        positionState.initialCapital = config.maxUsdcDeployed || 10000;
+        positionState.initialCapital = config.maxUsdcDeployed || DEFAULT_MAX_USDC_DEPLOYED;
         // Only set originalCapital if not already set (preserve true starting value)
         if (!positionState.originalCapital) {
           positionState.originalCapital = positionState.initialCapital;
@@ -6647,7 +6648,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     if (!target) return;
 
-    const result = await manualMergeBody(dust.id, { targetId: target.id, label: 'Auto-consolidation (dust)' });
+    const result = await manualMergeBody(dust.id, { targetId: target.id, label: 'Auto-consolidation (dust)' })
+      .catch((err) => ({ success: false, message: err.message }));
     if (!result.success) {
       dustMergeRetryAfter = Date.now() + 300000; // 5 min backoff (bounds failure re-log)
       logger.warn(`⚠️ [${exchange}] Dust auto-consolidation deferred: ${result.message}`);
@@ -9623,27 +9625,42 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { outcome };
     };
 
-    const sourceCancel = await cancelMergeLeg({
-      leg: 'Source', body: source, snapshot: sourceSnapshot,
-      dropSnapshots: [source, target], restoreSource: false,
-    });
-    if (sourceCancel.abort) return sourceCancel.abort;
+    // A throw (e.g. a rejected cancelOrder) must not leave the Race-3 snapshots
+    // registered: handleOrderFillImpl checks pendingMergeTpOrders BEFORE the live
+    // body, so a stale entry would book a later full TP fill without closing the
+    // cycle (#1342). Entries already moved by completeMergeSnapshot are gone from
+    // pending, so this only drops the unconsumed ones.
+    let merged;
+    try {
+      const sourceCancel = await cancelMergeLeg({
+        leg: 'Source', body: source, snapshot: sourceSnapshot,
+        dropSnapshots: [source, target], restoreSource: false,
+      });
+      if (sourceCancel.abort) return sourceCancel.abort;
 
-    const targetCancel = await cancelMergeLeg({
-      leg: 'Target', body: target, snapshot: targetSnapshot,
-      dropSnapshots: [sourceSnapshot, target], restoreSource: true,
-    });
-    if (targetCancel.abort) return targetCancel.abort;
+      const targetCancel = await cancelMergeLeg({
+        leg: 'Target', body: target, snapshot: targetSnapshot,
+        dropSnapshots: [sourceSnapshot, target], restoreSource: true,
+      });
+      if (targetCancel.abort) return targetCancel.abort;
 
-    // Merge bodies (pure data)
-    const merged = celestialHierarchy.mergeBodies(target, source, config.maxUsdcDeployed, logger);
+      // Merge bodies (pure data)
+      merged = celestialHierarchy.mergeBodies(target, source, config.maxUsdcDeployed, logger);
 
-    // Remove source from celestialBodies
-    positionState.celestialBodies = positionState.celestialBodies.filter(b => b.id !== source.id);
+      // Remove source from celestialBodies
+      positionState.celestialBodies = positionState.celestialBodies.filter(b => b.id !== source.id);
 
-    // Retain both snapshots for late-arriving fills (5-minute TTL).
-    completeMergeSnapshot(sourceSnapshot);
-    completeMergeSnapshot(targetSnapshot);
+      // Retain both snapshots for late-arriving fills (5-minute TTL).
+      completeMergeSnapshot(sourceSnapshot);
+      completeMergeSnapshot(targetSnapshot);
+    } catch (err) {
+      for (const snap of [sourceSnapshot, targetSnapshot]) {
+        if (snap.tpOrderId && pendingMergeTpOrders.get(snap.tpOrderId) === snap) {
+          pendingMergeTpOrders.delete(snap.tpOrderId);
+        }
+      }
+      throw err;
+    }
 
     // Check cascading promotions and sync aggregates
     celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);

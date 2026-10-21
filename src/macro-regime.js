@@ -164,6 +164,9 @@ const classifyMacroMode = (score, currentMode, hysteresis, thresholds) => {
   }
 };
 
+// Floor for the staleness limit (the limit is max of this and 3x update interval)
+const MACRO_STALE_MIN_MS = 6 * 3600 * 1000;
+
 /**
  * Create macro regime instance
  * @param {string} exchange - Exchange name
@@ -182,6 +185,7 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
   let lastUpdate = 0;
   let candleCounts = { hourly: 0, daily: 0 };
   let updateTimer = null;
+  let staleLogged = false;
 
   // Long-term bias / depression score (Phase 1 of auto-aggressiveness)
   // This is a separate signal layered on top of the existing macro EMAs.
@@ -346,10 +350,33 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
   const getMode = () => mode;
 
   /**
-   * Get multipliers for current mode from config
+   * True when the mode has not been refreshed within MACRO_STALE_MIN_MS or
+   * 3x the update interval, whichever is longer. A mode restored from disk
+   * (or kept through failed/short-candle refreshes) must not keep sizing
+   * entries once it can no longer be trusted. Logs once per transition.
+   * @returns {boolean}
+   */
+  const isStale = () => {
+    const limit = Math.max(MACRO_STALE_MIN_MS, 3 * (config.macroUpdateIntervalMs || 300000));
+    const stale = Date.now() - lastUpdate > limit;
+    if (stale !== staleLogged) {
+      staleLogged = stale;
+      // A never-refreshed neutral RANGING default is not worth announcing.
+      if (stale && mode !== 'RANGING') {
+        logger.warn(`⚠️ [${exchange}] Macro mode ${mode} is stale (last refreshed ${lastUpdate ? new Date(lastUpdate).toISOString() : 'never'}) — using neutral multipliers`, { mode, lastUpdate, staleLimitMs: limit });
+      } else if (!stale) {
+        logger.info(`✅ [${exchange}] Macro mode ${mode} refreshed — resuming computed multipliers`, { mode, lastUpdate });
+      }
+    }
+    return stale;
+  };
+
+  /**
+   * Get multipliers for current mode from config (neutral when stale)
    * @returns {MacroMultipliers}
    */
   const getMultipliers = () => {
+    if (isStale()) return { sizeMult: 1.0, tpMult: 1.0, offsetMult: 1.0 };
     switch (mode) {
       case 'ACCUMULATION':
         return {
@@ -383,6 +410,7 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
     score,
     emas: { ...emas },
     lastUpdate,
+    stale: isStale(),
     candles: { ...candleCounts },
     // Long-term bias is intentionally not persisted to disk — it's
     // recomputed from cached candles on every update cycle.
