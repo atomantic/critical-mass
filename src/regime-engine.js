@@ -3597,6 +3597,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // A flash-cancel sweep (#1028) routes the fills it discovers through the
       // fill gate, so let it settle before the gate closes. Bounded like the
       // fill drain; the fund drain after stop() still joins its pending write.
+      // The sweep and the fill drain share ONE fillDrainMs budget, so stop()'s
+      // waits stay inside the shutdown watchdog's budget (engine-shutdown.js).
+      const drainDeadline = Date.now() + fillDrainMs;
       if (flashCancelSweep) {
         let timer;
         const settled = await Promise.race([
@@ -3614,7 +3617,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // top-level fills are refused first; the drain is bounded so a hung
       // exchange call cannot block shutdown.
       engineLocks.closeFillGate();
-      const drain = await engineLocks.waitForFillsIdle(fillDrainMs);
+      const drain = await engineLocks.waitForFillsIdle(Math.max(0, drainDeadline - Date.now()));
       if (!drain.idle) {
         logger.warn(
           `⚠️ [${exchange}] Shutdown: ${drain.pending} fill handler(s) still in flight after ${fillDrainMs / 1000}s (orders: ${drain.orderIds.join(', ')}) — saving state anyway; startup recovery will repair`,

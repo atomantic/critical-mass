@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-1408] A fund or market-data start stuck on a slow exchange no longer stops the engine from saving on restart** — Engine shutdown now waits at most 2s for in-flight fund starts and for market-data starts, logs what it abandoned, and goes on to stop and flush every running fund. The in-process watchdog is 22s (PM2 `kill_timeout` stays 25s), and `stop()`'s flash-cancel and fill-drain waits share one 10s budget, so the total is bounded.
 - **Fills recorded while a fund is stopped land in the active cycle** — The stopped-fund market-data service now anchors its fill ledger on the persisted `activeCycleId`, so entry and TP fills no longer get filed in the previous finished cycle (which undercounted the per-cycle buy limit after the next start).
 - **A stale macro regime mode no longer sizes entries** — When the macro mode has not been refreshed for 3x the update interval (at least 6 hours), e.g. after a restart during a candle-API outage, `getMultipliers()` returns neutral 1.0x values and the macro status reports `stale: true`. Staleness is logged once when it starts and once when a refresh recovers it.
 - **Chart interval, log toolbar and Retry buttons meet touch-target size** — The BTC chart interval, range and view buttons, the log viewer's Retry/Clear/Flush/Fullscreen buttons and the Retry buttons in the regime transactions and UpDown signal panels are at least 44px on touch screens, with desktop sizing unchanged.

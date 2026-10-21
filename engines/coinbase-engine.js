@@ -885,10 +885,11 @@ startup().catch((err) => {
 // ============ Graceful Shutdown ============
 
 // Install signal handlers with error handling and watchdog
-// Must exceed FILL_DRAIN_MS (the bounded in-flight-fill drain in regime-engine
-// stop()) plus the state save, and stay below `kill_timeout` for the engines in
-// ecosystem.config.cjs. Kept a literal: tests/pm2-kill-timeout.test.js parses it.
-const SHUTDOWN_WATCHDOG_MS = 15000;
+// Must cover the bounded pre-stop joins plus FILL_DRAIN_MS (the shared flash-
+// cancel/in-flight-fill drain in regime-engine stop()) and the post-stop process
+// drain, and stay below `kill_timeout` for the engines in ecosystem.config.cjs.
+// Kept a literal: tests/pm2-kill-timeout.test.js parses it.
+const SHUTDOWN_WATCHDOG_MS = 22000;
 
 const engineShutdown = createEngineShutdown({
   ipcServer,
