@@ -8783,6 +8783,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         assetQty: intent.size ?? 0,
         sizeUsdc: intent.sizeUsdc ?? 0,
         placedAt: intent.createdAt ?? Date.now(),
+        ...(Number.isFinite(intent.staleMs) && intent.staleMs > 0 ? { staleMs: intent.staleMs } : {}),
       });
     }
     return adopted;
