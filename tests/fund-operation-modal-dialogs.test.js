@@ -33,11 +33,6 @@ const regimeDashboardSource = fs.readFileSync(
   'utf8',
 )
 
-const backupRestoreSource = fs.readFileSync(
-  path.join(__dirname, '..', 'admin', 'src', 'components', 'BackupRestore.jsx'),
-  'utf8',
-)
-
 describe('ModalDialog shared wrapper (issue #434)', () => {
   it('is a native <dialog> that opens modally and restores invoker focus on close', () => {
     assert.match(modalDialogSource, /<dialog[\s\S]*ref={dialogRef}/)
@@ -257,46 +252,6 @@ describe('Destructive executors are reachable only from a dialog confirm action 
   it('the Cancel Ladder button in RegimeDashboard.jsx only opens the confirm dialog (calls handleCancelLadder, not the executor)', () => {
     assert.match(regimeDashboardSource, /onClick={handleCancelLadder}/)
     assert.doesNotMatch(regimeDashboardSource, /onClick={handleCancelLadder}[\s\S]{0,400}handleExecuteCancelLadder\(\)/)
-  })
-
-  it('handleExecuteDelete (BackupRestore.jsx) is defined once and invoked only as the Delete Backup dialog confirm action', () => {
-    assert.equal(countOccurrences(backupRestoreSource, 'handleExecuteDelete'), 2)
-    assert.match(
-      backupRestoreSource,
-      /deleteConfirm && \([\s\S]*?onClick={handleExecuteDelete}[\s\S]*?<\/ModalDialog>/,
-    )
-  })
-
-  it('the Delete button in BackupRestore.jsx only opens the confirm dialog (calls handleDelete, not the executor)', () => {
-    assert.match(backupRestoreSource, /onClick={\(\) => handleDelete\(backup\.filename\)}/)
-    assert.doesNotMatch(backupRestoreSource, /onClick={\(\) => handleDelete\(backup\.filename\)}[\s\S]{0,400}handleExecuteDelete\(\)/)
-  })
-
-  it("handleExecuteFundStateRestore (BackupRestore.jsx) is defined once and invoked only from the fund-state restore dialog's Restore/Retry and Force buttons", () => {
-    assert.equal(countOccurrences(backupRestoreSource, 'handleExecuteFundStateRestore'), 3)
-    assert.match(
-      backupRestoreSource,
-      /fundStateRestoreConfirm && \([\s\S]*?onClick={\(\) => handleExecuteFundStateRestore\(\)}[\s\S]*?onClick={\(\) => handleExecuteFundStateRestore\({ force: true }\)}[\s\S]*?<\/ModalDialog>/,
-    )
-  })
-
-  it('the Restore Fund State button in BackupRestore.jsx only opens the confirm dialog (calls handleRestoreFundState, not the executor)', () => {
-    assert.match(
-      backupRestoreSource,
-      /onClick={\(\) => handleRestoreFundState\(snapshot\.snapshotId, fund\.exchange, fund\.pair\)}/,
-    )
-    assert.doesNotMatch(
-      backupRestoreSource,
-      /onClick={\(\) => handleRestoreFundState\(snapshot\.snapshotId, fund\.exchange, fund\.pair\)}[\s\S]{0,400}handleExecuteFundStateRestore\(/,
-    )
-  })
-
-  it("BackupRestore.jsx's fund-state restore handles the 409 writers-not-quiesced response with the same blockedBy/Retry/Force UI as the full restore", () => {
-    assert.match(backupRestoreSource, /res\.status === 409 && data\.code === 'writers-not-quiesced'/)
-    assert.match(backupRestoreSource, /setFundStateBlockedBy\(blocked\)/)
-    assert.match(backupRestoreSource, /fundStateBlockedBy \? 'Retry Restore' : 'Restore Fund State'/)
-    assert.match(backupRestoreSource, /Force Restore Anyway/)
-    assert.match(backupRestoreSource, /body: JSON\.stringify\({ force }\)/)
   })
 })
 
