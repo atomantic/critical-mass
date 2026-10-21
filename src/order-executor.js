@@ -1425,6 +1425,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     body_tp: 'body_tp',
   });
 
+  const adoptedEntryStaleMs = (intent) => {
+    if (Number.isFinite(intent?.staleMs) && intent.staleMs > 0) return intent.staleMs;
+    const longest = Math.max(config.orderStaleMs || 0, config.maxIntervalMs || 0);
+    return longest > 0 ? longest : undefined;
+  };
+
   /**
    * Adopt an exchange order that an operator matched back to an unresolved
    * placement intent, putting it under normal tracking and fill processing as
@@ -1437,12 +1443,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @param {{action?: string, price?: number, size?: number, sizeUsdc?: number, staleMs?: number, bodyId?: string, ladderIndex?: number, createdAt?: number}} intent - The intent it satisfies
    * @returns {{tracked: boolean, message: string}} What was done
    */
-  const adoptedEntryStaleMs = (intent) => {
-    if (Number.isFinite(intent?.staleMs) && intent.staleMs > 0) return intent.staleMs;
-    const longest = Math.max(config.orderStaleMs || 0, config.maxIntervalMs || 0);
-    return longest > 0 ? longest : undefined;
-  };
-
   const adoptPlacement = (order, intent) => {
     const orderId = order?.orderId;
     if (!orderId) return { tracked: false, message: 'Exchange order carried no order id — nothing to adopt' };
