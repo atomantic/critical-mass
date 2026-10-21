@@ -1,0 +1,1 @@
+- **[issue-1355] Ladder placement, preview and re-ladder share one input builder** — The three `buildLadder` call sites now go through a single `buildLadderFromMarket` helper so a new market input cannot make the previewed ladder differ from the placed one. No behavior change.
