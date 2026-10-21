@@ -220,6 +220,20 @@ describe('repairHistoricalFillAnnotations', () => {
     assert.equal(byTrade(ledger, 'm-sell-a').bodyBtcQty, 0.01);
   });
 
+  it('matches interleaved multi-row sell orders chronologically by their aggregate timestamp', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'i-buy1', orderId: 'i-buy1-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'i-buy2', orderId: 'i-buy2-o', side: 'buy', price: '51000', size: '0.01', tradeTime: at(3.5) }, null, { skipPersist: true });
+    // Order X starts first but completes last (aggregate timestamp t5); order Y completes at t4.
+    ledger.ingestFill({ tradeId: 'i-x1', orderId: 'i-x-o', side: 'sell', price: '60000', size: '0.005', tradeTime: at(3) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'i-y1', orderId: 'i-y-o', side: 'sell', price: '60000', size: '0.01', tradeTime: at(4) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'i-x2', orderId: 'i-x-o', side: 'sell', price: '60000', size: '0.005', tradeTime: at(5) }, null, { skipPersist: true });
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+
+    assert.equal(byTrade(ledger, 'i-buy2').sellOrderId, 'i-y-o', 'the earlier-completing sell claims the nearest earlier buy');
+    assert.equal(byTrade(ledger, 'i-buy1').sellOrderId, 'i-x-o');
+  });
+
   it('moves -recovered- cycle fills inside the current cycle range only', () => {
     const { ledger, persistCount } = makeLedger();
     ledger.ingestFill({ tradeId: 'c-live', orderId: 'c-live-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(5) }, null, { skipPersist: true });

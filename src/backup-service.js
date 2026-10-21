@@ -460,7 +460,7 @@ const validateBackupArchiveAsync = async (zipPath, { allowLegacy = false } = {})
  */
 const archiveValidityCache = new Map();
 
-const archiveValidityKey = (filePath, stats) => `${filePath}:${Math.round(stats.mtimeMs)}:${stats.size}`;
+const archiveValidityKey = (filePath, stats) => `${filePath}:${stats.mtimeMs}:${stats.size}`;
 
 /**
  * Cached validity of an archive file in its current state (legacy pre-manifest

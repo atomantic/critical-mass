@@ -833,9 +833,13 @@ const annotateBodySells = ({ fillLedger, positionState, logger, baseCurrency, ex
     if (f.untrackedSell || f.cycleAttribution === 'timeframe'
       || ((f.isBodyOwned || f.isSatellite) && !invalidAnnotation)) skippedOrderIds.add(f.orderId);
   }
+  // Chronological by aggregate (last-row) timestamp: grouping keeps each order at
+  // its first row's position, so interleaved partial fills of two orders would
+  // otherwise let the later-completing order claim the nearer buy first.
   const sellsToAnnotate = groupFillsByOrder([...sellRowsByOrder]
     .filter(([orderId]) => !skippedOrderIds.has(orderId))
-    .flatMap(([, rows]) => rows));
+    .flatMap(([, rows]) => rows))
+    .sort((a, b) => a.timestamp - b.timestamp);
   const buyFills = groupFillsByOrder(cycleFills.filter(f => f.side === 'buy'));
   const consumedBuyOrderIds = new Set();
   let annotatedCount = 0;
