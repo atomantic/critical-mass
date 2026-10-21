@@ -94,4 +94,23 @@ const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req,
  */
 const tradeResultStatusCode = (result) => (result?.status === 'buy_fill_pending' ? 202 : 200);
 
-module.exports = { resolvePairParam, getIPC, getSafeIPC, withConfiguredPair, asyncRoute, tradeResultStatusCode };
+const MAX_PAGE_LIMIT = 500;
+
+/**
+ * Opt-in paging for list endpoints. Returns null when the request carries neither
+ * `limit` nor `offset` (callers keep their legacy full response); otherwise a
+ * bounded `{ limit, offset }` (limit defaults to and is capped at MAX_PAGE_LIMIT).
+ * @param {Object} query - Express req.query
+ * @returns {{limit: number, offset: number}|null}
+ */
+const parsePaging = (query) => {
+  if (query?.limit === undefined && query?.offset === undefined) return null;
+  const limit = parseInt(query.limit, 10);
+  const offset = parseInt(query.offset, 10);
+  return {
+    limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, MAX_PAGE_LIMIT) : MAX_PAGE_LIMIT,
+    offset: Number.isFinite(offset) && offset > 0 ? offset : 0,
+  };
+};
+
+module.exports = { parsePaging, MAX_PAGE_LIMIT, resolvePairParam, getIPC, getSafeIPC, withConfiguredPair, asyncRoute, tradeResultStatusCode };

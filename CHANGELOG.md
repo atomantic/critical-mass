@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **DCA transactions, UpDown trades and Sentinel alerts support paging** — `GET /api/:exchange/transactions`, `/api/updown/trades` and `/api/sentinel/alerts` accept opt-in `?limit=` (default and max 500) and `?offset=` and report `total`; the UpDown summary still covers every trade. Requests without paging params return the same responses as before.
 - **Restoring an old archive with its source config works as documented** — `POST /api/backups/:filename/restore` now passes `legacyBaseConfig` through to the restore, so the recommended path in UPGRADE.md for archives taken before configuration manifests existed no longer fails with "legacy-archive-missing-base".
 - **UpDown paper-book reset and hydrate are guarded and backed up** — `scripts/updown-pnl-snapshot.js --reset-book` and `--hydrate-state` refuse while the gateway is running, because it would overwrite the rewritten book. They also copy `updown-state.json` to a timestamped backup before writing, since the previous closed trades and realized P&L cannot be rebuilt.
 - **Config saves keep the engine's capital-correction records** — Saving the Config page no longer erases the engine's record of capital corrections it has already applied, which could let a pending correction be applied twice after a restart.
