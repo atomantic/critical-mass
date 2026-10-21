@@ -46,9 +46,12 @@ function listLiveData() {
   const base = path.join(REPO_ROOT, 'data');
   const out = [];
   const walk = (dir) => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
       const full = path.join(dir, entry.name);
-      const st = fs.lstatSync(full);
+      let st;
+      try { st = fs.lstatSync(full); } catch { continue; } // vanished mid-walk
       out.push(`${path.relative(base, full)}:${st.size}:${st.mtimeMs}`);
       if (entry.isDirectory()) walk(full);
     }
@@ -64,7 +67,8 @@ function listLiveData() {
 function runOwned(options = {}) {
   const { extraArgs = [], killGraceMs = KILL_GRACE_MS } = options;
   const childArgs = options.childArgs || defaultChildArgs(extraArgs);
-  const liveBefore = options.childArgs ? null : listLiveData();
+  // CI only: on a dev box the PM2 engines legitimately write data/ while tests run.
+  const liveBefore = !options.childArgs && process.env.CI ? listLiveData() : null;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), ROOT_PREFIX));
   // Disposable data root: src/paths.js resolves DATA_DIR from this, so the
   // suite can never reach the checkout's live data/.
