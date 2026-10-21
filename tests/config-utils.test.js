@@ -329,6 +329,11 @@ describe('validateRegimeConfig', () => {
     assert.equal(validateRegimeConfig({ atrPeriod: 14 }).valid, true);
   });
 
+  it('uses the shared DEFAULT_MAX_USDC_DEPLOYED as the regime default cap', () => {
+    const { DEFAULT_MAX_USDC_DEPLOYED } = require('../src/fund-defaults');
+    assert.equal(REGIME_DEFAULTS.maxUsdcDeployed, DEFAULT_MAX_USDC_DEPLOYED);
+  });
+
   it('re-exports the preset contract and accepts all complete defaults', () => {
     const contract = require('../src/regime-preset-contract');
     assert.equal(DEFAULT_AGGRESSIVENESS_PRESETS, contract.DEFAULT_AGGRESSIVENESS_PRESETS);
