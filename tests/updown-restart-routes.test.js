@@ -46,7 +46,8 @@ describe('POST /api/updown/restart validates PM2 process (issue #534)', () => {
     const childProcess = require('child_process');
     const realExec = childProcess.exec;
     const commands = [];
-    childProcess.exec = (cmd, callback) => {
+    childProcess.exec = (cmd, options, done) => {
+      const callback = typeof options === 'function' ? options : done;
       commands.push(cmd);
       callback(null, cmd.includes('pm2 describe') ? '{"name": "critical-mass"}' : 'restarted', '');
     };
@@ -69,6 +70,36 @@ describe('POST /api/updown/restart validates PM2 process (issue #534)', () => {
       assert.equal(res.body.success, true);
       assert.equal(res.body.message, 'Restarting...');
       assert.ok(commands.some(cmd => cmd.includes('pm2 describe')), 'pre-flight check ran through the stub');
+    } finally {
+      childProcess.exec = realExec;
+      delete require.cache[require.resolve('../src/routes/updown-routes')];
+    }
+  });
+
+  it('answers 503 naming an unresponsive PM2 daemon when the pre-flight check times out', async () => {
+    const childProcess = require('child_process');
+    const realExec = childProcess.exec;
+    const seenOptions = [];
+    childProcess.exec = (cmd, options, done) => {
+      seenOptions.push(options);
+      done(Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }), '', '');
+    };
+    try {
+      delete require.cache[require.resolve('../src/routes/updown-routes')];
+      const registerUpdownRoutes = require('../src/routes/updown-routes');
+      const app = createFakeApp();
+      registerUpdownRoutes(app, {
+        updownService: { getTradeContext: () => ({}) },
+        candleCache: { getAllCandles: () => [] },
+        readJSON: () => ({ trades: [], nextId: 1 }),
+        writeJSON: () => {},
+        DATA_DIR: '/tmp/updown-test',
+      });
+
+      const res = await invoke(app, 'POST /api/updown/restart');
+      assert.equal(res.statusCode, 503);
+      assert.match(res.body.error, /PM2 did not respond/);
+      assert.ok(seenOptions[0]?.timeout > 0, 'the pre-flight exec is bounded');
     } finally {
       childProcess.exec = realExec;
       delete require.cache[require.resolve('../src/routes/updown-routes')];
