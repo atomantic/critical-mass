@@ -1,7 +1,7 @@
 import { Suspense, useRef, useState, useCallback, useMemo } from 'react'
 import { Canvas, useThree, invalidate } from '@react-three/fiber'
-import { OrbitControls } from '@react-three/drei'
 import { EffectComposer, Bloom } from '@react-three/postprocessing'
+import OrbitControlsLite from './celestial/OrbitControlsLite'
 import CelestialScene from './celestial/CelestialScene'
 import CelestialBody from './celestial/CelestialBody'
 import BlackHole from './celestial/BlackHole'
@@ -86,7 +86,7 @@ const SingleBodyScene = ({ body }) => {
       <pointLight position={[0, 3, 3]} intensity={1.5} distance={15} decay={2} />
       <pointLight position={[0, 0, 0]} color={TIER_COLORS[body.tier]} intensity={0.8} distance={10} decay={2} />
 
-      <OrbitControls enablePan={false} enableZoom={false} autoRotate autoRotateSpeed={1.5} minPolarAngle={Math.PI * 0.3} maxPolarAngle={Math.PI * 0.7} />
+      <OrbitControlsLite enablePan={false} enableZoom={false} autoRotate autoRotateSpeed={1.5} minPolarAngle={Math.PI * 0.3} maxPolarAngle={Math.PI * 0.7} />
 
       {renderBody(bodyProps)}
 
