@@ -2,7 +2,7 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { calculateApyMetrics, initializeApyTracking } = require('../src/apy-calculator');
+const { calculateApyMetrics, initializeApyTracking, backfillEngineStart } = require('../src/apy-calculator');
 
 // Helpers
 const MS_PER_HOUR = 60 * 60 * 1000;
@@ -620,5 +620,35 @@ describe('initializeApyTracking', () => {
     initializeApyTracking(pos, config, 'test-exchange', () => [{ placedAt: orderTime }]);
 
     assert.equal(pos.originalCapital, 9500, 'Should preserve existing originalCapital on backfill');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// backfillEngineStart (single writer shared by initializeApyTracking and
+// regime-engine's ledger backfill)
+// ---------------------------------------------------------------------------
+describe('backfillEngineStart', () => {
+  it('moves engineStartTime back and seeds capital when no start is set', () => {
+    const pos = {};
+    const moved = backfillEngineStart(pos, { maxUsdcDeployed: 500 }, 1000);
+    assert.equal(moved, true);
+    assert.equal(pos.engineStartTime, 1000);
+    assert.equal(pos.initialCapital, 500);
+    assert.equal(pos.originalCapital, 500);
+    assert.equal(pos.depositedCapital, undefined, 'does not touch depositedCapital');
+  });
+
+  it('is a no-op when the existing start is at or before the candidate time', () => {
+    const pos = { engineStartTime: 500, initialCapital: 7, originalCapital: 7 };
+    assert.equal(backfillEngineStart(pos, { maxUsdcDeployed: 500 }, 1000), false);
+    assert.equal(pos.engineStartTime, 500);
+    assert.equal(pos.initialCapital, 7);
+  });
+
+  it('preserves an existing originalCapital while moving the start earlier', () => {
+    const pos = { engineStartTime: 2000, originalCapital: 123 };
+    assert.equal(backfillEngineStart(pos, { maxUsdcDeployed: 500 }, 1000), true);
+    assert.equal(pos.engineStartTime, 1000);
+    assert.equal(pos.originalCapital, 123);
   });
 });
