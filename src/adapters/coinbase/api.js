@@ -1,12 +1,11 @@
 // @ts-check
-const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { getAuthHeaders } = require('./auth');
 const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
 const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
-const { validateCoinbaseKeys } = require('../key-validation');
+const { validateCoinbaseKeys, createKeyFileLoader } = require('../key-validation');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -38,56 +37,20 @@ const createCoinbaseAdapter = (keysPath = null) => {
   const adapter = createBaseAdapter('coinbase');
   const logger = createContextLogger({ exchange: 'coinbase' });
 
-  /**
-   * Check if keys file exists and contains valid-looking credentials
-   *
-   * Only ever consults `resolvedKeysPath` (the migrated `data/coinbase-keys.json`
-   * location) — issue #688: a legacy root-`keys.json` fallback here meant
-   * deleting the configured key via the API left the engine signing requests
-   * with the old credential. `src/migration.js`'s one-time migration is now
-   * the only way a legacy `keys.json` is ever consumed.
-   * @returns {boolean}
-   */
-  adapter.hasValidKeys = () => {
-    if (!fs.existsSync(resolvedKeysPath)) return false;
-
-    try {
-      const keys = JSON.parse(fs.readFileSync(resolvedKeysPath, 'utf8'));
-      return validateCoinbaseKeys(keys);
-    } catch {
-      return false;
-    }
-  };
-
-  /**
-   * Load API credentials from keys file
-   *
-   * Only ever reads `resolvedKeysPath` — no legacy root-`keys.json` fallback
-   * (issue #688; see `hasValidKeys` above for why).
-   * @returns {ApiCredentials}
-   * @throws {Error} If keys file is missing or invalid
-   */
-  adapter.loadCredentials = () => {
-    if (!fs.existsSync(resolvedKeysPath)) {
-      throw new Error('API keys not configured. Please add your Coinbase API keys.');
-    }
-
-    let keys;
-    try {
-      keys = JSON.parse(fs.readFileSync(resolvedKeysPath, 'utf8'));
-    } catch (err) {
-      throw new Error('Failed to parse API keys file: corrupted or invalid JSON');
-    }
+  // Shared keys-file loader. Only ever reads `resolvedKeysPath` — no legacy
+  // root-`keys.json` fallback (issue #688: a fallback here meant deleting the
+  // configured key via the API left the engine signing with the old credential).
+  // `src/migration.js`'s one-time migration is the only way a legacy file is consumed.
+  const keyLoader = createKeyFileLoader({
+    keysPath: resolvedKeysPath,
+    label: 'Coinbase',
+    validate: validateCoinbaseKeys,
     // Handle both old format (name/privateKey) and direct format
-    const apiKey = keys.name || keys.apiKey;
-    const apiSecret = keys.privateKey || keys.apiSecret;
-
-    if (!apiKey || !apiSecret) {
-      throw new Error('Invalid API keys. Both API key name and private key are required.');
-    }
-
-    return { apiKey, apiSecret };
-  };
+    pick: (keys) => ({ apiKey: keys.name || keys.apiKey, apiSecret: keys.privateKey || keys.apiSecret }),
+    requiredMessage: 'Invalid API keys. Both API key name and private key are required.',
+  });
+  adapter.hasValidKeys = keyLoader.hasValidKeys;
+  adapter.loadCredentials = keyLoader.loadCredentials;
 
   /**
    * Check if error is a transient network error that should be retried
