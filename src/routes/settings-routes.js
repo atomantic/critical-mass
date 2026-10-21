@@ -158,12 +158,12 @@ module.exports = (app, deps) => {
 
   // ============ Backups ============
 
-  app.get('/api/backups', (req, res) => {
-    const backups = listBackups();
+  app.get('/api/backups', asyncRoute(async (req, res) => {
+    const backups = await listBackups();
     const fundStateBackups = listFundStateBackups();
     const config = getBackupConfig();
     res.json({ success: true, backups, fundStateBackups, config, schedulerStatus: getBackupSchedulerStatus?.() ?? null });
-  });
+  }));
 
   app.get('/api/backups/config', (req, res) => {
     const config = getBackupConfig();

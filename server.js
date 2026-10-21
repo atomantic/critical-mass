@@ -254,7 +254,7 @@ const backupScheduler = createBackupScheduler({
         if (result.success) {
           const sizeMB = (result.sizeBytes / 1024 / 1024).toFixed(1);
           log('INFO', `💾 Scheduled backup created: ${result.filename} (${sizeMB} MB)`);
-          const pruneResult = pruneBackups(config.maxBackups);
+          const pruneResult = await pruneBackups(config.maxBackups);
           if (pruneResult.pruned > 0) {
             log('INFO', `💾 Pruned ${pruneResult.pruned} old backups, ${pruneResult.remaining} remaining`);
           }
