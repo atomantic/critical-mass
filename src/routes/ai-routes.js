@@ -1,103 +1,152 @@
+// @ts-check
 /**
- * AI Routes
+ * AI Routes — /api/providers and /api/runs.
  *
- * Mounts portos-ai-toolkit Express routes for AI provider management,
- * prompt running, and model selection. Uses dynamic import() because
- * portos-ai-toolkit is ESM and this project is CommonJS.
- *
- * Routes mounted at /api/providers, /api/runs.
+ * Owned API-provider management and prompt runs for the admin AI Providers
+ * page (formerly mounted from portos-ai-toolkit). Only OpenAI-compatible API
+ * providers whose origin is listed in AI_ALLOWED_ENDPOINTS can be saved,
+ * tested or run; provider secrets are redacted in every response and restored
+ * from the stored record when a client echoes the redaction marker back.
  */
 
-const { Router } = require('express');
-const path = require('path');
 const { createContextLogger } = require('../logger');
 const { ts } = require('../time-utils');
-const { createAiSecurity } = require('../ai-security');
+const { parseAllowedOrigins, redactSecrets } = require('../ai-security');
+const { createProviderStore } = require('../ai/provider-store');
+const { createRunRecorder, isValidRunId } = require('../ai/run-recorder');
+const { asyncRoute, parsePaging } = require('./route-utils');
 
 /**
- * Context logger for the AI toolkit mount. These routes are provider-scoped,
- * not market-scoped, so the provider/model ride along per call.
+ * Context logger for the AI routes. These routes are provider-scoped, not
+ * market-scoped, so the provider/model ride along per call.
  */
 const aiRoutesLogger = createContextLogger({ module: 'ai-routes' });
 
-const TOOLKIT_ROUTES = ['/providers', '/runs'];
+const DEFAULT_RUN_LIST_LIMIT = 50;
 
 /**
  * @param {import('express').Express} app
- * @param {{ io: any }} sharedDeps
- * @param {{ loadToolkit?: () => Promise<any> }} [options] - loadToolkit is injectable for tests
- * @returns {Promise<void>} settles once the toolkit routes (or their failure stub) are mounted
+ * @param {{ DATA_DIR: string }} sharedDeps
+ * @param {{ allowedOrigins?: Set<string>, fetchImpl?: typeof fetch, maxConcurrentRuns?: number }} [options] - injectable for tests
  */
-module.exports = (app, sharedDeps, { loadToolkit = () => import('portos-ai-toolkit/server') } = {}) => {
-  const { io } = sharedDeps;
-
-  // Mount a placeholder router synchronously so it sits in the right
-  // position (before the API catch-all). Sub-routes are populated async.
-  const aiRouter = Router();
-  app.use('/api', aiRouter);
-
-  // Async load ESM portos-ai-toolkit
-  return loadToolkit().then(({ createAIToolkit }) => {
-    const dataDir = path.join(__dirname, '..', '..', 'data');
-
-    // DEFAULT_PROVIDERS_SAMPLE has a wrong path in the toolkit (src/server/defaults/
-    // instead of src/defaults/). Resolve the correct path via require.resolve.
-    let sampleProvidersFile = null;
-    try {
-      const toolkitSrcDir = path.dirname(require.resolve('portos-ai-toolkit'));
-      sampleProvidersFile = path.join(toolkitSrcDir, 'defaults', 'providers.sample.json');
-    } catch (_) { /* toolkit not found — samples won't auto-seed */ }
-
-    const screenshotsDir = path.join(dataDir, 'screenshots');
-    const toolkit = createAIToolkit({
-      dataDir,
-      screenshotsDir,
-      sampleProvidersFile,
-      io,
-      maxConcurrentRuns: 3,
-      // 0.8.4 can silently fall back to a different provider during a run,
-      // bypassing endpoint validation for the provider the operator selected.
-      enableProviderStatus: false,
-      hooks: {
-        onRunCompleted: (metadata) => {
-          aiRoutesLogger.info(`ℹ️ [${ts()}] 🤖 AI run completed: ${metadata.providerName}/${metadata.model} (${(metadata.duration / 1000).toFixed(1)}s)`, {
-            action: 'run-completed',
-            provider: metadata.providerName,
-            model: metadata.model,
-            durationMs: metadata.duration,
-          });
-        },
-        onRunFailed: (metadata, error) => {
-          aiRoutesLogger.warn(`⚠️ [${ts()}] 🤖 AI run failed: ${metadata.providerName} — ${error}`, {
-            action: 'run-failed',
-            provider: metadata.providerName,
-            error: String(error),
-          });
-        }
-      }
-    });
-
-    const security = createAiSecurity({ providerService: toolkit.services.providers, screenshotsDir, runsDir: path.join(dataDir, 'runs') });
-
-    aiRouter.use('/providers', security.constrainOutboundRequests, security.filterProviderSamples, security.redactJsonResponses, security.guardProviderMutation, security.guardProviderExecution, toolkit.routes.providers);
-    aiRouter.use('/runs', security.constrainOutboundRequests, security.guardRun, toolkit.routes.runs);
-
-    aiRoutesLogger.info(`ℹ️ [${ts()}] 🤖 AI toolkit routes mounted at /api/providers, /api/runs`, {
-      action: 'mount',
-      routes: ['/api/providers', '/api/runs'],
-    });
-  }).catch(err => {
-    aiRoutesLogger.warn(`⚠️ [${ts()}] ⚠️ AI toolkit failed to load: ${err.message}`, {
-      action: 'mount',
-      error: err.message,
-    });
-    // Without this the AI pages fall through to the generic "Not found" 404,
-    // which reads as a missing feature rather than a broken install.
-    aiRouter.use(TOOLKIT_ROUTES, (_req, res) => {
-      res.status(503).json({
-        success: false,
-        error: 'AI providers are unavailable because the AI toolkit failed to load. Check the gateway log, reinstall dependencies (npm install), then restart.',
+module.exports = (app, { DATA_DIR }, { allowedOrigins = parseAllowedOrigins(), fetchImpl, maxConcurrentRuns = 3 } = {}) => {
+  const providers = createProviderStore({ dataDir: DATA_DIR, allowedOrigins, fetchImpl });
+  const runs = createRunRecorder({
+    dataDir: DATA_DIR,
+    providers,
+    maxConcurrentRuns,
+    onRunCompleted: (metadata) => {
+      aiRoutesLogger.info(`ℹ️ [${ts()}] 🤖 AI run completed: ${metadata.providerName}/${metadata.model} (${(metadata.duration / 1000).toFixed(1)}s)`, {
+        action: 'run-completed',
+        provider: metadata.providerName,
+        model: metadata.model,
+        durationMs: metadata.duration,
       });
-    });
+    },
+    onRunFailed: (metadata) => {
+      aiRoutesLogger.warn(`⚠️ [${ts()}] 🤖 AI run failed: ${metadata.providerName} — ${metadata.error}`, {
+        action: 'run-failed',
+        provider: metadata.providerName,
+        error: String(metadata.error),
+      });
+    },
   });
+
+  /** @param {import('express').Response} res @param {unknown} body */
+  const sendRedacted = (res, body) => res.json(redactSecrets(body));
+  /** @param {import('express').Response} res */
+  const providerNotFound = (res) => res.status(404).json({ error: 'Provider not found' });
+
+  // ── Providers ──────────────────────────────────────────────────────────
+  // Static segments are registered before /:id so they are never read as IDs.
+
+  app.get('/api/providers', (req, res) => sendRedacted(res, providers.list()));
+
+  app.get('/api/providers/active', (req, res) => sendRedacted(res, providers.getActive()));
+
+  app.put('/api/providers/active', (req, res) => {
+    const id = req.body?.id;
+    if (!id) return res.status(400).json({ error: 'Provider ID required' });
+    const provider = providers.setActive(id);
+    return provider ? sendRedacted(res, provider) : providerNotFound(res);
+  });
+
+  app.get('/api/providers/samples', (req, res) => sendRedacted(res, { providers: providers.samples() }));
+
+  app.get('/api/providers/:id', (req, res) => {
+    const provider = providers.get(req.params.id);
+    return provider ? sendRedacted(res, provider) : providerNotFound(res);
+  });
+
+  app.post('/api/providers', (req, res) => {
+    res.status(201);
+    sendRedacted(res, providers.create(req.body || {}));
+  });
+
+  app.put('/api/providers/:id', (req, res) => {
+    const provider = providers.update(req.params.id, req.body || {});
+    return provider ? sendRedacted(res, provider) : providerNotFound(res);
+  });
+
+  app.delete('/api/providers/:id', (req, res) => {
+    if (!providers.remove(req.params.id)) return providerNotFound(res);
+    return res.status(204).end();
+  });
+
+  app.post('/api/providers/:id/test', asyncRoute(async (req, res) => {
+    sendRedacted(res, await providers.test(req.params.id));
+  }));
+
+  app.post('/api/providers/:id/refresh-models', asyncRoute(async (req, res) => {
+    const result = await providers.refreshModels(req.params.id);
+    if ('error' in result) return res.status(502).json({ error: result.error });
+    return sendRedacted(res, result.provider);
+  }));
+
+  // ── Runs ───────────────────────────────────────────────────────────────
+
+  /** Reject a malformed run ID before it can reach a filesystem path. */
+  const withRunId = (handler) => (req, res, next) => (
+    isValidRunId(req.params.runId) ? handler(req, res, next) : res.status(400).json({ error: 'Invalid run ID' })
+  );
+
+  app.get('/api/runs', (req, res) => {
+    const paging = parsePaging(req.query) || { limit: DEFAULT_RUN_LIST_LIMIT, offset: 0 };
+    const source = typeof req.query.source === 'string' ? req.query.source : 'all';
+    res.json(runs.list({ ...paging, source }));
+  });
+
+  app.post('/api/runs', (req, res) => {
+    res.status(202).json(runs.start(req.body || {}));
+  });
+
+  app.delete('/api/runs', (req, res) => {
+    if (req.query.filter !== 'failed') return res.status(400).json({ error: 'Only filter=failed is supported for bulk delete' });
+    return res.json({ deletedCount: runs.removeFailed() });
+  });
+
+  app.get('/api/runs/:runId', withRunId((req, res) => {
+    const run = runs.get(req.params.runId);
+    return run ? res.json(run) : res.status(404).json({ error: 'Run not found' });
+  }));
+
+  app.get('/api/runs/:runId/output', withRunId((req, res) => {
+    const output = runs.output(req.params.runId);
+    return output === null ? res.status(404).json({ error: 'Run not found' }) : res.type('text/plain').send(output);
+  }));
+
+  app.get('/api/runs/:runId/prompt', withRunId((req, res) => {
+    const prompt = runs.prompt(req.params.runId);
+    return prompt === null ? res.status(404).json({ error: 'Run not found' }) : res.type('text/plain').send(prompt);
+  }));
+
+  app.post('/api/runs/:runId/stop', withRunId(asyncRoute(async (req, res) => {
+    if (!(await runs.stop(req.params.runId))) return res.status(404).json({ error: 'Run not found or not active' });
+    return res.json({ success: true });
+  })));
+
+  app.delete('/api/runs/:runId', withRunId((req, res) => {
+    if (!runs.remove(req.params.runId)) return res.status(404).json({ error: 'Run not found' });
+    return res.status(204).end();
+  }));
 };
