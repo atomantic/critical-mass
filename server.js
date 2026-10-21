@@ -462,11 +462,13 @@ const checkAndRunIntervalTrade = () => {
       const intervalLabel = formatInterval(intervalType);
       log('INFO', `[${label}] Scheduled ${intervalLabel} trade starting at ${new Date().toISOString()}`);
       const runId = getRunIdentifier(intervalType);
+      const intervalEnd = getNextExecutionTime(intervalType);
       schedulerState[key].lastRunId = runId;
-      schedulerState[key].nextExecutionTime = getNextExecutionTime(intervalType);
+      schedulerState[key].nextExecutionTime = intervalEnd;
 
       gatewayShutdown.track(runIntervalCycle(exchange, pair))
         .then(result => {
+          schedulerState[key].lastAlertAt = null;
           log('INFO', `[${label}] Scheduled trade complete: ${result.status}`);
         })
         .catch(err => {
@@ -476,7 +478,8 @@ const checkAndRunIntervalTrade = () => {
           // re-checks the persisted interval, pending buy and placement
           // intents — the manual trade route relies on the same guarantee.
           const entry = schedulerState[key];
-          const { failures, retryAt } = planScheduledRetry(entry, runId, Date.now());
+          const now = Date.now();
+          const { failures, retryAt, alert } = planScheduledRetry(entry, { runId, now, intervalEnd });
           entry.retryRunId = runId;
           entry.retryCount = failures;
           let next = `no further automatic retry this ${intervalLabel} interval — trigger the trade manually once the cause is fixed`;
@@ -486,7 +489,10 @@ const checkAndRunIntervalTrade = () => {
             next = `retrying at ${new Date(retryAt).toISOString()}`;
           }
           log('ERROR', `[${label}] Scheduled trade failed: ${err.message}; ${next}`);
-          tradeEvents.error(exchange, `[${label}] Scheduled ${intervalLabel} trade failed: ${err.message}; ${next}`, { pair, failures });
+          if (alert) {
+            entry.lastAlertAt = now;
+            tradeEvents.error(exchange, `[${label}] Scheduled ${intervalLabel} trade failed: ${err.message}; ${next}`, { pair, failures });
+          }
         });
     }
   }
