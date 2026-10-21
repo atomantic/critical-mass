@@ -100,14 +100,17 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   // Shared
   const [importNote, setImportNote] = useState('')
   const [importing, setImporting] = useState(false)
-  const [checking, setChecking] = useState(null)
+  // Trade ids with a status check / recovery request in flight. Per trade, so
+  // finishing one row's request never re-enables another row mid-request.
+  const [checking, setChecking] = useState({})
   const [dismissing, setDismissing] = useState(null)
   const [tradesError, setTradesError] = useState(null)
+  const [tradesLoaded, setTradesLoaded] = useState(false)
   // Per-trade outcome of the last check/retry this session: { [tradeId]: { error?, message? } }
   const [rowNotices, setRowNotices] = useState({})
   // Inline Retry recovery / Link replacement form: { tradeId, mode: 'retry'|'link', value } or null
   const [recoveryForm, setRecoveryForm] = useState(null)
-  const [recovering, setRecovering] = useState(null)
+  const [recovering, setRecovering] = useState({})
   const [resumingImport, setResumingImport] = useState(null)
   const resumeImportRef = useRef(null)
   const tradesGeneration = useRef(0)
@@ -163,6 +166,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
       if (!current()) return null
       if (res.ok && data.success && Array.isArray(data.trades)) {
         setManualTrades(data.trades)
+        setTradesLoaded(true)
         setTradesError(null)
         return data.trades
       }
@@ -361,7 +365,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   }
 
   const handleCheckStatus = async (tradeId) => {
-    setChecking(tradeId)
+    setChecking(prev => ({ ...prev, [tradeId]: true }))
     try {
       const res = await fetch(`/api/${exchange}/regime/manual-trade/${tradeId}/check${pairQuery}`, {
         method: 'POST',
@@ -373,7 +377,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
     } catch (err) {
       setRowNotice(tradeId, { error: err.message })
     } finally {
-      setChecking(null)
+      setChecking(({ [tradeId]: _done, ...rest }) => rest)
     }
     fetchManualTrades()
   }
@@ -391,7 +395,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
       setRowNotice(tradeId, { error: 'Recovery buy price must be a positive number' })
       return
     }
-    setRecovering(tradeId)
+    setRecovering(prev => ({ ...prev, [tradeId]: true }))
     try {
       const res = await fetch(`/api/${exchange}/regime/manual-trade/${tradeId}/retry${pairQuery}`, {
         method: 'POST',
@@ -400,7 +404,8 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
       })
       const data = await res.json()
       if (data.success) {
-        setRecoveryForm(null)
+        // Another row's form may have been opened while this request ran.
+        setRecoveryForm(prev => (prev?.tradeId === tradeId ? null : prev))
         setRowNotice(tradeId, { message: data.placed
           ? `Placed recovery buy ${data.trade?.buyOrderId || ''}`.trim()
           : `Linked replacement buy ${data.trade?.buyOrderId || ''}`.trim() })
@@ -411,7 +416,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
     } catch (err) {
       setRowNotice(tradeId, { error: err.message })
     } finally {
-      setRecovering(null)
+      setRecovering(({ [tradeId]: _done, ...rest }) => rest)
     }
   }
 
@@ -423,12 +428,14 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ orderIds: [orderId] }),
       })
-      const data = await res.json()
-      if (data.success) {
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.success) {
         setUnaccountedOrders(prev => prev.filter(o => o.orderId !== orderId))
+      } else {
+        setError(`Could not dismiss order ${truncId(orderId)}: ${data.error || `HTTP ${res.status}`}`)
       }
-    } catch {
-      // silent
+    } catch (err) {
+      setError(`Could not dismiss order ${truncId(orderId)}: ${err.message || 'network error'}`)
     } finally {
       setDismissing(null)
     }
@@ -843,7 +850,10 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
               <p role="alert" className="mb-2 text-xs text-red-400">{tradesError}</p>
             )}
             {manualTrades.length === 0 ? (
-              <p className="text-xs text-gray-400">No manual trades tracked yet.</p>
+              // Before a successful read the list is unknown, not empty.
+              tradesLoaded
+                ? <p className="text-xs text-gray-400">No manual trades tracked yet.</p>
+                : !tradesError && <p className="text-xs text-gray-400">Loading manual trades...</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
@@ -914,10 +924,10 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                             {(trade.status === 'buy_pending' || trade.status === 'tp_pending') && (
                               <button
                                 onClick={() => handleCheckStatus(trade.id)}
-                                disabled={checking === trade.id}
+                                disabled={checking[trade.id]}
                                 className="px-2 py-0.5 rounded-sm text-[10px] bg-yellow-600/30 text-yellow-400 hover:bg-yellow-600/50 border border-yellow-500/30"
                               >
-                                {checking === trade.id ? 'Checking...' : 'Check Status'}
+                                {checking[trade.id] ? 'Checking...' : 'Check Status'}
                               </button>
                             )}
                             {canContinueRecovery(trade) && (
@@ -973,14 +983,14 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                                   <button
                                     type="button"
                                     onClick={handleContinueRecovery}
-                                    disabled={recovering === trade.id || !recoveryForm.value.trim()}
+                                    disabled={recovering[trade.id] || !recoveryForm.value.trim()}
                                     className={`px-3 py-1 rounded text-xs font-medium ${
-                                      recovering === trade.id || !recoveryForm.value.trim()
+                                      recovering[trade.id] || !recoveryForm.value.trim()
                                         ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
                                         : 'bg-purple-600/50 text-purple-300 hover:bg-purple-600/70 border border-purple-400/50'
                                     }`}
                                   >
-                                    {recovering === trade.id ? 'Submitting...' : recoveryForm.mode === 'retry' ? 'Place Recovery Buy' : 'Link Buy'}
+                                    {recovering[trade.id] ? 'Submitting...' : recoveryForm.mode === 'retry' ? 'Place Recovery Buy' : 'Link Buy'}
                                   </button>
                                   <button
                                     type="button"
