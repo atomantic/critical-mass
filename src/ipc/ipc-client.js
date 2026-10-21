@@ -78,6 +78,11 @@ const createIPCClient = (url, name, options = {}) => {
         }
       }, 15_000);
 
+      // Only an event consumer takes the engine's held events; a tool that
+      // connects just to issue requests must not swallow them. Older engines
+      // ignore the unknown message type.
+      if (onEvent) socket.send(serialize(createMessage(MSG_TYPE.SUBSCRIBE, 'events', null)));
+
       if (onConnect) onConnect();
     });
 

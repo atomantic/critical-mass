@@ -59,7 +59,7 @@ describe('gateway shutdown owns admitted work', () => {
     assert.deepEqual(calls, ['cancel', 'producers']);
     cycle.resolve({ status: 'booked-and-sell-ready' });
     await settle();
-    assert.deepEqual(calls, ['cancel', 'producers', 'producers'], 'IPC stays connected through notification drain');
+    assert.deepEqual(calls, ['cancel', 'producers', 'producers', 'disconnect'], 'IPC disconnects before the notification drain so engines hold later events');
     notification.resolve(true);
     assert.equal(await shutdown, 0);
     assert.deepEqual(calls, ['cancel', 'producers', 'producers', 'disconnect', 'listeners', 'exit:0']);
@@ -161,7 +161,7 @@ describe('gateway shutdown owns admitted work', () => {
     });
     gateway.track(startup);
     assert.equal(await gateway.shutdown('SIGTERM'), 0);
-    assert.deepEqual(calls, ['cancel', 'producers', 'producers', 'notifier', 'disconnect', 'listeners', 'exit:0']);
+    assert.deepEqual(calls, ['cancel', 'producers', 'producers', 'disconnect', 'notifier', 'listeners', 'exit:0']);
   });
 
   it('reports a producer stop failure without an unhandled rejection, still draining work and the notifier', async () => {
@@ -173,7 +173,7 @@ describe('gateway shutdown owns admitted work', () => {
     assert.deepEqual(calls, ['cancel'], 'admitted work is still drained');
     work.resolve();
     assert.equal(await shutdown, 1);
-    assert.deepEqual(calls, ['cancel', 'notifier', 'disconnect', 'listeners', 'exit:1']);
+    assert.deepEqual(calls, ['cancel', 'disconnect', 'notifier', 'listeners', 'exit:1']);
   });
 
   it('keeps tearing down after an IPC disconnect failure', async () => {

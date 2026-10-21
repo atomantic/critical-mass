@@ -22,6 +22,12 @@ const { setEngineMaintenance, refuseDuringMaintenance } = require('../engine-mai
  */
 const ipcServerLogger = (name) => createContextLogger({ module: 'ipc-server', peer: name });
 
+// Events broadcast with `hold` while no gateway is connected (an engine boot
+// that beats the gateway's reconnect backoff, a gateway restart) are kept for
+// the next subscribing gateway instead of being dropped. Bounded: the oldest
+// go first so a long gateway outage cannot grow engine memory.
+const MAX_HELD_EVENTS = 200;
+
 /**
  * Create an IPC server for an engine process
  * @param {number} port - Port to listen on (localhost only)
@@ -46,6 +52,9 @@ const createIPCServer = (port, name) => {
   const requestHandlers = new Map();
   /** @type {Set<(remaining: number) => void>} Observers of a gateway socket closing. */
   const disconnectListeners = new Set();
+  /** @type {string[]} Serialized held event frames, oldest first. */
+  let heldFrames = [];
+  let droppedHeldFrames = 0;
 
   // Built-in, registered for every engine: the gateway opens a maintenance
   // window here before a backup restore so this process stops mutating the
@@ -174,6 +183,12 @@ const createIPCServer = (port, name) => {
       return;
     }
 
+    // Admitted while initializing: startup alerts are what the hold is for.
+    if (msg.type === MSG_TYPE.SUBSCRIBE) {
+      replayHeldFrames(ws);
+      return;
+    }
+
     // Even reads may lazily load a ledger. Admit only liveness probes until
     // restore recovery, migration and automatic fund startup have completed.
     if (initializing && (msg.type === MSG_TYPE.REQUEST || msg.type === MSG_TYPE.CONFIG_UPDATE)) {
@@ -254,33 +269,71 @@ const createIPCServer = (port, name) => {
   };
 
   /**
+   * Send held frames to a gateway that asked for them, in their original
+   * order. A client that never subscribes (an older gateway, an offline
+   * maintenance tool) leaves them held.
+   * @param {import('./ws-server').WebSocketConnection} ws
+   */
+  const replayHeldFrames = (ws) => {
+    if (ws.readyState !== OPEN || (heldFrames.length === 0 && droppedHeldFrames === 0)) return;
+    const frames = heldFrames;
+    const dropped = droppedHeldFrames;
+    heldFrames = [];
+    droppedHeldFrames = 0;
+    for (const data of frames) sendFrame(ws, data, 'replay');
+    const log = dropped > 0 ? logger.warn : logger.info;
+    log(`${dropped > 0 ? '⚠️' : 'ℹ️'} 🔗 [${name}] Delivered ${frames.length} event(s) held while no gateway was connected${dropped > 0 ? `; ${dropped} older event(s) were dropped` : ''}`, {
+      event: 'replay', delivered: frames.length, dropped,
+    });
+  };
+
+  /**
+   * @param {import('./ws-server').WebSocketConnection} client
+   * @param {string} data - Serialized frame
+   * @param {string} channel - For the failure log
+   */
+  const sendFrame = (client, data, channel) => {
+    let complete;
+    const sent = new Promise((resolve) => { complete = resolve; });
+    pendingBroadcasts.add(sent);
+    const onSent = (err) => {
+      pendingBroadcasts.delete(sent);
+      complete();
+      if (err) {
+        logger.error(`❌ 🔗 [${name}] IPC event send failed: ${err.message}`, {
+          channel, event: 'broadcast', error: err.message,
+        });
+      }
+    };
+    try {
+      client.send(data, onSent);
+    } catch (err) {
+      onSent(err);
+    }
+  };
+
+  /**
    * Broadcast an event to all connected gateway clients
    * @param {string} channel - Event channel name
    * @param {*} payload - Event data
    * @param {Object} [options] - Additional message options (room, exchange)
+   * @param {boolean} [options.hold] - Keep the event for the next subscribing gateway when none is connected
    */
   const broadcast = (channel, payload, options = {}) => {
     const msg = createMessage(MSG_TYPE.EVENT, channel, payload, options);
     const data = serialize(msg);
+    let delivered = false;
     for (const client of clients) {
       if (client.readyState === OPEN) {
-        let complete;
-        const sent = new Promise((resolve) => { complete = resolve; });
-        pendingBroadcasts.add(sent);
-        const onSent = (err) => {
-          pendingBroadcasts.delete(sent);
-          complete();
-          if (err) {
-            logger.error(`❌ 🔗 [${name}] IPC event send failed: ${err.message}`, {
-              channel, event: 'broadcast', error: err.message,
-            });
-          }
-        };
-        try {
-          client.send(data, onSent);
-        } catch (err) {
-          onSent(err);
-        }
+        delivered = true;
+        sendFrame(client, data, channel);
+      }
+    }
+    if (!delivered && options.hold) {
+      heldFrames.push(data);
+      if (heldFrames.length > MAX_HELD_EVENTS) {
+        droppedHeldFrames += heldFrames.length - MAX_HELD_EVENTS;
+        heldFrames = heldFrames.slice(-MAX_HELD_EVENTS);
       }
     }
   };
@@ -337,7 +390,8 @@ const createIPCServer = (port, name) => {
     setShuttingDown: (value) => { shuttingDown = Boolean(value); },
     isShuttingDown: () => shuttingDown,
     getClientCount: () => clients.size,
+    getHeldEventCount: () => heldFrames.length,
   };
 };
 
-module.exports = { createIPCServer };
+module.exports = { createIPCServer, MAX_HELD_EVENTS };

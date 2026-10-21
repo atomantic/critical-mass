@@ -99,7 +99,10 @@ const createGatewayShutdown = ({
       await runStep('producers', stopProducers);
       await drain();
       if (finished) return;
-      for (const [name, step] of [['producers', stopProducers], ['notifier', stopNotifier], ['IPC', disconnectIPC], ['listeners', closeListeners]]) {
+      // IPC disconnects before the notifier stops: an engine event arriving
+      // during the notifier drain would reach no listener, while a
+      // disconnected engine holds it for the next gateway.
+      for (const [name, step] of [['producers', stopProducers], ['IPC', disconnectIPC], ['notifier', stopNotifier], ['listeners', closeListeners]]) {
         await runStep(name, step);
       }
       log(failed ? 'ERROR' : 'INFO', failed ? 'Gateway shutdown finished with errors' : 'Gateway shutdown complete');
