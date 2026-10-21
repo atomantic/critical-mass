@@ -39,16 +39,21 @@ function NotificationsConfig() {
   const configRequest = useRef(0)
   const draftVersion = useRef(0)
   const dirty = useRef(false)
+  // Rendered mirror of `dirty`: Send Test uses the saved settings, so it must
+  // not run (and report success) while unsaved edits are on screen.
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
 
   const updateConfig = update => {
     if (pendingSave.current) return
     dirty.current = true
+    setHasUnsavedChanges(true)
     draftVersion.current += 1
     setConfig(update)
   }
   const updateToken = token => {
     if (pendingSave.current) return
     dirty.current = true
+    setHasUnsavedChanges(true)
     draftVersion.current += 1
     setRawToken(token)
   }
@@ -115,8 +120,11 @@ function NotificationsConfig() {
     if (rawToken) {
       payload.telegram = { ...payload.telegram, botToken: rawToken }
     } else {
-      // Don't send masked token back
-      delete payload.telegram.botToken
+      // Don't send the masked token back. Copy rather than delete: payload's
+      // telegram object is the one held in state, and deleting from it erased
+      // the "token configured" hint after a failed save.
+      const { botToken: _maskedToken, ...telegram } = payload.telegram || {}
+      payload.telegram = telegram
     }
 
     try {
@@ -129,6 +137,7 @@ function NotificationsConfig() {
       if (res.ok) {
         setMessage({ type: 'success', text: 'Notification settings saved!' })
         dirty.current = false
+        setHasUnsavedChanges(false)
         if (rawToken) {
           // The write succeeded even if the masked readback later fails.
           setConfig(prev => ({ ...prev, telegram: { ...prev.telegram, botToken: '••••••••' } }))
@@ -219,7 +228,8 @@ function NotificationsConfig() {
         <div className="flex gap-3">
           <button
             onClick={handleTest}
-            disabled={testing || !config.telegram.chatId}
+            disabled={testing || hasUnsavedChanges || !config.telegram.chatId}
+            title={hasUnsavedChanges ? 'Save your changes first — the test uses the saved settings' : undefined}
             className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
           >
             {testing ? 'Sending...' : 'Send Test'}

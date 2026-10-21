@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import ModalDialog from './ModalDialog'
 import { plural } from '../utils/plural.mjs'
 import { describeActionFailure } from '../utils/actionFailure.mjs'
@@ -73,6 +73,9 @@ function KeysConfig({ exchange, funds = [], onSave }) {
   const [showSecrets, setShowSecrets] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
+  // Bumped whenever the keys under test change, so a test still in flight
+  // cannot report on keys that are no longer the ones on screen or on disk.
+  const testGeneration = useRef(0)
   // Live region announcements for accessibility
   const [statusAnnouncement, setStatusAnnouncement] = useState('')
   const [alertAnnouncement, setAlertAnnouncement] = useState('')
@@ -96,6 +99,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
   // doesn't blank out the success message that was just set.
   const fetchKeys = async (silent = false) => {
     if (!silent) setLoading(true)
+    testGeneration.current += 1
     setTestResult(null)
     try {
       const res = await fetch(`/api/${exchange}/keys`)
@@ -159,6 +163,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
 
   const handleChange = (key, value) => {
     setKeys(prev => ({ ...prev, [key]: value }))
+    testGeneration.current += 1
     setTestResult(null)
   }
 
@@ -188,17 +193,19 @@ function KeysConfig({ exchange, funds = [], onSave }) {
   }
 
   const handleTest = async () => {
+    const generation = ++testGeneration.current
     setTesting(true)
     setTestResult(null)
+    let result
     try {
       const res = await fetch(`/api/${exchange}/test-connection`, { method: 'POST' })
-      const data = await res.json().catch(() => ({ success: false, error: describeActionFailure(res.status) }))
-      setTestResult(data)
+      result = await res.json().catch(() => ({ success: false, error: describeActionFailure(res.status) }))
     } catch (err) {
-      setTestResult({ success: false, error: err.message })
+      result = { success: false, error: err.message }
     } finally {
       setTesting(false)
     }
+    if (generation === testGeneration.current) setTestResult(result)
   }
 
   // Save requires every field to be freshly typed — the server never echoes stored
@@ -207,10 +214,11 @@ function KeysConfig({ exchange, funds = [], onSave }) {
   // Credentials exist whenever the server says so, regardless of what (if anything)
   // is currently typed in the form.
   const hasAnyKeys = configured
-  // Testing is safe against whatever is currently saved on disk, so it should be
-  // enabled for already-configured keys without forcing a retype, OR for a fresh,
-  // fully-typed set the operator hasn't saved yet.
-  const canTest = configured || hasAllFields
+  // The server tests the keys saved on disk, never the form. While new keys are
+  // typed a "Connected" result would vouch for the old keys, so testing waits
+  // until they are saved (or the edits are cleared).
+  const hasTypedKeys = config.fields.some(f => keys[f.key]?.trim())
+  const canTest = configured && !hasTypedKeys
 
   const handleDelete = async () => {
     setDeleting(true)
@@ -428,6 +436,9 @@ function KeysConfig({ exchange, funds = [], onSave }) {
           >
             {testing ? 'Testing...' : 'Test Connection'}
           </button>
+          {hasTypedKeys && (
+            <p className="text-xs text-gray-400 sm:self-center">Save the new keys to test them.</p>
+          )}
           {hasAnyKeys && (
             <button
               onClick={() => setConfirmDelete(true)}

@@ -732,6 +732,39 @@ export default function AIProviders() {
   )
   }
 
+// Module scope on purpose: declared inside ProviderForm it would be a new
+// component type on every render, remounting the input after each keystroke.
+function ModelSelect({ label, color, value, field, availableModels, setFormData }) {
+  const fieldId = useId()
+  return (
+    <div>
+      <label htmlFor={fieldId} className="block text-xs text-gray-400 mb-1">
+        <span className={`inline-block w-2 h-2 rounded-full ${color} mr-1`}></span>
+        {label}
+      </label>
+      {availableModels.length > 0 ? (
+        <select
+          id={fieldId}
+          value={value}
+          onChange={(e) => setFormData(prev => ({ ...prev, [field]: e.target.value }))}
+          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:border-indigo-500 focus:outline-hidden"
+        >
+          <option value="">None</option>
+          {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+      ) : (
+        <input
+          id={fieldId}
+          type="text"
+          value={value}
+          onChange={(e) => setFormData(prev => ({ ...prev, [field]: e.target.value }))}
+          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:border-indigo-500 focus:outline-hidden"
+        />
+      )}
+    </div>
+  )
+}
+
 function ProviderForm({ provider, onClose, onSave }) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
@@ -806,37 +839,6 @@ function ProviderForm({ provider, onClose, onSave }) {
   const timeoutInputId = useId()
   const enabledCheckboxId = useId()
 
-  const ModelSelect = ({ label, color, value, field }) => {
-    const fieldId = useId()
-    return (
-    <div>
-      <label htmlFor={fieldId} className="block text-xs text-gray-400 mb-1">
-        <span className={`inline-block w-2 h-2 rounded-full ${color} mr-1`}></span>
-        {label}
-      </label>
-      {availableModels.length > 0 ? (
-        <select
-          id={fieldId}
-          value={value}
-          onChange={(e) => setFormData(prev => ({ ...prev, [field]: e.target.value }))}
-          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:border-indigo-500 focus:outline-hidden"
-        >
-          <option value="">None</option>
-          {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
-        </select>
-      ) : (
-        <input
-          id={fieldId}
-          type="text"
-          value={value}
-          onChange={(e) => setFormData(prev => ({ ...prev, [field]: e.target.value }))}
-          className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:border-indigo-500 focus:outline-hidden"
-        />
-      )}
-    </div>
-  )
-
-  }
   return (
     <ModalDialog onClose={onClose} labelledBy={headingId} maxWidthClassName="max-w-lg">
       <div>
@@ -937,9 +939,9 @@ function ProviderForm({ provider, onClose, onSave }) {
           <div className="border-t border-gray-700 pt-4 mt-4">
             <h4 className="text-sm font-medium text-gray-300 mb-3">Model Tiers</h4>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <ModelSelect label="Light (fast)" color="bg-green-500" value={formData.lightModel} field="lightModel" />
-              <ModelSelect label="Medium (balanced)" color="bg-yellow-500" value={formData.mediumModel} field="mediumModel" />
-              <ModelSelect label="Heavy (powerful)" color="bg-red-500" value={formData.heavyModel} field="heavyModel" />
+              <ModelSelect label="Light (fast)" color="bg-green-500" value={formData.lightModel} field="lightModel" availableModels={availableModels} setFormData={setFormData} />
+              <ModelSelect label="Medium (balanced)" color="bg-yellow-500" value={formData.mediumModel} field="mediumModel" availableModels={availableModels} setFormData={setFormData} />
+              <ModelSelect label="Heavy (powerful)" color="bg-red-500" value={formData.heavyModel} field="heavyModel" availableModels={availableModels} setFormData={setFormData} />
             </div>
           </div>
 
