@@ -1,6 +1,6 @@
 import { Suspense, useRef, useState, useCallback, useMemo } from 'react'
 import { Canvas, useThree, invalidate } from '@react-three/fiber'
-import { EffectComposer, Bloom } from '@react-three/postprocessing'
+import BloomEffect from './celestial/BloomEffect'
 import OrbitControlsLite from './celestial/OrbitControlsLite'
 import CelestialScene from './celestial/CelestialScene'
 import CelestialBody from './celestial/CelestialBody'
@@ -90,9 +90,7 @@ const SingleBodyScene = ({ body }) => {
 
       {renderBody(bodyProps)}
 
-      <EffectComposer>
-        <Bloom luminanceThreshold={0.3} luminanceSmoothing={0.8} intensity={isParticle ? 1.0 : 0.6} radius={0.5} mipmapBlur />
-      </EffectComposer>
+      <BloomEffect threshold={0.3} strength={isParticle ? 1.0 : 0.6} radius={0.5} />
     </>
   )
 }

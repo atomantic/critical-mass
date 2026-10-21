@@ -2771,6 +2771,26 @@ describe('Fill Ledger', () => {
       assert.equal(count('fill-ledger-recalc.js'), 1, 'expected 0.5 to appear exactly once in fill-ledger-recalc.js');
       assert.equal(count('fill-ledger.js'), 0, 'the ledger must use CYCLE_COMPLETE_SELL_RATIO, not a literal');
     });
+
+    it('completes a cycle exactly at the default sell ratio boundary (49.9% stays open, 50% completes)', () => {
+      const runWithSellSize = (name, sellSize) => {
+        const ledger = createTestLedger(name);
+        ledger.ingestFill(makeBuyFill({
+          tradeId: `${name}-buy`, orderId: `${name}-buy-order`, price: '100', size: '1.0',
+          totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T00:00:00Z',
+        }), null, { cycleId: 'cycle-1' });
+        ledger.ingestFill(makeSellFill({
+          tradeId: `${name}-sell`, orderId: `${name}-sell-order`, price: '105', size: sellSize,
+          totalCommission: '0', rebate: '0', tradeTime: '2026-01-01T01:00:00Z',
+        }), null, { cycleId: 'cycle-1' });
+        return ledger.recalculateCycles().cyclesCompleted;
+      };
+
+      assert.equal(runWithSellSize('boundary-below', '0.499'), 0,
+        'a 49.9% sell ratio must leave the cycle open');
+      assert.equal(runWithSellSize('boundary-at', '0.5'), 1,
+        'a 50% sell ratio must complete the cycle');
+    });
   });
 
   // =======================================================================

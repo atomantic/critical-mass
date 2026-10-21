@@ -81,12 +81,23 @@ guardLegacyMigration({ processLabel: 'gateway', logger: createContextLogger({ mo
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || PORTS.API;
+// Loopback is not proof of a local browser: a same-host reverse proxy that adds
+// no forwarding headers looks identical (#1328). By default enrollment therefore
+// needs the generated data/operator-bootstrap-secret; set
+// OPERATOR_TRUST_LOOPBACK_BOOTSTRAP=true only when no reverse proxy is in front.
+const TRUST_LOOPBACK_BOOTSTRAP = process.env.OPERATOR_TRUST_LOOPBACK_BOOTSTRAP === 'true';
 const operatorAuth = createOperatorAuth({
   authFile: path.join(DATA_DIR, 'operator-auth.json'),
   readJSON,
   writeJSON,
   bootstrapSecret: process.env.OPERATOR_BOOTSTRAP_SECRET,
   bootstrapSecretFile: process.env.OPERATOR_BOOTSTRAP_SECRET_FILE,
+  ...(TRUST_LOOPBACK_BOOTSTRAP
+    ? {}
+    : {
+      isTrustedBootstrapRequest: () => false,
+      localBootstrapSecretFile: path.join(DATA_DIR, 'operator-bootstrap-secret'),
+    }),
   // Every attached listener shares the bus and its disconnect cleanup.
   onPasswordChanged: () => io.disconnectSockets(),
   onPasswordRemoved: () => {
