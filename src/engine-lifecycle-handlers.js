@@ -2,12 +2,12 @@
 /**
  * Engine IPC lifecycle handlers: `regime:start` / `regime:stop`.
  *
- * Extracted from engines/coinbase-engine.js (issue #504) so the ownership
+ * Extracted from engines/exchange-engine.js (issue #504) so the ownership
  * ordering these two handlers enforce can be exercised directly against the
  * real production callbacks instead of only through HTTP-proxy tests (which
  * stub IPC) or isolated service tests (which never invoke these handlers at
  * all). Automatic and manual starts share the same supervision and cleanup.
- * engines/coinbase-engine.js is the only production registration: the gemini
+ * engines/exchange-engine.js is the only production registration: the gemini
  * and cryptocom engine processes are thin wrappers that set EXCHANGE_NAME and
  * load it, so every exchange gets the same injected dependencies.
  *
@@ -20,6 +20,7 @@
  * fills from the connection gap via exchange reconciliation.
  */
 
+const { IPC_CHANNELS } = require('./ipc/ipc-protocol');
 const { createFundStartSupervisor, isTransientStartError } = require('./fund-start-supervisor');
 
 /**
@@ -219,7 +220,7 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     setTimer: deps.setTimer, clearTimer: deps.clearTimer,
   });
   const { startFund, autoResumeFund, resumeAfterBackup } = supervisor;
-  registry.onRequest('regime:start', startFund);
+  registry.onRequest(IPC_CHANNELS.REGIME_START, startFund);
 
   const stopFund = async (payload, exchange, pair) => {
     const resolvedPair = resolvePair(exchange, pair);
@@ -273,7 +274,7 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     fundLogger.info(`ℹ️ ✅ [${label}] Regime engine stopped successfully`);
     return { success: true, exchange, pair: resolvedPair, stopped: true };
   };
-  registry.onRequest('regime:stop', supervisor.wrapStop(stopFund));
+  registry.onRequest(IPC_CHANNELS.REGIME_STOP, supervisor.wrapStop(stopFund));
   return { startFund, autoResumeFund, resumeAfterBackup, getStartStatus: supervisor.getStatus,
     cancelStarts: supervisor.cancelAll, settleStarts: supervisor.settle };
 

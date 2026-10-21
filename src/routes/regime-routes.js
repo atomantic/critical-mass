@@ -13,6 +13,7 @@ const { createContextLogger } = require('../logger');
 const { readBooleanFlag } = require('../shared-utils');
 const { parseFillsQuery } = require('../transactions-regime-query');
 const { getSafeIPC, withConfiguredPair, asyncRoute } = require('./route-utils');
+const { IPC_CHANNELS } = require('../ipc/ipc-protocol');
 const { LADDER_WAIT_MS, FILL_DRAIN_MS } = require('../engine-locks');
 
 /**
@@ -143,7 +144,7 @@ module.exports = (app, deps) => {
     const { config } = result;
     if (!result.applied) {
       logger.error(`❌ 🚨 [${exchange}/${pair}] Regime config persisted but live engine update failed: ${result.error}`, {
-        action: 'update-config', channel: 'regime:update-config',
+        action: 'update-config', channel: IPC_CHANNELS.REGIME_UPDATE_CONFIG,
         persisted: true, applied: false, error: result.error,
       });
       return res.status(503).json({
@@ -161,7 +162,7 @@ module.exports = (app, deps) => {
   app.get('/api/:exchange/regime/status', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:status', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_STATUS, {}, exchange, pair).catch(engineError);
     if (!result.success) {
       // Engine unreachable: serve a read-only status from disk so the dashboard
       // keeps showing persisted body TPs (and doesn't flag those bodies' buys
@@ -184,7 +185,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/start', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:start', {}, exchange, pair, LIFECYCLE_TIMEOUT_MS).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_START, {}, exchange, pair, LIFECYCLE_TIMEOUT_MS).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -192,7 +193,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/stop', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:stop', {}, exchange, pair, LIFECYCLE_TIMEOUT_MS).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_STOP, {}, exchange, pair, LIFECYCLE_TIMEOUT_MS).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -200,7 +201,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/pause', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:pause', { reason: req.body?.reason }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_PAUSE, { reason: req.body?.reason }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -208,7 +209,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/resume', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:resume', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_RESUME, {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -219,7 +220,7 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
     const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
-    const result = await getIPC(exchange).request('regime:close', { reason }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_CLOSE, { reason }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     regimeLogger(exchange, pair, '/api/:exchange/regime/close').info(`ℹ️ 🚦 [${exchange}/${pair}] Fund close requested${reason ? `: ${reason}` : ''}`, {
       action: 'close-fund',
@@ -232,7 +233,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/reopen', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:reopen', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_REOPEN, {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     regimeLogger(exchange, pair, '/api/:exchange/regime/reopen').info(`ℹ️ 🔓 [${exchange}/${pair}] Fund reopened`, { action: 'reopen-fund' });
     res.json(result);
@@ -248,7 +249,7 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: `Invalid regime. Must be one of: ${validRegimes.join(', ')}` });
     }
 
-    const result = await getIPC(exchange).request('regime:force-regime', { regime: regime.toUpperCase(), reason }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_FORCE_REGIME, { regime: regime.toUpperCase(), reason }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -256,7 +257,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/resume-drawdown', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:resume-drawdown', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_RESUME_DRAWDOWN, {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -264,7 +265,7 @@ module.exports = (app, deps) => {
   app.get('/api/:exchange/regime/preview-ladder', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:preview-ladder', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_PREVIEW_LADDER, {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -272,7 +273,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/rebuild-ladder', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:rebuild-ladder', {}, exchange, pair, LADDER_SWEEP_TIMEOUT_MS).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_REBUILD_LADDER, {}, exchange, pair, LADDER_SWEEP_TIMEOUT_MS).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -280,7 +281,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/cancel-ladder', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:cancel-ladder', {}, exchange, pair, LADDER_SWEEP_TIMEOUT_MS).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_CANCEL_LADDER, {}, exchange, pair, LADDER_SWEEP_TIMEOUT_MS).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -292,7 +293,7 @@ module.exports = (app, deps) => {
     if (!bodyId) return res.status(400).json({ success: false, error: 'bodyId is required' });
 
     // Two verified cancellations plus placement can exceed the default 10s IPC deadline.
-    const result = await getIPC(exchange).request('regime:rollup-body', { bodyId }, exchange, pair, 60_000).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_ROLLUP_BODY, { bodyId }, exchange, pair, 60_000).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -301,7 +302,7 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
     // Collapse serializes multiple roll-ups, each with exchange settlement checks.
-    const result = await getIPC(exchange).request('regime:rollup-all', {}, exchange, pair, 300_000).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_ROLLUP_ALL, {}, exchange, pair, 300_000).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -309,7 +310,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/reset-cycle', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:reset-cycle', {}, exchange, pair, LADDER_SWEEP_TIMEOUT_MS).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_RESET_CYCLE, {}, exchange, pair, LADDER_SWEEP_TIMEOUT_MS).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -332,7 +333,7 @@ module.exports = (app, deps) => {
     const ipc = getIPC(exchange);
     let transportFailed = false;
     const result = await ipc
-      .request('regime:reconcile-placement-intent', { intentId, action }, exchange, pair)
+      .request(IPC_CHANNELS.REGIME_RECONCILE_PLACEMENT_INTENT, { intentId, action }, exchange, pair)
       .catch((err) => { transportFailed = true; return engineError(err); });
     const disconnected = transportFailed && (
       !Object.prototype.hasOwnProperty.call(exchangeIPCMap, exchange)
@@ -374,7 +375,7 @@ module.exports = (app, deps) => {
     const pct = parseFloat(tpPct);
     if (isNaN(pct) || pct <= 0 || pct > 50) return res.status(400).json({ success: false, error: 'tpPct must be a number between 0 and 50' });
 
-    const result = await getIPC(exchange).request('regime:set-body-tp', { bodyId, tpPct: pct }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_SET_BODY_TP, { bodyId, tpPct: pct }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -387,7 +388,7 @@ module.exports = (app, deps) => {
     const price = parseFloat(limitPrice);
     if (isNaN(price) || price <= 0) return res.status(400).json({ success: false, error: 'limitPrice must be a positive number' });
 
-    const result = await getIPC(exchange).request('regime:set-body-tp-price', { bodyId, limitPrice: price }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_SET_BODY_TP_PRICE, { bodyId, limitPrice: price }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -397,7 +398,7 @@ module.exports = (app, deps) => {
   app.get('/api/:exchange/regime/chart-data', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const data = await getIPC(exchange).request('regime:chart-data', {}, exchange, pair).catch(() =>
+    const data = await getIPC(exchange).request(IPC_CHANNELS.REGIME_CHART_DATA, {}, exchange, pair).catch(() =>
       ({ priceHistory: [], atrHistory: [], regimeHistory: [], exchange, pair, timestamp: Date.now() })
     );
     res.json({ success: true, exchange, pair, data });
@@ -408,7 +409,7 @@ module.exports = (app, deps) => {
     const pair = getFundPair(req);
     const query = parseFillsQuery(req.query);
     if (query.success === false) return res.status(400).json(query);
-    const result = await getIPC(exchange).request('regime:fills', query, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_FILLS, query, exchange, pair).catch(engineError);
     if (result.success === false) return res.status(result.statusCode || errStatus(result)).json(result);
     res.json({ success: true, exchange, pair, ...result });
   });
@@ -416,7 +417,7 @@ module.exports = (app, deps) => {
   app.get('/api/:exchange/regime/fills/cycles', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:fills:cycles', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_FILLS_CYCLES, {}, exchange, pair).catch(engineError);
     if (result.success === false) return res.status(errStatus(result)).json(result);
     res.json({ success: true, exchange, pair, ...result });
   });
@@ -424,7 +425,7 @@ module.exports = (app, deps) => {
   app.get('/api/:exchange/regime/open-orders', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:open-orders', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_OPEN_ORDERS, {}, exchange, pair).catch(engineError);
     if (result.success === false) return res.status(errStatus(result)).json(result);
     res.json({ success: true, exchange, pair, ...result });
   });
@@ -434,7 +435,7 @@ module.exports = (app, deps) => {
     const pair = getFundPair(req);
     const applyFlag = readBooleanFlag(req.body || {}, 'apply', false);
     if (applyFlag.error) return res.status(400).json({ success: false, error: applyFlag.error });
-    const result = await getIPC(exchange).request('regime:recalculate', { apply: applyFlag.value }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_RECALCULATE, { apply: applyFlag.value }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -447,7 +448,7 @@ module.exports = (app, deps) => {
     if (previewFlag.error) return res.status(400).json({ success: false, error: previewFlag.error });
     const mergeFlag = readBooleanFlag(body, 'merge', false);
     if (mergeFlag.error) return res.status(400).json({ success: false, error: mergeFlag.error });
-    const result = await getIPC(exchange).request('regime:convert-dca', { preview: previewFlag.value, merge: mergeFlag.value }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_CONVERT_DCA, { preview: previewFlag.value, merge: mergeFlag.value }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -462,7 +463,7 @@ module.exports = (app, deps) => {
     // Starts (or joins) an engine-owned scan and answers promptly (issue #966):
     // `pending: true` + `jobId` means poll the status route below; otherwise
     // the body is the complete result.
-    const result = await getIPC(exchange).request('regime:unaccounted-fills', { startDate }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_UNACCOUNTED_FILLS, { startDate }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -470,7 +471,7 @@ module.exports = (app, deps) => {
   app.get('/api/:exchange/regime/unaccounted-fills/jobs/:jobId', async (req, res) => {
     const { exchange, jobId } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:unaccounted-fills-status', { jobId }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_UNACCOUNTED_FILLS_STATUS, { jobId }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -478,7 +479,7 @@ module.exports = (app, deps) => {
   app.get('/api/:exchange/regime/manual-trades', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:manual-trades', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_MANUAL_TRADES, {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -486,7 +487,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/manual-trade', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:manual-trade', req.body, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_MANUAL_TRADE, req.body, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -494,7 +495,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/manual-trade/:tradeId/check', async (req, res) => {
     const { exchange, tradeId } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:manual-trade-check', { tradeId }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_MANUAL_TRADE_CHECK, { tradeId }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -505,7 +506,7 @@ module.exports = (app, deps) => {
     const { exchange, tradeId } = req.params;
     if (typeof tradeId !== 'string' || !tradeId.trim()) return res.status(400).json({ success: false, error: 'tradeId must be a non-blank string' });
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:manual-trade-resume', { tradeId }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_MANUAL_TRADE_RESUME, { tradeId }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -516,7 +517,7 @@ module.exports = (app, deps) => {
     const { exchange, tradeId } = req.params;
     const pair = getFundPair(req);
     const { recoveryBuyPrice, existingBuyOrderId } = req.body || {};
-    const result = await getIPC(exchange).request('regime:manual-trade-retry', { tradeId, recoveryBuyPrice, existingBuyOrderId }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_MANUAL_TRADE_RETRY, { tradeId, recoveryBuyPrice, existingBuyOrderId }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -527,7 +528,7 @@ module.exports = (app, deps) => {
     const body = req.body || {};
     const createBodyFlag = readBooleanFlag(body, 'createBody', true);
     if (createBodyFlag.error) return res.status(400).json({ success: false, error: createBodyFlag.error });
-    const result = await getIPC(exchange).request('regime:manual-trade-buy', { ...body, createBody: createBodyFlag.value }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_MANUAL_TRADE_BUY, { ...body, createBody: createBodyFlag.value }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -535,7 +536,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/manual-trade-pair', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:manual-trade-pair', req.body, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_MANUAL_TRADE_PAIR, req.body, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -547,7 +548,7 @@ module.exports = (app, deps) => {
     if (!Array.isArray(orderIds) || orderIds.length === 0) {
       return res.status(400).json({ success: false, error: 'orderIds array is required' });
     }
-    const result = await getIPC(exchange).request('regime:dismiss-fills', { orderIds }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_DISMISS_FILLS, { orderIds }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -558,7 +559,7 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
     const limit = parseInt(req.query.limit) || 100;
-    const result = await getIPC(exchange).request('regime:dry-run-log', { limit }, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_DRY_RUN_LOG, { limit }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -566,7 +567,7 @@ module.exports = (app, deps) => {
   app.get('/api/:exchange/regime/dry-run/pnl', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:dry-run-pnl', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_DRY_RUN_PNL, {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -574,7 +575,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/dry-run/reset', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:dry-run-reset', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_DRY_RUN_RESET, {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -582,7 +583,7 @@ module.exports = (app, deps) => {
   app.get('/api/:exchange/regime/dry-run/state', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:dry-run-state', {}, exchange, pair).catch(engineError);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_DRY_RUN_STATE, {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });

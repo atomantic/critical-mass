@@ -2,7 +2,7 @@
 /**
  * Engine IPC handler: `regime:recalculate`.
  *
- * Extracted from engines/coinbase-engine.js (issue #505) so the
+ * Extracted from engines/exchange-engine.js (issue #505) so the
  * preview-vs-apply / live-vs-stopped selection this handler enforces — never
  * mutating the ledger on a running-engine preview, delegating a running-
  * engine apply to the engine's own `recalculateAndRefresh` (never opening a
@@ -22,6 +22,8 @@
  * ignores cycle boundaries).
  * See docs/pnl-architecture.md.
  */
+
+const { IPC_CHANNELS } = require('./ipc/ipc-protocol');
 
 /**
  * @typedef {Object} EngineRecalculateDeps
@@ -74,7 +76,7 @@ const registerEngineRecalculateHandler = (registry, deps) => {
     getStandaloneLedger,
   } = deps;
 
-  registry.onRequest('regime:recalculate', async (payload, exchange, pair) => {
+  registry.onRequest(IPC_CHANNELS.REGIME_RECALCULATE, async (payload, exchange, pair) => {
     const resolvedPair = resolvePair(exchange, pair);
     // Reject before any ledger/store read so a direct IPC caller (bypassing
     // the gateway route's own validation) cannot flip a preview into an
