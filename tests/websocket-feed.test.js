@@ -96,6 +96,25 @@ describe('coinbase ticker bid/ask guard (#1336)', () => {
     assert.equal(ticks[0].bid, 99);
     assert.equal(ticks[0].ask, 101);
   });
+
+  it('withholds ticks with a zero, negative, or missing price (#110 M1)', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    FakeWebSocket.reset();
+    const ticks = [];
+    const feed = createWebSocketFeed('coinbase', { productId: 'BTC-USD', publicOnly: true, onTicker: (d) => ticks.push(d) });
+    feed.connect();
+    const sock = FakeWebSocket.instances[0];
+    sock.open();
+    const send = (t2) => sock.receive(JSON.stringify({ channel: 'ticker', events: [{ type: 'update', tickers: [{ product_id: 'BTC-USD', best_bid: '99', best_ask: '101', ...t2 }] }] }));
+    send({ price: '0' });
+    send({ price: '-5' });
+    send({});
+    assert.equal(ticks.length, 0);
+    send({ price: '100' });
+    feed.disconnect();
+    assert.equal(ticks.length, 1);
+    assert.equal(ticks[0].price, 100);
+  });
 });
 
 const VARIANTS = [
