@@ -20,6 +20,14 @@ export default function ContractSetup({ initialContract }) {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState('')
+  // One "Saved" timer: an earlier save's timer must not clear a later save's confirmation.
+  const savedTimerRef = useRef(null)
+  const showSaved = () => {
+    clearTimeout(savedTimerRef.current)
+    setSaved(true)
+    savedTimerRef.current = setTimeout(() => setSaved(false), 2000)
+  }
+  useEffect(() => () => clearTimeout(savedTimerRef.current), [])
 
   // Screenshot AI state
   const [providers, setProviders] = useState([])
@@ -110,8 +118,7 @@ export default function ContractSetup({ initialContract }) {
         const data = await res.json().catch(() => ({}))
         throw new Error(data.error || 'Failed to save contract')
       }
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      showSaved()
     } catch (err) {
       setSaveError(err.message || 'Failed to save contract')
     } finally {
@@ -230,8 +237,7 @@ export default function ContractSetup({ initialContract }) {
         }),
       })
       if (res.ok) {
-        setSaved(true)
-        setTimeout(() => setSaved(false), 2000)
+        showSaved()
       } else {
         setScreenshotError('Failed to save contract')
       }
