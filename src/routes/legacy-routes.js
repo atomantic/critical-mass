@@ -11,6 +11,8 @@ const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../config-vali
 const { prepareConfigUpdate, persistConfigUpdate } = require('./config-update');
 const { asyncRoute, getSafeIPC, tradeResultStatusCode } = require('./route-utils');
 const { readBooleanFlag } = require('../shared-utils');
+const { buildFundStatus } = require('../fund-status');
+const { buildActiveFundSummary } = require('../fund-summary');
 
 /**
  * Context logger for the unprefixed legacy routes. Every one of them is pinned
@@ -30,7 +32,7 @@ const legacyLogger = (route) => createContextLogger({
  * @param {{exchangeIPCMap: Object, parseTSV: Function, calculateCostBasis: Function, getNextTradeInfo: Function}} deps
  */
 module.exports = (app, deps) => {
-  const { exchangeIPCMap, parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
+  const { exchangeIPCMap, parseTSV } = deps;
 
   // Every route here is pinned to coinbase's default fund by definition. State
   // and cycle calls name that fund explicitly rather than relying on each
@@ -150,69 +152,21 @@ module.exports = (app, deps) => {
     res.json(transactions);
   });
 
-  app.get('/api/status', async (req, res) => {
-    const { getAdapter } = require('../adapters');
-    const config = getExchangeConfig('coinbase');
-    const state = stateTracker.loadState(config, 'coinbase', legacyPair());
+  const NO_FUND_ERROR = 'No coinbase fund exists; add one with POST /api/coinbase/funds first';
 
-    let currentPrice = 0;
-    let usdcBalance = { available: 0, hold: 0 };
-    let assetBalance = { available: 0, hold: 0 };
-    let keysConfigured = false;
-    let apiError = null;
-
-    const adapter = getAdapter('coinbase');
-
-    if (adapter.hasValidKeys && adapter.hasValidKeys()) {
-      keysConfigured = true;
-      try {
-        currentPrice = await adapter.getCurrentPrice(config.productId);
-        usdcBalance = await adapter.getAccountBalance('USDC');
-        assetBalance = await adapter.getAccountBalance(config.productId.split(/[-_]/)[0]);
-      } catch (err) {
-        apiError = err.message || 'API connection failed';
-        legacyLogger('/api/status').error(`❌ [coinbase] Status check failed: ${apiError}`, {
-          action: 'status',
-          pair: config.productId,
-          error: apiError,
-        });
-      }
-    }
-
-    res.json({ currentPrice, usdcBalance, assetBalance, keysConfigured, apiError, config, state, lastUpdated: new Date().toISOString() });
-  });
+  // Thin wrappers over the helpers behind GET /api/:exchange/status and
+  // /summary, pinned to coinbase's default fund (409 when it has none, like
+  // the legacy config save). Response shapes match the prefixed routes.
+  app.get('/api/status', asyncRoute(async (req, res) => {
+    const pair = legacyWritePair();
+    if (!pair) return res.status(409).json({ success: false, error: NO_FUND_ERROR });
+    res.json(await buildFundStatus('coinbase', pair, '/api/status', 'legacy-routes'));
+  }));
 
   app.get('/api/summary', (req, res) => {
-    const config = getExchangeConfig('coinbase');
-    const state = stateTracker.loadState(config, 'coinbase', legacyPair());
-    const logFile = getLogFile('coinbase');
-    const transactions = parseTSV(logFile);
-
-    const buys = transactions.filter(t => t.Type === 'BUY');
-    const sells = transactions.filter(t => t.Type === 'SELL_FILLED');
-
-    const totalBought = buys.reduce((sum, t) => sum + Math.abs(t['USDC Amount'] || 0), 0);
-    const totalSold = sells.reduce((sum, t) => sum + (t['USDC Amount'] || 0), 0);
-    const totalBTCBought = buys.reduce((sum, t) => sum + (t['BTC Amount'] || 0), 0);
-    const totalBTCSold = sells.reduce((sum, t) => sum + Math.abs(t['BTC Amount'] || 0), 0);
-
-    const costBasis = calculateCostBasis(state, transactions);
-    const nextTrade = getNextTradeInfo(config, state);
-
-    res.json({
-      config, state,
-      stats: {
-        totalBuys: buys.length, totalSells: sells.length,
-        pendingOrders: (state.orders || []).filter(o => o.status === 'pending').length,
-        totalBought, totalSold, totalBTCBought, totalBTCSold,
-        totalFees: state.totalFees || 0, totalRebates: state.totalRebates || 0, netFees: state.netFees || 0,
-        assetReserves: state.assetReserves || 0, usdcFundSize: state.usdcFundSize || 0,
-        outstandingOrdersUSDC: state.outstandingOrdersUSDC || 0, outstandingOrdersAsset: state.outstandingOrdersAsset || 0,
-        allocationUsed: state.totalAllocated || 0, allocationRemaining: (config.totalAllocation || 0) - (state.totalAllocated || 0),
-        intervalsRun: state.totalIntervalsRun || 0,
-      },
-      costBasis, nextTrade, transactions: transactions.slice(-50),
-    });
+    const pair = legacyWritePair();
+    if (!pair) return res.status(409).json({ success: false, error: NO_FUND_ERROR });
+    res.json(buildActiveFundSummary('coinbase', pair));
   });
 
   app.post('/api/sync', asyncRoute(async (req, res) => {

@@ -4,7 +4,8 @@
  */
 
 const stateTracker = require('../state-tracker');
-const { buildFundSummary, buildDcaFundSummary } = require('../fund-summary');
+const { buildActiveFundSummary } = require('../fund-summary');
+const { buildFundStatus } = require('../fund-status');
 const {
   getFundConfig,
   getGlobalConfig,
@@ -18,8 +19,6 @@ const {
   setFundDryRun,
   addFund,
   removeFund,
-  getBaseCurrency,
-  getQuoteCurrency,
   productIdMatchesPair,
   getFundStateConflict,
 } = require('../config-utils');
@@ -435,51 +434,7 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
-    const { getAdapter } = require('../adapters');
-
-    const config = getFundConfig(exchange, pair);
-    const state = stateTracker.loadState(config, exchange, pair);
-
-    let currentPrice = 0;
-    let quoteBalance = { available: 0, hold: 0 };
-    let assetBalance = { available: 0, hold: 0 };
-    let keysConfigured = false;
-    let apiError = null;
-    const quoteCurrency = getQuoteCurrency(config.productId);
-
-    const adapter = getAdapter(exchange);
-
-    if (adapter.hasValidKeys && adapter.hasValidKeys()) {
-      keysConfigured = true;
-      try {
-        currentPrice = await adapter.getCurrentPrice(config.productId);
-        quoteBalance = await adapter.getAccountBalance(quoteCurrency);
-        assetBalance = await adapter.getAccountBalance(getBaseCurrency(config.productId));
-      } catch (err) {
-        apiError = err.message || 'API connection failed';
-        exchangeLogger(exchange, pair, '/api/:exchange/status').error(`❌ [${exchange}/${pair}] Status check failed: ${apiError}`, {
-          action: 'status',
-          productId: config.productId,
-          error: apiError,
-        });
-      }
-    }
-
-    res.json({
-      exchange,
-      pair,
-      currentPrice,
-      quoteBalance,
-      assetBalance,
-      quoteCurrency,
-      keysConfigured,
-      apiError,
-      config,
-      state,
-      failedSells: stateTracker.getFailedSellOrders(state),
-      placementIntents: stateTracker.describePlacementIntents(exchange, pair),
-      lastUpdated: new Date().toISOString(),
-    });
+    res.json(await buildFundStatus(exchange, pair, '/api/:exchange/status', 'exchange-routes'));
   });
 
   // Get summary for an exchange/fund (?pair= optional).
@@ -490,11 +445,7 @@ module.exports = (app, deps) => {
     const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
 
-    const config = getFundConfig(exchange, pair);
-    const summary = getGlobalConfig().simpleDcaEnabled && config.dcaStrategy !== 'regime'
-      ? buildDcaFundSummary(exchange, pair, config)
-      : buildFundSummary(exchange, pair, { config });
-    res.json(summary);
+    res.json(buildActiveFundSummary(exchange, pair));
   });
 
   // Get candles for an exchange/fund (for charts)
