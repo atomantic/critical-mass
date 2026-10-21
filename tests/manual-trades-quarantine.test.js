@@ -69,3 +69,40 @@ describe('manual-trades transient read error', () => {
     assert.equal(fs.readdirSync(dir).some(f => f.includes('.corrupt-')), false);
   });
 });
+
+describe('manual-trades wrong top-level shape', () => {
+  const setup = (t, content) => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'manual-trades-shape-'));
+    const original = migration.getExchangeDataDir;
+    migration.getExchangeDataDir = (exchange) => {
+      const d = path.join(tmpRoot, exchange);
+      fs.mkdirSync(d, { recursive: true });
+      return d;
+    };
+    t.after(() => {
+      migration.getExchangeDataDir = original;
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    });
+    const { createManualTradeStore } = require('../src/manual-trades');
+    const store = createManualTradeStore('coinbase', 'BTC-USDC');
+    const dir = path.join(tmpRoot, 'coinbase', 'BTC-USDC');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'manual-trades.json');
+    fs.writeFileSync(file, content);
+    return { store, dir, file };
+  };
+
+  it('quarantines valid JSON that is null (not an object)', (t) => {
+    const { store, dir, file } = setup(t, 'null');
+    store.load();
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(fs.readdirSync(dir).filter(f => f.includes('.corrupt-')).length, 1);
+  });
+
+  it('quarantines a trades entry that is not an object', (t) => {
+    const { store, dir, file } = setup(t, '{"trades":[null]}');
+    store.load();
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(fs.readdirSync(dir).filter(f => f.includes('.corrupt-')).length, 1);
+  });
+});
