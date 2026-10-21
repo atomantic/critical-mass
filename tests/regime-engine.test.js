@@ -467,6 +467,79 @@ describe('updateMetrics marketState retention on empty candles (issue #584)', ()
   });
 });
 
+describe('metrics updater tick guard (issue #1497)', () => {
+  const PRODUCT_DETAILS = {
+    baseMinSize: '0.0001',
+    baseIncrement: '0.00000001',
+    quoteIncrement: '0.01',
+  };
+  const METRICS_TICK_MS = 60000;
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  const makeMockExecutor = () => ({
+    cancelAllEntries: async () => ({ success: true }),
+    cancelTpOrder: async () => ({ success: true }),
+    cancelBodyTpOrder: async () => ({ cancelled: true }),
+    placeBodyTpOrder: async () => ({ success: true, orderId: 'tp-1' }),
+    setStaleTimeoutMultiplier: () => {},
+    getPendingCounts: () => ({ buys: 0, sells: 0, total: 0 }),
+    isLadderOrder: () => false,
+    getOrderPlacedAt: () => null,
+    markSettled: () => {},
+    removeBodyTracking: () => {},
+    handleOrderFill: () => {},
+    checkPendingOrderFills: async () => ({ polled: 0, filled: 0, cancelled: 0 }),
+  });
+
+  it('never has more than one candle fetch in flight while the exchange stalls', async (t) => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    engine._test.setProductDetails(PRODUCT_DETAILS);
+    engine._test.setRunning(true);
+    engine._test.setOrderExecutor(makeMockExecutor());
+
+    const pending = [];
+    engine._test.setAdapter({
+      getCandles: () => new Promise((resolve, reject) => { pending.push({ resolve, reject }); }),
+    });
+
+    engine._test.startMetricsUpdater();
+    await flush();
+    assert.equal(pending.length, 1, 'initial run starts one candle fetch');
+
+    t.mock.timers.tick(5 * METRICS_TICK_MS);
+    await flush();
+    assert.equal(pending.length, 1, 'ticks during the stall must not stack new candle fetches');
+  });
+
+  it('resumes metrics runs on the next tick once the stalled fetch rejects', async (t) => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const engine = createRegimeEngine('gemini', 'BTC-USD', { dryRun: false, productId: 'BTC-USD' }, {});
+    engine._test.setProductDetails(PRODUCT_DETAILS);
+    engine._test.setRunning(true);
+    engine._test.setOrderExecutor(makeMockExecutor());
+
+    const pending = [];
+    engine._test.setAdapter({
+      getCandles: () => new Promise((resolve, reject) => { pending.push({ resolve, reject }); }),
+    });
+
+    engine._test.startMetricsUpdater();
+    await flush();
+    t.mock.timers.tick(3 * METRICS_TICK_MS);
+    await flush();
+    assert.equal(pending.length, 1, 'only one run while stalled');
+
+    pending[0].reject(new Error('Coinbase request timed out'));
+    await flush();
+    await flush();
+
+    t.mock.timers.tick(METRICS_TICK_MS);
+    await flush();
+    assert.equal(pending.length, 2, 'next tick after the rejection runs updateMetrics again');
+  });
+});
+
 describe('injectBody duplicate refusal (issue #691, codex review follow-up)', () => {
   // codex review: the original duplicate check only compared
   // `sourceOrderIds[0]`, but mergeIntoBody (celestial-hierarchy.js) appends a

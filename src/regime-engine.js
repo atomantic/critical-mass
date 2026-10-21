@@ -6384,13 +6384,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Start periodic metrics updater
    */
   const startMetricsUpdater = () => {
+    // A stalled exchange can outlast the interval (each candle request may take
+    // minutes with retries); never stack metrics runs on top of each other.
+    let metricsInFlight = false;
     // updateMetrics is async and awaits exchange/order calls that can reject;
     // an unhandled rejection in a bare interval callback would crash the
     // process, so guard every invocation.
-    const runMetrics = () =>
-      trackPendingWrite(`engine-metrics:${fundLabel}`, () => updateMetrics()).catch((err) =>
-        logger.error(`❌ [${exchange}] Metrics update crashed: ${err.message}`, { error: err.message })
-      );
+    const runMetrics = () => {
+      if (metricsInFlight) return;
+      metricsInFlight = true;
+      trackPendingWrite(`engine-metrics:${fundLabel}`, () => updateMetrics())
+        .catch((err) =>
+          logger.error(`❌ [${exchange}] Metrics update crashed: ${err.message}`, { error: err.message })
+        )
+        .finally(() => {
+          metricsInFlight = false;
+        });
+    };
     metricsInterval = setInterval(runMetrics, METRICS_INTERVAL_MS);
     // Initial update
     runMetrics();
@@ -10473,6 +10483,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       evaluateEntryTrigger: () => evaluateEntryTrigger(),
       evaluateLadderEntry: () => evaluateLadderEntry(),
       setRecoveryModule: (v) => { recoveryModule = v; },
+      startMetricsUpdater: () => startMetricsUpdater(),
       setMergeInProgress: engineLocks._test.setMergeInProgress,
       setReconcileInProgress: engineLocks._test.setReconcileInProgress,
       setFillInProgress: engineLocks._test.setFillInProgress,
