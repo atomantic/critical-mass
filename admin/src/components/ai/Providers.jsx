@@ -29,7 +29,11 @@ const RUN_STATUS_LABELS = {
 async function readJson(url, label) {
   const response = await fetch(url).catch(() => null)
   if (!response) return { error: `Could not load ${label}: the server is unreachable.` }
-  if (!response.ok) return { error: `Could not load ${label} (HTTP ${response.status}).` }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    const reason = typeof body?.error === 'string' && body.error.trim() ? `: ${body.error}` : ` (HTTP ${response.status}).`
+    return { error: `Could not load ${label}${reason}` }
+  }
   const data = await response.json().catch(() => null)
   return data ? { data } : { error: `Could not load ${label}: the response was unreadable.` }
 }
