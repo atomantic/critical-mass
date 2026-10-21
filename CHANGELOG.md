@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-1344] Celestial bloom uses three's own post-processing** — The Systems tier cards and the celestial scene render bloom through three's `EffectComposer` + `UnrealBloomPass` (shared `BloomEffect` component) instead of `@react-three/postprocessing`, dropping that package plus `postprocessing`, `n8ao` and `maath` from the admin dependencies. Bloom look is similar but not pixel-identical (different threshold/blur model).
 - **[issue-1361] Re-declared small helpers hoisted** — Coinbase order-result mapping (`mapOrderResponse`), `safeJsonParse` (websocket modules), and sha256/UUID helpers (journal transactions) now live once. TP-optimizer adjustment and ladder-order merges remain.
 
 ### Fixed
