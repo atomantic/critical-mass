@@ -732,3 +732,97 @@ describe('backup config portability — newer-build archives (#567)', () => {
     assert.deepEqual(result.droppedFields, []);
   });
 });
+
+// DCA consolidation settings are not in DEFAULTS (absent means off), so they
+// were missing from the allowlist and every restore turned them off (#1420).
+describe('backup config portability — DCA consolidation settings (#1420)', () => {
+  const PRE_1420_FIELD_REVISION = 120;
+  const dcaBase = (consolidation) => ({
+    exchanges: {
+      gemini: { pairs: { BTCUSD: { productId: 'BTCUSD', totalAllocation: 500, enabled: true, dryRun: false, ...consolidation } } },
+    },
+  });
+  const restoredFund = (install) => effectiveConfig(install).exchanges.gemini.pairs.BTCUSD;
+  const overrideOf = (install) => JSON.parse(fs.readFileSync(path.join(install.dataDir, 'config.json'), 'utf8'));
+
+  /** Rewrite an archive's manifest the way a pre-#1420 build wrote it. */
+  const asPre1420Archive = (install, filename) => {
+    const config = buildConfigSnapshot(effectiveConfig(install));
+    config.fieldRevision = PRE_1420_FIELD_REVISION;
+    for (const block of Object.values(config.exchanges)) {
+      for (const fund of Object.values(block.pairs)) {
+        delete fund.consolidateAfterOrders;
+        delete fund.consolidateInterval;
+      }
+    }
+    replaceManifest(install, filename, JSON.stringify({ manifestVersion: 1, config }));
+  };
+
+  it('round-trips consolidation settings onto a destination whose base has none', async () => {
+    const source = makeInstall('source', dcaBase({ consolidateAfterOrders: 40, consolidateInterval: 'weekly' }));
+    const created = await createBackup({ paths: source.paths });
+    assert.equal(created.success, true, created.error);
+    const archived = buildConfigSnapshot(effectiveConfig(source)).exchanges.gemini.pairs.BTCUSD;
+    assert.equal(archived.consolidateAfterOrders, 40);
+    assert.equal(archived.consolidateInterval, 'weekly');
+
+    for (const [name, destBase] of [['plain', DEST_BASE], ['off', dcaBase({ consolidateAfterOrders: 0, consolidateInterval: 'never' })]]) {
+      const dest = makeInstall(`dest-${name}`, destBase);
+      transferArchive(source, dest, created.filename);
+      const restored = restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true });
+      assert.equal(restored.success, true, restored.error);
+      const fund = restoredFund(dest);
+      assert.equal(fund.consolidateAfterOrders, 40, name);
+      assert.equal(fund.consolidateInterval, 'weekly', name);
+    }
+  });
+
+  it('keeps data/config.json a minimal diff when the destination base sets the same consolidation', async () => {
+    for (const consolidation of [
+      { consolidateAfterOrders: 0, consolidateInterval: 'never' },
+      { consolidateAfterOrders: 40, consolidateInterval: 'weekly' },
+    ]) {
+      const tag = `${consolidation.consolidateAfterOrders}-${consolidation.consolidateInterval}`;
+      const source = makeInstall(`source-${tag}`, dcaBase(consolidation));
+      const created = await createBackup({ paths: source.paths });
+      const dest = makeInstall(`dest-${tag}`, dcaBase(consolidation));
+      transferArchive(source, dest, created.filename);
+      const restored = restoreBackup(created.filename, { paths: dest.paths });
+      assert.equal(restored.success, true, restored.error);
+      assert.equal(overrideOf(dest).exchanges, undefined, `${tag}: ${JSON.stringify(overrideOf(dest))}`);
+    }
+  });
+
+  it('restores a pre-#1420 archive onto a base with consolidation off', async () => {
+    const source = makeInstall('source', dcaBase({ consolidateAfterOrders: 0, consolidateInterval: 'never' }));
+    const created = await createBackup({ paths: source.paths });
+    asPre1420Archive(source, created.filename);
+
+    const dest = makeInstall('dest', dcaBase({ consolidateAfterOrders: 0, consolidateInterval: 'never' }));
+    transferArchive(source, dest, created.filename);
+    const restored = restoreBackup(created.filename, { paths: dest.paths });
+    assert.equal(restored.success, true, restored.error);
+    assert.deepEqual(restored.droppedFields, []);
+    assert.equal(overrideOf(dest).exchanges, undefined, JSON.stringify(overrideOf(dest)));
+    assert.equal(restoredFund(dest).consolidateAfterOrders, 0);
+    assert.equal(restoredFund(dest).consolidateInterval, 'never');
+  });
+
+  it('restores a pre-#1420 archive onto a base with consolidation on, leaving it off', async () => {
+    const source = makeInstall('source', dcaBase({}));
+    const created = await createBackup({ paths: source.paths });
+    asPre1420Archive(source, created.filename);
+
+    const dest = makeInstall('dest', dcaBase({ consolidateAfterOrders: 25, consolidateInterval: 'daily' }));
+    transferArchive(source, dest, created.filename);
+    const restored = restoreBackup(created.filename, { paths: dest.paths });
+    assert.equal(restored.success, true, restored.error);
+    const fund = restoredFund(dest);
+    assert.equal(fund.consolidateAfterOrders, 0);
+    assert.equal(fund.consolidateInterval, 'never');
+    assert.deepEqual(
+      buildConfigSnapshot(effectiveConfig(dest)).exchanges,
+      buildConfigSnapshot(effectiveConfig(source)).exchanges,
+    );
+  });
+});
