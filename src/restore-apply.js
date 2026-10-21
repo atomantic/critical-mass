@@ -494,6 +494,20 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
   return { success: true, filesRestored: files.length };
 };
 
+// A directory's own mtime only moves when a direct child is added or removed,
+// so a restore still writing into existing entries looks idle; take the newest
+// mtime among the immediate children too.
+const newestMtimeMs = (dir, own) => {
+  const listed = attempt(() => fs.readdirSync(dir));
+  if (!listed.ok) return own;
+  let newest = own;
+  for (const child of listed.value) {
+    const st = attempt(() => fs.lstatSync(path.join(dir, child)));
+    if (st.ok && st.value.mtimeMs > newest) newest = st.value.mtimeMs;
+  }
+  return newest;
+};
+
 /**
  * Remove `.restore-temp-*` staging directories that no journal references.
  * A failed in-process restore disposes of its own staging tree; this backstops
@@ -515,7 +529,7 @@ const sweepOrphanStageDirs = ({ dataDir, referenced, logger }) => {
     if (!name.startsWith(STAGE_PREFIX) || referenced.has(name)) continue;
     const target = path.join(dataDir, name);
     const stat = attempt(() => fs.lstatSync(target));
-    if (!stat.ok || !stat.value.isDirectory() || Date.now() - stat.value.mtimeMs < ORPHAN_STAGE_MIN_AGE_MS) continue;
+    if (!stat.ok || !stat.value.isDirectory() || Date.now() - newestMtimeMs(target, stat.value.mtimeMs) < ORPHAN_STAGE_MIN_AGE_MS) continue;
     const gone = attempt(() => fs.rmSync(target, { recursive: true, force: true }));
     if (gone.ok) {
       removed += 1;

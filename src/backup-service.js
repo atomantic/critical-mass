@@ -1164,7 +1164,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
   // Never throws: cleanup failure must not mask the restore outcome.
   const cleanStage = () => {
     try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (e) {
-      logger.warn(`⚠️ 💾 Could not remove restore staging directory for ${filename}: ${e.message}`, { action: "restore-stage-cleanup", filename });
+      logger.warn(`⚠️ 💾 Could not remove restore staging directory for ${filename}: ${e.message}`, { action: 'restore-stage-cleanup', filename });
     }
   };
   try {
@@ -1295,15 +1295,15 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
         || (isRoot && (name === MANIFEST_FILENAME || (legacy && !override && name === 'config.json'))),
     });
 
-    // The applier cleans staging itself once a journal exists; this covers the
-    // earlier refusals (invalid staged set, snapshot or journal write failure),
-    // which return before one is written.
     // Post-commit: invalidate first, and never let cleanup fail a committed restore.
     if (applied.success && override) {
       try { invalidateConfigCache(); } catch (e) {
-        logger.warn(`⚠️ 💾 Restore ${filename} committed but the config cache could not be invalidated: ${e.message}`, { action: "restore-cache-invalidate", filename });
+        logger.warn(`⚠️ 💾 Restore ${filename} committed but the config cache could not be invalidated: ${e.message}`, { action: 'restore-cache-invalidate', filename });
       }
     }
+    // The applier cleans staging itself once a journal exists; this covers the
+    // earlier refusals (invalid staged set, snapshot or journal write failure),
+    // which return before one is written.
     if (applied.success || applied.rolledBack) cleanStage();
 
     if (!applied.success) {
@@ -1313,8 +1313,8 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     return { success: true, filesRestored: applied.filesRestored, configRestored: Boolean(override), legacy, droppedFields };
   } catch (error) {
     if (!handedOff) cleanStage();
-    logger.error(`❌ 💾 Restore failed while preparing ${filename}: ${error.message}`, { action: "restore-stage", filename, error: error.message });
-    return { success: false, code: "staging-failed", error: `Restore failed while preparing the archive: ${error.message}. ${handedOff ? "The rollback journal will recover the data directory on next start." : "No files were changed."}` };
+    logger.error(`❌ 💾 Restore failed while preparing ${filename}: ${error.message}`, { action: 'restore-stage', filename, error: error.message });
+    return { success: false, code: 'staging-failed', error: `Restore failed while preparing the archive: ${error.message}. ${handedOff ? 'The rollback journal will recover the data directory on next start.' : 'No files were changed.'}` };
   }
 };
 

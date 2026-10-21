@@ -532,8 +532,14 @@ describe('restore-apply — transactional application (#431)', () => {
     const owned = path.join(dataDir, '.restore-temp-owned');
     for (const dir of [orphan, fresh, owned]) write(path.join(dir, 'x.json'), '{}');
     const anHourAgo = new Date(Date.now() - 60 * 60_000);
-    fs.utimesSync(orphan, anHourAgo, anHourAgo);
-    fs.utimesSync(owned, anHourAgo, anHourAgo);
+    for (const dir of [orphan, owned]) {
+      fs.utimesSync(path.join(dir, 'x.json'), anHourAgo, anHourAgo);
+      fs.utimesSync(dir, anHourAgo, anHourAgo);
+    }
+    // An old directory whose child is still being written belongs to a live restore.
+    const active = path.join(dataDir, '.restore-temp-active');
+    write(path.join(active, 'x.json'), '{}');
+    fs.utimesSync(active, anHourAgo, anHourAgo);
     // A journal that cannot be rolled back: its staging directory must survive for recovery.
     write(path.join(dataDir, JOURNAL_FILENAME), JSON.stringify({
       journalVersion: JOURNAL_VERSION,
@@ -552,6 +558,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.equal(fs.existsSync(orphan), false, 'an old unreferenced staging directory is removed');
     assert.equal(fs.existsSync(fresh), true, 'a fresh staging directory may belong to a live restore and is kept');
     assert.equal(fs.existsSync(owned), true, 'a journal-owned staging directory is kept for recovery');
+    assert.equal(fs.existsSync(active), true, 'a directory with a recently written child is kept');
   });
 });
 
