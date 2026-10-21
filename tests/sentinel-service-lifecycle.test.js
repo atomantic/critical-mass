@@ -208,3 +208,60 @@ describe('Sentinel timestamp refresh (issue #695)', () => {
     }
   });
 });
+
+describe('Sentinel seen-item pruning (issue #1403)', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const mk = (feeds, saved, fetchAllFeeds) => {
+    const writes = [];
+    const config = {
+      enabled: true, pollIntervalMs: 60_000, feeds,
+      keywords: { critical: ['halt'], warning: [], info: [] },
+      aiClassification: { enabled: false },
+    };
+    const service = createSentinelService({ to: () => ({ emit: () => {} }) }, {
+      readJSON: () => saved,
+      writeJSON: (file, state) => writes.push(state),
+      DATA_DIR: os.tmpdir(),
+      getSentinelConfig: () => config,
+      fetchAllFeeds,
+    });
+    return { service, writes };
+  };
+  const item = (guid, source) => ({
+    guid, title: 'Trading halt', description: 'halt', source,
+    link: 'https://example.com/' + guid, pubDate: new Date().toISOString(),
+  });
+
+  it('keeps week-old seen items on dismiss and does not re-alert on the next poll', async () => {
+    const old = Date.now() - 8 * DAY;
+    const saved = {
+      alerts: [{ id: 'a1', title: 'x', dismissed: false }],
+      seenGuids: { g1: { ts: old, source: 'A' }, g2: old },
+      lastSuccessfulFetchAt: new Date(Date.now() - 1000).toISOString(),
+    };
+    const { service, writes } = mk([{ name: 'A' }], saved, async () => ({
+      items: [item('g1', 'A'), item('g2', 'A')], enabled: 1, succeeded: 1, failed: 0, failures: [],
+    }));
+    service.dismissAlert('a1');
+    assert.deepEqual(Object.keys(writes.at(-1).seenGuids).sort(), ['g1', 'g2']);
+    await service.forcePoll();
+    assert.equal(service.getAlerts().length, 1);
+    assert.equal(service.getAlerts()[0].id, 'a1');
+  });
+
+  it('keeps a failing feed GUIDs while pruning gone items from healthy feeds', async () => {
+    const old = Date.now() - 8 * DAY;
+    const saved = {
+      alerts: [],
+      seenGuids: { bad: { ts: old, source: 'B' }, gone: { ts: old, source: 'A' } },
+      lastSuccessfulFetchAt: new Date().toISOString(),
+    };
+    const { service, writes } = mk([{ name: 'A' }, { name: 'B' }], saved, async () => ({
+      items: [], enabled: 2, succeeded: 1, failed: 1, failures: [{ feed: 'B', category: 'network' }],
+    }));
+    await service.forcePoll();
+    const seen = writes.at(-1).seenGuids;
+    assert.ok(seen.bad);
+    assert.equal(seen.gone, undefined);
+  });
+});
