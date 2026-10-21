@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback } from 'react'
-import { EffectComposer, Bloom } from '@react-three/postprocessing'
+import BloomEffect from './BloomEffect'
 import OrbitControlsLite from './OrbitControlsLite'
 import Starfield from './Starfield'
 import HierarchicalOrbit from './HierarchicalOrbit'
@@ -92,15 +92,7 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
       ))}
 
       {/* Bloom post-processing */}
-      <EffectComposer>
-        <Bloom
-          luminanceThreshold={0.26}
-          luminanceSmoothing={0.78}
-          intensity={0.85}
-          radius={0.62}
-          mipmapBlur
-        />
-      </EffectComposer>
+      <BloomEffect threshold={0.26} strength={0.85} radius={0.62} />
     </>
   )
 }
