@@ -1802,11 +1802,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Save dry-run state to disk
+   * Build the dry-run state bundle. Single source for the periodic save, the
+   * shutdown save and the backup flush so they cannot drift (#113, #1357).
    */
-  const saveDryRunState = () => {
-    if (!isDryRun) return;
-
+  const snapshotDryRunState = () => {
     persistEpisodeState();
 
     // Persist macro regime state into position for recovery
@@ -1814,13 +1813,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.macroRegime = macroRegime.getState();
     }
 
-    dryRunState.saveState(exchange, {
+    return {
       isDryRun: true,
       executor: orderExecutor.exportState(),
       position: { ...positionState },
       tpOptimizer: tpOptimizer.exportState(),
       sizeOptimizer: sizeOptimizer.exportState(),
-    }, pair);
+    };
+  };
+
+  /**
+   * Save dry-run state to disk
+   */
+  const saveDryRunState = () => {
+    if (!isDryRun) return;
+    dryRunState.saveState(exchange, snapshotDryRunState(), pair);
   };
 
   /**
@@ -3637,16 +3644,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
       // Save state before stopping
       if (isDryRun) {
-        persistEpisodeState();
-        dryRunState.forceSave(exchange, {
-          isDryRun: true,
-          executor: orderExecutor.exportState(),
-          position: { ...positionState },
-          tpOptimizer: tpOptimizer.exportState(),
-          // Include sizeOptimizer so dry-run restarts don't lose sizing
-          // adjustments (saveDryRunState persists it; forceSave omitted it) (#113).
-          sizeOptimizer: sizeOptimizer.exportState(),
-        }, pair);
+        dryRunState.forceSave(exchange, snapshotDryRunState(), pair);
       } else {
         // Save live state on shutdown
         saveLiveState();
@@ -10427,10 +10425,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     start,
     stop,
     flushForBackup: () => {
-      if (isDryRun) dryRunState.forceSave(exchange, {
-        isDryRun: true, executor: orderExecutor.exportState(), position: { ...positionState },
-        tpOptimizer: tpOptimizer.exportState(), sizeOptimizer: sizeOptimizer.exportState(),
-      }, pair);
+      if (isDryRun) dryRunState.forceSave(exchange, snapshotDryRunState(), pair);
       else { saveLiveState(); fillLedger.persist({ force: true }); }
     },
     getState,
