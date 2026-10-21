@@ -114,7 +114,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   return (
     <div className="space-y-4">
       {fillsError && <div role="alert" className="text-sm text-yellow-400">
-        {fillsError} <button type="button" onClick={() => fetchData()} className="px-2 py-1 rounded-sm bg-gray-700">Retry</button>
+        {fillsError} <button type="button" onClick={() => fetchData()} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 rounded-sm bg-gray-700">Retry</button>
       </div>}
       {/* Header with status */}
       {isDryRun && (
@@ -136,7 +136,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                 ? `Open orders may be stale: ${ordersError}`
                 : `Open orders unavailable: ${ordersError}`}
             </span>
-            <button type="button" onClick={() => fetchData()} className="px-2 py-0.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs">
+            <button type="button" onClick={() => fetchData()} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-0.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs">
               Retry
             </button>
           </div>

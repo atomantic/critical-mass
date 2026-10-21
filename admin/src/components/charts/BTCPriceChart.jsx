@@ -345,7 +345,7 @@ export default function BTCPriceChart({
                 <button
                   key={tfKey}
                   onClick={() => setInterval(tfKey)}
-                  className={`px-2 py-1 text-xs rounded transition-colors ${
+                  className={`min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 text-xs rounded transition-colors ${
                     interval === tfKey ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'
                   }`}
                 >
@@ -358,7 +358,7 @@ export default function BTCPriceChart({
               <button
                 key={r.key}
                 onClick={() => setTimeRange(r.key)}
-                className={`px-2 py-1 text-xs rounded transition-colors ${
+                className={`min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 text-xs rounded transition-colors ${
                   timeRange === r.key ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'
                 }`}
               >
@@ -375,7 +375,7 @@ export default function BTCPriceChart({
               <button
                 key={k}
                 onClick={() => setView(k)}
-                className={`px-2 py-1 text-xs rounded transition-colors ${
+                className={`min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 text-xs rounded transition-colors ${
                   view === k ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'
                 }`}
               >
