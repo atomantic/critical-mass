@@ -59,9 +59,11 @@ const joinBounded = async (label, fn, timeoutMs, logger) => {
 const raceTimeout = async (promise, timeoutMs) => {
   let timer;
   const expired = new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs, 'timeout'); });
-  const outcome = await Promise.race([promise, expired]);
-  clearTimeout(timer);
-  return outcome;
+  try {
+    return await Promise.race([promise, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 /**
