@@ -126,7 +126,7 @@ describe('formatFundSummaryLines multi-fund daily summary (issue #397)', () => {
 });
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(require('../src/paths').DATA_DIR, 'config.json');
 
 // Mirrors src/notifier.js MAX_MESSAGE_LENGTH (not exported: it's an internal
 // batching constant, not part of the module's public contract).
@@ -546,10 +546,52 @@ describe('createNotifier() integration (fs-mocked config, stubbed fetch)', () =>
       t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
       await flushMicrotasks();
       assert.equal(calls.length, 1, 'batch B must not overtake the retrying batch A');
+      assert.equal(notifier.getStats().queueDepth, 2, 'A in flight plus B still queued');
 
       releaseSleep[0]();
+      await flushMicrotasks();
       assert.equal(await notifier.flush(), true);
       assert.deepEqual(calls.map(c => /batch ([AB])/.exec(c.body.text)[1]), ['A', 'A', 'B']);
+    });
+
+    it('keeps one flush in flight and a capped queue during an outage, then delivers the newest alert once', async (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      setupFsMocks(RUNNING_CONFIG);
+      let down = true;
+      const calls = stubFetch(async () => (down ? response(502, { description: 'Bad Gateway' }) : response(200)));
+      const releaseSleep = [];
+      notifier = createNotifier({ sleep: () => new Promise((resolve) => releaseSleep.push(resolve)) });
+      notifier.start();
+
+      let maxQueue = 0;
+      for (let i = 0; i < 50; i++) {
+        emit('buy_filled', `event ${i}`);
+        if (i % 2 === 1) {
+          t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+          await flushMicrotasks();
+        }
+        maxQueue = Math.max(maxQueue, notifier.getStats().queueDepth);
+      }
+      assert.equal(calls.length, 1, 'only the first batch is on the tail; later flushes wait in the queue');
+      assert.ok(maxQueue <= 200);
+      assert.equal(notifier.getStats().queueDepth, 50, 'queueDepth reports the real backlog');
+
+      // Cap enforcement
+      for (let i = 0; i < 260; i++) emit('buy_filled', `flood ${i}`);
+      assert.equal(notifier.getStats().queueDepth, 2 + 200, 'in-flight batch (2) plus the capped queue');
+
+      // Telegram recovers; the stuck batch retries, then the next interval flushes the queue
+      down = false;
+      emit('sentinel_critical', 'NEWEST CRITICAL');
+      while (releaseSleep.length) releaseSleep.shift()();
+      await flushMicrotasks();
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      await flushMicrotasks();
+      const texts = calls.map((c) => c.body.text);
+      const last = texts[texts.length - 1];
+      assert.ok(last.includes('NEWEST CRITICAL'));
+      assert.equal(texts.filter((x) => x.includes('older notifications were dropped')).length, 1);
+      assert.ok(!texts.some((x) => x.includes('flood 0\n') || x.endsWith('flood 0')), 'oldest flood messages were dropped');
     });
 
     it('flush() sends its batch immediately instead of queueing behind a batch that is sleeping between retries', async (t) => {

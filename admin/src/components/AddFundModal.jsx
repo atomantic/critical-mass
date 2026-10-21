@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { apiPost } from '../utils/apiClient'
 
 /**
  * AddFundModal — create a new (exchange, pair) fund.
@@ -172,20 +173,14 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
 
     setSubmitting(true)
     try {
-      const res = await fetch(`/api/${exchange}/funds`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pair: trimmedPair,
-          productId: trimmedPair,
-          totalAllocation: allocation,
-          dryRun,
-        }),
+      const res = await apiPost(`/api/${exchange}/funds`, {
+        pair: trimmedPair,
+        productId: trimmedPair,
+        totalAllocation: allocation,
+        dryRun,
       })
       if (!res.ok) {
-        // A proxy/gateway error page is not JSON; fall back to the status.
-        const data = await res.json().catch(() => ({}))
-        setError(data.error || `Failed to create fund (HTTP ${res.status})`)
+        setError(res.error)
         setSubmitting(false)
         return
       }

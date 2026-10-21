@@ -508,6 +508,33 @@ describe('operator adoption is exactly once', () => {
     assert.equal(executor.getPendingCounts().entries, 1);
   });
 
+  describe('adopted entry stale window', () => {
+    const adoptWith = (config, intent) => {
+      const delays = [];
+      mock.method(global, 'setTimeout', (fn, ms) => { delays.push(ms); return { unref() {}, ref() {} }; });
+      mock.method(global, 'clearTimeout', () => {});
+      try {
+        const executor = createOrderExecutor(EXCHANGE, config, { name: EXCHANGE }, PRODUCT, {}, PAIR);
+        executor.adoptPlacement({ orderId: 'adopted-stale' }, { action: 'entry_bid', price: 100, size: 0.5, sizeUsdc: 50, createdAt: Date.now(), ...intent });
+        return delays;
+      } finally {
+        mock.restoreAll();
+      }
+    };
+
+    it('re-arms with the adaptive staleMs carried on the intent, not the floor', () => {
+      const delays = adoptWith({ orderStaleMs: 60_000, maxIntervalMs: 600_000 }, { staleMs: 300_000 });
+      assert.equal(delays.length, 1);
+      assert.ok(delays[0] > 290_000 && delays[0] <= 300_000, `expected ~300s window, got ${delays[0]}`);
+    });
+
+    it('falls back to max(orderStaleMs, maxIntervalMs) for an intent without staleMs', () => {
+      const delays = adoptWith({ orderStaleMs: 60_000, maxIntervalMs: 600_000 }, {});
+      assert.equal(delays.length, 1);
+      assert.ok(delays[0] > 590_000 && delays[0] <= 600_000, `expected ~600s window, got ${delays[0]}`);
+    });
+  });
+
   it('adopts a body TP through the same tracking a normal placement uses', () => {
     const executor = executorFor();
     const result = executor.adoptPlacement({ orderId: 'tp-9' }, { action: 'body_tp', bodyId: 'body-1', price: 120, size: 0.4 });

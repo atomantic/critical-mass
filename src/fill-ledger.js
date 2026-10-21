@@ -2448,6 +2448,10 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
      * indexed-field changes use the dedicated mutators
      * (annotateFillsByOrderId, updateFillCycleId). */
     markDirty: () => { dirtySinceLastPersist = true; bumpLedgerVersion(); },
+    /** True when in-memory fills hold changes the next persist() would write.
+     * A load() now would discard them (resetCaches clears the flag too), so
+     * the engine's SIGUSR1 reload refuses while this is set (issue #1407). */
+    isDirty: () => dirtySinceLastPersist,
     load,
     // Test-only handle: returns the number of times persist() actually
     // wrote to disk (skipping the no-op short-circuit). Lets tests

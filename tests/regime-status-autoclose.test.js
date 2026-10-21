@@ -31,8 +31,8 @@ describe('closeDrainedEmptyPosition (issue #1131)', () => {
 });
 
 describe('regime:status stopped-path auto-close wiring', () => {
-  const src = fs.readFileSync(path.join(__dirname, '../engines/coinbase-engine.js'), 'utf8');
-  const handler = src.slice(src.indexOf("onRequest('regime:status'"), src.indexOf("onRequest('regime:pause'"));
+  const src = fs.readFileSync(path.join(__dirname, '../src/ipc/regime-ipc-handlers.js'), 'utf8');
+  const handler = src.slice(src.indexOf('onRequest(IPC_CHANNELS.REGIME_STATUS'), src.indexOf('onRequest(IPC_CHANNELS.REGIME_PAUSE'));
 
   it('delegates to the named helper and does not assign lifecycle inline', () => {
     assert.match(handler, /autoCloseDrainedFundWhileStopped\(exchange, resolvedPair, savedState\)/);
@@ -40,7 +40,7 @@ describe('regime:status stopped-path auto-close wiring', () => {
   });
 
   it('helper closes via the shared predicate, saves state and clears the running flag', () => {
-    const helper = src.slice(src.indexOf('const autoCloseDrainedFundWhileStopped'), src.indexOf("onRequest('regime:status'"));
+    const helper = src.slice(src.indexOf('const autoCloseDrainedFundWhileStopped'), src.indexOf('onRequest(IPC_CHANNELS.REGIME_STATUS'));
     assert.match(helper, /closeDrainedEmptyPosition\(position\)/);
     assert.ok(helper.indexOf('saveRegimeState') < helper.indexOf('saveRegimeRunningFlag(exchange, pair, false)'));
   });

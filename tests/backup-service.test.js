@@ -133,7 +133,7 @@ describe('backup-service — createBackup/restoreBackup', () => {
     assert.ok(result.sizeBytes > 0);
     createdBackups.push(result.filename);
 
-    const listed = listBackups();
+    const listed = await listBackups();
     assert.ok(listed.some(b => b.filename === result.filename));
   });
 
@@ -158,7 +158,7 @@ describe('backup-service — createBackup/restoreBackup', () => {
       '__backup_service_test__.json': JSON.stringify({ marker: 'legacy-recovery' }),
     });
     assert.equal(spawnSync('unzip', ['-tq', archive]).status, 0);
-    assert.ok(listBackups().some(backup => backup.filename === filename));
+    assert.ok((await listBackups()).some(backup => backup.filename === filename));
 
     const inspected = inspectBackup(filename);
     assert.equal(inspected.legacy, true);
@@ -197,7 +197,7 @@ describe('backup-service — createBackup/restoreBackup', () => {
       assert.equal(spawnSync('unzip', ['-tq', path.join(BACKUP_DIR, filename)]).status, 0);
     }
     assert.equal(listZipEntries(archive).filter(name => name === 'backup-manifest.json').length, 2);
-    const listed = listBackups().map(backup => backup.filename);
+    const listed = (await listBackups()).map(backup => backup.filename);
     assert.ok(!listed.includes(malformed));
     assert.ok(!listed.includes(duplicate));
   });
@@ -642,13 +642,13 @@ describe('backup-service — pruneBackups retention', () => {
   });
 
   it('deletes only the oldest archives beyond maxBackups, keeping the newest', async () => {
-    assert.equal(listBackups().length, 5);
+    assert.equal((await listBackups()).length, 5);
 
-    const result = pruneBackups(2);
+    const result = await pruneBackups(2);
     assert.equal(result.pruned, 3);
     assert.equal(result.remaining, 2);
 
-    const after = listBackups();
+    const after = await listBackups();
     assert.equal(after.length, 2);
     // The two survivors must be the two newest of the fixture set.
     const survivorNames = after.map(b => b.filename).sort();
@@ -656,21 +656,21 @@ describe('backup-service — pruneBackups retention', () => {
   });
 
   it('prunes nothing when the backup count is within the retention limit', async () => {
-    const totalBackups = listBackups().length;
+    const totalBackups = (await listBackups()).length;
     assert.equal(totalBackups, 5);
 
-    const result = pruneBackups(totalBackups);
+    const result = await pruneBackups(totalBackups);
     assert.equal(result.pruned, 0);
     assert.equal(result.remaining, totalBackups);
-    assert.equal(listBackups().length, 5);
+    assert.equal((await listBackups()).length, 5);
   });
 
   it('ignores corrupt matching archives when listing and pruning', async () => {
     const corrupt = path.join(BACKUP_DIR, `backup-${prefix}-corrupt.zip`);
     fs.writeFileSync(corrupt, 'partial archive');
     created.push(corrupt);
-    assert.equal(listBackups().some(backup => backup.filename.endsWith('-corrupt.zip')), false);
-    const result = pruneBackups(5);
+    assert.equal((await listBackups()).some(backup => backup.filename.endsWith('-corrupt.zip')), false);
+    const result = await pruneBackups(5);
     assert.equal(result.pruned, 0);
     assert.equal(fs.existsSync(corrupt), true);
   });
@@ -695,39 +695,56 @@ describe('backup-service — pruneBackups retention', () => {
       fs.rmSync(fakeBin, { recursive: true, force: true });
     });
 
-    it('tests each retained archive once, then serves repeated list and prune calls from the verdict cache', () => {
-      assert.equal(listBackups().length, 5);
+    it('tests each retained archive once, then serves repeated list and prune calls from the verdict cache', async () => {
+      assert.equal((await listBackups()).length, 5);
       assert.equal(integrityTests(), 5, 'first look at five unseen archives');
 
-      listBackups();
-      listBackups();
-      pruneBackups(5);
+      await listBackups();
+      await listBackups();
+      await pruneBackups(5);
       assert.equal(integrityTests(), 5, 'no archive is re-tested while unchanged');
     });
 
-    it('re-tests an archive whose size or mtime changed instead of reusing its earlier verdict (bit rot that changes neither is only caught after a restart)', () => {
-      assert.equal(listBackups().length, 5);
+    it('keeps the event loop running through a cold listing, and concurrent listings share one test per archive', async () => {
+      // Slow every integrity test so a synchronous listing would starve the timer.
+      const realUnzip = spawnSync('which', ['unzip'], { env: { PATH: originalPath } }).stdout.toString().trim();
+      fs.writeFileSync(path.join(fakeBin, 'unzip'), `#!/bin/sh\necho "$1" >> "${logFile}"\n[ "$1" = "-tq" ] && sleep 0.1\nexec ${realUnzip} "$@"\n`, { mode: 0o755 });
+      let ticks = 0;
+      const timer = setInterval(() => { ticks++; }, 20);
+      try {
+        const [first, second] = await Promise.all([listBackups(), listBackups()]);
+        assert.equal(first.length, 5);
+        assert.deepEqual(second, first);
+      } finally {
+        clearInterval(timer);
+      }
+      assert.ok(ticks >= 5, `timers kept firing during the listing (ticks=${ticks})`);
+      assert.equal(integrityTests(), 5, 'each cold archive is tested once across both listings');
+    });
+
+    it('re-tests an archive whose size or mtime changed instead of reusing its earlier verdict (bit rot that changes neither is only caught after a restart)', async () => {
+      assert.equal((await listBackups()).length, 5);
       const victim = path.join(BACKUP_DIR, `backup-${prefix}-2.zip`);
       const before = fs.statSync(victim);
       fs.writeFileSync(victim, 'truncated by a failed copy');
       fs.utimesSync(victim, before.atime, before.mtime);
       const baseline = integrityTests();
 
-      const names = listBackups().map(backup => backup.filename);
+      const names = (await listBackups()).map(backup => backup.filename);
       assert.equal(integrityTests(), baseline + 1, 'only the changed archive is re-tested');
       assert.equal(names.includes(`backup-${prefix}-2.zip`), false);
       assert.equal(names.length, 4);
     });
 
     it('lists a freshly created backup without re-running its integrity test', async () => {
-      listBackups();
+      await listBackups();
       const result = await createBackup();
       assert.equal(result.success, true, result.error);
       created.push(path.join(BACKUP_DIR, result.filename));
       assert.ok(integrityTests() >= 6, 'createBackup validated the new archive before publishing');
       const afterCreate = integrityTests();
 
-      assert.ok(listBackups().some(backup => backup.filename === result.filename));
+      assert.ok((await listBackups()).some(backup => backup.filename === result.filename));
       assert.equal(integrityTests(), afterCreate, 'listing reuses the verdict earned at publish time');
     });
   });
@@ -736,7 +753,7 @@ describe('backup-service — pruneBackups retention', () => {
     const corrupt = path.join(BACKUP_DIR, `backup-${prefix}-newer-corrupt.zip`);
     fs.writeFileSync(corrupt, 'partial archive');
     created.push(corrupt);
-    const newestValid = Date.parse(listBackups()[0].createdAt);
+    const newestValid = Date.parse((await listBackups())[0].createdAt);
     assert.ok(fs.statSync(corrupt).mtimeMs >= newestValid);
     assert.ok(Math.abs(getNewestBackupTime() - newestValid) <= 1);
   });
@@ -755,17 +772,17 @@ describe('backup-service — pruneBackups retention', () => {
 
   for (const { label, value } of invalidMaxBackupsCases) {
     it(`falls back to the default retain count instead of deleting everything when maxBackups is ${label}`, async () => {
-      assert.equal(listBackups().length, 5);
+      assert.equal((await listBackups()).length, 5);
 
       // Fixture has 5 backups, well under the default retain count (7), so a
       // correct fallback deletes NOTHING here — a raw `slice(0)`/`slice(null)`
       // bug would instead have wiped out all 5.
       assert.ok(GLOBAL_DEFAULTS.backup.maxBackups > 5, 'fixture assumes the default retain count exceeds the 5 seeded backups');
 
-      const result = pruneBackups(value);
+      const result = await pruneBackups(value);
       assert.equal(result.pruned, 0);
       assert.equal(result.remaining, 5);
-      assert.equal(listBackups().length, 5);
+      assert.equal((await listBackups()).length, 5);
     });
   }
 });

@@ -10,7 +10,7 @@ const makeService = (files) => createUpDownService(io, {
   readJSON: (file, fallback) => (file in files ? structuredClone(files[file]) : fallback),
   writeJSON: (file, state) => { files[file] = structuredClone(state) },
   DATA_DIR: '/tmp/updown-load-state-restore',
-  candleCache: { getCandles: () => [] },
+  candleCache: { getCandles: () => [], isSeeded: () => true },
   createScorecard: () => ({
     start: () => Promise.resolve(),
     stop: () => {},

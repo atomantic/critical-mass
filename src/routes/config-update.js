@@ -4,7 +4,7 @@
  * response envelopes; this module owns normalization, disk writes and IPC apply.
  */
 const {
-  getRegimeConfig, getFundConfig, updateFundConfig, updateRegimeConfig, productIdMatchesPair,
+  getRegimeConfig, getFundConfig, updateFundConfig, productIdMatchesPair,
 } = require('../config-utils');
 const { validateAndSanitizeRegimeConfig } = require('../config-validator');
 
@@ -79,19 +79,17 @@ const prepareConfigUpdate = ({
 };
 
 /**
- * Preserve the full-save replacement and regime-save merge writer semantics.
+ * Both transports merge into the stored blocks: a full save carries only the
+ * fields the operator changed, so engine-owned regime values it omits (e.g.
+ * maxUsdcDeployed credited by a take-profit after the form loaded, optimizer
+ * outputs, correction metadata) are never reverted to a stale draft (#1395).
  * Disk errors propagate; only an IPC failure is persisted-but-not-applied.
  */
 const persistConfigUpdate = async (exchange, pair, prepared, ipc, onPersist = () => {}) => {
   const { fullConfig, fundUpdates, regimeUpdates, engineUpdates } = prepared;
-  if (fullConfig) {
-    const updates = { ...fundUpdates };
-    if (Object.keys(regimeUpdates).length) updates.regime = regimeUpdates;
-    updateFundConfig(exchange, pair, updates);
-  } else {
-    if (Object.keys(fundUpdates).length) updateFundConfig(exchange, pair, fundUpdates);
-    if (Object.keys(regimeUpdates).length) updateRegimeConfig(exchange, pair, regimeUpdates);
-  }
+  const updates = { ...fundUpdates };
+  if (Object.keys(regimeUpdates).length) updates.regime = regimeUpdates;
+  if (Object.keys(updates).length) updateFundConfig(exchange, pair, updates);
   onPersist();
   // The regime response snapshots its merged GET view before the IPC request.
   const config = fullConfig ? undefined : buildClientConfig(exchange, pair);

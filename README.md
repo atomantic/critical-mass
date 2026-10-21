@@ -76,7 +76,7 @@ The password is stored as a scrypt hash in `data/operator-auth.json`. After sign
 
 Docker Compose and Umbrel must bind the container interface for their local proxy. On a fresh container start, the entrypoint therefore generates the one-time credential at `data/operator-bootstrap-secret` with owner-only permissions; read that file from the mounted app data directory and enter it in the setup screen. Successful enrollment deletes the file. You can instead supply `OPERATOR_BOOTSTRAP_SECRET` explicitly; rotate it before restarting after password removal because an already-consumed value remains invalid.
 
-AI toolkit execution is fail-closed: CLI providers are disabled while the bundled toolkit uses shell execution, workspaces must stay under `AI_WORKSPACE_ROOTS` (comma-separated, defaults to the Critical Mass directory), and API provider origins must be listed in `AI_ALLOWED_ENDPOINTS` (comma-separated exact origins such as `https://api.openai.com`).
+AI provider execution is fail-closed: only OpenAI-compatible API providers can be saved, tested or run (CLI providers are not supported), and their origins must be listed in `AI_ALLOWED_ENDPOINTS` (comma-separated exact origins such as `https://api.openai.com`).
 
 The same origin grant applies to UpDown screenshot analysis and Sentinel AI classification, including redirects. RSS feeds use public-address validation independently of the AI origin grant.
 

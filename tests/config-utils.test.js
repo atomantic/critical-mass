@@ -54,7 +54,7 @@ const {
 
 // Resolved paths matching what config-utils.js computes internally
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(require('../src/paths').DATA_DIR, 'config.json');
 
 const contextFor = (lines, prefix) => {
   const line = lines.find(candidate => candidate.startsWith(prefix));
@@ -1091,6 +1091,74 @@ describe('updateGlobalConfig', () => {
     const result = updateGlobalConfig({ schedulerInterval: 15000 });
     assert.equal(result.global.schedulerInterval, 15000);
     assert.ok(mocks.written() !== null);
+  });
+});
+
+// ============================================================================
+// mutateConfig — read-modify-write under the write lock (#1396)
+// ============================================================================
+
+describe('mutateConfig', () => {
+  afterEach(() => mock.restoreAll());
+
+  // Another process rewrites config.json after this process cached it, and the
+  // mtime does not move (same tick). The write must re-read under the lock.
+  // The mtime is pinned to a whole second on both sides: restoring a
+  // sub-millisecond mtime through utimesSync is lossy on some filesystems.
+  const PINNED_MTIME_S = 1700000000;
+  const writeBehindCache = (contents) => {
+    const file = path.join(pathsModule.DATA_DIR, 'config.json');
+    realFs.utimesSync(file, PINNED_MTIME_S, PINNED_MTIME_S);
+    const cached = loadConfig();
+    realFs.writeFileSync(file, typeof contents === 'string' ? contents : JSON.stringify(contents));
+    realFs.utimesSync(file, PINNED_MTIME_S, PINNED_MTIME_S);
+    assert.equal(realFs.statSync(file).mtimeMs, PINNED_MTIME_S * 1000, 'fixture must keep the cached mtime');
+    return cached;
+  };
+
+  it('keeps a key another writer saved after this process cached the config', (t) => {
+    const files = setupPublishedConfig(t, { base: { exchanges: {}, global: { schedulerInterval: 30000 } }, user: { global: { a: 1 } } });
+    assert.equal(writeBehindCache({ global: { a: 2 } }).global.a, 1);
+    assert.equal(loadConfig().global.a, 1, 'cache must hide the external write');
+    updateGlobalConfig({ b: 1 });
+    assert.equal(files.user().global.a, 2);
+    assert.equal(files.user().global.b, 1);
+  });
+
+  it('routes fund, regime and fund-removal writes through the fresh read', (t) => {
+    const fund = (regime) => ({ enabled: true, productId: 'BTC-USD', regime });
+    const files = setupPublishedConfig(t, {
+      base: { exchanges: { gemini: { pairs: { 'BTC-USD': fund({}), 'ETH-USD': { productId: 'ETH-USD' } } } } },
+      user: {},
+    });
+    writeBehindCache({ exchanges: { gemini: { pairs: { 'BTC-USD': { regime: { maxUsdcDeployed: 900 } } } } } });
+    updateRegimeConfig('gemini', 'BTC-USD', { minOrderUsd: 5 });
+    assert.deepEqual(files.user().exchanges.gemini.pairs['BTC-USD'].regime, { maxUsdcDeployed: 900, minOrderUsd: 5 });
+
+    writeBehindCache({ ...files.user(), global: { a: 3 } });
+    configUtils.removeFund('gemini', 'ETH-USD');
+    assert.equal(files.user().global.a, 3);
+    assert.deepEqual(configUtils.getFundsForExchange('gemini'), ['BTC-USD']);
+  });
+
+  it('writes nothing when the mutator throws and releases the lock', (t) => {
+    const files = setupPublishedConfig(t, { base: { exchanges: {}, global: { schedulerInterval: 30000 } }, user: { global: { a: 1 } } });
+    assert.throws(() => configUtils.mutateConfig((config) => {
+      config.global.a = 99;
+      throw new Error('rejected');
+    }), /rejected/);
+    assert.deepEqual(files.user(), { global: { a: 1 } });
+    updateGlobalConfig({ a: 2 });
+    assert.equal(files.user().global.a, 2);
+  });
+
+  it('aborts on an unreadable override and keeps serving the last-good config', (t) => {
+    setupPublishedConfig(t, { base: { exchanges: {}, global: { schedulerInterval: 30000 } }, user: { global: { a: 1 } } });
+    assert.equal(writeBehindCache('{ "global": ').global.a, 1);
+    const file = path.join(pathsModule.DATA_DIR, 'config.json');
+    assert.throws(() => updateGlobalConfig({ b: 1 }), /user config/i);
+    assert.equal(realFs.readFileSync(file, 'utf8'), '{ "global": ');
+    assert.equal(loadConfig().global.a, 1, 'last-good cache must survive the failed re-read');
   });
 });
 

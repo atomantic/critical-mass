@@ -15,6 +15,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const [ordersError, setOrdersError] = useState(null)
   const [fillsError, setFillsError] = useState(null)
   const [status, setStatus] = useState(null)
+  const [statusError, setStatusError] = useState(false)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
   const [cycleFilter, setCycleFilter] = useState('all')
@@ -35,6 +36,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
     const controller = new AbortController()
     setProductId(null)
     setStatus(null)
+    setStatusError(false)
     setSnapshot({ fills: [], summary: EMPTY_SUMMARY, pageInfo: EMPTY_PAGE, cycleIds: [] })
     setOpenOrders([])
     setOrdersError(null)
@@ -65,12 +67,16 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
         setPage(fillsData.pageInfo.page)
         setFillsError(null)
       } else setFillsError(fillsData?.error || `Transactions unavailable (HTTP ${fillsStatus})`)
-      if (statusData) setStatus(statusData.status)
+      if (statusData?.status) {
+        setStatus(statusData.status)
+        setStatusError(false)
+      } else setStatusError(true)
       if (ordersOk) {
         setOpenOrders(ordersData?.orders || [])
         setOrdersError(null)
       } else setOrdersError(ordersData?.error || `Open orders unavailable (HTTP ${ordersStatus})`)
     } else {
+      setStatusError(true)
       setFillsError('Transactions unavailable: request failed')
       setOrdersError('Open orders unavailable: request failed')
     }
@@ -94,7 +100,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   }, [fetchData, reader])
 
   const isDryRun = status?.isDryRun
-  const baseCurrency = getBaseCurrency(productId)
+  const baseCurrency = getBaseCurrency(productId || pair)
   const { fills: displayFills, cycleIds, pageInfo, summary } = snapshot
   const { totalBuys, totalSells, totalAssetBought, totalBtcSold, totalFees, totalPnL, totalHoldbackBtc, totalHoldbackValue } = summary
   const handleSort = (field) => {
@@ -117,6 +123,12 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
         {fillsError} <button type="button" onClick={() => fetchData()} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 rounded-sm bg-gray-700">Retry</button>
       </div>}
       {/* Header with status */}
+      {statusError && !status && (
+        <div role="alert" className="text-sm text-yellow-400">
+          Engine status unavailable — dry-run mode unknown{' '}
+          <button type="button" onClick={() => fetchData()} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 rounded-sm bg-gray-700">Retry status</button>
+        </div>
+      )}
       {isDryRun && (
         <div className="bg-purple-900/30 border border-purple-700/50 rounded-lg p-3 text-sm text-purple-400">
           Viewing dry-run simulated transactions

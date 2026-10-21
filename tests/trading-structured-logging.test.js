@@ -53,7 +53,7 @@ describe('core trading module structured logging', () => {
     for (const relativePath of [
       '../src/order-manager.js',
       '../src/dca-engine.js',
-      '../engines/coinbase-engine.js',
+      '../engines/exchange-engine.js',
     ]) {
       const source = fs.readFileSync(path.join(__dirname, relativePath), 'utf8');
       assert.doesNotMatch(source, /\bconsole\.(?:log|warn|error)\b/, relativePath);

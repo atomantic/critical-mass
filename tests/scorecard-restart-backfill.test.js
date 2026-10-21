@@ -299,3 +299,42 @@ describe('dead-owner maintenance lock reclaim', () => {
     assert.equal(acquireScorecardLock(foreign), null);
   });
 });
+
+// A window that fell due while the gateway was down, with no journaled mark
+// after it yet, is still inside the lag allowance at boot: recovery must hand
+// it to live evaluation rather than leave it counted with no outcome.
+describe('restart recovery of a window due during the downtime', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { createScorecard } = require('../src/updown/scorecard');
+
+  it('settles it against a fresh live price once the evaluation retry fires', async (t) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scorecard-late-window-'));
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    const predictedAt = Date.now() - 70_000; // 1m window fell due 10s ago
+    const ts = new Date(predictedAt).toISOString();
+    fs.writeFileSync(path.join(directory, `${ts.slice(0, 10)}.jsonl`),
+      JSON.stringify({ type: 'prediction', id: 'late', ts, price: 100, compositeScore: 20, compositeDirection: 'up', timeframes: {}, contract: null }) + '\n');
+    const written = [];
+    const scorecard = createScorecard({
+      io: { to: () => ({ emit: () => {} }) },
+      lastPriceFn: () => 105,
+      scorecardDir: directory,
+      journalWriter: async (record) => { written.push(record); },
+      retentionLogger: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+    t.after(() => scorecard.stop());
+
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    await scorecard.start(() => null);
+    assert.equal(written.some((r) => r.type === 'outcome'), false, 'nothing settled from journal marks');
+    t.mock.timers.tick(5_000); // EVAL_RETRY_MS for a target already in the past
+    await new Promise((resolve) => setImmediate(resolve)); // journal appends are queued
+
+    const outcome = written.find((r) => r.type === 'outcome' && r.predictionId === 'late' && r.window === '1m');
+    assert.ok(outcome, 'the late 1m window is settled');
+    assert.equal(outcome.exitPrice, 105);
+    assert.equal(written.some((r) => r.type === 'expired' && r.predictionId === 'late' && r.window === '1m'), false);
+  });
+});

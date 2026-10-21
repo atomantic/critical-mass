@@ -69,7 +69,7 @@ const REBATE_PERCENT = 0.031;
  * @param {boolean} forceRefresh - If true, fetch fresh data; otherwise prefer cached data
  * @param {string} [productId] - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
  */
-const prefetchPriceData = async (intervals, periods, onProgress, exchange = 'coinbase', forceRefresh = false, productId = null) => {
+const prefetchPriceData = async (intervals, periods, onProgress, exchange = 'coinbase', forceRefresh = false, productId = null, issues = { skipped: [], stale: [] }) => {
   const logger = createContextLogger({ exchange, pair: productId || undefined });
   const cache = {};
   let fetched = 0;
@@ -95,16 +95,28 @@ const prefetchPriceData = async (intervals, periods, onProgress, exchange = 'coi
 
     // Use preferCache option to avoid fetching new data if we have enough cached
     // Wrap in error handling to prevent crashes from API failures
+    const freshness = {};
+    let fetchError = null;
     const priceData = await getPriceData(maxIntervals, intervalType, exchange, {
       preferCache: !forceRefresh,
-      productId
+      productId,
+      freshness
     }).catch(err => {
+      fetchError = err;
       logger.error(`Error fetching ${intervalType} price data: ${err.message}`);
-      return []; // Return empty array on error, backtest will fail gracefully
+      return []; // runOptimizer skips this interval and reports why
     });
 
     if (priceData.length === 0) {
       logger.warn(`Warning: No ${intervalType} price data available for ${productId || 'default'} from ${exchange}`);
+      issues.skipped.push({
+        intervalType,
+        reason: fetchError
+          ? `Price fetch failed: ${fetchError.message}`
+          : `No ${intervalType} price data available from ${exchange}`
+      });
+    } else if (freshness.stale) {
+      issues.stale.push({ intervalType, reason: freshness.staleReason });
     }
 
     cache[intervalType] = priceData;
@@ -261,7 +273,7 @@ const runOptimizer = async ({
   const selectedBuyAmounts = { ...DEFAULT_BUY_AMOUNTS, ...buyAmounts };
 
   // Calculate total combinations
-  const totalCombinations = selectedIntervals.length * selectedMarkups.length * selectedPeriods.length;
+  let totalCombinations = selectedIntervals.length * selectedMarkups.length * selectedPeriods.length;
   let completed = 0;
 
   // Phase 1: Pre-fetch price data for selected intervals only
@@ -273,12 +285,19 @@ const runOptimizer = async ({
     percentComplete: 0
   });
 
+  const issues = { skipped: [], stale: [] };
   const priceCache = await prefetchPriceData(selectedIntervals, selectedPeriods, (progress) => {
     onProgress?.({
       ...progress,
       percentComplete: Math.round((progress.current / progress.total) * 10) // 0-10%
     });
-  }, exchange, forceRefresh, productId);
+  }, exchange, forceRefresh, productId, issues);
+
+  const skippedTypes = new Set(issues.skipped.map(s => s.intervalType));
+  totalCombinations -= skippedTypes.size * selectedMarkups.length * selectedPeriods.length;
+  if (skippedTypes.size === selectedIntervals.length) {
+    throw new Error(`No price data available for any selected interval: ${issues.skipped.map(s => `${s.intervalType} (${s.reason})`).join('; ')}`);
+  }
 
   // Phase 2: Run backtests
   onProgress?.({
@@ -292,6 +311,7 @@ const runOptimizer = async ({
   });
 
   for (const intervalType of selectedIntervals) {
+    if (skippedTypes.has(intervalType)) continue;
     const intervalBuyAmount = selectedBuyAmounts[intervalType] || DEFAULT_BUY_AMOUNTS[intervalType];
     const intervalPeriods = PERIOD_INTERVALS[intervalType];
 
@@ -340,6 +360,8 @@ const runOptimizer = async ({
     results,
     bestResult: results[0],
     totalCombinations,
+    ...(issues.skipped.length ? { skippedIntervals: issues.skipped } : {}),
+    ...(issues.stale.length ? { staleIntervals: issues.stale } : {}),
     duration,
     fundSize,
     productId,
@@ -369,6 +391,7 @@ const getTopResults = (results, n = 10) => {
 
 module.exports = {
   runOptimizer,
+  prefetchPriceData,
   getTopResults,
   buildResultRecord,
   compareOptimizerResults,

@@ -40,7 +40,7 @@ configUtils.updateRegimeConfig = () => {};
 const { createRegimeEngine } = require('../src/regime-engine');
 
 const TEST_PAIR = '__test694__';
-const JUNK_DIR = path.join(__dirname, '..', 'data', 'coinbase', TEST_PAIR);
+const JUNK_DIR = path.join(require('../src/paths').DATA_DIR, 'coinbase', TEST_PAIR);
 
 const engines = [];
 after(() => {

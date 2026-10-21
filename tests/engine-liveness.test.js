@@ -25,8 +25,8 @@ const TEST_PAIR = '__testliveness__';
 // An exchange with no known IPC port, so checkEngineStopped has only the flag
 // to go on — that is the branch these cases exercise.
 const UNPROBEABLE = '__testexchange__';
-const JUNK_DIR = path.join(__dirname, '..', 'data', 'coinbase', TEST_PAIR);
-const UNPROBEABLE_DIR = path.join(__dirname, '..', 'data', UNPROBEABLE);
+const JUNK_DIR = path.join(require('../src/paths').DATA_DIR, 'coinbase', TEST_PAIR);
+const UNPROBEABLE_DIR = path.join(require('../src/paths').DATA_DIR, UNPROBEABLE);
 const FLAG = path.join(JUNK_DIR, 'regime-engine-running.json');
 
 after(() => {

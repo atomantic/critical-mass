@@ -57,7 +57,7 @@ const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
 const { buildRuntimeHealth } = require('./src/runtime-health');
 const { createOperatorAuth } = require('./src/operator-auth');
-const { resolveListenHosts, createCorsMiddleware, bindGatewayListeners, watchTailscaleListeners } = require('./src/gateway-listen');
+const { resolveListenHosts, createCorsMiddleware, createSecurityHeadersMiddleware, bindGatewayListeners, watchTailscaleListeners } = require('./src/gateway-listen');
 const { registerProcessGuards } = require('./src/process-guard');
 const { resolveIpcPort } = require('./src/ipc-port-defaults');
 const { PORTS } = require('./ecosystem.config.cjs');
@@ -183,6 +183,10 @@ const routes = Object.fromEntries(Object.entries(shutdownRoutes).map(([method, r
 
 // ============ Middleware ============
 
+// Security headers go first so responses short-circuited by later middleware (e.g. shutdown 503) carry them too.
+app.disable('x-powered-by');
+app.use(createSecurityHeadersMiddleware());
+
 app.use(gatewayShutdown.middleware);
 
 app.use(createCorsMiddleware(CORS_ORIGINS));
@@ -250,7 +254,7 @@ const backupScheduler = createBackupScheduler({
         if (result.success) {
           const sizeMB = (result.sizeBytes / 1024 / 1024).toFixed(1);
           log('INFO', `💾 Scheduled backup created: ${result.filename} (${sizeMB} MB)`);
-          const pruneResult = pruneBackups(config.maxBackups);
+          const pruneResult = await pruneBackups(config.maxBackups);
           if (pruneResult.pruned > 0) {
             log('INFO', `💾 Pruned ${pruneResult.pruned} old backups, ${pruneResult.remaining} remaining`);
           }

@@ -43,6 +43,18 @@ const DEFAULT_PRODUCT_IDS = {
  */
 const loadCredentials = () => getAdapter('coinbase').loadCredentials();
 
+/** Stop a full candle fetch after this many failed batches in a row. */
+const MAX_CONSECUTIVE_FETCH_FAILURES = 3;
+/** Overall wall-clock budget for one full candle fetch. */
+const FETCH_DEADLINE_MS = 120000;
+/** Base wait after a 429, multiplied by the consecutive-failure count. */
+const RATE_LIMIT_BACKOFF_MS = 2000;
+
+const isRateLimitError = (err) => {
+  const msg = err && err.message ? err.message : '';
+  return err?.status === 429 || /\(429\)|\b429\b|rate limit/i.test(msg);
+};
+
 /**
  * Make authenticated request to Coinbase API
  */
@@ -197,7 +209,14 @@ const formatCandle = (c) => ({
  * @param {string} [productId] - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
  * @returns {Promise<Array>} Array of price data
  */
-const fetchPriceData = async (intervals, intervalType = 'daily', exchange = 'coinbase', productId = null) => {
+const fetchPriceData = async (intervals, intervalType = 'daily', exchange = 'coinbase', productId = null, fetchOptions = {}) => {
+  const {
+    maxConsecutiveFailures = MAX_CONSECUTIVE_FETCH_FAILURES,
+    deadlineMs = FETCH_DEADLINE_MS,
+    rateLimitBackoffMs = RATE_LIMIT_BACKOFF_MS,
+  } = fetchOptions;
+  const deadline = Date.now() + deadlineMs;
+  let consecutiveFailures = 0;
   const config = getIntervalConfig(intervalType);
   const granConfig = GRANULARITY[intervalType];
   const { aggregateFactor } = config;
@@ -218,14 +237,35 @@ const fetchPriceData = async (intervals, intervalType = 'daily', exchange = 'coi
   let remaining = rawCandlesNeeded;
 
   while (remaining > 0) {
+    if (Date.now() >= deadline) {
+      logger.warn(`Candle fetch deadline (${deadlineMs}ms) reached for ${effectiveProductId} on ${exchange}; continuing with ${allCandles.length} candles`);
+      break;
+    }
     const batchSize = Math.min(remaining, candlesPerRequest);
     const start = end - (batchSize * granConfig.seconds);
 
+    let failure = null;
     const candles = await fetchCandles(exchange, start, end, granConfig.value, effectiveProductId)
       .catch(err => {
+        failure = err;
         logger.error(`Error fetching candles from ${exchange}: ${err.message}`);
         return []; // Return empty to continue with partial data
       });
+
+    if (failure) {
+      consecutiveFailures++;
+      if (consecutiveFailures >= maxConsecutiveFailures) {
+        logger.warn(`Stopping candle fetch for ${effectiveProductId} on ${exchange} after ${consecutiveFailures} consecutive failed batches`);
+        break;
+      }
+      if (isRateLimitError(failure)) {
+        // Back off (growing with each consecutive 429) and retry the same window.
+        await new Promise(r => setTimeout(r, rateLimitBackoffMs * consecutiveFailures));
+        continue;
+      }
+    } else {
+      consecutiveFailures = 0;
+    }
 
     if (candles.length === 0 && exchange !== 'coinbase') {
       // Non-Coinbase exchanges may have limited historical data
@@ -336,10 +376,11 @@ const writePriceCache = (file, { intervalType, exchange, productId, prices }) =>
  * @param {Object} options - Additional options
  * @param {boolean} options.preferCache - If true, use cached data without fetching new intervals (for optimizer)
  * @param {string} options.productId - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
+ * @param {Object} [options.freshness] - Out-param: set to `{stale: true, staleReason}` when an incremental top-up failed and the cached prices were returned as-is
  * @returns {Promise<Array>} Price data array
  */
 const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinbase', options = {}) => {
-  const { preferCache = false, productId = null } = options;
+  const { preferCache = false, productId = null, freshness = null } = options;
   const effectiveProductId = productId || DEFAULT_PRODUCT_IDS[exchange] || DEFAULT_PRODUCT_IDS.coinbase;
   const logger = createContextLogger({ exchange, pair: effectiveProductId });
   const cacheFile = getCacheFile(intervalType, exchange, effectiveProductId);
@@ -399,18 +440,36 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
       const newCandles = [];
       let end = nowSeconds;
       const candlesPerRequest = 300;
+      let topUpError = null;
 
       while (end > fetchStartSeconds) {
         const batchSize = Math.min(candlesPerRequest, Math.ceil((end - fetchStartSeconds) / granConfig.seconds));
         const start = Math.max(fetchStartSeconds, end - (batchSize * granConfig.seconds));
 
-        const candles = await fetchCandles(exchange, start, end, granConfig.value, effectiveProductId);
-        newCandles.push(...candles);
+        try {
+          const candles = await fetchCandles(exchange, start, end, granConfig.value, effectiveProductId);
+          newCandles.push(...candles);
+        } catch (err) {
+          topUpError = err;
+          break;
+        }
 
         end = start;
         if (end > fetchStartSeconds) {
           await new Promise(r => setTimeout(r, 100));
         }
+      }
+
+      if (topUpError) {
+        // Keep the cached prices (only the newest candles are missing) rather
+        // than failing the whole run; the caller learns they are stale.
+        const staleReason = `Could not refresh ${intervalType} candles from ${exchange}: ${topUpError.message}`;
+        logger.warn(`${staleReason} — using cached prices`);
+        if (freshness) {
+          freshness.stale = true;
+          freshness.staleReason = staleReason;
+        }
+        return cachedPrices.slice(-intervals);
       }
 
       if (newCandles.length > 0) {
@@ -482,7 +541,8 @@ const runBacktest = async (params, preFetchedPrices = null) => {
   const effectiveProductId = productId || DEFAULT_PRODUCT_IDS[exchange] || DEFAULT_PRODUCT_IDS.coinbase;
 
   // Use pre-fetched prices if provided (from optimizer), otherwise fetch
-  const priceData = preFetchedPrices || await getPriceData(intervals, intervalType, exchange, { productId: effectiveProductId });
+  const freshness = {};
+  const priceData = preFetchedPrices || await getPriceData(intervals, intervalType, exchange, { productId: effectiveProductId, freshness });
 
   if (priceData.length === 0) {
     throw new Error('No price data available');
@@ -878,6 +938,11 @@ const runBacktest = async (params, preFetchedPrices = null) => {
     }));
   }
 
+  if (freshness.stale) {
+    result.stale = true;
+    result.staleReason = freshness.staleReason;
+  }
+
   return result;
 };
 
@@ -885,6 +950,7 @@ module.exports = {
   runBacktest,
   getPriceData,
   fetchPriceData,
+  MAX_CONSECUTIVE_FETCH_FAILURES,
   getCacheFile,
   readPriceCache,
   writePriceCache,

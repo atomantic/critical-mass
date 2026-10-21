@@ -11,6 +11,9 @@ const React = adminRequire('react')
 const { renderToStaticMarkup } = adminRequire('react-dom/server')
 let Dashboard
 let CostBasisDCA
+let StatCard
+let ToggleSwitch
+let formatCountdown
 
 before(async () => {
   const { rolldown } = await import(pathToFileURL(adminRequire.resolve('rolldown')).href)
@@ -28,6 +31,9 @@ before(async () => {
       '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
       '../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
       '../utils/intervals.mjs': { getIntervalMs: () => 86400000 },
+      '../utils/countdown.mjs': { formatCountdown },
+      './StatCard': StatCard,
+      './ToggleSwitch': ToggleSwitch,
       './ActivityFeed': () => null,
       './FailedSellPlacements': () => null,
       './DcaPlacementRecovery': () => null,
@@ -39,6 +45,7 @@ before(async () => {
       './charts/chartUtils': { formatCurrency: n => `$${n.toFixed(2)}`, formatPrice: String, formatAsset: String },
       '../App': { getBaseCurrency: () => 'ETH', getQuoteCurrency: () => 'USDC' },
       '../utils/api': { pairQuery: () => '?pair=ETH-USDC' },
+      '../utils/apiClient': { apiGet: async url => { const res = await fetch(url); const data = await res.json(); return { ok: res.ok, status: res.status, data, error: res.ok ? null : `HTTP ${res.status}` } } },
       '../utils/dashboardAction.mjs': { runDashboardAction() {} },
     }
     const m = { exports: {} }
@@ -48,6 +55,9 @@ before(async () => {
     } })
     return m.exports.default || m.exports
   }
+  ;({ formatCountdown } = await import('../admin/src/utils/countdown.mjs'))
+  StatCard = await compile('StatCard')
+  ToggleSwitch = await compile('ToggleSwitch')
   Dashboard = await compile('Dashboard')
   CostBasisDCA = await compile('CostBasisDCA')
 })

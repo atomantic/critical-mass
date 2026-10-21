@@ -1,6 +1,7 @@
 import React from 'react'
+import { STATUS_STALE_MS } from '../../utils/regimeStatusSnapshot.mjs'
 
-export default function StoppedBanner({ isRunning, lastPrice, totalAsset, engineDown, stale }) {
+export default function StoppedBanner({ isRunning, lastPrice, totalAsset, engineDown, stale, silent }) {
   return (
     <>
       {!isRunning && (lastPrice > 0 || totalAsset > 0) && (
@@ -10,7 +11,9 @@ export default function StoppedBanner({ isRunning, lastPrice, totalAsset, engine
             <div>
               <span className="text-orange-300 font-medium text-sm">Engine Unreachable</span>
               <span className="text-gray-400 text-xs ml-2">
-                Showing last known state from disk{stale ? ' · prices may be stale' : ''}
+                {silent
+                  ? `No status update in ${STATUS_STALE_MS / 1000}s · showing last known state`
+                  : `Showing last known state from disk${stale ? ' · prices may be stale' : ''}`}
               </span>
             </div>
           </div>

@@ -180,7 +180,7 @@ const backtestResult = {
 describe('Backtest portfolio chart', () => {
   it('stacks balances, labels both axes and shows the hovered snapshot', async () => {
     stubBox(600, 320)
-    vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => backtestResult })))
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => backtestResult })))
     const { container } = render(<Backtest summary={{ config: { productId: 'BTC-USDC', totalAllocation: 10000 } }} />)
     fireEvent.click(screen.getByRole('button', { name: 'Run Backtest' }))
     await screen.findByText('Portfolio Composition Over Time')

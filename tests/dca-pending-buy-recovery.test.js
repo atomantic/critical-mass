@@ -268,8 +268,20 @@ describe('accepted buy followed by a failed status read (issue #963)', () => {
     assert.equal(state.orders[0].runId, getRunIdentifier('daily'));
     assert.equal(state.orders[0].status, 'pending', 'the recovered buy is covered by a sell');
 
-    const again = await dcaEngine.runIntervalCycle(EXCHANGE, PAIR);
+    // A gateway restart re-checks every fund: an already-ran interval must not
+    // emit trade events, which the notifier would forward to Telegram.
+    const { tradeEvents } = require('../src/trade-events');
+    const emitted = [];
+    const onTrade = (event) => emitted.push(event.type);
+    tradeEvents.on('trade', onTrade);
+    let again;
+    try {
+      again = await dcaEngine.runIntervalCycle(EXCHANGE, PAIR);
+    } finally {
+      tradeEvents.off('trade', onTrade);
+    }
     assert.equal(again.status, 'already_ran');
+    assert.deepEqual(emitted, []);
     assert.equal(readState().totalAllocated, 99.5, 'never credited twice');
   });
 

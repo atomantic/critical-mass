@@ -1041,8 +1041,15 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     const contractRecovery = findUnsettledContractPredictions(allRecords, now)
 
     let backfilled = 0
-    for (const { prediction, windowMs, settlementTs, exitPrice, expired } of elapsed) {
+    // Fell due during the downtime with no recorded mark, but still inside the
+    // lag allowance: live evaluation settles it against a fresh price or expires it.
+    const lateWindows = []
+    for (const { prediction, windowMs, targetTs, settlementTs, exitPrice, expired } of elapsed) {
       if (expired) persistRecord(buildExpiredRecord(prediction, WINDOW_LABELS[windowMs]))
+      if (exitPrice == null && !expired) {
+        lateWindows.push({ prediction, targetTs, evaluate: () => evaluateOutcome(prediction, windowMs), label: WINDOW_LABELS[windowMs] })
+        continue
+      }
       if (exitPrice == null || settlementTs == null) continue
       const outcome = buildOutcomeRecord(prediction, windowMs, exitPrice, {
         ts: new Date(settlementTs).toISOString(),
@@ -1063,8 +1070,12 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       )
     }
 
-    for (const { prediction, settlementTs, exitPrice, expired } of contractRecovery.elapsed) {
+    for (const { prediction, targetTs, settlementTs, exitPrice, expired } of contractRecovery.elapsed) {
       if (expired) persistRecord(buildExpiredRecord(prediction, 'contract'))
+      if (exitPrice == null && !expired) {
+        lateWindows.push({ prediction, targetTs, evaluate: () => evaluateContract(prediction), label: 'contract' })
+        continue
+      }
       if (exitPrice == null || settlementTs == null) continue
       const outcome = buildContractOutcomeRecord(prediction, exitPrice, {
         ts: new Date(settlementTs).toISOString(),
@@ -1080,7 +1091,11 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       scheduleEvaluation(prediction, targetTs, () => evaluateContract(prediction), 'contract')
     }
 
-    const pendingCount = pending.length + contractRecovery.pending.length
+    for (const { prediction, targetTs, evaluate, label } of lateWindows) {
+      scheduleEvaluation(prediction, targetTs, evaluate, label)
+    }
+
+    const pendingCount = pending.length + contractRecovery.pending.length + lateWindows.length
     if (backfilled > 0 || pendingCount > 0) {
       scorecardLogger.info(`ℹ️ 📊 Scorecard restart recovery: backfilled=${backfilled} elapsed outcomes, rescheduled=${pendingCount} pending windows`, {
         action: 'restart-recovery',
@@ -1196,7 +1211,9 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       // computeSignalsFn/recordPrediction are synchronous; a throw here would
       // crash the process from the interval callback.
       try {
-        recordPrediction(computeSignalsFn(), 'interval')
+        // null: the caller has no trustworthy signal yet (e.g. candles still seeding).
+        const sampled = computeSignalsFn()
+        if (sampled) recordPrediction(sampled, 'interval')
       } catch (err) {
         scorecardLogger.warn(`⚠️ 📊 Scorecard sample failed err=${err.message}`, {
           action: 'sample',

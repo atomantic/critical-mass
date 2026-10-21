@@ -34,7 +34,7 @@ const FILL_WAIT_MS = 15000;
 /**
  * How long engine shutdown waits for in-flight fill handlers to settle before
  * snapshotting state anyway. Must stay below the process-manager kill deadline
- * and the shutdown watchdog in engines/coinbase-engine.js (which is derived
+ * and the shutdown watchdog in engines/exchange-engine.js (which is derived
  * from this value).
  */
 const FILL_DRAIN_MS = 10000;

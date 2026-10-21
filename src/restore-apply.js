@@ -55,6 +55,9 @@ const ORIGINALS_PREFIX = '.restore-originals-';
 /** Archive extraction staging directory. */
 const STAGE_PREFIX = '.restore-temp-';
 
+/** A staging directory younger than this may still be extracting in another process. */
+const ORPHAN_STAGE_MIN_AGE_MS = 10 * 60_000;
+
 /** Journal lifecycle. Anything but `committed` means data/ may be mixed-generation. */
 const STATUS = {
   APPLYING: 'applying',
@@ -359,9 +362,23 @@ const revertAndSettle = ({ dataDir, journal, logger }) => {
  */
 const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logger = NOOP_LOGGER }) => {
   const startedAt = Date.now();
-  const { files, dirs } = collectStagedSet({ stageDir, dataDir, skip });
+  // Nothing is journalled yet, so a walk that throws must be reported as a
+  // refusal (rolledBack: true) — the caller then disposes of the staging tree.
+  let staged;
+  try {
+    staged = collectStagedSet({ stageDir, dataDir, skip });
+  } catch (error) {
+    logger.error(`❌ 💾 Restore refused before any write: could not read the staged set: ${error.message}`, { action: 'restore-apply', filename, error: error.message });
+    return { success: false, code: 'staged-set-unreadable', error: `Could not read the extracted archive: ${error.message}. No files were changed.`, rolledBack: true };
+  }
+  const { files, dirs } = staged;
 
-  const valid = validateStagedSet({ stageDir, dataDir, files });
+  let valid;
+  try {
+    valid = validateStagedSet({ stageDir, dataDir, files });
+  } catch (error) {
+    valid = { ok: false, error: `Could not validate the extracted archive: ${error.message}. No files were changed.` };
+  }
   if (!valid.ok) {
     logger.error(`❌ 💾 Restore refused before any write: ${valid.error}`, { action: 'restore-apply', filename, error: valid.error });
     return { success: false, code: 'staged-set-invalid', error: valid.error, rolledBack: true };
@@ -477,6 +494,58 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
   return { success: true, filesRestored: files.length };
 };
 
+// A directory's own mtime only moves when a direct child is added or removed,
+// so a restore still writing into nested entries looks idle; take the newest
+// mtime anywhere in the tree.
+const newestMtimeMs = (dir, own) => {
+  let newest = own;
+  const listed = attempt(() => fs.readdirSync(dir, { withFileTypes: true }));
+  if (!listed.ok) return newest;
+  for (const entry of listed.value) {
+    const child = path.join(dir, entry.name);
+    const st = attempt(() => fs.lstatSync(child));
+    if (!st.ok) continue;
+    newest = Math.max(newest, st.value.mtimeMs);
+    if (entry.isDirectory()) newest = Math.max(newest, newestMtimeMs(child, st.value.mtimeMs));
+  }
+  return newest;
+};
+
+/**
+ * Remove `.restore-temp-*` staging directories that no journal references.
+ * A failed in-process restore disposes of its own staging tree; this backstops
+ * the cases it cannot reach (a process killed mid-extraction). Directories
+ * younger than ORPHAN_STAGE_MIN_AGE_MS are kept, since they may belong to a
+ * restore still extracting in another process.
+ *
+ * @param {Object} params
+ * @param {string} params.dataDir - Data directory
+ * @param {Set<string>} params.referenced - Staging directory names a journal owns
+ * @param {{info: Function, warn: Function, error: Function}} params.logger - Context logger
+ * @returns {number} Number of directories removed
+ */
+const sweepOrphanStageDirs = ({ dataDir, referenced, logger }) => {
+  const listed = attempt(() => fs.readdirSync(dataDir));
+  if (!listed.ok) return 0;
+  let removed = 0;
+  for (const name of listed.value) {
+    if (!name.startsWith(STAGE_PREFIX) || referenced.has(name)) continue;
+    const target = path.join(dataDir, name);
+    const stat = attempt(() => fs.lstatSync(target));
+    if (!stat.ok || !stat.value.isDirectory() || Date.now() - newestMtimeMs(target, stat.value.mtimeMs) < ORPHAN_STAGE_MIN_AGE_MS) continue;
+    const gone = attempt(() => fs.rmSync(target, { recursive: true, force: true }));
+    if (gone.ok) {
+      removed += 1;
+      logger.info(`ℹ️ 💾 Removed orphaned restore staging directory ${name}`, { action: 'restore-recovery', stageDir: name });
+    } else {
+      logger.warn(`⚠️ 💾 Could not remove orphaned restore staging directory ${name}: ${gone.error.message}`, {
+        action: 'restore-recovery', stageDir: name, error: gone.error.message,
+      });
+    }
+  }
+  return removed;
+};
+
 /**
  * Finish (or block on) a restore that a crash interrupted. Every process that
  * consumes persisted trading data calls this BEFORE loading any of it: the
@@ -490,7 +559,10 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
  */
 const recoverIncompleteRestore = ({ dataDir = DATA_DIR, logger = NOOP_LOGGER } = {}) => {
   const read = readJournal(dataDir);
-  if (!read.present) return { pending: false, recovered: false, blocked: false };
+  if (!read.present) {
+    sweepOrphanStageDirs({ dataDir, referenced: new Set(), logger });
+    return { pending: false, recovered: false, blocked: false };
+  }
   if (!read.ok) {
     logger.error(`❌ 💾 Incomplete restore detected but its journal is unusable: ${read.error} — refusing to load persisted state`, {
       action: 'restore-recovery', error: read.error,
@@ -499,6 +571,7 @@ const recoverIncompleteRestore = ({ dataDir = DATA_DIR, logger = NOOP_LOGGER } =
   }
 
   const journal = read.journal;
+  sweepOrphanStageDirs({ dataDir, referenced: new Set([journal.stageDir].filter(Boolean)), logger });
   if (journal.status === STATUS.COMMITTED) {
     // The transaction reached its commit point; only cleanup was interrupted.
     cleanupArtifacts(dataDir, journal);

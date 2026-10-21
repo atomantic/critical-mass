@@ -25,7 +25,7 @@ const stateTracker = require('../src/state-tracker');
 const ROUTES_PATH = require.resolve('../src/routes/regime-routes');
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(require('../src/paths').DATA_DIR, 'config.json');
 
 // Fund in nested form (mirrors live config); mirrors regime-routes-config.test.js.
 const BASE_CONFIG = {
@@ -563,14 +563,15 @@ describe('POST /api/:exchange/regime/manual-trade/:tradeId/resume', () => {
   it('the production IPC handler resumes the selected trade without sweeping other recovery work', async () => {
     // Execute only the production registration helper, avoiding engine boot,
     // exchange connections and the module's other require-time effects.
-    const source = fs.readFileSync(path.join(__dirname, '..', 'engines', 'coinbase-engine.js'), 'utf8');
-    const helper = source.slice(source.indexOf('const wireManualTradeImport ='), source.indexOf('// Manual Trades history reads'));
-    const registration = source.match(/^wireManualTradeImport\('regime:manual-trade-resume'.*$/m)?.[0];
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'ipc', 'regime-ipc-handlers.js'), 'utf8');
+    const helper = source.slice(source.indexOf('const wireManualTradeImport ='), source.indexOf('ipcServer.onRequest(IPC_CHANNELS.REGIME_UNACCOUNTED_FILLS,'));
+    const registration = source.match(/^\s*wireManualTradeImport\(IPC_CHANNELS\.REGIME_MANUAL_TRADE_RESUME.*$/m)?.[0];
     assert.ok(registration, 'the resume channel must be registered in production');
     const handlers = new Map();
     const result = { success: true, trade: { id: 't-1' } };
     let seen;
     vm.runInNewContext(`${helper}\n${registration}`, {
+      IPC_CHANNELS: require('../src/ipc/ipc-protocol').IPC_CHANNELS,
       ipcServer: { onRequest: (channel, handler) => handlers.set(channel, handler) },
       resolvePair: (exchange, pair) => pair,
       getManualTradeImporter: (exchange, pair) => ({

@@ -20,7 +20,7 @@ const registerSettingsRoutes = require('../src/routes/settings-routes');
 
 // Resolved paths matching what config-utils.js computes internally
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(require('../src/paths').DATA_DIR, 'config.json');
 
 const SECRET_TOKEN = '123456:SECRET-BOT-TOKEN-abcdef';
 
@@ -162,6 +162,27 @@ describe('legacy routes do not leak global secrets (issue #104)', () => {
     assert.equal(res.body.keysConfigured, false);
     assert.equal(res.body.config.productId, 'BTC-USDC');
     assertNoSecrets(res.body, 'GET /api/status');
+  });
+
+  it('GET /api/status has the prefixed route shape (exchange, pair, quoteBalance)', async () => {
+    const { app } = setup();
+    const res = await invoke(app, 'GET /api/status');
+    assert.equal(res.body.exchange, 'coinbase');
+    assert.equal(res.body.pair, 'BTC-USDC');
+    assert.equal(res.body.quoteCurrency, 'USDC');
+    assert.ok(res.body.quoteBalance);
+    assert.ok(Array.isArray(res.body.failedSells));
+  });
+
+  it('GET /api/status and /api/summary 409 when coinbase has no fund', async () => {
+    setupFsMocks({ base: { exchanges: {}, global: {} }, user: null });
+    const app = createFakeApp();
+    registerLegacyRoutes(app, { parseTSV: () => [] });
+    for (const route of ['GET /api/status', 'GET /api/summary']) {
+      const res = await invoke(app, route);
+      assert.equal(res.statusCode, 409, route);
+      assert.equal(res.body.success, false);
+    }
   });
 
   it('GET /api/summary returns summary without secrets', async () => {

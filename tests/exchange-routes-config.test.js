@@ -12,7 +12,7 @@
  * security intent — they're never persisted) so the save succeeds and the
  * stale key is stripped on the way through.
  */
-const { describe, it, afterEach, mock } = require('node:test');
+const { describe, it, afterEach, before, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const { supportConfigDescriptors } = require('./helpers/config-fs-descriptors');
@@ -22,7 +22,7 @@ const configUtils = require('../src/config-utils');
 const registerExchangeRoutes = require('../src/routes/exchange-routes');
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(require('../src/paths').DATA_DIR, 'config.json');
 
 // A coinbase fund whose stored regime block carries three dead keys (mirrors the
 // live coinbase/BTC-USDC config that triggered the bug).
@@ -176,6 +176,64 @@ describe('PUT /api/:exchange/config tolerates stale regime keys', () => {
     for (const [key, value] of Object.entries(corrections)) {
       assert.deepEqual(saved.regime[key], value, `${key} must survive a full save`);
     }
+  });
+});
+
+// A stale Config draft must not revert capital the engine credited after the
+// form loaded (#1395): the editor sends only edited keys and the route merges
+// them, so maxUsdcDeployed is neither rewritten on disk nor re-sent over IPC
+// (where the engine would book the drop as an operator withdrawal).
+describe('PUT /api/:exchange/config keeps engine-credited capital (#1395)', () => {
+  afterEach(() => mock.restoreAll());
+  let buildSavePayload;
+  before(async () => {
+    ({ buildSavePayload } = await import('../admin/src/utils/configSavePayload.mjs'));
+  });
+
+  const setup = () => {
+    const fsMocks = setupFsMocks(BASE_CONFIG);
+    configUtils.updateRegimeConfig('coinbase', 'BTC-USDC', { maxUsdcDeployed: 1000 });
+    const ipcCalls = [];
+    const app = createFakeApp();
+    registerExchangeRoutes(app, {
+      exchangeIPCMap: { coinbase: { request: async (channel, updates) => { ipcCalls.push({ channel, updates }); return { success: true }; } } },
+      parseTSV: () => [], calculateCostBasis: () => ({}), getNextTradeInfo: () => ({}),
+    });
+    return { app, fsMocks, ipcCalls };
+  };
+  const reqFor = (body) => ({ params: { exchange: 'coinbase' }, query: { pair: 'BTC-USDC' }, body });
+
+  const saveStaleDraft = async (editDraft) => {
+    const { app, ipcCalls } = setup();
+    const loaded = (await invoke(app, 'GET /api/:exchange/config', reqFor({}))).body;
+    // A take-profit credit lands while the operator is editing.
+    configUtils.updateRegimeConfig('coinbase', 'BTC-USDC', { maxUsdcDeployed: 1012.5 });
+    const draft = structuredClone(loaded);
+    editDraft(draft);
+    const res = await invoke(app, 'PUT /api/:exchange/config', reqFor(buildSavePayload(draft, loaded)));
+    assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+    return { saved: configUtils.getFundConfig('coinbase', 'BTC-USDC').regime, ipcCalls };
+  };
+
+  it('a draft editing another field keeps the credited maxUsdcDeployed on disk and off the IPC', async () => {
+    const { saved, ipcCalls } = await saveStaleDraft((draft) => { draft.regime.baseSizeUsdc = 75; });
+    assert.equal(saved.maxUsdcDeployed, 1012.5);
+    assert.equal(saved.baseSizeUsdc, 75);
+    assert.equal(saved.enabled, true, 'untouched stored regime keys survive the merge');
+    assert.equal(ipcCalls.length, 1);
+    assert.deepEqual(ipcCalls[0].updates, { baseSizeUsdc: 75 });
+  });
+
+  it('editing maxUsdcDeployed itself still persists and forwards it', async () => {
+    const { saved, ipcCalls } = await saveStaleDraft((draft) => { draft.regime.maxUsdcDeployed = 1500; });
+    assert.equal(saved.maxUsdcDeployed, 1500);
+    assert.deepEqual(ipcCalls[0].updates, { maxUsdcDeployed: 1500 });
+  });
+
+  it('a fund-level-only edit writes no regime values and forwards only that field', async () => {
+    const { saved, ipcCalls } = await saveStaleDraft((draft) => { draft.dryRun = false; });
+    assert.equal(saved.maxUsdcDeployed, 1012.5);
+    assert.deepEqual(ipcCalls[0].updates, { dryRun: false });
   });
 });
 

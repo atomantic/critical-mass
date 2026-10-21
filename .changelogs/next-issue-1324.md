@@ -1,0 +1,1 @@
+- **[issue-1324] Add a shared admin API client** — New `admin/src/utils/apiClient.js` (`apiGet/apiPost/apiPut/apiDelete`) returns one `{ ok, status, data, error }` shape, never throws on HTTP/non-JSON/network failures and reuses `describeActionFailure`. AddFundModal, Backtest and CostBasisDCA now use it; remaining components migrate incrementally.

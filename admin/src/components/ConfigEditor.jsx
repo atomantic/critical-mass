@@ -1,7 +1,9 @@
 import { describeConfigSaveError } from '../utils/configSaveError.mjs'
+import { buildSavePayload } from '../utils/configSavePayload.mjs'
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { TIERS as CELESTIAL_TIERS, formatTierCapitalRange } from '../../../shared/celestial-tiers.mjs'
-import { useState, useEffect, useId, useRef } from 'react'
+import { useState, useEffect, useId, useRef, useCallback } from 'react'
+import ToggleSwitch from './ToggleSwitch'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 
 // Input component defined OUTSIDE ConfigEditor to prevent re-creation on every render
@@ -80,37 +82,6 @@ function FormSelect({ label, hint, value, onChange, options, className = '' }) {
   )
 }
 
-function ToggleSwitch({ label, checked, onClick, disabled = false, activeClassName = 'bg-cyan-500', hint }) {
-  const labelId = useId()
-  const hintId = `${labelId}-hint`
-  return (
-    <div className="flex flex-col items-start gap-1 text-sm">
-      <div className="flex items-center gap-2">
-        <span id={labelId} className="text-gray-400">{label}</span>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={checked}
-          aria-labelledby={labelId}
-          aria-describedby={hint ? hintId : undefined}
-          onClick={onClick}
-          disabled={disabled}
-          className="min-h-11 min-w-11 inline-flex items-center justify-center rounded-full transition-colors disabled:opacity-50"
-        >
-          <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-            checked ? activeClassName : 'bg-gray-600'
-          }`}>
-            <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-              checked ? 'translate-x-5' : 'translate-x-1'
-            }`} />
-          </span>
-        </button>
-      </div>
-      {hint && <div id={hintId} className="text-[10px] text-gray-400 leading-tight">{hint}</div>}
-    </div>
-  )
-}
-
 // Reusable section card for the 2-column regime grid
 function SectionCard({ title, children, className = '' }) {
   return (
@@ -123,6 +94,8 @@ function SectionCard({ title, children, className = '' }) {
 
 function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pair, strategy = 'dca', engineRunning = null, engineDryRun = null, onRestart, loadError, onRetry }) {
   const [config, setConfig] = useState(initialConfig)
+  // The server copy the draft was loaded from; Save diffs against it (#1395).
+  const baselineRef = useRef(initialConfig)
   const [saving, setSaving] = useState(false)
   const [toggleBusy, setToggleBusy] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -130,6 +103,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const [isDirty, setIsDirty] = useState(false)
   const [presets, setPresets] = useState(null)
   const [editingPresets, setEditingPresets] = useState(null)
+  const [presetsError, setPresetsError] = useState(null)
   const [presetsDirty, setPresetsDirty] = useState(false)
   const [savingPresets, setSavingPresets] = useState(false)
   const [presetsMessage, setPresetsMessage] = useState(null)
@@ -148,6 +122,12 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // without this check a poll landing mid-write would fire that effect
   // (isDirty is never set for a toggle) and snap the UI back to stale state.
   const pendingWriteRef = useRef(0)
+  // Apply a server-confirmed value to both the draft and its baseline.
+  const adoptSaved = updater => {
+    baselineRef.current = updater(baselineRef.current)
+    setConfig(updater)
+  }
+  const loadDraft = next => adoptSaved(() => next)
 
   // Determine if showing regime config based on URL strategy prop
   const isRegime = strategy === 'regime'
@@ -159,7 +139,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       prevExchangeRef.current = exchange
       prevStrategyRef.current = strategy
       if (initialConfig) {
-        setConfig(initialConfig)
+        loadDraft(initialConfig)
         setIsDirty(false)
       }
     }
@@ -181,28 +161,36 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // before the write resolves.
   useEffect(() => {
     if (!initialConfig) {
-      setConfig(undefined)
+      loadDraft(undefined)
       setIsDirty(false)
       return
     }
     if (initialConfig && !isDirty && pendingWriteRef.current === 0) {
-      setConfig(initialConfig)
+      loadDraft(initialConfig)
     }
   }, [initialConfig]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch aggressiveness presets for regime mode
+  const loadPresets = useCallback(async (isStale = () => false) => {
+    try {
+      const res = await fetch('/api/presets/aggressiveness')
+      const data = res.ok ? await res.json() : null
+      if (isStale()) return
+      if (data?.presets) {
+        setPresets(data.presets)
+        setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
+        setPresetsError(null)
+      } else setPresetsError(res.ok ? 'Presets unavailable' : `Presets unavailable (HTTP ${res.status})`)
+    } catch (err) {
+      if (!isStale()) setPresetsError('Presets unavailable: request failed')
+    }
+  }, [])
   useEffect(() => {
     if (!isRegime) return
-    fetch('/api/presets/aggressiveness')
-      .then(res => res.json())
-      .then(data => {
-        if (data.presets) {
-          setPresets(data.presets)
-          setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
-        }
-      })
-      .catch(() => {})
-  }, [isRegime])
+    let stale = false
+    loadPresets(() => stale)
+    return () => { stale = true }
+  }, [isRegime, loadPresets])
 
   // Do not render editable defaults or retain a previous draft when this fund's
   // summary has not arrived. All hooks stay above this gate so Retry can mount
@@ -301,13 +289,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     pendingWriteRef.current += 1
     setSaving(true)
     setMessage(null)
-    // Depth protection has no production market-data input yet. Keep legacy
-    // values in the draft/readback, but never send them as active UI edits.
-    const payload = { ...config }
-    if (config.regime) {
-      const { minDepthUsdc, depthPauseMs, ...editableRegime } = config.regime
-      payload.regime = editableRegime
-    }
+    const payload = buildSavePayload(config, baselineRef.current)
     try {
       const res = await fetch(`/api/${exchange}/config${pairQuery}`, {
         method: 'PUT',
@@ -316,7 +298,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       })
       const result = await res.json().catch(() => ({}))
       if (res.ok) {
-        if (result.config) setConfig(result.config)
+        if (result.config) loadDraft(result.config)
         setMessage({ type: 'success', text: 'Configuration saved!' })
         setIsDirty(false)
         onSave?.()
@@ -324,7 +306,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         // Persistence succeeded even though the live engine rejected or missed
         // propagation. Keep the authoritative saved value and tell the operator
         // that a restart is required; reverting here would display stale state.
-        if (result.config) setConfig(result.config)
+        if (result.config) loadDraft(result.config)
         setIsDirty(false)
         setMessage({
           type: 'warning',
@@ -344,7 +326,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
 
   const handleReset = () => {
     if (initialConfig) {
-      setConfig(initialConfig)
+      loadDraft(initialConfig)
       setIsDirty(false)
       setMessage(null)
     }
@@ -450,7 +432,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       }),
       () => setConfig(prev => ({ ...prev, dryRun: next })),
       () => setConfig(prev => ({ ...prev, dryRun: !next })),
-      saved => saved && setConfig(saved),
+      saved => saved && loadDraft(saved),
     )
   }
 
@@ -469,7 +451,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         }),
         () => setConfig(prev => ({ ...prev, regime: { ...prev.regime, enabled: next } })),
         () => setConfig(prev => ({ ...prev, regime: { ...prev.regime, enabled: !next } })),
-        saved => saved && setConfig(prev => {
+        saved => saved && adoptSaved(prev => {
           const { dryRun, productId, ...savedRegime } = saved
           return {
             ...prev,
@@ -490,7 +472,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         }),
         () => setConfig(prev => ({ ...prev, enabled: next })),
         () => setConfig(prev => ({ ...prev, enabled: !next })),
-        saved => saved && setConfig(saved),
+        saved => saved && loadDraft(saved),
       )
     }
   }
@@ -588,17 +570,17 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             <ToggleSwitch
               label="Enabled"
               checked={Boolean(isRegime ? regimeConfig.enabled : config.enabled)}
-              onClick={handleToggleEnabled}
+              onChange={handleToggleEnabled}
               disabled={locked}
-              activeClassName="bg-green-500"
+              colorOn="bg-green-500"
               hint={isRegime ? 'Shows the fund as Ready in the fund list. Does not start or stop trading; use Start / Stop in the fund header.' : undefined}
             />
             <ToggleSwitch
               label="Dry Run"
               checked={Boolean(config.dryRun)}
-              onClick={handleToggleDryRun}
+              onChange={handleToggleDryRun}
               disabled={locked}
-              activeClassName="bg-yellow-500"
+              colorOn="bg-yellow-500"
             />
           </div>
         </div>
@@ -957,7 +939,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 <ToggleSwitch
                   label="Enable Celestial Bodies"
                   checked={regimeConfig.celestialEnabled !== false}
-                  onClick={() => handleRegimeChange('celestialEnabled', !(regimeConfig.celestialEnabled !== false))}
+                  onChange={() => handleRegimeChange('celestialEnabled', !(regimeConfig.celestialEnabled !== false))}
                 />
                 {regimeConfig.celestialEnabled !== false && (
                   <span className="text-xs text-cyan-400">
@@ -995,7 +977,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 <ToggleSwitch
                   label="Enable Macro Regime"
                   checked={Boolean(regimeConfig.macroEnabled)}
-                  onClick={() => handleRegimeChange('macroEnabled', !regimeConfig.macroEnabled)}
+                  onChange={() => handleRegimeChange('macroEnabled', !regimeConfig.macroEnabled)}
                 />
                 {regimeConfig.macroEnabled && (
                   <span className="text-xs text-cyan-400">
@@ -1051,7 +1033,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 <ToggleSwitch
                   label="Enable Auto-Management"
                   checked={Boolean(regimeConfig.tpAutoManaged)}
-                  onClick={() => handleRegimeChange('tpAutoManaged', !regimeConfig.tpAutoManaged)}
+                  onChange={() => handleRegimeChange('tpAutoManaged', !regimeConfig.tpAutoManaged)}
                 />
                 {regimeConfig.tpAutoManaged && (
                   <span className="text-xs text-cyan-400">
@@ -1160,6 +1142,12 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             </fieldset>
 
             {/* Aggressiveness Presets Editor — full width */}
+            {presetsError && !editingPresets && (
+              <div role="alert" className="lg:col-span-2 flex items-center gap-3 text-sm text-yellow-400">
+                <span>{presetsError}</span>
+                <button type="button" onClick={() => loadPresets()} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-0.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs">Retry</button>
+              </div>
+            )}
             {editingPresets && (
               <SectionCard title="Aggressiveness Presets" className="lg:col-span-2">
                 <div className="text-xs text-gray-400 mb-3">

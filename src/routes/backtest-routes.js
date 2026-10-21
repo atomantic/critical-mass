@@ -66,13 +66,17 @@ module.exports = (app, deps) => {
     if (!validation.ok) return res.status(400).json({ success: false, error: validation.error, code: validation.code });
     const { intervals, intervalType } = validation.value;
 
+    const freshness = {};
     const admission = simulationCoordinator.start({
       resourceKey: `prices:${exchange}`,
       requestKey: JSON.stringify({ exchange, intervals, intervalType }),
-    }, () => backtestEngine.getPriceData(intervals, intervalType, exchange));
+    }, () => backtestEngine.getPriceData(intervals, intervalType, exchange, { freshness }));
     if (!admission.accepted) return rejectAdmission(res, admission);
     const prices = await admission.promise;
-    res.json({ success: true, count: prices.length, intervalType, exchange, prices });
+    res.json({
+      success: true, count: prices.length, intervalType, exchange, prices,
+      ...(freshness.stale ? { stale: true, staleReason: freshness.staleReason } : {}),
+    });
   }));
 
   // Run backtest

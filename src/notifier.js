@@ -20,6 +20,10 @@ const notifierLogger = createContextLogger({ module: 'notifier' });
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 const MAX_MESSAGE_LENGTH = 4000;
+// Cap on messages waiting for the next flush. During a Telegram outage the
+// oldest are dropped (and summarised in one notice) so stale alerts cannot
+// pile up ahead of new critical ones.
+const MAX_QUEUED_MESSAGES = 200;
 const TELEGRAM_MAX_RETRIES = 3;
 const TELEGRAM_RETRY_MAX_DELAY_MS = 30_000;
 // The gateway gives the whole shutdown 30s (SHUTDOWN_TIMEOUT_MS) and awaits
@@ -218,6 +222,12 @@ const computeDailySummaryDelay = (hour, now = new Date()) => {
 const createNotifier = ({ sleep = defaultSleep } = {}) => {
   let config = getNotificationConfig();
   let queue = [];
+  // Messages evicted from `queue` by the cap since the last flush
+  let droppedCount = 0;
+  // Messages already handed to a send (in flight) and not yet settled
+  let inFlightMessages = 0;
+  // At most one non-urgent flush may occupy the send tail at a time
+  let flushInFlight = false;
   let flushTimer = null;
   let dailySummaryTimer = null;
   let tradeHandler = null;
@@ -388,9 +398,22 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
    */
   const flushQueue = ({ urgent = false } = {}) => {
     if (queue.length === 0) return;
+    // A previous non-urgent flush is still delivering (or retrying): leave
+    // these messages queued so they join the next batch instead of stacking
+    // more work on the send tail.
+    if (!urgent && flushInFlight) return;
 
     const messages = queue.splice(0);
-    stats.queueDepth = queue.length;
+    if (droppedCount > 0) {
+      messages.unshift(`⚠️ ${droppedCount} older notification${droppedCount === 1 ? ' was' : 's were'} dropped while Telegram was unreachable`);
+      droppedCount = 0;
+    }
+    inFlightMessages += messages.length;
+    stats.queueDepth = queue.length + inFlightMessages;
+    const settled = () => {
+      inFlightMessages -= messages.length;
+      stats.queueDepth = queue.length + inFlightMessages;
+    };
 
     // Combine into batches respecting max length
     let batch = '';
@@ -409,15 +432,33 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
 
     if (urgent) {
       // Bypass the serialized tail but keep this flush's own batches in order
-      return trackSend(batches.reduce(
+      const run = batches.reduce(
         (chain, b) => chain.then(async (sent) => (await sendTelegram(b, { urgent })) && sent),
         Promise.resolve(true)
-      ));
+      );
+      run.then(settled, settled);
+      return trackSend(run);
     }
 
     // Queue every batch on the serialized send tail; a failed batch does not
     // stop the later ones
-    return trackSend(Promise.all(batches.map((b) => sendTelegram(b))).then((results) => results.every(Boolean)));
+    flushInFlight = true;
+    const run = Promise.all(batches.map((b) => sendTelegram(b))).then((results) => results.every(Boolean));
+    const done = () => {
+      flushInFlight = false;
+      settled();
+    };
+    run.then(done, done);
+    return trackSend(run);
+  };
+
+  const armFlushTimer = () => {
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      flushQueue();
+      // Messages left queued because a send is still in flight: look again next interval
+      if (queue.length > 0) armFlushTimer();
+    }, config.rateLimitMs);
   };
 
   /**
@@ -426,14 +467,13 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
    */
   const enqueue = (text) => {
     queue.push(text);
-    stats.queueDepth = queue.length;
-
-    if (!flushTimer) {
-      flushTimer = setTimeout(() => {
-        flushTimer = null;
-        flushQueue();
-      }, config.rateLimitMs);
+    if (queue.length > MAX_QUEUED_MESSAGES) {
+      droppedCount += queue.length - MAX_QUEUED_MESSAGES;
+      queue.splice(0, queue.length - MAX_QUEUED_MESSAGES);
     }
+    stats.queueDepth = queue.length + inFlightMessages;
+
+    if (!flushTimer) armFlushTimer();
   };
 
   /**
@@ -451,12 +491,17 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
       clearTimeout(flushTimer);
       flushTimer = null;
     }
-    flushQueue({ urgent });
     let successful = true;
-    while (pendingSends.size) {
-      const results = await Promise.allSettled([...pendingSends]);
-      successful = results.every((result) => result.status === 'fulfilled' && result.value !== false) && successful;
-    }
+    // Loop: a non-urgent flush skipped behind an in-flight one leaves messages
+    // queued, so keep going until the queue is empty and nothing is pending.
+    // The caller (stop) bounds this with its drain deadline.
+    do {
+      flushQueue({ urgent });
+      while (pendingSends.size) {
+        const results = await Promise.allSettled([...pendingSends]);
+        successful = results.every((result) => result.status === 'fulfilled' && result.value !== false) && successful;
+      }
+    } while (queue.length > 0);
     return successful;
   };
 
@@ -675,7 +720,7 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
    */
   const getStats = () => ({
     ...stats,
-    queueDepth: queue.length,
+    queueDepth: queue.length + inFlightMessages,
     isRunning: !!tradeHandler,
     config: {
       enabled: config.enabled,

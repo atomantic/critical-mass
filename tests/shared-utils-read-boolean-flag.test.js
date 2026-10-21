@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { readBooleanFlag } = require('../src/shared-utils');
 
 // Issue #454: apply/preview/merge/createBody select a preview-vs-mutate branch
-// downstream (regime-routes.js, coinbase-engine.js IPC handlers, and
+// downstream (regime-routes.js, regime-ipc-handlers.js IPC handlers, and
 // manual-trade-import.js's importBuy). Coercing a truthy-but-non-boolean value
 // (the string "false", a number, an array/object, null) has flipped destructive
 // behavior before (see the `dryRun` fund-config guard this helper mirrors), so

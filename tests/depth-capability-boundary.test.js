@@ -34,6 +34,7 @@ function view(name, props = {}, notificationConfig = {}) {
     useState(initial) { const key = slot(initial); return [state[key], value => { state[key] = typeof value === 'function' ? value(state[key]) : value }] },
     useRef(initial) { return state[slot(() => ({ current: initial }))] },
     useEffect(effect) { if (!mounted) effects.push(effect) },
+    useCallback(fn) { return fn },
   }
   const exports = {}
   const context = vm.createContext({ exports, module: { exports }, React: hooks,
@@ -77,14 +78,35 @@ for (const entryMode of ['reactive', 'ladder']) describe(`depth capability bound
       flash.props.onChange(4)
     } else assert.match(text(tree), /Ladder mode bypasses tail event checks/)
     await button(page.render(), 'Save Configuration').props.onClick()
-    const saved = page.requests.find(request => request.method === 'PUT').body.regime
-    assert.ok(!('minDepthUsdc' in saved) && !('depthPauseMs' in saved))
-    assert.equal(saved.maxSpreadBps, entryMode === 'reactive' ? 35 : 40)
-    assert.equal(saved.flashMoveMult, entryMode === 'reactive' ? 4 : 2)
-    assert.equal(saved.spreadPauseMs, 7000)
-    assert.equal(saved.flashCooldownMs, 8000)
-    assert.equal(saved.cancelEntriesOnFlash, false)
+    // Only edited keys are sent (#1395); depth keys never are.
+    const body = page.requests.find(request => request.method === 'PUT').body
+    assert.deepEqual(body, entryMode === 'reactive' ? { regime: { maxSpreadBps: 35, flashMoveMult: 4 } } : {})
     assert.equal(config.regime.minDepthUsdc, 4321, 'legacy readback remains unmodified')
+  })
+})
+
+describe('Config save sends only the operator edits (#1395)', () => {
+  const field = (tree, prefix) => {
+    const found = nodes(tree).find(node => typeof node.props.label === 'string' && node.props.label.startsWith(prefix))
+    assert.ok(found, `expected field ${prefix}`)
+    return found
+  }
+  const saveBody = async (edit) => {
+    const config = { productId: 'BTC-USDC', dryRun: false, regime: { enabled: true, entryMode: 'reactive', baseSizeUsdc: 50, maxUsdcDeployed: 1000 } }
+    const page = view('ConfigEditor', { config, strategy: 'regime', pair: 'BTC-USDC' })
+    edit(await page.mount())
+    await button(page.render(), 'Save Configuration').props.onClick()
+    return page.requests.find(request => request.method === 'PUT').body
+  }
+
+  it('omits untouched engine-owned values such as maxUsdcDeployed', async () => {
+    const body = await saveBody(tree => field(tree, 'Base Size').props.onChange(75))
+    assert.deepEqual(body, { regime: { baseSizeUsdc: 75 } })
+  })
+
+  it('still sends maxUsdcDeployed when the operator edits it', async () => {
+    const body = await saveBody(tree => field(tree, 'Max Deployed').props.onChange(1500))
+    assert.deepEqual(body, { regime: { maxUsdcDeployed: 1500 } })
   })
 })
 

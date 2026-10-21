@@ -1,8 +1,8 @@
 import { Target, TrendingUp, TrendingDown, Minus } from '../icons'
+import { TF_ORDER } from '../../utils/timeframes.mjs'
 import { INDICATORS, INDICATOR_LABELS, INDICATOR_WEIGHTS } from '../../../../shared/indicator-config.mjs'
 
 const WINDOW_ORDER = ['1m', '5m', '15m', '1h']
-const TF_ORDER = ['1d', '4h', '2h', '1h', '30m', '15m', '10m', '5m', '3m', '1m']
 
 function accuracyColor(accuracy) {
   if (accuracy == null) return 'text-gray-400'
@@ -194,7 +194,7 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
       {totalEvaluated > 0 && (
         <div className="mb-4">
           <div className="text-xs text-gray-400 mb-1.5 font-medium">By Timeframe</div>
-          <div className="grid grid-cols-5 gap-1">
+          <div className="grid grid-cols-6 gap-1">
             {TF_ORDER.map(tf => {
               const data = byTimeframe?.[tf]
               return (

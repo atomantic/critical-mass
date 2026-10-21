@@ -45,11 +45,39 @@ const {
 const CONFIG_SNAPSHOT_VERSION = 1;
 
 /**
+ * DCA consolidation settings and the value `dca-engine.js` treats exactly like
+ * an absent key ("off"). A snapshot omits a key holding its off value, so an
+ * archive written before these keys were carried (#1420) — which has neither —
+ * compares equal to one whose fund has consolidation explicitly off.
+ */
+const CONSOLIDATION_OFF = Object.freeze({
+  consolidateAfterOrders: 0,
+  consolidateInterval: 'never',
+});
+
+/**
+ * Whether a consolidation setting is off, using the engine's own tests:
+ * `consolidateAfterOrders > 0` arms the threshold trigger, and a falsy or
+ * `'never'` `consolidateInterval` disables the scheduled one.
+ * @param {string} key - A key of CONSOLIDATION_OFF
+ * @param {*} value
+ * @returns {boolean}
+ */
+const isConsolidationOff = (key, value) => (key === 'consolidateAfterOrders'
+  ? !(value > 0)
+  : !value || value === CONSOLIDATION_OFF.consolidateInterval);
+
+/**
  * Fund-level fields carried by a snapshot. Allowlisted from the fund schema so
  * a stray/unknown key on disk — or a crafted archive — can never smuggle a
  * credential through the snapshot.
  */
-const SNAPSHOT_FUND_KEYS = Object.freeze(Object.keys(DEFAULTS));
+const SNAPSHOT_FUND_KEYS = Object.freeze([
+  ...Object.keys(DEFAULTS),
+  // DCA auto-consolidation (#1420). Not in DEFAULTS (absent means off), so it
+  // must be listed explicitly or a restore silently turns consolidation off.
+  ...Object.keys(CONSOLIDATION_OFF),
+]);
 
 /** Regime (strategy) fields carried by a snapshot. */
 const SNAPSHOT_REGIME_KEYS = Object.freeze([
@@ -89,7 +117,7 @@ const SNAPSHOT_GLOBAL_KEYS = Object.freeze([
  * SNAPSHOT_GLOBAL_KEYS.length` fails CI the moment a field is added to
  * DEFAULTS / REGIME_DEFAULTS / GLOBAL_DEFAULTS without bumping it.
  */
-const CONFIG_SNAPSHOT_FIELD_REVISION = 120;
+const CONFIG_SNAPSHOT_FIELD_REVISION = 122;
 
 /**
  * Copy only the allowlisted, defined keys of `source`, in allowlist order (so
@@ -121,6 +149,9 @@ const buildConfigSnapshot = (config) => {
     const pairs = {};
     for (const [pair, fundBlock] of Object.entries(normalizeExchangeBlock(block).pairs || {})) {
       const fund = pickAllowed(resolveFundConfig(normalized.global, fundBlock), SNAPSHOT_FUND_KEYS);
+      for (const key of Object.keys(CONSOLIDATION_OFF)) {
+        if (key in fund && isConsolidationOff(key, fund[key])) delete fund[key];
+      }
       // The pair key IS the fund identity; never let it drift from productId.
       fund.productId = fundBlock?.productId ?? pair;
       fund.regime = pickAllowed(resolveRegimeConfig(fundBlock), SNAPSHOT_REGIME_KEYS);
@@ -349,6 +380,21 @@ const reconstructConfigOverride = ({ snapshot: archivedSnapshot, baseConfig, des
     isPlainObject(destinationGlobal) ? destinationGlobal : (base.global || {}),
     snapshot.global || {},
   );
+
+  // An archived fund without a consolidation key had it off (the snapshot omits
+  // off values, and pre-#1420 archives never carried it). The merge would
+  // otherwise re-import an active value the destination base sets for that
+  // pair, so pin the explicit off value wherever the base resolves one.
+  for (const [exchange, { pairs }] of Object.entries(snapshot.exchanges)) {
+    const baseBlock = isPlainObject(base.exchanges?.[exchange]) ? base.exchanges[exchange] : null;
+    for (const pair of Object.keys(pairs)) {
+      const baseline = resolveOverrideBaseline(baseBlock, pair, target.global).fund;
+      const targetFund = target.exchanges[exchange].pairs[pair];
+      for (const [key, offValue] of Object.entries(CONSOLIDATION_OFF)) {
+        if (!(key in targetFund) && !isConsolidationOff(key, baseline[key])) targetFund[key] = offValue;
+      }
+    }
+  }
 
   // Prove the round trip before the caller writes anything: replay each
   // candidate override through the exact merge+normalize path loadConfig uses

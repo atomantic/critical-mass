@@ -30,7 +30,9 @@ that setting again. Keep the snapshot intact. For example, remove only
 its current base value. Other settings remain selected.
 
 Snapshot and override writes are atomic, and concurrent startup/settings writes
-are serialized by `data/.config-write.lock`. A crash may leave that lock directory.
+are serialized by `data/.config-write.lock`. Settings writes re-read
+`data/config.json` after taking the lock, so concurrent engine and gateway updates
+to different keys all persist. A crash may leave that lock directory.
 Startup then refuses to proceed after a bounded wait. Stop **all** Critical Mass
 writers, inspect/repair the configuration files, and remove only the empty lock
 directory before restarting. Locks are never stolen merely because they are old.
@@ -132,7 +134,8 @@ Separately, an earlier release of this same multi-pair migration moved `transact
 
 - Each engine claims its configured local IPC port before it runs recovery or the migration, so a second engine process for the same exchange on that port fails without touching fund data. This is exclusion by configured port only. The migration does not check for other writers (for example an engine configured on a different port, or a manual script), so follow the stop order above to make sure nothing else is writing the data directory.
 - If the migration fails for any reason, the engine process logs an error and `process.exit(1)` — it will NOT silently continue with mixed-layout state.
-- The migration uses `fs.renameSync` (atomic move) and refuses to overwrite existing files at the target path. If it sees a conflict (e.g. you started the new code, generated a partial new layout, then tried to restart with old files still around), it logs the conflict and skips that specific file rather than clobbering anything.
+- The migration uses `fs.renameSync` (atomic move) and refuses to overwrite existing files at the target path. If it sees a conflict (e.g. you started the new code, generated a partial new layout, then tried to restart with old files still around), it logs the conflict and skips that specific file rather than clobbering anything — except for `state.json`, `regime-state.json` and `fill-ledger.json`: with both an exchange-level and a per-fund copy of any of those, the engine refuses to start (moving nothing) and logs both paths. Keep the authoritative copy, move the other out of `data/`, and restart.
+- The migration resumes after an interruption: it runs whenever any per-fund file is still at the exchange level, so a crash after the state files moved but before `fill-ledger.json` did finishes moving the ledger on the next start instead of leaving the fund on an empty ledger.
 - It also cleans up empty pair subdirectories that the API server might have accidentally created before the engine ran (e.g. from gateway requests using `?pair=` before migration completed).
 
 ### After upgrading

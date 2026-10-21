@@ -4,7 +4,7 @@
  *
  * Two-tier classification:
  * 1. Keyword pre-filter (instant, free) with severity mapping
- * 2. Optional AI classification via portos-ai-toolkit providers
+ * 2. Optional AI classification via the configured API providers (data/providers.json)
  */
 
 const { readFile } = require('fs/promises');
