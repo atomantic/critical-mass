@@ -181,16 +181,83 @@ describe('PUT /api/config validates against the allowlist (issue #146)', () => {
     global: { schedulerInterval: 30000 },
   };
 
-  const setup = (base = BASE_COINBASE) => {
+  const setup = (base = BASE_COINBASE, request = async () => ({ success: true })) => {
     const fsMocks = setupFsMocks({ base, user: null });
     const app = createFakeApp();
+    const ipcCalls = [];
+    const exchangeIPCMap = {
+      coinbase: { request: async (...args) => { ipcCalls.push(args); return request(...args); } },
+    };
     registerLegacyRoutes(app, {
+      exchangeIPCMap,
       parseTSV: () => [],
       calculateCostBasis: () => ({}),
       getNextTradeInfo: () => ({}),
     });
-    return { app, fsMocks };
+    return { app, fsMocks, ipcCalls };
   };
+
+  // The legacy save used to write config.json and answer success without telling
+  // the running engine, so it kept trading on the old settings until a restart.
+  it('notifies the running engine via regime:update-config after a save', async () => {
+    const { app, ipcCalls } = setup();
+    const res = await invoke(app, 'PUT /api/config', {
+      body: { amount: 50, regime: { enabled: true } },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.applied, true);
+    assert.equal(ipcCalls.length, 1);
+    const [channel, engineUpdates, exchange] = ipcCalls[0];
+    assert.equal(channel, 'regime:update-config');
+    assert.equal(engineUpdates.enabled, true);
+    assert.equal(exchange, 'coinbase');
+  });
+
+  it('answers 503 persisted:true/applied:false when the engine cannot apply the save', async () => {
+    const { app, fsMocks } = setup(BASE_COINBASE, async () => { throw new Error('engine offline'); });
+    const res = await invoke(app, 'PUT /api/config', {
+      body: { amount: 50, regime: { enabled: true } },
+    });
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.body.success, false);
+    assert.equal(res.body.persisted, true);
+    assert.equal(res.body.applied, false);
+    assert.match(res.body.error, /engine offline/);
+    assert.equal(fsMocks.written().exchanges.coinbase.amount, 50, 'the save itself must still be persisted');
+  });
+
+  // getDefaultPair returns null with no coinbase fund; saving under that pair
+  // would have created a fund keyed "undefined".
+  it('answers 409 and persists nothing when coinbase has no fund', async () => {
+    const { app, fsMocks, ipcCalls } = setup({ exchanges: {}, global: { schedulerInterval: 30000 } });
+    const res = await invoke(app, 'PUT /api/config', { body: { amount: 50 } });
+    assert.equal(res.statusCode, 409);
+    assert.equal(res.body.success, false);
+    assert.equal(fsMocks.written(), null);
+    assert.equal(ipcCalls.length, 0);
+  });
+
+  // An older flat block with no productId still runs a BTC-USDC fund even though
+  // getDefaultPair returns null for it; the save must reach that fund.
+  it('saves a flat coinbase block with no productId into its default fund and notifies the engine', async () => {
+    const { app, fsMocks, ipcCalls } = setup({ exchanges: { coinbase: { amount: 10, enabled: true } }, global: { schedulerInterval: 30000 } });
+    const res = await invoke(app, 'PUT /api/config', { body: { amount: 50, regime: { enabled: true } } });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.applied, true);
+    assert.equal(fsMocks.written().exchanges.coinbase.amount, 50);
+    assert.equal(ipcCalls.length, 1);
+    assert.equal(ipcCalls[0][3], 'BTC-USDC');
+  });
+
+  it('rejects a productId for another asset with 400 and persists nothing', async () => {
+    const { app, fsMocks, ipcCalls } = setup();
+    const res = await invoke(app, 'PUT /api/config', { body: { productId: 'ETH-USDC' } });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body.error, /productId/);
+    assert.equal(fsMocks.written(), null);
+    assert.equal(ipcCalls.length, 0);
+  });
 
   it('drops unknown keys instead of persisting them', async () => {
     const { app, fsMocks } = setup();
@@ -283,15 +350,19 @@ describe('PATCH /api/config validates enabled/dryRun (issue #569)', () => {
     global: { schedulerInterval: 30000 },
   };
 
-  const setup = () => {
+  const setup = (request = async () => ({ success: true })) => {
     const fsMocks = setupFsMocks({ base: BASE_COINBASE, user: null });
     const app = createFakeApp();
+    const ipcCalls = [];
     registerLegacyRoutes(app, {
+      exchangeIPCMap: {
+        coinbase: { request: async (...args) => { ipcCalls.push(args); return request(...args); } },
+      },
       parseTSV: () => [],
       calculateCostBasis: () => ({}),
       getNextTradeInfo: () => ({}),
     });
-    return { app, fsMocks };
+    return { app, fsMocks, ipcCalls };
   };
 
   const NON_BOOLEAN_FLAG_VALUES = ['false', 'true', 0, 1, [], {}, null];
@@ -364,6 +435,61 @@ describe('PATCH /api/config validates enabled/dryRun (issue #569)', () => {
     assert.equal(res.statusCode, 200);
     assert.equal(res.body.applied, true);
     assert.equal(fsMocks.written().exchanges.coinbase.dryRun, false);
+  });
+
+  // The legacy toggle used to flip dryRun in config.json and answer success
+  // without telling the running engine, which kept its old mode until restart.
+  it('pushes a dryRun toggle to the running engine via regime:update-config', async () => {
+    const { app, ipcCalls } = setup();
+
+    const res = await invoke(app, 'PATCH /api/config', { body: { dryRun: false } });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.persisted, true);
+    assert.equal(ipcCalls.length, 1);
+    const [channel, engineUpdates, exchange] = ipcCalls[0];
+    assert.equal(channel, 'regime:update-config');
+    assert.deepEqual(engineUpdates, { dryRun: false });
+    assert.equal(exchange, 'coinbase');
+  });
+
+  it('answers 503 persisted:true/applied:false when the engine cannot apply a dryRun toggle', async () => {
+    const { app, fsMocks } = setup(async () => { throw new Error('engine offline'); });
+
+    const res = await invoke(app, 'PATCH /api/config', { body: { dryRun: false } });
+
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.body.success, false);
+    assert.equal(res.body.persisted, true);
+    assert.equal(res.body.applied, false);
+    assert.match(res.body.error, /engine offline/);
+    assert.equal(fsMocks.written().exchanges.coinbase.dryRun, false, 'the toggle itself must still be persisted');
+  });
+
+  it('pushes a dryRun toggle for a flat coinbase block with no productId to its default fund', async () => {
+    const fsMocks = setupFsMocks({ base: { exchanges: { coinbase: { amount: 10, enabled: true } }, global: { schedulerInterval: 30000 } }, user: null });
+    const app = createFakeApp();
+    const ipcCalls = [];
+    registerLegacyRoutes(app, {
+      exchangeIPCMap: { coinbase: { request: async (...args) => { ipcCalls.push(args); return { success: true }; } } },
+      parseTSV: () => [],
+      calculateCostBasis: () => ({}),
+      getNextTradeInfo: () => ({}),
+    });
+    const res = await invoke(app, 'PATCH /api/config', { body: { dryRun: false } });
+    assert.equal(res.statusCode, 200);
+    assert.equal(fsMocks.written().exchanges.coinbase.dryRun, false);
+    assert.equal(ipcCalls.length, 1);
+    assert.equal(ipcCalls[0][3], 'BTC-USDC');
+  });
+
+  it('does not contact the engine for an enabled-only toggle', async () => {
+    const { app, ipcCalls } = setup();
+
+    const res = await invoke(app, 'PATCH /api/config', { body: { enabled: false } });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(ipcCalls.length, 0);
   });
 });
 
