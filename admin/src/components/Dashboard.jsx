@@ -1,6 +1,6 @@
 import { getIntervalMs } from '../utils/intervals.mjs'
 import { plural } from '../utils/plural.mjs'
-import { describeActionFailure } from '../utils/actionFailure.mjs'
+import { fetchConvertPreview } from './regime/useDcaConversion'
 import { useState, useEffect, useCallback, useId, useRef } from 'react'
 import ActivityFeed from './ActivityFeed'
 import ModalDialog from './ModalDialog'
@@ -248,17 +248,8 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   }, [exchange, pairQuery])
 
   const handlePreviewExport = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ preview: true, merge: true }),
-    })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      addToast({ type: 'error', title: 'Preview Failed', message: describeActionFailure(res.status, err) })
-      return
-    }
-    const data = await res.json()
+    const data = await fetchConvertPreview({ exchange, pairQuery, addToast })
+    if (!data) return
     setConvertPreview(data)
     setShowConvertConfirm(true)
   }, [exchange, pairQuery, addToast])

@@ -1,16 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-
-const EXCHANGE_ICONS = {
-  coinbase: '₿',
-  gemini: '♊',
-  cryptocom: '🔷',
-}
-
-const EXCHANGE_COLORS = {
-  coinbase: 'bg-blue-600',
-  gemini: 'bg-cyan-600',
-  cryptocom: 'bg-indigo-600',
-}
+import { EXCHANGE_ICONS, EXCHANGE_COLORS } from './exchangeStyles'
 
 // Get engine status for an exchange
 const getEngineStatus = (exchange) => {

@@ -73,6 +73,7 @@ function view(name, fetchImpl, extra = {}) {
     './DcaPlacementRecovery': Panel,
     './DcaPendingBuyRecovery': BuyPanel,
     './Toast': { useToast: () => ({ addToast() {} }) },
+    './regime/useDcaConversion': { fetchConvertPreview: async () => null },
     './charts/chartUtils': { formatCurrency: String, formatPrice: String, formatAsset: String },
     '../App': { getBaseCurrency: () => 'ETH', getQuoteCurrency: () => 'USDC' },
   }
