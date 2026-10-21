@@ -111,10 +111,17 @@ it('fund-state restore blocked by unquiesced writers keeps the dialog open, list
 
   fireEvent.click(within(dialog).getByRole('checkbox'))
   expect(force.disabled).toBe(false)
-  fireEvent.click(force)
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Retry Restore' }))
+  await waitFor(() => expect(writes).toHaveLength(2))
+  expect(JSON.parse(writes[1].body)).toEqual({ force: false })
+  await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('checkbox').checked).toBe(false))
+  expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Force Restore Anyway' }).disabled).toBe(true)
+
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('checkbox'))
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Force Restore Anyway' }))
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-  expect(writes).toHaveLength(2)
-  expect(JSON.parse(writes[1].body)).toEqual({ force: true })
+  expect(writes).toHaveLength(3)
+  expect(JSON.parse(writes[2].body)).toEqual({ force: true })
   expect(await screen.findByText('Forced restore done')).toBeTruthy()
 })
 
