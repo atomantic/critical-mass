@@ -49,9 +49,12 @@ it('treats a network rejection as a load failure instead of an unhandled rejecti
   exchangesHandler = () => { throw new Error('socket hang up') }
   const unhandled = vi.fn()
   process.on('unhandledRejection', unhandled)
-  mount()
-  expect((await screen.findByText(/Could not load funds/)).textContent).toContain('socket hang up')
-  process.off('unhandledRejection', unhandled)
+  try {
+    mount()
+    expect((await screen.findByText(/Could not load funds/)).textContent).toContain('socket hang up')
+  } finally {
+    process.off('unhandledRejection', unhandled)
+  }
   expect(unhandled).not.toHaveBeenCalled()
 })
 
@@ -69,5 +72,5 @@ it('fund created but list refresh fails: success toast, refresh warning, modal c
   expect(await screen.findByText(/Fund created: coinbase\/ETH-USDC/)).toBeTruthy()
   expect(await screen.findByText('Fund list not refreshed')).toBeTruthy()
   expect(created).toBe(true)
-  expect(screen.queryByRole('dialog', { name: 'Add Fund' })).toBeNull()
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add Fund' })).toBeNull())
 })

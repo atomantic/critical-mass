@@ -302,32 +302,30 @@ function AppContent() {
       setExchangesError(err?.message || 'Network error')
       return false
     }
-    {
-      setExchangesError(null)
-      setExchangesLoaded(true)
-      setExchanges(data.exchanges || [])
-      setSimpleDcaEnabled(data.simpleDcaEnabled ?? false)
-      // Only auto-select exchange on initial load if not already in URL
-      // On root "/" (overview page), just set defaults without navigating away
-      if (autoSelect && !urlExchange) {
-        const enabled = data.exchanges?.find(e => e.enabled || e.regimeEnabled)
-        const first = data.exchanges?.[0]
-        const targetExchange = enabled?.name || first?.name || 'coinbase'
-        const exchangeConfig = enabled || first
-        const targetPair = exchangeConfig?.productId || 'BTC-USDC'
-        setLastExchange(targetExchange)
-        // Don't redirect away from non-exchange pages (overview, notifications, etc.)
-        const nonExchangePaths = ['/', '/updown', '/sentinel', '/gateway', '/notifications', '/backups', '/systems', '/ai']
-        const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
-        if (!isNonExchangePage) {
-          navigate(`/${targetExchange}/${targetPair}`, { replace: true })
-        }
-      } else if (autoSelect && urlExchange && !urlPair) {
-        // URL has exchange but no pair - redirect to pair path
-        const exchangeConfig = data.exchanges?.find(e => e.name === urlExchange)
-        const targetPair = exchangeConfig?.productId || 'BTC-USDC'
-        navigate(`/${urlExchange}/${targetPair}`, { replace: true })
+    setExchangesError(null)
+    setExchangesLoaded(true)
+    setExchanges(data.exchanges || [])
+    setSimpleDcaEnabled(data.simpleDcaEnabled ?? false)
+    // Only auto-select exchange on initial load if not already in URL
+    // On root "/" (overview page), just set defaults without navigating away
+    if (autoSelect && !urlExchange) {
+      const enabled = data.exchanges?.find(e => e.enabled || e.regimeEnabled)
+      const first = data.exchanges?.[0]
+      const targetExchange = enabled?.name || first?.name || 'coinbase'
+      const exchangeConfig = enabled || first
+      const targetPair = exchangeConfig?.productId || 'BTC-USDC'
+      setLastExchange(targetExchange)
+      // Don't redirect away from non-exchange pages (overview, notifications, etc.)
+      const nonExchangePaths = ['/', '/updown', '/sentinel', '/gateway', '/notifications', '/backups', '/systems', '/ai']
+      const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
+      if (!isNonExchangePage) {
+        navigate(`/${targetExchange}/${targetPair}`, { replace: true })
       }
+    } else if (autoSelect && urlExchange && !urlPair) {
+      // URL has exchange but no pair - redirect to pair path
+      const exchangeConfig = data.exchanges?.find(e => e.name === urlExchange)
+      const targetPair = exchangeConfig?.productId || 'BTC-USDC'
+      navigate(`/${urlExchange}/${targetPair}`, { replace: true })
     }
     return true
   }
@@ -848,14 +846,14 @@ function AppContent() {
                       </button>
                     </div>
                   ) : (
-                  <ExchangeSelector
-                    currentExchange={currentExchange}
-                    currentPair={currentPair}
-                    exchanges={exchanges}
-                    onChange={handleExchangeChange}
-                    onRefresh={retryExchanges}
-                    onAddFund={() => setAddFundDialogOpen(true)}
-                  />
+                    <ExchangeSelector
+                      currentExchange={currentExchange}
+                      currentPair={currentPair}
+                      exchanges={exchanges}
+                      onChange={handleExchangeChange}
+                      onRefresh={retryExchanges}
+                      onAddFund={() => setAddFundDialogOpen(true)}
+                    />
                   )}
                 {!fundsUnavailable && currentStrategy === 'regime' && regimeRunning !== null && (<>
 

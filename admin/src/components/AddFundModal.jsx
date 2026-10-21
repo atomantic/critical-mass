@@ -193,6 +193,8 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
       // modal so the operator is not invited to create it a second time.
       try {
         await onCreated?.({ exchange, pair: trimmedPair })
+      } catch (err) {
+        console.error('Add fund follow-up failed:', err)
       } finally {
         onClose?.()
       }
