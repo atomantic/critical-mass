@@ -538,8 +538,8 @@ describe('restore-apply — transactional application (#431)', () => {
     }
     // An old directory whose child is still being written belongs to a live restore.
     const active = path.join(dataDir, '.restore-temp-active');
-    write(path.join(active, 'x.json'), '{}');
-    fs.utimesSync(active, anHourAgo, anHourAgo);
+    write(path.join(active, 'nested', 'x.json'), '{}');
+    for (const p of [path.join(active, 'nested'), active]) fs.utimesSync(p, anHourAgo, anHourAgo);
     // A journal that cannot be rolled back: its staging directory must survive for recovery.
     write(path.join(dataDir, JOURNAL_FILENAME), JSON.stringify({
       journalVersion: JOURNAL_VERSION,
@@ -558,7 +558,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.equal(fs.existsSync(orphan), false, 'an old unreferenced staging directory is removed');
     assert.equal(fs.existsSync(fresh), true, 'a fresh staging directory may belong to a live restore and is kept');
     assert.equal(fs.existsSync(owned), true, 'a journal-owned staging directory is kept for recovery');
-    assert.equal(fs.existsSync(active), true, 'a directory with a recently written child is kept');
+    assert.equal(fs.existsSync(active), true, 'a directory with a recently written nested file is kept');
   });
 });
 

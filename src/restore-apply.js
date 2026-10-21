@@ -495,15 +495,18 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
 };
 
 // A directory's own mtime only moves when a direct child is added or removed,
-// so a restore still writing into existing entries looks idle; take the newest
-// mtime among the immediate children too.
+// so a restore still writing into nested entries looks idle; take the newest
+// mtime anywhere in the tree.
 const newestMtimeMs = (dir, own) => {
-  const listed = attempt(() => fs.readdirSync(dir));
-  if (!listed.ok) return own;
   let newest = own;
-  for (const child of listed.value) {
-    const st = attempt(() => fs.lstatSync(path.join(dir, child)));
-    if (st.ok && st.value.mtimeMs > newest) newest = st.value.mtimeMs;
+  const listed = attempt(() => fs.readdirSync(dir, { withFileTypes: true }));
+  if (!listed.ok) return newest;
+  for (const entry of listed.value) {
+    const child = path.join(dir, entry.name);
+    const st = attempt(() => fs.lstatSync(child));
+    if (!st.ok) continue;
+    newest = Math.max(newest, st.value.mtimeMs);
+    if (entry.isDirectory()) newest = Math.max(newest, newestMtimeMs(child, st.value.mtimeMs));
   }
   return newest;
 };

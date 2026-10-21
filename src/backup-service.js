@@ -1312,9 +1312,12 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
 
     return { success: true, filesRestored: applied.filesRestored, configRestored: Boolean(override), legacy, droppedFields };
   } catch (error) {
-    if (!handedOff) cleanStage();
+    // Once handed off, the applier may have thrown before writing a journal; only
+    // a journal on disk means startup recovery owns the staging tree.
+    const journaled = handedOff && fs.existsSync(path.join(paths.dataDir, JOURNAL_FILENAME));
+    if (!journaled) cleanStage();
     logger.error(`❌ 💾 Restore failed while preparing ${filename}: ${error.message}`, { action: 'restore-stage', filename, error: error.message });
-    return { success: false, code: 'staging-failed', error: `Restore failed while preparing the archive: ${error.message}. ${handedOff ? 'The rollback journal will recover the data directory on next start.' : 'No files were changed.'}` };
+    return { success: false, code: 'staging-failed', error: `Restore failed while preparing the archive: ${error.message}. ${journaled ? 'The rollback journal will recover the data directory on next start.' : 'No files were changed.'}` };
   }
 };
 
