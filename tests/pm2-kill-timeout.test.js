@@ -5,6 +5,10 @@ const path = require('node:path');
 const { apps } = require('../ecosystem.config.cjs');
 const { SHUTDOWN_TIMEOUT_MS } = require('../src/gateway-shutdown');
 const { FILL_DRAIN_MS } = require('../src/engine-locks');
+const {
+  DEFAULT_IPC_DRAIN_TIMEOUT_MS, DEFAULT_PROCESS_DRAIN_TIMEOUT_MS,
+  DEFAULT_START_JOIN_TIMEOUT_MS, DEFAULT_SHUTDOWN_WATCHDOG_MS,
+} = require('../src/engine-shutdown');
 
 const read = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
 const watchdogMs = Number(/const SHUTDOWN_WATCHDOG_MS = (\d+);/.exec(read('engines/coinbase-engine.js'))[1]);
@@ -17,6 +21,15 @@ const deadlineFor = (app) => (app.name === 'critical-mass' ? SHUTDOWN_TIMEOUT_MS
 describe('PM2 kill_timeout ordering', () => {
   it('engine watchdog outlasts the in-flight fill drain', () => {
     assert.ok(watchdogMs > FILL_DRAIN_MS);
+  });
+
+  it('engine shutdown budget (bounded steps + shared stop() drain) fits inside the watchdog', () => {
+    // IPC drain + fund-start join + market-start join, then stop()'s single
+    // flash-cancel/fill-drain budget, then the process-wide write drain.
+    const worstCaseMs = DEFAULT_IPC_DRAIN_TIMEOUT_MS + 2 * DEFAULT_START_JOIN_TIMEOUT_MS
+      + FILL_DRAIN_MS + DEFAULT_PROCESS_DRAIN_TIMEOUT_MS;
+    assert.ok(worstCaseMs < watchdogMs, `${worstCaseMs}ms of bounded steps must fit in the ${watchdogMs}ms watchdog`);
+    assert.equal(DEFAULT_SHUTDOWN_WATCHDOG_MS, watchdogMs, 'coordinator default and engine literal agree');
   });
 
   const longRunning = apps.filter((a) => a.name !== 'critical-mass-ui');

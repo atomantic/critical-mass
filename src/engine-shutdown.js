@@ -6,10 +6,11 @@
  * 1. Single-flight idempotence: duplicate signals share the shutdown promise.
  * 2. Immediate intake closure on IPC server: marks server as shutting down so
  *    new requests/updates are rejected and new connections are refused.
- * 3. Cancels pending fund startup supervision and settles in-flight starts.
+ * 3. Cancels pending fund startup supervision and settles in-flight starts
+ *    (bounded: a start hung on exchange REST must not starve the engine stops).
  * 4. Drains in-flight accepted IPC requests (e.g. rebuild-ladder, manual-trade).
  * 5. Stops background jobs (unaccounted fills) and market data services.
- * 6. Drains in-flight market data service starts.
+ * 6. Drains in-flight market data service starts (bounded like step 3).
  * 7. Stops all active regime engines (draining in-flight fills).
  * 8. Drains process-wide pending writes across all funds (order updates, bookings,
  *    metrics, optimizers, reconciles).
@@ -21,9 +22,35 @@
  * 13. Enforces an in-process watchdog timeout (exits 1 if teardown exceeds budget).
  */
 
-const DEFAULT_SHUTDOWN_WATCHDOG_MS = 15000;
+// Budget (see tests/pm2-kill-timeout.test.js): the bounded steps before the
+// engine stops, plus stop()'s shared flash-cancel/fill drain (FILL_DRAIN_MS) and
+// the post-stop process drain, must fit inside the watchdog, which in turn stays
+// below the PM2 kill_timeout (25s).
+const DEFAULT_SHUTDOWN_WATCHDOG_MS = 22000;
 const DEFAULT_IPC_DRAIN_TIMEOUT_MS = 3000;
 const DEFAULT_PROCESS_DRAIN_TIMEOUT_MS = 3000;
+const DEFAULT_START_JOIN_TIMEOUT_MS = 2000;
+
+/**
+ * Await `fn()` for at most `timeoutMs`. A timeout or rejection is logged and
+ * swallowed: the joined work is already cancelled/unneeded, and the engine
+ * stops that follow must still run.
+ */
+const joinBounded = async (label, fn, timeoutMs, logger) => {
+  let timer;
+  const expired = new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs, false); });
+  const joined = await Promise.race([
+    Promise.resolve().then(fn).then(() => true, (err) => {
+      logger?.error?.(`❌ ${label} failed: ${err.message}`, { error: err.message });
+      return true;
+    }),
+    expired,
+  ]);
+  clearTimeout(timer);
+  if (!joined) {
+    logger?.warn?.(`⚠️ ${label} still running after ${timeoutMs}ms — abandoning the join and stopping engines`, { timeout: timeoutMs });
+  }
+};
 
 /**
  * Create engine shutdown coordinator
@@ -43,6 +70,7 @@ const DEFAULT_PROCESS_DRAIN_TIMEOUT_MS = 3000;
  * @param {number} [options.watchdogMs] - Watchdog timeout ms
  * @param {number} [options.ipcDrainTimeoutMs] - Accepted IPC drain timeout ms
  * @param {number} [options.processDrainTimeoutMs] - Process pending writes drain timeout ms
+ * @param {number} [options.startJoinTimeoutMs] - Bound on each start join (fund and market data starts)
  * @returns {{shutdown: (signal: string) => Promise<number>, isStopping: () => boolean}}
  */
 const createEngineShutdown = ({
@@ -60,6 +88,7 @@ const createEngineShutdown = ({
   watchdogMs = DEFAULT_SHUTDOWN_WATCHDOG_MS,
   ipcDrainTimeoutMs = DEFAULT_IPC_DRAIN_TIMEOUT_MS,
   processDrainTimeoutMs = DEFAULT_PROCESS_DRAIN_TIMEOUT_MS,
+  startJoinTimeoutMs = DEFAULT_START_JOIN_TIMEOUT_MS,
 }) => {
   let shutdownPromise = null;
   let stopping = false;
@@ -102,7 +131,7 @@ const createEngineShutdown = ({
         await cancelStarts({ shutdown: true });
       }
       if (settleStarts) {
-        await settleStarts();
+        await joinBounded('Fund start settle', settleStarts, startJoinTimeoutMs, shutdownLogger);
       }
 
       // 3. Drain in-flight accepted IPC requests
@@ -120,7 +149,7 @@ const createEngineShutdown = ({
         stopMarketServices();
       }
       if (drainMarketStarts) {
-        await drainMarketStarts();
+        await joinBounded('Market data start drain', drainMarketStarts, startJoinTimeoutMs, shutdownLogger);
       }
 
       // 6. Stop all running regime engines
@@ -217,4 +246,5 @@ module.exports = {
   DEFAULT_SHUTDOWN_WATCHDOG_MS,
   DEFAULT_IPC_DRAIN_TIMEOUT_MS,
   DEFAULT_PROCESS_DRAIN_TIMEOUT_MS,
+  DEFAULT_START_JOIN_TIMEOUT_MS,
 };

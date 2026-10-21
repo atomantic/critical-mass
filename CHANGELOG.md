@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-1408] A fund or market-data start stuck on a slow exchange no longer stops the engine from saving on restart** — Engine shutdown now waits at most 2s for in-flight fund starts and for market-data starts, logs what it abandoned, and goes on to stop and flush every running fund. The in-process watchdog is 22s (PM2 `kill_timeout` stays 25s), and `stop()`'s flash-cancel and fill-drain waits share one 10s budget, so the total is bounded.
 - **Chart interval, log toolbar and Retry buttons meet touch-target size** — The BTC chart interval, range and view buttons, the log viewer's Retry/Clear/Flush/Fullscreen buttons and the Retry buttons in the regime transactions and UpDown signal panels are at least 44px on touch screens, with desktop sizing unchanged.
 - **Icon-only buttons announce their action to screen readers** — The UpDown Scorecard Analysis refresh button now has the accessible name "Refresh scorecard analysis", and the decorative icons in the toast dismiss button and that refresh button are hidden from assistive tech.
 - **Exchange feeds reconnect when a WebSocket handshake never completes** — A market or user feed whose upgrade request hangs is now terminated after 15s and retried with the normal backoff, instead of staying dark and blocking every later reconnect.
