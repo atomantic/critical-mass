@@ -304,6 +304,8 @@ const createRealtimeBus = ({
   return {
     sockets,
     attach,
+    /** Undo `attach` for a server that never served (failed late bind). @param {import('node:http').Server} server */
+    detach: (server) => { server.removeListener('upgrade', onUpgrade); },
     /** @param {'connection'} event @param {(socket: RealtimeSocket, req: import('node:http').IncomingMessage) => void} handler */
     on: (event, handler) => {
       if (event !== 'connection') throw new TypeError(`Unsupported realtime bus event: ${event}`);

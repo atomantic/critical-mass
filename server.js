@@ -533,6 +533,11 @@ const attachExtraServer = (s) => {
   io.attach(s);
   extraServers.push(s);
 };
+const detachExtraServer = (s) => {
+  io.detach(s);
+  const i = extraServers.indexOf(s);
+  if (i !== -1) extraServers.splice(i, 1);
+};
 
 // Default (HOST unset) mode only: a Tailscale address that comes up after the
 // gateway (tailscaled starts slower than PM2 after a reboot) is bound without
@@ -544,6 +549,7 @@ const watchLateTailscale = () => {
     port: PORT,
     createServer: () => http.createServer(app),
     onExtra: attachExtraServer,
+    onExtraFailed: detachExtraServer,
     isStopping: gatewayShutdown.isStopping,
     log,
   });

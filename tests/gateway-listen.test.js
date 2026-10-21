@@ -248,6 +248,27 @@ describe('watchTailscaleListeners', () => {
     }
   })
 
+  it('untracks the server of every failed late bind so retries do not accumulate', async () => {
+    const tracked = new Set()
+    let failed = 0
+    const watcher = watchTailscaleListeners({
+      bound: [], port: 5570,
+      createServer: () => fakeServer('EADDRNOTAVAIL'),
+      onExtra: (s) => tracked.add(s),
+      onExtraFailed: (s) => { failed++; tracked.delete(s) },
+      scan: () => ['100.83.147.46'],
+    })
+    try {
+      for (let i = 1; i <= 4; i++) {
+        assert.deepEqual(await watcher.scan(), [])
+        assert.equal(failed, i)
+        assert.equal(tracked.size, 0)
+      }
+    } finally {
+      watcher.stop()
+    }
+  })
+
   it('binds nothing once shutdown has begun', async () => {
     const watcher = watchTailscaleListeners({
       bound: [], port: 5570,
