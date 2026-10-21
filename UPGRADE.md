@@ -30,7 +30,9 @@ that setting again. Keep the snapshot intact. For example, remove only
 its current base value. Other settings remain selected.
 
 Snapshot and override writes are atomic, and concurrent startup/settings writes
-are serialized by `data/.config-write.lock`. A crash may leave that lock directory.
+are serialized by `data/.config-write.lock`. Settings writes re-read
+`data/config.json` after taking the lock, so concurrent engine and gateway updates
+to different keys all persist. A crash may leave that lock directory.
 Startup then refuses to proceed after a bounded wait. Stop **all** Critical Mass
 writers, inspect/repair the configuration files, and remove only the empty lock
 directory before restarting. Locks are never stolen merely because they are old.

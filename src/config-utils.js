@@ -437,12 +437,12 @@ const writeUserConfigFile = (override, file = getUserConfigFile()) => {
 };
 
 /**
- * Save configuration to user config file (data/config.json).
- * Persists base differences plus existing explicit selections.
+ * Write `config` to the user config file. The caller MUST already hold the
+ * config write lock (`withConfigWriteLock`) — see `saveConfig`/`mutateConfig`.
  * @param {MultiExchangeConfig} config - Full merged configuration to save
  * @returns {void}
  */
-const saveConfig = (config) => withConfigWriteLock(pathsModule.DATA_DIR, () => {
+const writeConfigLocked = (config) => {
   const baseFile = resolveBaseConfigFile();
   // Guard the parse the same way loadRawConfig does (#185): the base config
   // can be transiently unreadable (mid-write from another process, disk
@@ -466,7 +466,19 @@ const saveConfig = (config) => withConfigWriteLock(pathsModule.DATA_DIR, () => {
   // before the OS updates mtime.
   _configCache = null;
   _configCacheKey = null;
-});
+};
+
+/**
+ * Save configuration to user config file (data/config.json).
+ * Persists base differences plus existing explicit selections.
+ *
+ * Only the write is serialized: `config` was read before the lock, so a key
+ * another process wrote in between is reverted. Read-modify-write callers
+ * must use `mutateConfig` instead (issue #1396).
+ * @param {MultiExchangeConfig} config - Full merged configuration to save
+ * @returns {void}
+ */
+const saveConfig = (config) => withConfigWriteLock(pathsModule.DATA_DIR, () => writeConfigLocked(config));
 
 /**
  * Check if config is in multi-exchange format
@@ -526,6 +538,39 @@ const loadConfig = () => {
   const raw = loadRawConfig();
   return structuredClone(normalizeToMultiExchange(raw));
 };
+
+/**
+ * Read-modify-write the configuration under the config write lock.
+ *
+ * The configuration is re-read from disk once the lock is held, bypassing the
+ * mtime-keyed cache (a write by another engine or the gateway can land within
+ * the same mtime tick), so `mutator` always edits the latest persisted state
+ * and a concurrent writer's keys survive (issue #1396). A throw from `mutator`
+ * writes nothing. A failed re-read leaves this process's last-good cache in
+ * place and aborts the write rather than saving from a stale copy.
+ *
+ * The lock is not re-entrant: `mutator` must not call `saveConfig` or another
+ * writer.
+ * @param {(config: MultiExchangeConfig) => void} mutator - Edits `config` in place
+ * @returns {MultiExchangeConfig} The configuration as written
+ */
+const mutateConfig = (mutator) => withConfigWriteLock(pathsModule.DATA_DIR, () => {
+  const lastGood = _configCache;
+  const lastGoodKey = _configCacheKey;
+  _configCache = null;
+  _configCacheKey = null;
+  let config;
+  try {
+    config = loadConfig();
+  } catch (err) {
+    _configCache = lastGood;
+    _configCacheKey = lastGoodKey;
+    throw err;
+  }
+  mutator(config);
+  writeConfigLocked(config);
+  return config;
+});
 
 // ============================================================================
 // Multi-Pair (Fund) Helpers
@@ -992,8 +1037,7 @@ const getConfiguredExchanges = () => {
  *   is brand-new) and returns its full replacement.
  * @returns {MultiExchangeConfig} Updated full configuration
  */
-const mutateFundBlock = (exchange, pair, mutator) => {
-  const config = loadConfig();
+const mutateFundBlock = (exchange, pair, mutator) => mutateConfig((config) => {
   if (!config.exchanges) config.exchanges = {};
 
   // Seed DEFAULTS for brand-new exchange entries (preserves legacy behavior:
@@ -1021,10 +1065,7 @@ const mutateFundBlock = (exchange, pair, mutator) => {
   // Writing a fund re-establishes it: drop any deletion tombstone so a re-add
   // of a previously removed pair isn't suppressed on the next load (#441).
   config.exchanges[exchange] = clearDeletedPair(config.exchanges[exchange], pair);
-
-  saveConfig(config);
-  return config;
-};
+});
 
 /**
  * Update fund-level configuration for a specific (exchange, pair).
@@ -1139,14 +1180,16 @@ const addFund = (exchange, pair, initialConfig = {}) => {
  * @param {string} pair
  * @returns {MultiExchangeConfig} Updated full configuration
  */
-const removeFund = (exchange, pair) => {
-  const config = loadConfig();
+const removeFund = (exchange, pair) => mutateConfig((config) => {
   const block = config.exchanges?.[exchange];
   if (!block) {
     throw new Error(`Exchange ${exchange} not found`);
   }
 
-  const existing = getFundsForExchange(exchange);
+  // Checked against the config re-read under the lock (#1396), not a
+  // separate cached read, so a concurrent removal can't empty the exchange.
+  const normalized = normalizeExchangeBlock(block);
+  const existing = Object.keys(normalized.pairs || {});
   if (!existing.includes(pair)) {
     throw new Error(`Fund ${exchange}/${pair} not found`);
   }
@@ -1154,33 +1197,25 @@ const removeFund = (exchange, pair) => {
     throw new Error(`Cannot remove the last remaining fund on ${exchange}`);
   }
 
-  const normalized = normalizeExchangeBlock(block);
   delete normalized.pairs[pair];
   // Deleting the key is not enough on its own: saveConfig persists only the
   // diff against the base config.json, so a pair defined there would re-merge
   // on the next load. Record an explicit tombstone (#441).
   normalized[DELETED_PAIRS_KEY] = [...new Set([...getDeletedPairs(normalized), pair])];
   config.exchanges[exchange] = normalized;
-  saveConfig(config);
-  return config;
-};
+});
 
 /**
  * Update global configuration
  * @param {Partial<GlobalConfig>} updates - Global configuration updates
  * @returns {MultiExchangeConfig} Updated full configuration
  */
-const updateGlobalConfig = (updates) => {
-  const config = loadConfig();
-
+const updateGlobalConfig = (updates) => mutateConfig((config) => {
   config.global = {
     ...config.global,
     ...updates,
   };
-
-  saveConfig(config);
-  return config;
-};
+});
 
 /**
  * Guard shared by every explicit-pair fund writer (issue #689): a caller that
@@ -1384,24 +1419,24 @@ const getAggressivenessPresets = () => {
  * @returns {Object} Updated full configuration (global.aggressivenessPresets holds the effective values)
  */
 const updateAggressivenessPresets = (updates) => {
-  const config = loadConfig();
-  const current = config.global?.aggressivenessPresets || {};
-
-  const overrides = {};
   const effective = {};
-  for (const level of Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS)) {
-    const defaults = DEFAULT_AGGRESSIVENESS_PRESETS[level];
-    const requested = { ...current[level], ...updates[level] };
-    effective[level] = { ...defaults, ...requested };
-    // Previously pinned keys survive even when equal to the default; keys merely
-    // echoed back by the editor at their default value are not pinned.
-    const diff = computeDiff(defaults, requested, current[level] || {});
-    if (Object.keys(diff).length) overrides[level] = diff;
-  }
+  const config = mutateConfig((draft) => {
+    const current = draft.global?.aggressivenessPresets || {};
 
-  config.global = config.global || {};
-  config.global.aggressivenessPresets = overrides;
-  saveConfig(config);
+    const overrides = {};
+    for (const level of Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS)) {
+      const defaults = DEFAULT_AGGRESSIVENESS_PRESETS[level];
+      const requested = { ...current[level], ...updates[level] };
+      effective[level] = { ...defaults, ...requested };
+      // Previously pinned keys survive even when equal to the default; keys merely
+      // echoed back by the editor at their default value are not pinned.
+      const diff = computeDiff(defaults, requested, current[level] || {});
+      if (Object.keys(diff).length) overrides[level] = diff;
+    }
+
+    draft.global = draft.global || {};
+    draft.global.aggressivenessPresets = overrides;
+  });
   // Return effective values for callers; the file holds only the overrides.
   config.global.aggressivenessPresets = effective;
   return config;
@@ -1412,8 +1447,7 @@ const updateAggressivenessPresets = (updates) => {
  * @param {Object} updates - Notification config updates
  * @returns {Object} Updated full configuration
  */
-const updateNotificationConfig = (updates) => {
-  const config = loadConfig();
+const updateNotificationConfig = (updates) => mutateConfig((config) => {
   const current = config.global?.notifications || {};
 
   config.global = config.global || {};
@@ -1430,10 +1464,7 @@ const updateNotificationConfig = (updates) => {
       ? { ...current.quietHours, ...updates.quietHours }
       : current.quietHours,
   };
-
-  saveConfig(config);
-  return config;
-};
+});
 
 /**
  * Get backup configuration with defaults
@@ -1462,8 +1493,7 @@ const getBackupConfig = () => {
  * @param {Object} updates - Backup config updates
  * @returns {Object} Updated full configuration
  */
-const updateBackupConfig = (updates) => {
-  const config = loadConfig();
+const updateBackupConfig = (updates) => mutateConfig((config) => {
   const current = config.global?.backup || {};
 
   config.global = config.global || {};
@@ -1472,10 +1502,7 @@ const updateBackupConfig = (updates) => {
     ...current,
     ...updates,
   };
-
-  saveConfig(config);
-  return config;
-};
+});
 
 /**
  * Default sentinel configuration
@@ -1538,8 +1565,7 @@ const getSentinelConfig = () => {
  * @param {Object} updates - Sentinel config updates
  * @returns {Object} Updated full configuration
  */
-const updateSentinelConfig = (updates) => {
-  const config = loadConfig();
+const updateSentinelConfig = (updates) => mutateConfig((config) => {
   const current = config.global?.sentinel || {};
 
   config.global = config.global || {};
@@ -1553,10 +1579,7 @@ const updateSentinelConfig = (updates) => {
       ? { ...current.keywords, ...updates.keywords }
       : current.keywords,
   };
-
-  saveConfig(config);
-  return config;
-};
+});
 
 const initializeConfigBase = () => {
   const result = reconcileBaseConfig({ dataDir: pathsModule.DATA_DIR, baseConfigFile: resolveBaseConfigFile(), logger: configLogger });
@@ -1569,6 +1592,7 @@ module.exports = {
   BACKUP_INTERVAL_BOUNDS,
   loadConfig,
   saveConfig,
+  mutateConfig,
   loadRawConfig,
   invalidateConfigCache,
   _resetConfigCacheForTests,
