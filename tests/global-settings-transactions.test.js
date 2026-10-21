@@ -60,6 +60,40 @@ function createView(name) {
       if (name === 'react') return hooks
       if (name === '../utils/plural.mjs') return { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` }
       if (name === '../utils/actionFailure.mjs') return { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` }
+      if (name === '../utils/apiClient' || name === '../utils/apiClient.js') {
+        const parseBody = res => res.json().catch(() => null)
+        const apiRequest = async (method, url, { body, signal, allowEmpty = false } = {}) => {
+          const init = { method, signal }
+          if (body !== undefined) {
+            init.headers = { 'Content-Type': 'application/json' }
+            init.body = JSON.stringify(body)
+          }
+          let res
+          try {
+            res = await fetch(url, init)
+          } catch (err) {
+            if (err?.name === 'AbortError') throw err
+            return { ok: false, status: 0, data: null, error: err?.message || 'Network error' }
+          }
+          const data = await parseBody(res)
+          const ok = res.ok && data?.success !== false && (allowEmpty || data !== null)
+          if (ok) return { ok, status: res.status, data, error: null }
+          const describeActionFailure = (status, b) => b?.error || b?.message || `HTTP ${status}`
+          return { ok, status: res.status, data, error: describeActionFailure(res.ok && data === null ? 0 : res.status, data) }
+        }
+        return {
+          apiRequest,
+          apiGet: (url, opts) => apiRequest('GET', url, opts),
+          apiPost: (url, body, opts) => apiRequest('POST', url, { ...opts, body }),
+          apiPut: (url, body, opts) => apiRequest('PUT', url, { ...opts, body }),
+          apiDelete: (url, opts) => apiRequest('DELETE', url, opts),
+          describeMutationFailure: (result, fallback = 'Request failed') => (
+            result.status === 0
+              ? `${result.error || fallback}. The request may have reached the server; refresh status before retrying.`
+              : result.error || fallback
+          ),
+        }
+      }
       if (name === './ModalDialog') return ({ children }) => children
       throw new Error(`Unexpected fixture import ${name}`)
     },

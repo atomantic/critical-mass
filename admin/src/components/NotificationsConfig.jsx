@@ -133,7 +133,13 @@ function NotificationsConfig() {
         await fetchConfig({ silent: true, saved: true })
         fetchStats()
       } else {
-        setMessage({ type: 'error', text: result.data?.errors?.join('; ') || describeMutationFailure(result, 'Failed to save settings') })
+        setMessage({
+          type: 'error',
+          text: result.data?.errors?.join('; ')
+            || (result.status === 0
+              ? describeMutationFailure(result, 'Failed to save settings')
+              : `Failed to save settings (${describeMutationFailure(result, `HTTP ${result.status}`)})`),
+        })
       }
     } finally {
       pendingSave.current = false
