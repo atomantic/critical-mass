@@ -133,9 +133,10 @@ export default function ScorecardAnalysis() {
             <button
               onClick={fetchData}
               disabled={loading}
+              aria-label="Refresh scorecard analysis"
               className="p-1.5 bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors text-gray-400 hover:text-white"
             >
-              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+              <RefreshCw size={14} aria-hidden="true" className={loading ? 'animate-spin' : ''} />
             </button>
           </div>
         </div>

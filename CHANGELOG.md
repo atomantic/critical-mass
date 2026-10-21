@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Icon-only buttons announce their action to screen readers** — The UpDown Scorecard Analysis refresh button now has the accessible name "Refresh scorecard analysis", and the decorative icons in the toast dismiss button and that refresh button are hidden from assistive tech.
 - **Exchange feeds reconnect when a WebSocket handshake never completes** — A market or user feed whose upgrade request hangs is now terminated after 15s and retried with the normal backoff, instead of staying dark and blocking every later reconnect.
 - **DCA transactions, UpDown trades and Sentinel alerts support paging** — `GET /api/:exchange/transactions`, `/api/updown/trades` and `/api/sentinel/alerts` accept opt-in `?limit=` (default and max 500) and `?offset=` and report `total`; the UpDown summary still covers every trade. Requests without paging params return the same responses as before.
 - **A finished AI provider run no longer shows "No output" when its output read fails** — The run panel keeps the run, shows a read notice and a Retry button that re-reads the output, instead of reporting an empty result.
