@@ -12,6 +12,10 @@ const ALL_INTERVALS = ['5min', '10min', '30min', '1hour', '4hour', 'daily']
 const ALL_MARKUPS = [1, 2, 3, 4, 5, 6, 7, 8, 10]
 const ALL_PERIODS = ['30D', '60D', '90D', '1Y']
 
+// Longest a streaming run may go without an optimizer:progress event before we give up on it
+const PROGRESS_SILENCE_MS = 2 * 60 * 1000
+const LOST_CONTACT_MESSAGE = 'Lost contact with the optimizer run — results were not received. Run it again.'
+
 // Default buy amounts per interval (can be customized)
 const DEFAULT_BUY_AMOUNTS = {
   '5min': 1,
@@ -111,6 +115,26 @@ function Optimizer({ exchange = 'coinbase', pair }) {
       socket.off('optimizer:error', onError)
     }
   }, [exchange, pair])
+
+  // A streaming run can lose its result stream (socket drop, gateway restart, silent run).
+  // While one is active, give up on socket disconnect or prolonged progress silence.
+  useEffect(() => {
+    if (!loading) return
+    const socket = getRealtimeClient()
+    const giveUp = () => {
+      activeRunIdRef.current = null
+      setError(LOST_CONTACT_MESSAGE)
+      setLoading(false)
+      setProgress(null)
+      setCurrentBest(null)
+    }
+    const timer = setTimeout(giveUp, PROGRESS_SILENCE_MS)
+    socket.on('disconnect', giveUp)
+    return () => {
+      clearTimeout(timer)
+      socket.off('disconnect', giveUp)
+    }
+  }, [loading, progress])
 
   // Load cached results whenever the active fund changes.
   useEffect(() => {
