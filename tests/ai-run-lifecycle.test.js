@@ -176,6 +176,30 @@ describe('AI runner lifecycle ownership', () => {
     assert.equal(h.timers.size, 1, 'the next poll is scheduled on completion')
   })
 
+  it('keeps ownership and shows the read notice when a finished run output read fails, then recovers on retry', async () => {
+    const h = await createHarness()
+    await startPolling(h, 'run-a')
+    h.lastCall('/api/runs/run-a').resolve(jsonResponse({ endTime: 9 }))
+    await flush()
+    h.lastCall('/api/runs/run-a/output').resolve(textResponse('boom', 500))
+    await flush()
+
+    assert.equal(h.view.notice?.kind, 'read')
+    assert.notEqual(h.view.output, 'No output')
+    assert.equal(h.view.runningId, 'run-a', 'ownership is kept')
+
+    h.lifecycle.refresh()
+    await flush()
+    h.lastCall('/api/runs/run-a').resolve(jsonResponse({ endTime: 9 }))
+    await flush()
+    h.lastCall('/api/runs/run-a/output').resolve(textResponse('recovered'))
+    await flush()
+
+    assert.equal(h.view.output, 'recovered')
+    assert.equal(h.view.notice, null)
+    assert.equal(h.view.runningId, null)
+  })
+
   it('displays output, releases the timer, and refreshes on normal completion', async () => {
     const h = await createHarness()
     await startPolling(h, 'run-a')
