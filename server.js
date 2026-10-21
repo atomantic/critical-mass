@@ -127,10 +127,19 @@ const gatewayShutdown = createGatewayShutdown({
     backupScheduler.stop();
     tailscaleWatcher?.stop();
   },
+  // Each producer is stopped on its own, so one failing to persist its state
+  // (e.g. a full disk) still lets the others persist and stop; any failure is
+  // rethrown so the shutdown reports it.
   stopProducers: () => {
-    updownService.stop();
-    sentinelService.stop();
-    activeLogStreams.stopAll();
+    const failures = [];
+    for (const [name, stop] of [['UpDown', () => updownService.stop()], ['Sentinel', () => sentinelService.stop()], ['log streams', () => activeLogStreams.stopAll()]]) {
+      try {
+        stop();
+      } catch (err) {
+        failures.push(`${name}: ${err.message}`);
+      }
+    }
+    if (failures.length) throw new Error(failures.join('; '));
   },
   stopNotifier: () => notifier.stop(),
   disconnectIPC: () => {

@@ -918,6 +918,7 @@ describe('release review restore failure boundaries', () => {
     });
     assert.equal(result.status, 500);
     assert.equal(result.body.rolledBack, false);
+    assert.equal(result.body.error, 'rollback failed', 'a failed rollback must not invite an engine restart');
     assert.deepEqual(result.body.recovery, recovery);
     assert.deepEqual(order, ['stop']);
     assert.equal(maintenance.isMaintenanceActive(), true);

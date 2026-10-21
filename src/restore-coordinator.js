@@ -342,7 +342,8 @@ const applyRestoreUnderLock = async ({
       success: false,
       code,
       ...(unconfirmed.length > 0 ? { unconfirmed } : {}),
-      error: noteStoppedEngines(error, stoppedEngines),
+      // A failed rollback keeps engines down until recovery; never invite a restart then.
+      error: applied.ok && applied.result?.rolledBack === false ? error : noteStoppedEngines(error, stoppedEngines),
       stoppedEngines,
       ...(applied.ok && applied.result?.rolledBack === false ? { rolledBack: false } : {}),
       ...(applied.result?.recovery ? { recovery: applied.result.recovery } : {}),

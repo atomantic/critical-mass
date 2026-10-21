@@ -397,7 +397,11 @@ const appendManifest = async (zipPath, manifest) => {
   } catch (error) {
     return { success: false, error: `Failed to write backup manifest: ${error.message}` };
   } finally {
-    if (stagingDir) fs.rmSync(stagingDir, { recursive: true, force: true });
+    // A staging dir left in the OS temp dir is harmless; a throw here would
+    // strand the archive this function exists to clean up.
+    if (stagingDir) {
+      try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
   }
   if (result.error || result.status !== 0) {
     const error = result.error
