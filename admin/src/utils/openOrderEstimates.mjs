@@ -7,7 +7,7 @@
  * judging Collapse-All / manual TP edits. See issue #698.
  *
  * Two things the naive formula gets wrong if not careful:
- *  - Fee rate: the engine budgets `config.feeRate || 0.001` (10 bps), not a hard-coded
+ *  - Fee rate: the engine budgets `config.feeRate ?? 0.001` (10 bps; an explicit 0 is honored), not a hard-coded
  *    6 bps guess.
  *  - Holdback: for a body TP, the exact planned holdback is already known —
  *    `body.assetQty - order.size` (CLAUDE.md: don't conflate body.assetQty with the TP
@@ -23,7 +23,7 @@ import { DEFAULT_FEE_RATE_PER_SIDE } from '../../../shared/fee-defaults.mjs'
 export { TIER_HOLDBACK_SCALE }
 
 // Same fallback the engine uses (shared/fee-defaults.mjs), so the estimates match
-// regime-engine.js placeBodyTp's `config.feeRate || DEFAULT_FEE_RATE_PER_SIDE`.
+// regime-engine.js placeBodyTp's `config.feeRate ?? DEFAULT_FEE_RATE_PER_SIDE`.
 export { DEFAULT_FEE_RATE_PER_SIDE }
 
 export const isTpOrderType = (type) =>
