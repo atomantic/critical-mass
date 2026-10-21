@@ -41,7 +41,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     priceHistory, atrHistory, regimeHistory, setSocketStatus, fetchStatus, fetchConfig, fetchFills,
   } = useRegimeDashboardData(exchange, pair, pairQuery)
   const {
-    dcaState, convertPreview, converting, showConvertConfirm, setShowConvertConfirm,
+    dcaState, dcaStateError, retryDcaState, convertPreview, converting, showConvertConfirm, setShowConvertConfirm,
     handlePreviewConvert, handleExecuteConvert,
   } = useDcaConversion({ exchange, pairQuery, isRunning, addToast, fetchStatus, fetchFills })
   const {
@@ -93,7 +93,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
       <BuysPausedBanner buysPaused={buysPaused} cycleBuys={position.cycleBuys} maxCycleBuys={config?.maxCycleBuys} isRunning={isRunning} isDrainingOrClosed={isDrainingOrClosed} setResetCycleConfirm={setResetCycleConfirm} resettingCycle={resettingCycle} />
 
       {(status && !error && !isRunning && !market.lastPrice && !position.totalAsset) ? (
-        <EmptyRegimeState isDryRun={isDryRun} dcaState={dcaState} handlePreviewConvert={handlePreviewConvert} />
+        <EmptyRegimeState isDryRun={isDryRun} dcaState={dcaState} dcaStateError={dcaStateError} retryDcaState={retryDcaState} handlePreviewConvert={handlePreviewConvert} />
       ) : status ? (
         <>
           {/* Live Status Bar */}

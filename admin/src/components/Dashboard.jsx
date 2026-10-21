@@ -241,8 +241,11 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   useEffect(() => {
     const controller = new AbortController()
     fetch(`/api/${exchange}/regime/status${pairQuery}`, { signal: controller.signal })
-      .then(r => r.json())
-      .then(data => setRegimeRunning(data.running || data.status?.isRunning || false))
+      .then(async r => {
+        if (!r.ok) return // keep the Export button hidden: the engine state is unknown
+        const data = await r.json()
+        setRegimeRunning(data.running || data.status?.isRunning || false)
+      })
       .catch(() => {})
     return () => controller.abort()
   }, [exchange, pairQuery])

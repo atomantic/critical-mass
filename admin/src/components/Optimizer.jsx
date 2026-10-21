@@ -125,7 +125,11 @@ function Optimizer({ exchange = 'coinbase', pair }) {
     setCurrentBest(null)
 
     fetch(`/api/${exchange}/optimizer/cache${pairQuery}`, { signal: controller.signal })
-      .then(res => res.json())
+      .then(async res => {
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(`Could not load cached optimizer results. ${describeActionFailure(res.status, data)}`)
+        return data
+      })
       .then(data => {
         if (cacheRequestGenerationRef.current !== requestGeneration) return
         if (data.cached) {
@@ -240,8 +244,11 @@ function Optimizer({ exchange = 'coinbase', pair }) {
 
   const clearCache = async () => {
     fetch(`/api/${exchange}/optimizer/cache${pairQuery}`, { method: 'DELETE' })
-      .then(res => res.json())
-      .then(() => setResults(null))
+      .then(async res => {
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok || data.success === false) throw new Error(`Could not clear cached results. ${describeActionFailure(res.status, data)}`)
+        setResults(null)
+      })
       .catch(err => setError(err.message))
   }
 
