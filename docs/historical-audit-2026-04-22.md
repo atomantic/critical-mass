@@ -108,7 +108,7 @@ Summary: 82 findings across 45+ files. 2 shared utilities to extract.
 - [ ] **[MEDIUM]** `src/shared-utils.js:308` — `DATA_DIR` dual-exported from both `paths.js` and `shared-utils.js`. Fix: remove from shared-utils. Complexity: Simple
 - [ ] **[MEDIUM]** `src/adapters/gemini/api.js:266-375` + `src/adapters/cryptocom/api.js:353-461` — `placeLimitSell`/`placeLimitBuy` duplication. Fix: parameterize by side. Complexity: Simple
 - [ ] **[MEDIUM]** `src/adapters/gemini/api.js:456` — `getOrderFills` hardcoded `symbol: 'btcusd'`. Fix: resolve from order. Complexity: Medium
-- [ ] **[LOW]** `place-corrective-buy-2cb8f4c2.js`, `repair-orphan-buy-mm0nf5pn.js` — Deprecated one-off scripts (`repair-orphan-buy-mm0nf5pn.js` removed in #1157)
+- [x] **[LOW]** `place-corrective-buy-2cb8f4c2.js`, `repair-orphan-buy-mm0nf5pn.js` — Deprecated one-off scripts (`repair-orphan-buy-mm0nf5pn.js` removed in #1157; `place-corrective-buy-2cb8f4c2.js` removed later — it placed a live order on a bare run, and `place-corrective-buys.js --place` supersedes it)
 - [ ] **[LOW]** `src/adapters/cryptocom/api.js` — console.log vs project logger
 
 ### Architecture & SOLID

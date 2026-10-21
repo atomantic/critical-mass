@@ -1122,14 +1122,14 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
  *   rolledBack?: boolean, recovery?: Object }}
  */
 const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null, acceptLegacyWithoutBase = false, acceptFundRemoval = false, logger = SILENT_LOGGER } = {}) => {
+  if (legacyBaseConfig !== null && (typeof legacyBaseConfig !== 'object' || Array.isArray(legacyBaseConfig))) {
+    return { success: false, code: 'legacy-base-invalid', error: 'legacyBaseConfig must be the source machine\'s config.json object' };
+  }
+
   const paths = resolvePaths(pathOverrides);
   const resolved = resolveArchivePath(filename, paths.backupsDir);
   if (!resolved.ok) return { success: false, error: resolved.error };
   const { zipPath } = resolved;
-
-  if (legacyBaseConfig !== null && (typeof legacyBaseConfig !== 'object' || Array.isArray(legacyBaseConfig))) {
-    return { success: false, code: 'legacy-base-invalid', error: 'legacyBaseConfig must be the source machine\'s config.json object' };
-  }
 
   // Destination state read before anything is extracted, so the reconstruction
   // below can preserve this machine's credentials.

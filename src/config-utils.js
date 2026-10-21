@@ -1025,6 +1025,17 @@ const mutateFundBlock = (exchange, pair, mutator) => {
   return config;
 };
 
+// Correction ids and capital remainders are written with the corrected capital
+// (#836). Losing them on a form save would let a pending correction apply twice.
+const FULL_SAVE_RETAINED_REGIME_KEYS = Object.freeze([
+  'minDepthUsdc',
+  'depthPauseMs',
+  'appliedBuyCorrections',
+  'buyCorrectionCapitalRemainder',
+  'appliedSellCorrections',
+  'sellCorrectionCapitalRemainder',
+]);
+
 /**
  * Update fund-level configuration for a specific (exchange, pair).
  * Auto-converts the exchange's block from legacy flat → nested if needed.
@@ -1045,11 +1056,12 @@ const updateFundConfig = (exchange, pair, updates) => mutateFundBlock(exchange, 
       throw new Error(`productId "${updates.productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}) — a config save cannot change a fund's traded asset`);
     }
   }
-  // Full-form saves omit depth controls until production depth data exists.
-  // Retain only these legacy keys; other regime fields keep replacement semantics.
+  // Full-form saves omit depth controls until production depth data exists, and
+  // the validator strips the engine-owned correction metadata the form reads
+  // back. Retain only these keys; other regime fields keep replacement semantics.
   if (updates.regime) {
     const regime = { ...updates.regime };
-    for (const key of ['minDepthUsdc', 'depthPauseMs']) {
+    for (const key of FULL_SAVE_RETAINED_REGIME_KEYS) {
       if (!(key in regime) && block.regime && key in block.regime) regime[key] = block.regime[key];
     }
     return { ...block, ...updates, regime };

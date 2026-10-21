@@ -4,27 +4,49 @@
  * Uses the cycle-pair annotations written to the ledger when available and
  * falls back to the same buy-linkage derivation used by the live ledger.
  *
- * Engine must be stopped. Backs up the existing closed-trades.json with a
- * timestamp suffix, but only after ledger coverage and realized-P&L checks
- * pass.
+ * --apply against the live data directory refuses while the BTC-USDC engine is
+ * running: it holds closed trades in memory and rewrites the whole file on its
+ * next sell. Backs up the existing closed-trades.json with a timestamp suffix,
+ * but only after ledger coverage and realized-P&L checks pass.
  *
  * Usage:
  *   node scripts/rebuild-coinbase-closed-trades.js          # dry-run
  *   node scripts/rebuild-coinbase-closed-trades.js --apply  # writes
  *
  * Tests and offline recovery can set CRITICAL_MASS_DATA_DIR to use a copied
- * data root without touching the repository's live data directory.
+ * data root without touching the repository's live data directory. No engine
+ * owns such a copy, so the running-engine check applies only to the live root.
  */
 
 const fs = require('fs');
 const path = require('path');
+const { DATA_DIR } = require('../src/paths');
+const { checkEngineStopped } = require('../src/engine-liveness');
+const { atomicWriteSync } = require('../src/durable-write');
 
 const apply = process.argv.includes('--apply');
-const DATA_ROOT = process.env.CRITICAL_MASS_DATA_DIR || path.join(__dirname, '..', 'data');
+const DATA_ROOT = process.env.CRITICAL_MASS_DATA_DIR || DATA_DIR;
 const DIR = path.join(DATA_ROOT, 'coinbase', 'BTC-USDC');
 const LEDGER = path.join(DIR, 'fill-ledger.json');
 const CLOSED = path.join(DIR, 'closed-trades.json');
 const STATE = path.join(DIR, 'regime-state.json');
+
+const realPath = (dir) => {
+  try { return fs.realpathSync(dir); } catch { return path.resolve(dir); }
+};
+
+async function main() {
+// Check before reading the snapshot: anything booked by a live engine after
+// the read would be dropped by the write below.
+if (apply && realPath(DATA_ROOT) === realPath(DATA_DIR)) {
+  const { safe, reason } = await checkEngineStopped('coinbase', 'BTC-USDC');
+  if (!safe) {
+    console.error(`❌ REFUSING to write coinbase/BTC-USDC: ${reason}. Stop the engine first, then re-run with --apply.`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`  engine check: ${reason}`);
+}
 
 const round8 = (n) => Math.round(n * 1e8) / 1e8;
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -248,8 +270,11 @@ if (verificationErrors.length > 0) {
     fs.copyFileSync(CLOSED, backup);
     console.log(`  Backup: ${path.basename(backup)}`);
   }
-  fs.writeFileSync(CLOSED, JSON.stringify(trades, null, 2));
+  atomicWriteSync(CLOSED, JSON.stringify(trades, null, 2));
   console.log('  ✓ written');
 } else {
   console.log('  (Re-run with --apply to write.)');
 }
+}
+
+main().catch(err => { console.error(err); process.exitCode = 1; });

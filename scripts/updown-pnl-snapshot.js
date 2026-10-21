@@ -8,12 +8,16 @@
  *   node scripts/updown-pnl-snapshot.js --reset-book
  *   node scripts/updown-pnl-snapshot.js --hydrate-state
  *
- * --reset-book     Stop-the-engine first. Zero the paper book (0 lots, 0 P&L)
- *                  so the next BUY is a fresh OPEN. Historical signal labels
- *                  are not a live position.
- * --hydrate-state  Stop-the-engine first. Replays signal history through the
- *                  0.01-BTC-per-contract paper book using scorecard prediction prices, then
- *                  writes perpBook into data/updown-state.json.
+ * --reset-book     Zero the paper book (0 lots, 0 P&L) so the next BUY is a
+ *                  fresh OPEN. Historical signal labels are not a live position.
+ * --hydrate-state  Replays signal history through the 0.01-BTC-per-contract
+ *                  paper book using scorecard prediction prices, then writes
+ *                  perpBook into data/updown-state.json.
+ *
+ * Both write modes refuse while the gateway (which runs UpDown) is listening:
+ * it holds the book in memory and would overwrite the rewrite. They copy
+ * updown-state.json to a timestamped backup first, since the previous book's
+ * closed trades and realized P&L cannot be rebuilt.
  */
 
 const fs = require('fs')
@@ -22,6 +26,7 @@ const { DATA_DIR, UPDOWN_DATA_DIR } = require('../src/paths')
 const { readJSON, writeJSON } = require('../src/shared-utils')
 const { createPerpBook } = require('../src/updown/perp-book')
 const { replaySignals, priceAt, summarize } = require('../src/updown/pnl-monitor')
+const { checkGatewayStopped } = require('../src/engine-liveness')
 
 const STATE_PATH = path.join(DATA_DIR, 'updown-state.json')
 const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard')
@@ -31,6 +36,13 @@ const resetBook = process.argv.includes('--reset-book')
 if (hydrate && resetBook) {
   console.error('📊 UpDown pnl-monitor cannot --hydrate-state and --reset-book together')
   process.exit(1)
+}
+
+/** Copy the state file aside before a write replaces its book. */
+const backupState = () => {
+  const backup = `${STATE_PATH}.backup-updown-pnl-snapshot-${Date.now()}`
+  fs.copyFileSync(STATE_PATH, backup, fs.constants.COPYFILE_EXCL)
+  console.error(`📊 UpDown pnl-monitor backup file=${backup}`)
 }
 
 const loadPriceIndex = () => {
@@ -54,6 +66,16 @@ const loadPriceIndex = () => {
   return index
 }
 
+async function main() {
+if (hydrate || resetBook) {
+  const { safe, reason } = await checkGatewayStopped()
+  if (!safe) {
+    console.error(`❌ UpDown pnl-monitor refusing to rewrite the book: ${reason}. Stop the gateway first.`)
+    process.exitCode = 1
+    return
+  }
+}
+
 const state = readJSON(STATE_PATH, null)
 if (!state) {
   console.error('📊 UpDown pnl-monitor missing state file=' + STATE_PATH)
@@ -68,6 +90,7 @@ const latest = Array.isArray(state.signalHistory) && state.signalHistory.length 
 
 let book = createPerpBook()
 if (resetBook) {
+  backupState()
   state.perpBook = book.serialize()
   writeJSON(STATE_PATH, state)
   console.error(`📊 UpDown pnl-monitor reset book contracts=0 file=${STATE_PATH}`)
@@ -77,6 +100,7 @@ if (resetBook) {
     (ts) => priceAt(priceIndex, ts),
   )
   book = replayed
+  backupState()
   state.perpBook = book.serialize()
   writeJSON(STATE_PATH, state)
   console.error(`📊 UpDown pnl-monitor hydrated fills=${fills.length} contracts=${book.contracts()} file=${STATE_PATH}`)
@@ -94,3 +118,6 @@ const snap = summarize(book.snapshot(mark), {
 fs.mkdirSync(path.dirname(SNAPSHOT_PATH), { recursive: true })
 fs.appendFileSync(SNAPSHOT_PATH, JSON.stringify(snap) + '\n')
 console.log(JSON.stringify(snap))
+}
+
+main().catch(err => { console.error(err); process.exitCode = 1 })
