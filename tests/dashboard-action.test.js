@@ -54,6 +54,29 @@ describe('DCA dashboard request lifecycle (issue #283)', () => {
     assert.equal(toasts[0].message, 'exchange is unavailable')
   })
 
+  it('does not report an accepted request as failed when its reply cannot be read', async () => {
+    const { runDashboardAction } = await loadAction()
+    const events = []
+    const toasts = []
+
+    const succeeded = await runDashboardAction({
+      setBusy: (busy) => events.push(`busy:${busy}`),
+      request: async () => ({ ok: true, json: async () => { throw new SyntaxError('Unexpected token <') } }),
+      addToast: (toast) => toasts.push(toast),
+      failureTitle: 'Sell Retry Failed',
+      failureMessage: 'Could not place the sell for this buy',
+      onSuccess: async (res) => { await res.json() },
+      onSettled: () => events.push('settled'),
+    })
+
+    assert.equal(succeeded, true)
+    assert.deepEqual(events, ['busy:true', 'busy:false', 'settled'])
+    assert.equal(toasts.length, 1)
+    assert.equal(toasts[0].type, 'warning')
+    assert.notEqual(toasts[0].title, 'Sell Retry Failed')
+    assert.match(toasts[0].message, /accepted the request.*Unexpected token <.*Refresh/)
+  })
+
   it('preserves success callbacks and always runs export cleanup', async () => {
     const { runDashboardAction } = await loadAction()
     const events = []
