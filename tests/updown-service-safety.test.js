@@ -326,3 +326,33 @@ describe('UpDown cycle history and side-effect characterization', () => {
     })
   }
 })
+
+describe('UpDown reload replaces in-memory state', () => {
+  it('clears position and paper book when the restored file lacks them, and keeps a full file intact', async () => {
+    let file = null
+    const writes = []
+    const service = createUpDownService(io, {
+      readJSON: () => file,
+      writeJSON: (_p, data) => writes.push(structuredClone(data)),
+      DATA_DIR: '/tmp/updown-service-reload',
+      candleCache,
+      createSignalEngine: engineFactory(() => signalResult('HOLD')),
+      createScorecard: () => scorecardStub(),
+    })
+    service.setPosition({ entryPrice: 100, contracts: 2, direction: 'up' })
+    const book = { lots: [{ entryPrice: 100, contracts: 1, entryTime: 1 }], realizedPnl: 5, open: true }
+    file = { position: { entryPrice: 50, contracts: 3, direction: 'up', entryTime: 1 }, perpBook: book }
+    await service.start()
+    assert.equal(service.getStatus().position.entryPrice, 50, 'full file restores position')
+    service.stop()
+
+    file = { contract: {}, signalHistory: [] }
+    await service.start()
+    assert.equal(service.getStatus().position, null)
+    assert.equal(service.getStatus().perp.contracts, 0)
+    service.stop()
+    const last = writes.at(-1)
+    assert.equal(last.position, null)
+    assert.equal(last.perpBook.lots.length, 0)
+  })
+})

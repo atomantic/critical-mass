@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Exchange feeds reconnect when a WebSocket handshake never completes** — A market or user feed whose upgrade request hangs is now terminated after 15s and retried with the normal backoff, instead of staying dark and blocking every later reconnect.
 - **DCA transactions, UpDown trades and Sentinel alerts support paging** — `GET /api/:exchange/transactions`, `/api/updown/trades` and `/api/sentinel/alerts` accept opt-in `?limit=` (default and max 500) and `?offset=` and report `total`; the UpDown summary still covers every trade. Requests without paging params return the same responses as before.
 - **A finished AI provider run no longer shows "No output" when its output read fails** — The run panel keeps the run, shows a read notice and a Retry button that re-reads the output, instead of reporting an empty result.
 - **Restoring an old archive with its source config works as documented** — `POST /api/backups/:filename/restore` now passes `legacyBaseConfig` through to the restore, so the recommended path in UPGRADE.md for archives taken before configuration manifests existed no longer fails with "legacy-archive-missing-base".
@@ -54,6 +55,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - **The fallback fee rate lives in one place** — The 10 bps per-side default used when `feeRate` is unset is now a single `DEFAULT_FEE_RATE_PER_SIDE` in `shared/fee-defaults.mjs`, shared by the regime engine, the dry-run executor and the Open Orders estimates. Each site keeps its existing zero handling (the engine treats 0 as unset, the dry-run executor honors an explicit 0), so behavior is unchanged.
+- **[issue-1349] Backtest and optimizer diagnostics use the context logger** — Fetch progress, fetch errors and empty-data warnings from `backtest-engine.js` and `optimizer-engine.js` are written with structured `exchange` and `pair` context instead of raw `console.*` calls. Log text is unchanged apart from the appended context.
 - **[issue-1181] Express remains the gateway HTTP framework** — Record the accepted dependency cost, toolkit and security contract coupling, and evidence required to revisit framework ownership.
 - **[issue-1223] Notification timing shows the server timezone** — Add read-only timezone metadata, label batching accurately, explain critical-event quiet-hours bypasses and document Compose timezone selection.
 - **[issue-1232] Legacy regime-state field renames are table-driven** — `loadRegimeState` applies the BTC-named -> asset-agnostic renames (position, `celestialState`, each body) and the `ladderStep` move through one `LEGACY_FIELD_RENAMES` table and `migrateLegacyPositionFields`, replacing eight hand-written copies. A characterization test pins every legacy key at the load boundary.

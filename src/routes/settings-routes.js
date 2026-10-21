@@ -139,10 +139,10 @@ module.exports = (app, deps) => {
     res.json({ success: true });
   });
 
-  app.post('/api/notifications/test', (req, res) => {
+  app.post('/api/notifications/test', (req, res, next) => {
     notifier.sendTest()
       .then(result => res.json(result))
-      .catch(err => res.status(500).json({ success: false, error: err.message }));
+      .catch(next);
   });
 
   app.get('/api/notifications/stats', (req, res) => {

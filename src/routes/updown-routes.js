@@ -759,7 +759,7 @@ module.exports = (app, deps) => {
   };
 
   const writeTrades = (data) => writeJSON(TRADES_PATH, data);
-  app.get('/api/updown/trades', (req, res) => {
+  app.get('/api/updown/trades', (req, res, next) => {
     try {
       const data = readTrades();
       const trades = data.trades || [];
@@ -789,11 +789,11 @@ module.exports = (app, deps) => {
         },
       });
     } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
+      next(err);
     }
   });
 
-  app.post('/api/updown/trades', (req, res) => {
+  app.post('/api/updown/trades', (req, res, next) => {
     const { date, cost, returnAmount, note, direction: bodyDirection } = req.body || {};
     if (cost == null || returnAmount == null) {
       return res.status(400).json({ success: false, error: 'cost and returnAmount are required' });
@@ -865,11 +865,11 @@ module.exports = (app, deps) => {
       });
       res.json({ success: true, trade });
     } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
+      next(err);
     }
   });
 
-  app.put('/api/updown/trades/:id', (req, res) => {
+  app.put('/api/updown/trades/:id', (req, res, next) => {
     const id = parseInt(req.params.id, 10);
     const body = req.body || {};
     try {
@@ -908,11 +908,11 @@ module.exports = (app, deps) => {
       writeTrades(data);
       res.json({ success: true, trade });
     } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
+      next(err);
     }
   });
 
-  app.delete('/api/updown/trades/:id', (req, res) => {
+  app.delete('/api/updown/trades/:id', (req, res, next) => {
     const id = parseInt(req.params.id, 10);
     try {
       const data = readTrades();
@@ -926,7 +926,7 @@ module.exports = (app, deps) => {
       });
       res.json({ success: true });
     } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
+      next(err);
     }
   });
 };
