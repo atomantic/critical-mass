@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
+import { apiGet } from '../utils/apiClient'
 
 function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', pair }) {
   const baseCurrency = getBaseCurrency(summary?.config?.productId)
@@ -12,9 +13,9 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
 
   const fetchPrice = useCallback(async () => {
     try {
-      const res = await fetch(`/api/${exchange}/status${pairQuery}`)
-      if (!res.ok) throw new Error(`Status request failed (${res.status})`)
-      const data = await res.json()
+      const res = await apiGet(`/api/${exchange}/status${pairQuery}`)
+      if (!res.ok) throw new Error(res.status ? `Status request failed (${res.status})` : res.error)
+      const data = res.data
       const price = Number(data.currentPrice)
       setCurrentPrice(price > 0 ? price : null)
       setPriceError(data.apiError || (price > 0 ? null : 'Price unavailable.'))
