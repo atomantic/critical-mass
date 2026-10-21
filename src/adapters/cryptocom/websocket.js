@@ -14,7 +14,7 @@
  * - Must wait 1s after connection before subscribing (rate limit)
  */
 
-const { createWebSocketLifecycle } = require('../../websocket-lifecycle');
+const { createWebSocketLifecycle, tagFrameError } = require('../../websocket-lifecycle');
 const { safeJsonParse } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
@@ -98,15 +98,20 @@ const createCryptocomWebSocketFeed = (exchange, config) => {
     }
 
     const result = message.result;
-    if (!result?.channel || !result.data) return;
+    // Frame shape is exchange-controlled: ignore a non-array payload.
+    if (!result?.channel || !Array.isArray(result.data)) return;
 
     const channel = result.channel;
     const channelPrefix = typeof channel === 'string' ? channel.split('.')[0] : '';
 
-    if (channelPrefix === 'ticker') {
-      handleTickerData(result.data);
-    } else if (channelPrefix === 'trade') {
-      handleTradeData(result.data);
+    try {
+      if (channelPrefix === 'ticker') {
+        handleTickerData(result.data);
+      } else if (channelPrefix === 'trade') {
+        handleTradeData(result.data);
+      }
+    } catch (error) {
+      throw tagFrameError(error, channelPrefix);
     }
   };
 
@@ -118,6 +123,7 @@ const createCryptocomWebSocketFeed = (exchange, config) => {
     if (!config.onTicker) return;
 
     for (const tick of dataArray) {
+      if (!tick || typeof tick !== 'object') continue;
       const price = parseFloat(tick.a);
       const bid = parseFloat(tick.b);
       const ask = parseFloat(tick.k);
@@ -150,6 +156,7 @@ const createCryptocomWebSocketFeed = (exchange, config) => {
     if (!config.onTrade) return;
 
     for (const trade of dataArray) {
+      if (!trade || typeof trade !== 'object') continue;
       config.onTrade({
         tradeId: String(trade.d),
         price: parseFloat(trade.p),

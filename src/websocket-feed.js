@@ -14,7 +14,7 @@
  * - JWT authentication for user channel
  */
 
-const { createWebSocketLifecycle } = require('./websocket-lifecycle');
+const { createWebSocketLifecycle, tagFrameError } = require('./websocket-lifecycle');
 // Called through the module object so tests can stub signing failures.
 const jwt = require('./jwt');
 const crypto = require('crypto');
@@ -208,7 +208,7 @@ const createWebSocketFeed = (exchange, config) => {
    */
   const handleMessage = (data, socket) => {
     const message = safeJsonParse(data);
-    if (!message) {
+    if (!message || typeof message !== 'object') {
       logger.warn(`⚠️ [${exchange}] Received invalid JSON from WebSocket`, { error: 'invalid_json' });
       return;
     }
@@ -231,24 +231,33 @@ const createWebSocketFeed = (exchange, config) => {
     }
 
     // Skip heartbeat and subscription confirmation messages
-    if (!events || events.length === 0) return;
+    if (!Array.isArray(events) || events.length === 0) return;
 
-    switch (channel) {
-      case 'ticker':
-        handleTickerEvent(events);
-        break;
-      case 'market_trades':
-        handleTradeEvent(events);
-        break;
-      case 'user':
-        handleUserEvent(events);
-        break;
-      case 'subscriptions':
-        // Subscription confirmation
-        break;
-      default:
-        // Unknown channel
-        break;
+    // Frame shape is exchange-controlled and consumer callbacks run
+    // synchronously, so a throw here must not escape the socket listener. User
+    // frames carry fills and cancels: tag them fail-safe so the lifecycle
+    // reconnects (re-subscribing, then gap recovery re-reads order state)
+    // instead of dropping them.
+    try {
+      switch (channel) {
+        case 'ticker':
+          handleTickerEvent(events);
+          break;
+        case 'market_trades':
+          handleTradeEvent(events);
+          break;
+        case 'user':
+          handleUserEvent(events);
+          break;
+        case 'subscriptions':
+          // Subscription confirmation
+          break;
+        default:
+          // Unknown channel
+          break;
+      }
+    } catch (error) {
+      throw tagFrameError(error, String(channel), channel === 'user');
     }
   };
 
@@ -258,7 +267,7 @@ const createWebSocketFeed = (exchange, config) => {
    * @returns {boolean}
    */
   const isMatchingProduct = (tickerProductId) => {
-    if (!tickerProductId) return false;
+    if (typeof tickerProductId !== 'string' || !tickerProductId) return false;
     if (tickerProductId === config.productId) return true;
     // Coinbase WS sends BTC-USD for BTC-USDC subscriptions; match on base currency
     const [tickerBase] = tickerProductId.split('-');
@@ -272,10 +281,12 @@ const createWebSocketFeed = (exchange, config) => {
    */
   const handleTickerEvent = (events) => {
     for (const event of events) {
+      if (!event || typeof event !== 'object') continue;
       // Handle both 'ticker' type events and direct ticker data
-      const tickers = event.tickers || (event.product_id ? [event] : []);
+      const tickers = Array.isArray(event.tickers) ? event.tickers : (event.product_id ? [event] : []);
 
       for (const ticker of tickers) {
+        if (!ticker || typeof ticker !== 'object') continue;
         if (!isMatchingProduct(ticker.product_id)) continue;
 
         // Reject the event when price is missing/non-positive rather than
@@ -314,14 +325,15 @@ const createWebSocketFeed = (exchange, config) => {
    */
   const handleTradeEvent = (events) => {
     for (const event of events) {
-      if (event.type !== 'snapshot' && event.type !== 'update') continue;
+      if (!event || (event.type !== 'snapshot' && event.type !== 'update')) continue;
 
-      for (const trade of event.trades || []) {
+      for (const trade of Array.isArray(event.trades) ? event.trades : []) {
+        if (!trade || typeof trade !== 'object') continue;
         if (!isMatchingProduct(trade.product_id)) continue;
         // Guard against a malformed trade with no side — trade.side.toLowerCase()
         // would otherwise throw synchronously inside the ws 'message' listener,
         // becoming an uncaughtException with no global handler (issue #110 M2).
-        if (!trade.side) continue;
+        if (typeof trade.side !== 'string' || !trade.side) continue;
 
         const tradeData = {
           tradeId: trade.trade_id,
@@ -344,11 +356,12 @@ const createWebSocketFeed = (exchange, config) => {
    */
   const handleUserEvent = (events) => {
     for (const event of events) {
-      if (event.type !== 'snapshot' && event.type !== 'update') continue;
+      if (!event || (event.type !== 'snapshot' && event.type !== 'update')) continue;
 
-      for (const order of event.orders || []) {
+      for (const order of Array.isArray(event.orders) ? event.orders : []) {
+        if (!order || typeof order !== 'object') continue;
         if (order.product_id !== config.productId) continue;
-        if (!order.side) continue; // Skip orders without side info
+        if (typeof order.side !== 'string' || !order.side) continue; // Skip orders without side info
 
         const orderData = {
           orderId: order.order_id,
