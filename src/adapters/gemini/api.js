@@ -23,8 +23,6 @@ const { createContextLogger } = require('../../logger');
  */
 
 const REST_BASE_URL = 'https://api.gemini.com';
-const WS_FAST_API_URL = 'wss://api.gemini.com/v1/order/events';
-const WS_MARKET_DATA_URL = 'wss://api.gemini.com/v1/marketdata';
 
 // Gemini private REST limit is ~5 req/s. Spacing every 200ms keeps a reconcile
 // burst (order/status × N + balances + mytrades) from tripping the rate limiter
@@ -107,12 +105,6 @@ const createGeminiAdapter = (keysPath = null) => {
   // Start with base adapter
   const adapter = createBaseAdapter('gemini');
   const logger = createContextLogger({ exchange: 'gemini' });
-
-  // WebSocket connection state
-  let wsConnection = null;
-  let wsConnected = false;
-  const pendingOrders = new Map();
-  const orderUpdates = new Map();
 
   // Serializes all private REST calls to ~5 req/s (issue #193).
   const acquireRestSlot = createRestThrottle({ minIntervalMs: REST_MIN_INTERVAL_MS });

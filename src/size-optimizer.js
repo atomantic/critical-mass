@@ -49,20 +49,6 @@ const { createContextLogger } = require('./logger');
 const MAX_RECENT_CYCLES = 50;
 
 /**
- * Calculate the total ladder multiplier for a given number of steps
- * With divergence-based scaling, per-step factors are unknowable at planning time
- * (they depend on runtime price vs avg cost), so assume factor=1.0 per step.
- * This is conservative — divergence scaling acts as bonus capacity that's still budget-capped.
- *
- * @param {number} maxSteps - Maximum ladder steps
- * @param {number} _liquidityFactorCap - Unused (kept for API compatibility)
- * @returns {number} Total multiplier sum
- */
-const calculateTotalStepMultiplier = (maxSteps, _liquidityFactorCap = 2.0) => {
-  return maxSteps;
-};
-
-/**
  * Create size optimizer instance
  * @param {string} exchange - Exchange name
  * @param {Object} config - Regime configuration
@@ -241,10 +227,12 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
     // Current values
     const currentBaseSizeUsdc = config.baseSizeUsdc;
     const currentMaxCycleBuys = config.maxCycleBuys;
-    const liquidityFactorCap = config.liquidityFactorCap || 2.0;
 
-    // Calculate total step multiplier for current max buys
-    const totalMultiplier = calculateTotalStepMultiplier(currentMaxCycleBuys, liquidityFactorCap);
+    // Total step multiplier for current max buys. Assumes factor=1.0 per step:
+    // divergence scaling depends on runtime price vs avg cost, so it is unknowable
+    // at planning time. This is conservative; divergence scaling is bonus capacity
+    // that's still budget-capped.
+    const totalMultiplier = currentMaxCycleBuys;
 
     // Target deployment based on available balance
     const targetDeployment = availableBalance * targetUtilization;
@@ -322,11 +310,11 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
    * @returns {Object} Preview of sizing values
    */
   const previewSizing = (balance) => {
-    const liquidityFactorCap = config.liquidityFactorCap || 2.0;
     const targetUtilization = config.sizeTargetUtilization || 0.90;
     const maxCycleBuys = config.maxCycleBuys;
 
-    const totalMultiplier = calculateTotalStepMultiplier(maxCycleBuys, liquidityFactorCap);
+    // Assumes factor=1.0 per step (divergence scaling is unknowable at planning time)
+    const totalMultiplier = maxCycleBuys;
     const targetDeployment = balance * targetUtilization;
     const optimalBaseSizeUsdc = roundUSDC(targetDeployment / totalMultiplier);
 
@@ -455,8 +443,6 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
     exportState,
     importState,
     reset,
-    // Utility export
-    calculateTotalStepMultiplier,
     // For testing
     _calculateAdjustment: calculateAdjustment,
   };
@@ -464,5 +450,4 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
 
 module.exports = {
   createSizeOptimizer,
-  calculateTotalStepMultiplier,
 };
