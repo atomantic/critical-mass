@@ -1,5 +1,11 @@
 // @ts-check
-const { describe, it, mock, afterEach } = require('node:test');
+const { describe, it, mock, afterEach, after } = require('node:test');
+const { createIsolatedDataDir } = require('./test-data-dir');
+
+// Placement intents are persisted per fund. Without this root the BTC-USDC
+// executors below read and rewrite the live fund's placement-intents.json.
+const isolatedData = createIsolatedDataDir('cm-order-executor-test');
+after(() => isolatedData.cleanup());
 const assert = require('node:assert/strict');
 
 const { createOrderExecutor } = require('../src/order-executor');

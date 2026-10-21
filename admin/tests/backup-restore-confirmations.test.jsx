@@ -167,3 +167,19 @@ it('full archive Restore needs Confirm Restore; Cancel sends nothing; a 409 offe
   expect(writes).toHaveLength(2)
   expect(JSON.parse(writes[1].body).force).toBe(true)
 })
+
+it('a successful restore names its recovery archive and shows the server warnings', async () => {
+  writeResponse = () => json(200, {
+    success: true,
+    filesRestored: 3,
+    configRestored: true,
+    recoveryPoint: 'backup-pre.zip',
+    message: 'Restored 3 files. The data it replaced is saved as backup-pre.zip; restore that backup to undo.',
+    warnings: ['UpDown failed to reload restored state: boom'],
+  })
+  render(<BackupRestore />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Restore' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm Restore' }).disabled).toBe(false))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm Restore' }))
+  expect(await screen.findByText(/saved as backup-pre\.zip; restore that backup to undo\..*UpDown failed to reload restored state: boom/)).toBeTruthy()
+})

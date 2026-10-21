@@ -187,6 +187,35 @@ const noteStoppedEngines = (error, stoppedEngines) => (stoppedEngines.length > 0
   : error);
 
 /**
+ * Archive the live data directory once every writer has stopped and before any
+ * destination changes. A committed restore discards its rollback copies, so
+ * this archive is the only way back from restoring the wrong or an older
+ * archive. It fails open: restore is also the remedy for a corrupt config or
+ * data file, the same damage that can make archiving fail.
+ * @param {(() => Promise<{success: boolean, filename?: string, error?: string}>) | undefined} createRecoveryPoint
+ * @param {{info: Function, error: Function}} logger
+ * @param {string} filename - Archive being restored, for log context
+ * @returns {Promise<{filename: string} | {error: string} | null>} null when no recovery point is configured
+ */
+const saveRecoveryPoint = async (createRecoveryPoint, logger, filename) => {
+  if (!createRecoveryPoint) return null;
+  const result = await Promise.resolve()
+    .then(() => createRecoveryPoint())
+    .then((r) => r, (err) => ({ success: false, error: err.message }));
+  if (result?.success === true && typeof result.filename === 'string') {
+    logger.info(`ℹ️ 💾 Pre-restore recovery archive saved: ${result.filename}`, {
+      action: 'restore-backup', filename, recoveryPoint: result.filename,
+    });
+    return { filename: result.filename };
+  }
+  const error = result?.error || 'archive creation returned no file';
+  logger.error(`❌ 💾 Pre-restore recovery archive failed before restoring ${filename}: ${error} — continuing without an undo point`, {
+    action: 'restore-backup', filename, error,
+  });
+  return { error };
+};
+
+/**
  * The restore body, run while the maintenance lock is held: confirm every
  * writer stopped, apply the archive, then reload the gateway's writers and
  * drop the caches that still mirror the pre-restore files.
@@ -203,6 +232,7 @@ const noteStoppedEngines = (error, stoppedEngines) => (stoppedEngines.length > 0
  * @param {Array<{name: string, stop?: Function, resume?: Function}>} params.gatewayWriters - Gateway services owning archived files
  * @param {(timeoutMs: number) => Promise<{drained: boolean, pending: Array<{label: string, runningMs: number}>}>} [params.drainPendingWrites] - Join for work already in flight
  * @param {() => any} [params.invalidateCaches] - Drops in-memory views of the restored files
+ * @param {() => Promise<{success: boolean, filename?: string, error?: string}>} [params.createRecoveryPoint] - Archives the live data before it is replaced
  * @param {{info: Function, warn: Function, error: Function}} params.logger - Context logger
  * @param {number} params.stopTimeoutMs - Per-engine acknowledgement timeout
  * @param {number} params.drainTimeoutMs - How long to wait for in-flight gateway work
@@ -217,6 +247,7 @@ const applyRestoreUnderLock = async ({
   gatewayWriters,
   drainPendingWrites,
   invalidateCaches,
+  createRecoveryPoint,
   logger,
   stopTimeoutMs,
   drainTimeoutMs,
@@ -288,10 +319,16 @@ const applyRestoreUnderLock = async ({
     drainedWriters.push(writer);
   }
 
+  const proceed = unconfirmed.length === 0 || force;
+  const recoveryPoint = proceed ? await saveRecoveryPoint(createRecoveryPoint, logger, filename) : null;
+  if (recoveryPoint && 'error' in recoveryPoint) {
+    warnings.push(`Could not save a pre-restore recovery archive (${recoveryPoint.error}); this restore cannot be undone from an archive.`);
+  }
+
   // A throwing applier (ENOSPC mid-copy, unreadable archive) must still reach
   // the reload below.
   const applied = await Promise.resolve()
-    .then(() => unconfirmed.length > 0 && !force
+    .then(() => !proceed
       ? { success: false, code: 'writers-not-quiesced', error: 'Gateway writers did not confirm shutdown. No files were changed.', rolledBack: true }
       : restore(filename))
     .then((r) => ({ ok: true, result: r }), (err) => ({ ok: false, err }));
@@ -356,17 +393,22 @@ const applyRestoreUnderLock = async ({
     action: 'restore-backup', filename, filesRestored: result.filesRestored, elapsedMs: Date.now() - startedAt,
   });
 
+  const savedRecoveryPoint = recoveryPoint && 'filename' in recoveryPoint ? recoveryPoint.filename : null;
+  const restoredText = `Restored ${result.filesRestored} ${result.filesRestored === 1 ? 'file' : 'files'}.`;
   return { status: 200, body: {
     success: true,
     filesRestored: result.filesRestored,
     configRestored: result.configRestored === true,
     legacy: result.legacy === true,
     stoppedEngines,
+    ...(savedRecoveryPoint ? { recoveryPoint: savedRecoveryPoint } : {}),
     ...(force && unconfirmed.length > 0 ? { forced: true, unconfirmed } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
-    message: stoppedEngines.length > 0
-      ? `Restored ${result.filesRestored} ${result.filesRestored === 1 ? 'file' : 'files'}. Stopped engines: ${stoppedEngines.join(', ')}. Restart engines manually from dashboard.`
-      : `Restored ${result.filesRestored} ${result.filesRestored === 1 ? 'file' : 'files'}.`,
+    message: [
+      restoredText,
+      savedRecoveryPoint ? `The data it replaced is saved as ${savedRecoveryPoint}; restore that backup to undo.` : null,
+      stoppedEngines.length > 0 ? `Stopped engines: ${stoppedEngines.join(', ')}. Restart engines manually from dashboard.` : null,
+    ].filter(Boolean).join(' '),
   } };
 };
 
@@ -392,6 +434,7 @@ const performRestore = async ({
   gatewayWriters = [],
   drainPendingWrites,
   invalidateCaches,
+  createRecoveryPoint,
   logger,
   stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
   drainTimeoutMs = DEFAULT_DRAIN_TIMEOUT_MS,
@@ -418,7 +461,7 @@ const performRestore = async ({
 
   const outcome = await applyRestoreUnderLock({
     filename, force, exchangeIPCMap, configuredExchanges, restore, gatewayWriters,
-    drainPendingWrites, invalidateCaches, logger, stopTimeoutMs, drainTimeoutMs,
+    drainPendingWrites, invalidateCaches, createRecoveryPoint, logger, stopTimeoutMs, drainTimeoutMs,
   }).catch((err) => {
     logger.error(`❌ 💾 Restore aborted by an unexpected error on ${filename}: ${err.message}`, {
       action: 'restore-backup', filename, error: err.message,
