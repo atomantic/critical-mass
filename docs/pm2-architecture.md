@@ -137,8 +137,19 @@ holds the maintenance lock it owns UpDown and Sentinel (and keeps them stopped a
 an incomplete rollback), so shutdown leaves them alone rather than persisting
 pre-restore memory over restored files. An aborted HTTP client does not cancel the
 handler's ownership.
-IPC remains connected through that drain; queued and already-sending Telegram
-notifications then settle before IPC, the realtime bus and every HTTP listener close.
+IPC remains connected through that drain. IPC then disconnects, so an engine
+event raised from here on is held by the engine for the next gateway instead of
+reaching a notifier that has stopped listening; queued and already-sending
+Telegram notifications settle before the realtime bus and every HTTP listener close.
+
+Engines hold `trade:event` frames (fills, TP placements, SAFE-mode and fault
+alerts) broadcast while no gateway is connected — an engine boot that finishes
+before the gateway's reconnect backoff, or a gateway restart — and replay them
+in order when the next gateway subscribes on connect (`MSG_TYPE.SUBSCRIBE`). The
+hold is in memory and keeps the newest 200 events (`MAX_HELD_EVENTS` in
+`src/ipc/ipc-server.js`); an engine exit discards it. An older gateway never
+subscribes and an older engine ignores the subscription, so mixed versions keep
+the previous drop-while-disconnected behavior.
 
 The internal deadline is **30 seconds** (`SHUTDOWN_TIMEOUT_MS` in
 `src/gateway-shutdown.js`). Deadline expiry or a teardown failure exits with code
