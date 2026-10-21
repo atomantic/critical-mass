@@ -21,6 +21,9 @@ const { tradeEvents } = require('../trade-events');
 const sentinelLogger = createContextLogger({ module: 'sentinel-service' });
 
 const STATE_FILE = 'sentinel-state.json';
+// Overall per-poll budget for AI classification. Items still unclassified at the
+// deadline are alerted with their keyword severity so a slow provider can't delay alerts.
+const AI_CLASSIFY_DEADLINE_MS = 20_000;
 const MAX_SEEN_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /**
@@ -32,10 +35,13 @@ const MAX_SEEN_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
  * @param {string} deps.DATA_DIR - Data directory path
  * @param {Function} deps.getSentinelConfig - Get sentinel config
  * @param {Function} [deps.fetchAllFeeds] - Feed fetcher override for tests
+ * @param {Function} [deps.classifyByAI] - AI classifier override for tests
+ * @param {number} [deps.aiClassifyDeadlineMs] - Per-poll AI classification deadline override for tests
  * @returns {Object}
  */
 const createSentinelService = (io, deps) => {
-  const { readJSON, writeJSON, DATA_DIR, getSentinelConfig, fetchAllFeeds: fetchFeeds = fetchAllFeeds } = deps;
+  const { readJSON, writeJSON, DATA_DIR, getSentinelConfig, fetchAllFeeds: fetchFeeds = fetchAllFeeds,
+    classifyByAI: classifyAI = classifyByAI, aiClassifyDeadlineMs = AI_CLASSIFY_DEADLINE_MS } = deps;
   const stateFilePath = path.join(DATA_DIR, STATE_FILE);
 
   /** @type {NodeJS.Timeout | null} */
@@ -166,19 +172,13 @@ const createSentinelService = (io, deps) => {
   };
 
   /**
-   * Process a single feed item: classify and create alert
+   * Build an alert from a keyword match and an optional AI classification.
    * @param {Object} item - Normalized feed item
-   * @param {Object} config - Sentinel config
-   * @returns {Promise<Object|null>} Alert or null
+   * @param {{severity: string, matchedKeywords: string[]}} keywordResult
+   * @param {Object|null} aiResult - AI classification, or null when off/failed/late
+   * @returns {Object} Alert
    */
-  const processItem = async (item, config) => {
-    // Keyword classification
-    const keywordResult = classifyByKeywords(item, config.keywords);
-    if (!keywordResult) return null; // No match
-
-    // Optional AI classification for items that pass keyword filter
-    const aiResult = await classifyByAI(item, config.aiClassification);
-
+  const buildAlert = (item, keywordResult, aiResult) => {
     const id = crypto.randomUUID();
     return {
       id,
@@ -219,14 +219,17 @@ const createSentinelService = (io, deps) => {
       const afterLongGap = gapSinceFetch > MAX_SEEN_AGE_MS;
       const staleBefore = Date.now() - MAX_SEEN_AGE_MS;
 
+      // Pass 1 (synchronous): refresh/suppress already-known items and collect keyword matches.
+      /** @type {Array<{item: Object, keywordResult: Object, aiResult: Object|null}>} */
+      const candidates = [];
+      const pendingGuids = new Set();
       for (const item of items) {
-        if (!isCurrent()) return;
         const guid = item.guid;
-        if (seenGuids.has(guid)) {
+        if (seenGuids.has(guid) || pendingGuids.has(guid)) {
           // Refresh timestamp so items still in feed don't expire after MAX_SEEN_AGE_MS.
           // Without this, items that remain in the feed for >7 days get pruned and re-alerted
           // on the next poll (issue #695).
-          seenGuids.set(guid, { ts: Date.now(), source: item.source ?? null });
+          if (seenGuids.has(guid)) seenGuids.set(guid, { ts: Date.now(), source: item.source ?? null });
           continue;
         }
 
@@ -237,14 +240,37 @@ const createSentinelService = (io, deps) => {
           continue;
         }
 
-        const alert = await processItem(item, config);
-        if (!isCurrent()) return;
+        pendingGuids.add(guid);
+        candidates.push({ item, keywordResult: classifyByKeywords(item, config.keywords), aiResult: null });
+      }
 
-        // Mark the item seen only after its asynchronous classification
-        // finishes under the current lifecycle. stop() can then persist safely
-        // without recording an item whose alert was never committed.
+      // Pass 2: classify all keyword matches concurrently under ONE deadline. Quota
+      // accounting stays inside classifyByAI (one call per matched item, as before).
+      // Anything unfinished at the deadline keeps aiResult = null (keyword severity).
+      const matched = candidates.filter(c => c.keywordResult);
+      if (matched.length > 0) {
+        let timer;
+        let expired = false;
+        const deadline = new Promise(resolve => {
+          timer = setTimeout(() => { expired = true; resolve(); }, aiClassifyDeadlineMs);
+        });
+        const classifications = Promise.all(matched.map(async (c) => {
+          const aiResult = await classifyAI(c.item, config.aiClassification).catch(() => null);
+          if (!expired) c.aiResult = aiResult ?? null; // late results are discarded
+        }));
+        await Promise.race([classifications, deadline]);
+        clearTimeout(timer);
+      }
+      if (!isCurrent()) return;
+
+      // Pass 3: commit in feed order. Mark each item seen only after the lifecycle
+      // check above, so stop() can persist safely without recording an item whose
+      // alert was never committed.
+      for (const { item, keywordResult, aiResult } of candidates) {
+        const guid = item.guid;
         seenGuids.set(guid, { ts: Date.now(), source: item.source ?? null });
-        if (!alert) continue;
+        if (!keywordResult) continue;
+        const alert = buildAlert(item, keywordResult, aiResult);
 
         alerts.push(alert);
         newAlerts++;
