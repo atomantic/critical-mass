@@ -4,6 +4,8 @@ import { ArrowLeft, RefreshCw } from '../icons'
 import { CartesianChart } from '../charts/primitives/CartesianChart'
 import { AXIS_TICK, GRID } from '../charts/chartUtils'
 import { INDICATORS, INDICATOR_LABELS } from '../../../../shared/indicator-config.mjs'
+import StatCard from '../StatCard'
+import { TF_ORDER } from '../../utils/timeframes.mjs'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 
 const RANGES = [
@@ -17,7 +19,7 @@ const INDICATOR_COLORS = {
   bollinger: '#eab308', vwap: '#22c55e', momentum: '#ec4899',
   obv: '#14b8a6', williamsR: '#f43f5e', cci: '#84cc16',
 }
-const DEFAULT_TF_ORDER = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']
+const DEFAULT_TF_ORDER = [...TF_ORDER].reverse()
 
 const TOOLTIP_STYLE = { backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }
 const PERCENT_AXES = [{ domain: [0, 100], tick: AXIS_TICK }]
@@ -39,16 +41,6 @@ function formatHour(hour) {
   const parts = hour.split('T')
   if (parts.length < 2) return hour
   return `${parts[0].slice(5)} ${parts[1]}:00`
-}
-
-function StatCard({ label, value, sub }) {
-  return (
-    <div className="bg-gray-800 rounded-lg p-3 border border-gray-700">
-      <div className="text-xs text-gray-400 mb-1">{label}</div>
-      <div className="text-lg font-bold font-mono text-white">{value ?? '---'}</div>
-      {sub && <div className="text-xs text-gray-400 mt-0.5">{sub}</div>}
-    </div>
-  )
 }
 
 export default function ScorecardAnalysis() {
@@ -168,17 +160,17 @@ export default function ScorecardAnalysis() {
               value={s.perpRealizedPnl != null
                 ? s.perpRealizedPnl.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
                 : null}
-              sub={s.perpRounds ? `${s.perpRounds} closed rounds` : '0.01 BTC / Open or Add'}
+              subtext={s.perpRounds ? `${s.perpRounds} closed rounds` : '0.01 BTC / Open or Add'}
             />
             <StatCard
               label="Perp Win Rate"
               value={s.perpWinRate != null ? `${s.perpWinRate}%` : null}
-              sub={data.perpAnalysis ? `${data.perpAnalysis.wins}W / ${data.perpAnalysis.losses}L` : null}
+              subtext={data.perpAnalysis ? `${data.perpAnalysis.wins}W / ${data.perpAnalysis.losses}L` : null}
             />
             <StatCard
               label="Directional Accuracy"
               value={s.perpDirectionalAccuracy != null ? `${s.perpDirectionalAccuracy}%` : null}
-              sub={`${s.outcomes} options-style outcomes`}
+              subtext={`${s.outcomes} options-style outcomes`}
             />
             <StatCard label="Predictions" value={s.predictions} />
             <StatCard
