@@ -25,7 +25,7 @@ const stateTracker = require('../src/state-tracker');
 const ROUTES_PATH = require.resolve('../src/routes/regime-routes');
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(require('../src/paths').DATA_DIR, 'config.json');
 
 // Fund in nested form (mirrors live config); mirrors regime-routes-config.test.js.
 const BASE_CONFIG = {

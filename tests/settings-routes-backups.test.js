@@ -20,7 +20,7 @@ const configUtils = require('../src/config-utils');
 const registerSettingsRoutes = require('../src/routes/settings-routes');
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(require('../src/paths').DATA_DIR, 'config.json');
 
 const BASE_CONFIG = {
   exchanges: { coinbase: { productId: 'BTC-USDC' } },

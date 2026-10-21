@@ -20,12 +20,14 @@
 
 const fs = require('fs');
 const path = require('path');
-const { DATA_DIR } = require('../src/paths');
+const { DATA_DIR, APP_ROOT } = require('../src/paths');
 const { checkEngineStopped } = require('../src/engine-liveness');
 const { atomicWriteSync } = require('../src/durable-write');
 
 const apply = process.argv.includes('--apply');
-const DATA_ROOT = process.env.CRITICAL_MASS_DATA_DIR || DATA_DIR;
+// src/paths.js already honours CRITICAL_MASS_DATA_DIR; the live root is the checkout's data/.
+const DATA_ROOT = DATA_DIR;
+const LIVE_ROOT = path.join(APP_ROOT, 'data');
 const DIR = path.join(DATA_ROOT, 'coinbase', 'BTC-USDC');
 const LEDGER = path.join(DIR, 'fill-ledger.json');
 const CLOSED = path.join(DIR, 'closed-trades.json');
@@ -38,7 +40,7 @@ const realPath = (dir) => {
 async function main() {
 // Check before reading the snapshot: anything booked by a live engine after
 // the read would be dropped by the write below.
-if (apply && realPath(DATA_ROOT) === realPath(DATA_DIR)) {
+if (apply && realPath(DATA_ROOT) === realPath(LIVE_ROOT)) {
   const { safe, reason } = await checkEngineStopped('coinbase', 'BTC-USDC');
   if (!safe) {
     console.error(`❌ REFUSING to write coinbase/BTC-USDC: ${reason}. Stop the engine first, then re-run with --apply.`);

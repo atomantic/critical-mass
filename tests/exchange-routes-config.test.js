@@ -22,7 +22,7 @@ const configUtils = require('../src/config-utils');
 const registerExchangeRoutes = require('../src/routes/exchange-routes');
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(require('../src/paths').DATA_DIR, 'config.json');
 
 // A coinbase fund whose stored regime block carries three dead keys (mirrors the
 // live coinbase/BTC-USDC config that triggered the bug).

@@ -21,7 +21,7 @@ const PAIRS = [];
 const engines = [];
 after(() => {
   for (const eng of engines) eng._test.clearTimers();
-  for (const pair of PAIRS) fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', pair), { recursive: true, force: true });
+  for (const pair of PAIRS) fs.rmSync(path.join(require('../src/paths').DATA_DIR, 'coinbase', pair), { recursive: true, force: true });
 });
 
 const T0 = Date.parse('2026-01-01T00:00:00.000Z');
