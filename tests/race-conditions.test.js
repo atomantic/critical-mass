@@ -1,5 +1,11 @@
 // @ts-check
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach, after } = require('node:test');
+const { createIsolatedDataDir } = require('./test-data-dir');
+
+// Executors and regime-state saves below persist per-fund files; without this
+// root they land in (and are left behind in) the checkout's live data/ tree.
+const isolatedData = createIsolatedDataDir('cm-race-conditions-test');
+after(() => isolatedData.cleanup());
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
