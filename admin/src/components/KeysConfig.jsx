@@ -165,16 +165,19 @@ function KeysConfig({ exchange, funds = [], onSave }) {
   const handleSave = async () => {
     setSaving(true)
     setMessage(null)
-    const result = await apiPut(`/api/${exchange}/keys`, keys, { allowEmpty: true })
-    if (result.ok) {
-      setMessage({ type: 'success', text: 'API keys saved successfully!' })
-      setKeys({})
-      await fetchKeys(true)
-      onSave?.()
-    } else {
-      setMessage({ type: 'error', text: describeMutationFailure(result, 'Failed to save keys') })
+    try {
+      const result = await apiPut(`/api/${exchange}/keys`, keys, { allowEmpty: true })
+      if (result.ok) {
+        setMessage({ type: 'success', text: 'API keys saved successfully!' })
+        setKeys({})
+        await fetchKeys(true)
+        onSave?.()
+      } else {
+        setMessage({ type: 'error', text: describeMutationFailure(result, 'Failed to save keys') })
+      }
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const handleTest = async () => {
@@ -203,17 +206,20 @@ function KeysConfig({ exchange, funds = [], onSave }) {
   const handleDelete = async () => {
     setDeleting(true)
     setMessage(null)
-    const result = await apiDelete(`/api/${exchange}/keys`, { allowEmpty: true })
-    if (result.ok) {
-      setKeys({})
-      setConfirmDelete(false)
-      setMessage({ type: 'success', text: 'API keys deleted successfully!' })
-      await fetchKeys(true)
-      onSave?.()
-    } else {
-      setMessage({ type: 'error', text: describeMutationFailure(result, 'Failed to delete keys') })
+    try {
+      const result = await apiDelete(`/api/${exchange}/keys`, { allowEmpty: true })
+      if (result.ok) {
+        setKeys({})
+        setConfirmDelete(false)
+        setMessage({ type: 'success', text: 'API keys deleted successfully!' })
+        await fetchKeys(true)
+        onSave?.()
+      } else {
+        setMessage({ type: 'error', text: describeMutationFailure(result, 'Failed to delete keys') })
+      }
+    } finally {
+      setDeleting(false)
     }
-    setDeleting(false)
   }
 
   if (loading) {

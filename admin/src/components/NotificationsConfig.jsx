@@ -118,7 +118,7 @@ function NotificationsConfig() {
       payload.telegram = telegram
     }
 
-    {
+    try {
       const result = await apiPut('/api/notifications/config', payload, { allowEmpty: true })
 
       if (result.ok) {
@@ -135,22 +135,26 @@ function NotificationsConfig() {
       } else {
         setMessage({ type: 'error', text: result.data?.errors?.join('; ') || describeMutationFailure(result, 'Failed to save settings') })
       }
+    } finally {
+      pendingSave.current = false
+      setSaving(false)
     }
-    pendingSave.current = false
-    setSaving(false)
   }
 
   const handleTest = async () => {
     setTesting(true)
     setMessage(null)
-    const result = await apiPost('/api/notifications/test')
-    if (result.ok) {
-      setMessage({ type: 'success', text: 'Test message sent to Telegram!' })
-    } else {
-      setMessage({ type: 'error', text: `Test failed: ${result.data?.error || describeMutationFailure(result, 'Request failed')}` })
+    try {
+      const result = await apiPost('/api/notifications/test')
+      if (result.ok && result.data?.success) {
+        setMessage({ type: 'success', text: 'Test message sent to Telegram!' })
+      } else {
+        setMessage({ type: 'error', text: `Test failed: ${result.data?.error || describeMutationFailure(result, 'Request failed')}` })
+      }
+    } finally {
+      setTesting(false)
+      fetchStats()
     }
-    setTesting(false)
-    fetchStats()
   }
 
   const updateEvent = (key, value) => {
