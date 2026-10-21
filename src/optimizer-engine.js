@@ -12,6 +12,7 @@ const {
   OPTIMIZER_MARKUPS: DEFAULT_MARKUPS,
   OPTIMIZER_PERIODS: DEFAULT_PERIODS,
 } = require('./simulation-policy');
+const { createContextLogger } = require('./logger');
 
 // Default interval types to test
 
@@ -70,6 +71,7 @@ const REBATE_PERCENT = 0.031;
  * @param {string} [productId] - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
  */
 const prefetchPriceData = async (intervals, periods, onProgress, exchange = 'coinbase', forceRefresh = false, productId = null) => {
+  const logger = createContextLogger({ exchange, pair: productId || undefined });
   const cache = {};
   let fetched = 0;
   const total = intervals.length;
@@ -98,12 +100,12 @@ const prefetchPriceData = async (intervals, periods, onProgress, exchange = 'coi
       preferCache: !forceRefresh,
       productId
     }).catch(err => {
-      console.error(`Error fetching ${intervalType} price data: ${err.message}`);
+      logger.error(`Error fetching ${intervalType} price data: ${err.message}`);
       return []; // Return empty array on error, backtest will fail gracefully
     });
 
     if (priceData.length === 0) {
-      console.warn(`Warning: No ${intervalType} price data available for ${productId || 'default'} from ${exchange}`);
+      logger.warn(`Warning: No ${intervalType} price data available for ${productId || 'default'} from ${exchange}`);
     }
 
     cache[intervalType] = priceData;
