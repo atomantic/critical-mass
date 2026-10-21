@@ -24,7 +24,7 @@ const makeService = (fetchAllFeeds, feeds = [{ name: 'a', url: 'https://u:secret
   return { service, config };
 };
 
-const item = { guid: 'g1', title: 'Trading halt', description: 'halt', source: 'a', link: 'https://example.com/1', pubDate: new Date(0).toISOString() };
+const item = { guid: 'g1', title: 'Trading halt', description: 'halt', source: 'a', link: 'https://example.com/1', pubDate: new Date().toISOString() };
 const result = (items, enabled, succeeded, categories = []) => ({
   items, enabled, succeeded, failed: enabled - succeeded,
   failures: categories.map((category, i) => ({ feed: `f${i}`, category })),
@@ -79,5 +79,42 @@ describe('Sentinel feed acquisition health', () => {
     assert.equal(service.getStatus().feedState, 'no-feeds');
     config.enabled = false;
     assert.equal(service.getStatus().feedState, 'disabled');
+  });
+});
+
+describe('Sentinel stale-news suppression', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const makeWithState = (saved, items) => {
+    const config = {
+      enabled: true, pollIntervalMs: 60_000, feeds: [{ name: 'a', url: 'https://example.com/a' }],
+      keywords: { critical: ['halt'], warning: [], info: [] }, aiClassification: { enabled: false },
+    };
+    const io = { to: () => ({ emit: () => {} }) };
+    return createSentinelService(io, {
+      readJSON: () => saved, writeJSON: () => {}, DATA_DIR: os.tmpdir(),
+      getSentinelConfig: () => config, fetchAllFeeds: async () => result(items, 1, 1),
+    });
+  };
+
+  it('marks items seen without alerting after a gap longer than the retention', async () => {
+    const old = new Date(Date.now() - 10 * DAY).toISOString();
+    const service = makeWithState({ lastSuccessfulFetchAt: old, seenGuids: {} }, [{ ...item, pubDate: new Date().toISOString() }]);
+    await service.forcePoll();
+    assert.equal(service.getAlerts().length, 0);
+    await service.forcePoll();
+    assert.equal(service.getAlerts().length, 0);
+  });
+
+  it('does not alert on items published before the retention window', async () => {
+    const service = makeWithState(null, [{ ...item, pubDate: new Date(Date.now() - 10 * DAY).toISOString() }]);
+    await service.forcePoll();
+    assert.equal(service.getAlerts().length, 0);
+  });
+
+  it('still alerts on recent items after a recent fetch', async () => {
+    const recent = new Date(Date.now() - DAY).toISOString();
+    const service = makeWithState({ lastSuccessfulFetchAt: recent, seenGuids: {} }, [item]);
+    await service.forcePoll();
+    assert.equal(service.getAlerts().length, 1);
   });
 });

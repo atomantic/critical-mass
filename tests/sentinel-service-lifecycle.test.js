@@ -38,7 +38,7 @@ const alertItem = {
   description: 'halt market',
   source: 'test',
   link: 'https://example.com/1',
-  pubDate: new Date(0).toISOString(),
+  pubDate: new Date().toISOString(),
 };
 
 describe('Sentinel poll lifecycle fencing', () => {
