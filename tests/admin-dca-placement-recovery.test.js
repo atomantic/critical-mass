@@ -34,6 +34,7 @@ const deferred = () => {
 }
 const settle = () => new Promise(resolve => setImmediate(resolve))
 const response = (data, ok = true) => ({ ok, json: async () => data })
+const { apiClientStub } = require('./api-client-harness')
 const Panel = () => null
 const BuyPanel = () => null
 
@@ -65,6 +66,7 @@ function view(name, fetchImpl, extra = {}) {
     '../utils/api': { pairQuery: pair => `?pair=${encodeURIComponent(pair)}` },
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
+    '../utils/apiClient': apiClientStub(fetchImpl),
     '../utils/intervals.mjs': { getIntervalMs: () => 86400000 },
     '../utils/requestOwner.mjs': { createRequestOwner: () => createRequestOwner({ fetchImpl }) },
     '../utils/dashboardAction.mjs': {},

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { describeActionFailure } from '../../utils/actionFailure.mjs'
+import { apiPost } from '../../utils/apiClient'
 
 export default function useRegimeDashboardActions({ exchange, pairQuery, addToast, setSocketStatus, fetchStatus, fetchConfig, fetchFills }) {
   const [rollUpConfirm, setRollUpConfirm] = useState(null)
@@ -14,17 +15,24 @@ export default function useRegimeDashboardActions({ exchange, pairQuery, addToas
   const [settingTp, setSettingTp] = useState(false)
   const [cancellingLadder, setCancellingLadder] = useState(false)
   const [cancelLadderConfirm, setCancelLadderConfirm] = useState(false)
+  // Shared client: network failures throw so the existing catch copy stays, and
+  // HTTP / success:false failures keep the parsed body for status side effects.
+  const post = async (path, body) => {
+    const result = await apiPost(`/api/${exchange}/regime/${path}${pairQuery}`, body)
+    if (result.status === 0) throw new Error(result.error || 'Network error')
+    return result
+  }
+  const failureMessage = (result, data) => result.error || describeActionFailure(result.status, data)
   // Resume from drawdown pause (confirmed via modal — project forbids window.confirm)
   const handleResumeDrawdown = async () => {
     setDrawdownResumeConfirm(false)
     try {
-      const res = await fetch(`/api/${exchange}/regime/resume-drawdown${pairQuery}`, { method: 'POST' })
-      const data = await res.json().catch(() => ({}))
-      if (res.ok) await fetchStatus()
+      const result = await post('resume-drawdown')
+      if (result.ok) await fetchStatus()
       // Surface the engine's actual reason (e.g. "Fund equity is depleted ($0.00)
       // — cannot re-base the drawdown peak") instead of a bare HTTP status —
       // that reason is the whole point of a failed resume attempt.
-      else addToast({ type: 'error', title: 'Resume failed', message: describeActionFailure(res.status, data) })
+      else addToast({ type: 'error', title: 'Resume failed', message: failureMessage(result, result.data) })
     } catch (err) {
       addToast({ type: 'error', title: 'Resume failed', message: err.message || 'Network error' })
     }
@@ -36,13 +44,12 @@ export default function useRegimeDashboardActions({ exchange, pairQuery, addToas
   const handleResumeFromAuthDenied = async () => {
     setResumingAuth(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/resume${pairQuery}`, { method: 'POST' })
-      if (res.ok) {
+      const result = await post('resume')
+      if (result.ok) {
         await fetchStatus()
         addToast({ type: 'success', title: 'Resumed', message: 'Engine resumed — retrying API access' })
       } else {
-        const data = await res.json().catch(() => ({}))
-        addToast({ type: 'error', title: 'Resume failed', message: describeActionFailure(res.status, data) })
+        addToast({ type: 'error', title: 'Resume failed', message: failureMessage(result, result.data) })
       }
     } catch (err) {
       addToast({ type: 'error', title: 'Resume failed', message: err.message || 'Network error' })
@@ -55,20 +62,16 @@ export default function useRegimeDashboardActions({ exchange, pairQuery, addToas
   const handleRollUp = async (bodyId) => {
     setRollingUp(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/rollup-body${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bodyId }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (res.ok && data.success && data.status) {
+      const result = await post('rollup-body', { bodyId })
+      const data = result.data ?? {}
+      if (result.ok && data.success && data.status) {
         // Directly update socket status from API response for immediate visual refresh
         // (avoids race where socketStatus overrides stale localStatus from fetchStatus)
         setSocketStatus(data.status)
         // Re-fetch fills so buy order annotations (bodyId, sellOrderId) reflect the merge
         fetchFills()
       } else {
-        addToast({ type: 'error', title: 'Roll-up failed', message: describeActionFailure(res.status, data) })
+        addToast({ type: 'error', title: 'Roll-up failed', message: failureMessage(result, data) })
       }
     } catch (err) {
       addToast({ type: 'error', title: 'Roll-up failed', message: err.message })
@@ -82,17 +85,14 @@ export default function useRegimeDashboardActions({ exchange, pairQuery, addToas
   const handleCollapseAll = async () => {
     setCollapsingAll(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/rollup-all${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      })
-      const data = await res.json().catch(() => ({}))
-      if (data.success) {
+      const result = await post('rollup-all')
+      const data = result.data ?? {}
+      if (result.ok && data.success) {
         addToast({ type: 'success', title: 'Collapse complete', message: data.message || 'Bodies merged' })
         if (data.status) setSocketStatus(data.status)
         fetchFills()
       } else {
-        addToast({ type: 'error', title: 'Collapse failed', message: describeActionFailure(res.status, data) })
+        addToast({ type: 'error', title: 'Collapse failed', message: failureMessage(result, data) })
         if (data.status) setSocketStatus(data.status)
       }
     } catch (err) {
@@ -108,17 +108,14 @@ export default function useRegimeDashboardActions({ exchange, pairQuery, addToas
   const handleResetCycle = async () => {
     setResettingCycle(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/reset-cycle${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      })
-      const data = await res.json().catch(() => ({}))
-      if (data.success) {
+      const result = await post('reset-cycle')
+      const data = result.data ?? {}
+      if (result.ok && data.success) {
         addToast({ type: 'success', title: 'Cycle reset', message: data.message || 'Buying re-enabled' })
         if (data.status) setSocketStatus(data.status)
         fetchFills()
       } else {
-        addToast({ type: 'error', title: 'Cycle reset failed', message: describeActionFailure(res.status, data) })
+        addToast({ type: 'error', title: 'Cycle reset failed', message: failureMessage(result, data) })
         if (data.status) setSocketStatus(data.status)
       }
     } catch (err) {
@@ -142,20 +139,16 @@ export default function useRegimeDashboardActions({ exchange, pairQuery, addToas
     const payload = mode === 'pct' ? { bodyId: tpEditModal.bodyId, tpPct: value } : { bodyId: tpEditModal.bodyId, limitPrice: value }
     setSettingTp(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/${endpoint}${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (res.ok && data.success && data.status) {
+      const result = await post(endpoint, payload)
+      const data = result.data ?? {}
+      if (result.ok && data.success && data.status) {
         setSocketStatus(data.status)
         fetchFills()
         setTpEditModal(null)
       } else {
         // Keep the modal open on failure so the operator can retry — the old TP
         // is still resting on the exchange, so silently closing misled them.
-        addToast({ type: 'error', title: 'Set TP failed', message: describeActionFailure(res.status, data) })
+        addToast({ type: 'error', title: 'Set TP failed', message: failureMessage(result, data) })
       }
     } catch (err) {
       addToast({ type: 'error', title: 'Set TP failed', message: err.message })
@@ -171,17 +164,14 @@ export default function useRegimeDashboardActions({ exchange, pairQuery, addToas
   const handleExecuteCancelLadder = async () => {
     setCancellingLadder(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/cancel-ladder${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      })
-      const data = await res.json().catch(() => ({}))
-      if (data.success) {
+      const result = await post('cancel-ladder')
+      const data = result.data ?? {}
+      if (result.ok && data.success) {
         addToast({ type: 'success', title: 'Ladder Cancelled', message: data.message })
         if (data.status) setSocketStatus(data.status)
         fetchConfig()
       } else {
-        addToast({ type: 'error', title: 'Cancel ladder failed', message: describeActionFailure(res.status, data) })
+        addToast({ type: 'error', title: 'Cancel ladder failed', message: failureMessage(result, data) })
       }
     } catch (err) {
       addToast({ type: 'error', title: 'Cancel ladder failed', message: err.message })

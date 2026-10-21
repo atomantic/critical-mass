@@ -1,4 +1,5 @@
 import { describeConfigSaveError } from '../../utils/configSaveError.mjs'
+import { apiPut } from '../../utils/apiClient'
 import React, { useId, useState } from 'react'
 import { computeCapitalAdjustment } from '../../utils/capitalAdjustment.mjs'
 
@@ -28,13 +29,10 @@ function CapitalAdjust({ apy, exchange, pairQuery, fetchConfig, fetchStatus, add
     const { delta, updates } = adjustment
     setCapitalAdjusting(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (data.success) {
+      const result = await apiPut(`/api/${exchange}/regime/config${pairQuery}`, updates)
+      if (result.status === 0) throw new Error(result.error || 'Network error')
+      const data = result.data ?? {}
+      if (result.ok && data.success) {
         // Report the values the server actually applied (data.config), not
         // just what we sent — the source of truth after persistence (#701).
         const appliedDeposited = data.config?.depositedCapital ?? updates.depositedCapital
@@ -46,7 +44,7 @@ function CapitalAdjust({ apy, exchange, pairQuery, fetchConfig, fetchStatus, add
         })
         await Promise.all([fetchConfig?.(), fetchStatus?.()])
       } else {
-        const { kind, message } = describeConfigSaveError(res.status, data)
+        const { kind, message } = describeConfigSaveError(result.status, data)
         if (kind === 'notApplied') {
           addToast?.({ type: 'warning', title: 'Capital saved, not yet live', message: 'Restart the engine to apply it.' })
           await Promise.all([fetchConfig?.(), fetchStatus?.()])

@@ -1,5 +1,6 @@
 import { describeConfigSaveError } from '../../utils/configSaveError.mjs'
 import { describeActionFailure } from '../../utils/actionFailure.mjs'
+import { apiGet, apiPost, apiPut } from '../../utils/apiClient'
 import React, { useId, useRef, useState } from 'react'
 import { plural } from '../../utils/plural.mjs'
 import { formatPriceByMagnitude, formatCurrency } from '../charts/chartUtils'
@@ -55,17 +56,18 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
   const fetchLadderPreview = async (myGen) => {
     setPanelState('loading')
     try {
-      const res = await fetch(`/api/${exchange}/regime/preview-ladder${pairQuery}`)
-      const data = await res.json().catch(() => ({}))
+      const result = await apiGet(`/api/${exchange}/regime/preview-ladder${pairQuery}`)
+      if (result.status === 0) throw new Error(result.error || 'Network error')
+      const data = result.data ?? {}
       if (myGen !== gen.current) return // superseded by a newer edit/open/close
-      if (data.success) {
+      if (result.ok && data.success) {
         previewGen.current = myGen
         setLadderPreview(data.preview)
         setPanelState('ready')
       } else {
         setLadderPreview(null)
         setPanelState('previewFailed')
-        addToast?.({ type: 'error', title: 'Preview Failed', message: describeActionFailure(res.status, data) })
+        addToast?.({ type: 'error', title: 'Preview Failed', message: result.error || describeActionFailure(result.status, data) })
       }
     } catch (err) {
       if (myGen !== gen.current) return
@@ -87,19 +89,16 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
   const persist = async (edits, myGen) => {
     try {
       if (failed.current) return // draft stays unsaved; Retry sends all of it
-      const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(edits),
-      })
-      if (res.ok) {
+      const result = await apiPut(`/api/${exchange}/regime/config${pairQuery}`, edits)
+      if (result.status === 0) throw new Error(result.error || 'Network error')
+      if (result.ok) {
         confirmed.current = { ...confirmed.current, ...edits }
         await fetchConfig?.()
         if (myGen === gen.current && !failed.current) await fetchLadderPreview(myGen)
         return
       }
-      const data = await res.json().catch(() => ({}))
-      const { kind, message } = describeConfigSaveError(res.status, data)
+      const data = result.data ?? {}
+      const { kind, message } = describeConfigSaveError(result.status, data)
       failed.current = kind
       previewGen.current = -1
       setLadderPreview(null)
@@ -187,12 +186,10 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
     placing.current = true
     setPlacingLadder(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/rebuild-ladder${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      })
-      const data = await res.json().catch(() => ({}))
-      if (data.success) {
+      const result = await apiPost(`/api/${exchange}/regime/rebuild-ladder${pairQuery}`)
+      if (result.status === 0) throw new Error(result.error || 'Network error')
+      const data = result.data ?? {}
+      if (result.ok && data.success) {
         addToast?.({ type: 'success', title: 'Ladder Placed', message: data.message })
         if (data.status) setSocketStatus?.(data.status)
         gen.current++
@@ -200,7 +197,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
         setShowLadderPanel(false)
         setLadderPreview(null)
       } else {
-        addToast?.({ type: 'error', title: 'Ladder Failed', message: describeActionFailure(res.status, data) })
+        addToast?.({ type: 'error', title: 'Ladder Failed', message: result.error || describeActionFailure(result.status, data) })
       }
     } catch (err) {
       addToast?.({ type: 'error', title: 'Ladder Failed', message: err.message })

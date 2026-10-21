@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useRegimeEvents } from '../../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../../hooks/useChartDataBuffer'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
+import { apiGet } from '../../utils/apiClient'
 import { EMPTY_SNAPSHOT, STATUS_STALE_MS, nextRegimeStatusSeq, toUnreachableStatus } from '../../utils/regimeStatusSnapshot.mjs'
 
 export default function useRegimeDashboardData(exchange, pair, pairQuery) {
@@ -111,12 +112,13 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   // Fetch aggressiveness presets
   const fetchPresets = useCallback(async () => {
     try {
-      const res = await fetch('/api/presets/aggressiveness')
-      const data = res.ok ? await res.json() : null
+      const result = await apiGet('/api/presets/aggressiveness')
+      if (result.status === 0) throw new Error(result.error || 'request failed')
+      const data = result.ok ? result.data : null
       if (data?.presets && typeof data.presets === 'object') {
         setPresets(data.presets)
         setPresetsError(null)
-      } else setPresetsError(`Presets unavailable${res.ok ? '' : ` (HTTP ${res.status})`}`)
+      } else setPresetsError(`Presets unavailable${result.ok ? '' : ` (HTTP ${result.status})`}`)
     } catch {
       setPresetsError('Presets unavailable: request failed')
     }
@@ -151,13 +153,9 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
 
   // Fetch cached chart data from server
   const fetchCachedChartData = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/chart-data${pairQuery}`)
-    if (res.ok) {
-      const data = await res.json()
-      if (data.data) {
-        initializeFromCache(data.data)
-      }
-    }
+    const result = await apiGet(`/api/${exchange}/regime/chart-data${pairQuery}`)
+    if (result.status === 0) throw new Error(result.error || 'Network error')
+    if (result.ok && result.data?.data) initializeFromCache(result.data.data)
   }, [exchange, pairQuery, initializeFromCache])
 
   const isRunning = status?.isRunning
