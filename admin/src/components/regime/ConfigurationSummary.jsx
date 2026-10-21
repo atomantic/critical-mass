@@ -2,7 +2,7 @@ import React from 'react'
 import AggressivenessControl from './AggressivenessControl'
 import { ConfigTooltip, CONFIG_TOOLTIPS } from './RegimeHelp'
 
-export default function ConfigurationSummary({ config, exchange, pairQuery, fetchConfig, presets, addToast }) {
+export default function ConfigurationSummary({ config, exchange, pairQuery, fetchConfig, presets, presetsError, retryPresets, addToast }) {
   return (
     <>
       {config && (
@@ -24,6 +24,8 @@ export default function ConfigurationSummary({ config, exchange, pairQuery, fetc
             pairQuery={pairQuery}
             onConfigUpdate={fetchConfig}
             presets={presets}
+            presetsError={presetsError}
+            retryPresets={retryPresets}
             addToast={addToast}
           />
 
