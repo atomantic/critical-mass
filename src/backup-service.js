@@ -912,13 +912,13 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
 };
 
 /**
- * Restore one fund from a rolling state snapshot through the same durable
- * transactional applier used by full archives.
+ * Validate a fund-state snapshot's identity and manifest and list the state
+ * files it holds for one fund, without staging anything.
  * @param {string} snapshotId
  * @param {string} exchange
  * @param {string} pair
- * @param {{paths?: {dataDir?: string, baseConfigFile?: string}, logger?: Object}} [options]
- * @returns {{success: boolean, filesRestored?: number, error?: string, code?: string, rolledBack?: boolean, recovery?: Object}}
+ * @param {{fundStateBackupsDir: string}} paths - Resolved paths
+ * @returns {{ok: true, snapshotDir: string, files: Array<string>} | {ok: false, error: string}}
  */
 const resolveFundStateSnapshot = (snapshotId, exchange, pair, paths) => {
   if (!isSafeFundStateSegment(snapshotId) || !isSafeFundStateSegment(exchange) || !isSafeFundStateSegment(pair)) {
@@ -959,6 +959,15 @@ const checkFundStateRestorePreconditions = (snapshotId, exchange, pair, { paths:
   return resolved.ok ? { ok: true } : { ok: false, error: resolved.error };
 };
 
+/**
+ * Restore one fund from a rolling state snapshot through the same durable
+ * transactional applier used by full archives.
+ * @param {string} snapshotId
+ * @param {string} exchange
+ * @param {string} pair
+ * @param {{paths?: {dataDir?: string, baseConfigFile?: string}, logger?: Object}} [options]
+ * @returns {{success: boolean, filesRestored?: number, error?: string, code?: string, rolledBack?: boolean, recovery?: Object}}
+ */
 const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrides, logger = SILENT_LOGGER } = {}) => {
   const paths = resolvePaths(pathOverrides);
   const resolved = resolveFundStateSnapshot(snapshotId, exchange, pair, paths);
