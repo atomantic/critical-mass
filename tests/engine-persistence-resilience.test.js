@@ -134,6 +134,42 @@ describe('health monitor treats unpersistable state as a health condition', () =
     assert.equal(monitor.getState().mode, 'ACTIVE', 'recovers once the disk accepts writes again');
   });
 
+  for (const [mode, halt] of [
+    ['PAUSED', (monitor) => monitor.pause('manual')],
+    ['AUTH_DENIED', (monitor) => monitor.recordAuthDenied('ip_not_allowlisted')],
+  ]) {
+    it(`keeps a ${mode} engine halted through a save-failure run instead of resuming when saves recover`, () => {
+      const safeReasons = [];
+      const monitor = createHealthMonitor('coinbase', createTestConfig({ safeRecoveryMs: 0 }), {
+        onSafeMode: (reason) => safeReasons.push(reason),
+      });
+      monitor.recordWsStatus(true);
+      halt(monitor);
+
+      for (let i = 0; i < MAX_CONSECUTIVE_PERSISTENCE_FAILURES; i++) monitor.recordPersistenceFailure('EROFS');
+      assert.equal(monitor.getState().mode, mode);
+      assert.equal(monitor.getState().healthChecks.persistenceFailureCount, MAX_CONSECUTIVE_PERSISTENCE_FAILURES);
+      assert.equal(safeReasons.length, 0);
+
+      monitor.recordPersistenceSuccess();
+      monitor.checkHealth({ openOrderCount: 0 });
+      assert.equal(monitor.getState().mode, mode, 'the operator-owned halt survives the disk recovering');
+      assert.equal(monitor.canPlaceEntry().allowed, false);
+    });
+  }
+
+  it('trips SAFE on the next health check when a paused engine is resumed while saves still fail', () => {
+    const monitor = createHealthMonitor('coinbase', createTestConfig({ safeRecoveryMs: 0 }), {});
+    monitor.recordWsStatus(true);
+    monitor.pause('manual');
+    for (let i = 0; i < MAX_CONSECUTIVE_PERSISTENCE_FAILURES; i++) monitor.recordPersistenceFailure();
+
+    monitor.resume();
+    monitor.checkHealth({ openOrderCount: 0 });
+    assert.equal(monitor.getState().mode, 'SAFE');
+    assert.match(monitor.getState().reason, new RegExp(`^${PERSISTENCE_FAILED_PREFIX}`));
+  });
+
   it('distinguishes a pure persistence fault from a market/connectivity fault', () => {
     assert.equal(isPersistenceOnlySafeReason('persistence_failed:3 (ENOSPC)'), true);
     assert.equal(isPersistenceOnlySafeReason('persistence_failed:3, persistence_failed:4'), true);

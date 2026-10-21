@@ -30,7 +30,8 @@ export default function ContractSetup({ initialContract }) {
   useEffect(() => () => clearTimeout(savedTimerRef.current), [])
 
   // Screenshot AI state
-  const [providers, setProviders] = useState([])
+  const [providers, setProviders] = useState(null) // null = not loaded
+  const [providersError, setProvidersError] = useState('')
   const [selectedProvider, setSelectedProvider] = useState(() => localStorage.getItem(LS_PROVIDER_KEY) || '')
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem(LS_MODEL_KEY) || '')
   const [analyzing, setAnalyzing] = useState(false)
@@ -72,14 +73,18 @@ export default function ContractSetup({ initialContract }) {
   }, [initialContract])
 
   // Fetch available AI providers
-  useEffect(() => {
-    fetch('/api/updown/providers')
-      .then(r => r.json())
-      .then(data => {
-        if (data.success) setProviders(data.providers)
-      })
-      .catch(() => {})
+  const loadProviders = useCallback(async () => {
+    setProvidersError('')
+    try {
+      const res = await fetch('/api/updown/providers')
+      const data = await res.json().catch(() => null)
+      if (!res.ok || !data?.success) throw new Error(data?.error || `server error ${res.status}`)
+      setProviders(data.providers || [])
+    } catch (err) {
+      setProvidersError(`Could not load AI providers (${err.message}).`)
+    }
   }, [])
+  useEffect(() => { loadProviders() }, [loadProviders])
 
   // Persist provider/model selection
   useEffect(() => {
@@ -91,14 +96,15 @@ export default function ContractSetup({ initialContract }) {
 
   // Auto-select model when provider changes
   useEffect(() => {
-    const p = providers.find(p => p.id === selectedProvider)
+    const p = providers?.find(p => p.id === selectedProvider)
     if (!p) return
     // Keep current model if it belongs to this provider
     if (p.models?.includes(selectedModel)) return
     setSelectedModel(p.defaultModel || p.models?.[0] || '')
   }, [selectedProvider, providers])
 
-  const handleSave = async () => {
+  /** PUT the contract; any failure lands in saveError beside the Save button. */
+  const saveContract = async (contract) => {
     setSaving(true)
     setSaved(false)
     setSaveError('')
@@ -106,25 +112,29 @@ export default function ContractSetup({ initialContract }) {
       const res = await fetch('/api/updown/contract', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          expiry,
-          target: parseFloat(target),
-          stop: parseFloat(stop),
-          range: parseInt(range, 10),
-          direction: direction.toLowerCase(),
-        }),
+        body: JSON.stringify(contract),
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
         throw new Error(data.error || 'Failed to save contract')
       }
       showSaved()
+      return true
     } catch (err) {
       setSaveError(err.message || 'Failed to save contract')
+      return false
     } finally {
       setSaving(false)
     }
   }
+
+  const handleSave = () => saveContract({
+    expiry,
+    target: parseFloat(target),
+    stop: parseFloat(stop),
+    range: parseInt(range, 10),
+    direction: direction.toLowerCase(),
+  })
 
   const analyzeScreenshot = useCallback(async (file) => {
     if (!selectedProvider) {
@@ -223,25 +233,16 @@ export default function ContractSetup({ initialContract }) {
       if (d.stop) setStop(d.stop.toString())
       if (d.expiryISO) setExpiry(d.expiryISO)
 
-      setSaving(true)
-      setSaved(false)
-      const res = await fetch('/api/updown/contract', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          expiry: d.expiryISO || expiry,
-          target: d.target ?? parseFloat(target),
-          stop: d.stop ?? parseFloat(stop),
-          range: d.range ?? parseInt(range, 10),
-          direction: (dir).toLowerCase(),
-        }),
+      // The form already shows the extracted values, so on failure Save Contract
+      // retries exactly what Apply tried to save.
+      const ok = await saveContract({
+        expiry: d.expiryISO || expiry,
+        target: d.target ?? parseFloat(target),
+        stop: d.stop ?? parseFloat(stop),
+        range: d.range ?? parseInt(range, 10),
+        direction: (dir).toLowerCase(),
       })
-      if (res.ok) {
-        showSaved()
-      } else {
-        setScreenshotError('Failed to save contract')
-      }
-      setSaving(false)
+      if (!ok) setScreenshotError('Extracted values were applied to the form but not saved — see the error below Save Contract.')
     }
 
     // Crypto.com screenshots contain option premiums, not BTC perp entry
@@ -251,7 +252,7 @@ export default function ContractSetup({ initialContract }) {
     }
   }
 
-  const currentProviderModels = providers.find(p => p.id === selectedProvider)?.models || []
+  const currentProviderModels = providers?.find(p => p.id === selectedProvider)?.models || []
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700" ref={dropZoneRef} tabIndex={-1}>
@@ -277,7 +278,7 @@ export default function ContractSetup({ initialContract }) {
             className="bg-gray-900 border border-gray-700 rounded-sm px-2 py-1 text-xs text-white focus:outline-hidden focus:border-purple-500"
           >
             <option value="">Provider...</option>
-            {providers.map(p => (
+            {(providers || []).map(p => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
@@ -295,6 +296,14 @@ export default function ContractSetup({ initialContract }) {
             ))}
           </select>
         </div>
+        {providersError ? (
+          <div role="alert" className="text-xs text-red-400 bg-red-900/20 rounded-sm px-2 py-1">
+            {providersError}
+            <button type="button" onClick={loadProviders} className="ml-2 underline">Retry</button>
+          </div>
+        ) : providers?.length === 0 && (
+          <div className="text-xs text-gray-400">No enabled API providers. Add one on the AI Providers page to read screenshots.</div>
+        )}
 
         {/* Drop zone */}
         <div
