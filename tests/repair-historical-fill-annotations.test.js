@@ -100,6 +100,126 @@ describe('repairHistoricalFillAnnotations', () => {
     assert.equal(persistCount(), 2);
   });
 
+  it('does not re-book a foreign (untrackedSell) sell as a body sell or close the matching buy', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'u-buy', orderId: 'u-buy-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'u-sell', orderId: 'u-sell-o', side: 'sell', price: '60000', size: '0.01', tradeTime: at(2) }, null, { skipPersist: true });
+    ledger.annotateFillsByOrderId('u-sell-o', { untrackedSell: true });
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+
+    const sell = byTrade(ledger, 'u-sell');
+    assert.equal(sell.isBodyOwned, undefined);
+    assert.equal(sell.bodyPnl, undefined);
+    assert.equal(sell.bodyHoldbackAsset, undefined);
+    assert.equal(byTrade(ledger, 'u-buy').sellOrderId, undefined);
+    assert.equal(byTrade(ledger, 'u-buy').isBodyOwned, undefined);
+  });
+
+  it('keeps a foreign sell excluded when a late row of the order carries no untrackedSell flag', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'l-buy', orderId: 'l-buy-o', side: 'buy', price: '50000', size: '0.005', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'l-sell-a', orderId: 'l-sell-o', side: 'sell', price: '60000', size: '0.01', tradeTime: at(2) }, null, { skipPersist: true });
+    ledger.annotateFillsByOrderId('l-sell-o', { untrackedSell: true });
+    // Ingested after the flag was written: belongs to the same foreign order.
+    ledger.ingestFill({ tradeId: 'l-sell-b', orderId: 'l-sell-o', side: 'sell', price: '60000', size: '0.005', tradeTime: at(2.1) }, null, { skipPersist: true });
+    assert.equal(byTrade(ledger, 'l-sell-b').untrackedSell, undefined, 'precondition: late row is unflagged');
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+
+    for (const id of ['l-sell-a', 'l-sell-b']) {
+      assert.equal(byTrade(ledger, id).isBodyOwned, undefined, id);
+      assert.equal(byTrade(ledger, id).bodyPnl, undefined, id);
+    }
+    assert.equal(byTrade(ledger, 'l-buy').sellOrderId, undefined);
+  });
+
+  it('does not overwrite the per-order bodyPnl of an annotated body sell when a late row is unannotated', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'p-buy', orderId: 'p-buy-o', side: 'buy', price: '50000', size: '0.005', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'p-sell-a', orderId: 'p-sell-o', side: 'sell', price: '60000', size: '0.01', tradeTime: at(2) }, null, { skipPersist: true });
+    ledger.annotateFillsByOrderId('p-sell-o', { isBodyOwned: true, bodyPnl: 123, bodyHoldbackAsset: 0.001, bodyCostBasis: 400 });
+    ledger.ingestFill({ tradeId: 'p-sell-b', orderId: 'p-sell-o', side: 'sell', price: '60000', size: '0.005', tradeTime: at(2.1) }, null, { skipPersist: true });
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+
+    assert.equal(byTrade(ledger, 'p-sell-a').bodyPnl, 123);
+    assert.equal(byTrade(ledger, 'p-sell-a').bodyHoldbackAsset, 0.001);
+    assert.equal(byTrade(ledger, 'p-sell-b').bodyPnl, undefined, 'late row is not re-annotated on its own');
+    assert.equal(byTrade(ledger, 'p-buy').sellOrderId, undefined);
+  });
+
+  it('only pairs a buy whose size is within 1% of the sell, and leaves other sells unannotated', () => {
+    const { ledger } = makeLedger();
+    // sell 0.01 BTC: 0.0102 is +2% and 0.0098 is -2% (both outside); 0.00995 / 0.01005 are inside.
+    const cases = [
+      { id: 'n-hi', buySize: '0.0102', paired: false },
+      { id: 'n-lo', buySize: '0.0098', paired: false },
+      { id: 'n-in-hi', buySize: '0.01005', paired: true },
+      // In band but smaller than the sell (negative holdback): matched, then only marked body-owned.
+      { id: 'n-in-lo', buySize: '0.00995', paired: false, markedOnly: true },
+    ];
+    cases.forEach(({ id, buySize }, i) => {
+      ledger.ingestFill({ tradeId: `${id}-buy`, orderId: `${id}-buy-o`, side: 'buy', price: '50000', size: buySize, tradeTime: at(10 * i + 1) }, null, { skipPersist: true });
+      ledger.ingestFill({ tradeId: `${id}-sell`, orderId: `${id}-sell-o`, side: 'sell', price: '60000', size: '0.01', tradeTime: at(10 * i + 2) }, null, { skipPersist: true });
+    });
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+
+    for (const { id, paired, markedOnly } of cases) {
+      const sell = byTrade(ledger, `${id}-sell`);
+      const buy = byTrade(ledger, `${id}-buy`);
+      if (paired) {
+        assert.equal(sell.isBodyOwned, true, `${id}: sell is booked`);
+        assert.equal(buy.sellOrderId, `${id}-sell-o`, `${id}: buy is closed by its sell`);
+      } else if (markedOnly) {
+        assert.equal(sell.isBodyOwned, true, `${id}: in-band sell is matched`);
+        assert.equal(sell.bodyPnl, undefined, `${id}: invalid holdback books no pnl`);
+        assert.equal(buy.sellOrderId, undefined, id);
+      } else {
+        assert.equal(sell.isBodyOwned, undefined, `${id}: out-of-band sell stays unannotated`);
+        assert.equal(sell.bodyPnl, undefined, id);
+        assert.equal(buy.sellOrderId, undefined, `${id}: out-of-band buy is not closed`);
+      }
+    }
+  });
+
+  it('never pairs a sell with a buy that happened after it', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'e-sell', orderId: 'e-sell-o', side: 'sell', price: '60000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'e-buy', orderId: 'e-buy-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(2) }, null, { skipPersist: true });
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+
+    assert.equal(byTrade(ledger, 'e-sell').isBodyOwned, undefined);
+    assert.equal(byTrade(ledger, 'e-sell').bodyPnl, undefined);
+    assert.equal(byTrade(ledger, 'e-buy').sellOrderId, undefined);
+    assert.equal(byTrade(ledger, 'e-buy').isBodyOwned, undefined);
+  });
+
+  it('does not re-book a timestamp-folded (timeframe) sell as a body sell', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 't-buy', orderId: 't-buy-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 't-sell', orderId: 't-sell-o', side: 'sell', price: '60000', size: '0.01', tradeTime: at(2) }, null, { skipPersist: true });
+    byTrade(ledger, 't-sell').cycleAttribution = 'timeframe';
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+
+    assert.equal(byTrade(ledger, 't-sell').bodyPnl, undefined);
+    assert.equal(byTrade(ledger, 't-buy').sellOrderId, undefined);
+  });
+
+  it('matches a multi-row sell order once, as a single aggregated sell', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'm-buy1', orderId: 'm-buy1-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'm-buy2', orderId: 'm-buy2-o', side: 'buy', price: '50000', size: '0.005', tradeTime: at(2) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'm-sell-a', orderId: 'm-sell-o', side: 'sell', price: '60000', size: '0.005', tradeTime: at(3) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'm-sell-b', orderId: 'm-sell-o', side: 'sell', price: '60000', size: '0.005', tradeTime: at(3.1) }, null, { skipPersist: true });
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+
+    // The two 0.005 rows aggregate to 0.01 and pair with the 0.01 buy only;
+    // per-row matching would have consumed m-buy2 as well.
+    assert.equal(byTrade(ledger, 'm-buy1').sellOrderId, 'm-sell-o');
+    assert.equal(byTrade(ledger, 'm-buy2').sellOrderId, undefined);
+    assert.equal(byTrade(ledger, 'm-sell-a').bodyPnl, byTrade(ledger, 'm-sell-b').bodyPnl);
+    assert.ok(byTrade(ledger, 'm-sell-a').bodyPnl > 0);
+    assert.equal(byTrade(ledger, 'm-sell-a').bodyBtcQty, 0.01);
+  });
+
   it('moves -recovered- cycle fills inside the current cycle range only', () => {
     const { ledger, persistCount } = makeLedger();
     ledger.ingestFill({ tradeId: 'c-live', orderId: 'c-live-o', side: 'buy', price: '50000', size: '0.01', tradeTime: at(5) }, null, { skipPersist: true });

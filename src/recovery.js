@@ -63,12 +63,25 @@ const createRecoveryModule = (exchange, adapter, productId) => {
 
     // 4. Ingest all fills into ledger (idempotent)
     let newFillsIngested = 0;
-    for (const fill of recentFills) {
-      const result = fillLedger.ingestFill(fill);
-      if (result.ingested) {
-        newFillsIngested++;
+    // One ledger rewrite for the whole batch, not one per fill.
+    try {
+      for (const fill of recentFills) {
+        const result = fillLedger.ingestFill(fill, null, { skipPersist: true });
+        if (result.ingested) {
+          newFillsIngested++;
+        }
       }
+    } catch (err) {
+      // Keep rows ingested before the failure durable, but never let a failed
+      // flush mask the ingest error that is the root cause.
+      try {
+        fillLedger.persist();
+      } catch (persistErr) {
+        logger.error(`❌ [${exchange}] Ledger flush after failed ingest also failed: ${persistErr.message}`, { error: persistErr.message });
+      }
+      throw err;
     }
+    fillLedger.persist();
     logger.info(`📝 [${exchange}] Ingested ${newFillsIngested} new fills`, { ingestedFillCount: newFillsIngested });
 
     // 5. Rebuild position state from fill ledger

@@ -79,13 +79,14 @@ const makeEngine = (pair, fillSource, openOrder = OPEN_PARTIAL) => {
     loadCredentials: () => ({ apiKey: 'test', apiSecret: 'test' }),
   });
   const restored = [];
+  const restoreSpecs = [];
   let tpSeq = 0;
   eng._test.setOrderExecutor({
     setPriceIncrement: () => {},
     getPendingCounts: () => ({ total: 0 }),
     getOrderPlacedAt: () => null,
     isLadderOrder: () => false,
-    restorePendingOrder: (orderId) => restored.push(orderId),
+    restorePendingOrder: (orderId, spec) => { restored.push(orderId); restoreSpecs.push(spec); },
     markSettled: () => {},
     checkPendingOrderFills: async () => ({ polled: 0, filled: 0, cancelled: 0 }),
     handleOrderFill: () => {},
@@ -106,7 +107,7 @@ const makeEngine = (pair, fillSource, openOrder = OPEN_PARTIAL) => {
     }),
   });
   engines.push(eng);
-  return { eng, restored };
+  return { eng, restored, restoreSpecs };
 };
 
 const bodiesFor = (pos) => (pos.celestialBodies || []).filter(b => (b.sourceOrderIds || []).includes(ORDER_ID));
@@ -148,6 +149,26 @@ describe('startup booking of partially-filled open entries (issue #671)', () => 
     assert.ok(Math.abs(bodies[0].assetQty - 0.01) < 1e-9, `body holds the full 0.01 (got ${bodies[0].assetQty})`);
     assert.equal(p.cycleBuys, 1, 'one order is one cycle buy');
     assert.equal((p.pendingEntryOrders || []).some(e => e.orderId === ORDER_ID), false, 'terminal fill retires the entry');
+  });
+
+  it('re-arms a restored saved entry with its saved adaptive stale window, or the longest window for a legacy row', async () => {
+    for (const savedStaleMs of [777_000, undefined]) {
+      const fillSource = { fills: [T1] };
+      const { eng, restoreSpecs } = makeEngine(`__teststartuppartial_s${savedStaleMs ?? 'legacy'}__`, fillSource);
+      const pos = eng._getPositionState();
+      pos.pendingEntryOrders = [{
+        orderId: ORDER_ID, price: 50000, assetQty: 0.01, sizeUsdc: 500, placedAt: Date.now() - 60000,
+        ...(savedStaleMs ? { staleMs: savedStaleMs } : {}),
+      }];
+
+      const result = await eng.start();
+      assert.equal(result.success, true, `start() must succeed: ${result.error}`);
+
+      const cfg = eng._getConfig();
+      const spec = restoreSpecs.find(s => s.type === 'entry');
+      assert.ok(spec, 'the entry was restored');
+      assert.equal(spec.staleMs, savedStaleMs ?? Math.max(cfg.orderStaleMs, cfg.maxIntervalMs));
+    }
   });
 
   it('legacy ledger rows from the old startup ingest are adopted into the body without double-counting cycleBuys', async () => {
@@ -296,13 +317,20 @@ describe('startup booking of partially-filled open entries (issue #671)', () => 
 
   it('adopted orphan entry: persisted to pendingEntryOrders and its tranche booked into a body', async () => {
     const fillSource = { fills: [T1] };
-    const { eng, restored } = makeEngine('__teststartuppartial_c__', fillSource);
+    const { eng, restored, restoreSpecs } = makeEngine('__teststartuppartial_c__', fillSource);
 
     const result = await eng.start();
     assert.equal(result.success, true, `start() must succeed: ${result.error}`);
 
     let p = eng._getPositionState();
     assert.ok(restored.includes(ORDER_ID));
+    // The adopted orphan has no saved window: it is re-armed with the longest
+    // adaptive window (not the orderStaleMs floor), and the persisted row keeps it.
+    const cfg = eng._getConfig();
+    const expectedStaleMs = Math.max(cfg.orderStaleMs, cfg.maxIntervalMs);
+    assert.ok(expectedStaleMs > 0);
+    assert.equal(restoreSpecs.find(s => s.type === 'entry').staleMs, expectedStaleMs);
+    assert.equal(p.pendingEntryOrders.find(e => e.orderId === ORDER_ID).staleMs, expectedStaleMs);
     const tracked = (p.pendingEntryOrders || []).find(e => e.orderId === ORDER_ID);
     assert.ok(tracked, 'the adopted orphan must be persisted so it survives the next restart');
     assert.ok(Math.abs(tracked.assetQty - 0.006) < 1e-9, `persisted at its unfilled remainder (got ${tracked.assetQty})`);

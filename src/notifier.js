@@ -20,6 +20,16 @@ const notifierLogger = createContextLogger({ module: 'notifier' });
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 const MAX_MESSAGE_LENGTH = 4000;
+const TELEGRAM_MAX_RETRIES = 3;
+const TELEGRAM_RETRY_MAX_DELAY_MS = 30_000;
+// The gateway gives the whole shutdown 30s (SHUTDOWN_TIMEOUT_MS) and awaits
+// stop() first, so the notifier's drain must finish well inside that.
+const STOP_DRAIN_DEADLINE_MS = 10_000;
+
+const defaultSleep = (ms) => new Promise((resolve) => {
+  const timer = setTimeout(resolve, ms);
+  timer.unref?.();
+});
 
 /**
  * Characters reserved by Telegram's legacy Markdown parse_mode. Trade event
@@ -201,9 +211,11 @@ const computeDailySummaryDelay = (hour, now = new Date()) => {
 
 /**
  * Create a notifier instance
+ * @param {Object} [options]
+ * @param {(ms: number) => Promise<void>} [options.sleep] - Retry-delay wait; injectable so tests need not really sleep
  * @returns {Object} Notifier instance
  */
-const createNotifier = () => {
+const createNotifier = ({ sleep = defaultSleep } = {}) => {
   let config = getNotificationConfig();
   let queue = [];
   let flushTimer = null;
@@ -212,6 +224,12 @@ const createNotifier = () => {
   let getEngines = null;
   const pendingSends = new Set();
   let stopPromise = null;
+  // Set by stop(): retries are abandoned so a Telegram outage cannot hold shutdown.
+  let stopping = false;
+  const retryWakers = new Set();
+  // Sends are serialized through one tail so batches (and retries of an earlier
+  // batch) are delivered in enqueue order.
+  let sendTail = Promise.resolve();
 
   const trackSend = (promise) => {
     pendingSends.add(promise);
@@ -249,11 +267,12 @@ const createNotifier = () => {
   };
 
   /**
-   * Send a message to Telegram
+   * One Telegram sendMessage attempt. Never throws.
    * @param {string} text - Message text
-   * @returns {Promise<boolean>}
+   * @param {boolean} markdown - Send with parse_mode Markdown
+   * @returns {Promise<{ok: boolean, retryable?: boolean, retryAfterMs?: number, plainTextRetry?: boolean, status?: number|string, desc?: string}>}
    */
-  const sendTelegram = (text) => trackSend((async () => {
+  const attemptTelegramSend = async (text, markdown) => {
     const url = `${TELEGRAM_API}${config.telegram.botToken}/sendMessage`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
@@ -264,42 +283,101 @@ const createNotifier = () => {
         body: JSON.stringify({
           chat_id: config.telegram.chatId,
           text,
-          parse_mode: 'Markdown',
+          ...(markdown && { parse_mode: 'Markdown' }),
           disable_web_page_preview: true,
         }),
         signal: controller.signal,
       });
       const data = await resp.json().catch(() => ({}));
       clearTimeout(timeout);
-      if (!resp.ok) {
-        stats.errors++;
-        stats.dailyErrors++;
-        const desc = data.description || resp.statusText;
-        notifierLogger.error(`❌ 📨 Telegram send failed (${resp.status}): ${desc}`, {
-          transport: 'telegram',
-          status: resp.status,
-          error: desc,
-        });
-        return false;
-      }
-      stats.sent++;
-      stats.dailySent++;
-      stats.lastSentAt = new Date().toISOString();
-      return true;
+      if (resp.ok) return { ok: true };
+      const desc = data.description || resp.statusText;
+      const retryAfterSec = Number(data.parameters?.retry_after);
+      return {
+        ok: false,
+        status: resp.status,
+        desc,
+        // 429 and 5xx are transient; other 4xx (bad token, chat not found) never succeed on retry
+        retryable: resp.status === 429 || resp.status >= 500,
+        retryAfterMs: Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? retryAfterSec * 1000 : 0,
+        // A Markdown entity-parse 400 can still be delivered as plain text
+        plainTextRetry: markdown && resp.status === 400 && /can't parse entities/i.test(String(desc)),
+      };
     } catch (err) {
       clearTimeout(timeout);
-      stats.errors++;
-      stats.dailyErrors++;
-      const status = err.status || 'unknown';
-      const desc = err.message || String(err);
-      notifierLogger.error(`❌ 📨 Telegram send failed (${status}): ${desc}`, {
-        transport: 'telegram',
-        status,
-        error: desc,
-      });
-      return false;
+      return { ok: false, status: err.status || 'unknown', desc: err.message || String(err), retryable: true, retryAfterMs: 0 };
     }
-  })());
+  };
+
+  /**
+   * Send a message to Telegram. Transient failures (network error, timeout,
+   * 5xx, 429) are retried with capped backoff inside the tracked promise so
+   * flush() still waits for them; a Markdown parse rejection gets one
+   * plain-text retry; other failures are final.
+   * @param {string} text - Message text
+   * @returns {Promise<boolean>}
+   */
+  const sendTelegram = (text) => {
+    const run = sendTail.then(() => deliverTelegram(text));
+    sendTail = run.catch(() => {});
+    return trackSend(run);
+  };
+
+  const deliverTelegram = async (text) => {
+    let markdown = true;
+    let outgoing = text;
+    for (let attempt = 0; ; attempt++) {
+      const result = await attemptTelegramSend(outgoing, markdown);
+      if (result.ok) {
+        stats.sent++;
+        stats.dailySent++;
+        stats.lastSentAt = new Date().toISOString();
+        return true;
+      }
+
+      if (result.plainTextRetry) {
+        markdown = false;
+        outgoing = text.replace(/\\([_*`[\]])/g, '$1'); // drop the Markdown escapes: they would show literally
+        notifierLogger.warn(`⚠️ 📨 Telegram rejected Markdown (${result.desc}) — resending as plain text`, {
+          transport: 'telegram',
+          status: result.status,
+          error: result.desc,
+        });
+        continue;
+      }
+
+      if (result.retryable && attempt < TELEGRAM_MAX_RETRIES && !stopping) {
+        const delayMs = Math.min(TELEGRAM_RETRY_MAX_DELAY_MS, Math.max(result.retryAfterMs, 1000 * 2 ** attempt));
+        notifierLogger.warn(`⚠️ 📨 Telegram send failed (${result.status}): ${result.desc} — retry ${attempt + 1}/${TELEGRAM_MAX_RETRIES} in ${delayMs}ms`, {
+          transport: 'telegram',
+          status: result.status,
+          error: result.desc,
+          attempt: attempt + 1,
+          delayMs,
+        });
+        let wake;
+        const woken = new Promise((resolve) => { wake = resolve; });
+        retryWakers.add(wake);
+        await Promise.race([sleep(delayMs), woken]);
+        retryWakers.delete(wake);
+        if (stopping) return recordSendFailure(result);
+        continue;
+      }
+
+      return recordSendFailure(result);
+    }
+  };
+
+  const recordSendFailure = (result) => {
+    stats.errors++;
+    stats.dailyErrors++;
+    notifierLogger.error(`❌ 📨 Telegram send failed (${result.status}): ${result.desc}`, {
+      transport: 'telegram',
+      status: result.status,
+      error: result.desc,
+    });
+    return false;
+  };
 
   /**
    * Flush queued messages
@@ -325,11 +403,9 @@ const createNotifier = () => {
     }
     if (batch) batches.push(batch);
 
-    // Send each batch
-    return trackSend(batches.reduce(
-      (chain, b) => chain.then(async (sent) => (await sendTelegram(b)) && sent),
-      Promise.resolve(true)
-    ));
+    // Queue every batch on the serialized send tail; a failed batch does not
+    // stop the later ones
+    return trackSend(Promise.all(batches.map(sendTelegram)).then((results) => results.every(Boolean)));
   };
 
   /**
@@ -442,6 +518,7 @@ const createNotifier = () => {
    */
   const start = (engineGetter) => {
     stopPromise = null;
+    stopping = false;
     config = getNotificationConfig();
     getEngines = engineGetter || null;
 
@@ -484,9 +561,27 @@ const createNotifier = () => {
       dailySummaryTimer = null;
     }
 
+    // Abandon retry backoff: wake any sleeping retry and refuse further retries.
+    stopping = true;
+    for (const wake of retryWakers) wake();
+    retryWakers.clear();
+
     // Own queued batches and sends that already left the queue (including
     // daily summaries and test notifications), sharing one drain on repeats.
-    const drain = flush().catch((err) => {
+    // Bounded: attempts already in flight may take up to their own 10s abort
+    // each, so cap the whole drain well under the gateway's shutdown deadline.
+    let deadlineTimer;
+    const deadline = new Promise((resolve) => {
+      deadlineTimer = setTimeout(() => {
+        notifierLogger.warn('⚠️ 📨 Notifier drain deadline reached on stop — abandoning unsent messages', {
+          action: 'stop',
+          deadlineMs: STOP_DRAIN_DEADLINE_MS,
+        });
+        resolve(false);
+      }, STOP_DRAIN_DEADLINE_MS);
+      deadlineTimer.unref?.();
+    });
+    const drain = Promise.race([flush(), deadline]).finally(() => clearTimeout(deadlineTimer)).catch((err) => {
       notifierLogger.error(`❌ 📨 Flush on stop failed: ${err.message}`, { action: 'stop', error: err.message });
       return false;
     }).then((sent) => {

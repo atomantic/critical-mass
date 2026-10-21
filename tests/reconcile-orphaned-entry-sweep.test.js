@@ -301,6 +301,68 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
     assert.ok(Math.abs(bodies[0].assetQty - 0.4) < 1e-8, `the body must reflect the known 0.4 partial — got ${bodies[0].assetQty}`);
   });
 
+  for (const saved of [true, false]) {
+    it(`re-arms a still-resting entry with ${saved ? 'its saved adaptive stale window' : 'the longest adaptive window when the row predates staleMs'}`, async () => {
+      // The re-arm must not fall back to the orderStaleMs floor: a deep bid
+      // placed with a multi-minute window would be cancelled seconds after restart.
+      const orderId = saved ? 'e10-saved' : 'e10-legacy';
+      const adapter = {
+        getOrderFills: async () => { throw new Error('trade scan unavailable'); },
+        getOrder: async () => ({ orderId, side: 'BUY', status: 'CANCELLED', filledSize: 0.4, filledValue: 0, averageFilledPrice: 0 }),
+      };
+      const restoreCalls = [];
+      const eng = makeEngine(adapter, { restorePendingOrder: (id, spec) => restoreCalls.push({ id, spec }) });
+      const cfg = eng._getConfig();
+      const savedStaleMs = Math.max(cfg.orderStaleMs, cfg.maxIntervalMs) - 1000;
+      const pos = eng._getPositionState();
+      pos.pendingEntryOrders = [{
+        orderId, price: 2000, assetQty: 1.5, sizeUsdc: 3000, placedAt: Date.now(),
+        ...(saved ? { staleMs: savedStaleMs } : {}),
+      }];
+
+      await sweep(eng);
+
+      assert.equal(restoreCalls.length, 1);
+      assert.equal(restoreCalls[0].spec.type, 'entry');
+      assert.equal(
+        restoreCalls[0].spec.staleMs,
+        saved ? savedStaleMs : Math.max(cfg.orderStaleMs, cfg.maxIntervalMs),
+      );
+      assert.ok(restoreCalls[0].spec.staleMs > cfg.orderStaleMs || cfg.maxIntervalMs <= cfg.orderStaleMs,
+        'the restored window is longer than the orderStaleMs floor');
+    });
+  }
+
+  it('persists the adaptive stale window a reactive entry was placed with', async () => {
+    const placed = [];
+    const eng = makeEngine({
+      getOrderFills: async () => [],
+      getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
+      getAccountBalance: async () => ({ available: 1_000_000 }),
+    }, {
+      placeEntryBid: async (...args) => {
+        placed.push(args);
+        return { success: true, orderId: 'e11', price: 99.9, assetQty: 0.5 };
+      },
+    });
+    Object.assign(eng._getConfig(), {
+      entryMode: 'reactive', ladderAutoSwitch: false, maxUsdcDeployed: 1000, depositedCapital: 1000,
+      baseSizeUsdc: 50, maxAssetExposure: 0, maxCycleBuys: 100, minIntervalMs: 0, maxIntervalMs: 0, maxOpenOrders: 50,
+    });
+    Object.assign(eng._getMarketState(), { lastPrice: 100, bid: 99.99, ask: 100.01, atr1m: 0.5, volBaseline: 0.01, realizedVol: 0.01 });
+    const health = eng._test.getHealth();
+    health.mode = 'ACTIVE';
+    health.reason = null;
+
+    await eng._test.evaluateEntryTrigger();
+
+    assert.equal(placed.length, 1, 'the entry was placed');
+    const entryStaleMs = placed[0][5];
+    assert.ok(Number.isFinite(entryStaleMs) && entryStaleMs > 0);
+    const row = eng._getPositionState().pendingEntryOrders.find(e => e.orderId === 'e11');
+    assert.equal(row.staleMs, entryStaleMs, 'the saved row carries the window the executor armed');
+  });
+
   it('persists a raised knownFilledSize to disk immediately, not on the periodic save timer (issue #764)', () => {
     // The stamp covers the window where the fill it records may fail to book;
     // a restart inside that window must still see it.

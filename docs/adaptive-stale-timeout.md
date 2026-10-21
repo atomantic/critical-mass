@@ -60,6 +60,25 @@ staleMs = clamp( 4min × (offsetBps / ATRbps)²,  orderStaleMs,  maxIntervalMs )
   the deep bids the fix is meant to protect.
 - If ATR/price are unavailable (startup), falls back to `orderStaleMs`
   (previous behavior).
+- **Restored entries are re-armed.** `restorePendingOrder` (startup restore,
+  orphan adoption, reconcile re-arm) arms a fresh stale timer for a resting
+  `entry` with only the *remaining* window: `staleMs - (now - placedAt)`, where
+  `placedAt` is the exchange creation time when known and `staleMs` is the
+  adaptive window the bid was placed with, saved on its `pendingEntryOrders`
+  row. A row saved before that field existed, or an orphan adopted at startup,
+  uses the cap `max(orderStaleMs, maxIntervalMs)` instead: the offset is
+  unknown, and the floor would cancel a deep bid seconds after a restart.
+  Entries adopted from a placement intent (crash between placement and
+  tracking) still get the regime-adjusted `orderStaleMs`.
+  An order already past its window is cancelled after a 5 s grace (startup is
+  still booking offline partials), and re-restoring an entry whose timer is
+  live does not postpone it.
+- **Partially filled entries are cancelled too.** At the timeout a resting
+  entry that is `OPEN` (any `completionPercentage`) or `PARTIALLY_FILLED` is
+  cancelled via `safeCancelOrder`; the filled portion is routed through
+  `onFillDetected` so it is booked into a body, and the unfilled remainder stops
+  blocking new reactive entries. Without this the one-shot timer would be
+  consumed by a partial and the bid would rest until price returned.
 
 Both executors honor the per-order value: the live executor's
 `scheduleStaleOrderTimeout` `setTimeout` path (`order.staleMs ?? effectiveStaleMs`),
