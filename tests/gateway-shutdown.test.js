@@ -65,6 +65,23 @@ describe('gateway shutdown owns admitted work', () => {
     assert.deepEqual(calls, ['cancel', 'producers', 'producers', 'disconnect', 'listeners', 'exit:0']);
   });
 
+  it('production producer stop leaves restore-owned writers alone so it cannot persist over restored files', () => {
+    const source = fs.readFileSync(require.resolve('../server'), 'utf8');
+    const start = source.indexOf('  stopProducers: () => {');
+    const block = source.slice(start, source.indexOf('\n  },', start) + '\n  },'.length);
+    for (const maintenance of [true, false]) {
+      const calls = [];
+      const context = vm.createContext({
+        isMaintenanceActive: () => maintenance,
+        updownService: { stop: () => calls.push('updown') },
+        sentinelService: { stop: () => calls.push('sentinel') },
+        activeLogStreams: { stopAll: () => calls.push('logs') },
+      });
+      vm.runInContext(`({${block}}).stopProducers()`, context);
+      assert.deepEqual(calls, maintenance ? ['logs'] : ['updown', 'sentinel', 'logs']);
+    }
+  });
+
   it('keeps IPC alive for a route promise even when its client disconnects', async () => {
     const work = deferred();
     const { gateway, calls } = makeGateway();
