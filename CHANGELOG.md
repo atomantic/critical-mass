@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Fills recorded while a fund is stopped land in the active cycle** — The stopped-fund market-data service now anchors its fill ledger on the persisted `activeCycleId`, so entry and TP fills no longer get filed in the previous finished cycle (which undercounted the per-cycle buy limit after the next start).
 - **Chart interval, log toolbar and Retry buttons meet touch-target size** — The BTC chart interval, range and view buttons, the log viewer's Retry/Clear/Flush/Fullscreen buttons and the Retry buttons in the regime transactions and UpDown signal panels are at least 44px on touch screens, with desktop sizing unchanged.
 - **Icon-only buttons announce their action to screen readers** — The UpDown Scorecard Analysis refresh button now has the accessible name "Refresh scorecard analysis", and the decorative icons in the toast dismiss button and that refresh button are hidden from assistive tech.
 - **Exchange feeds reconnect when a WebSocket handshake never completes** — A market or user feed whose upgrade request hangs is now terminated after 15s and retried with the normal backoff, instead of staying dark and blocking every later reconnect.
