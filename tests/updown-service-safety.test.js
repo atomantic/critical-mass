@@ -287,7 +287,7 @@ describe('UpDown cycle history and side-effect characterization', () => {
   })
 
   for (const age of [299_999, 300_000]) {
-    it(`resumed same-type history at age ${age}ms preserves the strict debounce boundary`, async t => {
+    it(`resumed legacy history (no published type) at age ${age}ms preserves the strict debounce boundary`, async t => {
       const old = historyRow('NEUTRAL', CYCLE_START + 5_000 - age)
       const { service, cycle } = await cycleHarness(t, { saved: { signalHistory: [old] } })
       const calls = cycle()
@@ -295,7 +295,28 @@ describe('UpDown cycle history and side-effect characterization', () => {
       assert.deepEqual(service.getStatus().signalHistory, age < 300_000 ? [old] : [old, historyRow('NEUTRAL', CYCLE_START + 5_000)])
       assert.deepEqual(calls.find(c => c.name === 'persist').payload.signalHistory, service.getStatus().signalHistory)
     })
+
+    it(`resumed same-type history at age ${age}ms continues silently from the published type`, async t => {
+      const old = historyRow('NEUTRAL', CYCLE_START + 5_000 - age)
+      const { service, cycle } = await cycleHarness(t, { saved: { signalHistory: [old], stability: { publishedType: 'NEUTRAL' } } })
+      const calls = cycle()
+      assert.deepEqual(calls.map(c => c.name), ['compute', 'updown:indicators'])
+      assert.deepEqual(service.getStatus().signalHistory, [old])
+    })
   }
+
+  it('resuming with a saved published BUY and a BUY result emits no prediction or signal', async t => {
+    const { cycle } = await cycleHarness(t, { saved: { stability: { publishedType: 'BUY' } } })
+    const calls = cycle({ type: 'BUY', score: 30 })
+    assert.ok(calls.some(c => c.name === 'updown:indicators'))
+    assert.ok(!calls.some(c => c.name === 'prediction' || c.name === 'updown:signal'))
+  })
+
+  it('resuming with a saved published BUY and a different result still emits both', async t => {
+    const { cycle } = await cycleHarness(t, { saved: { stability: { publishedType: 'BUY' } } })
+    const names = cycle({ type: 'SELL', score: -30 }).map(c => c.name)
+    assert.ok(names.includes('prediction') && names.includes('updown:signal'))
+  })
 
   it('excludes NO_TRADE_ZONE rows while still persisting, predicting and publishing changes', async t => {
     const { service, cycle } = await cycleHarness(t)

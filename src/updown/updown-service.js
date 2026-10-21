@@ -153,6 +153,9 @@ const createUpDownService = (io, deps) => {
     }
     if (saved.stability) {
       signalEngine.setStabilityState(saved.stability);
+      // Continue silently from the restored published type so a restart does
+      // not re-journal / re-emit the current signal as a fresh change.
+      if (saved.stability.publishedType) lastSignal = saved.stability.publishedType;
     }
     if (saved.flushSetup) {
       signalEngine.setFlushSetupState?.(saved.flushSetup);
