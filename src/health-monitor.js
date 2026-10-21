@@ -191,7 +191,11 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
     persistenceFailures += 1;
     state.healthChecks.persistenceFailureCount = persistenceFailures;
 
-    if (persistenceFailures >= MAX_CONSECUTIVE_PERSISTENCE_FAILURES) {
+    // Only an ACTIVE engine escalates. PAUSED and AUTH_DENIED already block new
+    // entries and checkHealth() never auto-exits them, but SAFE does — so
+    // overwriting them here would turn a disk fault into a silent resume once
+    // saves recover. checkHealth() trips SAFE after a manual resume instead.
+    if (persistenceFailures >= MAX_CONSECUTIVE_PERSISTENCE_FAILURES && state.mode === 'ACTIVE') {
       // ", " is the issue separator in a SAFE reason (see checkHealth), and an
       // fs error message readily contains one ("ENOSPC: ..., write '/path'") —
       // sanitise it so the reason stays one parseable token.
