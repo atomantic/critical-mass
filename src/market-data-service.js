@@ -82,14 +82,7 @@ const retireService = (key, service) => {
 /** Default bound for a writer-handover join; matches the engine write drain. */
 const FENCE_TIMEOUT_MS = 30_000;
 
-// REST adapter methods this service actually calls (getOrderFills via
-// ingestNewFillsForOrder, getCandles via updateMetrics) — instrumented so a
-// REST-error burst / rate-limit / latency spike here feeds this service's own
-// health monitor. Uses instrumentAdapterForHealth from health-monitor.js
-// (issue #211-B), narrowed to this file's actual call sites rather than the
-// full REST surface the live trading engine exercises (issue #228).
-
-/** Operator-facing retry reason strings keyed by ingest outcome. */
+/** Ingest outcomes that need a retry, mapped to their operator-facing reason. */
 const INGEST_RETRY_REASON = {
   short: 'ledger short of cumulative',
   'no-fills-yet': 'has no fills yet',
@@ -97,7 +90,7 @@ const INGEST_RETRY_REASON = {
   'persist-failed': 'persist failed',
 };
 
-const INGEST_NEEDS_RETRY = new Set(['short', 'no-fills-yet', 'fetch-failed', 'persist-failed']);
+const INGEST_NEEDS_RETRY = new Set(Object.keys(INGEST_RETRY_REASON));
 
 /**
  * Fetch and ingest any new fills for an order, advancing the

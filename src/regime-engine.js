@@ -5487,24 +5487,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         source: fillData.source || 'live',
       }, { additive: booking.additive });
 
-      // try/finally: if resetCycle() throws (its only network call — the
-      // ladder cancel — runs before any state mutation, so a throw there
-      // means resetCycle() changed nothing), the outer dedup-clear/retry
-      // path retries this fill, but `claimCapitalCredit` will then return
-      // false and sizeOptimizerCycleData would never be set again —
-      // permanently dropping this cycle from the optimizer's stats.
-      // Recording it here regardless of
-      // resetCycle()'s outcome closes that gap; the underlying figures
-      // were already fixed, committed facts before resetCycle() ran.
-      // Deliberately NOT awaited: saveLiveState()/fillLedger.persist()
-      // below durably persist this already-completed cycle close before
-      // the optimizer's balance-fetch (up to a 30s exchange timeout) gets
-      // a chance to delay them — a crash during that fetch loses only
-      // this one best-effort optimizer stats sample, never the
-      // P&L-critical state. Never rejects (its
-      // own body is try/caught), so no unhandled-rejection risk. Once it
-      // DOES resolve, re-save so the recorded sample/balance isn't left
-      // ONLY in memory until some unrelated future save picks it up.
+      // Record the optimizer sample even if resetCycle() throws: the retry
+      // of this fill finds claimCapitalCredit already spent and would never
+      // rebuild sizeOptimizerCycleData, dropping the cycle from the stats.
+      // (A throw comes from the ladder cancel, before any state mutation.)
+      // Not awaited, so its balance fetch (up to a 30s timeout) cannot delay
+      // the P&L-critical saves below; it never rejects, and re-saves once
+      // it resolves so the sample is not held only in memory.
       try {
         await resetCycle();
       } finally {
@@ -5522,8 +5511,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   /**
    * Record a buy-merge TP cancellation before any further asynchronous work.
    * A clean cancellation keeps the target; other outcomes route the buy to a
-   * new body. Execution-bearing cancellations also tell the caller what still
-   * needs booking or re-arming. Keep those awaits in handleOrderFillImpl so a
+   * new body. An execution-bearing cancellation also returns
+   * `execution.followUp`: 'book-execution' (book the sold tranche now),
+   * 'rearm-target' (an in-flight fill already booked it; re-place the target's
+   * TP) or null (no TP to act on). Keep those awaits in handleOrderFillImpl so a
    * clean cancel and its body/counter commitment remain one synchronous step.
    */
   const recordBuyMergeCancellation = (mergeTarget, cancelResult) => {
@@ -5564,15 +5555,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const snapshotConsumed = !!soldTp && !pendingMergeTpOrders.has(soldTp);
       const committedBooking = snapshotConsumed ? fillLedger.getSellBooking(soldTp) : null;
       const alreadyBookedSize = committedBooking && committedBooking.hasMarker ? committedBooking.bookedSize : 0;
-      const skipImmediateBooking = snapshotConsumed
+      const executionAlreadyBooked = snapshotConsumed
         && !((cancelResult.filledSize || 0) > alreadyBookedSize + 1e-9);
-      if (skipImmediateBooking) {
+      if (executionAlreadyBooked) {
         logger.info(
           `ℹ️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP ${soldTp.slice(0, 8)} execution (${cancelResult.filledSize} ${baseCurrency}) was already booked by its in-flight fill — not re-booking (#770)`,
           { orderId: soldTp, filledSize: cancelResult.filledSize, alreadyBookedSize }
         );
       }
-      if (soldTp && !skipImmediateBooking) {
+      // executionAlreadyBooked implies soldTp (the snapshot was consumed).
+      const followUp = executionAlreadyBooked ? 'rearm-target' : soldTp ? 'book-execution' : null;
+      if (followUp === 'book-execution') {
         completeMergeSnapshot(snapshotBody(mergeTarget));
       }
       // Clear the cancelled TP so no body references a dead order; the
@@ -5581,7 +5574,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       mergeTarget.tpPrice = 0;
       mergeTarget.assetOnOrder = 0;
       saveLiveState();
-      return { mergeTarget: null, execution: { soldTp, skipImmediateBooking } };
+      return { mergeTarget: null, execution: { soldTp, followUp } };
     }
 
     // Cancel succeeded — move to completed with TTL
@@ -6006,7 +5999,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id, mergeTarget.tpOrderId);
       const cancellation = recordBuyMergeCancellation(mergeTarget, cancelResult);
       if (cancellation.execution) {
-        const { soldTp, skipImmediateBooking } = cancellation.execution;
+        const { soldTp, followUp } = cancellation.execution;
         // cancelBodyTpOrder has just removed this order from ALL executor
         // tracking (pendingOrders included) — a future poll can no longer find
         // it to discover the fill, and if this WS connection happens to also
@@ -6016,7 +6009,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // immediately instead of hoping a WS event arrives (issue #227
         // follow-up). handleOrderFill's own dedup guard makes this safe even
         // if a WS/poll event for the same fill also arrives independently.
-        if (soldTp && !skipImmediateBooking) {
+        if (followUp === 'book-execution') {
           await handleOrderFill(buildPartialFillData(soldTp, 'sell', {
             status: 'CANCELLED',
             filledSize: cancelResult.filledSize,
@@ -6028,7 +6021,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               { orderId: soldTp, error: err.message }
             );
           });
-        } else if (skipImmediateBooking && mergeTarget.assetQty > 0
+        } else if (followUp === 'rearm-target' && mergeTarget.assetQty > 0
           && (positionState.celestialBodies || []).includes(mergeTarget)) {
           // The in-flight fill's snapshot handler left the cancel and the
           // re-place to this continuation (it saw the body still pointing at
@@ -8976,6 +8969,28 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     return { success: true, message: `Discarded ${intent.action ?? 'placement'} intent — placements resume for this fund` };
   };
 
+  /** The blocking intent with this id, or undefined (in-flight dispatches are not reconcilable). */
+  const findReconcilableIntent = (intentId) => describePlacementIntents(exchange, pair)
+    .find(i => i.id === intentId && isBlockingPlacementIntent(i));
+
+  const noReconcilableIntent = (intentId) => ({
+    success: false,
+    error: `No unresolved placement intent ${intentId} on this fund (an in-flight dispatch is not reconcilable)`,
+  });
+
+  /**
+   * Authoritative client-order-id lookup. A rejected lookup resolves to
+   * `{ lookupError }` so callers keep the intent instead of reading it as absent.
+   * @returns {Promise<{found: Object|null}|{lookupError: Error}>}
+   */
+  const lookupPlacementByClientOrderId = (intent) => adapter.findOrderByClientOrderId(intent.clientOrderId, productId)
+    .then(found => ({ found }), lookupError => ({ lookupError }));
+
+  const lookupFailed = (lookupError) => ({
+    success: false,
+    error: `Lookup failed (${lookupError.message}) — the intent stays pending; we must not assume the order is absent`,
+  });
+
   /**
    * Operator reconcile of one unresolved placement intent.
    *
@@ -8984,50 +8999,60 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * clearing the intent. `discard` clears an intent the operator has confirmed
    * never became a live order. Both are exactly-once: the disk row is removed
    * as part of the action, so a duplicate call finds nothing to act on.
-   *
-   * Automatic reconciliation uses the same durable adoption path and clears
-   * positively identified terminal orders with zero fills. When there is no
-   * client order id, or the lookup finds nothing, it searches open orders and
-   * fill history instead (resolveFromExchangeEvidence).
    * @param {string} intentId - Intent id to reconcile
    * @param {'adopt'|'discard'} action - Operator decision
    * @returns {Promise<{success: boolean, message?: string, error?: string, adoptedOrderId?: string}>} Result
    */
-  const reconcilePlacementIntent = async (intentId, action, { automatic = false } = {}) => {
+  const reconcilePlacementIntent = async (intentId, action) => {
     if (action !== 'adopt' && action !== 'discard') {
       return { success: false, error: `Unknown reconcile action '${action}' (expected 'adopt' or 'discard')` };
     }
-    const intent = describePlacementIntents(exchange, pair).find(i => i.id === intentId && isBlockingPlacementIntent(i));
-    if (!intent) {
-      return { success: false, error: `No unresolved placement intent ${intentId} on this fund (an in-flight dispatch is not reconcilable)` };
-    }
+    const intent = findReconcilableIntent(intentId);
+    if (!intent) return noReconcilableIntent(intentId);
 
     if (action === 'discard') return discardPlacementIntent(intentId, intent);
 
     if (!intent.clientOrderId) {
-      if (automatic) return resolveFromExchangeEvidence(intentId, intent);
       return { success: false, error: 'This intent carries no client order id (the process died before the response), so it cannot be looked up. The engine searches open orders and fills for it automatically; otherwise check the exchange, cancel any duplicate, then discard it.' };
     }
     if (typeof adapter.findOrderByClientOrderId !== 'function') {
-      if (automatic) return resolveFromExchangeEvidence(intentId, intent);
       return { success: false, error: `${exchange} cannot look up an order by client id; check the exchange manually, then discard the intent` };
     }
 
-    const found = await adapter.findOrderByClientOrderId(intent.clientOrderId, productId).catch((err) => ({ __lookupError: err }));
-    if (found?.__lookupError) {
-      return { success: false, error: `Lookup failed (${found.__lookupError.message}) — the intent stays pending; we must not assume the order is absent` };
-    }
-    if (automatic) {
-      const classification = classifyAutomaticLookup(found);
-      if (classification === 'clear-unfilled-terminal') return clearUnfilledTerminalIntent(intentId);
-      if (classification === 'status-unknown') return { success: false, error: 'Exchange order status remains unknown; retrying automatically' };
-      // An empty lookup may only reflect bounded history; corroborate it.
-      if (classification === 'absent') return resolveFromExchangeEvidence(intentId, intent);
-    }
-    if (!found) {
+    const lookup = await lookupPlacementByClientOrderId(intent);
+    if ('lookupError' in lookup) return lookupFailed(lookup.lookupError);
+    if (!lookup.found) {
       return { success: false, error: `The exchange reports no order for client id ${intent.clientOrderId}. If you have confirmed that, discard the intent instead — an empty lookup alone is never auto-cleared.` };
     }
-    return adoptFoundPlacement(intentId, intent, found, automatic);
+    return adoptFoundPlacement(intentId, intent, lookup.found, { automatic: false });
+  };
+
+  /**
+   * Automatic recovery of one unresolved placement intent, run by the periodic
+   * reconciler. Uses the same durable adoption path as the operator, and also
+   * clears positively identified terminal orders with zero fills. When there is
+   * no client order id, the adapter cannot look one up, or the lookup finds
+   * nothing, it searches open orders and fill history instead
+   * (resolveFromExchangeEvidence).
+   * @param {string} intentId
+   * @returns {Promise<{success: boolean, deferred?: boolean, message?: string, error?: string, adoptedOrderId?: string}>}
+   */
+  const recoverPlacementIntent = async (intentId) => {
+    const intent = findReconcilableIntent(intentId);
+    if (!intent) return noReconcilableIntent(intentId);
+
+    if (!intent.clientOrderId || typeof adapter.findOrderByClientOrderId !== 'function') {
+      return resolveFromExchangeEvidence(intentId, intent);
+    }
+
+    const lookup = await lookupPlacementByClientOrderId(intent);
+    if ('lookupError' in lookup) return lookupFailed(lookup.lookupError);
+    const classification = classifyAutomaticLookup(lookup.found);
+    if (classification === 'clear-unfilled-terminal') return clearUnfilledTerminalIntent(intentId);
+    if (classification === 'status-unknown') return { success: false, error: 'Exchange order status remains unknown; retrying automatically' };
+    // An empty lookup may only reflect bounded history; corroborate it.
+    if (classification === 'absent') return resolveFromExchangeEvidence(intentId, intent);
+    return adoptFoundPlacement(intentId, intent, lookup.found, { automatic: true });
   };
 
   const clearUnfilledTerminalIntent = (intentId) => ({
@@ -9090,7 +9115,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (classification === 'status-unknown') {
       return { success: false, error: `Matched exchange order ${evidence.order.orderId} but its status is unknown; retrying automatically` };
     }
-    return adoptFoundPlacement(intentId, intent, evidence.order, true);
+    return adoptFoundPlacement(intentId, intent, evidence.order, { automatic: true });
   };
 
   /**
@@ -9098,10 +9123,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @param {string} intentId
    * @param {Object} intent
    * @param {Object} found - Exchange order (OrderDetails shape)
-   * @param {boolean} automatic
+   * @param {{automatic: boolean}} origin - Recovery loop vs operator request (log wording only)
    * @returns {{success: boolean, message?: string, error?: string, adoptedOrderId?: string}}
    */
-  const adoptFoundPlacement = (intentId, intent, found, automatic) => {
+  const adoptFoundPlacement = (intentId, intent, found, { automatic }) => {
     // Recheck after the lookup await. From here through persistence and removal
     // there are no awaits, so concurrent operator requests cannot interleave.
     // Keep the intent until tracking reaches disk: a failed write must leave
@@ -9142,7 +9167,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // An unparseable intent file is a disk problem, not an exchange question.
       if (intent.id === 'unreadable-intent-file') continue;
       try {
-        const result = await reconcilePlacementIntent(intent.id, 'adopt', { automatic: true });
+        const result = await recoverPlacementIntent(intent.id);
         if (!result.success && !result.deferred) logger.warn(`⏳ [${exchange}] Placement ${intent.id}: ${result.error}`);
       } catch (err) {
         logger.warn(`⏳ [${exchange}] Placement ${intent.id} recovery will retry: ${err.message}`);
