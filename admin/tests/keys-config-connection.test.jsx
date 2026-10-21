@@ -39,3 +39,16 @@ it('shows the amount without a unit when the response has no quote currency', as
   await showConnectionResult({ success: true, balance: { available: 0.12 } })
   expect(screen.getByText('Available: 0.12')).toBeTruthy()
 })
+
+it('says a key save may have been applied when no reply was read', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url, options) => {
+    if (options?.method === 'PUT') throw new TypeError('Failed to fetch')
+    return { ok: true, status: 200, json: async () => ({ configured: false, fields: {} }) }
+  }))
+  render(<KeysConfig exchange="gemini" funds={[]} />)
+  fireEvent.change(await screen.findByLabelText(/API Key/), { target: { value: 'account-abc' } })
+  fireEvent.change(screen.getByLabelText(/API Secret/), { target: { value: 'secret' } })
+  fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+  expect((await screen.findAllByText(/may have reached the server/)).length).toBeGreaterThan(0)
+})
