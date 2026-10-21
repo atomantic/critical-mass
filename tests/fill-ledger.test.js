@@ -2766,10 +2766,10 @@ describe('Fill Ledger', () => {
       assert.equal(real.cyclesCompleted, 0);
     });
 
-    it('asserts 0.5 appears exactly once as named constant in src/fill-ledger.js', () => {
-      const src = fs.readFileSync(path.join(__dirname, '../src/fill-ledger.js'), 'utf8');
-      const matches = src.match(/0\.5/g) || [];
-      assert.equal(matches.length, 1, `expected 0.5 to appear exactly once, but found ${matches.length} occurrences`);
+    it('asserts 0.5 appears exactly once, as the named constant in src/fill-ledger-recalc.js', () => {
+      const count = (file) => (fs.readFileSync(path.join(__dirname, '../src', file), 'utf8').match(/0\.5/g) || []).length;
+      assert.equal(count('fill-ledger-recalc.js'), 1, 'expected 0.5 to appear exactly once in fill-ledger-recalc.js');
+      assert.equal(count('fill-ledger.js'), 0, 'the ledger must use CYCLE_COMPLETE_SELL_RATIO, not a literal');
     });
   });
 

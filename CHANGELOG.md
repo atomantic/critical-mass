@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-1335] Cycle recalculation planning moved out of the fill ledger** — The grouping, orphan attribution, inherited-annotation, completed/active and renumbering steps of `recalculateCycles` now live in `src/fill-ledger-recalc.js` as one pure `planCycleRecalculation`. `recalculateCycles` applies the plan (stamps fills, updates indexes, live cycle and dirty/version flags, auto-links, persists) and `previewRecalculateCycles` returns the same plan without applying it, so the two can no longer drift. Output is unchanged: checked against the previous code on 1,500 generated ledgers and pinned by a snapshot test.
 - **[issue-1361] Re-declared small helpers hoisted** — Coinbase order-result mapping (`mapOrderResponse`), `safeJsonParse` (websocket modules), and sha256/UUID helpers (journal transactions) now live once. TP-optimizer adjustment and ladder-order merges remain.
 
 ### Fixed
