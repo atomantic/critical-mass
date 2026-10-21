@@ -70,7 +70,7 @@ function ActivityFeed({ exchange = null, maxEvents = 10, showWhenEmpty = true })
           {connected ? 'Waiting for trade activity...' : 'Connecting to server...'}
         </div>
       ) : (
-        <div className="space-y-2 max-h-[calc(100vh-12rem)] overflow-y-auto">
+        <div className="space-y-2 max-h-[calc(100dvh-12rem)] overflow-y-auto">
           {displayEvents.map((event, i) => {
             const style = eventStyles[event.type] || defaultStyle
             return (
