@@ -22,9 +22,10 @@ const deferred = () => {
 }
 let read
 
-// The first fund switch in this file pays a one-time first-navigation cost
-// (~100ms on an idle machine) that the first test absorbs. Run one throwaway
-// switch before any test so that cost lands outside the first test's budget.
+// The first fund switch, running-status render and failed-load render in this
+// file pay one-time costs (module init, first render) that the first tests
+// absorb; under CPU load they exceed findBy*'s 1s budget. Run one throwaway
+// pass through each path before any test so those costs land outside it.
 beforeAll(async () => {
   window.history.replaceState({}, '', '/coinbase/BTC-USDC/config')
   vi.stubGlobal('fetch', vi.fn((url, options) => {
@@ -32,13 +33,17 @@ beforeAll(async () => {
     if (url === '/api/exchanges') return Promise.resolve(response({ exchanges: ['coinbase', 'gemini'].map(name => ({
       name, pair: 'BTC-USDC', productId: 'BTC-USDC', strategy: 'regime', regimeEnabled: true,
     })) }))
-    if (url.includes('/regime/status')) return Promise.resolve(response(status(false)))
+    if (url.includes('/gemini/')) return Promise.resolve(response({}, false))
+    if (url.includes('/regime/status')) return Promise.resolve(response(status(true, true)))
     return Promise.resolve(response({ config: config(111, true) }))
   }))
   render(<BrowserRouter><App /></BrowserRouter>)
   await screen.findByDisplayValue('111')
+  await screen.findByRole('button', { name: 'Stop', exact: true })
   await switchFund('gemini')
-  await screen.findByDisplayValue('111')
+  // Also warm the failed-load render path (Retry actions) the failure tests hit.
+  await screen.findByRole('button', { name: 'Retry configuration' })
+  await screen.findByRole('button', { name: 'Retry engine status' })
   cleanup()
   vi.unstubAllGlobals()
 })
