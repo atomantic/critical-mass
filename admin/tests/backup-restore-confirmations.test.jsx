@@ -95,7 +95,7 @@ it('Restore Fund State only opens the confirm dialog; Cancel sends nothing; Conf
 
 it('fund-state restore blocked by unquiesced writers keeps the dialog open, lists the writers, and only forces after acknowledgement', async () => {
   writeResponse = (url, options) => JSON.parse(options.body).force
-    ? json(200, { success: true, message: 'Forced restore done' })
+    ? json(200, { success: true, forced: true, unconfirmed: [{ exchange: 'coinbase', reason: 'ipc-timeout' }], message: 'Forced restore done' })
     : json(409, { code: 'writers-not-quiesced', error: 'writers still running', unconfirmed: [{ exchange: 'coinbase', reason: 'ipc-timeout' }] })
   render(<BackupRestore />)
   fireEvent.click(await screen.findByRole('button', { name: 'Restore Fund State' }))
@@ -122,7 +122,7 @@ it('fund-state restore blocked by unquiesced writers keeps the dialog open, list
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   expect(writes).toHaveLength(3)
   expect(JSON.parse(writes[2].body)).toEqual({ force: true })
-  expect(await screen.findByText('Forced restore done')).toBeTruthy()
+  expect(await screen.findByText(/Forced restore done — FORCED past 1 unconfirmed writer/)).toBeTruthy()
 })
 
 it('Cancel on a blocked fund-state restore clears the blocked list so the next dialog starts clean', async () => {

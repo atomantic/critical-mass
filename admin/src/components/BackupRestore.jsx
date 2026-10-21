@@ -212,7 +212,12 @@ function BackupRestore() {
       })
       const data = await res.json().catch(() => ({}))
       if (res.ok && data.success) {
-        setMessage({ type: 'success', text: data.message || `Restored ${plural(data.filesRestored, "file")} for ${exchange}/${pair}` })
+        setMessage({
+          type: data.forced ? 'error' : 'success',
+          text: data.forced
+            ? `${data.message || `Restored ${plural(data.filesRestored, "file")} for ${exchange}/${pair}`} — FORCED past ${plural(data.unconfirmed?.length || 0, "unconfirmed writer")}; verify your data before restarting engines.`
+            : (data.message || `Restored ${plural(data.filesRestored, "file")} for ${exchange}/${pair}`),
+        })
         fetchData({ silent: true })
       } else if (res.status === 409 && data.code === 'writers-not-quiesced') {
         // Nothing was written. Keep the dialog open and offer the override.
