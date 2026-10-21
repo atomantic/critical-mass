@@ -382,7 +382,16 @@ const createUpDownService = (io, deps) => {
         trade: fillResult.trade,
         book: { contracts: perpSnap.contracts, realizedPnl: perpSnap.realizedPnl },
       });
-      persistState();
+      // The fill is already in memory and the signal-change save below retries
+      // it; a throw here would defer this cycle's prediction to the next one.
+      try {
+        persistState();
+      } catch (err) {
+        updownLogger.error(`❌ 📊 UpDown state save failed after paper fill err=${err.message}`, {
+          action: 'persist-state',
+          error: err.message,
+        });
+      }
       io.to('updown').emit('updown:scorecard', scorecard.getMetrics());
       updownLogger.info(`ℹ️ 📊 UpDown perp ${action} contracts=${fillResult.fill.contracts} price=$${fillResult.fill.price} book=${perpSnap.contracts} realized=$${perpSnap.realizedPnl}`, {
         action,

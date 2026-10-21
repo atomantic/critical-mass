@@ -350,15 +350,23 @@ describe('UpDown cycle history and side-effect characterization', () => {
     assert.deepEqual(calls.find(c => c.name === 'persist').payload.signalHistory, expected)
   })
 
-  for (const failAt of ['compute', 'recordPerpFill', 'persist', 'prediction']) {
+  const cycleOrder = ['compute', 'fill-book', 'recordPerpFill', 'persist', 'updown:scorecard', 'updown:indicators', 'persist', 'prediction', 'updown:signal']
+  for (const failAt of ['compute', 'recordPerpFill', 'prediction']) {
     it(`the interval catches ${failAt} failure and stops later cycle effects`, async t => {
       const { cycle, calls, service } = await cycleHarness(t, { failAt })
       assert.doesNotThrow(() => cycle({ type: 'BUY', score: 30 }))
-      const order = ['compute', 'fill-book', 'recordPerpFill', 'persist', 'updown:scorecard', 'updown:indicators', 'persist', 'prediction', 'updown:signal']
-      assert.deepEqual(calls.map(c => c.name), order.slice(0, order.indexOf(failAt) + 1))
+      assert.deepEqual(calls.map(c => c.name), cycleOrder.slice(0, cycleOrder.indexOf(failAt) + 1))
       assert.equal(service.getStatus().perp.contracts, failAt === 'compute' ? 0 : 1)
     })
   }
+
+  it('a failed save after a paper fill still runs the rest of that cycle', async t => {
+    const { cycle, calls, service } = await cycleHarness(t, { failAt: 'persist' })
+    assert.doesNotThrow(() => cycle({ type: 'BUY', score: 30 }))
+    assert.deepEqual(calls.map(c => c.name), cycleOrder)
+    assert.equal(calls.find(c => c.name === 'updown:signal').payload.filled, true)
+    assert.equal(service.getStatus().perp.contracts, 1)
+  })
 })
 
 describe('UpDown reload replaces in-memory state', () => {
