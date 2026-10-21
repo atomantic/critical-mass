@@ -36,6 +36,7 @@ export default function UpDownDashboard() {
   const [restarting, setRestarting] = useState(false)
   const [audioEnabled, setAudioEnabled] = useState(false)
   const [error, setError] = useState(null)
+  const [statusError, setStatusError] = useState(null)
   const prevSignalRef = useRef(null)
   const [signalAnnotations, setSignalAnnotations] = useState([])
 
@@ -50,7 +51,10 @@ export default function UpDownDashboard() {
     // A superseded read commits nothing — not even the loading reset, so it can
     // never clear state belonging to a newer request.
     if (!owned) return
-    if (data) {
+    if (!data) {
+      setStatusError('Could not load UpDown status.')
+    } else {
+      setStatusError(null)
       setStatus(data)
       // Seed signal annotations from backend history on first load
       if (!seededRef.current && data.signalHistory?.length) {
@@ -171,6 +175,19 @@ export default function UpDownDashboard() {
     )
   }
 
+  // Without a status snapshot the engine state, contract and position are
+  // unknown: never render them as a stopped engine with empty forms.
+  if (!status) {
+    return (
+      <div role="alert" className="bg-gray-800 rounded-lg p-8 text-center space-y-3">
+        <div className="text-red-400">{statusError || 'Could not load UpDown status.'}</div>
+        <button onClick={fetchStatus} className="min-h-11 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm">
+          Retry
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-4">
       {/* Error banner */}
@@ -178,6 +195,15 @@ export default function UpDownDashboard() {
         <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-red-200 text-sm flex items-center justify-between">
           <span>{error}</span>
           <button onClick={() => setError(null)} className="text-red-400 hover:text-red-300 ml-3">&times;</button>
+        </div>
+      )}
+
+      {statusError && (
+        <div role="alert" className="flex items-center justify-between gap-2 text-sm text-red-400">
+          <span>{statusError} Showing the last loaded status.</span>
+          <button onClick={fetchStatus} className="min-h-11 px-3 bg-gray-700 hover:bg-gray-600 text-white rounded-sm shrink-0">
+            Retry
+          </button>
         </div>
       )}
 
