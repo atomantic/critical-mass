@@ -73,8 +73,26 @@ function createView(respond) {
     if (options.method) writes.push({ url, body: options.body ? JSON.parse(options.body) : null })
     return { ok: true, json: async () => respond(url, options) }
   }
+  // Mirrors apiClient's { ok, status, data, error } contract over the synthetic fetch.
+  const request = async (method, url, body) => {
+    let res
+    let data
+    try {
+      res = await fetch(url, method === 'GET' ? {} : { method, body: JSON.stringify(body) })
+      data = await res.json()
+    } catch (err) {
+      return { ok: false, status: 0, data: null, error: err.message }
+    }
+    const ok = res.ok && data?.success !== false
+    return { ok, status: res.status ?? 200, data, error: ok ? null : data?.error || 'Request failed' }
+  }
   const stubs = {
     react: hooks,
+    '../utils/apiClient': {
+      apiGet: (url) => request('GET', url),
+      apiPost: (url, body) => request('POST', url, body),
+      describeMutationFailure: (result, fallback = 'Request failed') => result.error || fallback,
+    },
     './charts/chartUtils': { formatCurrency: String, formatPrice: String, formatDateTime: String },
     '../utils/api': { pairQuery: () => '?pair=BTC-USDC' },
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
