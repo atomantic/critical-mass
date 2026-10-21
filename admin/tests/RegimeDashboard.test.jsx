@@ -66,7 +66,9 @@ describe('RegimeDashboard behavior pin', () => {
     for (const value of ['Entry Status', 'HARVEST', 'LADDER', '1 order ($250)', 'Check exchange order', 'New buys paused — cycle buy-limit reached (3/3)', '$123.00', '1.2s', '2 active / 0 completed']) {
       expect(screen.getAllByText(value, { exact: false }).length).toBeGreaterThan(0)
     }
-    expect(screen.getByRole('button', { name: 'Collapse All (2)' })).toBeTruthy()
+    const collapseAll = screen.getByRole('button', { name: 'Collapse All (2)' })
+    expect(collapseAll.className).toContain('min-h-11')
+    expect(collapseAll.parentElement.className).toContain('flex-wrap')
     expect(screen.getByRole('button', { name: 'Reset cycle & resume buying' })).toBeTruthy()
   })
 

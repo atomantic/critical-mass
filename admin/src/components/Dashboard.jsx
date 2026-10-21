@@ -3,6 +3,7 @@ import { plural } from '../utils/plural.mjs'
 import { describeActionFailure } from '../utils/actionFailure.mjs'
 import { useState, useEffect, useCallback, useId, useRef } from 'react'
 import ActivityFeed from './ActivityFeed'
+import ModalDialog from './ModalDialog'
 import FailedSellPlacements from './FailedSellPlacements'
 import DcaPlacementRecovery from './DcaPlacementRecovery'
 import DcaPendingBuyRecovery from './DcaPendingBuyRecovery'
@@ -79,6 +80,8 @@ function formatCountdown(ms) {
 }
 
 function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
+  const convertTitleId = useId()
+  const convertDescId = useId()
   const [liveData, setLiveData] = useState(null)
   const [updating, setUpdating] = useState(false)
   const [countdown, setCountdown] = useState('')
@@ -636,55 +639,59 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
 
       {/* Export to Regime confirmation modal */}
       {showConvertConfirm && convertPreview && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => !converting && setShowConvertConfirm(false)}>
-          <div className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-white text-lg font-medium mb-3">Export to Regime Engine</h3>
-            <p className="text-gray-300 text-sm mb-4">
-              {convertPreview.merge
-                ? `Merge ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} into the existing regime engine (${plural(convertPreview.existingBodies, 'body', 'bodies')}, ${convertPreview.existingAsset?.toFixed(8)} ${baseCurrency}). Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`
-                : `Export ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} to a new regime engine state. Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`}
-            </p>
-            <div className="bg-gray-900 rounded-lg p-3 mb-4 text-sm space-y-1.5">
-              <div className="flex justify-between">
-                <span className="text-gray-400">Positions to import</span>
-                <span className="text-white font-mono">{convertPreview.pending}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-400">{baseCurrency} amount</span>
-                <span className="text-yellow-400 font-mono">{convertPreview.pendingBaseQty?.toFixed(8)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-400">Cost basis</span>
-                <span className="text-yellow-400 font-mono">{formatCurrency(convertPreview.pendingCostBasis)}</span>
-              </div>
-              {convertPreview.merge && (
-                <div className="border-t border-gray-700 pt-1.5 flex justify-between">
-                  <span className="text-gray-400">Existing regime bodies</span>
-                  <span className="text-green-400 font-mono">{convertPreview.existingBodies}</span>
-                </div>
-              )}
+        <ModalDialog
+          onClose={() => setShowConvertConfirm(false)}
+          dismissible={!converting}
+          labelledBy={convertTitleId}
+          describedBy={convertDescId}
+        >
+          <h3 id={convertTitleId} className="text-white text-lg font-medium mb-3">Export to Regime Engine</h3>
+          <p id={convertDescId} className="text-gray-300 text-sm mb-4">
+            {convertPreview.merge
+              ? `Merge ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} into the existing regime engine (${plural(convertPreview.existingBodies, 'body', 'bodies')}, ${convertPreview.existingAsset?.toFixed(8)} ${baseCurrency}). Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`
+              : `Export ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} to a new regime engine state. Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`}
+          </p>
+          <div className="bg-gray-900 rounded-lg p-3 mb-4 text-sm space-y-1.5">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Positions to import</span>
+              <span className="text-white font-mono">{convertPreview.pending}</span>
             </div>
-            <p className="text-gray-400 text-xs mb-4">
-              Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.
-            </p>
-            <div className="flex justify-end gap-3">
-              <button
-                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
-                onClick={() => setShowConvertConfirm(false)}
-                disabled={converting}
-              >
-                Cancel
-              </button>
-              <button
-                className="px-4 py-2 text-sm text-white bg-indigo-600 hover:bg-indigo-500 rounded-sm transition-colors disabled:opacity-50"
-                onClick={handleExecuteExport}
-                disabled={converting}
-              >
-                {converting ? 'Exporting...' : 'Confirm Export'}
-              </button>
+            <div className="flex justify-between">
+              <span className="text-gray-400">{baseCurrency} amount</span>
+              <span className="text-yellow-400 font-mono">{convertPreview.pendingBaseQty?.toFixed(8)}</span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Cost basis</span>
+              <span className="text-yellow-400 font-mono">{formatCurrency(convertPreview.pendingCostBasis)}</span>
+            </div>
+            {convertPreview.merge && (
+              <div className="border-t border-gray-700 pt-1.5 flex justify-between">
+                <span className="text-gray-400">Existing regime bodies</span>
+                <span className="text-green-400 font-mono">{convertPreview.existingBodies}</span>
+              </div>
+            )}
           </div>
-        </div>
+          <p className="text-gray-400 text-xs mb-4">
+            Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
+              onClick={() => setShowConvertConfirm(false)}
+              disabled={converting}
+              autoFocus
+            >
+              Cancel
+            </button>
+            <button
+              className="px-4 py-2 text-sm text-white bg-indigo-600 hover:bg-indigo-500 rounded-sm transition-colors disabled:opacity-50"
+              onClick={handleExecuteExport}
+              disabled={converting}
+            >
+              {converting ? 'Exporting...' : 'Confirm Export'}
+            </button>
+          </div>
+        </ModalDialog>
       )}
     </div>
   )
