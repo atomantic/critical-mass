@@ -26,6 +26,10 @@ const { spawnSync, spawn } = require('child_process');
 const { DATA_DIR, BACKUP_DIR } = require('./paths');
 const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME } = require('./restore-apply');
 const { LOCK_FILENAME: LEGACY_MIGRATION_LOCK } = require('./legacy-namespace-migration');
+
+// UpDown scorecard maintenance lock (relative to data/). A backup taken while a
+// backfill holds it would carry a lock no live process owns into the restore.
+const SCORECARD_MAINTENANCE_LOCK = path.join('updown', 'scorecard', '.maintenance-lock');
 const {
   buildConfigSnapshot,
   reconstructConfigOverride,
@@ -547,6 +551,9 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
     // Legacy namespace migration ownership (issue #971): a captured lock is
     // meaningless on another machine or after a restore.
     `${LEGACY_MIGRATION_LOCK}*`,
+    // Scorecard maintenance ownership (the lock dir, its owner.json, and any
+    // stale-reclaim aside copy); a restored lock would stall UpDown for 2 minutes.
+    `${SCORECARD_MAINTENANCE_LOCK}*`,
   ];
 
   if (!includePriceCache) {
@@ -1277,7 +1284,8 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     logger,
     // Skip the backups directory, root credential files, key files and the
     // archive's own metadata.
-    skip: (name, isRoot) => name === 'backups'
+    skip: (name, isRoot, rel) => name === 'backups'
+      || rel.startsWith(SCORECARD_MAINTENANCE_LOCK)
       || (isRoot && (name === CONFIG_LOCK_DIR || name.startsWith(`${BASE_SNAPSHOT_FILENAME}.`)))
       || name.endsWith('-keys.json')
       || (isRoot && ROOT_CREDENTIAL_FILES.includes(name))
