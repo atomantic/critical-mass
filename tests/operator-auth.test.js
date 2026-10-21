@@ -147,6 +147,16 @@ describe('operator authentication bootstrap', () => {
     };
     assert.equal(isLoopbackRequest(rebindingRequest), false);
 
+    const proxied = (headers) => ({
+      socket: { remoteAddress: '127.0.0.1' },
+      headers: { host: '127.0.0.1:5570', ...headers },
+    });
+    assert.equal(isLoopbackRequest(proxied({})), true);
+    assert.equal(isLoopbackRequest(proxied({ 'x-forwarded-for': '' })), false);
+    for (const header of ['forwarded', 'via', 'x-real-ip', 'x-forwarded-proto', 'x-forwarded-port']) {
+      assert.equal(isLoopbackRequest(proxied({ [header]: 'x' })), false, header);
+    }
+
     const requestWithOrigin = (remoteAddress, host, origin) => ({
       socket: { remoteAddress },
       get: (name) => name === 'host' ? host : name === 'origin' ? origin : '',
