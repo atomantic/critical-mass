@@ -76,6 +76,22 @@ describe('NotificationsConfig', () => {
     const body = JSON.parse(fetch.mock.calls.find(([, options]) => options?.method === 'PUT')[1].body)
     expect(body.telegram).toEqual({ chatId: 'not-a-chat' })
   })
+
+  it('shows error when Send Test returns HTTP 200 with success: false', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url, options) => {
+      if (url === '/api/notifications/test' && options?.method === 'POST') {
+        return { ok: true, status: 200, json: async () => ({ success: false, error: 'Telegram bot blocked by user' }) }
+      }
+      if (url === '/api/notifications/config') return ok(savedConfig())
+      return ok({ isRunning: true })
+    }))
+    render(<NotificationsConfig />)
+    const sendTest = await screen.findByRole('button', { name: 'Send Test' })
+    expect(sendTest.disabled).toBe(false)
+
+    fireEvent.click(sendTest)
+    expect(await screen.findByText('Test failed: Telegram bot blocked by user')).toBeTruthy()
+  })
 })
 
 describe('AI provider form', () => {

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { apiGet, apiPost, apiPut, describeMutationFailure } from '../utils/apiClient'
 
 const EVENT_GROUPS = {
   'Critical': [
@@ -72,32 +73,22 @@ function NotificationsConfig() {
     const fail = text => {
       if (current()) (silent ? setRefreshError : setError)(text)
     }
-    try {
-      const res = await fetch('/api/notifications/config')
-      if (res.ok) {
-        const data = await res.json()
-        if (!current()) return
-        if (!dirty.current && version === draftVersion.current) setConfig(data)
+    const result = await apiGet('/api/notifications/config')
+    if (current()) {
+      if (result.ok) {
+        if (!dirty.current && version === draftVersion.current) setConfig(result.data)
         setRefreshError(null)
       } else {
-        fail(`Failed to load notifications config (HTTP ${res.status})`)
+        fail(result.status === 0 ? result.error : `Failed to load notifications config (HTTP ${result.status})`)
       }
-    } catch (err) {
-      fail(err.message || 'Failed to load notifications config')
-    } finally {
-      if (!silent && current()) setLoading(false)
     }
+    if (!silent && current()) setLoading(false)
   }
 
   const fetchStats = async () => {
-    try {
-      const res = await fetch('/api/notifications/stats')
-      if (res.ok) {
-        setStats(await res.json())
-      }
-    } catch (err) {
-      // Silently fail on stats fetch to avoid blocking the page
-    }
+    // A failed stats fetch is ignored so it never blocks the page.
+    const result = await apiGet('/api/notifications/stats')
+    if (result.ok) setStats(result.data)
   }
 
   useEffect(() => {
@@ -128,13 +119,9 @@ function NotificationsConfig() {
     }
 
     try {
-      const res = await fetch('/api/notifications/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
+      const result = await apiPut('/api/notifications/config', payload, { allowEmpty: true })
 
-      if (res.ok) {
+      if (result.ok) {
         setMessage({ type: 'success', text: 'Notification settings saved!' })
         dirty.current = false
         setHasUnsavedChanges(false)
@@ -146,11 +133,14 @@ function NotificationsConfig() {
         await fetchConfig({ silent: true, saved: true })
         fetchStats()
       } else {
-        const data = await res.json().catch(() => ({}))
-        setMessage({ type: 'error', text: data.errors?.join('; ') || data.error || `Failed to save settings (HTTP ${res.status})` })
+        setMessage({
+          type: 'error',
+          text: result.data?.errors?.join('; ')
+            || (result.status === 0
+              ? describeMutationFailure(result, 'Failed to save settings')
+              : `Failed to save settings (${describeMutationFailure(result, `HTTP ${result.status}`)})`),
+        })
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Failed to save settings' })
     } finally {
       pendingSave.current = false
       setSaving(false)
@@ -161,19 +151,16 @@ function NotificationsConfig() {
     setTesting(true)
     setMessage(null)
     try {
-      const res = await fetch('/api/notifications/test', { method: 'POST' })
-      const result = await res.json()
-      if (result.success) {
+      const result = await apiPost('/api/notifications/test')
+      if (result.ok && result.data?.success) {
         setMessage({ type: 'success', text: 'Test message sent to Telegram!' })
       } else {
-        setMessage({ type: 'error', text: `Test failed: ${result.error}` })
+        setMessage({ type: 'error', text: `Test failed: ${result.data?.error || describeMutationFailure(result, 'Request failed')}` })
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Test failed' })
     } finally {
       setTesting(false)
+      fetchStats()
     }
-    fetchStats()
   }
 
   const updateEvent = (key, value) => {

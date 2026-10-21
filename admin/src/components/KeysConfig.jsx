@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import ModalDialog from './ModalDialog'
 import { plural } from '../utils/plural.mjs'
-import { describeActionFailure } from '../utils/actionFailure.mjs'
+import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
 
 const EXCHANGE_DISPLAY_NAMES = { coinbase: 'Coinbase', gemini: 'Gemini', cryptocom: 'Crypto.com' }
 
@@ -101,21 +101,16 @@ function KeysConfig({ exchange, funds = [], onSave }) {
     if (!silent) setLoading(true)
     testGeneration.current += 1
     setTestResult(null)
-    try {
-      const res = await fetch(`/api/${exchange}/keys`)
-      if (res.ok) {
-        const data = await res.json().catch(() => ({}))
-        setConfigured(Boolean(data.configured))
-        setFields(data.fields || {})
-        setCreatedAt(data.createdAt || null)
-      } else if (res.status !== 404) {
-        setMessage({ type: 'error', text: 'Failed to load keys' })
-      }
-    } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Failed to load keys' })
-    } finally {
-      if (!silent) setLoading(false)
+    const result = await apiGet(`/api/${exchange}/keys`, { allowEmpty: true })
+    if (result.ok) {
+      const data = result.data || {}
+      setConfigured(Boolean(data.configured))
+      setFields(data.fields || {})
+      setCreatedAt(data.createdAt || null)
+    } else if (result.status !== 404) {
+      setMessage({ type: 'error', text: result.status === 0 ? result.error : 'Failed to load keys' })
     }
+    if (!silent) setLoading(false)
   }
 
   useEffect(() => {
@@ -171,22 +166,15 @@ function KeysConfig({ exchange, funds = [], onSave }) {
     setSaving(true)
     setMessage(null)
     try {
-      const res = await fetch(`/api/${exchange}/keys`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(keys),
-      })
-      if (res.ok) {
+      const result = await apiPut(`/api/${exchange}/keys`, keys, { allowEmpty: true })
+      if (result.ok) {
         setMessage({ type: 'success', text: 'API keys saved successfully!' })
         setKeys({})
         await fetchKeys(true)
         onSave?.()
       } else {
-        const error = await res.json().catch(() => ({}))
-        setMessage({ type: 'error', text: error.error || 'Failed to save keys' })
+        setMessage({ type: 'error', text: describeMutationFailure(result, 'Failed to save keys') })
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Failed to save keys' })
     } finally {
       setSaving(false)
     }
@@ -196,15 +184,10 @@ function KeysConfig({ exchange, funds = [], onSave }) {
     const generation = ++testGeneration.current
     setTesting(true)
     setTestResult(null)
-    let result
-    try {
-      const res = await fetch(`/api/${exchange}/test-connection`, { method: 'POST' })
-      result = await res.json().catch(() => ({ success: false, error: describeActionFailure(res.status) }))
-    } catch (err) {
-      result = { success: false, error: err.message }
-    } finally {
-      setTesting(false)
-    }
+    const response = await apiPost(`/api/${exchange}/test-connection`)
+    setTesting(false)
+    // A reply body (including success:false) is the server's own verdict; otherwise report the client's reason.
+    const result = response.data ?? { success: false, error: response.error }
     if (generation === testGeneration.current) setTestResult(result)
   }
 
@@ -224,18 +207,16 @@ function KeysConfig({ exchange, funds = [], onSave }) {
     setDeleting(true)
     setMessage(null)
     try {
-      const res = await fetch(`/api/${exchange}/keys`, { method: 'DELETE' })
-      if (res.ok) {
+      const result = await apiDelete(`/api/${exchange}/keys`, { allowEmpty: true })
+      if (result.ok) {
         setKeys({})
         setConfirmDelete(false)
         setMessage({ type: 'success', text: 'API keys deleted successfully!' })
         await fetchKeys(true)
         onSave?.()
       } else {
-        setMessage({ type: 'error', text: 'Failed to delete keys' })
+        setMessage({ type: 'error', text: describeMutationFailure(result, 'Failed to delete keys') })
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Failed to delete keys' })
     } finally {
       setDeleting(false)
     }
