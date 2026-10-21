@@ -1,5 +1,5 @@
 # ─── Stage 1: Build admin UI ───────────────────────────────────
-FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
+FROM --platform=$BUILDPLATFORM node:26-alpine AS builder
 
 WORKDIR /app
 
@@ -11,7 +11,7 @@ COPY shared/ ./shared/
 RUN cd admin && npm run build
 
 # ─── Stage 2: Production runtime ──────────────────────────────
-FROM node:22-alpine
+FROM node:26-alpine
 
 WORKDIR /app
 
