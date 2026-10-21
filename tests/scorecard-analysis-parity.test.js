@@ -43,7 +43,7 @@ it('live hydration and the registered historical endpoint agree on mixed-version
   // Remove the deliberately out-of-range fixture before live hydration, which has
   // its own retention policy rather than the HTTP request's explicit date range.
   let historical
-  handlers.get('/api/updown/scorecard-analysis')(
+  await handlers.get('/api/updown/scorecard-analysis')(
     { query: { from: date, to: date } },
     { json: result => { historical = result } },
   )

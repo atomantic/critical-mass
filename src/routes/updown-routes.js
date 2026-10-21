@@ -10,7 +10,6 @@ const path = require('path');
 const fs = require('fs');
 const { exec } = require('child_process');
 const { promisify } = require('util');
-const { readFileSync, readdirSync } = fs;
 const { createContextLogger } = require('../logger');
 const { UPDOWN_DATA_DIR } = require('../paths');
 const { validateEndpointUrl, safeFetch } = require('../url-validator');
@@ -470,31 +469,80 @@ module.exports = (app, deps) => {
   // --- Scorecard Analysis (historical) ---
   const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard');
 
-  const readJSONLFiles = (from, to) => {
-    if (!fs.existsSync(SCORECARD_DIR)) return [];
-    const files = readdirSync(SCORECARD_DIR).filter(f => f.endsWith('.jsonl')).sort();
-    const fromStr = from.toISOString().slice(0, 10);
-    const toStr = to.toISOString().slice(0, 10);
+  // The admin page re-polls this endpoint every minute and a day's journal is
+  // ~3MB, so reads are async and the newest days are cached by (size, mtime):
+  // a cached, unchanged closed day costs one stat() instead of a read +
+  // JSON.parse on the gateway event loop. Only the newest MAX_CACHED_DAYS
+  // journals are kept, which covers the default 7-day window and bounds memory;
+  // older days in the 30-day view are re-read on each request. Stat happens
+  // before the read, so a cached entry is never older than its signature; an
+  // append in between just forces a re-read next poll.
+  const MAX_CACHED_DAYS = 10;
+  const dayRecordCache = new Map(); // file (YYYY-MM-DD.jsonl) -> { sig, records }
+  let lastAnalysis = null; // { key: file signature, result } for the most recent request
+
+  const parseJSONL = (content) => {
     const records = [];
-    for (const file of files) {
-      const dateStr = file.replace('.jsonl', '');
-      if (dateStr < fromStr || dateStr > toStr) continue;
-      const content = readFileSync(path.join(SCORECARD_DIR, file), 'utf-8');
-      for (const line of content.split('\n')) {
-        if (!line.trim()) continue;
-        // The journal is written via fire-and-forget appendFile, so a crash
-        // mid-append can leave a torn line. Skip unparseable lines (mirrors
-        // scorecard.js loadHistory) instead of 500-ing the whole endpoint
-        // permanently (issue #108).
-        let rec;
-        try { rec = JSON.parse(line); } catch { continue; }
-        records.push(rec);
-      }
+    for (const line of content.split('\n')) {
+      if (!line.trim()) continue;
+      // The journal is written via fire-and-forget appendFile, so a crash
+      // mid-append can leave a torn line. Skip unparseable lines (mirrors
+      // scorecard.js loadHistory) instead of 500-ing the whole endpoint
+      // permanently (issue #108).
+      let rec;
+      try { rec = JSON.parse(line); } catch { continue; }
+      records.push(rec);
     }
     return records;
   };
 
-  app.get('/api/updown/scorecard-analysis', (req, res) => {
+  const readDayRecords = async (file) => {
+    const filePath = path.join(SCORECARD_DIR, file);
+    const { size, mtimeMs } = await fs.promises.stat(filePath);
+    const sig = `${size}:${mtimeMs}`;
+    const cached = dayRecordCache.get(file);
+    if (cached && cached.sig === sig) return { sig, records: cached.records };
+    const records = parseJSONL(await fs.promises.readFile(filePath, 'utf-8'));
+    dayRecordCache.set(file, { sig, records });
+    // Evict the oldest journal date (file names sort chronologically) rather than
+    // the least recently used: a 30-day request reads oldest-first, so LRU would
+    // push out the recent days before reaching them and re-read all 31 files.
+    while (dayRecordCache.size > MAX_CACHED_DAYS) {
+      let oldest = null;
+      for (const key of dayRecordCache.keys()) if (oldest === null || key < oldest) oldest = key;
+      dayRecordCache.delete(oldest);
+    }
+    return { sig, records };
+  };
+
+  const readJSONLFiles = async (from, to) => {
+    let entries;
+    try {
+      entries = await fs.promises.readdir(SCORECARD_DIR);
+    } catch (err) {
+      if (err.code === 'ENOENT') return { records: [], signature: '' };
+      throw err;
+    }
+    const fromStr = from.toISOString().slice(0, 10);
+    const toStr = to.toISOString().slice(0, 10);
+    const files = entries
+      .filter(f => f.endsWith('.jsonl'))
+      .sort()
+      .filter(f => {
+        const dateStr = f.replace('.jsonl', '');
+        return dateStr >= fromStr && dateStr <= toStr;
+      });
+    const records = [];
+    const sigs = [];
+    for (const file of files) {
+      const day = await readDayRecords(file);
+      sigs.push(`${file}@${day.sig}`);
+      for (const rec of day.records) records.push(rec);
+    }
+    return { records, signature: sigs.join('|') };
+  };
+
+  app.get('/api/updown/scorecard-analysis', async (req, res) => {
     const now = new Date();
     const fromParam = req.query.from;
     const toParam = req.query.to;
@@ -519,8 +567,13 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: 'to date is invalid' });
     }
 
-    const records = readJSONLFiles(from, to);
-    res.json(buildScorecardAnalysis(records));
+    const { records, signature } = await readJSONLFiles(from, to);
+    // buildScorecardAnalysis is pure over the records, and the records are fully
+    // determined by the in-range files' names + size + mtime.
+    if (!lastAnalysis || lastAnalysis.key !== signature) {
+      lastAnalysis = { key: signature, result: buildScorecardAnalysis(records) };
+    }
+    res.json(lastAnalysis.result);
   });
 
   app.get('/api/updown/status', (req, res) => {
