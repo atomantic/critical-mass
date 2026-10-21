@@ -313,7 +313,7 @@ describe('createMacroRegime: factory and state', () => {
 describe('createMacroRegime: multipliers', () => {
   it('returns ACCUMULATION multipliers from config', () => {
     const regime = createMacroRegime('test', defaultConfig(), createMockAdapter(), 'BTC-USDC');
-    regime.restoreState({ mode: 'ACCUMULATION', score: -20 });
+    regime.restoreState({ mode: 'ACCUMULATION', score: -20, lastUpdate: Date.now() });
     const m = regime.getMultipliers();
     assert.equal(m.sizeMult, 1.3);
     assert.equal(m.tpMult, 0.85);
@@ -322,7 +322,7 @@ describe('createMacroRegime: multipliers', () => {
 
   it('returns MARKUP multipliers from config', () => {
     const regime = createMacroRegime('test', defaultConfig(), createMockAdapter(), 'BTC-USDC');
-    regime.restoreState({ mode: 'MARKUP', score: 50 });
+    regime.restoreState({ mode: 'MARKUP', score: 50, lastUpdate: Date.now() });
     const m = regime.getMultipliers();
     assert.equal(m.sizeMult, 0.7);
     assert.equal(m.tpMult, 1.3);
@@ -331,7 +331,7 @@ describe('createMacroRegime: multipliers', () => {
 
   it('returns DECLINE multipliers from config', () => {
     const regime = createMacroRegime('test', defaultConfig(), createMockAdapter(), 'BTC-USDC');
-    regime.restoreState({ mode: 'DECLINE', score: -70 });
+    regime.restoreState({ mode: 'DECLINE', score: -70, lastUpdate: Date.now() });
     const m = regime.getMultipliers();
     assert.equal(m.sizeMult, 0.4);
     assert.equal(m.tpMult, 0.7);
@@ -340,12 +340,63 @@ describe('createMacroRegime: multipliers', () => {
 
   it('uses fallback defaults when config multipliers are absent', () => {
     const regime = createMacroRegime('test', {}, createMockAdapter(), 'BTC-USDC');
-    regime.restoreState({ mode: 'ACCUMULATION', score: -20 });
+    regime.restoreState({ mode: 'ACCUMULATION', score: -20, lastUpdate: Date.now() });
     const m = regime.getMultipliers();
     // Defaults from source: 1.3, 0.85, 0.8
     assert.equal(m.sizeMult, 1.3);
     assert.equal(m.tpMult, 0.85);
     assert.equal(m.offsetMult, 0.8);
+  });
+});
+
+// ============================================================================
+// createMacroRegime — staleness of restored / unrefreshable mode
+// ============================================================================
+describe('createMacroRegime: stale mode', () => {
+  const HOUR = 3600 * 1000;
+  const failingAdapter = { getCandles: async () => { throw new Error('candle API down'); } };
+
+  it('returns neutral multipliers and stale status for an old restored mode when refresh fails', async () => {
+    const regime = createMacroRegime('test', defaultConfig(), failingAdapter, 'BTC-USDC');
+    regime.restoreState({ mode: 'ACCUMULATION', score: -20, lastUpdate: Date.now() - 7 * HOUR });
+    await assert.rejects(regime.update());
+
+    assert.deepEqual(regime.getMultipliers(), { sizeMult: 1.0, tpMult: 1.0, offsetMult: 1.0 });
+    assert.equal(regime.getState().stale, true);
+  });
+
+  it('keeps computed multipliers inside the staleness limit', () => {
+    const regime = createMacroRegime('test', defaultConfig(), failingAdapter, 'BTC-USDC');
+    regime.restoreState({ mode: 'ACCUMULATION', score: -20, lastUpdate: Date.now() - 5 * HOUR });
+    assert.equal(regime.getMultipliers().sizeMult, 1.3);
+    assert.equal(regime.getState().stale, false);
+  });
+
+  it('scales the limit with a long update interval', () => {
+    const regime = createMacroRegime('test', { ...defaultConfig(), macroUpdateIntervalMs: 3 * HOUR }, failingAdapter, 'BTC-USDC');
+    regime.restoreState({ mode: 'ACCUMULATION', score: -20, lastUpdate: Date.now() - 8 * HOUR });
+    assert.equal(regime.getMultipliers().sizeMult, 1.3);
+  });
+
+  it('treats a restored non-neutral mode with no lastUpdate as stale', () => {
+    const regime = createMacroRegime('test', defaultConfig(), failingAdapter, 'BTC-USDC');
+    regime.restoreState({ mode: 'DECLINE', score: -70 });
+    assert.equal(regime.getMultipliers().sizeMult, 1.0);
+  });
+
+  it('resumes computed multipliers after a successful refresh', async () => {
+    const adapter = createMockAdapter({
+      hourlyCandles: generateCandles(200, 100000, 0),
+      dailyCandles: generateCandles(25, 100000, 0),
+    });
+    const regime = createMacroRegime('test', defaultConfig(), adapter, 'BTC-USDC');
+    regime.restoreState({ mode: 'DECLINE', score: -70, lastUpdate: Date.now() - 48 * HOUR });
+    assert.equal(regime.getMultipliers().sizeMult, 1.0);
+    assert.equal(regime.getState().stale, true);
+
+    await regime.update();
+    assert.equal(regime.getState().stale, false);
+    assert.equal(regime.getMode(), 'RANGING');
   });
 });
 
