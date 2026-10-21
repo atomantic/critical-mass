@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from '../../lib/router'
+import { apiGet } from '../../utils/apiClient'
 
 /**
  * Compact alert banner shown globally when critical/warning sentinel alerts are active.
@@ -11,13 +12,11 @@ export default function AlertBanner() {
   useEffect(() => {
     const fetchAlerts = async () => {
       try {
-        const res = await fetch('/api/sentinel/status')
-        if (!res.ok) return
-        const data = await res.json()
+        const { ok, data } = await apiGet('/api/sentinel/status')
+        if (!ok) return
         if (data.criticalAlerts > 0 || data.warningAlerts > 0) {
-          const alertsRes = await fetch('/api/sentinel/alerts')
-          if (!alertsRes.ok) return
-          const alertsData = await alertsRes.json()
+          const { ok: alertsOk, data: alertsData } = await apiGet('/api/sentinel/alerts')
+          if (!alertsOk) return
           const undismissed = (alertsData.alerts || []).filter(a => !a.dismissed && (a.severity === 'critical' || a.severity === 'warning'))
           setActiveAlerts(prev => {
             // Skip update if alerts haven't changed
