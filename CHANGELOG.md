@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Chart interval, log toolbar and Retry buttons meet touch-target size** — The BTC chart interval, range and view buttons, the log viewer's Retry/Clear/Flush/Fullscreen buttons and the Retry buttons in the regime transactions and UpDown signal panels are at least 44px on touch screens, with desktop sizing unchanged.
 - **Icon-only buttons announce their action to screen readers** — The UpDown Scorecard Analysis refresh button now has the accessible name "Refresh scorecard analysis", and the decorative icons in the toast dismiss button and that refresh button are hidden from assistive tech.
 - **Exchange feeds reconnect when a WebSocket handshake never completes** — A market or user feed whose upgrade request hangs is now terminated after 15s and retried with the normal backoff, instead of staying dark and blocking every later reconnect.
 - **DCA transactions, UpDown trades and Sentinel alerts support paging** — `GET /api/:exchange/transactions`, `/api/updown/trades` and `/api/sentinel/alerts` accept opt-in `?limit=` (default and max 500) and `?offset=` and report `total`; the UpDown summary still covers every trade. Requests without paging params return the same responses as before.
