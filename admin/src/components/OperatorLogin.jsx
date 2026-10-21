@@ -133,7 +133,7 @@ export default function OperatorLogin({ children }) {
         <p className="mt-2 text-sm text-gray-400">
           {bootstrapRequired
             ? bootstrapSecretRequired
-              ? 'Enter a new operator password and the one-time bootstrap secret from the host operator (the gateway's data/operator-bootstrap-secret file).'
+              ? 'Enter a new operator password and the one-time bootstrap secret from the host operator (the data/operator-bootstrap-secret file on the gateway host).'
               : 'Create the first operator password from this local connection.'
             : required
             ? 'Enter the operator password set in Gateway → Gateway access.'

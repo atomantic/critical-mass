@@ -172,7 +172,10 @@ const unreadableAuthFileReason = (file) => {
 const loadOrCreateLocalSecret = (file) => {
   try {
     const existing = fs.readFileSync(file, 'utf8').split('\n')[0].trim();
-    if (Buffer.byteLength(existing) >= MIN_BOOTSTRAP_SECRET_LENGTH) return existing;
+    if (Buffer.byteLength(existing) >= MIN_BOOTSTRAP_SECRET_LENGTH) {
+      fs.chmodSync(file, 0o600);
+      return existing;
+    }
   } catch { /* missing or unreadable: generate a fresh one */ }
   const secret = crypto.randomBytes(32).toString('hex');
   fs.mkdirSync(path.dirname(file), { recursive: true });
