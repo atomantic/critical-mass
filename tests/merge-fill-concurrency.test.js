@@ -409,6 +409,22 @@ describe('#196 manualMergeBody — lock acquisition', () => {
     assert.equal(eng._test.getFlags().mergeInProgress, false, 'lock released after merge');
   });
 
+  it('#1342 a cancel that throws on the target leg leaves no Race-3 merge snapshots registered', async () => {
+    let calls = 0;
+    const eng = makeEngine({
+      bodies: [makeBody('a', 50000, 0.01, 'tp-a'), makeBody('b', 51000, 0.01, 'tp-b')],
+      executor: {
+        cancelBodyTpOrder: async () => {
+          if (++calls === 2) throw new Error('network blip');
+          return { cancelled: true };
+        },
+      },
+    });
+    await assert.rejects(eng.manualMergeBody('a', { targetId: 'b' }), /network blip/);
+    assert.equal(eng._test.getMergeTpSnapshots().pending.size, 0, 'no stale pending snapshots');
+    assert.equal(eng._test.getFlags().mergeInProgress, false, 'lock released');
+  });
+
   it('two genuinely concurrent manualMergeBody calls: exactly one succeeds, the other is rejected busy', async () => {
     // Unlike the flag-driven tests above (which pre-set mergeInProgress before
     // calling), this fires two REAL overlapping calls via Promise.all and holds
