@@ -26,9 +26,13 @@
  */
 
 const { beginMaintenance, endMaintenance } = require('./restore-maintenance');
+const { FILL_DRAIN_MS } = require('./engine-locks');
 
 /** Engines flush state on stop; give them meaningfully longer than a status poll. */
 const DEFAULT_STOP_TIMEOUT_MS = 30_000;
+
+/** A fund start drains fills and reconciles orders; match the dashboard's Start timeout. */
+const DEFAULT_START_TIMEOUT_MS = FILL_DRAIN_MS + 50_000;
 
 /** How long to wait for gateway work that was already in flight to finish. */
 const DEFAULT_DRAIN_TIMEOUT_MS = 30_000;
@@ -175,16 +179,76 @@ const describeFund = (entry) => {
 };
 
 /**
+ * Restart the funds a refused restore stopped, through the same `regime:start`
+ * path the dashboard uses. Funds on one engine start one after another (as at
+ * engine boot); engines start in parallel. Never throws.
+ *
+ * The caller must have closed the engine maintenance windows first — an engine
+ * refuses `regime:start` while its restore window is open.
+ *
+ * @param {Object} params
+ * @param {Array<any>} params.funds - `{exchange, pair}` descriptors from the stop acknowledgements
+ * @param {Object} params.exchangeIPCMap - Map of exchange name -> IPC client
+ * @param {{info: Function, warn: Function, error: Function}} params.logger - Context logger
+ * @param {string} params.filename - Backup filename (log context)
+ * @param {number} params.timeoutMs - Per-fund start acknowledgement timeout
+ * @returns {Promise<{restarted: string[], failed: Array<{fund: string, error: string}>}>} Outcome per fund
+ */
+const restartStoppedFunds = async ({ funds, exchangeIPCMap, logger, filename, timeoutMs }) => {
+  const byExchange = new Map();
+  const failed = [];
+  for (const entry of funds) {
+    if (!entry || typeof entry !== 'object' || !entry.exchange || !entry.pair) {
+      failed.push({ fund: describeFund(entry), error: 'fund identity unknown' });
+      continue;
+    }
+    if (!byExchange.has(entry.exchange)) byExchange.set(entry.exchange, []);
+    byExchange.get(entry.exchange).push(entry.pair);
+  }
+
+  const restarted = [];
+  await Promise.all([...byExchange].map(async ([exchange, pairs]) => {
+    const ipc = exchangeIPCMap[exchange];
+    for (const pair of pairs) {
+      const fund = describeFund({ exchange, pair });
+      const outcome = !ipc || typeof ipc.request !== 'function'
+        ? { error: 'no IPC client' }
+        : await ipc.request('regime:start', {}, exchange, pair, timeoutMs).then(
+          (ack) => (ack?.success === true ? {} : { error: (typeof ack?.error === 'string' && ack.error) || 'engine refused the start' }),
+          (err) => ({ error: err?.message || String(err) }),
+        );
+      if (outcome.error) {
+        failed.push({ fund, error: outcome.error });
+        logger.error(`❌ 💾 Could not restart ${fund} after the refused restore of ${filename}: ${outcome.error}`, {
+          action: 'restore-backup', filename, exchange, pair, error: outcome.error,
+        });
+      } else {
+        restarted.push(fund);
+        logger.info(`ℹ️ 💾 Restarted ${fund} after the refused restore of ${filename}`, { action: 'restore-backup', filename, exchange, pair });
+      }
+    }
+  }));
+  return { restarted, failed };
+};
+
+/**
  * Engines are stopped (and their running flags cleared) before the restore can
- * refuse, so a "no files were changed" refusal still leaves those funds
- * stopped. Say so in the operator-facing error, or they stay down unnoticed.
+ * refuse. Say in the operator-facing error what happened to them: restarted,
+ * or still stopped and needing a manual restart.
  * @param {string} error
- * @param {string[]} stoppedEngines
+ * @param {{restarted: string[], failed: Array<{fund: string, error: string}>}} restart
  * @returns {string}
  */
-const noteStoppedEngines = (error, stoppedEngines) => (stoppedEngines.length > 0
-  ? `${error}${/[.!?]$/.test(error) ? '' : '.'} Engines stopped for the restore are still stopped: ${stoppedEngines.join(', ')} — restart them from the dashboard.`
-  : error);
+const noteRestartOutcome = (error, { restarted, failed }) => {
+  const notes = [
+    restarted.length > 0 ? `Engines stopped for the restore were restarted: ${restarted.join(', ')}.` : null,
+    failed.length > 0
+      ? `Engines stopped for the restore are still stopped: ${failed.map((f) => `${f.fund} (${f.error})`).join(', ')} — restart them from the dashboard.`
+      : null,
+  ].filter(Boolean);
+  if (notes.length === 0) return error;
+  return `${error}${/[.!?]$/.test(error) ? '' : '.'} ${notes.join(' ')}`;
+};
 
 /**
  * Archive the live data directory once every writer has stopped and before any
@@ -236,7 +300,8 @@ const saveRecoveryPoint = async (createRecoveryPoint, logger, filename) => {
  * @param {{info: Function, warn: Function, error: Function}} params.logger - Context logger
  * @param {number} params.stopTimeoutMs - Per-engine acknowledgement timeout
  * @param {number} params.drainTimeoutMs - How long to wait for in-flight gateway work
- * @returns {Promise<{status: number, body: Object}>} HTTP status + response body
+ * @returns {Promise<{status: number, body: Object, restartFunds?: Array<Object>}>} HTTP status + response body,
+ *   plus the stopped funds that are safe to restart when the restore refused
  */
 const applyRestoreUnderLock = async ({
   filename,
@@ -266,7 +331,8 @@ const applyRestoreUnderLock = async ({
       : Promise.resolve({ drained: true, pending: [] }),
   ]);
 
-  const stoppedEngines = acks.flatMap((a) => (a.stopped || []).map(describeFund));
+  const stoppedFunds = acks.flatMap((a) => a.stopped || []);
+  const stoppedEngines = stoppedFunds.map(describeFund);
   const unconfirmed = acks.filter((a) => !a.confirmed).map((a) => ({
     exchange: a.exchange,
     reason: a.reason,
@@ -291,10 +357,11 @@ const applyRestoreUnderLock = async ({
       logger.error(`❌ 💾 Restore blocked after ${Date.now() - startedAt}ms: writers not confirmed stopped (${summary}) — no files written`, {
         action: 'restore-backup', filename, unconfirmed: summary, elapsedMs: Date.now() - startedAt,
       });
-      return { status: 409, body: {
+      // Nothing was written, so the funds that did stop can trade again.
+      return { status: 409, restartFunds: stoppedFunds, body: {
         success: false,
         code: 'writers-not-quiesced',
-        error: noteStoppedEngines(`Cannot restore: ${unconfirmed.length} writer(s) did not confirm shutdown (${summary}). No files were changed.`, stoppedEngines),
+        error: `Cannot restore: ${unconfirmed.length} writer(s) did not confirm shutdown (${summary}). No files were changed.`,
         unconfirmed,
         stoppedEngines,
       } };
@@ -374,15 +441,17 @@ const applyRestoreUnderLock = async ({
     const code = typeof applied.result?.code === 'string' ? applied.result.code : 'restore-failed';
     // `rolledBack: false` means the data directory is a mixed generation and the
     // rollback artifacts are being retained for a retry — the UI must say so
-    // rather than presenting this as a plain failed restore (#431).
-    return { status: code === 'writers-not-quiesced' ? 409 : 500, body: {
+    // rather than presenting this as a plain failed restore (#431). Engines stay
+    // down until recovery then: trading on a mixed generation is the one thing
+    // worse than a stopped fund. Otherwise the destination is back on its
+    // pre-restore bytes and the stopped funds can resume.
+    return { status: code === 'writers-not-quiesced' ? 409 : 500, restartFunds: recoveryBlocked ? [] : stoppedFunds, body: {
       success: false,
       code,
       ...(unconfirmed.length > 0 ? { unconfirmed } : {}),
-      // A failed rollback keeps engines down until recovery; never invite a restart then.
-      error: applied.ok && applied.result?.rolledBack === false ? error : noteStoppedEngines(error, stoppedEngines),
+      error,
       stoppedEngines,
-      ...(applied.ok && applied.result?.rolledBack === false ? { rolledBack: false } : {}),
+      ...(recoveryBlocked ? { rolledBack: false } : {}),
       ...(applied.result?.recovery ? { recovery: applied.result.recovery } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
     } };
@@ -416,13 +485,24 @@ const applyRestoreUnderLock = async ({
  * Acquire the exclusive maintenance lock, put every engine into its maintenance
  * window, and run the restore under both.
  *
+ * `preflight` runs first, before any engine window opens or any engine is asked
+ * to stop: a restore that its archive or acknowledgements would refuse anyway
+ * refuses with every fund still running. When the restore still refuses after
+ * engines stopped (an unconfirmed writer, or an applier failure that rolled
+ * back), the stopped funds are restarted once the engine windows close and the
+ * response reports `restartedEngines` / `restartFailed`. An incomplete rollback
+ * (`rolledBack: false`) restarts nothing (#1384).
+ *
  * The lock and engine windows are released on ordinary exits, including a
  * thrown fs error inside the archive applier — a leaked lock would 503 every
  * mutating API request for the rest of the process lifetime, and a leaked
  * engine window would refuse trading until its TTL expired. An incomplete
  * rollback retains the gateway lock until startup recovery proves coherence.
  *
- * @param {Object} params - See `applyRestoreUnderLock`
+ * @param {Object} params - See `applyRestoreUnderLock`, plus:
+ * @param {() => Promise<{ok: boolean, code?: string, error?: string}> | {ok: boolean, code?: string, error?: string}} [params.preflight]
+ *   - Archive and acknowledgement checks that need no writer stopped
+ * @param {number} [params.startTimeoutMs] - Per-fund restart acknowledgement timeout
  * @returns {Promise<{status: number, body: Object}>} HTTP status + response body
  */
 const performRestore = async ({
@@ -438,6 +518,8 @@ const performRestore = async ({
   logger,
   stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
   drainTimeoutMs = DEFAULT_DRAIN_TIMEOUT_MS,
+  startTimeoutMs = DEFAULT_START_TIMEOUT_MS,
+  preflight,
 }) => {
   const lock = beginMaintenance(`restore ${filename}`);
   if (!lock.acquired) {
@@ -452,6 +534,27 @@ const performRestore = async ({
         error: `Another maintenance operation is in progress (${lock.heldBy})`,
       },
     };
+  }
+
+  // Checked under the lock so no other maintenance operation changes the
+  // destination between this verdict and the restore it gates.
+  if (preflight) {
+    const check = await Promise.resolve()
+      .then(() => preflight())
+      .then((r) => r, (err) => ({ ok: false, error: err?.message || String(err) }));
+    if (check?.ok !== true) {
+      endMaintenance();
+      const error = check?.error || 'Restore pre-check failed';
+      logger.warn(`⚠️ 💾 Restore of ${filename} refused before stopping any engine: ${error}`, {
+        action: 'restore-backup', filename, code: check?.code, error,
+      });
+      return { status: 400, body: {
+        success: false,
+        code: typeof check?.code === 'string' ? check.code : 'restore-precheck-failed',
+        error,
+        stoppedEngines: [],
+      } };
+    }
   }
 
   // Open the engine windows BEFORE asking anything to stop, so nothing can be
@@ -470,10 +573,25 @@ const performRestore = async ({
   });
 
   await setEngineMaintenanceWindows({ ...windowArgs, active: false });
+
+  // Restart while the gateway lock is still held, so a second restore cannot
+  // stop these funds again mid-start. The windows are closed by now — an
+  // engine refuses `regime:start` inside one.
+  const { restartFunds = [], ...response } = outcome;
+  if (restartFunds.length > 0) {
+    const restart = await restartStoppedFunds({ funds: restartFunds, exchangeIPCMap, logger, filename, timeoutMs: startTimeoutMs });
+    response.body = {
+      ...response.body,
+      error: noteRestartOutcome(response.body.error, restart),
+      restartedEngines: restart.restarted,
+      ...(restart.failed.length > 0 ? { restartFailed: restart.failed } : {}),
+    };
+  }
+
   // Preserve the gateway gate when accounting files are still mixed. Startup
   // recovery clears the journal before this process may resume any writers.
-  if (outcome.body?.rolledBack !== false) endMaintenance();
-  return outcome;
+  if (response.body?.rolledBack !== false) endMaintenance();
+  return response;
 };
 
 module.exports = {
@@ -482,5 +600,6 @@ module.exports = {
   classifyStopAck,
   DEFAULT_STOP_TIMEOUT_MS,
   DEFAULT_DRAIN_TIMEOUT_MS,
+  DEFAULT_START_TIMEOUT_MS,
   ENGINE_MAINTENANCE_TTL_MS,
 };
