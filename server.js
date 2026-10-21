@@ -126,6 +126,7 @@ const gatewayShutdown = createGatewayShutdown({
     schedulerTimer = null;
     backupScheduler.stop();
     tailscaleWatcher?.stop();
+    candleCache.stop();
   },
   // Each producer is stopped on its own, so one failing to persist its state
   // (e.g. a full disk) still lets the others persist and stop; any failure is
