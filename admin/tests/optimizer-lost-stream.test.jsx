@@ -54,7 +54,7 @@ it('gives up after the progress silence bound and resets it on progress', async 
 it('a normal optimizer:complete settles the run without the lost-contact message', async () => {
   await startRun()
   const runId = JSON.parse(fetch.mock.calls.find(c => c[1]?.method === 'POST')[1].body).runId
-  await act(async () => { emit('optimizer:complete', { exchange: 'coinbase', pair: 'BTC-USD', runId, results: [], topResults: [] }) })
+  await act(async () => { emit('optimizer:complete', { exchange: 'coinbase', pair: 'BTC-USD', runId, totalCombinations: 1, duration: 1000, config: { intervals: ['1hour'], markups: [4], periods: ['30D'] }, topResults: [], bestResult: { metrics: { totalValue: 12345, roi: 5, fillRate: 50 }, params: { intervalType: '1hour', intervalBuyAmount: 50, sellMarkupPercent: 4, holdbackPercent: 0, period: '30D' } } }) })
   await act(async () => { vi.advanceTimersByTime(300_000); emit('disconnect') })
   expect(screen.queryByText(LOST)).toBeNull()
   expect(screen.queryByText('Running...')).toBeNull()
