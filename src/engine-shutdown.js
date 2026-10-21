@@ -14,8 +14,9 @@
  * 7. Stops all active regime engines (draining in-flight fills).
  * 8. Drains process-wide pending writes across all funds (order updates, bookings,
  *    metrics, optimizers, reconciles).
- * 9. Publishes final state and fill ledger (flushForBackup) for cleanly stopped
- *    engines to persist writes that landed during the drain.
+ * 9. Publishes final state and fill ledger (flushForBackup) for engines that
+ *    were running and stopped cleanly, to persist writes that landed during
+ *    the drain.
  * 10. Flushes chart data buffers.
  * 11. Flushes pending outbound IPC frames to gateway.
  * 12. Closes the IPC server.
@@ -169,6 +170,17 @@ const createEngineShutdown = ({
       // 6. Stop all running regime engines
       const stopPromises = [];
       const engineEntries = regimeEngines ? [...regimeEngines.entries()] : [];
+      // Only engines running when captured owe a final flush (step 8). A fund
+      // mid-Stop stays registered while its standalone consumer takes over, and
+      // flushing that stopped engine would overwrite the consumer's recovered
+      // fills with a stale ledger (#1552). Same rule as stopFund/stop-all.
+      const wasRunning = engineEntries.map(([, engine]) => {
+        try {
+          return engine?.getStatus?.().isRunning === true;
+        } catch {
+          return false;
+        }
+      });
       for (const [key, engine] of engineEntries) {
         shutdownLogger?.info?.(`ℹ️ Stopping regime engine for ${key}...`, { fundKey: key });
         const stopped = Promise.resolve().then(() => engine.stop());
@@ -214,10 +226,10 @@ const createEngineShutdown = ({
         }
       }
 
-      // 8. Publish final state & ledger for engines that stopped cleanly,
-      // capturing writes that settled during the post-stop drain.
+      // 8. Publish final state & ledger for running engines that stopped
+      // cleanly, capturing writes that settled during the post-stop drain.
       for (let i = 0; i < results.length; i++) {
-        if (results[i].status === 'fulfilled' && !abandoned.has(i)) {
+        if (results[i].status === 'fulfilled' && wasRunning[i] && !abandoned.has(i)) {
           const [fundKey, engine] = engineEntries[i];
           try {
             engine?.flushForBackup?.();
