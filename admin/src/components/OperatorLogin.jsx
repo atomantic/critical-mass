@@ -92,7 +92,7 @@ export default function OperatorLogin({ children }) {
   if (status === 'authenticated') return children
   if (status === 'loading') {
     return (
-      <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center px-4">
+      <main className="min-h-dvh bg-gray-950 text-gray-100 flex items-center justify-center px-4">
         <div
           className="w-full max-w-sm rounded-xl border border-gray-700 bg-gray-900 p-8 text-center shadow-2xl"
           role="status"
@@ -112,7 +112,7 @@ export default function OperatorLogin({ children }) {
 
   if (status === 'unreachable') {
     return (
-      <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center px-4">
+      <main className="min-h-dvh bg-gray-950 text-gray-100 flex items-center justify-center px-4">
         <section className="w-full max-w-sm rounded-xl border border-gray-700 bg-gray-900 p-8 text-center shadow-2xl">
           <div className="text-3xl mb-3" aria-hidden="true">⚛</div>
           <h1 className="text-2xl font-semibold">Can&apos;t reach the gateway</h1>
@@ -126,7 +126,7 @@ export default function OperatorLogin({ children }) {
   }
 
   return (
-    <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center px-4">
+    <main className="min-h-dvh bg-gray-950 text-gray-100 flex items-center justify-center px-4">
       <form onSubmit={login} className="w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 p-8 shadow-2xl">
         <div className="text-3xl mb-3">⚛</div>
         <h1 className="text-2xl font-semibold">{bootstrapRequired ? 'Set up operator access' : 'Operator sign-in'}</h1>
