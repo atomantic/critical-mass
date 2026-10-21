@@ -509,6 +509,50 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.deepEqual(exits, []);
     assert.equal(result.pending, false);
   });
+
+  it('refuses before any write, and reports it as rolled back, when the staged tree cannot be walked', async () => {
+    const realReaddirSync = fs.readdirSync;
+    mock.method(fs, 'readdirSync', (target, ...rest) => {
+      if (String(target) === path.join(stageDir, 'sub')) throw new Error('EIO: injected walk failure');
+      return realReaddirSync(target, ...rest);
+    });
+
+    const result = applyStagedFiles({ dataDir, stageDir, filename: 'backup-walk.zip', logger: silentLogger });
+
+    assert.equal(result.success, false);
+    assert.equal(result.code, 'staged-set-unreadable');
+    assert.equal(result.rolledBack, true);
+    assert.deepEqual(preRestoreState(), { alpha: '{"gen":"current-alpha"}', beta: '{"gen":"current-beta"}', gamma: null });
+    assert.deepEqual(artifactNames().filter((n) => n !== '.restore-temp-fixture'), [], 'no journal or originals are created before the walk succeeds');
+  });
+
+  it('sweeps old orphaned staging directories at startup but keeps fresh ones and journal-owned ones', async () => {
+    const orphan = path.join(dataDir, '.restore-temp-orphan');
+    const fresh = path.join(dataDir, '.restore-temp-fresh');
+    const owned = path.join(dataDir, '.restore-temp-owned');
+    for (const dir of [orphan, fresh, owned]) write(path.join(dir, 'x.json'), '{}');
+    const anHourAgo = new Date(Date.now() - 60 * 60_000);
+    fs.utimesSync(orphan, anHourAgo, anHourAgo);
+    fs.utimesSync(owned, anHourAgo, anHourAgo);
+    // A journal that cannot be rolled back: its staging directory must survive for recovery.
+    write(path.join(dataDir, JOURNAL_FILENAME), JSON.stringify({
+      journalVersion: JOURNAL_VERSION,
+      restoreId: 'owned',
+      filename: 'backup-owned.zip',
+      status: STATUS.APPLYING,
+      originalsDir: '.restore-originals-missing',
+      stageDir: '.restore-temp-owned',
+      entries: [{ dest: 'alpha.json', existed: true }],
+      createdDirs: [],
+    }));
+
+    const result = recoverIncompleteRestore({ dataDir, logger: silentLogger });
+
+    assert.equal(result.blocked, true);
+    assert.equal(fs.existsSync(orphan), false, 'an old unreferenced staging directory is removed');
+    assert.equal(fs.existsSync(fresh), true, 'a fresh staging directory may belong to a live restore and is kept');
+    assert.equal(fs.existsSync(owned), true, 'a journal-owned staging directory is kept for recovery');
+  });
 });
 
 describe('backup-service — restore failure leaves the install coherent (#431)', () => {
@@ -567,6 +611,22 @@ describe('backup-service — restore failure leaves the install coherent (#431)'
     assert.equal(JSON.parse(read(ledgerFile())).generation, 'current');
     assert.equal(JSON.parse(read(stateFile())).realizedPnL, 42);
     assert.deepEqual(fs.readdirSync(install.dataDir).filter((n) => n.startsWith('.restore-')), [], 'no artifacts leak after a clean rollback');
+  });
+
+  it('removes the staging directory when a step after extraction throws', async () => {
+    const realWriteFileSync = fs.writeFileSync;
+    mock.method(fs, 'writeFileSync', (target, ...rest) => {
+      if (String(target).includes(`${path.sep}.restore-temp-`)) throw new Error('ENOSPC: injected staging write failure');
+      return realWriteFileSync(target, ...rest);
+    });
+
+    const result = restoreBackup(filename, { paths: install });
+
+    assert.equal(result.success, false);
+    assert.equal(result.code, 'staging-failed');
+    assert.match(result.error, /ENOSPC/);
+    assert.equal(JSON.parse(read(stateFile())).generation, 'current', 'the destination is untouched');
+    assert.deepEqual(fs.readdirSync(install.dataDir).filter((n) => n.startsWith('.restore-')), [], 'no staging directory leaks');
   });
 
   it('never archives its own restore bookkeeping', async () => {

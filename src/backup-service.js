@@ -1160,143 +1160,153 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
       : (extractResult.stderr ? extractResult.stderr.toString().trim() : 'Unknown unzip error'));
   }
 
-  // ---- Decide the configuration outcome before mutating the destination ----
-  const manifestPath = path.join(tempDir, MANIFEST_FILENAME);
-  const legacy = !fs.existsSync(manifestPath);
-  let snapshot = null;
+  let handedOff = false;
+  try {
+    // ---- Decide the configuration outcome before mutating the destination ----
+    const manifestPath = path.join(tempDir, MANIFEST_FILENAME);
+    const legacy = !fs.existsSync(manifestPath);
+    let snapshot = null;
 
-  if (!legacy) {
-    const manifestRead = readJsonFile(manifestPath);
-    if (!manifestRead.ok) return abort(manifestRead.error, 'manifest-malformed');
-    const envelope = readManifestSnapshot(manifestRead.value);
-    if (!envelope.ok) return abort(envelope.error, 'manifest-unsupported-version');
-    snapshot = envelope.snapshot;
-  } else if (legacyBaseConfig) {
-    // The archive carries only the base-relative override; pairing it with the
-    // source's base reconstructs what the source machine actually ran.
-    const archivedOverride = readJsonFile(path.join(tempDir, 'config.json'));
-    if (!archivedOverride.ok) return abort(archivedOverride.error, 'manifest-malformed');
-    snapshot = buildConfigSnapshot(deepMerge(legacyBaseConfig, archivedOverride.value || {}));
-  } else if (!acceptLegacyWithoutBase) {
-    return abort(
-      `This archive has no ${MANIFEST_FILENAME}, so it does not carry the configuration it was taken with. `
-      + 'Supply the source machine\'s config.json (legacyBaseConfig) to make it portable, or explicitly accept a '
-      + 'data-only restore (acceptLegacyWithoutBase) that keeps this machine\'s current fund configuration. '
-      + 'No files were changed.',
-      'legacy-archive-missing-base',
-    );
-  }
+    if (!legacy) {
+      const manifestRead = readJsonFile(manifestPath);
+      if (!manifestRead.ok) return abort(manifestRead.error, 'manifest-malformed');
+      const envelope = readManifestSnapshot(manifestRead.value);
+      if (!envelope.ok) return abort(envelope.error, 'manifest-unsupported-version');
+      snapshot = envelope.snapshot;
+    } else if (legacyBaseConfig) {
+      // The archive carries only the base-relative override; pairing it with the
+      // source's base reconstructs what the source machine actually ran.
+      const archivedOverride = readJsonFile(path.join(tempDir, 'config.json'));
+      if (!archivedOverride.ok) return abort(archivedOverride.error, 'manifest-malformed');
+      snapshot = buildConfigSnapshot(deepMerge(legacyBaseConfig, archivedOverride.value || {}));
+    } else if (!acceptLegacyWithoutBase) {
+      return abort(
+        `This archive has no ${MANIFEST_FILENAME}, so it does not carry the configuration it was taken with. `
+        + 'Supply the source machine\'s config.json (legacyBaseConfig) to make it portable, or explicitly accept a '
+        + 'data-only restore (acceptLegacyWithoutBase) that keeps this machine\'s current fund configuration. '
+        + 'No files were changed.',
+        'legacy-archive-missing-base',
+      );
+    }
 
-  let override = null;
-  /** @type {Array<string>} */
-  let droppedFields = [];
-  if (snapshot) {
-    const rebuilt = reconstructConfigOverride({
+    let override = null;
+    /** @type {Array<string>} */
+    let droppedFields = [];
+    if (snapshot) {
+      const rebuilt = reconstructConfigOverride({
+        snapshot,
+        baseConfig: destination.base,
+        destinationGlobal: destination.config.global,
+      });
+      if (!rebuilt.ok) return abort(rebuilt.error, 'config-snapshot-invalid');
+      override = rebuilt.override;
+      droppedFields = rebuilt.droppedFields ?? [];
+      if (droppedFields.length > 0) {
+        logger.warn(`⚠️ 💾 Restore ${filename}: archive written by a newer build — ignoring ${droppedFields.length} setting(s) this build has no concept of, destination keeps its own defaults (${droppedFields.join(', ')})`, {
+          action: 'restore-dropped-fields', filename, droppedFields, count: droppedFields.length,
+        });
+      }
+
+      // The reconstruction above already tombstones base-defined pairs the
+      // snapshot lacks; this catches every fund the destination actually runs
+      // (base OR override-defined) that would disappear, and refuses unless the
+      // operator has explicitly accepted it — mirroring acceptLegacyWithoutBase
+      // above rather than inventing a second idiom (issue #533).
+      const removedFunds = diffSnapshotAgainstConfig({ snapshot, effectiveConfig: destination.config });
+      if (removedFunds.length > 0 && !acceptFundRemoval) {
+        const describe = removedFunds.map(({ exchange, pair }) => `${exchange}/${pair}`).join(', ');
+        return abort(
+          `Restoring this archive would remove ${removedFunds.length} fund${removedFunds.length === 1 ? "" : "s"} this machine currently runs that the archive does not carry (${describe}). `
+          + 'They may still hold on-disk state or a live exchange order. Pass acceptFundRemoval to proceed. No files were changed.',
+          'fund-removal-unacknowledged',
+        );
+      }
+    }
+
+    if (override) {
+      // Stage the reconstruction OVER the archived config.json rather than writing
+      // it after the copy: the archived diff was relative to the SOURCE's base and
+      // is meaningless against this one, and staging it makes the config
+      // replacement part of the same all-or-nothing application below (#431).
+      // 0600 because an override can hold secrets (Telegram token) — matching
+      // writeUserConfigFile's default for a brand-new file.
+      fs.writeFileSync(path.join(tempDir, 'config.json'), JSON.stringify(override, null, 2), { mode: 0o600 });
+    }
+
+    // A source baseline is not portable: the reconstructed override is relative
+    // to THIS base. Stage both in the same rollback transaction, including for
+    // legacy data-only restores, which retain the destination configuration.
+    fs.writeFileSync(path.join(tempDir, BASE_SNAPSHOT_FILENAME), JSON.stringify(destination.base, null, 2), { mode: 0o600 });
+    fs.chmodSync(path.join(tempDir, BASE_SNAPSHOT_FILENAME), 0o600);
+
+    // ---- Translate a pre-multi-pair archive into the per-fund layout -------
+    // Archives predating the multi-pair release hold their per-fund files at
+    // `<exchange>/`, where nothing reads them any more. Relocating them inside
+    // the STAGING tree — before the applier collects its set — puts the
+    // translation inside the same all-or-nothing transaction as every other
+    // replacement (#431): the journal records the translated destinations, so a
+    // rollback reverts them, and a destination that already holds per-fund files
+    // is still replaced rather than shadowed (issue #541).
+    const layout = planLayoutTranslation({
+      exchangeFiles: collectExchangeFilesFromDir(tempDir),
       snapshot,
-      baseConfig: destination.base,
-      destinationGlobal: destination.config.global,
+      destinationConfig: destination.config,
     });
-    if (!rebuilt.ok) return abort(rebuilt.error, 'config-snapshot-invalid');
-    override = rebuilt.override;
-    droppedFields = rebuilt.droppedFields ?? [];
-    if (droppedFields.length > 0) {
-      logger.warn(`⚠️ 💾 Restore ${filename}: archive written by a newer build — ignoring ${droppedFields.length} setting(s) this build has no concept of, destination keeps its own defaults (${droppedFields.join(', ')})`, {
-        action: 'restore-dropped-fields', filename, droppedFields, count: droppedFields.length,
+    if (layout.unresolvable.length > 0) {
+      return abort(
+        `This archive predates the multi-pair layout and holds per-fund files at the exchange level for ${layout.unresolvable.join(', ')}, `
+        + 'but neither the archive nor this machine names a fund for those exchanges, so there is no directory to restore them into. '
+        + 'Configure the fund before restoring. No files were changed.',
+        'legacy-layout-unresolvable-pair',
+      );
+    }
+    for (const { exchange, pair } of layout.translations) {
+      const { moved, skipped } = normalizeExchangeTreeToPairs({ root: tempDir, exchange, pair });
+      logger.info(`ℹ️ 💾 Restore translated legacy layout ${exchange}/ → ${exchange}/${pair}: ${moved.length} file(s) relocated, ${skipped.length} skipped (${moved.join(', ') || 'none'})`, {
+        action: 'restore-legacy-layout', filename, exchange, pair, moved: moved.length, skipped: skipped.length,
       });
     }
 
-    // The reconstruction above already tombstones base-defined pairs the
-    // snapshot lacks; this catches every fund the destination actually runs
-    // (base OR override-defined) that would disappear, and refuses unless the
-    // operator has explicitly accepted it — mirroring acceptLegacyWithoutBase
-    // above rather than inventing a second idiom (issue #533).
-    const removedFunds = diffSnapshotAgainstConfig({ snapshot, effectiveConfig: destination.config });
-    if (removedFunds.length > 0 && !acceptFundRemoval) {
-      const describe = removedFunds.map(({ exchange, pair }) => `${exchange}/${pair}`).join(', ');
-      return abort(
-        `Restoring this archive would remove ${removedFunds.length} fund${removedFunds.length === 1 ? "" : "s"} this machine currently runs that the archive does not carry (${describe}). `
-        + 'They may still hold on-disk state or a live exchange order. Pass acceptFundRemoval to proceed. No files were changed.',
-        'fund-removal-unacknowledged',
-      );
-    }
-  }
-
-  if (override) {
-    // Stage the reconstruction OVER the archived config.json rather than writing
-    // it after the copy: the archived diff was relative to the SOURCE's base and
-    // is meaningless against this one, and staging it makes the config
-    // replacement part of the same all-or-nothing application below (#431).
-    // 0600 because an override can hold secrets (Telegram token) — matching
-    // writeUserConfigFile's default for a brand-new file.
-    fs.writeFileSync(path.join(tempDir, 'config.json'), JSON.stringify(override, null, 2), { mode: 0o600 });
-  }
-
-  // A source baseline is not portable: the reconstructed override is relative
-  // to THIS base. Stage both in the same rollback transaction, including for
-  // legacy data-only restores, which retain the destination configuration.
-  fs.writeFileSync(path.join(tempDir, BASE_SNAPSHOT_FILENAME), JSON.stringify(destination.base, null, 2), { mode: 0o600 });
-  fs.chmodSync(path.join(tempDir, BASE_SNAPSHOT_FILENAME), 0o600);
-
-  // ---- Translate a pre-multi-pair archive into the per-fund layout -------
-  // Archives predating the multi-pair release hold their per-fund files at
-  // `<exchange>/`, where nothing reads them any more. Relocating them inside
-  // the STAGING tree — before the applier collects its set — puts the
-  // translation inside the same all-or-nothing transaction as every other
-  // replacement (#431): the journal records the translated destinations, so a
-  // rollback reverts them, and a destination that already holds per-fund files
-  // is still replaced rather than shadowed (issue #541).
-  const layout = planLayoutTranslation({
-    exchangeFiles: collectExchangeFilesFromDir(tempDir),
-    snapshot,
-    destinationConfig: destination.config,
-  });
-  if (layout.unresolvable.length > 0) {
-    return abort(
-      `This archive predates the multi-pair layout and holds per-fund files at the exchange level for ${layout.unresolvable.join(', ')}, `
-      + 'but neither the archive nor this machine names a fund for those exchanges, so there is no directory to restore them into. '
-      + 'Configure the fund before restoring. No files were changed.',
-      'legacy-layout-unresolvable-pair',
-    );
-  }
-  for (const { exchange, pair } of layout.translations) {
-    const { moved, skipped } = normalizeExchangeTreeToPairs({ root: tempDir, exchange, pair });
-    logger.info(`ℹ️ 💾 Restore translated legacy layout ${exchange}/ → ${exchange}/${pair}: ${moved.length} file(s) relocated, ${skipped.length} skipped (${moved.join(', ') || 'none'})`, {
-      action: 'restore-legacy-layout', filename, exchange, pair, moved: moved.length, skipped: skipped.length,
+    // From here applyStagedFiles owns the staging directory: it removes it on a
+    // refusal or rollback, or leaves it for the rollback journal to recover.
+    handedOff = true;
+    // ---- Past this point the destination is mutated ----
+    // Transactional: the staged set is validated in full, every destination it
+    // replaces is copied aside under a durable rollback journal, and each
+    // replacement is a same-directory temp-file + rename. A failure reverts every
+    // destination; a crash leaves the journal for startup recovery (#431).
+    const applied = applyStagedFiles({
+      dataDir: paths.dataDir,
+      stageDir: tempDir,
+      filename,
+      logger,
+      // Skip the backups directory, root credential files, key files and the
+      // archive's own metadata.
+      skip: (name, isRoot) => name === 'backups'
+        || (isRoot && (name === CONFIG_LOCK_DIR || name.startsWith(`${BASE_SNAPSHOT_FILENAME}.`)))
+        || name.endsWith('-keys.json')
+        || (isRoot && ROOT_CREDENTIAL_FILES.includes(name))
+        || (isRoot && (name === MANIFEST_FILENAME || (legacy && !override && name === 'config.json'))),
     });
+
+    // The applier cleans staging itself once a journal exists; this covers the
+    // earlier refusals (invalid staged set, snapshot or journal write failure),
+    // which return before one is written.
+    if (applied.success || applied.rolledBack) fs.rmSync(tempDir, { recursive: true, force: true });
+
+    if (!applied.success) {
+      return { success: false, code: applied.code, error: applied.error, rolledBack: applied.rolledBack, ...(applied.recovery ? { recovery: applied.recovery } : {}) };
+    }
+
+    // Only now can a reader see the new config.json.
+    if (override) invalidateConfigCache();
+
+    return { success: true, filesRestored: applied.filesRestored, configRestored: Boolean(override), legacy, droppedFields };
+  } catch (error) {
+    if (!handedOff) fs.rmSync(tempDir, { recursive: true, force: true });
+    logger.error(`❌ 💾 Restore failed while preparing ${filename}: ${error.message}`, { action: "restore-stage", filename, error: error.message });
+    return { success: false, code: "staging-failed", error: `Restore failed while preparing the archive: ${error.message}. ${handedOff ? "The rollback journal will recover the data directory on next start." : "No files were changed."}` };
   }
-
-  // ---- Past this point the destination is mutated ----
-  // Transactional: the staged set is validated in full, every destination it
-  // replaces is copied aside under a durable rollback journal, and each
-  // replacement is a same-directory temp-file + rename. A failure reverts every
-  // destination; a crash leaves the journal for startup recovery (#431).
-  const applied = applyStagedFiles({
-    dataDir: paths.dataDir,
-    stageDir: tempDir,
-    filename,
-    logger,
-    // Skip the backups directory, root credential files, key files and the
-    // archive's own metadata.
-    skip: (name, isRoot) => name === 'backups'
-      || (isRoot && (name === CONFIG_LOCK_DIR || name.startsWith(`${BASE_SNAPSHOT_FILENAME}.`)))
-      || name.endsWith('-keys.json')
-      || (isRoot && ROOT_CREDENTIAL_FILES.includes(name))
-      || (isRoot && (name === MANIFEST_FILENAME || (legacy && !override && name === 'config.json'))),
-  });
-
-  // The applier cleans staging itself once a journal exists; this covers the
-  // earlier refusals (invalid staged set, snapshot or journal write failure),
-  // which return before one is written.
-  if (applied.success || applied.rolledBack) fs.rmSync(tempDir, { recursive: true, force: true });
-
-  if (!applied.success) {
-    return { success: false, code: applied.code, error: applied.error, rolledBack: applied.rolledBack, ...(applied.recovery ? { recovery: applied.recovery } : {}) };
-  }
-
-  // Only now can a reader see the new config.json.
-  if (override) invalidateConfigCache();
-
-  return { success: true, filesRestored: applied.filesRestored, configRestored: Boolean(override), legacy, droppedFields };
 };
 
 module.exports = {

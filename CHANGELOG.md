@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **A failed restore no longer leaves its extracted archive in `data/`** — Any failure after the archive is extracted (staging a config, normalizing a legacy layout, walking the staged set) now removes the `.restore-temp-*` staging directory instead of leaking a full copy of the archive. Startup also sweeps orphaned staging directories older than ten minutes that no rollback journal references.
 - **Restoring an old archive with its source config works as documented** — `POST /api/backups/:filename/restore` now passes `legacyBaseConfig` through to the restore, so the recommended path in UPGRADE.md for archives taken before configuration manifests existed no longer fails with "legacy-archive-missing-base".
 - **UpDown paper-book reset and hydrate are guarded and backed up** — `scripts/updown-pnl-snapshot.js --reset-book` and `--hydrate-state` refuse while the gateway is running, because it would overwrite the rewritten book. They also copy `updown-state.json` to a timestamped backup before writing, since the previous closed trades and realized P&L cannot be rebuilt.
 - **Config saves keep the engine's capital-correction records** — Saving the Config page no longer erases the engine's record of capital corrections it has already applied, which could let a pending correction be applied twice after a restart.
