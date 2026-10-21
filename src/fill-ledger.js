@@ -263,15 +263,7 @@ const findInvalidLedgerReason = (data) => {
  * at least this fraction of bought asset volume (body TP sells, core TP sells,
  * or any combination).
  */
-let CYCLE_COMPLETE_SELL_RATIO = 0.5;
-
-/**
- * Set the completion threshold (for tests).
- * @param {number} val
- */
-const setCycleCompleteSellRatioForTest = (val) => {
-  CYCLE_COMPLETE_SELL_RATIO = val;
-};
+const CYCLE_COMPLETE_SELL_RATIO = 0.5;
 
 /**
  * Determine whether a cycle is completed based on total sell size vs buy size.
@@ -3205,13 +3197,5 @@ module.exports = {
   groupFillsByCycle,
   collectCycleTimestamps,
   buildCycleRenumberingMap,
-  setCycleCompleteSellRatioForTest,
   LEGACY_CONSUMPTION_KEY,
 };
-
-Object.defineProperty(module.exports, 'CYCLE_COMPLETE_SELL_RATIO', {
-  get: () => CYCLE_COMPLETE_SELL_RATIO,
-  set: (val) => { CYCLE_COMPLETE_SELL_RATIO = val; },
-  configurable: true,
-  enumerable: true,
-});

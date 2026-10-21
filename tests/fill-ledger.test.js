@@ -2725,11 +2725,10 @@ describe('Fill Ledger', () => {
       assert.ok(previewCycleIds.length > 0, 'at least one completed cycle verified');
     });
 
-    it('pins that changing the shared threshold moves preview and apply together', () => {
+    it('pins that changing the threshold moves preview and apply together', () => {
       const fillLedgerMod = freshFillLedgerModule();
-      const { createFillLedger, setCycleCompleteSellRatioForTest, CYCLE_COMPLETE_SELL_RATIO } = fillLedgerMod;
-      const originalRatio = CYCLE_COMPLETE_SELL_RATIO;
-      try {
+      const { createFillLedger } = fillLedgerMod;
+      {
         // Buy 1.0, Sell 0.6 -> sell ratio is 0.6.
         // At default threshold (0.5), 0.6 >= 0.5 so cycle is completed.
         const ledger1 = createFillLedger('thresh-1');
@@ -2742,9 +2741,7 @@ describe('Fill Ledger', () => {
         assert.equal(real1.cyclesCompleted, 1, 'completed at default threshold');
 
         // Increase threshold to 0.7. Now 0.6 < 0.7, so cycle should NOT be completed in BOTH.
-        setCycleCompleteSellRatioForTest(0.7);
-
-        const ledger2 = createFillLedger('thresh-2');
+        const ledger2 = createFillLedger('thresh-2', 'BTC-USDC', 'BTC-USDC', { cycleCompleteSellRatio: 0.7 });
         ledger2.ingestFill(makeBuyFill({ tradeId: 't-b2', orderId: 'tb-2', price: '100000', size: '1.0', timestamp: 1000 }), null, { cycleId: null });
         ledger2.ingestFill(makeSellFill({ tradeId: 't-s2', orderId: 'ts-2', price: '105000', size: '0.6', timestamp: 2000 }), null, { cycleId: null });
 
@@ -2754,8 +2751,6 @@ describe('Fill Ledger', () => {
         assert.equal(real2.cyclesCompleted, 0, 'not completed at 0.7 threshold in apply');
         assert.equal(preview2.cycleDetails.length, 0);
         assert.equal(real2.cycleDetails.length, 0);
-      } finally {
-        setCycleCompleteSellRatioForTest(originalRatio);
       }
     });
 
