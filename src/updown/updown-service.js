@@ -382,8 +382,9 @@ const createUpDownService = (io, deps) => {
         trade: fillResult.trade,
         book: { contracts: perpSnap.contracts, realizedPnl: perpSnap.realizedPnl },
       });
-      // The fill is already in memory and the signal-change save below retries
-      // it; a throw here would defer this cycle's prediction to the next one.
+      // The fill is already in memory, and a fill normally comes with a published-type
+      // change whose save below writes it again; a throw here would defer this
+      // cycle's prediction to the next one.
       try {
         persistState();
       } catch (err) {

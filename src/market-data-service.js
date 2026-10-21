@@ -969,8 +969,12 @@ const createMarketDataService = (exchange, pair) => {
     // A stalled exchange can outlast the interval (each candle request may take
     // minutes with retries), so a run in flight is shared, never stacked.
     const runMetrics = () => {
-      metricsInFlight ??= updateMetrics(adapter, productId).finally(() => { metricsInFlight = null; });
-      return metricsInFlight;
+      if (metricsInFlight) return metricsInFlight;
+      const run = updateMetrics(adapter, productId).finally(() => {
+        if (metricsInFlight === run) metricsInFlight = null;
+      });
+      metricsInFlight = run;
+      return run;
     };
     // updateMetrics is async; guard the interval callback so an unhandled
     // rejection (e.g. a throw inside calculateAllMetrics) can't crash the process.
@@ -1986,6 +1990,8 @@ const createMarketDataService = (exchange, pair) => {
       clearInterval(metricsUpdateInterval);
       metricsUpdateInterval = null;
     }
+    // A later start() must fetch with its own adapter, not join this run.
+    metricsInFlight = null;
 
     if (wsFeed) {
       wsFeed.disconnect();
