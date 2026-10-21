@@ -425,6 +425,48 @@ describe('#196 manualMergeBody — lock acquisition', () => {
     assert.equal(eng._test.getFlags().mergeInProgress, false, 'lock released');
   });
 
+  it('#1358 a roll-up that throws after both cancels unregisters the snapshots, so a later TP fill is not routed to the merge-snapshot branch', async () => {
+    const eng = makeEngine({
+      bodies: [makeBody('a', 50000, 0.01, 'tp-a'), makeBody('b', 51000, 0.01, 'tp-b')],
+      adapter: {
+        getOrderFills: async () => [{
+          tradeId: 'trade-1358', orderId: 'tp-a', side: 'SELL', price: '50500', size: '0.01',
+          totalCommission: '0.01', rebate: '0', liquidityIndicator: 'MAKER', tradeTime: new Date().toISOString(),
+        }],
+      },
+    });
+    const celestialHierarchy = require('../src/celestial-hierarchy');
+    const originalMergeBodies = celestialHierarchy.mergeBodies;
+    let sawRegistered = false;
+    celestialHierarchy.mergeBodies = () => {
+      // Both snapshots are live while the roll-up is mid-flight...
+      sawRegistered = eng._test.getMergeTpSnapshots().pending.size === 2;
+      throw new Error('roll-up blew up');
+    };
+    try {
+      await assert.rejects(eng.manualMergeBody('a', { targetId: 'b' }), /roll-up blew up/);
+    } finally {
+      celestialHierarchy.mergeBodies = originalMergeBodies;
+    }
+    assert.equal(sawRegistered, true, 'Race-3 snapshots were registered before the throw');
+
+    // ...and neither pending nor completed holds them after the failure.
+    const snaps = eng._test.getMergeTpSnapshots();
+    assert.equal(snaps.pending.size, 0, 'no stale pending snapshots');
+    assert.equal(snaps.completed.size, 0, 'failed roll-up never retains snapshots as completed');
+    assert.equal(eng._test.getFlags().mergeInProgress, false, 'lock released');
+
+    // A later fill on the source TP id must not hit the merge-snapshot branch
+    // (which would deduct from / mutate the still-live source body).
+    await eng._test.handleOrderFill({ orderId: 'tp-a', side: 'sell', status: 'FILLED', filledSize: 0.01 });
+    const after = eng._test.getMergeTpSnapshots();
+    assert.equal(after.pending.size, 0);
+    assert.equal(after.completed.size, 0);
+    const live = eng._getPositionState().celestialBodies.find(b => b.id === 'a');
+    assert.ok(live, 'source body untouched by the unrelated fill');
+    assert.equal(live.assetQty, 0.01, 'merge-snapshot deduction did not run');
+  });
+
   it('two genuinely concurrent manualMergeBody calls: exactly one succeeds, the other is rejected busy', async () => {
     // Unlike the flag-driven tests above (which pre-set mergeInProgress before
     // calling), this fires two REAL overlapping calls via Promise.all and holds
