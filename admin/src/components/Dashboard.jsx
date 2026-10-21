@@ -83,6 +83,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const convertTitleId = useId()
   const convertDescId = useId()
   const [liveData, setLiveData] = useState(null)
+  const [liveError, setLiveError] = useState(null)
   const [updating, setUpdating] = useState(false)
   const [countdown, setCountdown] = useState('')
   const [consolidating, setConsolidating] = useState(false)
@@ -106,6 +107,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
     if (buyRecoveryRef.current) return false
     const { owned, data } = await liveOwnerRef.current.read(`/api/${exchange}/status${pairQuery}`)
     if (owned && data) setLiveData(data)
+    if (owned) setLiveError(data ? data.apiError || null : 'Could not load live status.')
     return Boolean(owned && data)
   }, [exchange, pairQuery])
 
@@ -286,9 +288,13 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const { config, state, stats, costBasis, nextTrade } = summary
   const quoteCurrency = getQuoteCurrency(config?.productId)
   const baseCurrency = getBaseCurrency(config?.productId)
-  const currentPrice = liveData?.currentPrice || 0
-  const assetValue = (state.assetReserves || 0) * currentPrice
-  const pendingAssetValue = (state.outstandingOrdersAsset || 0) * currentPrice
+  // Missing or non-positive price is unknown, never 0 (would render $0 / -100%).
+  const livePrice = Number(liveData?.currentPrice)
+  const currentPrice = livePrice > 0 ? livePrice : null
+  const priceKnown = currentPrice !== null
+  const NA = '—'
+  const assetValue = (state.assetReserves || 0) * (currentPrice || 0)
+  const pendingAssetValue = (state.outstandingOrdersAsset || 0) * (currentPrice || 0)
   const totalAssetHeld = (state.assetReserves || 0) + (state.outstandingOrdersAsset || 0)
   const hasHoldingCostBasis = costBasis != null
   const totalAssetCostBasis = (costBasis?.reservesCostBasis || 0) + (costBasis?.pendingCostBasis || 0)
@@ -320,10 +326,16 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
         />
         {/* Live Price Banner + Controls */}
         <div className="bg-gray-800 rounded-lg p-4">
+          {liveError && (
+            <div role="alert" className="mb-3 flex items-center justify-between gap-2 text-sm text-red-400">
+              <span>{liveError}</span>
+              <button type="button" onClick={fetchLive} className="px-2 py-1 rounded bg-gray-700 text-white">Retry</button>
+            </div>
+          )}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
             <div className="flex items-center gap-2 sm:gap-4 min-w-0">
               <span className="text-gray-400 shrink-0 text-sm sm:text-base">{config?.productId || 'BTC-' + quoteCurrency}</span>
-              <span className="text-xl sm:text-3xl font-bold truncate">{formatPrice(currentPrice)}</span>
+              <span className="text-xl sm:text-3xl font-bold truncate">{priceKnown ? formatPrice(currentPrice) : NA}</span>
             </div>
             <div className="flex flex-wrap items-center gap-2 sm:gap-4">
               <ToggleSwitch
@@ -364,11 +376,11 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
                 <div className="text-xs text-gray-400">{quoteCurrency}</div>
               </div>
               <div className="min-w-0">
-                <div className="text-base sm:text-lg font-bold text-orange-400 truncate">{formatCurrency(assetValue + pendingAssetValue)}</div>
+                <div className="text-base sm:text-lg font-bold text-orange-400 truncate">{priceKnown ? formatCurrency(assetValue + pendingAssetValue) : NA}</div>
                 <div className="text-xs text-gray-400">{baseCurrency} Value</div>
               </div>
               <div className="min-w-0">
-                <div className="text-base sm:text-lg font-bold text-blue-400 truncate">{formatCurrency((state.usdcFundSize || 0) + assetValue + pendingAssetValue)}</div>
+                <div className="text-base sm:text-lg font-bold text-blue-400 truncate">{priceKnown ? formatCurrency((state.usdcFundSize || 0) + assetValue + pendingAssetValue) : NA}</div>
                 <div className="text-xs text-gray-400">Total</div>
               </div>
             </div>
@@ -385,7 +397,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
                   <div className="text-gray-400 mb-1">Reserves</div>
                   <div className="text-orange-400 font-semibold truncate">{formatAssetHeld(state.assetReserves || 0)}</div>
                   <div className="text-gray-400 truncate">Cost: {hasHoldingCostBasis ? formatCurrency(costBasis.reservesCostBasis || 0) : '—'}</div>
-                  <div className="text-gray-400 truncate">Val: {formatCurrency(assetValue)}</div>
+                  <div className="text-gray-400 truncate">Val: {priceKnown ? formatCurrency(assetValue) : NA}</div>
                 </div>
                 <div className="text-center min-w-0">
                   <div className="text-gray-400 mb-1">Total {baseCurrency}</div>
@@ -407,34 +419,34 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
             <div className="grid grid-cols-3 gap-2">
               {(() => {
                 // Current market value of all asset holdings
-                const totalAssetMarketValue = totalAssetHeld * currentPrice
+                const totalAssetMarketValue = totalAssetHeld * (currentPrice || 0)
                 // Float P&L: if we sold everything at current price, what's the profit?
                 const floatPnL = totalAssetMarketValue - totalAssetCostBasis
                 const floatPnLPct = totalAssetCostBasis > 0 ? (floatPnL / totalAssetCostBasis) * 100 : 0
                 const hasRealizedPnL = Number.isFinite(stats.realizedProfit)
                 const realizedPnL = stats.realizedProfit
                 const assetReserves = state.assetReserves || 0
-                const reservesValue = assetReserves * currentPrice
+                const reservesValue = assetReserves * (currentPrice || 0)
                 const totalRealizedLiquid = realizedPnL + reservesValue
                 return (
                   <>
                     <StatCard
                       label={`${baseCurrency} Mkt Val`}
-                      value={formatCurrency(totalAssetMarketValue)}
+                      value={priceKnown ? formatCurrency(totalAssetMarketValue) : NA}
                       subtext={hasHoldingCostBasis ? `Cost: ${formatCurrency(totalAssetCostBasis)}` : 'Cost unavailable'}
                       color="blue"
                     />
                     <StatCard
                       label="Float P&L"
-                      value={hasHoldingCostBasis ? `${floatPnL >= 0 ? '+' : ''}${formatCurrency(floatPnL)}` : '—'}
-                      subtext={hasHoldingCostBasis ? `${floatPnLPct >= 0 ? '+' : ''}${floatPnLPct.toFixed(1)}%` : 'Unavailable for Fibonacci DCA'}
-                      color={!hasHoldingCostBasis ? 'blue' : floatPnL >= 0 ? 'green' : 'red'}
+                      value={hasHoldingCostBasis && priceKnown ? `${floatPnL >= 0 ? '+' : ''}${formatCurrency(floatPnL)}` : NA}
+                      subtext={!hasHoldingCostBasis ? 'Unavailable for Fibonacci DCA' : priceKnown ? `${floatPnLPct >= 0 ? '+' : ''}${floatPnLPct.toFixed(1)}%` : 'Price unavailable'}
+                      color={!hasHoldingCostBasis || !priceKnown ? 'blue' : floatPnL >= 0 ? 'green' : 'red'}
                     />
                     <StatCard
                       label="Realized"
-                      value={hasRealizedPnL ? `${totalRealizedLiquid >= 0 ? '+' : ''}${formatCurrency(totalRealizedLiquid)}` : '—'}
+                      value={hasRealizedPnL && priceKnown ? `${totalRealizedLiquid >= 0 ? '+' : ''}${formatCurrency(totalRealizedLiquid)}` : NA}
                       subtext={!hasRealizedPnL ? 'Unavailable for Simple DCA' : assetReserves > 0 ? <span className="flex flex-col leading-tight"><span className="text-white">{formatCurrency(realizedPnL)} USD</span><span className="text-orange-400">+{assetReserves.toFixed(8)} {baseCurrency}</span></span> : null}
-                      color={!hasRealizedPnL ? 'blue' : totalRealizedLiquid >= 0 ? 'green' : 'red'}
+                      color={!hasRealizedPnL || !priceKnown ? 'blue' : totalRealizedLiquid >= 0 ? 'green' : 'red'}
                     />
                   </>
                 )
