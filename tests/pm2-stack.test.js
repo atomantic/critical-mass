@@ -7,6 +7,10 @@ const { spawnSync } = require('node:child_process');
 
 const repo = path.resolve(__dirname, '..');
 const commands = require('../package.json').scripts;
+// Each stub call is a separate Node process; on a loaded host a single start can take seconds,
+// so the budget is generous. A real hang still hits this limit and fails with a timeout message.
+const SPAWN_TIMEOUT_MS = 120000;
+const TEST_TIMEOUT_MS = 300000;
 const names = ['critical-mass', 'critical-mass-coinbase', 'critical-mass-gemini', 'critical-mass-cryptocom', 'critical-mass-ui'];
 
 function run(t, command = 'start', scenario = '', initial = names) {
@@ -63,14 +67,17 @@ function run(t, command = 'start', scenario = '', initial = names) {
     cwd: root,
     env: { PATH: bin + path.delimiter + path.dirname(process.execPath), SCENARIO: scenario },
     encoding: 'utf8',
-    timeout: 15000,
+    timeout: SPAWN_TIMEOUT_MS,
   });
+  if (result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGTERM') {
+    throw new Error(`pm2-stack "${command}" (scenario "${scenario || 'default'}") timed out after ${SPAWN_TIMEOUT_MS}ms`);
+  }
   const calls = fs.existsSync(path.join(root, 'calls.jsonl'))
     ? fs.readFileSync(path.join(root, 'calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse) : [];
   return { ...result, calls, state: JSON.parse(fs.readFileSync(path.join(root, 'state.json'))) };
 }
 
-test('npm start confirms gateway stop before engines, recreates in dependency order, and saves only this stack', t => {
+test('npm start confirms gateway stop before engines, recreates in dependency order, and saves only this stack', { timeout: TEST_TIMEOUT_MS }, t => {
   const result = run(t);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(result.calls.filter(call => call[0] === 'pm2' && call[1] !== 'jlist'), [
@@ -85,7 +92,7 @@ test('npm start confirms gateway stop before engines, recreates in dependency or
   assert.deepEqual(result.calls.filter(call => call[0] === 'lsof').slice(1).map(call => call[2]), [':5570', ':5571', ':5572', ':5573', ':5574']);
 });
 
-test('fresh and partial native installations start without treating absent processes as a stop failure', t => {
+test('fresh and partial native installations start without treating absent processes as a stop failure', { timeout: TEST_TIMEOUT_MS }, t => {
   for (const initial of [[], ['critical-mass-gemini']]) {
     const result = run(t, 'start', '', initial);
     assert.equal(result.status, 0, result.stderr);
@@ -93,7 +100,7 @@ test('fresh and partial native installations start without treating absent proce
   }
 });
 
-test('all advertised npm PM2 lifecycle commands use ordered stop; stop preserves registrations', t => {
+test('all advertised npm PM2 lifecycle commands use ordered stop; stop preserves registrations', { timeout: TEST_TIMEOUT_MS }, t => {
   for (const command of ['pm2:start', 'pm2:restart', 'pm2:stop']) {
     const result = run(t, command);
     assert.equal(result.status, 0, result.stderr);
@@ -106,7 +113,7 @@ test('all advertised npm PM2 lifecycle commands use ordered stop; stop preserves
   }
 });
 
-test('failed or unconfirmed gateway stop leaves engines running and never deletes or starts', t => {
+test('failed or unconfirmed gateway stop leaves engines running and never deletes or starts', { timeout: TEST_TIMEOUT_MS }, t => {
   for (const scenario of ['stop-failure', 'gateway-still-running']) {
     const result = run(t, 'start', scenario);
     assert.equal(result.status, 1, result.stderr);
@@ -115,7 +122,7 @@ test('failed or unconfirmed gateway stop leaves engines running and never delete
   }
 });
 
-test('unreadable inventory and missing port tool fail before any process mutation, with no inventory leak', t => {
+test('unreadable inventory and missing port tool fail before any process mutation, with no inventory leak', { timeout: TEST_TIMEOUT_MS }, t => {
   for (const scenario of ['bad-inventory', 'missing-lsof']) {
     const result = run(t, 'start', scenario);
     assert.equal(result.status, 1, result.stderr);
@@ -124,7 +131,7 @@ test('unreadable inventory and missing port tool fail before any process mutatio
   }
 });
 
-test('occupied ports or failed starts cannot save a broken process list', t => {
+test('occupied ports or failed starts cannot save a broken process list', { timeout: TEST_TIMEOUT_MS }, t => {
   for (const scenario of ['occupied-port', 'engine-start-failure', 'errored-start']) {
     const result = run(t, 'start', scenario);
     assert.equal(result.status, 1, result.stderr);

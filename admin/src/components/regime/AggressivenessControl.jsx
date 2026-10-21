@@ -2,7 +2,7 @@ import { CONFIG_FIELD_LABELS, describeConfigSaveError } from '../../utils/config
 import React, { useState, useMemo } from 'react'
 import { buildAggressivenessLevels, detectAggressivenessLevel, computeAggressivenessParams, formatInterval } from './aggressiveness'
 
-export default function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, presets, addToast }) {
+export default function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, presets, presetsError, retryPresets, addToast }) {
   const [updating, setUpdating] = useState(false)
   // The level whose parameters are displayed. Selecting is read-only; only the
   // explicit Apply button writes. The applied indicator stays derived from the
@@ -82,6 +82,13 @@ export default function AggressivenessControl({ config, exchange, pairQuery, onC
         )}
       </div>
 
+      {presetsError && !presets && (
+        <div role="alert" className="flex items-center gap-3 text-xs text-yellow-400 mb-2">
+          <span>Presets unavailable</span>
+          <button type="button" onClick={() => retryPresets?.()} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-0.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-200">Retry</button>
+        </div>
+      )}
+
       {/* Level buttons */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 mb-2">
         {levels.map((level) => {
@@ -93,7 +100,7 @@ export default function AggressivenessControl({ config, exchange, pairQuery, onC
               type="button"
               onClick={() => setPreviewLevel(level.id)}
               aria-pressed={previewLevel === level.id}
-              disabled={updating}
+              disabled={updating || !presets}
               className={`min-w-11 min-h-11 w-full px-2 py-1.5 text-xs font-medium rounded border transition-all ${
                 isActive ? classes.active : classes.inactive
               } ${previewLevel === level.id && !isActive ? 'underline underline-offset-4 text-white border-gray-300' : ''} ${updating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
