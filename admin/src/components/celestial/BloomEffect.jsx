@@ -16,6 +16,7 @@ const BloomEffect = ({ threshold, strength, radius }) => {
   const scene = useThree((s) => s.scene)
   const camera = useThree((s) => s.camera)
   const size = useThree((s) => s.size)
+  const invalidate = useThree((s) => s.invalidate)
   const dpr = useThree((s) => s.viewport.dpr)
   const [parts, setParts] = useState(null)
 
@@ -38,16 +39,20 @@ const BloomEffect = ({ threshold, strength, radius }) => {
     parts.bloom.threshold = threshold
     parts.bloom.strength = strength
     parts.bloom.radius = radius
-  }, [parts, threshold, strength, radius])
+    invalidate()
+  }, [parts, threshold, strength, radius, invalidate])
 
   useEffect(() => {
     if (!parts) return
     parts.composer.setPixelRatio(dpr)
     parts.composer.setSize(size.width, size.height)
-  }, [parts, size, dpr])
+    invalidate()
+  }, [parts, size, dpr, invalidate])
 
   useFrame(() => {
+    // Plain render until the composer exists so no frame is skipped.
     if (parts) parts.composer.render()
+    else gl.render(scene, camera)
   }, 1)
 
   return null
