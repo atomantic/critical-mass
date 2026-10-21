@@ -92,3 +92,37 @@ describe('config save response handling', () => {
     expect(props.onConfigUpdate).not.toHaveBeenCalled()
   })
 })
+
+describe('dry-run restart', () => {
+  const stubLifecycle = (stop, start) => vi.stubGlobal('fetch', vi.fn(async (url) => {
+    if (url.includes('/regime/stop')) return stop
+    if (url.includes('/regime/start')) return start
+    return response(200, { presets: {} })
+  }))
+  const renderPendingRestart = () => {
+    const onRestart = vi.fn()
+    render(<ConfigEditor config={{ ...config, dryRun: true }} strategy="regime" engineRunning engineDryRun={false} onRestart={onRestart} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Restart Engine' }))
+    return onRestart
+  }
+
+  it('reports why the stop failed and does not try to start a still-running engine', async () => {
+    stubLifecycle(response(400, { success: false, error: 'Fund writers are still draining' }), response(200, { success: true }))
+    const onRestart = renderPendingRestart()
+    await screen.findByText(/Could not stop the engine to apply the change \(Fund writers are still draining\)/)
+    expect(fetch.mock.calls.some(([url]) => url.includes('/regime/start'))).toBe(false)
+    expect(onRestart).toHaveBeenCalledTimes(1)
+  })
+
+  it('starts an engine that had already stopped', async () => {
+    stubLifecycle(response(400, { success: false, error: 'Regime engine not running for this fund' }), response(200, { success: true }))
+    renderPendingRestart()
+    await screen.findByText('Engine restarted — change applied')
+  })
+
+  it('says the engine is stopped when the start after a successful stop fails', async () => {
+    stubLifecycle(response(200, { success: true }), response(503, { success: false, error: 'Engine unavailable: IPC request timeout' }))
+    renderPendingRestart()
+    await screen.findByText('Engine stopped but did not start again (Engine unavailable: IPC request timeout) — start it manually from the dashboard.')
+  })
+})
