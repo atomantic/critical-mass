@@ -12,6 +12,8 @@ const {
   pruneBackups,
   restoreBackup,
   restoreFundStateBackup,
+  checkRestorePreconditions,
+  checkFundStateRestorePreconditions,
   inspectBackup,
 } = require('../backup-service');
 const { createContextLogger } = require('../logger');
@@ -34,7 +36,7 @@ const settingsLogger = (route) => createContextLogger({
 
 /**
  * @param {import('express').Express} app
- * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, runBackup: Function, updownService?: Object, sentinelService?: Object, candleCache?: Object, getBackupSchedulerStatus?: Function, createRecoveryPoint?: Function}} deps
+ * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, runBackup: Function, updownService?: Object, sentinelService?: Object, candleCache?: Object, getBackupSchedulerStatus?: Function, createRecoveryPoint?: Function, checkRestorePreconditions?: Function}} deps
  */
 module.exports = (app, deps) => {
   const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService, sentinelService, candleCache, runBackup, getBackupSchedulerStatus } = deps;
@@ -42,6 +44,7 @@ module.exports = (app, deps) => {
   // replacing it, so a wrong restore can be undone from the Backups page.
   // Not pruned here: the next scheduled backup applies the retention count.
   const createRecoveryPoint = deps.createRecoveryPoint || (() => createBackup());
+  const checkArchiveRestore = deps.checkRestorePreconditions || checkRestorePreconditions;
 
   /**
    * Gateway services that own files inside the archive. Each is stopped before
@@ -246,6 +249,8 @@ module.exports = (app, deps) => {
       force: req.body?.force === true,
       exchangeIPCMap,
       configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
+      // Refuse a missing or malformed snapshot before any engine is stopped (#1384).
+      preflight: () => checkFundStateRestorePreconditions(snapshotId, exchange, pair),
       restore: () => restoreFundStateBackup(snapshotId, exchange, pair, { logger }),
       gatewayWriters: gatewayWriters(),
       drainPendingWrites,
@@ -276,6 +281,17 @@ module.exports = (app, deps) => {
     const logger = settingsLogger('/api/backups/:filename/restore');
     const { filename } = req.params;
     logger.info(`ℹ️ 💾 Restore requested: ${filename}`, { action: 'restore-backup', filename });
+    const restoreOptions = {
+      // The source machine's base config.json makes a legacy archive portable
+      // (UPGRADE.md); anything that is not an object is rejected.
+      legacyBaseConfig: req.body?.legacyBaseConfig ?? null,
+      // A legacy (manifest-less) archive is refused unless the operator has
+      // explicitly accepted a data-only restore in the confirmation UI (#430).
+      acceptLegacyWithoutBase: req.body?.acceptLegacyWithoutBase === true,
+      // Explicit operator acknowledgement that the archive would remove
+      // funds this machine currently runs from its configuration (#533).
+      acceptFundRemoval: req.body?.acceptFundRemoval === true,
+    };
 
     const { status, body } = await performRestore({
       filename,
@@ -284,18 +300,11 @@ module.exports = (app, deps) => {
       // Only exchanges this gateway actually proxies can own a live engine
       // process; a config key with no IPC client has no writer to drain.
       configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
-      // A legacy (manifest-less) archive is refused unless the operator has
-      // explicitly accepted a data-only restore in the confirmation UI (#430).
-      restore: (name) => restoreBackup(name, {
-        // The source machine's base config.json makes a legacy archive portable
-        // (UPGRADE.md); restoreBackup rejects anything that is not an object.
-        legacyBaseConfig: req.body?.legacyBaseConfig ?? null,
-        acceptLegacyWithoutBase: req.body?.acceptLegacyWithoutBase === true,
-        // Explicit operator acknowledgement that the archive would remove
-        // funds this machine currently runs from its configuration (#533).
-        acceptFundRemoval: req.body?.acceptFundRemoval === true,
-        logger,
-      }),
+      // The archive and acknowledgement checks run before any engine is
+      // stopped, so a request that would be refused leaves every fund running
+      // (#1384); the applier repeats them once writers are quiescent.
+      preflight: () => checkArchiveRestore(filename, restoreOptions),
+      restore: (name) => restoreBackup(name, { ...restoreOptions, logger }),
       gatewayWriters: gatewayWriters(),
       drainPendingWrites,
       createRecoveryPoint,
