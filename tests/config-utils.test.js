@@ -1383,6 +1383,7 @@ describe('aggressiveness preset override persistence (#1400)', () => {
   it('ignores stored out-of-range legacy values and falls back to the default', () => {
     setupFsMocks({ base: { exchanges: {}, global: {} }, user: { global: { aggressivenessPresets: { moderate: { kFactor: 0.9 } } } } });
     mock.method(console, 'warn', () => {});
+    mock.method(console, 'log', () => {});
     assert.equal(getAggressivenessPresets().moderate.kFactor, DEFAULT_AGGRESSIVENESS_PRESETS.moderate.kFactor);
   });
 });

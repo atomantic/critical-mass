@@ -1385,7 +1385,7 @@ const getAggressivenessPresets = () => {
       if (isPresetValueInBounds(key, value)) {
         valid[key] = value;
       } else {
-        console.warn(`[config] Ignoring out-of-range stored preset ${level}.${key}=${JSON.stringify(value)}; using default`);
+        configLogger.warn('⚠️ [config] Ignoring out-of-range stored aggressiveness preset value; using default', { level, key, value });
       }
     }
     merged[level] = { ...DEFAULT_AGGRESSIVENESS_PRESETS[level], ...valid };
