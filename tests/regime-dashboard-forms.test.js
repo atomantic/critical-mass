@@ -17,13 +17,14 @@ const EXTRACTED_COMPONENT_NAMES = new Set(['PositionCard', 'LadderPanel', 'Capit
 before(async () => {
   // Use the admin build's JSX compiler, with dependencies left external so no
   // sockets, charts, or trading services are started by this render harness.
-  // Bundle the forms, their configuration wrapper and dashboard hooks so
-  // moved implementations use this harness's fake hooks. Charts, sockets,
+  // Bundle the forms, their configuration wrapper and dashboard hooks (plus
+  // the pure status-snapshot helpers the data hook uses, #1388) so moved
+  // implementations use this harness's fake hooks. Charts, sockets,
   // help popups and unrelated panels remain external stubs.
   const { rolldown } = await import(pathToFileURL(adminRequire.resolve('rolldown')).href)
   const bundle = await rolldown({
     input: path.join(__dirname, '..', 'admin', 'src', 'components', 'RegimeDashboard.jsx'),
-    external: id => !/\/(PositionCard|LadderPanel|CapitalAdjust|AggressivenessControl|ConfigurationSummary|aggressiveness|deriveDashboardStatus|useRegimeDashboardData|useDcaConversion|useRegimeDashboardActions|configSaveError)(\.(?:jsx?|mjs))?$/.test(id),
+    external: id => !/\/(PositionCard|LadderPanel|CapitalAdjust|AggressivenessControl|ConfigurationSummary|aggressiveness|deriveDashboardStatus|useRegimeDashboardData|useDcaConversion|useRegimeDashboardActions|configSaveError|regimeStatusSnapshot)(\.(?:jsx?|mjs))?$/.test(id),
     transform: { jsx: 'react' },
   })
   try {
@@ -173,7 +174,10 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
   }
   const exports = {}
   const context = vm.createContext({
-    exports, module: { exports }, fetch, AbortController, setTimeout, clearTimeout,
+    exports, module: { exports }, fetch, AbortController, clearTimeout,
+    // Unref'd so the dashboard's 30s status-silence timer (#1388) can't hold
+    // the test process open after the assertions finish.
+    setTimeout: (...args) => { const t = setTimeout(...args); t.unref?.(); return t },
     require: name => stubs[name] || (() => null),
   })
   vm.runInContext(dashboardCode, context, { filename: 'RegimeDashboard.jsx' })
