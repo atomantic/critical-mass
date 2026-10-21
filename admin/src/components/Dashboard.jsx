@@ -444,9 +444,9 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
                     />
                     <StatCard
                       label="Realized"
-                      value={hasRealizedPnL && priceKnown ? `${totalRealizedLiquid >= 0 ? '+' : ''}${formatCurrency(totalRealizedLiquid)}` : NA}
+                      value={hasRealizedPnL ? `${totalRealizedLiquid >= 0 ? '+' : ''}${formatCurrency(totalRealizedLiquid)}` : NA}
                       subtext={!hasRealizedPnL ? 'Unavailable for Simple DCA' : assetReserves > 0 ? <span className="flex flex-col leading-tight"><span className="text-white">{formatCurrency(realizedPnL)} USD</span><span className="text-orange-400">+{assetReserves.toFixed(8)} {baseCurrency}</span></span> : null}
-                      color={!hasRealizedPnL || !priceKnown ? 'blue' : totalRealizedLiquid >= 0 ? 'green' : 'red'}
+                      color={!hasRealizedPnL ? 'blue' : totalRealizedLiquid >= 0 ? 'green' : 'red'}
                     />
                   </>
                 )
