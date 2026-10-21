@@ -138,9 +138,9 @@ describe('buildOutcomeRecord backfill parity', () => {
   });
 });
 
-// Restart never guesses that a lock from an interrupted maintainer is safe to
-// steal. Operators must stop all writers before clearing that stale lock.
-it('preserves a maintenance lock left by an interrupted process', (t) => {
+// Restart never guesses that a lock with unreadable or invalid owner metadata is
+// safe to steal. Operators must stop all writers before clearing it.
+it('preserves a maintenance lock with an invalid owner', (t) => {
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
@@ -167,7 +167,7 @@ describe('stale maintenance lock', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scorecard-stale-lock-'));
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
     fs.mkdirSync(lockPath(directory));
-    fs.writeFileSync(path.join(lockPath(directory), 'owner.json'), JSON.stringify({ pid: 4242, startedAt: '2026-01-01T00:00:00.000Z' }));
+    fs.writeFileSync(path.join(lockPath(directory), 'owner.json'), JSON.stringify({ pid: process.pid, startedAt: '2026-01-01T00:00:00.000Z' }));
     return directory;
   };
 
@@ -176,7 +176,7 @@ describe('stale maintenance lock', () => {
     let ran = false;
     await assert.rejects(
       withScorecardLock(directory, async () => { ran = true; }, { timeoutMs: 60 }),
-      (err) => err.code === 'SCORECARD_LOCK_BUSY' && /owner pid 4242/.test(err.message),
+      (err) => err.code === 'SCORECARD_LOCK_BUSY' && new RegExp(`owner pid ${process.pid}`).test(err.message),
     );
     assert.equal(ran, false);
     assert.equal(fs.existsSync(path.join(lockPath(directory), 'owner.json')), true);
@@ -246,5 +246,56 @@ describe('stale maintenance lock', () => {
     assert.equal(journal.healthy, false);
     assert.match(journal.lastError, /cancelled: writer stopped/);
     assert.equal(fs.existsSync(lockPath(directory)), true);
+  });
+});
+
+describe('dead-owner maintenance lock reclaim', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { acquireScorecardLock, lockPath } = require('../src/updown/scorecard-maintenance');
+
+  const deadPid = () => {
+    const { spawnSync } = require('child_process');
+    return spawnSync(process.execPath, ['-e', '0']).pid;
+  };
+  const lockWith = (t, ownerJson, ageMs = 60_000) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scorecard-dead-lock-'));
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    fs.mkdirSync(lockPath(directory));
+    fs.writeFileSync(path.join(lockPath(directory), 'owner.json'), ownerJson);
+    const when = new Date(Date.now() - ageMs);
+    fs.utimesSync(lockPath(directory), when, when);
+    return directory;
+  };
+
+  it('reclaims a lock owned by a dead process', (t) => {
+    const directory = lockWith(t, JSON.stringify({ pid: deadPid(), host: os.hostname() }));
+    t.mock.method(console, 'warn', () => {});
+    const release = acquireScorecardLock(directory);
+    assert.equal(typeof release, 'function');
+    const owner = JSON.parse(fs.readFileSync(path.join(lockPath(directory), 'owner.json'), 'utf8'));
+    assert.equal(owner.pid, process.pid);
+    release();
+    assert.deepEqual(fs.readdirSync(directory), []);
+  });
+
+  it('never reclaims a lock owned by a live process', (t) => {
+    const directory = lockWith(t, JSON.stringify({ pid: process.pid, host: os.hostname() }));
+    assert.equal(acquireScorecardLock(directory), null);
+    assert.equal(fs.existsSync(path.join(lockPath(directory), 'owner.json')), true);
+  });
+
+  it('treats an unreadable owner file as live', (t) => {
+    const directory = lockWith(t, '{not json');
+    assert.equal(acquireScorecardLock(directory), null);
+    assert.equal(fs.existsSync(lockPath(directory)), true);
+  });
+
+  it('keeps a dead owner\'s lock inside the grace period or on another host', (t) => {
+    const fresh = lockWith(t, JSON.stringify({ pid: deadPid(), host: os.hostname() }), 0);
+    assert.equal(acquireScorecardLock(fresh), null);
+    const foreign = lockWith(t, JSON.stringify({ pid: deadPid(), host: 'some-other-host' }));
+    assert.equal(acquireScorecardLock(foreign), null);
   });
 });

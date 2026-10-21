@@ -27,7 +27,9 @@ These backup and manifest files are not daily journals and are not automatically
 pruned; retain them until the replay has been checked.
 
 An interrupted process can leave `.maintenance-lock/` and hidden staging files.
-Locks are never automatically stolen; the gateway logs the lock path and owner
+A lock whose `owner.json` names a dead process on this host (older than 5s) is
+reclaimed automatically and logged. Locks with a live, foreign-host or unreadable
+owner are never stolen; the gateway logs the lock path and owner
 when a journal write or prune gives up waiting. Stop every UpDown process and replay
 process, inspect the lock's `owner.json`, then remove the stale lock directory
 and obsolete `*.tmp` files before restarting or resuming. A lock without owner
