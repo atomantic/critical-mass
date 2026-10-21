@@ -4,7 +4,7 @@
  */
 
 const stateTracker = require('../state-tracker');
-const { getExchangeConfig, getDefaultPair, setExchangeEnabled, setExchangeDryRun, getGlobalConfig } = require('../config-utils');
+const { getExchangeConfig, getDefaultPair, getFundsForExchange, setExchangeEnabled, setExchangeDryRun, getGlobalConfig } = require('../config-utils');
 const { syncFundOrders, runIntervalCycle } = require('../dca-engine');
 const { createContextLogger, getLogFile } = require('../logger');
 const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
@@ -38,6 +38,12 @@ module.exports = (app, deps) => {
   // second coinbase fund can never be reached from an unprefixed legacy route.
   const legacyPair = () => getDefaultPair('coinbase') ?? undefined;
 
+  // The fund a config write targets. getDefaultPair returns null for an older
+  // flat block with no productId, yet that block still runs a fund (the
+  // normalized view and updateExchangeConfig key it by the default product), so
+  // fall back to the first normalized fund. Undefined only when no fund exists.
+  const legacyWritePair = () => legacyPair() ?? getFundsForExchange('coinbase')[0];
+
   app.get('/api/config', (req, res) => {
     const config = getExchangeConfig('coinbase');
     res.json(config);
@@ -48,7 +54,7 @@ module.exports = (app, deps) => {
   // (#146), nested regime sanitize/value validation (#452), the product-identity
   // check, and the regime:update-config IPC so the running engine applies the save.
   app.put('/api/config', asyncRoute(async (req, res) => {
-    const pair = legacyPair();
+    const pair = legacyWritePair();
     // With no coinbase fund there is nothing to save into; persisting under an
     // undefined pair would create a fund literally named "undefined".
     if (!pair) {
@@ -102,7 +108,7 @@ module.exports = (app, deps) => {
     if (typeof enabledFlag.value === 'boolean') { setExchangeEnabled('coinbase', enabledFlag.value); applied = true; }
     if (typeof dryRunFlag.value === 'boolean') {
       const { value: dryRun } = dryRunFlag;
-      const pair = legacyPair();
+      const pair = legacyWritePair();
       setExchangeDryRun('coinbase', dryRun);
       applied = true;
       // No coinbase fund means no fund engine is running to notify.
