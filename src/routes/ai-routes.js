@@ -5,7 +5,7 @@
  * prompt running, and model selection. Uses dynamic import() because
  * portos-ai-toolkit is ESM and this project is CommonJS.
  *
- * Routes mounted at /api/providers, /api/runs, /api/prompts.
+ * Routes mounted at /api/providers, /api/runs.
  */
 
 const { Router } = require('express');
@@ -20,7 +20,7 @@ const { createAiSecurity } = require('../ai-security');
  */
 const aiRoutesLogger = createContextLogger({ module: 'ai-routes' });
 
-const TOOLKIT_ROUTES = ['/providers', '/runs', '/prompts'];
+const TOOLKIT_ROUTES = ['/providers', '/runs'];
 
 /**
  * @param {import('express').Express} app
@@ -81,11 +81,10 @@ module.exports = (app, sharedDeps, { loadToolkit = () => import('portos-ai-toolk
 
     aiRouter.use('/providers', security.constrainOutboundRequests, security.filterProviderSamples, security.redactJsonResponses, security.guardProviderMutation, security.guardProviderExecution, toolkit.routes.providers);
     aiRouter.use('/runs', security.constrainOutboundRequests, security.guardRun, toolkit.routes.runs);
-    aiRouter.use('/prompts', security.guardPrompts, toolkit.routes.prompts);
 
-    aiRoutesLogger.info(`ℹ️ [${ts()}] 🤖 AI toolkit routes mounted at /api/providers, /api/runs, /api/prompts`, {
+    aiRoutesLogger.info(`ℹ️ [${ts()}] 🤖 AI toolkit routes mounted at /api/providers, /api/runs`, {
       action: 'mount',
-      routes: ['/api/providers', '/api/runs', '/api/prompts'],
+      routes: ['/api/providers', '/api/runs'],
     });
   }).catch(err => {
     aiRoutesLogger.warn(`⚠️ [${ts()}] ⚠️ AI toolkit failed to load: ${err.message}`, {

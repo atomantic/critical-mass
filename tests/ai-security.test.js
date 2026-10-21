@@ -142,48 +142,11 @@ describe('AI toolkit security boundary', () => {
     assert.equal(badId.res.statusCode, 400);
   });
 
-  it('rejects prompt stage names with path traversal sequences', async () => {
-    const traversal = '../../../README';
-
-    const getTemplate = await callMiddleware(security.guardPrompts, { method: 'GET', path: `/stages/${traversal}/template` });
-    assert.equal(getTemplate.res.statusCode, 400);
-    assert.match(getTemplate.res.body.error, /Stage name must contain only/);
-
-    const put = await callMiddleware(security.guardPrompts, { method: 'PUT', path: `/stages/${traversal}`, body: { template: 'x' } });
-    assert.equal(put.res.statusCode, 400);
-
-    const del = await callMiddleware(security.guardPrompts, { method: 'DELETE', path: `/stages/${traversal}` });
-    assert.equal(del.res.statusCode, 400);
-
-    const encoded = await callMiddleware(security.guardPrompts, { method: 'GET', path: '/stages/..%2F..%2F..%2FREADME/template' });
-    assert.equal(encoded.res.statusCode, 400);
-
-    const create = await callMiddleware(security.guardPrompts, { method: 'POST', path: '/stages', body: { name: traversal } });
-    assert.equal(create.res.statusCode, 400);
-  });
-
-  it('allows normal prompt stage requests through unmodified', async () => {
-    const list = await callMiddleware(security.guardPrompts, { method: 'GET', path: '/stages' });
-    assert.equal(list.next, true);
-
-    const get = await callMiddleware(security.guardPrompts, { method: 'GET', path: '/stages/summarize' });
-    assert.equal(get.next, true);
-
-    const create = await callMiddleware(security.guardPrompts, { method: 'POST', path: '/stages', body: { name: 'summarize' } });
-    assert.equal(create.next, true);
-
-    const variables = await callMiddleware(security.guardPrompts, { method: 'GET', path: '/variables' });
-    assert.equal(variables.next, true);
-  });
-
   it('guards mixed-case routes accepted by the real toolkit routers without changing identifiers', async (t) => {
     const express = require('express');
-    const { createPromptsRoutes, createPromptsService, createProvidersRoutes } = await import('portos-ai-toolkit/server');
+    const { createProvidersRoutes } = await import('portos-ai-toolkit/server');
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-route-guards-'));
     t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
-    fs.mkdirSync(path.join(temp, 'prompts'));
-    const prompts = createPromptsService({ dataDir: temp });
-    await prompts.init();
     const configured = {
       cli: providers.cli,
       MiXeD: { ...providers.api, id: 'MiXeD' },
@@ -203,7 +166,6 @@ describe('AI toolkit security boundary', () => {
     });
     const app = express();
     app.use(express.json());
-    app.use('/api/prompts', scopedSecurity.guardPrompts, createPromptsRoutes(prompts));
     app.use('/api/providers', scopedSecurity.filterProviderSamples, scopedSecurity.redactJsonResponses,
       scopedSecurity.guardProviderMutation, scopedSecurity.guardProviderExecution, createProvidersRoutes(service));
     const server = app.listen(0, '127.0.0.1');
@@ -211,15 +173,6 @@ describe('AI toolkit security boundary', () => {
     t.after(() => new Promise((resolve) => server.close(resolve)));
     const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
-    for (const spelling of ['stages', 'StAgEs', 'STAGES']) {
-      const response = await fetch(`${baseUrl}/api/prompts/${spelling}/..%2f..%2foutside`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template: 'must stay inside stages' }),
-      });
-      assert.equal(response.status, 400, spelling);
-      await response.arrayBuffer();
-      assert.equal(fs.existsSync(path.join(temp, 'outside.md')), false);
-    }
     for (const id of ['cli', 'unapproved']) {
       for (const suffix of ['test', 'TeSt', 'TEST/', 'refresh-models', 'ReFrEsH-MoDeLs/']) {
         const response = await fetch(`${baseUrl}/api/providers/${id}/${suffix}`, { method: 'POST' });
@@ -234,13 +187,6 @@ describe('AI toolkit security boundary', () => {
       assert.deepEqual((await response.json()).providers.map((provider) => provider.id), ['MiXeD']);
     }
 
-    const stage = await fetch(`${baseUrl}/api/prompts/StAgEs/MiXeD`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ config: { description: 'case-preserved stage' }, template: 'allowed template' }),
-    });
-    assert.equal(stage.status, 200);
-    assert.equal((await stage.json()).template, 'allowed template');
-    assert.equal(fs.readFileSync(path.join(temp, 'prompts', 'stages', 'MiXeD.md'), 'utf8'), 'allowed template');
     for (const suffix of ['TeSt', 'ReFrEsH-MoDeLs/']) {
       const response = await fetch(`${baseUrl}/api/providers/MiXeD/${suffix}`, { method: 'POST' });
       assert.equal(response.status, 200);
