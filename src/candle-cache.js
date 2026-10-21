@@ -254,6 +254,7 @@ const seedDerivedTimeframes = (agg, now = Date.now()) => {
  *   getCandles: (exchange: string, tf: string) => Array,
  *   getAllCandles: (exchange: string) => Record<string, Array>,
  *   getAggregator: (exchange: string) => ReturnType<typeof createCandleAggregator>,
+ *   isSeeded: (exchange: string) => boolean,
  *   seedAll: () => Promise<void>,
  *   invalidate: (options?: {reseed?: boolean}) => Promise<void>,
  *   stop: () => void,
@@ -516,6 +517,18 @@ const createCandleCache = ({
   };
 
   /**
+   * Whether every directly-fetched timeframe has been seeded for an exchange.
+   * Live ticks alone cannot rebuild long history (the 1h trend filter needs
+   * ~200 candles), so consumers that act on signals must wait for this.
+   * @param {string} exchange
+   * @returns {boolean}
+   */
+  const isSeeded = (exchange) => {
+    const done = seededTimeframes.get(exchange);
+    return SEED_TIMEFRAMES.every(({ tf }) => done?.has(tf));
+  };
+
+  /**
    * Get the raw aggregator for an exchange (for signal engine direct access)
    * @param {string} exchange
    * @returns {ReturnType<typeof createCandleAggregator>}
@@ -564,7 +577,7 @@ const createCandleCache = ({
     return reseed ? seedAll() : Promise.resolve();
   };
 
-  return { seedFromPublicAPI, processTick, getCandles, getAllCandles, getAggregator, seedAll, invalidate, stop };
+  return { seedFromPublicAPI, processTick, getCandles, getAllCandles, getAggregator, isSeeded, seedAll, invalidate, stop };
 };
 
 module.exports = { createCandleCache, seedDerivedTimeframes, aggregateCandles };

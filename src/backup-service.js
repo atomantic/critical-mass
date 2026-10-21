@@ -3,8 +3,8 @@
  * Backup Service
  *
  * Handles scheduled and manual backups of trading data files.
- * Archive creation uses async spawn for zip/unzip; restore and listing use spawnSync
- * (listing only on a cold cache — see archiveValidityCache).
+ * Archive creation and listing use async spawn for zip/unzip; restore uses spawnSync
+ * (and the schedule anchor, for the newest archive on a cold cache — see archiveValidityCache).
  * Excludes credentials, live configuration, and the backup directory from archives.
  *
  * Archives also carry a versioned manifest (`backup-manifest.json`) holding a
@@ -495,6 +495,32 @@ const isArchiveListable = (filePath, stats) => {
   return archiveValidityCache.get(key);
 };
 
+/** In-flight async validations keyed like archiveValidityCache, so concurrent listings share one test. */
+const pendingArchiveValidity = new Map();
+
+/**
+ * Non-blocking isArchiveListable for listing and pruning. After a restart every
+ * retained archive is cold, and testing them all synchronously stalls the
+ * gateway for seconds per archive (IPC requests time out meanwhile).
+ * @param {string} filePath
+ * @param {import('fs').Stats} stats
+ * @returns {Promise<boolean>}
+ */
+const isArchiveListableAsync = async (filePath, stats) => {
+  const key = archiveValidityKey(filePath, stats);
+  if (archiveValidityCache.has(key)) return archiveValidityCache.get(key);
+  if (!pendingArchiveValidity.has(key)) {
+    const pending = validateBackupArchiveAsync(filePath, { allowLegacy: true })
+      .then(({ ok }) => {
+        archiveValidityCache.set(key, ok);
+        return ok;
+      })
+      .finally(() => pendingArchiveValidity.delete(key));
+    pendingArchiveValidity.set(key, pending);
+  }
+  return pendingArchiveValidity.get(key);
+};
+
 /** Drop verdicts for archive states that no longer exist so the cache cannot grow without bound. */
 const pruneArchiveValidityCache = (liveKeys) => {
   for (const key of archiveValidityCache.keys()) {
@@ -619,38 +645,35 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
 
 /**
  * List all backups sorted newest-first
- * @returns {Array<{ filename: string, createdAt: string, sizeBytes: number }>}
+ * @returns {Promise<Array<{ filename: string, createdAt: string, sizeBytes: number }>>}
  */
-const listBackups = () => {
+const listBackups = async () => {
   ensureBackupsDir();
 
   const liveKeys = new Set();
-  const files = fs.readdirSync(BACKUPS_DIR)
-    .filter(f => f.startsWith('backup-') && f.endsWith('.zip'))
-    .filter((filename) => {
-      const filePath = path.join(BACKUPS_DIR, filename);
-      try {
-        const stats = fs.lstatSync(filePath);
-        if (!stats.isFile()) return false;
-        liveKeys.add(archiveValidityKey(filePath, stats));
-        return isArchiveListable(filePath, stats);
-      } catch (_error) {
-        return false;
-      }
-    });
+  const candidates = [];
+  for (const filename of fs.readdirSync(BACKUPS_DIR)) {
+    if (!filename.startsWith('backup-') || !filename.endsWith('.zip')) continue;
+    const filePath = path.join(BACKUPS_DIR, filename);
+    try {
+      const stats = fs.lstatSync(filePath);
+      if (!stats.isFile()) continue;
+      liveKeys.add(archiveValidityKey(filePath, stats));
+      candidates.push({ filename, filePath, stats });
+    } catch (_error) {
+      // Removed between readdir and lstat.
+    }
+  }
   pruneArchiveValidityCache(liveKeys);
 
-  return files
-    .map(filename => {
-      const filePath = path.join(BACKUPS_DIR, filename);
-      const stats = fs.statSync(filePath);
-      return {
-        filename,
-        createdAt: stats.mtime.toISOString(),
-        sizeBytes: stats.size,
-      };
-    })
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const backups = [];
+  // One archive at a time: a cold listing after a restart must not fan out an
+  // unzip -tq per retained archive at once.
+  for (const { filename, filePath, stats } of candidates) {
+    if (!(await isArchiveListableAsync(filePath, stats))) continue;
+    backups.push({ filename, createdAt: stats.mtime.toISOString(), sizeBytes: stats.size });
+  }
+  return backups.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 };
 
 /**
@@ -675,14 +698,14 @@ const deleteBackup = (filename) => {
  * `GLOBAL_DEFAULTS.backup.maxBackups` when `maxBackups` is not a positive
  * integer, so an invalid retain count can never delete every archive.
  * @param {number} maxBackups - Maximum number of backups to keep
- * @returns {{ pruned: number, remaining: number }}
+ * @returns {Promise<{ pruned: number, remaining: number }>}
  */
-const pruneBackups = (maxBackups) => {
+const pruneBackups = async (maxBackups) => {
   // A hand-edited config file (or a caller bypassing route validation) can
   // hand this a 0/null/-1/non-number. Falling back to the default retain
   // count keeps that from deleting every archive (#547).
   const keep = Number.isInteger(maxBackups) && maxBackups >= 1 ? maxBackups : GLOBAL_DEFAULTS.backup.maxBackups;
-  const backups = listBackups(); // sorted newest-first
+  const backups = await listBackups(); // sorted newest-first
   let pruned = 0;
 
   if (backups.length > keep) {

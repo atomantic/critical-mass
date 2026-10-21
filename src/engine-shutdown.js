@@ -126,13 +126,13 @@ const createEngineShutdown = ({
         ipcServer.setShuttingDown(true);
       }
 
-      // 2. Cancel and settle startup supervision
-      if (cancelStarts) {
-        await cancelStarts({ shutdown: true });
-      }
-      if (settleStarts) {
-        await joinBounded('Fund start settle', settleStarts, startJoinTimeoutMs, shutdownLogger);
-      }
+      // 2. Cancel and settle startup supervision. cancelStarts cancels
+      // synchronously but then awaits every in-flight start, which a slow
+      // exchange can hold for minutes, so it shares the bounded join.
+      await joinBounded('Fund start settle', async () => {
+        if (cancelStarts) await cancelStarts({ shutdown: true });
+        await settleStarts?.();
+      }, startJoinTimeoutMs, shutdownLogger);
 
       // 3. Drain in-flight accepted IPC requests
       if (drainPendingWrites) {

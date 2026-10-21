@@ -617,9 +617,6 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
     stateTracker.initFibonacciState(state, config);
   }
 
-  // Emit starting event
-  tradeEvents.starting(exchange, intervalLabel);
-
   // Check if enabled
   if (!config.enabled && !recoveryOnly) {
     cycleLogger.info(`ℹ️ [${exchange}] Critical Mass is disabled in config`);
@@ -635,12 +632,14 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
     return { status: 'import_recovery_pending', exchange };
   }
 
-  // Check if already ran this interval
+  // Check if already ran this interval. Log only: every gateway restart
+  // re-checks each fund here, and a trade event would reach Telegram each time.
   if (!recoveryOnly && stateTracker.checkIfRanThisInterval(state, config.intervalType)) {
     cycleLogger.info(`ℹ️ [${exchange}] Already ran this ${intervalLabel} interval (${state.lastRunId})`);
-    tradeEvents.skipped(exchange, `Already ran this ${intervalLabel} interval`);
     return { status: 'already_ran', lastRunId: state.lastRunId, intervalType: config.intervalType, exchange };
   }
+
+  tradeEvents.starting(exchange, intervalLabel);
 
   // Settle the prior sell before buying more; uncovered buys may keep the position nonzero.
   if (isFibonacci && state.fibActiveSellOrderId) {

@@ -108,6 +108,7 @@ const createUpDownService = (io, deps) => {
   let lastPrice = 0;
   let lastTickAt = 0;
   let lastStaleLogAt = 0;
+  let lastUnseededLogAt = 0;
   let lastSignal = null;
   let lastSignalResult = null;
   let running = false;
@@ -325,6 +326,21 @@ const createUpDownService = (io, deps) => {
       return;
     }
 
+    // The candle cache is memory-only and reseeds after every gateway restart
+    // or restore. Scoring empty history reads as NEUTRAL, which would close a
+    // restored long and book a trade the market never produced.
+    if (!candleCache.isSeeded('coinbase')) {
+      const now = Date.now();
+      if (now - lastUnseededLogAt >= PRICE_STALE_MS) {
+        lastUnseededLogAt = now;
+        updownLogger.warn('⚠️ 📊 UpDown signal cycle paused — coinbase candle history not seeded yet', {
+          action: 'signal-cycle',
+          reason: 'candles-not-seeded',
+        });
+      }
+      return;
+    }
+
     // Get scorecard metrics for adaptive weights + horizon prediction
     const metrics = scorecard.getMetrics();
 
@@ -366,7 +382,17 @@ const createUpDownService = (io, deps) => {
         trade: fillResult.trade,
         book: { contracts: perpSnap.contracts, realizedPnl: perpSnap.realizedPnl },
       });
-      persistState();
+      // The fill is already in memory, and a fill normally comes with a published-type
+      // change whose save below writes it again; a throw here would defer this
+      // cycle's prediction to the next one.
+      try {
+        persistState();
+      } catch (err) {
+        updownLogger.error(`❌ 📊 UpDown state save failed after paper fill err=${err.message}`, {
+          action: 'persist-state',
+          error: err.message,
+        });
+      }
       io.to('updown').emit('updown:scorecard', scorecard.getMetrics());
       updownLogger.info(`ℹ️ 📊 UpDown perp ${action} contracts=${fillResult.fill.contracts} price=$${fillResult.fill.price} book=${perpSnap.contracts} realized=$${perpSnap.realizedPnl}`, {
         action,
@@ -470,6 +496,7 @@ const createUpDownService = (io, deps) => {
     // Uses scorecardSignalEngine (issue #212C), a dedicated instance, so the sampler's
     // reads don't advance the live cycle's crossover-detection memory.
     startPromise = Promise.resolve(scorecard.start(() => {
+      if (!candleCache.isSeeded('coinbase')) return null;
       const sampled = scorecardSignalEngine.computeSignals(contract.expiry, scorecard.getMetrics());
       return alignJournalType(sampled, lastSignalResult?.type);
     })).then(() => {

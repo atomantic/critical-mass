@@ -733,6 +733,8 @@ const createMarketDataService = (exchange, pair) => {
   let healthMonitor = null;
   let isConnected = false;
   let metricsUpdateInterval = null;
+  /** @type {Promise<void> | null} */
+  let metricsInFlight = null;
   let productId = null;
   let onStatusUpdateCallback = null;
   let lastStatusEmit = 0;
@@ -964,20 +966,29 @@ const createMarketDataService = (exchange, pair) => {
     if (metricsUpdateInterval) {
       clearInterval(metricsUpdateInterval);
     }
+    // A stalled exchange can outlast the interval (each candle request may take
+    // minutes with retries), so a run in flight is shared, never stacked.
+    const runMetrics = () => {
+      if (metricsInFlight) return metricsInFlight;
+      const run = updateMetrics(adapter, productId).finally(() => {
+        if (metricsInFlight === run) metricsInFlight = null;
+      });
+      metricsInFlight = run;
+      return run;
+    };
     // updateMetrics is async; guard the interval callback so an unhandled
     // rejection (e.g. a throw inside calculateAllMetrics) can't crash the process.
-    metricsUpdateInterval = setInterval(
-      () =>
-        trackPendingWrite(`market-metrics:${serviceKey(exchange, resolvedPair)}`, () => updateMetrics(adapter, productId)).catch((err) =>
-          logger.error(`❌ [${exchange}] Metrics update failed: ${err.message}`, {
-            error: err.message,
-          })
-        ),
-      METRICS_INTERVAL_MS
-    );
+    metricsUpdateInterval = setInterval(() => {
+      if (metricsInFlight) return;
+      trackPendingWrite(`market-metrics:${serviceKey(exchange, resolvedPair)}`, runMetrics).catch((err) =>
+        logger.error(`❌ [${exchange}] Metrics update failed: ${err.message}`, {
+          error: err.message,
+        })
+      );
+    }, METRICS_INTERVAL_MS);
 
     // Initial metrics fetch
-    await updateMetrics(adapter, productId);
+    await runMetrics();
     // A stop that landed during the fetch fenced this service: it must not
     // touch the ledger again, not even to recover the handover gap below.
     if (timerTracker.isStopped()) return { success: false, error: 'stopped during start' };
@@ -1979,6 +1990,8 @@ const createMarketDataService = (exchange, pair) => {
       clearInterval(metricsUpdateInterval);
       metricsUpdateInterval = null;
     }
+    // A later start() must fetch with its own adapter, not join this run.
+    metricsInFlight = null;
 
     if (wsFeed) {
       wsFeed.disconnect();
