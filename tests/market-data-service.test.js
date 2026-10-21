@@ -2571,6 +2571,53 @@ describe('handleTicker carries volume24h into marketState (issue #202)', () => {
   });
 });
 
+describe('stopped-fund status stream with an unreadable regime-state.json', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const migration = require('../src/migration');
+  const stateTracker = require('../src/state-tracker');
+  const originalGetExchangeDataDir = migration.getExchangeDataDir;
+  /** @type {string|null} */
+  let tmpDir = null;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mds-corrupt-state-'));
+    migration.getExchangeDataDir = (exchange) => {
+      const dir = path.join(/** @type {string} */ (tmpDir), exchange);
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    };
+  });
+
+  afterEach(() => {
+    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = null;
+  });
+
+  it('pauses the status stream instead of throwing out of the ticker handler, and resumes once the file loads', (t) => {
+    const stateFile = stateTracker.getRegimeStateFile('coinbase', 'BTC-USD');
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(stateFile, '{ not valid json');
+    let now = 1_000_000;
+    t.mock.method(Date, 'now', () => now);
+
+    const svc = createMarketDataService('coinbase', 'BTC-USD');
+    const emitted = [];
+    svc.setOnStatusUpdate((status) => emitted.push(status));
+
+    // A throw here escapes the WebSocket message listener and exits the engine.
+    assert.doesNotThrow(() => svc._test.handleTicker({ price: 100, bid: 99.9, ask: 100.1 }));
+    assert.equal(emitted.length, 0);
+
+    fs.rmSync(stateFile);
+    now += 2000;
+    svc._test.handleTicker({ price: 101, bid: 100.9, ask: 101.1 });
+    assert.equal(emitted.length, 1, 'the stream resumes once the state file loads again');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Health-monitor instrumentation (issue #228 — follow-up to #211/#225, which
 // wired recordRestError/recordRateLimit/recordRestLatency into regime-engine.js
