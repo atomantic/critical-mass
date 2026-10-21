@@ -2757,6 +2757,17 @@ describe('createMarketDataService: health monitor wiring (issue #228)', () => {
     assert.equal(svc.getHealthState(), null);
   });
 
+  it('getHealthState() surfaces the feed user-channel status (issue #1382)', () => {
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectHealthMonitor({ getState: () => ({ mode: 'ACTIVE' }) });
+    assert.equal(svc.getHealthState().userChannel, null, 'null with no feed');
+    let userChannel = 'degraded';
+    svc._test.injectWsFeed({ getStatus: () => ({ connected: true, reconnectAttempts: 0, userChannel }) });
+    assert.deepEqual(svc.getHealthState(), { mode: 'ACTIVE', userChannel: 'degraded' });
+    userChannel = 'subscribed';
+    assert.equal(svc.getHealthState().userChannel, 'subscribed');
+  });
+
   it('a REST error from getOrderFills (via handleOrderUpdate -> ingestNewFillsForOrder) reaches the injected health monitor', async () => {
     const monitor = makeHealthSpy();
     const svc = createMarketDataService('coinbase');
