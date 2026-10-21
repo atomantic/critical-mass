@@ -290,6 +290,49 @@ for (const variant of VARIANTS) {
 }
 
 
+describe('WebSocket handshake timeout (#1413)', () => {
+  const HANDSHAKE_TIMEOUT = 15000;
+  const makeFeed = (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    FakeWebSocket.reset();
+    const events = { disconnects: 0 };
+    const feed = createWebSocketFeed('gemini', {
+      productId: 'BTC-USD', publicOnly: true, onDisconnect: () => { events.disconnects++; },
+    });
+    feed.connect();
+    return { feed, events };
+  };
+
+  it('terminates a socket that never opens and schedules a reconnect', (t) => {
+    const { feed, events } = makeFeed(t);
+    const sock = FakeWebSocket.instances[0];
+    t.mock.timers.tick(HANDSHAKE_TIMEOUT - 1);
+    assert.equal(sock.closeCalls.length, 0);
+    t.mock.timers.tick(1);
+    assert.equal(sock.closeCalls.length, 1, 'the hung socket is terminated');
+    assert.equal(events.disconnects, 1);
+    t.mock.timers.tick(1000);
+    assert.equal(FakeWebSocket.instances.length, 2, 'reconnect creates a new socket');
+    feed.disconnect();
+  });
+
+  it('does not terminate a socket that opened in time', (t) => {
+    const { feed } = makeFeed(t);
+    const sock = FakeWebSocket.instances[0];
+    sock.open();
+    t.mock.timers.tick(HANDSHAKE_TIMEOUT);
+    assert.equal(sock.closeCalls.length, 0);
+    feed.disconnect();
+  });
+
+  it('disconnect cancels the handshake timer', (t) => {
+    const { feed } = makeFeed(t);
+    feed.disconnect();
+    t.mock.timers.tick(HANDSHAKE_TIMEOUT * 4);
+    assert.equal(FakeWebSocket.instances.length, 1, 'no reconnect after disconnect');
+  });
+});
+
 describe('Crypto.com delayed subscription session ownership (issue #1003)', () => {
   for (const shutdown of ['close', 'disconnect']) {
     it(`cancels subscription and heartbeat when ${shutdown} occurs before subscription`, (t) => {

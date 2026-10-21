@@ -361,6 +361,8 @@ const findUnsettledPredictions = (records, now) => {
       if (record.compositeDirection === 'up') {
         predictions.push({ ...record, _ts: ts })
       }
+    } else if (record.type === 'expired') {
+      if (record.predictionId && record.window) settledKeys.add(`${record.predictionId}:${record.window}`)
     } else if (record.type === 'outcome') {
       if (record.predictionId && record.window) settledKeys.add(`${record.predictionId}:${record.window}`)
       const ts = Date.parse(record.ts)
@@ -388,17 +390,34 @@ const findUnsettledPredictions = (records, now) => {
       let settlementTs = null
       for (const p of priceTimeline) {
         if (p.ts >= targetTs) {
-          exitPrice = p.price
-          settlementTs = p.ts
+          if (p.ts - targetTs <= MAX_EVAL_LAG_MS) {
+            exitPrice = p.price
+            settlementTs = p.ts
+          }
           break
         }
       }
-      elapsed.push({ prediction, windowMs, targetTs, settlementTs, exitPrice })
+      // Same lag limit live evaluation applies: no price within it means the window
+      // is unrecoverable, so the caller journals an `expired` marker (never settled late).
+      const expired = exitPrice == null && now - targetTs > MAX_EVAL_LAG_MS
+      elapsed.push({ prediction, windowMs, targetTs, settlementTs, exitPrice, expired })
     }
   }
 
   return { pending, elapsed }
 }
+
+/**
+ * Journal marker for a window that missed MAX_EVAL_LAG_MS with no usable price.
+ * Counted as settled by the recovery planners so a later restart never scores it
+ * against a price recorded hours afterwards.
+ */
+const buildExpiredRecord = (prediction, window) => ({
+  type: 'expired',
+  ts: new Date().toISOString(),
+  predictionId: prediction.id,
+  window,
+})
 
 /**
  * Find UP predictions whose valid snapshotted contract has not been settled.
@@ -423,6 +442,8 @@ const findUnsettledContractPredictions = (records, now) => {
           Number.isFinite(expiry) && expiry > ts) {
         predictions.push(record)
       }
+    } else if (record.type === 'expired') {
+      if (record.window === 'contract' && record.predictionId) settled.add(record.predictionId)
     } else if (record.type === 'outcome') {
       if (record.window === 'contract' && record.predictionId) settled.add(record.predictionId)
       if (Number.isFinite(ts) && Number.isFinite(record.exitPrice) && record.exitPrice > 0) {
@@ -440,12 +461,14 @@ const findUnsettledContractPredictions = (records, now) => {
       pending.push({ prediction, targetTs, remainingMs: targetTs - now })
       continue
     }
-    const mark = prices.find(p => p.ts >= targetTs) ?? null
+    const found = prices.find(p => p.ts >= targetTs)
+    const mark = found && found.ts - targetTs <= MAX_EVAL_LAG_MS ? found : null
     elapsed.push({
       prediction,
       targetTs,
       settlementTs: mark?.ts ?? null,
       exitPrice: mark?.price ?? null,
+      expired: mark == null && now - targetTs > MAX_EVAL_LAG_MS,
     })
   }
   return { pending, elapsed }
@@ -677,6 +700,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
           if (Date.now() - targetTs <= MAX_EVAL_LAG_MS) {
             arm()
           } else {
+            persistRecord(buildExpiredRecord(prediction, label))
             scorecardLogger.warn(`⚠️ 📊 Scorecard eval unavailable — fresh price missing predId=${prediction.id} window=${label}`, {
               action: 'evaluate',
               predictionId: prediction.id,
@@ -1015,7 +1039,8 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     const contractRecovery = findUnsettledContractPredictions(allRecords, now)
 
     let backfilled = 0
-    for (const { prediction, windowMs, settlementTs, exitPrice } of elapsed) {
+    for (const { prediction, windowMs, settlementTs, exitPrice, expired } of elapsed) {
+      if (expired) persistRecord(buildExpiredRecord(prediction, WINDOW_LABELS[windowMs]))
       if (exitPrice == null || settlementTs == null) continue
       const outcome = buildOutcomeRecord(prediction, windowMs, exitPrice, {
         ts: new Date(settlementTs).toISOString(),
@@ -1036,7 +1061,8 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       )
     }
 
-    for (const { prediction, settlementTs, exitPrice } of contractRecovery.elapsed) {
+    for (const { prediction, settlementTs, exitPrice, expired } of contractRecovery.elapsed) {
+      if (expired) persistRecord(buildExpiredRecord(prediction, 'contract'))
       if (exitPrice == null || settlementTs == null) continue
       const outcome = buildContractOutcomeRecord(prediction, exitPrice, {
         ts: new Date(settlementTs).toISOString(),
