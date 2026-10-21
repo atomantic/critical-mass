@@ -863,9 +863,10 @@ const annotateBodySells = ({ fillLedger, positionState, logger, baseCurrency, ex
     if (f.side !== 'sell' || f.orderId === coreTpOrderId) continue;
     if (!sellRowsByOrder.has(f.orderId)) sellRowsByOrder.set(f.orderId, []);
     sellRowsByOrder.get(f.orderId).push(f);
+    const isBooked = f.bodyBookedSize != null || f.bodyBooked;
     const invalidAnnotation = (f.bodyPnl ?? f.satellitePnl) < 0 || (f.bodyHoldbackAsset ?? f.satelliteHoldbackAsset) < 0;
     if (f.untrackedSell || f.cycleAttribution === 'timeframe'
-      || ((f.isBodyOwned || f.isSatellite) && !invalidAnnotation)) skippedOrderIds.add(f.orderId);
+      || isBooked || ((f.isBodyOwned || f.isSatellite) && !invalidAnnotation)) skippedOrderIds.add(f.orderId);
   }
   // Chronological by aggregate (last-row) timestamp: grouping keeps each order at
   // its first row's position, so interleaved partial fills of two orders would
