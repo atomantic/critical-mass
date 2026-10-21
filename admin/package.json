@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@react-three/fiber": "^9.8.1",
+    "@react-three/fiber": "^9.8.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "three": "^0.182.0"
