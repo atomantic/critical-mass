@@ -320,7 +320,7 @@ module.exports = (app, deps) => {
     if (pairError) return res.status(400).json({ success: false, error: pairError });
     const logger = exchangeLogger(exchange, pair, '/api/:exchange/config');
     const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
-    if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
+    if (errors.length > 0) return res.status(400).json({ success: false, error: errors.join('; ') });
 
     const prepared = prepareConfigUpdate({
       exchange, pair, updates, fullConfig: true, rawRegime: req.body?.regime,
@@ -335,7 +335,7 @@ module.exports = (app, deps) => {
         });
       },
     });
-    if (!prepared.valid) return res.status(400).json({ error: prepared.errors.join('; ') });
+    if (!prepared.valid) return res.status(400).json({ success: false, error: prepared.errors.join('; ') });
 
     const result = await persistConfigUpdate(exchange, pair, prepared, getIPC(exchange));
     if (!result.applied) {
