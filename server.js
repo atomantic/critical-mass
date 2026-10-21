@@ -131,8 +131,16 @@ const gatewayShutdown = createGatewayShutdown({
   // (e.g. a full disk) still lets the others persist and stop; any failure is
   // rethrown so the shutdown reports it.
   stopProducers: () => {
+    // A restore owns UpDown and Sentinel from its stop through its reload, and
+    // keeps them stopped after an incomplete rollback. stop() always persists,
+    // so stopping them inside that window would write pre-restore memory over
+    // the restored files.
+    const restoreOwnsWriters = isMaintenanceActive();
     const failures = [];
-    for (const [name, stop] of [['UpDown', () => updownService.stop()], ['Sentinel', () => sentinelService.stop()], ['log streams', () => activeLogStreams.stopAll()]]) {
+    for (const [name, stop] of [
+      ...(restoreOwnsWriters ? [] : [['UpDown', () => updownService.stop()], ['Sentinel', () => sentinelService.stop()]]),
+      ['log streams', () => activeLogStreams.stopAll()],
+    ]) {
       try {
         stop();
       } catch (err) {

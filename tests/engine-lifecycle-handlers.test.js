@@ -440,6 +440,38 @@ describe('engine-lifecycle-handlers', () => {
       });
     }
 
+    it('publishes writes that finish after stop() saved, before the consumer loads the ledger', async () => {
+      const h = createHarness({ drainFundWrites: async () => { h.calls.push({ op: 'drain', pair: PAIR_A }); return { drained: true }; } });
+      h.regimeEngines.set(fundKey(EXCHANGE, PAIR_A), {
+        ...createFakeEngine(h.calls, EXCHANGE, PAIR_A, { status: { isRunning: true } }),
+        flushForBackup: () => h.calls.push({ op: 'flush', pair: PAIR_A }),
+      });
+
+      assert.equal((await h.stop({}, EXCHANGE, PAIR_A)).success, true);
+      const order = ['engine.stop', 'drain', 'flush', 'startMarketDataService'].map((op) => firstIndex(h.calls, op, PAIR_A));
+      assert.ok(order.every((i, n) => i > -1 && (n === 0 || i > order[n - 1])), `stop → drain → flush → consumer, got ${order}`);
+    });
+
+    it('does not flush an engine that was never running and keeps ownership when the final flush fails', async () => {
+      const notRunning = createHarness();
+      let flushed = false;
+      notRunning.regimeEngines.set(fundKey(EXCHANGE, PAIR_A), {
+        ...createFakeEngine(notRunning.calls, EXCHANGE, PAIR_A, { status: { isRunning: false } }),
+        flushForBackup: () => { flushed = true; },
+      });
+      assert.equal((await notRunning.stop({}, EXCHANGE, PAIR_A)).success, true);
+      assert.equal(flushed, false, 'a partially started, unrecovered engine must not overwrite disk');
+
+      const failing = createHarness();
+      failing.regimeEngines.set(fundKey(EXCHANGE, PAIR_A), {
+        ...createFakeEngine(failing.calls, EXCHANGE, PAIR_A, { status: { isRunning: true } }),
+        flushForBackup: () => { throw new Error('ENOSPC'); },
+      });
+      assert.deepEqual(await failing.stop({}, EXCHANGE, PAIR_A), { success: false, error: 'ENOSPC' });
+      assert.equal(failing.regimeEngines.has(fundKey(EXCHANGE, PAIR_A)), true);
+      assert.equal(countOf(failing.calls, 'startMarketDataService', PAIR_A), 0);
+    });
+
     it('retains ownership and starts no consumer when accepted fund writes cannot be confirmed drained', async () => {
       const h = createHarness({ drainFundWrites: async () => ({ drained: false }) });
       h.regimeEngines.set(fundKey(EXCHANGE, PAIR_A), createFakeEngine(h.calls, EXCHANGE, PAIR_A));

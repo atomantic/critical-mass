@@ -395,6 +395,6 @@ describe('createLogStreamRegistry stopAll', () => {
     });
     await gateway.shutdown('SIGTERM');
     assert.equal(child.killed, true);
-    assert.deepEqual(calls, ['cancel', 'producers', 'notifier', 'disconnect', 'listeners', 'exit:0']);
+    assert.deepEqual(calls, ['cancel', 'producers', 'producers', 'notifier', 'disconnect', 'listeners', 'exit:0']);
   });
 });

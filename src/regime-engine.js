@@ -1806,6 +1806,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Dry-run counterpart of saveLiveStateGuarded for the save timer. Dry-run is
+   * a per-fund setting, so live funds share this process: a full disk must not
+   * turn a dry-run save into an uncaughtException that exits them all (#532).
+   * @param {string} source - Caller label for the log line
+   * @returns {boolean} Whether the save succeeded
+   */
+  const saveDryRunStateGuarded = (source) => {
+    try {
+      saveDryRunState();
+      return true;
+    } catch (err) {
+      logger.error(`❌ [${fundLabel}] Dry-run state save failed from ${source}: ${err.message}`, {
+        action: 'save-dry-run-state', source, error: err.message,
+      });
+      return false;
+    }
+  };
+
+  /**
    * Load dry-run state from disk
    * @returns {boolean} Whether state was loaded
    */
@@ -3483,7 +3502,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       startFillDriftSweep();
     } else {
       // Start periodic state saving for dry-run (every 60 seconds)
-      stateSaveInterval = setInterval(saveDryRunState, 60000);
+      stateSaveInterval = setInterval(() => saveDryRunStateGuarded('state-save-timer'), 60000);
     }
 
     invalidateEntryAdmission();
@@ -7926,6 +7945,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
     }
 
+    // The body owns its TP from the moment the exchange accepts it. Live mode
+    // persists that ownership inside the placement handoff, before the dispatch
+    // intent is released: otherwise the order id lived only in memory until the
+    // 5-minute save, and a crash in that window restarted the body with no TP,
+    // so startup placed a second sell beside the untracked original.
+    const adoptTpOrder = (orderId) => {
+      body.tpOrderId = orderId;
+      body.tpPrice = tpPrice;
+      body.assetOnOrder = sellQty;
+
+      // Re-aggregate position-level fields so positionState.assetOnOrder reflects
+      // ALL bodies' TP orders, not just the most-recently-placed one. Without this,
+      // satellite bodies created after the main body's TP leave assetOnOrder stale,
+      // making the dashboard's "On Order" panel under-report by the satellite size.
+      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+    };
+
     let result;
     try {
       // body.avgPrice is the body's real, already-tracked average buy price —
@@ -7936,7 +7972,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // engine, since it never trades through the legacy single-cycle path
       // that resets it). No-op for the live executor, which already tracks
       // cost basis on `body.costBasis` independently of order placement.
-      result = await orderExecutor.placeBodyTpOrder(sellQty, tpPrice, body.id, body.avgPrice);
+      result = await orderExecutor.placeBodyTpOrder(sellQty, tpPrice, body.id, body.avgPrice, {
+        // Guarded: the order is already resting, so a failed save must not
+        // turn it into a pending placement the executor stops tracking; the
+        // failure counts toward the health monitor's persistence limit instead.
+        onAccepted: isDryRun ? null : ({ orderId }) => {
+          adoptTpOrder(orderId);
+          saveLiveStateGuarded('body-tp-placed');
+        },
+      });
     } catch (err) {
       logger.warn(
         `⚠️ [${exchange}] Body TP placement error for ${body.id.slice(-8)}: ${err.message}`,
@@ -7946,15 +7990,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     if (result.success) {
-      body.tpOrderId = result.orderId;
-      body.tpPrice = tpPrice;
-      body.assetOnOrder = sellQty;
-
-      // Re-aggregate position-level fields so positionState.assetOnOrder reflects
-      // ALL bodies' TP orders, not just the most-recently-placed one. Without this,
-      // satellite bodies created after the main body's TP leave assetOnOrder stale,
-      // making the dashboard's "On Order" panel under-report by the satellite size.
-      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+      adoptTpOrder(result.orderId);
 
       // Link all source buy fills to this sell order (use both sourceOrderIds and buyOrders for coverage)
       // A large merged body can own hundreds of buys. Persist all links in one
@@ -10463,6 +10499,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       checkOfflineOrderFills,
       // Background persistence guards (issue #532)
       saveLiveStateGuarded,
+      saveDryRunStateGuarded,
       reloadStateFromDisk,
       getHealth: () => healthMonitor.getState(),
       healthMonitor,

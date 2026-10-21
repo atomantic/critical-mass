@@ -126,8 +126,17 @@ runs the production start block against that contract.
 
 The gateway handles SIGTERM and SIGINT through one drain coordinator. It stops
 admitting HTTP requests and realtime client commands, cancels the DCA and backup timers,
-and waits for accepted request handlers and scheduled DCA cycles before stopping
-local producers. An aborted HTTP client does not cancel the handler's ownership.
+and stops the local producers (UpDown, Sentinel, log tails), which save their own
+state, before it waits for accepted request handlers and scheduled DCA cycles. A
+deadline exit therefore never skips the producers' final save, and UpDown's startup
+lock wait, which only its stop cancels, cannot hold the drain. Producers are stopped
+again after the drain in case drained work restarted one. A failed teardown step
+(a producer that cannot persist, an IPC disconnect) is reported and exits 1, but
+every later step, the drain and the notifier included, still runs. While a restore
+holds the maintenance lock it owns UpDown and Sentinel (and keeps them stopped after
+an incomplete rollback), so shutdown leaves them alone rather than persisting
+pre-restore memory over restored files. An aborted HTTP client does not cancel the
+handler's ownership.
 IPC remains connected through that drain; queued and already-sending Telegram
 notifications then settle before IPC, the realtime bus and every HTTP listener close.
 
