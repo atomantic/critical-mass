@@ -46,11 +46,15 @@ const toastIcons = {
 
 function Toast({ id, type, title, message, onClose }) {
   const timerRef = useRef(null)
+  const [paused, setPaused] = useState(false)
+  const persistent = type === 'error'
 
+  // Errors stay until dismissed; other toasts auto-close but pause on hover/focus
   useEffect(() => {
+    if (persistent || paused) return undefined
     timerRef.current = setTimeout(() => onClose(id), 5000)
     return () => clearTimeout(timerRef.current)
-  }, [id, onClose])
+  }, [id, onClose, persistent, paused])
 
   const handleDismiss = () => {
     clearTimeout(timerRef.current)
@@ -61,6 +65,10 @@ function Toast({ id, type, title, message, onClose }) {
     <div
       className={`flex items-start gap-3 p-4 rounded-lg border shadow-lg animate-slide-in ${toastStyles[type]}`}
       role="alert"
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocus={() => setPaused(true)}
+      onBlur={() => setPaused(false)}
     >
       <div className="shrink-0 mt-0.5">{toastIcons[type]}</div>
       <div className="flex-1 min-w-0">
@@ -69,7 +77,8 @@ function Toast({ id, type, title, message, onClose }) {
       </div>
       <button
         onClick={handleDismiss}
-        className="shrink-0 opacity-70 hover:opacity-100 transition-opacity"
+        aria-label="Dismiss notification"
+        className="shrink-0 -m-2 p-2 min-h-11 min-w-11 flex items-center justify-center opacity-70 hover:opacity-100 transition-opacity"
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
@@ -94,7 +103,7 @@ export function ToastProvider({ children }) {
   return (
     <ToastContext.Provider value={{ addToast }}>
       {children}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm max-h-[60vh] overflow-y-auto">
         {toasts.map((toast) => (
           <Toast key={toast.id} {...toast} onClose={removeToast} />
         ))}
