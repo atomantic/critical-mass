@@ -66,4 +66,24 @@ describe('rebuild-coinbase-closed-trades', () => {
     assert.deepEqual(unchanged, [{ sellOrderId: 'stale', pnl: 999 }]);
     assert.equal(fs.readdirSync(fund).filter(name => name.startsWith('closed-trades.json.backup-rebuild-')).length, 0);
   });
+
+  it('refuses to apply to the live data root while the engine is recorded as running', () => {
+    const { root, fund } = fixture();
+    writeJson(path.join(fund, 'regime-engine-running.json'), { running: true });
+    // Make the fixture the "live" root so the guard runs without touching real data.
+    const preload = path.join(root, 'live-root.js');
+    const pathsModule = path.join(__dirname, '..', 'src', 'paths.js');
+    fs.writeFileSync(preload, `require(${JSON.stringify(pathsModule)}).DATA_DIR = ${JSON.stringify(root)};\n`);
+
+    const result = spawnSync(process.execPath, ['--require', preload, script, '--apply'], {
+      env: { ...process.env, CRITICAL_MASS_DATA_DIR: root },
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /REFUSING to write coinbase\/BTC-USDC: regime-engine-running\.json records the engine as RUNNING/);
+    assert.doesNotMatch(result.stdout, /Verified:/, 'guard must run before the ledger snapshot is read');
+    const unchanged = JSON.parse(fs.readFileSync(path.join(fund, 'closed-trades.json'), 'utf8'));
+    assert.deepEqual(unchanged, [{ sellOrderId: 'stale', pnl: 999 }]);
+  });
 });

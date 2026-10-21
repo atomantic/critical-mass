@@ -8,7 +8,6 @@ const path = require('node:path');
 const migration = require('../src/migration');
 const configUtils = require('../src/config-utils');
 const correctiveBuys = require('../scripts/place-corrective-buys');
-const legacyCorrectiveBuy = require('../scripts/place-corrective-buy-2cb8f4c2');
 
 describe('corrective-buy pending state paths', () => {
   it('isolates reads and writes by exchange and product pair', (t) => {
@@ -33,26 +32,6 @@ describe('corrective-buy pending state paths', () => {
     assert.equal(ethPath, path.join(tempRoot, 'coinbase', 'ETH-USDC', 'pending-corrective-buys.json'));
     assert.deepEqual(correctiveBuys.loadPending('coinbase', 'BTC-USDC'), [{ buyOrderId: 'btc-order' }]);
     assert.deepEqual(correctiveBuys.loadPending('coinbase', 'ETH-USDC'), [{ buyOrderId: 'eth-order' }]);
-  });
-
-  it('keeps the deprecated audit script on the same pair-specific read/write contract', (t) => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'corrective-buy-audit-paths-'));
-    const originalGetExchangeDataDir = migration.getExchangeDataDir;
-    migration.getExchangeDataDir = (exchange) => path.join(tempRoot, exchange);
-    t.after(() => {
-      migration.getExchangeDataDir = originalGetExchangeDataDir;
-      fs.rmSync(tempRoot, { recursive: true, force: true });
-    });
-
-    assert.equal(
-      legacyCorrectiveBuy.getPendingReadPath('coinbase', 'BTC-USDC'),
-      path.join(tempRoot, 'coinbase', 'BTC-USDC', 'pending-corrective-buys.json')
-    );
-    assert.equal(
-      legacyCorrectiveBuy.getPendingWritePath('coinbase', 'BTC-USDC'),
-      path.join(tempRoot, 'coinbase', 'BTC-USDC', 'pending-corrective-buys.json')
-    );
-    assert.equal(fs.existsSync(path.join(tempRoot, 'coinbase', 'BTC-USDC')), true);
   });
 
   it('annotates the explicit BTC-USDC ledger when the configured default is a different fund', async (t) => {
@@ -100,5 +79,13 @@ describe('corrective-buy pending state paths', () => {
     assert.equal(fill.orderId, 'corrective-buy-1');
     assert.equal(fill.sellOrderId, 'orphan-sell-1');
     assert.equal(fill.correctiveBuy, true);
+  });
+
+  it('places live orders only when --place is given', () => {
+    assert.equal(correctiveBuys.parseMode(['node', 'script']), null);
+    assert.equal(correctiveBuys.parseMode(['node', 'script', '--dry-run']), null);
+    assert.equal(correctiveBuys.parseMode(['node', 'script', '--place']), 'place');
+    assert.equal(correctiveBuys.parseMode(['node', 'script', '--status']), 'status');
+    assert.equal(correctiveBuys.parseMode(['node', 'script', '--annotate']), 'annotate');
   });
 });

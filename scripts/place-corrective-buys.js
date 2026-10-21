@@ -8,10 +8,10 @@
  * corresponding orphan sell order ID.
  *
  * Usage:
- *   node scripts/place-corrective-buys.js                # place orders (safe while engine runs)
+ *   node scripts/place-corrective-buys.js --place         # place live orders (safe while engine runs)
  *   node scripts/place-corrective-buys.js --status        # check order status on exchange
  *   node scripts/place-corrective-buys.js --annotate      # ingest fills + annotate ledger
- *                                                          (stop engine first: pm2 stop critical-mass)
+ *                                                          (refuses while the engine runs; backs up first)
  */
 
 const fs = require('fs');
@@ -19,6 +19,8 @@ const path = require('path');
 const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
 const { createFillLedger } = require('../src/fill-ledger');
 const { getFundDataDir, resolveFundDataDir } = require('../src/migration');
+const { atomicWriteSync } = require('../src/durable-write');
+const { prepareApply } = require('./lib/fund-cli');
 
 const PRODUCT_ID = 'BTC-USDC';
 const EXCHANGE = 'coinbase';
@@ -98,7 +100,8 @@ function loadPending(exchange = EXCHANGE, productId = PRODUCT_ID) {
 }
 
 function savePending(pending, exchange = EXCHANGE, productId = PRODUCT_ID) {
-  fs.writeFileSync(getPendingWritePath(exchange, productId), JSON.stringify(pending, null, 2));
+  // Atomic: a torn file would forget placed orders and a re-run would place them again.
+  atomicWriteSync(getPendingWritePath(exchange, productId), JSON.stringify(pending, null, 2));
 }
 
 // ── Place orders (safe while engine is running) ──────────────────────
@@ -158,7 +161,7 @@ async function placeOrders(adapter) {
 async function checkStatus(adapter) {
   const pending = loadPending();
   if (pending.length === 0) {
-    console.log('No pending corrective buys. Run without flags to place orders first.');
+    console.log('No pending corrective buys. Run with --place to place orders first.');
     return;
   }
 
@@ -217,10 +220,6 @@ async function annotateFills(adapter) {
     return;
   }
 
-  // Safety check: warn if engine might be running
-  console.log('⚠️  Make sure critical-mass engine is stopped before annotating!');
-  console.log('   (pm2 stop critical-mass)\n');
-
   // createFillLedger's second argument controls display/base-currency metadata;
   // the third is the persistence pair. Pass both explicitly so a different
   // configured default fund cannot receive these BTC-USDC annotations.
@@ -273,13 +272,31 @@ async function annotateFills(adapter) {
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
+// Placing live orders needs its own flag: a bare run must never reach the exchange.
+const parseMode = (argv) => (argv.includes('--annotate') ? 'annotate'
+  : argv.includes('--status') ? 'status'
+  : argv.includes('--place') ? 'place'
+  : null);
+
 async function main() {
-  const mode = process.argv.includes('--annotate') ? 'annotate'
-    : process.argv.includes('--status') ? 'status'
-    : 'place';
+  const mode = parseMode(process.argv);
+  if (!mode) {
+    console.error('Usage: node scripts/place-corrective-buys.js --place | --status | --annotate');
+    process.exitCode = 1;
+    return;
+  }
 
   console.log('🔧 Corrective Buy Manager for Orphan Sells');
   console.log('===========================================\n');
+
+  // A running engine holds the ledger in memory and would overwrite the annotations.
+  if (mode === 'annotate') {
+    await prepareApply({
+      exchange: EXCHANGE,
+      pair: PRODUCT_ID,
+      files: [path.join(resolveFundDataDir(EXCHANGE, PRODUCT_ID), 'fill-ledger.json'), getPendingReadPath()],
+    });
+  }
 
   const adapter = createCoinbaseAdapter();
 
@@ -301,4 +318,5 @@ module.exports = {
   loadPending,
   savePending,
   annotateFills,
+  parseMode,
 };
