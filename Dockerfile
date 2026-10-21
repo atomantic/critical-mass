@@ -11,7 +11,7 @@ COPY shared/ ./shared/
 RUN cd admin && npm run build
 
 # ─── Stage 2: Production runtime ──────────────────────────────
-FROM node:22-alpine
+FROM node:26-alpine
 
 WORKDIR /app
 
