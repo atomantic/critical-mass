@@ -4,6 +4,7 @@ const { connectWebSocket } = require('./websocket-connection');
 const HEARTBEAT_INTERVAL = 30000;
 const MAX_SILENT_INTERVALS = 2;
 const HANDSHAKE_TIMEOUT = 15000;
+const STABLE_CONNECTION_MS = 30000;
 const RECONNECT_BASE_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 60000;
 
@@ -39,6 +40,7 @@ const createWebSocketLifecycle = ({
   const retireSession = current => {
     clearTimeout(current.handshakeTimeout);
     clearTimeout(current.subscribeTimeout);
+    clearTimeout(current.stableTimeout);
     clearInterval(current.heartbeatInterval);
     session = null;
   };
@@ -54,6 +56,17 @@ const createWebSocketLifecycle = ({
       reconnectAttempts++;
       connect();
     }, delay);
+  };
+
+  // Backoff resets only once a connection proves stable, so an exchange that
+  // accepts the upgrade and then drops us (auth/subscribe rejection, rate limit)
+  // keeps growing the delay instead of retrying at the base delay forever.
+  const markStable = current => {
+    if (current.stable || !isCurrent(current)) return;
+    current.stable = true;
+    clearTimeout(current.stableTimeout);
+    current.stableTimeout = null;
+    reconnectAttempts = 0;
   };
 
   const startHeartbeat = current => {
@@ -79,7 +92,7 @@ const createWebSocketLifecycle = ({
     clearReconnect();
     logger.info(`🔌 [${exchange}] Connecting to ${name}...`, { lifecycle: 'connecting' });
     const socket = connectWebSocket(url);
-    const current = { socket, connected: false, silentIntervals: 0, subscribeTimeout: null, heartbeatInterval: null, handshakeTimeout: null };
+    const current = { socket, connected: false, silentIntervals: 0, subscribeTimeout: null, stableTimeout: null, stable: false, subscribed: false, heartbeatInterval: null, handshakeTimeout: null };
     session = current;
     current.handshakeTimeout = setTimeout(() => {
       current.handshakeTimeout = null;
@@ -96,13 +109,14 @@ const createWebSocketLifecycle = ({
       current.handshakeTimeout = null;
       logger.info(`✅ [${exchange}] ${name} connected`, { lifecycle: 'connected' });
       current.connected = true;
-      reconnectAttempts = 0;
+      current.stableTimeout = setTimeout(() => markStable(current), STABLE_CONNECTION_MS);
       onOpen();
       const finishConnect = () => {
         current.subscribeTimeout = null;
         if (!isOpen(current)) return;
         subscribe(socket);
         if (!isOpen(current)) return;
+        current.subscribed = true;
         startHeartbeat(current);
         config.onConnect?.();
       };
@@ -112,6 +126,7 @@ const createWebSocketLifecycle = ({
     socket.on('message', data => {
       if (!isOpen(current)) return;
       current.silentIntervals = 0;
+      if (current.subscribed) markStable(current);
       handleMessage(typeof data === 'string' ? data : data.toString(), socket);
     });
     socket.on('close', (code, reason) => {
