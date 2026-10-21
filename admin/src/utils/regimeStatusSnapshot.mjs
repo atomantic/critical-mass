@@ -18,9 +18,12 @@ export const STOPPED_STATUS_FIELDS = [
 ]
 
 // Generation shared by every snapshot source so the newest one wins regardless
-// of whether it arrived over the socket or over HTTP.
+// of whether it arrived over the socket or over HTTP. An HTTP read takes its
+// generation when the request starts, so a socket emit that lands while it is
+// in flight (e.g. the stopped status right after Stop) beats its response.
 let generation = 0
-export const stampRegimeStatus = (status) => ({ status, seq: ++generation })
+export const nextRegimeStatusSeq = () => ++generation
+export const stampRegimeStatus = (status) => ({ status, seq: nextRegimeStatusSeq() })
 export const EMPTY_SNAPSHOT = Object.freeze({ status: null, seq: 0 })
 
 // A stopped payload is complete, so it replaces the snapshot, and so does any

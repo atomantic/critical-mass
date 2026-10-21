@@ -130,6 +130,22 @@ describe('RegimeDashboard status freshness', () => {
     expect(result.current.status.isRunning).toBe(true)
   })
 
+  it('keeps a socket emit that lands while an HTTP status read is in flight', async () => {
+    const { result } = renderHook(() => useRegimeDashboardData('coinbase', 'BTC-USDC', '?pair=BTC-USDC'))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    let respond
+    statusResponse = () => new Promise(resolve => { respond = resolve })
+    let read
+    act(() => { read = result.current.fetchStatus() })
+    emitStatus(stoppedStatus(60500))
+    await act(async () => {
+      respond({ ok: true, json: async () => ({ status: runningStatus(60400) }) })
+      await read
+    })
+    expect(result.current.status.isRunning).toBe(false)
+    expect(result.current.status.market.lastPrice).toBe(60500)
+  })
+
   it('flags the engine unreachable after the stale window with no status, until a fresh one arrives', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     render(<RegimeDashboard exchange="coinbase" pair="BTC-USDC" />)

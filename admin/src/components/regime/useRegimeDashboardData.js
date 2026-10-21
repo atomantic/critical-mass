@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useRegimeEvents } from '../../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../../hooks/useChartDataBuffer'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
-import { EMPTY_SNAPSHOT, STATUS_STALE_MS, stampRegimeStatus, toUnreachableStatus } from '../../utils/regimeStatusSnapshot.mjs'
+import { EMPTY_SNAPSHOT, STATUS_STALE_MS, nextRegimeStatusSeq, toUnreachableStatus } from '../../utils/regimeStatusSnapshot.mjs'
 
 export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   const [localSnapshot, setLocalSnapshot] = useState(EMPTY_SNAPSHOT)
@@ -80,8 +80,10 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
     return Boolean(valid)
   }, [exchange, pairQuery])
 
-  const commitLocalStatus = useCallback(value => setLocalSnapshot(stampRegimeStatus(value)), [])
-  const fetchStatus = useCallback(() => readSnapshot('status', statusOwner, commitLocalStatus), [readSnapshot, statusOwner, commitLocalStatus])
+  const fetchStatus = useCallback(() => {
+    const seq = nextRegimeStatusSeq()
+    return readSnapshot('status', statusOwner, value => setLocalSnapshot({ status: value, seq }))
+  }, [readSnapshot, statusOwner])
 
   // The engine's process dying sends nothing to the browser, and the socket's
   // "Live" state only tracks the gateway. Mark a running snapshot silent once
