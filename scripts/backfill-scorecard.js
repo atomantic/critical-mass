@@ -8,7 +8,9 @@
  *
  * Usage: node scripts/backfill-scorecard.js [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--step 5] [--apply]
  *
- * --from   Start date (default: 30 days after first candle for warmup)
+ * --from   Start date (default: 30 days after first candle for warmup). Days older
+ *          than the live scorecard retention window are pruned by UpDown on its next
+ *          start, so an earlier --from is clamped to the oldest retained UTC day.
  * --to     End date (default: last candle)
  * --apply  Explicitly publish results (default: dry run; no writes)
  * --step   Minutes between predictions (default: 5)
@@ -21,7 +23,7 @@ const { acquireScorecardLock, atomicPublish, validateJsonl, lockPath } = require
 const { createCandleAggregator } = require('../src/candle-aggregator')
 const { createSignalEngine, ALL_SIGNAL_TFS } = require('../src/updown/signal-engine')
 const { TF_MS, seedCompletedCandles } = require('../src/updown/replay-candles')
-const { computeAdaptiveWeights, buildOutcomeRecord, scorecardDirection } = require('../src/updown/scorecard')
+const { computeAdaptiveWeights, buildOutcomeRecord, scorecardDirection, SCORECARD_RETENTION_DAYS } = require('../src/updown/scorecard')
 const { INDICATORS, INDICATOR_WEIGHTS } = require('../src/updown/indicator-config')
 const { DATA_DIR } = require('../src/paths')
 const COINBASE_DIR = path.join(DATA_DIR, 'coinbase')
@@ -105,6 +107,21 @@ const scorecardRecordKey = (record) => {
   return null
 }
 
+const DAY_MS = 86_400_000
+
+/** Oldest UTC day (YYYY-MM-DD) the live scorecard keeps: today plus the previous N-1 days. */
+const retentionCutoffDay = (now = Date.now()) =>
+  new Date(now - (SCORECARD_RETENTION_DAYS - 1) * DAY_MS).toISOString().slice(0, 10)
+
+/** Clamp a replay start to the retention window; `clamped` carries the cutoff day when it moved. */
+const clampFromToRetention = (requestedFromTs, now = Date.now()) => {
+  const cutoffDay = retentionCutoffDay(now)
+  const cutoffTs = new Date(cutoffDay + 'T00:00:00Z').getTime()
+  return requestedFromTs >= cutoffTs
+    ? { fromTs: requestedFromTs, clamped: null }
+    : { fromTs: cutoffTs, clamped: cutoffDay }
+}
+
 // Parse CLI args
 const args = process.argv.slice(2)
 const getArg = (name, def) => {
@@ -158,7 +175,11 @@ const main = () => {
   const stepMin = parseInt(getArg('step', '5'), 10)
   const stepMs = stepMin * 60_000
 
-  const fromTs = fromArg ? new Date(fromArg + 'T00:00:00Z').getTime() : defaultFromTs
+  const requestedFromTs = fromArg ? new Date(fromArg + 'T00:00:00Z').getTime() : defaultFromTs
+  const { fromTs, clamped } = clampFromToRetention(requestedFromTs)
+  if (clamped) {
+    console.log(`  ⚠️ Clamped --from ${new Date(requestedFromTs).toISOString().slice(0, 10)} to ${clamped}: UpDown retains only the newest ${SCORECARD_RETENTION_DAYS} UTC days of scorecard history`)
+  }
   const toTs = toArg ? new Date(toArg + 'T23:59:59Z').getTime() : lastTs
 
   const fromDate = new Date(fromTs).toISOString().slice(0, 10)
@@ -398,7 +419,7 @@ const main = () => {
 }
 
 /** Publish only under the same exclusive lock used by live appends. */
-const publishBackfill = (dayBuffers, { directory = SCORECARD_DIR, apply = false } = {}) => {
+const publishBackfill = (dayBuffers, { directory = SCORECARD_DIR, apply = false, now = Date.now() } = {}) => {
   const days = Object.keys(dayBuffers).sort()
   if (days.some(day => !/^\d{4}-\d{2}-\d{2}$/.test(day))) throw new Error('Invalid scorecard day')
   // Hash incrementally: a year of replay must not become one giant JSON string.
@@ -417,6 +438,7 @@ const publishBackfill = (dayBuffers, { directory = SCORECARD_DIR, apply = false 
       : { version: 1, fingerprint, completedDays: [] }
     if (manifest.version !== 1 || manifest.fingerprint !== fingerprint || !Array.isArray(manifest.completedDays)
       || manifest.completedDays.some(day => !days.includes(day))) throw new Error('Invalid backfill manifest')
+    const cutoffDay = retentionCutoffDay(now)
     let totalLines = 0
     for (const day of days) {
       const file = path.join(directory, `${day}.jsonl`)
@@ -433,7 +455,8 @@ const publishBackfill = (dayBuffers, { directory = SCORECARD_DIR, apply = false 
         fresh.push(line)
       }
       if (manifest.completedDays.includes(day)) {
-        if (fresh.length) throw new Error(`Completed backfill day is missing records: ${day}`)
+        // Retention prunes published days; a completed day past the window is satisfied, not missing.
+        if (fresh.length && day >= cutoffDay) throw new Error(`Completed backfill day is missing records: ${day}`)
         continue
       }
       totalLines += fresh.length
@@ -455,4 +478,4 @@ const publishBackfill = (dayBuffers, { directory = SCORECARD_DIR, apply = false 
 
 if (require.main === module) main()
 
-module.exports = { findCandleIndex, scorecardRecordKey, withHistoricalClock, publishBackfill }
+module.exports = { findCandleIndex, scorecardRecordKey, withHistoricalClock, publishBackfill, retentionCutoffDay, clampFromToRetention }
