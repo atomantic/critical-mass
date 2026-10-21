@@ -38,6 +38,8 @@ const WINDOW_LABELS = { 60000: '1m', 300000: '5m', 900000: '15m', 3600000: '1h' 
 /** Tick-to-tick products (CDC Up options, Coinbase perp flips) live on 1m/5m. */
 const PRIMARY_WINDOWS = ['1m', '5m']
 const BUFFER_SIZE = 2000
+/** Live retention: newest N daily journals kept. The backfill script clamps to the same window. */
+const SCORECARD_RETENTION_DAYS = 30
 const EMIT_THROTTLE_MS = 5_000
 const DEDUP_WINDOW_MS = 55_000
 const WEIGHT_LOG_THROTTLE_MS = 300_000
@@ -1120,9 +1122,9 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
    */
   /**
    * Prune scorecard JSONL files older than retentionDays
-   * @param {number} [retentionDays=30] - Number of days to keep
+   * @param {number} [retentionDays=SCORECARD_RETENTION_DAYS] - Number of days to keep
    */
-  const pruneHistory = async (retentionDays = 30) => {
+  const pruneHistory = async (retentionDays = SCORECARD_RETENTION_DAYS) => {
     if (!existsSync(scorecardDir)) return
     return withScorecardLock(scorecardDir, async () => {
       const files = await readdir(scorecardDir)
@@ -1162,8 +1164,8 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     const generation = ++lifecycleGeneration
     computeSignalsFn = computeSignals
 
-    // Prune old scorecard data on startup (keep 30 days)
-    await pruneHistory(30).catch(err => retentionLogger.warn(`⚠️ 📊 Scorecard prune failed err=${err.message}`, { action: 'prune', error: err.message }))
+    // Prune old scorecard data on startup
+    await pruneHistory().catch(err => retentionLogger.warn(`⚠️ 📊 Scorecard prune failed err=${err.message}`, { action: 'prune', error: err.message }))
     if (!running || generation !== lifecycleGeneration) return
 
     // Hydrate from disk and emit initial metrics
@@ -1259,4 +1261,5 @@ module.exports = {
   WINDOW_MS,
   ALL_TFS,
   scorecardDirection,
+  SCORECARD_RETENTION_DAYS,
 }

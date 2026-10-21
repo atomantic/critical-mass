@@ -5,6 +5,14 @@ for a dry run. It computes and validates replay records and existing daily
 history without writing anything. Add `--apply` to explicitly publish them.
 `--step 5` controls minutes between predictions.
 
+UpDown keeps only the newest 30 daily journals (`SCORECARD_RETENTION_DAYS` in
+`src/updown/scorecard.js`) and prunes the rest at every start and daily. The
+script therefore clamps `--from` to the oldest retained UTC day (today and the
+previous 29) and prints when it does; older days would be deleted on the next
+UpDown start. A rerun after such a prune treats completed manifest days older
+than the window as satisfied rather than failing with "Completed backfill day is
+missing records".
+
 Deploy the scorecard maintenance-lock code to every UpDown writer and restart
 those services before applying a replay. Older processes do not honor the lock.
 The script reports its mode, lock path and resume manifest. Apply refuses a busy
