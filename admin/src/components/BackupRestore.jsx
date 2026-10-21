@@ -513,7 +513,7 @@ function BackupRestore() {
                 onChange={e => updateConfig(prev => ({ ...prev, enabled: e.target.checked }))}
                 className="sr-only peer"
               />
-              <div className="relative shrink-0 w-11 h-6 bg-gray-600 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
+              <div className="relative shrink-0 w-11 h-6 bg-gray-600 peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-blue-400 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
               <span className="text-sm font-medium">Enable Scheduled Backups</span>
             </label>
           </div>
