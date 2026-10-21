@@ -155,6 +155,28 @@ describe('PUT /api/:exchange/config tolerates stale regime keys', () => {
     assert.ok(!written.includes('tpMergeMinImprovementPct'), 'dead key must not enter saved overrides');
     assert.ok(!written.includes('maxSatelliteOrders'), 'dead key must not enter saved overrides');
   });
+
+  it('keeps the engine-written correction metadata through a full save', async () => {
+    const { app, fsMocks } = setup();
+    // What applyBuyCorrectionCapital / applySellCorrectionCapital persist (#836).
+    const corrections = {
+      appliedBuyCorrections: ['buy-correction-1'],
+      buyCorrectionCapitalRemainder: 0.004,
+      appliedSellCorrections: ['sell-correction-1'],
+      sellCorrectionCapitalRemainder: -0.002,
+    };
+    configUtils.updateRegimeConfig('coinbase', 'BTC-USDC', corrections);
+
+    const got = await invoke(app, 'GET /api/:exchange/config', reqFor({}));
+    const res = await invoke(app, 'PUT /api/:exchange/config', reqFor({ ...got.body, dryRun: false }));
+    assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+
+    const saved = fsMocks.user().exchanges.coinbase.pairs['BTC-USDC'];
+    assert.equal(saved.dryRun, false);
+    for (const [key, value] of Object.entries(corrections)) {
+      assert.deepEqual(saved.regime[key], value, `${key} must survive a full save`);
+    }
+  });
 });
 
 // Parity regression for #452: this route used to only sanitize regime key NAMES
