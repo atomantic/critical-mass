@@ -1161,6 +1161,12 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
   }
 
   let handedOff = false;
+  // Never throws: cleanup failure must not mask the restore outcome.
+  const cleanStage = () => {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (e) {
+      logger.warn(`⚠️ 💾 Could not remove restore staging directory for ${filename}: ${e.message}`, { action: "restore-stage-cleanup", filename });
+    }
+  };
   try {
     // ---- Decide the configuration outcome before mutating the destination ----
     const manifestPath = path.join(tempDir, MANIFEST_FILENAME);
@@ -1292,13 +1298,12 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     // The applier cleans staging itself once a journal exists; this covers the
     // earlier refusals (invalid staged set, snapshot or journal write failure),
     // which return before one is written.
-    // Post-commit: a failure here must not turn a committed restore into an error.
-    const cleanStage = () => {
-      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (e) {
-        logger.warn(`⚠️ 💾 Could not remove restore staging directory for ${filename}: ${e.message}`, { action: "restore-stage-cleanup", filename });
+    // Post-commit: invalidate first, and never let cleanup fail a committed restore.
+    if (applied.success && override) {
+      try { invalidateConfigCache(); } catch (e) {
+        logger.warn(`⚠️ 💾 Restore ${filename} committed but the config cache could not be invalidated: ${e.message}`, { action: "restore-cache-invalidate", filename });
       }
-    };
-    if (applied.success && override) invalidateConfigCache();
+    }
     if (applied.success || applied.rolledBack) cleanStage();
 
     if (!applied.success) {
@@ -1307,7 +1312,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
 
     return { success: true, filesRestored: applied.filesRestored, configRestored: Boolean(override), legacy, droppedFields };
   } catch (error) {
-    if (!handedOff) fs.rmSync(tempDir, { recursive: true, force: true });
+    if (!handedOff) cleanStage();
     logger.error(`❌ 💾 Restore failed while preparing ${filename}: ${error.message}`, { action: "restore-stage", filename, error: error.message });
     return { success: false, code: "staging-failed", error: `Restore failed while preparing the archive: ${error.message}. ${handedOff ? "The rollback journal will recover the data directory on next start." : "No files were changed."}` };
   }

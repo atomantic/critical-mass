@@ -373,7 +373,12 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
   }
   const { files, dirs } = staged;
 
-  const valid = validateStagedSet({ stageDir, dataDir, files });
+  let valid;
+  try {
+    valid = validateStagedSet({ stageDir, dataDir, files });
+  } catch (error) {
+    valid = { ok: false, error: `Could not validate the extracted archive: ${error.message}. No files were changed.` };
+  }
   if (!valid.ok) {
     logger.error(`❌ 💾 Restore refused before any write: ${valid.error}`, { action: 'restore-apply', filename, error: valid.error });
     return { success: false, code: 'staged-set-invalid', error: valid.error, rolledBack: true };
