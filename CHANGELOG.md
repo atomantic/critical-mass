@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
-- **[issue-1325] Regime IPC handlers split out of the shared engine; engine renamed `exchange-engine.js`** — The ~40 `regime:*` request handlers now live in `src/ipc/regime-ipc-handlers.js` (`registerRegimeIpcHandlers`), the shared engine bootstrap is `engines/exchange-engine.js` (PM2 coinbase process, gemini and cryptocom wrappers updated), and `IPC_CHANNELS` in `ipc-protocol.js` is used by both the gateway routes and the engine handlers so channel names cannot drift. Handler bodies are unchanged; the engine's log context is now `exchange-engine`.
+- **[issue-1325] Regime IPC handlers split out of the shared engine; engine renamed `exchange-engine.js`** — The ~40 `regime:*` request handlers now live in `src/ipc/regime-ipc-handlers.js` (`registerRegimeIpcHandlers`), the shared engine bootstrap is `engines/exchange-engine.js` (PM2 coinbase process, gemini and cryptocom wrappers updated), and `IPC_CHANNELS` in `ipc-protocol.js` covers the `regime:*` request channels handled by the extracted modules and used by both the gateway routes and the engine handlers (`regime:stop-all`, `exchanges:list` and `funds:list` remain literals). Handler bodies are unchanged; the engine's log context is now `exchange-engine`.
 - **[issue-1361] Re-declared small helpers hoisted** — Coinbase order-result mapping (`mapOrderResponse`), `safeJsonParse` (websocket modules), and sha256/UUID helpers (journal transactions) now live once. TP-optimizer adjustment and ladder-order merges remain.
 
 ### Fixed

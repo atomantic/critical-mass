@@ -297,7 +297,7 @@ const registerRegimeIpcHandlers = (ipcServer, deps) => {
     }
 
     if (orders.length === 0 && savedState.position?.activeTpOrderId) {
-        const adapter = getAdapter(exchange);
+      const adapter = getAdapter(exchange);
       const lookup = await lookupStoppedFundTpOrder({
         adapter, position: savedState.position, exchange, pair: resolvedPair,
         logger: logger(exchange, resolvedPair),
