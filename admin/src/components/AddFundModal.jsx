@@ -182,14 +182,22 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
           dryRun,
         }),
       })
-      const data = await res.json()
       if (!res.ok) {
-        setError(data.error || 'Failed to create fund')
+        // A proxy/gateway error page is not JSON; fall back to the status.
+        const data = await res.json().catch(() => ({}))
+        setError(data.error || `Failed to create fund (HTTP ${res.status})`)
         setSubmitting(false)
         return
       }
-      onCreated?.({ exchange, pair: trimmedPair })
-      onClose?.()
+      // The fund exists now. Whatever the follow-up refresh does, close the
+      // modal so the operator is not invited to create it a second time.
+      try {
+        await onCreated?.({ exchange, pair: trimmedPair })
+      } catch (err) {
+        console.error('Add fund follow-up failed:', err)
+      } finally {
+        onClose?.()
+      }
     } catch (err) {
       setError(err.message || 'Network error')
     } finally {
