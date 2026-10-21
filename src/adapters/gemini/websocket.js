@@ -14,7 +14,7 @@
  * - No auth needed for public market data
  */
 
-const { createWebSocketLifecycle } = require('../../websocket-lifecycle');
+const { createWebSocketLifecycle, tagFrameError } = require('../../websocket-lifecycle');
 const { safeJsonParse } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
@@ -81,14 +81,18 @@ const createGeminiWebSocketFeed = (exchange, config) => {
    */
   const handleMessage = (data) => {
     const message = safeJsonParse(data);
-    if (!message) return;
+    if (!message || typeof message !== 'object') return;
 
     const { type } = message;
 
-    if (type === 'l2_updates') {
-      handleL2Updates(message);
-    } else if (type === 'trade') {
-      handleTradeMessage(message);
+    try {
+      if (type === 'l2_updates') {
+        handleL2Updates(message);
+      } else if (type === 'trade') {
+        handleTradeMessage(message);
+      }
+    } catch (error) {
+      throw tagFrameError(error, type);
     }
     // Subscription acks and other types are silently ignored
   };
@@ -135,9 +139,11 @@ const createGeminiWebSocketFeed = (exchange, config) => {
    * Update best bid/ask from changes, then emit ticker.
    */
   const handleL2Updates = (message) => {
-    const changes = message.changes || [];
+    const changes = Array.isArray(message.changes) ? message.changes : [];
 
-    for (const [side, price, qty] of changes) {
+    for (const change of changes) {
+      if (!Array.isArray(change)) continue;
+      const [side, price, qty] = change;
       const p = parseFloat(price);
       const q = parseFloat(qty);
       if (!(p > 0)) continue;
@@ -154,8 +160,9 @@ const createGeminiWebSocketFeed = (exchange, config) => {
     recomputeBest();
 
     // Process embedded trades (present in snapshot and some updates)
-    const trades = message.trades || [];
+    const trades = Array.isArray(message.trades) ? message.trades : [];
     for (const trade of trades) {
+      if (!trade || typeof trade !== 'object') continue;
       const tradePrice = parseFloat(trade.price);
       if (tradePrice > 0) lastPrice = tradePrice;
 

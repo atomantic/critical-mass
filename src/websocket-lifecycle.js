@@ -7,6 +7,24 @@ const HANDSHAKE_TIMEOUT = 15000;
 const STABLE_CONNECTION_MS = 30000;
 const RECONNECT_BASE_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 60000;
+const FRAME_ERROR_LOG_INTERVAL = 60000;
+
+/**
+ * Tag an error thrown while handling one inbound frame so the lifecycle knows
+ * which channel it came from and how to contain it. `failSafe` marks frames
+ * that must not be dropped (user/order frames carrying fills and cancels): the
+ * socket is terminated so the reconnect path re-subscribes and gap recovery
+ * re-reads order state. Untagged and market-data errors drop just that frame.
+ * @param {unknown} error
+ * @param {string} channel
+ * @param {boolean} [failSafe]
+ * @returns {Error}
+ */
+const tagFrameError = (error, channel, failSafe = false) => {
+  const tagged = error instanceof Error ? error : new Error(String(error));
+  Object.assign(tagged, { frameChannel: channel, frameFailSafe: failSafe });
+  return tagged;
+};
 
 /**
  * Own one feed's socket sessions and their timers. Exchange protocol work stays
@@ -29,6 +47,8 @@ const createWebSocketLifecycle = ({
   let shouldReconnect = true;
   let reconnectAttempts = 0;
   let reconnectTimeout = null;
+  /** @type {Map<string, { lastLoggedAt: number, suppressed: number }>} */
+  const frameErrorLog = new Map();
   const isCurrent = current => session === current;
   const isOpen = current => isCurrent(current) && current.socket.isOpen();
 
@@ -86,6 +106,33 @@ const createWebSocketLifecycle = ({
     }, HEARTBEAT_INTERVAL);
   };
 
+  // A throw out of the frame handler would reach the process-wide
+  // uncaughtException guard and exit the engine for every fund on the exchange.
+  // Market-data frames are superseded by the next tick, so drop them (logging at
+  // most once per interval per channel); fail-safe frames reconnect instead.
+  /** @returns {boolean} whether the socket was terminated */
+  const containFrameError = (current, error) => {
+    const channel = error?.frameChannel || 'unknown';
+    const failSafe = error?.frameFailSafe === true;
+    const message = error instanceof Error ? error.message : String(error);
+    const now = Date.now();
+    const entry = frameErrorLog.get(channel) || { lastLoggedAt: -Infinity, suppressed: 0 };
+    if (failSafe || now - entry.lastLoggedAt >= FRAME_ERROR_LOG_INTERVAL) {
+      logger.error(`❌ [${exchange}] ${name} ${channel} frame handler threw — ${failSafe ? 'terminating socket to reconnect and recover order state' : 'dropping frame'}: ${message}`, {
+        lifecycle: 'frame-error', channel, failSafe, error: message,
+        stack: error instanceof Error ? error.stack : undefined,
+        suppressedSinceLastLog: entry.suppressed,
+      });
+      frameErrorLog.set(channel, { lastLoggedAt: now, suppressed: 0 });
+    } else {
+      entry.suppressed++;
+      frameErrorLog.set(channel, entry);
+    }
+    if (!failSafe) return false;
+    current.socket.terminate('frame handler failed');
+    return true;
+  };
+
   const connect = () => {
     if (session && (session.socket.isOpen() || session.socket.isConnecting())) return;
     if (session) retireSession(session);
@@ -126,8 +173,15 @@ const createWebSocketLifecycle = ({
     socket.on('message', data => {
       if (!isOpen(current)) return;
       current.silentIntervals = 0;
-      if (current.subscribed) markStable(current);
-      handleMessage(typeof data === 'string' ? data : data.toString(), socket);
+      let terminated = false;
+      try {
+        handleMessage(typeof data === 'string' ? data : data.toString(), socket);
+      } catch (error) {
+        terminated = containFrameError(current, error);
+      }
+      // A frame that forces a reconnect must not reset the backoff, or a
+      // poisoned user stream would reconnect at the base delay forever.
+      if (!terminated && current.subscribed) markStable(current);
     });
     socket.on('close', (code, reason) => {
       if (!isCurrent(current)) return;
@@ -166,4 +220,4 @@ const createWebSocketLifecycle = ({
   };
 };
 
-module.exports = { createWebSocketLifecycle };
+module.exports = { createWebSocketLifecycle, tagFrameError };
