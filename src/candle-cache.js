@@ -21,6 +21,10 @@ const cacheLogger = (exchange) => createContextLogger({ module: 'candle-cache', 
 
 const SEED_MAX_RETRIES = 5;
 const SEED_RETRY_INTERVAL_MS = 5_000;
+// After the fast boot attempts are exhausted, keep retrying the timeframes that are still
+// empty on an unref'd timer, doubling the delay up to a 15 minute cap (issue #1381).
+const SEED_BACKGROUND_INITIAL_MS = 30_000;
+const SEED_BACKGROUND_MAX_MS = 15 * 60_000;
 
 /**
  * Seed configs: timeframe → { hours of history, API granularity }
@@ -243,16 +247,24 @@ const seedDerivedTimeframes = (agg, now = Date.now()) => {
 
 /**
  * Create the shared candle cache
+ * @param {{maxRetries?: number, retryIntervalMs?: number, backgroundInitialMs?: number, backgroundMaxMs?: number}} [options] - Retry tuning (tests inject small values)
  * @returns {{
- *   seedFromPublicAPI: (exchange: string) => Promise<number>,
+ *   seedFromPublicAPI: (exchange: string, timeframes?: Set<string>) => Promise<number>,
  *   processTick: (exchange: string, price: number, timestamp: number, volume?: number) => void,
  *   getCandles: (exchange: string, tf: string) => Array,
  *   getAllCandles: (exchange: string) => Record<string, Array>,
  *   getAggregator: (exchange: string) => ReturnType<typeof createCandleAggregator>,
  *   seedAll: () => Promise<void>,
+ *   invalidate: (options?: {reseed?: boolean}) => Promise<void>,
+ *   stop: () => void,
  * }}
  */
-const createCandleCache = () => {
+const createCandleCache = ({
+  maxRetries = SEED_MAX_RETRIES,
+  retryIntervalMs = SEED_RETRY_INTERVAL_MS,
+  backgroundInitialMs = SEED_BACKGROUND_INITIAL_MS,
+  backgroundMaxMs = SEED_BACKGROUND_MAX_MS,
+} = {}) => {
   /** @type {Map<string, ReturnType<typeof createCandleAggregator>>} */
   const aggregators = new Map();
 
@@ -265,6 +277,15 @@ const createCandleCache = () => {
   // transient parse glitch) contributes 0 and never overwrites a good baseline. (issue #161)
   /** @type {Map<string, number>} */
   const lastVolume24h = new Map();
+
+  // Per-exchange set of directly-fetched timeframes that came back with candles, so a retry
+  // only re-fetches the ones still empty (issue #1381).
+  /** @type {Map<string, Set<string>>} */
+  const seededTimeframes = new Map();
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  const backgroundTimers = new Map();
+  // Bumped by invalidate()/stop() so in-flight retry loops from an older generation bail out.
+  let generation = 0;
 
   /**
    * Get or create an aggregator for an exchange
@@ -283,13 +304,16 @@ const createCandleCache = () => {
   /**
    * Seed an exchange's aggregator from its public API
    * @param {string} exchange
+   * @param {Set<string>} [onlyTimeframes] - Restrict the fetch to these timeframes (retry of the empty ones)
    * @returns {Promise<number>} total candles seeded
    */
-  const seedFromPublicAPI = async (exchange) => {
+  const seedFromPublicAPI = async (exchange, onlyTimeframes) => {
     const agg = getOrCreate(exchange);
+    const gen = generation;
     // Reseed is a fresh start for live volume — drop any stale 24h baseline so the first
     // live tick after seeding contributes 0 increment instead of a huge bogus delta (issue #161).
-    lastVolume24h.delete(exchange);
+    // A partial retry leaves the baseline alone: live ticks have been running since the boot.
+    if (!onlyTimeframes) lastVolume24h.delete(exchange);
     let totalSeeded = 0;
 
     // Fetch every timeframe FIRST, then seed them all against a single post-fetch `now`.
@@ -300,6 +324,7 @@ const createCandleCache = () => {
     // a slow fetch can't misclassify the in-progress bucket as completed (issue #145).
     const fetched = [];
     for (const { tf, hours, coinbaseGranularity, cryptocomTf, geminiTf } of SEED_TIMEFRAMES) {
+      if (onlyTimeframes && !onlyTimeframes.has(tf)) continue;
       let candles;
       if (exchange === 'coinbase') {
         candles = await fetchCoinbaseCandles(tf, hours, coinbaseGranularity);
@@ -319,6 +344,12 @@ const createCandleCache = () => {
       // them boundaryInclusive to net out the later 1m roll-up (issue #145).
       agg.seedCandles(tf, candles, now, { boundaryInclusive: true });
       totalSeeded += candles.length;
+      // An invalidate() mid-fetch orphaned this aggregator; don't credit the new generation.
+      if (gen === generation) {
+        let done = seededTimeframes.get(exchange);
+        if (!done) seededTimeframes.set(exchange, done = new Set());
+        done.add(tf);
+      }
       cacheLogger(exchange).info(`ℹ️ 🕯️ candle-cache: seeded ${candles.length} ${tf} candles for ${exchange}`, {
         action: 'seed',
         timeframe: tf,
@@ -327,44 +358,113 @@ const createCandleCache = () => {
     }
 
     // Derive intermediate timeframes (10m, 30m, 2h, 4h) from seeded data, same `now`.
-    totalSeeded += seedDerivedTimeframes(agg, now);
+    if (fetched.length > 0 || !onlyTimeframes) totalSeeded += seedDerivedTimeframes(agg, now);
 
     return totalSeeded;
   };
 
   /**
-   * Seed with retries
+   * Seed with retries. Runs `maxRetries` fast attempts (the returned promise settles after
+   * them, so boot is never blocked), then hands off to an unref'd exponential-backoff timer
+   * that keeps going until every timeframe has candles. Each attempt re-fetches only the
+   * timeframes that are still empty (issue #1381).
    * @param {string} exchange
+   * @returns {Promise<void>}
    */
   const seedWithRetry = async (exchange) => {
     const logger = cacheLogger(exchange);
+    const gen = generation;
+    const pending = () => {
+      const done = seededTimeframes.get(exchange);
+      return new Set(SEED_TIMEFRAMES.map(t => t.tf).filter(tf => !done?.has(tf)));
+    };
+    /** @returns {Promise<{seeded: number, missing: Set<string>}>} */
+    const runAttempt = async () => {
+      const missing = pending();
+      const seeded = await seedFromPublicAPI(exchange, missing.size === SEED_TIMEFRAMES.length ? undefined : missing)
+        .catch(() => 0);
+      return { seeded, missing: pending() };
+    };
+
     let retries = 0;
-    const attempt = async () => {
-      const seeded = await seedFromPublicAPI(exchange).catch(() => 0);
+    while (true) {
+      const { seeded, missing } = await runAttempt();
+      if (gen !== generation) return;
       if (seeded > 0) {
         logger.info(`ℹ️ 🕯️ candle-cache: ${exchange} seeded ${seeded} candles total`, {
           action: 'seed-complete',
           candles: seeded,
         });
-        return;
       }
+      if (missing.size === 0) return;
       retries++;
-      if (retries < SEED_MAX_RETRIES) {
-        logger.warn(`⚠️ 🕯️ candle-cache: ${exchange} seed attempt ${retries}/${SEED_MAX_RETRIES} got 0 candles, retrying in ${SEED_RETRY_INTERVAL_MS}ms`, {
-          action: 'seed-retry',
-          attempt: retries,
-          maxAttempts: SEED_MAX_RETRIES,
-          retryInMs: SEED_RETRY_INTERVAL_MS,
-        });
-        await new Promise(r => setTimeout(r, SEED_RETRY_INTERVAL_MS));
-        return attempt();
-      }
-      logger.warn(`⚠️ 🕯️ candle-cache: ${exchange} seed failed after ${SEED_MAX_RETRIES} attempts, running with live data only`, {
-        action: 'seed-failed',
-        attempts: SEED_MAX_RETRIES,
+      if (retries >= maxRetries) break;
+      logger.warn(`⚠️ 🕯️ candle-cache: ${exchange} seed attempt ${retries}/${maxRetries} left ${[...missing].join(',')} empty, retrying in ${retryIntervalMs}ms`, {
+        action: 'seed-retry',
+        attempt: retries,
+        maxAttempts: maxRetries,
+        retryInMs: retryIntervalMs,
+        missing: [...missing],
       });
-    };
-    await attempt();
+      await new Promise(r => setTimeout(r, retryIntervalMs).unref());
+      if (gen !== generation) return;
+    }
+
+    const stillMissing = [...pending()];
+    logger.warn(`⚠️ 🕯️ candle-cache: ${exchange} seed incomplete after ${maxRetries} attempts (${stillMissing.join(',')} empty), retrying in the background with backoff`, {
+      action: 'seed-failed',
+      attempts: maxRetries,
+      missing: stillMissing,
+    });
+    scheduleBackground(exchange, gen, backgroundInitialMs);
+  };
+
+  /**
+   * Schedule one background retry for an exchange's still-empty timeframes. The timer is
+   * unref'd so it never keeps the process alive, and is dropped by invalidate()/stop().
+   * Each failed attempt logs once, then the delay doubles up to the cap.
+   * @param {string} exchange
+   * @param {number} gen - generation the retry chain belongs to
+   * @param {number} delayMs
+   */
+  const scheduleBackground = (exchange, gen, delayMs) => {
+    const timer = setTimeout(async () => {
+      backgroundTimers.delete(exchange);
+      if (gen !== generation) return;
+      const done = seededTimeframes.get(exchange);
+      const missing = new Set(SEED_TIMEFRAMES.map(t => t.tf).filter(tf => !done?.has(tf)));
+      if (missing.size === 0) return;
+      const seeded = await seedFromPublicAPI(exchange, missing).catch(() => 0);
+      if (gen !== generation) return;
+      const stillMissing = SEED_TIMEFRAMES.map(t => t.tf).filter(tf => !seededTimeframes.get(exchange)?.has(tf));
+      if (seeded > 0) {
+        cacheLogger(exchange).info(`ℹ️ 🕯️ candle-cache: ${exchange} background retry seeded ${seeded} candles`, {
+          action: 'seed-background-complete',
+          candles: seeded,
+          missing: stillMissing,
+        });
+      }
+      if (stillMissing.length === 0) return;
+      const nextMs = Math.min(delayMs * 2, backgroundMaxMs);
+      cacheLogger(exchange).warn(`⚠️ 🕯️ candle-cache: ${exchange} background seed retry left ${stillMissing.join(',')} empty, next retry in ${nextMs}ms`, {
+        action: 'seed-background-retry',
+        missing: stillMissing,
+        retryInMs: nextMs,
+      });
+      scheduleBackground(exchange, gen, nextMs);
+    }, delayMs);
+    timer.unref();
+    backgroundTimers.set(exchange, timer);
+  };
+
+  /**
+   * Cancel every pending background retry and abandon in-flight retry loops.
+   * Call on shutdown; invalidate() does this itself.
+   */
+  const stop = () => {
+    generation++;
+    for (const timer of backgroundTimers.values()) clearTimeout(timer);
+    backgroundTimers.clear();
   };
 
   /**
@@ -453,8 +553,10 @@ const createCandleCache = () => {
    */
   const invalidate = ({ reseed = true } = {}) => {
     const cleared = aggregators.size;
+    stop();
     aggregators.clear();
     lastVolume24h.clear();
+    seededTimeframes.clear();
     cacheLogger('all').info(`ℹ️ Candle cache invalidated: dropped ${cleared} aggregator(s), reseeding`, {
       action: 'invalidate',
       aggregators: cleared,
@@ -462,7 +564,7 @@ const createCandleCache = () => {
     return reseed ? seedAll() : Promise.resolve();
   };
 
-  return { seedFromPublicAPI, processTick, getCandles, getAllCandles, getAggregator, seedAll, invalidate };
+  return { seedFromPublicAPI, processTick, getCandles, getAllCandles, getAggregator, seedAll, invalidate, stop };
 };
 
 module.exports = { createCandleCache, seedDerivedTimeframes, aggregateCandles };
