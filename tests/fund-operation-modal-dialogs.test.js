@@ -51,6 +51,10 @@ describe('ModalDialog shared wrapper (issue #434)', () => {
     assert.match(modalDialogSource, /if \(!dismissibleRef\.current\) event\.preventDefault\(\)/)
   })
 
+  it('reopens the dialog when a second Escape closes it despite the busy guard (issue #1370)', () => {
+    assert.match(modalDialogSource, /if \(!dismissibleRef\.current\) \{\s*dialog\.showModal\(\)\s*return\s*\}/)
+  })
+
   it('dismisses on backdrop click only when dismissible, and syncs parent state via the close event', () => {
     assert.match(modalDialogSource, /event\.target === dialogRef\.current && dismissibleRef\.current/)
     assert.match(modalDialogSource, /addEventListener\('close', handleClose\)/)
