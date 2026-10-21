@@ -805,12 +805,13 @@ const groupFillsByOrder = (fills) => {
 
 /**
  * Buy matching a sell: similar asset size (±1%), earlier than the sell, not
- * already consumed, and closest in time (a body TP is placed right after its buy).
+ * unavailable (already paired this pass, consumed, or owned by a live body),
+ * and closest in time (a body TP is placed right after its buy).
  */
-const matchBuyForSell = (sellFill, buyFills, consumed) => {
+const matchBuyForSell = (sellFill, buyFills, unavailable) => {
   let best = null;
   for (const buy of buyFills) {
-    if (consumed.has(buy.orderId)) continue;
+    if (unavailable.has(buy.orderId)) continue;
     const sizeRatio = buy.size / sellFill.size;
     if (!(sizeRatio > 0.99 && sizeRatio < 1.01) || !(buy.timestamp < sellFill.timestamp)) continue;
     if (!best || (sellFill.timestamp - buy.timestamp) < (sellFill.timestamp - best.timestamp)) best = buy;
@@ -821,18 +822,43 @@ const matchBuyForSell = (sellFill, buyFills, consumed) => {
 /**
  * Step 2: re-derive PnL/holdback for unannotated or badly-annotated body sells
  * (non-core-TP sells missing isBodyOwned, or with negative PnL/holdback).
+ * @param {Object} deps - repairHistoricalFillAnnotations deps
+ * @param {Iterable<string>} [deps.mergeSnapshotTpOrderIds] - TP order ids held
+ *   by a pending/completed merge snapshot (still owed a snapshot booking)
+ * @param {Object[]} cycleFills - Current-cycle ledger rows
  * @returns {number} annotation operations applied
  */
-const annotateBodySells = ({ fillLedger, positionState, logger, baseCurrency, exchange, roundAsset }, cycleFills) => {
+const annotateBodySells = ({ fillLedger, positionState, logger, baseCurrency, exchange, roundAsset, mergeSnapshotTpOrderIds }, cycleFills) => {
   const coreTpOrderId = positionState.activeTpOrderId;
+  const liveBodies = positionState.celestialBodies || [];
   // Ownership is decided per ORDER, not per row: annotateFillsByOrderId writes
   // every row of an order, but a row ingested after an annotation carries none
   // of it. Foreign sells (`untrackedSell`, #750) and timestamp-folded rows
   // (`cycleAttribution: 'timeframe'`, #705) were deliberately left unattributed,
   // and an order with a valid annotation is already booked; re-booking either
   // would turn it into realized P&L or overwrite the correct per-order bodyPnl.
+  // A live body's TP (or a merge snapshot's) is still owed its real booking:
+  // rows recovered while the engine was down (a partial of a still-resting
+  // TP) are booked by the fill path, which a guessed annotation here would
+  // corrupt (issue #1398).
+  const skippedOrderIds = new Set([
+    ...liveBodies.map(b => b.tpOrderId),
+    ...(mergeSnapshotTpOrderIds || []),
+  ].filter(Boolean));
+  // A buy a live body owns is still held; one with a consumption record was
+  // already closed by the sell(s) it names. Neither may be paired again.
+  const liveBodyIds = new Set(liveBodies.map(b => b.id));
+  const unavailableBuyOrderIds = new Set(liveBodies.flatMap(b => [
+    ...(b.sourceOrderIds || []),
+    ...(b.buyOrders || []).map(e => e && e.orderId),
+  ]).filter(Boolean));
+  for (const f of cycleFills) {
+    if (f.side !== 'buy') continue;
+    if ((f.bodyId && liveBodyIds.has(f.bodyId)) || (f.consumedBy && typeof f.consumedBy === 'object')) {
+      unavailableBuyOrderIds.add(f.orderId);
+    }
+  }
   const sellRowsByOrder = new Map();
-  const skippedOrderIds = new Set();
   for (const f of cycleFills) {
     if (f.side !== 'sell' || f.orderId === coreTpOrderId) continue;
     if (!sellRowsByOrder.has(f.orderId)) sellRowsByOrder.set(f.orderId, []);
@@ -849,14 +875,13 @@ const annotateBodySells = ({ fillLedger, positionState, logger, baseCurrency, ex
     .flatMap(([, rows]) => rows))
     .sort((a, b) => a.timestamp - b.timestamp);
   const buyFills = groupFillsByOrder(cycleFills.filter(f => f.side === 'buy'));
-  const consumedBuyOrderIds = new Set();
+  const rejectedSellOrderIds = [];
   let annotatedCount = 0;
 
   for (const sellFill of sellsToAnnotate) {
-    const matchingBuy = matchBuyForSell(sellFill, buyFills, consumedBuyOrderIds);
+    const matchingBuy = matchBuyForSell(sellFill, buyFills, unavailableBuyOrderIds);
     if (!matchingBuy) continue;
 
-    consumedBuyOrderIds.add(matchingBuy.orderId);
     const costBasis = matchingBuy.quoteAmount + matchingBuy.fee;
     const proceeds = sellFill.quoteAmount - sellFill.fee;
     const pnl = proceeds - costBasis;
@@ -864,6 +889,7 @@ const annotateBodySells = ({ fillLedger, positionState, logger, baseCurrency, ex
 
     // Sanity check: body PnL should be positive and holdback non-negative
     if (pnl >= 0 && holdbackAsset >= 0) {
+      unavailableBuyOrderIds.add(matchingBuy.orderId);
       fillLedger.annotateFillsByOrderId(sellFill.orderId, {
         isBodyOwned: true,
         bodyCostBasis: costBasis,
@@ -876,11 +902,16 @@ const annotateBodySells = ({ fillLedger, positionState, logger, baseCurrency, ex
       annotatedCount += 2;
       logger.info(`🔧 [${exchange}] Annotated body sell: ${sellFill.orderId.slice(0, 8)} PnL=$${pnl.toFixed(4)}, holdback=${holdbackAsset.toFixed(8)} ${baseCurrency}`);
     } else {
-      // Mark as body-owned but without computed values (dashboard will show raw data)
-      fillLedger.annotateFillsByOrderId(sellFill.orderId, { isBodyOwned: true });
-      annotatedCount++;
-      logger.warn(`⚠️ [${exchange}] Marked body sell ${sellFill.orderId.slice(0, 8)} (no matching buy found with valid PnL)`);
+      // A size match with an impossible P&L is no pairing, and no proof the
+      // sell is the engine's: leave it unannotated. Stamping isBodyOwned would
+      // make the fill path skip a foreign sell as "already booked" instead of
+      // flagging it untrackedSell (issue #1398). The buy stays available.
+      // Such a sell is re-examined every boot, so it is logged once in total.
+      rejectedSellOrderIds.push(sellFill.orderId);
     }
+  }
+  if (rejectedSellOrderIds.length > 0) {
+    logger.warn(`⚠️ [${exchange}] Left ${rejectedSellOrderIds.length} sell(s) unannotated — size-matched buy gives no valid PnL: ${rejectedSellOrderIds.map(id => id.slice(0, 8)).join(', ')}`);
   }
   return annotatedCount;
 };
@@ -928,6 +959,8 @@ const moveRecoveredCycleFills = ({ fillLedger, logger, exchange }, currentCycleI
  * @param {Function} deps.roundPrice - Price rounding utility
  * @param {Function} deps.roundAsset - Asset qty rounding utility
  * @param {Function} deps.fmtPrice - Price formatting utility
+ * @param {Iterable<string>} [deps.mergeSnapshotTpOrderIds] - TP order ids of
+ *   pending/completed merge snapshots; their sells are never re-derived
  */
 const repairHistoricalFillAnnotations = (deps) => {
   const { fillLedger, positionState, logger, exchange } = deps;
@@ -1568,6 +1601,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const pendingMergeTpOrders = new Map();
   // tpOrderId → body snapshot, retained for the five-minute late-fill race window.
   const completedMergeTpOrders = createTtlStore(MERGE_SNAPSHOT_TTL_MS);
+  /** A sell order the body-TP booking path (live body or merge snapshot) owns. */
+  const isBodyTpSellOrder = (orderId) => pendingMergeTpOrders.has(orderId)
+    || completedMergeTpOrders.has(orderId)
+    || (positionState.celestialBodies || []).some(b => b.tpOrderId === orderId);
   const completeMergeSnapshot = (snapshot) => {
     const orderId = snapshot.tpOrderId;
     if (!orderId) return;
@@ -3452,7 +3489,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Repair historical fill annotations (orphan recovery, size fuzzy-match, -recovered- cycle rewrites)
       repairHistoricalFillAnnotations({
         fillLedger, positionState, config, logger, baseCurrency, priceIncrement, exchange,
-        celestialHierarchy, calculateDynamicTpPercent, roundPrice, roundAsset, fmtPrice
+        celestialHierarchy, calculateDynamicTpPercent, roundPrice, roundAsset, fmtPrice,
+        mergeSnapshotTpOrderIds: [
+          ...pendingMergeTpOrders.keys(),
+          ...[...completedMergeTpOrders].map(([orderId]) => orderId),
+        ],
       });
 
       // Sync position totals from celestial bodies (ensures recovery didn't zero them out)
@@ -6155,6 +6196,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (unbookedSellFills && unbookedSellFills.length > 0) {
         fillsToAggregate = unbookedSellFills;
         sellRowsAreNew = true;
+      } else if (sellRowsAreNew && isBodyTpSellOrder(fillData.orderId)
+        && !fillLedger.getSellBooking(fillData.orderId)) {
+        // A body TP no booking ever covered: rows recovered while the engine
+        // was down (a partial of a TP that was still resting) are as unbooked
+        // as this pass's, and booking only the new rows would lose that
+        // execution (issue #1398). Book every row of the order once.
+        const aggregated = new Set(fillsToAggregate.map(f => f.tradeId));
+        fillsToAggregate = [...fillsToAggregate, ...fillLedger.getFillsForOrder(fillData.orderId)
+          .filter(f => f.side === 'sell' && f.size > 1e-9 && !f.bodyBooked && !aggregated.has(f.tradeId))];
       }
       const bookedTradeIds = fillsToAggregate.map(f => f.tradeId);
 
