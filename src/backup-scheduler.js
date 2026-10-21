@@ -18,15 +18,39 @@ const MAX_TIMER_MS = 2 ** 31 - 1;
  * @param {() => boolean} [deps.isStopping]
  * @param {(promise: Promise<any>) => Promise<any>} [deps.track]
  * @param {(level: string, message: string) => void} deps.log
+ * @param {(message: string, data: object) => void} [deps.alert]
  */
 const createBackupScheduler = ({
   getConfig, kinds, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout,
-  isStopping = () => false, track = (promise) => promise, log,
+  isStopping = () => false, track = (promise) => promise, log, alert = () => {},
 }) => {
   const timers = new Map();
   const inFlight = new Set();
   const lastRunAt = new Map();
   let firstArm = true;
+  const failures = new Map(); // name -> { count, at, error, capAlerted }
+
+  /** Record a failed run; returns the exponential retry delay (5, 10, 20 min... capped at the interval). */
+  const recordFailure = (name, config, error) => {
+    const kind = kinds[name];
+    const prev = failures.get(name);
+    const count = (prev?.count ?? 0) + 1;
+    const interval = config[kind.intervalKey];
+    const retryMs = Math.min(FAILURE_RETRY_MS * 2 ** Math.min(count - 1, 30), interval);
+    const atCap = retryMs >= interval;
+    const entry = { count, at: now(), error, capAlerted: prev?.capAlerted ?? false };
+    failures.set(name, entry);
+    log('ERROR', `💾 ${kind.failLabel} failed (${count} consecutive): ${error}`);
+    if (count === 1 || (atCap && !entry.capAlerted)) {
+      if (atCap) entry.capAlerted = true;
+      try {
+        alert(`${kind.failLabel} failed ${count} time(s): ${error}. Next retry in ${Math.round(retryMs / 60000)} min.`, { kind: name, failures: count, error });
+      } catch (err) {
+        log('ERROR', `💾 ${kind.failLabel} alert failed: ${err.message}`);
+      }
+    }
+    return retryMs;
+  };
 
   const disarm = (name) => {
     if (timers.has(name)) clearTimer(timers.get(name));
@@ -90,15 +114,14 @@ const createBackupScheduler = ({
       const result = await kind.run(config);
       if (result.success) {
         lastRunAt.set(name, now());
+        failures.delete(name);
       } else if (result.code === 'maintenance-in-progress') {
         retryMs = MAINTENANCE_RETRY_MS;
       } else {
-        retryMs = Math.min(FAILURE_RETRY_MS, config[kind.intervalKey]);
-        log('ERROR', `💾 ${kind.failLabel} failed: ${result.error}`);
+        retryMs = recordFailure(name, config, result.error);
       }
     })()).catch((err) => {
-      retryMs = FAILURE_RETRY_MS;
-      log('ERROR', `💾 ${kind.failLabel} failed: ${err.message}`);
+      retryMs = recordFailure(name, getConfig(), err.message);
     }).finally(() => {
       inFlight.delete(name);
       arm(name, retryMs);
@@ -123,7 +146,13 @@ const createBackupScheduler = ({
 
   const stop = () => Object.keys(kinds).forEach(disarm);
 
-  return { reschedule, stop };
+  /** Per-kind last failure, or null when the latest run succeeded. */
+  const getStatus = () => Object.fromEntries(Object.keys(kinds).map((name) => {
+    const f = failures.get(name);
+    return [name, f ? { lastFailure: { at: f.at, error: f.error }, consecutiveFailures: f.count } : { lastFailure: null, consecutiveFailures: 0 }];
+  }));
+
+  return { reschedule, stop, getStatus };
 };
 
 module.exports = { createBackupScheduler, MIN_DELAY_MS, FAILURE_RETRY_MS, MAINTENANCE_RETRY_MS };

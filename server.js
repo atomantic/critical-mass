@@ -226,6 +226,7 @@ const backupScheduler = createBackupScheduler({
   isStopping: () => gatewayShutdown.isStopping(),
   track: (promise) => gatewayShutdown.track(promise),
   log,
+  alert: (message, data) => tradeEvents.error('system', message, data),
   kinds: {
     archive: {
       label: 'full archive',
@@ -348,7 +349,7 @@ const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSO
 
 require('./src/routes/sentinel-routes')(routes, { ...sharedDeps, sentinelService, getSentinelConfig, updateSentinelConfig });
 require('./src/routes/ai-routes')(routes, sharedDeps);
-require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, candleCache, runBackup });
+require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, candleCache, runBackup, getBackupSchedulerStatus: () => backupScheduler.getStatus() });
 require('./src/routes/candle-routes')(routes, { candleCache });
 require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache });
 require('./src/routes/exchange-routes')(routes, sharedDeps);
