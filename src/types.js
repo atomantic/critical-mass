@@ -734,6 +734,7 @@
  * @property {number} score - Current composite score (-100 to +100)
  * @property {{h21: number, h50: number, h200: number, d20: number}} emas - EMA values
  * @property {number} lastUpdate - Timestamp of last macro update
+ * @property {boolean} [stale] - True when the mode is too old to size on (multipliers neutral)
  * @property {{hourly: number, daily: number}} candles - Number of candles used
  */
 
