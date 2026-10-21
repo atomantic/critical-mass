@@ -367,7 +367,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       adapter,
       productId,
       () => adapter.placeLimitBuy(productId, assetQty, bidPrice, { postOnly: true }),
-      intentFor('entry_bid', 'buy', { price: bidPrice, size: assetQty, sizeUsdc }),
+      intentFor('entry_bid', 'buy', { price: bidPrice, size: assetQty, sizeUsdc, ...(staleMs > 0 ? { staleMs } : {}) }),
     );
 
     // An unresolved outcome is NOT a clean failure: a real bid may be resting
@@ -1425,6 +1425,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     body_tp: 'body_tp',
   });
 
+  const adoptedEntryStaleMs = (intent) => {
+    if (Number.isFinite(intent?.staleMs) && intent.staleMs > 0) return intent.staleMs;
+    const longest = Math.max(config.orderStaleMs || 0, config.maxIntervalMs || 0);
+    return longest > 0 ? longest : undefined;
+  };
+
   /**
    * Adopt an exchange order that an operator matched back to an unresolved
    * placement intent, putting it under normal tracking and fill processing as
@@ -1434,7 +1440,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * never registered twice (the intent row is what makes it exactly-once, but a
    * duplicate here would double-count a fill, so it is refused outright).
    * @param {{orderId: string, price?: number, size?: number}} order - Order found on the exchange
-   * @param {{action?: string, price?: number, size?: number, sizeUsdc?: number, bodyId?: string, ladderIndex?: number, createdAt?: number}} intent - The intent it satisfies
+   * @param {{action?: string, price?: number, size?: number, sizeUsdc?: number, staleMs?: number, bodyId?: string, ladderIndex?: number, createdAt?: number}} intent - The intent it satisfies
    * @returns {{tracked: boolean, message: string}} What was done
    */
   const adoptPlacement = (order, intent) => {
@@ -1461,12 +1467,19 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       return { tracked: true, message: `Adopted body TP ${orderId} for body ${intent.bodyId}` };
     }
 
+    // An adopted entry keeps the adaptive stale window it was placed with (carried
+    // on the intent); an intent without one falls back to the longest window the
+    // adaptive timeout can produce, never the floor, so a deep bid is not
+    // cancelled seconds after adoption.
+    const staleMs = type === 'entry' ? adoptedEntryStaleMs(intent) : undefined;
+
     restorePendingOrder(orderId, {
       type,
       price,
       size,
       sizeUsdc: intent?.sizeUsdc ?? size * price,
       placedAt,
+      ...(staleMs === undefined ? {} : { staleMs }),
       ...(intent?.ladderIndex === undefined ? {} : { ladderIndex: intent.ladderIndex }),
     });
     return { tracked: true, message: `Adopted ${type} order ${orderId} into tracking` };
