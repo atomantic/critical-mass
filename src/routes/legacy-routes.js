@@ -4,11 +4,12 @@
  */
 
 const stateTracker = require('../state-tracker');
-const { getExchangeConfig, getDefaultPair, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun, getRegimeConfig, getGlobalConfig } = require('../config-utils');
+const { getExchangeConfig, getDefaultPair, setExchangeEnabled, setExchangeDryRun, getGlobalConfig } = require('../config-utils');
 const { syncFundOrders, runIntervalCycle } = require('../dca-engine');
 const { createContextLogger, getLogFile } = require('../logger');
-const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
-const { asyncRoute, tradeResultStatusCode } = require('./route-utils');
+const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
+const { prepareConfigUpdate, persistConfigUpdate } = require('./config-update');
+const { asyncRoute, getSafeIPC, tradeResultStatusCode } = require('./route-utils');
 const { readBooleanFlag } = require('../shared-utils');
 
 /**
@@ -26,10 +27,10 @@ const legacyLogger = (route) => createContextLogger({
 
 /**
  * @param {import('express').Express} app
- * @param {{parseTSV: Function, calculateCostBasis: Function, getNextTradeInfo: Function}} deps
+ * @param {{exchangeIPCMap: Object, parseTSV: Function, calculateCostBasis: Function, getNextTradeInfo: Function}} deps
  */
 module.exports = (app, deps) => {
-  const { parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
+  const { exchangeIPCMap, parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
 
   // Every route here is pinned to coinbase's default fund by definition. State
   // and cycle calls name that fund explicitly rather than relying on each
@@ -42,46 +43,56 @@ module.exports = (app, deps) => {
     res.json(config);
   });
 
-  app.put('/api/config', (req, res) => {
-    // Validate against the allowlist schema so the unprefixed legacy path has the
-    // same mass-assignment protection as PUT /api/:exchange/config — unknown keys are
-    // dropped, out-of-range values are rejected with 400 (issue #146). Without this,
-    // req.body was deep-merged into config.json verbatim, letting a client inject
-    // arbitrary keys or out-of-range values (e.g. {amount:-1, evilKey:1}).
+  // Same save boundary as PUT /api/:exchange/config (prepareConfigUpdate +
+  // persistConfigUpdate), pinned to coinbase's default fund: the schema allowlist
+  // (#146), nested regime sanitize/value validation (#452), the product-identity
+  // check, and the regime:update-config IPC so the running engine applies the save.
+  app.put('/api/config', asyncRoute(async (req, res) => {
+    const pair = legacyPair();
+    // With no coinbase fund there is nothing to save into; persisting under an
+    // undefined pair would create a fund literally named "undefined".
+    if (!pair) {
+      return res.status(409).json({ success: false, error: 'No coinbase fund exists; add one with POST /api/coinbase/funds before saving its config' });
+    }
+    const logger = legacyLogger('/api/config');
     const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
     if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
 
-    // regime is a nested object — sanitize keys against the allowlist, then value-
-    // validate the survivors, before merging, mirroring PUT /api/:exchange/config.
-    // Unknown keys are DROPPED (not rejected): the config editor GETs the full
-    // stored config and PUTs it back verbatim, so a hard 400 on a stale key (e.g. a
-    // field removed from the engine in a later version but still present in a
-    // fund's persisted config) would make that fund permanently unsaveable.
-    // Dropping keeps the security intent — unknown keys never enter the saved
-    // overrides or reach the engine — while letting the save succeed. Known values
-    // ARE rejected when out of range, closing the bypass this unprefixed path had
-    // relative to the dedicated regime config route (#452).
-    if (req.body?.regime !== undefined) {
-      const { value: sanitizedRegime, droppedKeys, valid, errors: regimeErrors } = validateAndSanitizeRegimeConfig(req.body.regime, getRegimeConfig('coinbase'));
-      if (valid === false) {
-        return res.status(400).json({ error: regimeErrors.join('; ') });
-      }
-      if (droppedKeys.length > 0) {
-        legacyLogger('/api/config').warn(`⚠️ 🧹 [coinbase] Dropped ${droppedKeys.length} unknown regime key(s) on legacy config save: ${droppedKeys.join(', ')}`, {
+    const prepared = prepareConfigUpdate({
+      exchange: 'coinbase', pair, updates, fullConfig: true, rawRegime: req.body?.regime,
+      onProductMismatch: ({ productId, incomingBase, pairBase }) => {
+        logger.warn(`⚠️ 🛑 [coinbase/${pair}] Rejected legacy config save: productId "${productId}" trades ${incomingBase}, not ${pairBase}`, {
+          action: 'update-config', productId, incomingBase, pairBase,
+        });
+      },
+      onDroppedKeys: (droppedKeys) => {
+        logger.warn(`⚠️ 🧹 [coinbase] Dropped ${droppedKeys.length} unknown regime key(s) on legacy config save: ${droppedKeys.join(', ')}`, {
           action: 'update-config',
           droppedKeys,
         });
-      }
-      if (Object.keys(sanitizedRegime).length > 0) {
-        updates.regime = sanitizedRegime;
-      }
+      },
+    });
+    if (!prepared.valid) return res.status(400).json({ error: prepared.errors.join('; ') });
+
+    const result = await persistConfigUpdate('coinbase', pair, prepared, getSafeIPC(exchangeIPCMap, 'coinbase'));
+    if (!result.applied) {
+      logger.error(`❌ 🚨 [coinbase/${pair}] Config persisted but live engine update failed: ${result.error}`, {
+        action: 'update-config', channel: 'regime:update-config',
+        persisted: true, applied: false, error: result.error,
+      });
+      return res.status(503).json({
+        success: false, persisted: true, applied: false,
+        error: `Config was saved but the live engine did not apply it: ${result.error}`,
+        config: getExchangeConfig('coinbase'),
+      });
     }
 
-    updateExchangeConfig('coinbase', updates);
-    res.json({ success: true, config: getExchangeConfig('coinbase') });
-  });
+    res.json({ success: true, persisted: true, applied: true, config: getExchangeConfig('coinbase') });
+  }));
 
-  app.patch('/api/config', (req, res) => {
+  // Mirrors PATCH /api/:exchange/config: a dryRun toggle is also pushed to the
+  // running engine, otherwise it keeps its old mode until a restart.
+  app.patch('/api/config', asyncRoute(async (req, res) => {
     const body = req.body || {};
     const enabledFlag = readBooleanFlag(body, 'enabled', undefined);
     if (enabledFlag.error) return res.status(400).json({ success: false, error: enabledFlag.error });
@@ -89,10 +100,37 @@ module.exports = (app, deps) => {
     if (dryRunFlag.error) return res.status(400).json({ success: false, error: dryRunFlag.error });
     let applied = false;
     if (typeof enabledFlag.value === 'boolean') { setExchangeEnabled('coinbase', enabledFlag.value); applied = true; }
-    if (typeof dryRunFlag.value === 'boolean') { setExchangeDryRun('coinbase', dryRunFlag.value); applied = true; }
+    if (typeof dryRunFlag.value === 'boolean') {
+      const { value: dryRun } = dryRunFlag;
+      const pair = legacyPair();
+      setExchangeDryRun('coinbase', dryRun);
+      applied = true;
+      // No coinbase fund means no fund engine is running to notify.
+      if (pair) {
+        try {
+          const engineResult = await getSafeIPC(exchangeIPCMap, 'coinbase').request('regime:update-config', { dryRun }, 'coinbase', pair);
+          if (engineResult?.success === false) throw new Error(engineResult.error || engineResult.message || 'Engine rejected config update');
+        } catch (err) {
+          legacyLogger('/api/config').error(`❌ 🚨 [coinbase/${pair}] Dry-run setting persisted but live engine update failed: ${err.message}`, {
+            action: 'toggle-dry-run',
+            channel: 'regime:update-config',
+            persisted: true,
+            applied: false,
+            error: err.message,
+          });
+          return res.status(503).json({
+            success: false,
+            persisted: true,
+            applied: false,
+            error: `Dry-run setting was saved but the live engine did not apply it: ${err.message}`,
+            config: getExchangeConfig('coinbase'),
+          });
+        }
+      }
+    }
     const config = getExchangeConfig('coinbase');
-    res.json({ success: true, applied, config });
-  });
+    res.json({ success: true, persisted: true, applied, config });
+  }));
 
   app.get('/api/state', (req, res) => {
     const config = getExchangeConfig('coinbase');
