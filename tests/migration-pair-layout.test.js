@@ -181,6 +181,12 @@ describe('migrateExchangeToPairs — completeness and idempotency (issue #425)',
     // not silently resolved by discarding data.
     assert.equal(fs.readFileSync(path.join(exchangeDir, 'chart-data-buffer.json'), 'utf8'), 'legacy-buffer');
     assert.equal(fs.readFileSync(path.join(fundDir, 'chart-data-buffer.json'), 'utf8'), 'already-migrated-buffer');
+
+    // The skipped cache stays behind, but the next start is a plain no-op
+    // rather than a 0-move migration on every boot (issue #1399).
+    const again = migration.migrateExchangeToPairs(EXCHANGE);
+    assert.equal(again.migrated, false);
+    assert.match(again.reason, /^no-op/);
   });
 
   it('preserves a non-empty sibling pair subdirectory and removes an empty one during cleanup', () => {

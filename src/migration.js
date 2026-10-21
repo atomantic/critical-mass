@@ -535,14 +535,26 @@ const normalizeExchangeTreeToPairs = ({ root, exchange, pair }) => {
 };
 
 /**
+ * Per-fund files whose skip on a both-copies collision would leave the fund
+ * trading on the wrong accounting: a missing fund-level ledger loads as a
+ * fresh install (empty realized P&L and consumption records), and a state
+ * file decides which bodies and orders the engine resumes. When both copies
+ * exist the migration cannot know which generation is authoritative, so it
+ * refuses rather than skip (issue #1399).
+ */
+const PAIR_MIGRATION_CONFLICT_FILES = ['state.json', 'regime-state.json', 'fill-ledger.json'];
+
+/**
  * Detect whether the exchange's data directory is in legacy single-pair
  * layout (files at data/<exchange>/) and needs migration to the per-fund
  * layout (files at data/<exchange>/<pair>/).
  *
  * @param {string} exchange
+ * @param {string|null} [pair] - Default pair; when given, stragglers already
+ *   skipped as a collision with the fund directory do not count
  * @returns {boolean} True if migration is needed
  */
-const needsPairMigration = (exchange) => {
+const needsPairMigration = (exchange, pair) => {
   // Pure existence check — getExchangeDataDir would create the directory.
   const exchangeDir = path.join(DATA_DIR, exchange);
   if (!fs.existsSync(exchangeDir)) return false;
@@ -552,19 +564,19 @@ const needsPairMigration = (exchange) => {
   // resume and move the ledger on the next start (issue #1399).
   // transactions.tsv is excluded: repairStrandedTransactionLog reconciles it
   // on every start, migrated or not (issue #543).
+  // With `pair`, a non-guarded straggler whose fund-level copy already exists
+  // is ignored: the migration would only skip it again, so counting it would
+  // re-run a 0-move migration on every boot. A guarded (ledger/state) file
+  // still counts so the migration can refuse on the conflict.
+  const fundDir = typeof pair === 'string' && pair ? path.join(exchangeDir, pair) : null;
   return fs.readdirSync(exchangeDir, { withFileTypes: true })
-    .some((entry) => entry.isFile() && entry.name !== 'transactions.tsv' && isPerFundFile(entry.name));
+    .some((entry) => entry.isFile()
+      && entry.name !== 'transactions.tsv'
+      && isPerFundFile(entry.name)
+      && (!fundDir
+        || PAIR_MIGRATION_CONFLICT_FILES.includes(entry.name)
+        || !fs.existsSync(path.join(fundDir, entry.name))));
 };
-
-/**
- * Per-fund files whose skip on a both-copies collision would leave the fund
- * trading on the wrong accounting: a missing fund-level ledger loads as a
- * fresh install (empty realized P&L and consumption records), and a state
- * file decides which bodies and orders the engine resumes. When both copies
- * exist the migration cannot know which generation is authoritative, so it
- * refuses rather than skip (issue #1399).
- */
-const PAIR_MIGRATION_CONFLICT_FILES = ['state.json', 'regime-state.json', 'fill-ledger.json'];
 
 /**
  * List the conflict-guarded per-fund files present at BOTH the exchange level
@@ -919,7 +931,7 @@ const migrateExchangeToPairs = (exchange) => {
   const configUtils = require('./config-utils');
   const defaultPairForRepair = configUtils.getDefaultPair(exchange);
 
-  if (!needsPairMigration(exchange)) {
+  if (!needsPairMigration(exchange, defaultPairForRepair)) {
     // The rest of the migration has nothing to do, but a stranded
     // transactions.tsv (recreated post-migration by the unpatched accessor)
     // can still exist even on an exchange whose state.json/regime-state.json
