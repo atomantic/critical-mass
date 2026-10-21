@@ -298,6 +298,31 @@ describe('coinbase engine graceful shutdown', () => {
     assert.ok(callLog.some((c) => c.includes('Market data start drain still running')), 'abandoned market join logged');
   });
 
+  it('bounds a cancelStarts that waits on an in-flight start, as the supervisor cancelAll does', async () => {
+    const callLog = [];
+    const exitCodes = [];
+    const coordinator = createEngineShutdown({
+      regimeEngines: new Map([['btc-usdc', {
+        stop: async () => callLog.push('btc-stop'),
+        flushForBackup: () => callLog.push('btc-flush'),
+      }]]),
+      // cancelAll marks shutdown synchronously, then awaits every start promise.
+      cancelStarts: async () => { callLog.push('cancelStarts'); await new Promise(() => {}); },
+      settleStarts: async () => {},
+      logger: { info: () => {}, error: () => {}, warn: (msg) => callLog.push(`warn:${msg}`) },
+      exit: (code) => exitCodes.push(code),
+      startJoinTimeoutMs: 20,
+      watchdogMs: 1000,
+    });
+
+    await coordinator.shutdown('SIGTERM');
+
+    assert.deepEqual(exitCodes, [0], 'exits cleanly before the watchdog');
+    assert.ok(callLog.includes('cancelStarts'), 'starts were cancelled');
+    assert.ok(callLog.includes('btc-stop') && callLog.includes('btc-flush'), 'running engine stopped and flushed');
+    assert.ok(callLog.some((c) => c.includes('Fund start settle still running')), 'abandoned fund join logged');
+  });
+
   it('continues stopping engines when a start join rejects', async () => {
     const callLog = [];
     const exitCodes = [];
