@@ -246,7 +246,7 @@ for (const variant of VARIANTS) {
       assert.equal(sock.closeCalls.length, 0);
     });
 
-    it('uses capped exponential reconnect backoff and resets it on open', (t) => {
+    it('uses capped exponential reconnect backoff and resets it on the first frame after subscribe', (t) => {
       const { feed, sock } = openFeed(t, variant);
       let current = sock;
       for (const delay of [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000]) {
@@ -259,7 +259,52 @@ for (const variant of VARIANTS) {
       }
       assert.equal(feed.getStatus().reconnectAttempts, 8);
       current.open();
+      if (variant.openDelayMs > 0) t.mock.timers.tick(variant.openDelayMs);
+      assert.equal(feed.getStatus().reconnectAttempts, 8, 'open alone does not reset the backoff');
+      current.receive(variant.heartbeat);
       assert.equal(feed.getStatus().reconnectAttempts, 0);
+      feed.disconnect();
+    });
+
+    it('keeps growing the backoff when the socket opens and closes straight away', (t) => {
+      const { feed, sock } = openFeed(t, variant);
+      let current = sock;
+      for (const delay of [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000]) {
+        const count = FakeWebSocket.instances.length;
+        current.peerClose(1008, 'rejected');
+        t.mock.timers.tick(delay - 1);
+        assert.equal(FakeWebSocket.instances.length, count, `waits the full ${delay}ms`);
+        t.mock.timers.tick(1);
+        current = FakeWebSocket.instances[count];
+        current.open();
+        if (variant.openDelayMs > 0) t.mock.timers.tick(variant.openDelayMs);
+      }
+      feed.disconnect();
+    });
+
+    it('resets the backoff after the connection stays open for the stability window', (t) => {
+      const { feed, sock } = openFeed(t, variant);
+      sock.peerClose(1006, 'lost');
+      t.mock.timers.tick(1000);
+      FakeWebSocket.instances[1].open();
+      t.mock.timers.tick(30000);
+      assert.equal(feed.getStatus().reconnectAttempts, 0);
+      feed.disconnect();
+    });
+
+    it('reconnects at the base delay after a socket that received a frame later drops', (t) => {
+      const { feed, sock } = openFeed(t, variant);
+      sock.peerClose(1006, 'lost');
+      t.mock.timers.tick(1000);
+      const second = FakeWebSocket.instances[1];
+      second.open();
+      if (variant.openDelayMs > 0) t.mock.timers.tick(variant.openDelayMs);
+      second.receive(variant.heartbeat);
+      second.peerClose(1006, 'lost');
+      t.mock.timers.tick(999);
+      assert.equal(FakeWebSocket.instances.length, 2);
+      t.mock.timers.tick(1);
+      assert.equal(FakeWebSocket.instances.length, 3);
       feed.disconnect();
     });
 
