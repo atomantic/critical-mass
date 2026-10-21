@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from '../lib/router'
 import { KeyRound, ScrollText } from './icons'
+import { apiDelete, apiGet, apiPut, apiRequest } from '../utils/apiClient'
 
 export default function GatewayAccess() {
   const [required, setRequired] = useState(null)
@@ -15,14 +16,9 @@ export default function GatewayAccess() {
   const refresh = async () => {
     setRequired(null)
     setStatusError(false)
-    try {
-      const res = await fetch('/api/auth/session')
-      if (!res.ok) throw new Error('Could not read gateway status')
-      await res.json()
-      setRequired(true)
-    } catch {
-      setStatusError(true)
-    }
+    const result = await apiGet('/api/auth/session')
+    if (result.ok) setRequired(true)
+    else setStatusError(true)
   }
 
   useEffect(() => { refresh() }, [])
@@ -36,23 +32,16 @@ export default function GatewayAccess() {
     }
     setSaving(true)
     try {
-      const res = await fetch('/api/auth/password', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password, currentPassword }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (res.ok) {
+      const result = await apiPut('/api/auth/password', { password, currentPassword }, { allowEmpty: true })
+      if (result.ok) {
         setRequired(true)
         setPassword('')
         setConfirm('')
         setCurrentPassword('')
         setMessage({ type: 'success', text: 'Password changed.' })
       } else {
-        setMessage({ type: 'error', text: data.error || 'Could not save password' })
+        setMessage({ type: 'error', text: result.error || 'Could not save password' })
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Could not save password' })
     } finally {
       setSaving(false)
     }
@@ -62,32 +51,24 @@ export default function GatewayAccess() {
     setMessage(null)
     setClearing(true)
     try {
-      const res = await fetch('/api/auth/password', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: currentPassword }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (res.ok) {
+      // apiDelete carries no body, so send the confirmation through the shared request helper.
+      const result = await apiRequest('DELETE', '/api/auth/password', { body: { password: currentPassword }, allowEmpty: true })
+      if (result.ok) {
         setMessage({ type: 'success', text: 'Password removed. The gateway will ask you to create a new one when the page reloads.' })
         setTimeout(() => window.location.reload(), 1500)
       } else {
-        setMessage({ type: 'error', text: data.error || 'Could not remove password' })
+        setMessage({ type: 'error', text: result.error || 'Could not remove password' })
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Could not remove password' })
     } finally {
       setClearing(false)
     }
   }
 
   const handleSignOut = async () => {
-    try {
-      await fetch('/api/auth/session', { method: 'DELETE' })
-      window.location.reload()
-    } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Sign out failed' })
-    }
+    // The server answers 204, so an empty reply is the success case.
+    const result = await apiDelete('/api/auth/session', { allowEmpty: true })
+    if (result.ok) window.location.reload()
+    else setMessage({ type: 'error', text: `Sign out failed: ${result.error}` })
   }
 
   return (

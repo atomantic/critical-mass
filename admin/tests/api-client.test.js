@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { apiGet, apiPost, apiDelete } from '../src/utils/apiClient'
+import { apiGet, apiPost, apiDelete, describeMutationFailure } from '../src/utils/apiClient'
 
 const reply = (status, body) => ({
   ok: status >= 200 && status < 300,
@@ -58,5 +58,21 @@ describe('apiClient', () => {
     const abort = Object.assign(new Error('aborted'), { name: 'AbortError' })
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abort))
     await expect(apiGet('/api/x')).rejects.toBe(abort)
+  })
+})
+
+describe('describeMutationFailure', () => {
+  it('flags an unread reply as possibly applied', () => {
+    const text = describeMutationFailure({ status: 0, error: 'Failed to fetch' }, 'Import failed')
+    expect(text).toContain('Failed to fetch')
+    expect(text).toContain('may have reached the server')
+  })
+
+  it('passes a server rejection reason through unchanged', () => {
+    expect(describeMutationFailure({ status: 400, error: 'Bad price' }, 'Import failed')).toBe('Bad price')
+  })
+
+  it('falls back when no reason is present', () => {
+    expect(describeMutationFailure({ status: 500, error: null }, 'Import failed')).toBe('Import failed')
   })
 })

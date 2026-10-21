@@ -40,3 +40,12 @@ export const apiGet = (url, opts) => apiRequest('GET', url, opts)
 export const apiPost = (url, body, opts) => apiRequest('POST', url, { ...opts, body })
 export const apiPut = (url, body, opts) => apiRequest('PUT', url, { ...opts, body })
 export const apiDelete = (url, opts) => apiRequest('DELETE', url, opts)
+
+// Operator-facing reason for a failed mutation. status 0 means no reply was
+// read, so the request may still have reached the server: say so instead of a
+// bare "Failed to fetch".
+export const describeMutationFailure = (result, fallback = 'Request failed') => (
+  result.status === 0
+    ? `${result.error || fallback}. The request may have reached the server; refresh status before retrying.`
+    : result.error || fallback
+)

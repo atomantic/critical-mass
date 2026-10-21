@@ -2,6 +2,7 @@ import { Fragment, useState, useCallback, useMemo, useRef, useEffect } from 'rea
 import { formatCurrency, formatPrice, formatDateTime } from './charts/chartUtils'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { plural } from '../utils/plural.mjs'
+import { apiGet, apiPost, describeMutationFailure as mutationError } from '../utils/apiClient'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { runUnaccountedFillsScan, describeScanProgress } from '../utils/unaccountedFillsScan.mjs'
 
@@ -161,18 +162,15 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
     const current = () => generation === tradesGeneration.current
     setTradesLoading(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/manual-trades${pairQuery}`)
-      const data = await res.json()
+      const result = await apiGet(`/api/${exchange}/regime/manual-trades${pairQuery}`)
       if (!current()) return null
-      if (res.ok && data.success && Array.isArray(data.trades)) {
-        setManualTrades(data.trades)
+      if (result.ok && Array.isArray(result.data.trades)) {
+        setManualTrades(result.data.trades)
         setTradesLoaded(true)
         setTradesError(null)
-        return data.trades
+        return result.data.trades
       }
-      setTradesError(data.error || 'Failed to load manual trades')
-    } catch (err) {
-      if (current()) setTradesError(err.message)
+      setTradesError(result.error || 'Failed to load manual trades')
     } finally {
       if (current()) setTradesLoading(false)
     }
@@ -240,21 +238,14 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
         body.existingBuyOrderId = existingBuyOrderId
       }
 
-      const res = await fetch(`/api/${exchange}/regime/manual-trade${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      const data = await res.json()
-      if (data.success) {
+      const result = await apiPost(`/api/${exchange}/regime/manual-trade${pairQuery}`, body)
+      if (result.ok) {
         setImportModal(null)
         fetchManualTrades()
         setUnaccountedOrders(prev => prev.filter(o => o.orderId !== importModal.orderId))
       } else {
-        setError(data.error || 'Import failed')
+        setError(mutationError(result, 'Import failed'))
       }
-    } catch (err) {
-      setError(err.message)
     } finally {
       setImporting(false)
     }
@@ -265,25 +256,18 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
     if (!importModal) return
     setImporting(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/manual-trade-buy${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          buyOrderId: importModal.orderId,
-          note: importNote,
-          createBody,
-        }),
+      const result = await apiPost(`/api/${exchange}/regime/manual-trade-buy${pairQuery}`, {
+        buyOrderId: importModal.orderId,
+        note: importNote,
+        createBody,
       })
-      const data = await res.json()
-      if (data.success) {
+      if (result.ok) {
         setImportModal(null)
         fetchManualTrades()
         setUnaccountedOrders(prev => prev.filter(o => o.orderId !== importModal.orderId))
       } else {
-        setError(data.error || 'Import failed')
+        setError(mutationError(result, 'Import failed'))
       }
-    } catch (err) {
-      setError(err.message)
     } finally {
       setImporting(false)
     }
@@ -297,17 +281,12 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
       const buyOrder = importModal.side === 'buy' ? importModal : selectedMatch
       const sellOrder = importModal.side === 'sell' ? importModal : selectedMatch
 
-      const res = await fetch(`/api/${exchange}/regime/manual-trade-pair${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          buyOrderId: buyOrder.orderId,
-          sellOrderId: sellOrder.orderId,
-          note: importNote,
-        }),
+      const result = await apiPost(`/api/${exchange}/regime/manual-trade-pair${pairQuery}`, {
+        buyOrderId: buyOrder.orderId,
+        sellOrderId: sellOrder.orderId,
+        note: importNote,
       })
-      const data = await res.json()
-      if (data.success) {
+      if (result.ok) {
         setImportModal(null)
         setSelectedMatch(null)
         fetchManualTrades()
@@ -315,10 +294,8 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
           prev.filter(o => o.orderId !== buyOrder.orderId && o.orderId !== sellOrder.orderId)
         )
       } else {
-        setError(data.error || 'Import failed')
+        setError(mutationError(result, 'Import failed'))
       }
-    } catch (err) {
-      setError(err.message)
     } finally {
       setImporting(false)
     }
@@ -341,14 +318,12 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
     setRowNotice(tradeId, null)
     let completed = false
     try {
-      const res = await fetch(`/api/${exchange}/regime/manual-trade/${encodeURIComponent(tradeId)}/resume${pairQuery}`, {
-        method: 'POST',
-      })
-      const data = await res.json()
-      if (!res.ok || !data.success || data.trade?.id !== tradeId) {
-        throw new Error(data.error || 'Import recovery could not be confirmed')
+      const result = await apiPost(`/api/${exchange}/regime/manual-trade/${encodeURIComponent(tradeId)}/resume${pairQuery}`)
+      if (!result.ok || result.data.trade?.id !== tradeId) {
+        throw new Error(result.ok ? 'Import recovery could not be confirmed' : mutationError(result, 'Import recovery could not be confirmed'))
       }
-      setManualTrades(prev => prev.map(trade => trade.id === tradeId ? data.trade : trade))
+      const { trade: resumed } = result.data
+      setManualTrades(prev => prev.map(trade => trade.id === tradeId ? resumed : trade))
       setRowNotice(tradeId, { message: 'Import completed. The recorded buy is linked to its body.' })
       completed = true
     } catch (err) {
@@ -367,15 +342,10 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   const handleCheckStatus = async (tradeId) => {
     setChecking(prev => ({ ...prev, [tradeId]: true }))
     try {
-      const res = await fetch(`/api/${exchange}/regime/manual-trade/${tradeId}/check${pairQuery}`, {
-        method: 'POST',
-      })
-      const data = await res.json()
-      setRowNotice(tradeId, data.success
-        ? { message: data.message || 'Status checked' }
-        : { error: data.error || 'Status check failed' })
-    } catch (err) {
-      setRowNotice(tradeId, { error: err.message })
+      const result = await apiPost(`/api/${exchange}/regime/manual-trade/${tradeId}/check${pairQuery}`)
+      setRowNotice(tradeId, result.ok
+        ? { message: result.data.message || 'Status checked' }
+        : { error: result.error || 'Status check failed' })
     } finally {
       setChecking(({ [tradeId]: _done, ...rest }) => rest)
     }
@@ -397,13 +367,9 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
     }
     setRecovering(prev => ({ ...prev, [tradeId]: true }))
     try {
-      const res = await fetch(`/api/${exchange}/regime/manual-trade/${tradeId}/retry${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      const data = await res.json()
-      if (data.success) {
+      const result = await apiPost(`/api/${exchange}/regime/manual-trade/${tradeId}/retry${pairQuery}`, body)
+      const data = result.data
+      if (result.ok) {
         // Another row's form may have been opened while this request ran.
         setRecoveryForm(prev => (prev?.tradeId === tradeId ? null : prev))
         setRowNotice(tradeId, { message: data.placed
@@ -411,10 +377,8 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
           : `Linked replacement buy ${data.trade?.buyOrderId || ''}`.trim() })
         fetchManualTrades()
       } else {
-        setRowNotice(tradeId, { error: data.error || 'Recovery failed' })
+        setRowNotice(tradeId, { error: mutationError(result, 'Recovery failed') })
       }
-    } catch (err) {
-      setRowNotice(tradeId, { error: err.message })
     } finally {
       setRecovering(({ [tradeId]: _done, ...rest }) => rest)
     }
@@ -423,19 +387,12 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   const handleDismiss = async (orderId) => {
     setDismissing(orderId)
     try {
-      const res = await fetch(`/api/${exchange}/regime/dismiss-fills${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderIds: [orderId] }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (res.ok && data.success) {
+      const result = await apiPost(`/api/${exchange}/regime/dismiss-fills${pairQuery}`, { orderIds: [orderId] })
+      if (result.ok) {
         setUnaccountedOrders(prev => prev.filter(o => o.orderId !== orderId))
       } else {
-        setError(`Could not dismiss order ${truncId(orderId)}: ${data.error || `HTTP ${res.status}`}`)
+        setError(`Could not dismiss order ${truncId(orderId)}: ${mutationError(result, 'request failed')}`)
       }
-    } catch (err) {
-      setError(`Could not dismiss order ${truncId(orderId)}: ${err.message || 'network error'}`)
     } finally {
       setDismissing(null)
     }
