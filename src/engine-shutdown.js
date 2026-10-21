@@ -229,11 +229,7 @@ const createEngineShutdown = ({
       // 8. Publish final state & ledger for running engines that stopped
       // cleanly, capturing writes that settled during the post-stop drain.
       for (let i = 0; i < results.length; i++) {
-<<<<<<< HEAD
-        if (results[i].status === 'fulfilled' && !abandoned.has(i)) {
-=======
-        if (results[i].status === 'fulfilled' && wasRunning[i]) {
->>>>>>> 2eb74f7f (fix: clear the running flag before the Stop handover and flush only running engines on shutdown (#1552))
+        if (results[i].status === 'fulfilled' && wasRunning[i] && !abandoned.has(i)) {
           const [fundKey, engine] = engineEntries[i];
           try {
             engine?.flushForBackup?.();
