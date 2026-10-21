@@ -1,0 +1,1 @@
+- **[issue-1391] Surface UpDown candle-history load failures** — `useCandleData` now returns `error` and `retry`; `BTCPriceChart` shows an alert with a Retry button instead of "Waiting for price data" when the history request fails.

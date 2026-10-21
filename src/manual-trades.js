@@ -228,8 +228,25 @@ const createManualTradeStore = (exchange, pair) => {
     const filePath = getStorePath(exchange, pair);
     if (!fs.existsSync(filePath)) return;
 
+    // A read error (EIO/EMFILE/EACCES, read racing a rename) is transient and the
+    // file is still valid: surface it without moving the file aside.
+    let text;
     try {
-      const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      text = fs.readFileSync(filePath, 'utf8');
+    } catch (err) {
+      if (err.code === 'ENOENT') return;
+      logger.error(`❌ [${exchange}] Failed to read manual trades (file left in place): ${err.message}`, {
+        filePath,
+        error: err.message,
+      });
+      throw err;
+    }
+
+    try {
+      const raw = JSON.parse(text);
+      // Build locally and commit only after the whole file validates.
+      const loadedTrades = [];
+      const loadedDismissed = [];
       if (Array.isArray(raw.trades)) {
         for (const t of raw.trades) {
           if (!t.tradeType) t.tradeType = 'sell_first';
@@ -237,14 +254,14 @@ const createManualTradeStore = (exchange, pair) => {
           if (t.bodyIntent === undefined) t.bodyIntent = null;
           if (t.recoveryIntent === undefined) t.recoveryIntent = null;
           normalizeRecoveryAttempts(t);
-          trades.set(t.id, t);
+          loadedTrades.push(t);
         }
       }
       if (Array.isArray(raw.dismissedFillOrderIds)) {
-        for (const id of raw.dismissedFillOrderIds) {
-          dismissedFillOrderIds.add(id);
-        }
+        loadedDismissed.push(...raw.dismissedFillOrderIds);
       }
+      for (const t of loadedTrades) trades.set(t.id, t);
+      for (const id of loadedDismissed) dismissedFillOrderIds.add(id);
       logger.info(`📋 [${exchange}] Loaded ${trades.size} manual trades, ${dismissedFillOrderIds.size} dismissed fills`, {
         filePath,
         tradeCount: trades.size,

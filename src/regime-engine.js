@@ -732,9 +732,14 @@ const recoverOrphanBuys = (deps, cycleFills) => {
  */
 const pickOrphanMergeTarget = (eligibleBodies, newBuy, candidateTpPrice, { config, celestialHierarchy }) => {
   const target = celestialHierarchy.findMergeTarget(
-    eligibleBodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
-    config.maxCelestialBodies || 10, 0, config.maxOpenOrders,
-    config.mergeProximityScale ?? 1.0
+    eligibleBodies, newBuy, {
+      maxUsdcDeployed: config.maxUsdcDeployed,
+      candidateTpPrice,
+      maxBodies: config.maxCelestialBodies || 10,
+      pendingOrderCount: 0,
+      maxOpenOrders: config.maxOpenOrders,
+      proximityScale: config.mergeProximityScale ?? 1.0
+    }
   );
   if (target) return target;
   let closest = null;
@@ -5953,9 +5958,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Find merge target among existing celestial bodies
     const bodies = positionState.celestialBodies || [];
     const mergeTarget = celestialHierarchy.findMergeTarget(
-      bodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
-      config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders,
-      config.mergeProximityScale ?? 1.0
+      bodies, newBuy, {
+        maxUsdcDeployed: config.maxUsdcDeployed,
+        candidateTpPrice,
+        maxBodies: config.maxCelestialBodies || 10,
+        pendingOrderCount: orderExecutor.getPendingCounts().total,
+        maxOpenOrders: config.maxOpenOrders,
+        proximityScale: config.mergeProximityScale ?? 1.0
+      }
     );
 
     return { summary, newBuy, mergeTarget, commitBuyAccounting, isLadderFill,
@@ -8433,9 +8443,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       const bodies = positionState.celestialBodies || [];
       let mergeTarget = celestialHierarchy.findMergeTarget(
-        bodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
-        config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders,
-        config.mergeProximityScale ?? 1.0
+        bodies, newBuy, {
+          maxUsdcDeployed: config.maxUsdcDeployed,
+          candidateTpPrice,
+          maxBodies: config.maxCelestialBodies || 10,
+          pendingOrderCount: orderExecutor.getPendingCounts().total,
+          maxOpenOrders: config.maxOpenOrders,
+          proximityScale: config.mergeProximityScale ?? 1.0
+        }
       );
 
       positionState.cycleBuys += 1;
