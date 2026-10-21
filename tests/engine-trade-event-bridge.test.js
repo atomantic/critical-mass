@@ -13,7 +13,7 @@ const { createNotifier } = require('../src/notifier');
 
 it('delivers engine faults over IPC to Telegram and the realtime bus exactly once', { timeout: 5000 }, async (t) => {
   const configFile = path.join(__dirname, '..', 'config.json');
-  const userConfigFile = path.join(__dirname, '..', 'data', 'config.json');
+  const userConfigFile = path.join(require('../src/paths').DATA_DIR, 'config.json');
   const originalRead = fs.readFileSync;
   const originalExists = fs.existsSync;
   const originalStat = fs.statSync;

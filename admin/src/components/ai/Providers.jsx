@@ -327,7 +327,7 @@ export default function AIProviders() {
           </button>
           <button
             onClick={() => setShowRunner(!showRunner)}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors text-sm"
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm"
           >
             {showRunner ? 'Hide Runner' : 'Run Prompt'}
           </button>
@@ -471,7 +471,7 @@ export default function AIProviders() {
                 <button
                   onClick={() => handleAddSample(sp)}
                   disabled={Boolean(mutationPending[`sample:${sp.id}`] || mutationPending['sample-all'])}
-                  className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors text-sm disabled:opacity-50 shrink-0"
+                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm disabled:opacity-50 shrink-0"
                 >
                   {mutationPending[`sample:${sp.id}`] ? 'Adding...' : 'Add'}
                 </button>
@@ -641,7 +641,7 @@ export default function AIProviders() {
             <p>No providers configured.</p>
             <button
               onClick={handleLoadSamples}
-              className="mt-3 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors text-sm"
+              className="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm"
             >
               Load Sample Providers
             </button>
@@ -975,7 +975,7 @@ function ProviderForm({ provider, onClose, onSave }) {
             <button type="button" onClick={onClose} className="px-4 py-2 text-gray-400 hover:text-white">
               Cancel
             </button>
-            <button type="submit" disabled={pending} className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors disabled:opacity-50">
+            <button type="submit" disabled={pending} className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50">
               {pending ? 'Saving...' : provider ? 'Save' : 'Create'}
             </button>
           </div>

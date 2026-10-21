@@ -564,7 +564,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
                 {!regimeRunning && (
                   <button
                     onClick={handlePreviewExport}
-                    className="px-3 py-1 text-xs rounded-sm font-medium bg-indigo-600 hover:bg-indigo-500 text-white"
+                    className="px-3 py-1 text-xs rounded-sm font-medium bg-blue-600 hover:bg-blue-500 text-white"
                   >
                     Export to Regime
                   </button>
@@ -700,7 +700,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
               Cancel
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-indigo-600 hover:bg-indigo-500 rounded-sm transition-colors disabled:opacity-50"
+              className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded-sm transition-colors disabled:opacity-50"
               onClick={handleExecuteExport}
               disabled={converting}
             >

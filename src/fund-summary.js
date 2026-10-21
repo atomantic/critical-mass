@@ -5,7 +5,7 @@
  * from regime state and fill ledger data.
  */
 
-const { getFundConfig } = require('./config-utils');
+const { getFundConfig, getGlobalConfig } = require('./config-utils');
 const { loadState, loadFundRegimeState } = require('./state-tracker');
 const { getCachedFillLedger } = require('./fill-ledger');
 const { getLogFile } = require('./logger');
@@ -174,7 +174,22 @@ function buildFundSummary(exchange, pair, opts = {}) {
   };
 }
 
+/**
+ * Summary for the fund's active strategy. Matches App.jsx's strategy selection:
+ * with Simple DCA disabled, regime data is used even when the config still
+ * carries a legacy DCA strategy.
+ * @param {string} exchange
+ * @param {string} pair
+ */
+function buildActiveFundSummary(exchange, pair) {
+  const config = getFundConfig(exchange, pair);
+  return getGlobalConfig().simpleDcaEnabled && config.dcaStrategy !== 'regime'
+    ? buildDcaFundSummary(exchange, pair, config)
+    : buildFundSummary(exchange, pair, { config });
+}
+
 module.exports = {
+  buildActiveFundSummary,
   buildFundSummary,
   buildDcaFundSummary,
 };

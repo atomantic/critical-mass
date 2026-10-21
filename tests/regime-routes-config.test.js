@@ -18,7 +18,7 @@ const configUtils = require('../src/config-utils');
 const registerRegimeRoutes = require('../src/routes/regime-routes');
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(require('../src/paths').DATA_DIR, 'config.json');
 
 // Fund in nested form with dryRun enabled at the fund level (mirrors live config).
 const BASE_CONFIG = {

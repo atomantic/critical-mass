@@ -310,7 +310,7 @@ describe('IPC request lifecycle on a controlled socket', () => {
 });
 
 describe('fund targeting from the stop route to the engine lifecycle callback', () => {
-  const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+  const USER_CONFIG_FILE = path.join(require('../src/paths').DATA_DIR, 'config.json');
   const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
   const CONFIG = {
     exchanges: {
