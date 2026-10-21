@@ -153,4 +153,17 @@ describe('RegimeDashboard status freshness', () => {
     expect(screen.queryByText('Engine Unreachable')).toBeNull()
     expect(screen.getByRole('heading', { name: 'TP Auto-Management' })).toBeTruthy()
   })
+
+  it('leaves a quiet stopped fund as Engine Stopped without probing', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    httpStatus = stoppedStatus()
+    render(<RegimeDashboard exchange="coinbase" pair="BTC-USDC" />)
+    await screen.findByText('Engine Stopped')
+    const statusReads = () => fetch.mock.calls.filter(([url]) => url.includes('/regime/status')).length
+    const readsBefore = statusReads()
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS * 2) })
+    expect(screen.getByText('Engine Stopped')).toBeTruthy()
+    expect(screen.queryByText('Engine Unreachable')).toBeNull()
+    expect(statusReads()).toBe(readsBefore)
+  })
 })

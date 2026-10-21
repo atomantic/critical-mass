@@ -40,8 +40,8 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   const latest = socketStatus && (!localSnapshot.status || socketSeq > localSnapshot.seq)
     ? { status: socketStatus, seq: socketSeq }
     : localSnapshot
-  // No status for STATUS_STALE_MS: show the last snapshot as an unreachable
-  // engine (stopped-status fields only) until a fresh one arrives.
+  // A running snapshot with no successor for STATUS_STALE_MS shows as an
+  // unreachable engine (stopped-status fields only) until a fresh one arrives.
   const statusSilent = Boolean(latest.status) && silentSeq === latest.seq
   const status = useMemo(() => statusSilent ? toUnreachableStatus(latest.status) : latest.status, [statusSilent, latest.status])
 
@@ -84,20 +84,22 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   const fetchStatus = useCallback(() => readSnapshot('status', statusOwner, commitLocalStatus), [readSnapshot, statusOwner, commitLocalStatus])
 
   // The engine's process dying sends nothing to the browser, and the socket's
-  // "Live" state only tracks the gateway. Mark the snapshot silent once nothing
-  // has arrived for STATUS_STALE_MS and probe over HTTP: the gateway answers
-  // with the on-disk ENGINE_DOWN status when the engine IPC is gone, or the
-  // running engine's status when the market was just quiet.
-  const hasStatus = Boolean(latest.status)
+  // "Live" state only tracks the gateway. Mark a running snapshot silent once
+  // nothing has arrived for STATUS_STALE_MS and probe over HTTP: the gateway
+  // answers with the on-disk ENGINE_DOWN status when the engine IPC is gone, or
+  // the running engine's status when the market was just quiet. A stopped
+  // snapshot already shows no running-only state, so a quiet stopped fund is
+  // left as "Engine Stopped".
+  const latestRunning = latest.status?.isRunning === true
   const latestSeq = latest.seq
   useEffect(() => {
-    if (!hasStatus) return
+    if (!latestRunning) return
     const t = setTimeout(() => {
       setSilentSeq(latestSeq)
       fetchStatus()
     }, STATUS_STALE_MS)
     return () => clearTimeout(t)
-  }, [hasStatus, latestSeq, fetchStatus])
+  }, [latestRunning, latestSeq, fetchStatus])
   const fetchConfig = useCallback(() => readSnapshot('config', configOwner, setConfig), [readSnapshot, configOwner])
   // Keep fillsOwner.read's ownership fence for concurrent marker/action reads.
   const fetchFills = useCallback(() => readSnapshot('fills', fillsOwner, data => {
