@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import DestructiveConfirmation from '../DestructiveConfirmation'
 import useSentinelSocket from '../../hooks/useSentinelSocket'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
+import { apiGet, apiPost, apiPut, apiDelete } from '../../utils/apiClient'
 
 const TOUCH_BTN = 'min-h-11 min-w-11 shrink-0 inline-flex items-center justify-center'
 
@@ -71,28 +72,15 @@ export default function SentinelDashboard() {
   // `throwOnError` lets a confirmation dialog own the failure message instead of the page banner.
   const request = async (label, send, { throwOnError = false } = {}) => {
     setMutationError('')
-    const fail = (message) => {
-      if (throwOnError) throw new Error(message)
-      setMutationError(message)
-    }
-    try {
-      const res = await send()
-      if (res.ok) {
-        try { return (await res.json()) || true } catch { return true }
-      }
-
-      let detail = ''
-      try {
-        const body = await res.json()
-        const errors = body.errors
-        detail = body.error || (Array.isArray(errors) ? errors.join(', ') : errors) || ''
-        if (typeof detail === 'object') detail = JSON.stringify(detail)
-      } catch { /* use the HTTP status when the body is empty or invalid */ }
-      fail(`${label}: ${detail || `Request failed (${res.status})`}`)
-    } catch (error) {
-      if (throwOnError && error.message.startsWith(`${label}: `)) throw error
-      fail(`${label}: ${error?.message || 'Request failed'}`)
-    }
+    const result = await send()
+    if (result.ok) return result.data || true
+    // Validation replies carry an `errors` list rather than a single `error`.
+    const errors = result.data?.errors
+    const detail = result.data?.error ? result.error
+      : (Array.isArray(errors) ? errors.join(', ') : errors) || result.error
+    const message = `${label}: ${typeof detail === 'object' ? JSON.stringify(detail) : detail}`
+    if (throwOnError) throw new Error(message)
+    setMutationError(message)
     return false
   }
 
@@ -118,7 +106,7 @@ export default function SentinelDashboard() {
   const handleForcePoll = async () => {
     setPolling(true)
     try {
-      if (await request('Could not poll feeds', () => fetch('/api/sentinel/poll', { method: 'POST' }))) {
+      if (await request('Could not poll feeds', () => apiPost('/api/sentinel/poll'))) {
         await fetchAlerts()
         await fetchStatus()
       }
@@ -128,14 +116,14 @@ export default function SentinelDashboard() {
   }
 
   const handleDismiss = async (alertId) => {
-    if (await request('Could not dismiss alert', () => fetch(`/api/sentinel/dismiss/${alertId}`, { method: 'POST' }))) {
+    if (await request('Could not dismiss alert', () => apiPost(`/api/sentinel/dismiss/${alertId}`))) {
       setAlertsView(prev => prev && { ...prev, alerts: prev.alerts.map(a => a.id === alertId ? { ...a, dismissed: true } : a) })
       fetchStatus()
     }
   }
 
   const handleClearAll = async () => {
-    await request('Could not clear alerts', () => fetch('/api/sentinel/alerts', { method: 'DELETE' }), { throwOnError: true })
+    await request('Could not clear alerts', () => apiDelete('/api/sentinel/alerts'), { throwOnError: true })
     alertsOwner.invalidate()
     setAlertsView({ filter, alerts: [] })
     fetchStatus()
@@ -147,11 +135,7 @@ export default function SentinelDashboard() {
     feedWriteLock.current = true
     setFeedWritePending(true)
     try {
-      const result = await request('Could not update Sentinel settings', () => fetch('/api/sentinel/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: newEnabled }),
-      }))
+      const result = await request('Could not update Sentinel settings', () => apiPut('/api/sentinel/config', { enabled: newEnabled }))
       if (result) {
         configRevision.current += 1
         setStatus(prev => ({ ...(prev || {}), config: { ...(prev?.config || {}), ...(result.config || {}), enabled: newEnabled } }))
@@ -164,11 +148,11 @@ export default function SentinelDashboard() {
   }
 
   const handleStart = async () => {
-    if (await request('Could not start Sentinel', () => fetch('/api/sentinel/start', { method: 'POST' }))) await fetchStatus()
+    if (await request('Could not start Sentinel', () => apiPost('/api/sentinel/start'))) await fetchStatus()
   }
 
   const handleStop = async () => {
-    if (await request('Could not stop Sentinel', () => fetch('/api/sentinel/stop', { method: 'POST' }))) await fetchStatus()
+    if (await request('Could not stop Sentinel', () => apiPost('/api/sentinel/stop'))) await fetchStatus()
   }
 
   const updateFeeds = async (feeds, options) => {
@@ -176,11 +160,7 @@ export default function SentinelDashboard() {
     feedWriteLock.current = true
     setFeedWritePending(true)
     try {
-      const result = await request('Could not update feeds', () => fetch('/api/sentinel/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feeds }),
-      }), options)
+      const result = await request('Could not update feeds', () => apiPut('/api/sentinel/config', { feeds }), options)
       if (result) {
         configRevision.current += 1
         setStatus(prev => ({ ...(prev || {}), config: { ...(prev?.config || {}), ...(result.config || {}), feeds } }))
@@ -222,9 +202,8 @@ export default function SentinelDashboard() {
     setConfirmationError('')
     // Clear deletes every severity, so count the unfiltered collection.
     try {
-      const res = await fetch('/api/sentinel/alerts')
-      if (!res.ok) throw new Error('Unable to load alerts. Please try again.')
-      const data = await res.json()
+      const { ok, data } = await apiGet('/api/sentinel/alerts')
+      if (!ok) throw new Error('Unable to load alerts. Please try again.')
       setConfirmation({ kind: 'alerts', count: data.alerts.length, active: data.alerts.filter(alert => !alert.dismissed).length })
     } catch {
       setConfirmationError('Unable to load alerts. Please try again before clearing them.')
