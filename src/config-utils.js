@@ -6,7 +6,7 @@
  * Supports backward compatibility with single-exchange config format.
  */
 
-const { DEFAULT_AGGRESSIVENESS_PRESETS, MERGE_PROXIMITY_BOUNDS } = require('./regime-preset-contract');
+const { DEFAULT_AGGRESSIVENESS_PRESETS, MERGE_PROXIMITY_BOUNDS, PRESET_FIELD_RULES } = require('./regime-preset-contract');
 const { DEFAULT_MAX_USDC_DEPLOYED } = require('./fund-defaults');
 const fs = require('fs');
 const { atomicWriteSync } = require('./durable-write');
@@ -1356,7 +1356,23 @@ const getNotificationConfig = () => {
 };
 
 /**
- * Get aggressiveness presets (user-customized merged with defaults)
+ * Whether a stored preset value satisfies the shared preset bounds. Keys with
+ * no rule (e.g. historical schema-only fields) are passed through untouched.
+ * @param {string} key
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+const isPresetValueInBounds = (key, value) => {
+  const rule = PRESET_FIELD_RULES[key];
+  if (!rule) return true;
+  return typeof value === 'number' && Number.isFinite(value) && value >= rule.min && value <= rule.max;
+};
+
+/**
+ * Get aggressiveness presets (user-customized merged with defaults).
+ * Stored values outside the current preset bounds (e.g. saved under the looser
+ * pre-#323 limits) are reported and skipped in favor of the shipped default,
+ * so the editor never offers a value the fund-config save would reject.
  * @returns {Object} Presets keyed by level id
  */
 const getAggressivenessPresets = () => {
@@ -1364,35 +1380,47 @@ const getAggressivenessPresets = () => {
   const saved = config.global?.aggressivenessPresets || {};
   const merged = {};
   for (const level of Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS)) {
-    merged[level] = {
-      ...DEFAULT_AGGRESSIVENESS_PRESETS[level],
-      ...saved[level],
-    };
+    const valid = {};
+    for (const [key, value] of Object.entries(saved[level] || {})) {
+      if (isPresetValueInBounds(key, value)) {
+        valid[key] = value;
+      } else {
+        configLogger.warn('⚠️ [config] Ignoring out-of-range stored aggressiveness preset value; using default', { level, key, value });
+      }
+    }
+    merged[level] = { ...DEFAULT_AGGRESSIVENESS_PRESETS[level], ...valid };
   }
   return merged;
 };
 
 /**
- * Update aggressiveness presets
+ * Update aggressiveness presets. Only keys that differ from the shipped
+ * defaults (or were already explicitly stored) are persisted, so later changes
+ * to default preset values still reach installs that edited one level.
  * @param {Object} updates - Presets keyed by level id with partial param overrides
- * @returns {Object} Updated full configuration
+ * @returns {Object} Updated full configuration (global.aggressivenessPresets holds the effective values)
  */
 const updateAggressivenessPresets = (updates) => {
   const config = loadConfig();
   const current = config.global?.aggressivenessPresets || {};
 
-  config.global = config.global || {};
-  config.global.aggressivenessPresets = {};
-
+  const overrides = {};
+  const effective = {};
   for (const level of Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS)) {
-    config.global.aggressivenessPresets[level] = {
-      ...DEFAULT_AGGRESSIVENESS_PRESETS[level],
-      ...current[level],
-      ...updates[level],
-    };
+    const defaults = DEFAULT_AGGRESSIVENESS_PRESETS[level];
+    const requested = { ...current[level], ...updates[level] };
+    effective[level] = { ...defaults, ...requested };
+    // Previously pinned keys survive even when equal to the default; keys merely
+    // echoed back by the editor at their default value are not pinned.
+    const diff = computeDiff(defaults, requested, current[level] || {});
+    if (Object.keys(diff).length) overrides[level] = diff;
   }
 
+  config.global = config.global || {};
+  config.global.aggressivenessPresets = overrides;
   saveConfig(config);
+  // Return effective values for callers; the file holds only the overrides.
+  config.global.aggressivenessPresets = effective;
   return config;
 };
 
