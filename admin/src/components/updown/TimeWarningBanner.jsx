@@ -1,4 +1,5 @@
 import { Clock } from '../icons'
+import { formatCountdown } from '../../utils/countdown.mjs'
 
 // Warning zone thresholds (must match signal-engine.js)
 const WARNING_ZONE_H = 8
@@ -8,14 +9,6 @@ export function getTimeColor(hoursLeft) {
   if (hoursLeft > WARNING_ZONE_H) return { bg: 'bg-green-500', border: 'border-green-500/30', text: 'text-green-400', label: 'Safe' }
   if (hoursLeft >= NO_TRADE_ZONE_H) return { bg: 'bg-yellow-500', border: 'border-yellow-500/30', text: 'text-yellow-400', label: 'Caution' }
   return { bg: 'bg-red-500', border: 'border-red-500/30', text: 'text-red-400', label: 'Critical', pulse: true }
-}
-
-export function formatCountdown(ms) {
-  if (ms <= 0) return '00:00:00'
-  const hours = Math.floor(ms / 3600000)
-  const minutes = Math.floor((ms % 3600000) / 60000)
-  const seconds = Math.floor((ms % 60000) / 1000)
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
 /**
@@ -61,7 +54,7 @@ export default function TimeWarningBanner({ timeRemaining, expiry }) {
           {colors.pulse && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />}
         </div>
         <span className={`text-lg font-mono font-bold ${colors.text}`}>
-          {formatCountdown(msLeft)}
+          {formatCountdown(msLeft, 'clock')}
         </span>
       </div>
       <div className="w-full bg-gray-700 rounded-full h-2">

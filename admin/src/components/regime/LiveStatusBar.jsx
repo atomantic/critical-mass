@@ -1,18 +1,12 @@
 import React, { useState, useEffect } from 'react'
 import { resolveElapsedDisplay } from '../../utils/liveTimerElapsed.mjs'
+import { formatCountdown } from '../../utils/countdown.mjs'
 import { formatDuration } from './regimeFormat'
 import { formatPriceByMagnitude } from '../charts/chartUtils'
 import EntryStatusCard from './EntryStatusCard'
 import CurrentRegimeCard from './CurrentRegimeCard'
 import EntryModeCard from './EntryModeCard'
 
-const formatCountdown = (ms) => {
-  if (!ms || ms <= 0) return '0:00'
-  const totalSeconds = Math.floor(ms / 1000)
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`
-}
 function LivePriceTicker({ price, prevPrice }) {
   const direction = price > prevPrice ? 'up' : price < prevPrice ? 'down' : 'none'
   const directionColors = {
@@ -52,7 +46,7 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
       <div className="bg-gray-900 rounded-sm p-1.5">
         <div className="text-[10px] text-gray-400 mb-0.5">{label}</div>
         <div className="flex items-center gap-1">
-          <span className="text-sm font-mono text-cyan-400">{formatCountdown(remaining)}</span>
+          <span className="text-sm font-mono text-cyan-400">{formatCountdown(remaining, 'minutes')}</span>
           {remaining === 0 && <span className="text-[10px] text-yellow-400 animate-pulse">Ready</span>}
         </div>
         {total && (

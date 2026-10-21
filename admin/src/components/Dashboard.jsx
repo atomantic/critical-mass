@@ -13,71 +13,9 @@ import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { createRequestOwner } from '../utils/requestOwner.mjs'
 import { runDashboardAction } from '../utils/dashboardAction.mjs'
-
-function ToggleSwitch({ label, checked, onChange, disabled, colorOn = 'bg-green-500', colorOff = 'bg-gray-600' }) {
-  const labelId = useId()
-  return (
-    <div className="flex items-center gap-2">
-      <span id={labelId} className="text-sm text-gray-400">{label}</span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-labelledby={labelId}
-        disabled={disabled}
-        onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-          disabled ? 'opacity-50 cursor-not-allowed' : ''
-        } ${checked ? colorOn : colorOff}`}
-      >
-        <span
-          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-            checked ? 'translate-x-6' : 'translate-x-1'
-          }`}
-        />
-      </button>
-    </div>
-  )
-}
-
-function StatCard({ label, value, subtext, color = 'blue' }) {
-  const colors = {
-    blue: 'bg-blue-900/50 border-blue-700',
-    green: 'bg-green-900/50 border-green-700',
-    yellow: 'bg-yellow-900/50 border-yellow-700',
-    purple: 'bg-purple-900/50 border-purple-700',
-    red: 'bg-red-900/50 border-red-700',
-  }
-
-  return (
-    <div className={`p-2 rounded-lg border min-w-0 overflow-hidden ${colors[color]}`}>
-      <div className="text-xs text-gray-400 truncate">{label}</div>
-      <div className="text-sm sm:text-base font-bold truncate">{value}</div>
-      {subtext && <div className="text-xs text-gray-400 overflow-hidden">{subtext}</div>}
-    </div>
-  )
-}
-
-// Format countdown from milliseconds
-function formatCountdown(ms) {
-  if (ms <= 0) return 'now'
-
-  const seconds = Math.floor(ms / 1000)
-  const minutes = Math.floor(seconds / 60)
-  const hours = Math.floor(minutes / 60)
-  const days = Math.floor(hours / 24)
-
-  if (days > 0) {
-    return `${days}d ${hours % 24}h ${minutes % 60}m`
-  }
-  if (hours > 0) {
-    return `${hours}h ${minutes % 60}m ${seconds % 60}s`
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${seconds % 60}s`
-  }
-  return `${seconds}s`
-}
+import { formatCountdown } from '../utils/countdown.mjs'
+import ToggleSwitch from './ToggleSwitch'
+import StatCard from './StatCard'
 
 function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const convertTitleId = useId()

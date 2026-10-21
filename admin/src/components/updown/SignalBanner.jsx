@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { TrendingUp, TrendingDown, Minus, Plus, CircleDot, Clock } from '../icons'
-import { formatCountdown } from './TimeWarningBanner'
+import { formatCountdown } from '../../utils/countdown.mjs'
 import { getActionLabel } from '../../constants/signals'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 
@@ -220,7 +220,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
         {hasTime && (
           <div className="flex items-center gap-1.5 ml-auto text-gray-400" title="Time remaining until contract expiry">
             <Clock size={14} />
-            <span className="text-sm font-mono">{formatCountdown(timeRemaining)}</span>
+            <span className="text-sm font-mono">{formatCountdown(timeRemaining, 'clock')}</span>
           </div>
         )}
       </div>
