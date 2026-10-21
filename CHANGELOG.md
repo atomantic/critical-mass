@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-1390] Live fills update Regime Charts totals without manual refresh** — `ChartsRegime` now tracks a debounced fill marker derived from live status and refetches cycle fills when fills advance, keeping TPs Filled, Total Entries and cumulative P&L in sync with Realized P&L.
 - **[issue-1408] A fund or market-data start stuck on a slow exchange no longer stops the engine from saving on restart** — Engine shutdown now waits at most 2s for in-flight fund starts and for market-data starts, logs what it abandoned, and goes on to stop and flush every running fund. The in-process watchdog is 22s (PM2 `kill_timeout` stays 25s), and `stop()`'s flash-cancel and fill-drain waits share one 10s budget, so the total is bounded.
 - **Historical-annotation repair tests run against an isolated data root** — `repair-historical-fill-annotations.test.js` now writes its fill ledgers to a temp data directory instead of the repo `data/coinbase` tree, so a killed run no longer leaves stale fund directories behind.
 - **Candle seeding keeps retrying when the public candle APIs are down at boot** — After the five fast boot attempts, timeframes that are still empty are retried on an unref'd timer with exponential backoff capped at 15 minutes, re-fetching only the empty timeframes and logging once per backoff step. The retries stop on shutdown and on a cache invalidate (backup restore).

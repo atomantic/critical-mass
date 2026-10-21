@@ -9,7 +9,21 @@ import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { deriveRegimeCumulativePnl } from '../utils/regimeFillGroups.mjs'
 
-function ChartsRegime({ exchange = 'coinbase', pair }) {
+export function deriveFillMarker(status) {
+  if (!status) return ''
+  const pos = status.position
+  return [
+    pos?.cyclesCompleted ?? '',
+    pos?.cycleBuys ?? '',
+    pos?.realizedPnL ?? '',
+    pos?.realizedAssetPnL ?? '',
+    pos?.lastFillId ?? status.lastFillId ?? '',
+    pos?.lastFillTime ?? status.lastFillTime ?? '',
+    pos?.fillCount ?? status.fillCount ?? '',
+  ].join(':')
+}
+
+function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const pairQuery = buildPairQuery(pair)
   const [localStatus, setLocalStatus] = useState(null)
   const [config, setConfig] = useState(null)
@@ -81,6 +95,7 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
       const candlesResult = results[3]
       const cacheResult = results[4]
       session.hasSnapshot = true
+      fillRefreshRef.current = deriveFillMarker(socketStatus || statusData.status)
       setLocalStatus(statusData.status)
       setConfig(configData.config)
       setFillAggregates(fillsData)
@@ -104,8 +119,33 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
     }
   }, [exchange, pair, initializeFromCache]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const fetchFills = useCallback(async () => {
+    const session = readState.current
+    if (!session?.active || session.inFlight) return
+    session.inFlight = true
+    const controller = new AbortController()
+    session.fillsController = controller
+    try {
+      const response = await fetch(`/api/${exchange}/regime/fills/cycles${pairQuery}`, { signal: controller.signal })
+      if (!response.ok) throw new Error(`Fills fetch failed: HTTP ${response.status}`)
+      const fillsData = await response.json()
+      if (!session.active) return
+      setFillAggregates(fillsData)
+      setStale(false)
+    } catch (err) {
+      if (!session.active) return
+      if (err.name !== 'AbortError') {
+        if (!session.hasSnapshot) setError(err.message || 'Failed to load fills')
+        else setStale(true)
+      }
+    } finally {
+      session.inFlight = false
+      if (session.fillsController === controller) session.fillsController = null
+    }
+  }, [exchange, pairQuery])
+
   useEffect(() => {
-    const session = { active: true, inFlight: false, hasSnapshot: false, controller: null }
+    const session = { active: true, inFlight: false, hasSnapshot: false, controller: null, fillsController: null }
     readState.current = session
     setLocalStatus(null)
     setConfig(null)
@@ -117,8 +157,28 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
     setHistoryUnavailable(false)
     setLoading(true)
     fetchData()
-    return () => { session.active = false; session.controller?.abort() }
+    return () => {
+      session.active = false
+      session.controller?.abort()
+      session.fillsController?.abort()
+    }
   }, [fetchData])
+
+  // Refresh fills aggregates when a fill lands in live status (#1390).
+  const fillMarker = deriveFillMarker(status)
+  const fillRefreshRef = useRef(null)
+  useEffect(() => {
+    if (fillRefreshRef.current === null) {
+      fillRefreshRef.current = fillMarker
+      return
+    }
+    if (fillRefreshRef.current === fillMarker) return
+    fillRefreshRef.current = fillMarker
+    const t = setTimeout(() => {
+      fetchFills()
+    }, fillDebounceMs)
+    return () => clearTimeout(t)
+  }, [fillMarker, fetchFills, fillDebounceMs])
 
   const isRunning = status?.isRunning
   const isDryRun = Boolean(status?.isDryRun || config?.dryRun)
