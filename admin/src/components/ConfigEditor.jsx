@@ -1,4 +1,5 @@
 import { describeConfigSaveError } from '../utils/configSaveError.mjs'
+import { buildSavePayload } from '../utils/configSavePayload.mjs'
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { TIERS as CELESTIAL_TIERS, formatTierCapitalRange } from '../../../shared/celestial-tiers.mjs'
 import { useState, useEffect, useId, useRef, useCallback } from 'react'
@@ -93,6 +94,8 @@ function SectionCard({ title, children, className = '' }) {
 
 function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pair, strategy = 'dca', engineRunning = null, engineDryRun = null, onRestart, loadError, onRetry }) {
   const [config, setConfig] = useState(initialConfig)
+  // The server copy the draft was loaded from; Save diffs against it (#1395).
+  const baselineRef = useRef(initialConfig)
   const [saving, setSaving] = useState(false)
   const [toggleBusy, setToggleBusy] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -119,6 +122,12 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // without this check a poll landing mid-write would fire that effect
   // (isDirty is never set for a toggle) and snap the UI back to stale state.
   const pendingWriteRef = useRef(0)
+  // Apply a server-confirmed value to both the draft and its baseline.
+  const adoptSaved = updater => {
+    baselineRef.current = updater(baselineRef.current)
+    setConfig(updater)
+  }
+  const loadDraft = next => adoptSaved(() => next)
 
   // Determine if showing regime config based on URL strategy prop
   const isRegime = strategy === 'regime'
@@ -130,7 +139,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       prevExchangeRef.current = exchange
       prevStrategyRef.current = strategy
       if (initialConfig) {
-        setConfig(initialConfig)
+        loadDraft(initialConfig)
         setIsDirty(false)
       }
     }
@@ -152,12 +161,12 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // before the write resolves.
   useEffect(() => {
     if (!initialConfig) {
-      setConfig(undefined)
+      loadDraft(undefined)
       setIsDirty(false)
       return
     }
     if (initialConfig && !isDirty && pendingWriteRef.current === 0) {
-      setConfig(initialConfig)
+      loadDraft(initialConfig)
     }
   }, [initialConfig]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -280,13 +289,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     pendingWriteRef.current += 1
     setSaving(true)
     setMessage(null)
-    // Depth protection has no production market-data input yet. Keep legacy
-    // values in the draft/readback, but never send them as active UI edits.
-    const payload = { ...config }
-    if (config.regime) {
-      const { minDepthUsdc, depthPauseMs, ...editableRegime } = config.regime
-      payload.regime = editableRegime
-    }
+    const payload = buildSavePayload(config, baselineRef.current)
     try {
       const res = await fetch(`/api/${exchange}/config${pairQuery}`, {
         method: 'PUT',
@@ -295,7 +298,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       })
       const result = await res.json().catch(() => ({}))
       if (res.ok) {
-        if (result.config) setConfig(result.config)
+        if (result.config) loadDraft(result.config)
         setMessage({ type: 'success', text: 'Configuration saved!' })
         setIsDirty(false)
         onSave?.()
@@ -303,7 +306,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         // Persistence succeeded even though the live engine rejected or missed
         // propagation. Keep the authoritative saved value and tell the operator
         // that a restart is required; reverting here would display stale state.
-        if (result.config) setConfig(result.config)
+        if (result.config) loadDraft(result.config)
         setIsDirty(false)
         setMessage({
           type: 'warning',
@@ -323,7 +326,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
 
   const handleReset = () => {
     if (initialConfig) {
-      setConfig(initialConfig)
+      loadDraft(initialConfig)
       setIsDirty(false)
       setMessage(null)
     }
@@ -429,7 +432,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       }),
       () => setConfig(prev => ({ ...prev, dryRun: next })),
       () => setConfig(prev => ({ ...prev, dryRun: !next })),
-      saved => saved && setConfig(saved),
+      saved => saved && loadDraft(saved),
     )
   }
 
@@ -448,7 +451,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         }),
         () => setConfig(prev => ({ ...prev, regime: { ...prev.regime, enabled: next } })),
         () => setConfig(prev => ({ ...prev, regime: { ...prev.regime, enabled: !next } })),
-        saved => saved && setConfig(prev => {
+        saved => saved && adoptSaved(prev => {
           const { dryRun, productId, ...savedRegime } = saved
           return {
             ...prev,
@@ -469,7 +472,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         }),
         () => setConfig(prev => ({ ...prev, enabled: next })),
         () => setConfig(prev => ({ ...prev, enabled: !next })),
-        saved => saved && setConfig(saved),
+        saved => saved && loadDraft(saved),
       )
     }
   }

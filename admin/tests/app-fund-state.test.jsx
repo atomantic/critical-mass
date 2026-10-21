@@ -107,7 +107,8 @@ it('never renders or writes A config while B loads, then saves only B values wit
   await waitFor(() => expect(fetch.mock.calls.some(([, options]) => options?.method === 'PUT')).toBe(true))
   const [url, options] = fetch.mock.calls.find(([, options]) => options?.method === 'PUT')
   expect(url).toBe('/api/gemini/config?pair=BTC-USDC')
-  expect(JSON.parse(options.body)).toEqual(config(333))
+  // Save sends only the edit made on B's draft (#1395).
+  expect(JSON.parse(options.body)).toEqual({ regime: { baseSizeUsdc: 333 } })
   await act(async () => statusB.resolve(response(status(false, false, 'closed'))))
   expect(await screen.findByRole('button', { name: 'Reopen', exact: true })).toBeTruthy()
   expect(screen.queryByRole('button', { name: 'Restart Engine' })).toBeNull()
