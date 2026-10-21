@@ -10,6 +10,8 @@ const {
   getRunIdentifier,
   hasRunThisInterval,
   normalizeConfig,
+  SCHEDULED_RETRY_DELAYS_MS,
+  planScheduledRetry,
   getIntervalAmount,
   formatInterval,
   getTimeUntilNext,
@@ -361,5 +363,21 @@ describe('shared admin trading intervals', () => {
     for (const value of [undefined, null, '', 'unknown', 'hourly', 'weekly', 'toString']) {
       assert.equal(getIntervalMs(value), 86_400_000);
     }
+  });
+});
+
+describe('planScheduledRetry', () => {
+  it('retries a failed scheduled cycle with growing delays, then stops for that interval', () => {
+    const entry = {};
+    const now = 1_000_000;
+    const retryAts = [];
+    for (let i = 0; i <= SCHEDULED_RETRY_DELAYS_MS.length; i += 1) {
+      const { failures, retryAt } = planScheduledRetry(entry, 'daily-1', now);
+      Object.assign(entry, { retryRunId: 'daily-1', retryCount: failures });
+      retryAts.push(retryAt);
+    }
+    assert.deepEqual(retryAts, [...SCHEDULED_RETRY_DELAYS_MS.map((ms) => now + ms), null]);
+    assert.deepEqual(planScheduledRetry(entry, 'daily-2', now), { failures: 1, retryAt: now + SCHEDULED_RETRY_DELAYS_MS[0] },
+      'a new interval starts with a fresh retry budget');
   });
 });

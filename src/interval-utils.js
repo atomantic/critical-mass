@@ -106,6 +106,23 @@ const formatInterval = (intervalType) => {
   return config.label;
 };
 
+/** Delays before re-running a scheduled cycle that rejected within its interval. */
+const SCHEDULED_RETRY_DELAYS_MS = Object.freeze([5 * 60_000, 15 * 60_000, 45 * 60_000]);
+
+/**
+ * Plan the retry of a scheduled cycle that rejected. Failures are counted per
+ * run identifier, so each new interval starts with a fresh retry budget.
+ * @param {{retryRunId?: string|null, retryCount?: number}} entry - The fund's scheduler entry
+ * @param {string} runId - Run identifier of the attempt that failed
+ * @param {number} now - Current time (ms)
+ * @returns {{failures: number, retryAt: number|null}} retryAt is null once the budget is spent
+ */
+const planScheduledRetry = (entry, runId, now) => {
+  const failures = (entry.retryRunId === runId ? entry.retryCount || 0 : 0) + 1;
+  const delay = SCHEDULED_RETRY_DELAYS_MS[failures - 1];
+  return { failures, retryAt: delay === undefined ? null : now + delay };
+};
+
 /**
  * Get time until next execution
  * @param {IntervalType} intervalType - Interval type
@@ -178,6 +195,8 @@ module.exports = {
   getIntervalAmount,
   formatInterval,
   getTimeUntilNext,
+  SCHEDULED_RETRY_DELAYS_MS,
+  planScheduledRetry,
   getConsolidationRunId,
   shouldRunConsolidation,
 };

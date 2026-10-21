@@ -29,6 +29,7 @@ const {
   hasRunThisInterval,
   formatInterval,
   getTimeUntilNext,
+  planScheduledRetry,
 } = require('./src/interval-utils');
 const { runIntervalCycle } = require('./src/dca-engine');
 const { createNotifier } = require('./src/notifier');
@@ -460,7 +461,8 @@ const checkAndRunIntervalTrade = () => {
     if (now >= nextExec) {
       const intervalLabel = formatInterval(intervalType);
       log('INFO', `[${label}] Scheduled ${intervalLabel} trade starting at ${new Date().toISOString()}`);
-      schedulerState[key].lastRunId = getRunIdentifier(intervalType);
+      const runId = getRunIdentifier(intervalType);
+      schedulerState[key].lastRunId = runId;
       schedulerState[key].nextExecutionTime = getNextExecutionTime(intervalType);
 
       gatewayShutdown.track(runIntervalCycle(exchange, pair))
@@ -468,7 +470,23 @@ const checkAndRunIntervalTrade = () => {
           log('INFO', `[${label}] Scheduled trade complete: ${result.status}`);
         })
         .catch(err => {
-          log('ERROR', `[${label}] Scheduled trade failed: ${err.message}`);
+          // A transient exchange error (price, balance or order-status read)
+          // would otherwise skip this fund's buy for the whole interval with
+          // nothing but a console line. Re-running is safe: runIntervalCycle
+          // re-checks the persisted interval, pending buy and placement
+          // intents — the manual trade route relies on the same guarantee.
+          const entry = schedulerState[key];
+          const { failures, retryAt } = planScheduledRetry(entry, runId, Date.now());
+          entry.retryRunId = runId;
+          entry.retryCount = failures;
+          let next = `no further automatic retry this ${intervalLabel} interval — trigger the trade manually once the cause is fixed`;
+          if (retryAt !== null && entry.lastRunId === runId) {
+            entry.lastRunId = null;
+            entry.nextExecutionTime = retryAt;
+            next = `retrying at ${new Date(retryAt).toISOString()}`;
+          }
+          log('ERROR', `[${label}] Scheduled trade failed: ${err.message}; ${next}`);
+          tradeEvents.error(exchange, `[${label}] Scheduled ${intervalLabel} trade failed: ${err.message}; ${next}`, { pair, failures });
         });
     }
   }
