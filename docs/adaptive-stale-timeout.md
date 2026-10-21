@@ -69,7 +69,8 @@ staleMs = clamp( 4min × (offsetBps / ATRbps)²,  orderStaleMs,  maxIntervalMs )
   uses the cap `max(orderStaleMs, maxIntervalMs)` instead: the offset is
   unknown, and the floor would cancel a deep bid seconds after a restart.
   Entries adopted from a placement intent (crash between placement and
-  tracking) still get the regime-adjusted `orderStaleMs`.
+  tracking) keep the adaptive window too: `placeEntryBid` records `staleMs` on
+  the intent, and an intent without it uses the same cap.
   An order already past its window is cancelled after a 5 s grace (startup is
   still booking offline partials), and re-restoring an entry whose timer is
   live does not postpone it.

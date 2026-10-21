@@ -912,6 +912,54 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
 };
 
 /**
+ * Validate a fund-state snapshot's identity and manifest and list the state
+ * files it holds for one fund, without staging anything.
+ * @param {string} snapshotId
+ * @param {string} exchange
+ * @param {string} pair
+ * @param {{fundStateBackupsDir: string}} paths - Resolved paths
+ * @returns {{ok: true, snapshotDir: string, files: Array<string>} | {ok: false, error: string}}
+ */
+const resolveFundStateSnapshot = (snapshotId, exchange, pair, paths) => {
+  if (!isSafeFundStateSegment(snapshotId) || !isSafeFundStateSegment(exchange) || !isSafeFundStateSegment(pair)) {
+    return { ok: false, error: 'Invalid fund-state snapshot or fund identity' };
+  }
+  const snapshotDir = path.join(paths.fundStateBackupsDir, snapshotId);
+  let stat;
+  try {
+    stat = fs.lstatSync(snapshotDir);
+  } catch (error) {
+    return { ok: false, error: error?.code === 'ENOENT' ? 'Fund-state snapshot not found' : error.message };
+  }
+  if (!stat.isDirectory()) return { ok: false, error: 'Fund-state snapshot is invalid' };
+
+  const parsed = readFundStateManifest(snapshotDir);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  if (parsed.manifest.snapshotId !== snapshotId) return { ok: false, error: 'Fund-state snapshot identity mismatch' };
+  const fund = parsed.manifest.funds.find((entry) => entry.exchange === exchange && entry.pair === pair);
+  if (!fund || !Array.isArray(fund.files) || fund.files.length === 0) {
+    return { ok: false, error: `Snapshot does not contain state for ${exchange}/${pair}` };
+  }
+  const unsupported = fund.files.find((name) => !FUND_STATE_SNAPSHOT_FILENAMES.includes(name));
+  if (unsupported !== undefined) return { ok: false, error: `Snapshot contains an unsupported state file: ${unsupported}` };
+  return { ok: true, snapshotDir, files: fund.files };
+};
+
+/**
+ * The checks `restoreFundStateBackup` makes before staging, run on their own so
+ * a restore that would refuse does so before any engine is stopped (#1384).
+ * @param {string} snapshotId
+ * @param {string} exchange
+ * @param {string} pair
+ * @param {{paths?: {dataDir?: string, baseConfigFile?: string}}} [options]
+ * @returns {{ok: true} | {ok: false, error: string}}
+ */
+const checkFundStateRestorePreconditions = (snapshotId, exchange, pair, { paths: pathOverrides } = {}) => {
+  const resolved = resolveFundStateSnapshot(snapshotId, exchange, pair, resolvePaths(pathOverrides));
+  return resolved.ok ? { ok: true } : { ok: false, error: resolved.error };
+};
+
+/**
  * Restore one fund from a rolling state snapshot through the same durable
  * transactional applier used by full archives.
  * @param {string} snapshotId
@@ -921,31 +969,14 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
  * @returns {{success: boolean, filesRestored?: number, error?: string, code?: string, rolledBack?: boolean, recovery?: Object}}
  */
 const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrides, logger = SILENT_LOGGER } = {}) => {
-  if (!isSafeFundStateSegment(snapshotId) || !isSafeFundStateSegment(exchange) || !isSafeFundStateSegment(pair)) {
-    return { success: false, error: 'Invalid fund-state snapshot or fund identity' };
-  }
   const paths = resolvePaths(pathOverrides);
-  const snapshotDir = path.join(paths.fundStateBackupsDir, snapshotId);
-  let stat;
-  try {
-    stat = fs.lstatSync(snapshotDir);
-  } catch (error) {
-    return { success: false, error: error?.code === 'ENOENT' ? 'Fund-state snapshot not found' : error.message };
-  }
-  if (!stat.isDirectory()) return { success: false, error: 'Fund-state snapshot is invalid' };
-
-  const parsed = readFundStateManifest(snapshotDir);
-  if (!parsed.ok) return { success: false, error: parsed.error };
-  if (parsed.manifest.snapshotId !== snapshotId) return { success: false, error: 'Fund-state snapshot identity mismatch' };
-  const fund = parsed.manifest.funds.find((entry) => entry.exchange === exchange && entry.pair === pair);
-  if (!fund || !Array.isArray(fund.files) || fund.files.length === 0) {
-    return { success: false, error: `Snapshot does not contain state for ${exchange}/${pair}` };
-  }
+  const resolved = resolveFundStateSnapshot(snapshotId, exchange, pair, paths);
+  if (!resolved.ok) return { success: false, error: resolved.error };
+  const { snapshotDir } = resolved;
 
   const stageDir = fs.mkdtempSync(path.join(paths.dataDir, STAGE_PREFIX));
   try {
-    for (const name of fund.files) {
-      if (!FUND_STATE_SNAPSHOT_FILENAMES.includes(name)) throw new Error(`Snapshot contains an unsupported state file: ${name}`);
+    for (const name of resolved.files) {
       const source = path.join(snapshotDir, exchange, pair, name);
       const sourceStat = fs.lstatSync(source);
       if (!sourceStat.isFile()) throw new Error(`Snapshot state file is not a regular file: ${name}`);
@@ -1106,6 +1137,171 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
 };
 
 /**
+ * Work out which configuration snapshot a restore would apply, or why it must
+ * refuse. Shared by the applier and its pre-flight so both refuse alike.
+ * @param {Object} params
+ * @param {boolean} params.legacy - The archive has no manifest
+ * @param {() => {ok: boolean, value?: any, error?: string}} params.readManifest - Parsed manifest JSON
+ * @param {() => {ok: boolean, value?: any, error?: string}} params.readArchivedOverride - Parsed archived config.json (value null when absent)
+ * @param {Object|null} params.legacyBaseConfig
+ * @param {boolean} params.acceptLegacyWithoutBase
+ * @returns {{ok: true, snapshot: Object|null} | {ok: false, code: string, error: string}}
+ */
+const resolveRestoreSnapshot = ({ legacy, readManifest, readArchivedOverride, legacyBaseConfig, acceptLegacyWithoutBase }) => {
+  if (!legacy) {
+    const manifestRead = readManifest();
+    if (!manifestRead.ok) return { ok: false, code: 'manifest-malformed', error: manifestRead.error };
+    const envelope = readManifestSnapshot(manifestRead.value);
+    if (!envelope.ok) return { ok: false, code: 'manifest-unsupported-version', error: envelope.error };
+    return { ok: true, snapshot: envelope.snapshot };
+  }
+  if (legacyBaseConfig) {
+    // The archive carries only the base-relative override; pairing it with the
+    // source's base reconstructs what the source machine actually ran.
+    const archivedOverride = readArchivedOverride();
+    if (!archivedOverride.ok) return { ok: false, code: 'manifest-malformed', error: archivedOverride.error };
+    return { ok: true, snapshot: buildConfigSnapshot(deepMerge(legacyBaseConfig, archivedOverride.value || {})) };
+  }
+  if (!acceptLegacyWithoutBase) {
+    return {
+      ok: false,
+      code: 'legacy-archive-missing-base',
+      error: `This archive has no ${MANIFEST_FILENAME}, so it does not carry the configuration it was taken with. `
+        + 'Supply the source machine\'s config.json (legacyBaseConfig) to make it portable, or explicitly accept a '
+        + 'data-only restore (acceptLegacyWithoutBase) that keeps this machine\'s current fund configuration. '
+        + 'No files were changed.',
+    };
+  }
+  return { ok: true, snapshot: null };
+};
+
+/**
+ * Rebuild the destination override from a snapshot and refuse an
+ * unacknowledged fund removal.
+ *
+ * The reconstruction already tombstones base-defined pairs the snapshot lacks;
+ * the removal check catches every fund the destination actually runs (base OR
+ * override-defined) that would disappear, and refuses unless the operator has
+ * explicitly accepted it — mirroring acceptLegacyWithoutBase rather than
+ * inventing a second idiom (issue #533).
+ * @param {Object} params
+ * @param {Object} params.snapshot
+ * @param {{config: Object, base: Object}} params.destination - Destination effective + base config
+ * @param {boolean} params.acceptFundRemoval
+ * @returns {{ok: true, override: Object, droppedFields: Array<string>} | {ok: false, code: string, error: string}}
+ */
+const planRestoreConfig = ({ snapshot, destination, acceptFundRemoval }) => {
+  const rebuilt = reconstructConfigOverride({
+    snapshot,
+    baseConfig: destination.base,
+    destinationGlobal: destination.config.global,
+  });
+  if (!rebuilt.ok) return { ok: false, code: 'config-snapshot-invalid', error: rebuilt.error };
+  const removedFunds = diffSnapshotAgainstConfig({ snapshot, effectiveConfig: destination.config });
+  if (removedFunds.length > 0 && !acceptFundRemoval) {
+    const describe = removedFunds.map(({ exchange, pair }) => `${exchange}/${pair}`).join(', ');
+    return {
+      ok: false,
+      code: 'fund-removal-unacknowledged',
+      error: `Restoring this archive would remove ${removedFunds.length} fund${removedFunds.length === 1 ? "" : "s"} this machine currently runs that the archive does not carry (${describe}). `
+        + 'They may still hold on-disk state or a live exchange order. Pass acceptFundRemoval to proceed. No files were changed.',
+    };
+  }
+  return { ok: true, override: rebuilt.override, droppedFields: rebuilt.droppedFields ?? [] };
+};
+
+/**
+ * @param {string[]} unresolvable - Exchanges with exchange-level fund files and no known pair
+ * @returns {string}
+ */
+const unresolvableLayoutError = (unresolvable) =>
+  `This archive predates the multi-pair layout and holds per-fund files at the exchange level for ${unresolvable.join(', ')}, `
+  + 'but neither the archive nor this machine names a fund for those exchanges, so there is no directory to restore them into. '
+  + 'Configure the fund before restoring. No files were changed.';
+
+/**
+ * Parse JSON read out of an archive entry.
+ * @param {Buffer|undefined} raw
+ * @param {string} name - Entry name for the diagnostic
+ * @returns {{ok: true, value: any} | {ok: false, error: string}}
+ */
+const parseArchiveJson = (raw, name) => {
+  try {
+    return { ok: true, value: JSON.parse(raw ? raw.toString() : '') };
+  } catch (err) {
+    return { ok: false, error: jsonReadError(err, name).message };
+  }
+};
+
+/**
+ * Every refusal `restoreBackup` can make from the archive and the operator's
+ * acknowledgements alone — integrity, manifest, legacy acknowledgement, fund
+ * removal, legacy layout — decided without extracting the archive or touching a
+ * destination file. Restore runs this before it stops any engine, so a request
+ * that was always going to be refused leaves every fund running (#1384). The
+ * applier still repeats these checks: this only moves the refusal earlier.
+ *
+ * Async so the full-archive integrity test does not stall the event loop.
+ *
+ * @param {string} filename - Backup filename
+ * @param {Object} [options] - Same acknowledgements as `restoreBackup`
+ * @param {{dataDir?: string, baseConfigFile?: string}} [options.paths]
+ * @param {Object|null} [options.legacyBaseConfig]
+ * @param {boolean} [options.acceptLegacyWithoutBase]
+ * @param {boolean} [options.acceptFundRemoval]
+ * @returns {Promise<{ok: true} | {ok: false, code?: string, error: string}>}
+ */
+const checkRestorePreconditions = async (filename, { paths: pathOverrides, legacyBaseConfig = null, acceptLegacyWithoutBase = false, acceptFundRemoval = false } = {}) => {
+  if (legacyBaseConfig !== null && (typeof legacyBaseConfig !== 'object' || Array.isArray(legacyBaseConfig))) {
+    return { ok: false, code: 'legacy-base-invalid', error: 'legacyBaseConfig must be the source machine\'s config.json object' };
+  }
+  const paths = resolvePaths(pathOverrides);
+  const resolved = resolveArchivePath(filename, paths.backupsDir);
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+  const { zipPath } = resolved;
+
+  const destination = readEffectiveConfig(paths);
+  if (!destination.ok) return { ok: false, code: 'destination-config-unreadable', error: destination.error };
+
+  const integrity = await spawnAsync('unzip', ['-tq', zipPath]);
+  const integrityFailure = checkTailFailure(integrity, 'Archive integrity check failed');
+  if (integrityFailure) return { ok: false, code: 'archive-corrupt', error: `Archive failed its integrity check: ${integrityFailure.error}. No files were changed.` };
+  const listing = await spawnAsync('unzip', ['-Z1', zipPath]);
+  const listingFailure = checkTailFailure(listing, 'Unable to read archive entries');
+  if (listingFailure) return { ok: false, code: 'archive-corrupt', error: `${listingFailure.error}. No files were changed.` };
+  const entries = listing.stdout.toString().split('\n').map((line) => line.trim()).filter(Boolean);
+
+  const legacy = !entries.includes(MANIFEST_FILENAME);
+  const readEntry = async (name) => (entries.includes(name) ? spawnAsync('unzip', ['-p', zipPath, name]) : null);
+  const manifestRaw = legacy ? null : await readEntry(MANIFEST_FILENAME);
+  const overrideRaw = legacy && legacyBaseConfig ? await readEntry('config.json') : null;
+  const resolvedSnapshot = resolveRestoreSnapshot({
+    legacy,
+    readManifest: () => parseArchiveJson(manifestRaw?.stdout, MANIFEST_FILENAME),
+    readArchivedOverride: () => (overrideRaw ? parseArchiveJson(overrideRaw.stdout, 'config.json') : { ok: true, value: null }),
+    legacyBaseConfig,
+    acceptLegacyWithoutBase,
+  });
+  if (!resolvedSnapshot.ok) return resolvedSnapshot;
+  const { snapshot } = resolvedSnapshot;
+
+  if (snapshot) {
+    const planned = planRestoreConfig({ snapshot, destination, acceptFundRemoval });
+    if (!planned.ok) return planned;
+  }
+
+  const layout = planLayoutTranslation({
+    exchangeFiles: collectExchangeFilesFromEntries(entries),
+    snapshot,
+    destinationConfig: destination.config,
+  });
+  if (layout.unresolvable.length > 0) {
+    return { ok: false, code: 'legacy-layout-unresolvable-pair', error: unresolvableLayoutError(layout.unresolvable) };
+  }
+  return { ok: true };
+};
+
+/**
  * Restore a backup by extracting files to data directory.
  *
  * Skips keys files and the backups directory, and rebuilds `data/config.json`
@@ -1178,61 +1374,28 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     // ---- Decide the configuration outcome before mutating the destination ----
     const manifestPath = path.join(tempDir, MANIFEST_FILENAME);
     const legacy = !fs.existsSync(manifestPath);
-    let snapshot = null;
-
-    if (!legacy) {
-      const manifestRead = readJsonFile(manifestPath);
-      if (!manifestRead.ok) return abort(manifestRead.error, 'manifest-malformed');
-      const envelope = readManifestSnapshot(manifestRead.value);
-      if (!envelope.ok) return abort(envelope.error, 'manifest-unsupported-version');
-      snapshot = envelope.snapshot;
-    } else if (legacyBaseConfig) {
-      // The archive carries only the base-relative override; pairing it with the
-      // source's base reconstructs what the source machine actually ran.
-      const archivedOverride = readJsonFile(path.join(tempDir, 'config.json'));
-      if (!archivedOverride.ok) return abort(archivedOverride.error, 'manifest-malformed');
-      snapshot = buildConfigSnapshot(deepMerge(legacyBaseConfig, archivedOverride.value || {}));
-    } else if (!acceptLegacyWithoutBase) {
-      return abort(
-        `This archive has no ${MANIFEST_FILENAME}, so it does not carry the configuration it was taken with. `
-        + 'Supply the source machine\'s config.json (legacyBaseConfig) to make it portable, or explicitly accept a '
-        + 'data-only restore (acceptLegacyWithoutBase) that keeps this machine\'s current fund configuration. '
-        + 'No files were changed.',
-        'legacy-archive-missing-base',
-      );
-    }
+    const resolvedSnapshot = resolveRestoreSnapshot({
+      legacy,
+      readManifest: () => readJsonFile(manifestPath),
+      readArchivedOverride: () => readJsonFile(path.join(tempDir, 'config.json')),
+      legacyBaseConfig,
+      acceptLegacyWithoutBase,
+    });
+    if (!resolvedSnapshot.ok) return abort(resolvedSnapshot.error, resolvedSnapshot.code);
+    const { snapshot } = resolvedSnapshot;
 
     let override = null;
     /** @type {Array<string>} */
     let droppedFields = [];
     if (snapshot) {
-      const rebuilt = reconstructConfigOverride({
-        snapshot,
-        baseConfig: destination.base,
-        destinationGlobal: destination.config.global,
-      });
-      if (!rebuilt.ok) return abort(rebuilt.error, 'config-snapshot-invalid');
-      override = rebuilt.override;
-      droppedFields = rebuilt.droppedFields ?? [];
+      const planned = planRestoreConfig({ snapshot, destination, acceptFundRemoval });
+      if (!planned.ok) return abort(planned.error, planned.code);
+      override = planned.override;
+      droppedFields = planned.droppedFields;
       if (droppedFields.length > 0) {
         logger.warn(`⚠️ 💾 Restore ${filename}: archive written by a newer build — ignoring ${droppedFields.length} setting(s) this build has no concept of, destination keeps its own defaults (${droppedFields.join(', ')})`, {
           action: 'restore-dropped-fields', filename, droppedFields, count: droppedFields.length,
         });
-      }
-
-      // The reconstruction above already tombstones base-defined pairs the
-      // snapshot lacks; this catches every fund the destination actually runs
-      // (base OR override-defined) that would disappear, and refuses unless the
-      // operator has explicitly accepted it — mirroring acceptLegacyWithoutBase
-      // above rather than inventing a second idiom (issue #533).
-      const removedFunds = diffSnapshotAgainstConfig({ snapshot, effectiveConfig: destination.config });
-      if (removedFunds.length > 0 && !acceptFundRemoval) {
-        const describe = removedFunds.map(({ exchange, pair }) => `${exchange}/${pair}`).join(', ');
-        return abort(
-          `Restoring this archive would remove ${removedFunds.length} fund${removedFunds.length === 1 ? "" : "s"} this machine currently runs that the archive does not carry (${describe}). `
-          + 'They may still hold on-disk state or a live exchange order. Pass acceptFundRemoval to proceed. No files were changed.',
-          'fund-removal-unacknowledged',
-        );
       }
     }
 
@@ -1266,12 +1429,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
       destinationConfig: destination.config,
     });
     if (layout.unresolvable.length > 0) {
-      return abort(
-        `This archive predates the multi-pair layout and holds per-fund files at the exchange level for ${layout.unresolvable.join(', ')}, `
-        + 'but neither the archive nor this machine names a fund for those exchanges, so there is no directory to restore them into. '
-        + 'Configure the fund before restoring. No files were changed.',
-        'legacy-layout-unresolvable-pair',
-      );
+      return abort(unresolvableLayoutError(layout.unresolvable), 'legacy-layout-unresolvable-pair');
     }
     for (const { exchange, pair } of layout.translations) {
       const { moved, skipped } = normalizeExchangeTreeToPairs({ root: tempDir, exchange, pair });
@@ -1341,6 +1499,8 @@ module.exports = {
   pruneFundStateBackups,
   restoreBackup,
   restoreFundStateBackup,
+  checkRestorePreconditions,
+  checkFundStateRestorePreconditions,
   inspectBackup,
   MANIFEST_FILENAME,
   MANIFEST_VERSION,

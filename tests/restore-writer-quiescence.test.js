@@ -97,7 +97,8 @@ describe('restore writer quiescence gate', () => {
     });
     assert.equal(status, 409);
     assert.deepEqual(restoreCalls, []);
-    assert.match(body.error, /No files were changed\. Engines stopped for the restore are still stopped: coinbase BTC-USDC — restart them from the dashboard\.$/);
+    assert.match(body.error, /No files were changed\. Engines stopped for the restore were restarted: coinbase BTC-USDC\.$/);
+    assert.deepEqual(body.restartedEngines, ['coinbase BTC-USDC']);
   });
 
   it('treats an IPC timeout as "still writing", never as stopped', async () => {
@@ -464,7 +465,7 @@ describe('settings route is wired to the quiescence gate', () => {
   const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
   const CONFIG = { exchanges: { coinbase: { pairs: { 'BTC-USDC': { productId: 'BTC-USDC' } } } } };
 
-  const setup = (ipc, recoveryCalls = []) => {
+  const setup = (ipc, recoveryCalls = [], { preflightCalls = [], realPreflight = false } = {}) => {
     configUtils._resetConfigCacheForTests();
     mock.method(fs, 'existsSync', (p) => p === BASE_CONFIG_FILE);
     mock.method(fs, 'readFileSync', (p) => {
@@ -487,7 +488,12 @@ describe('settings route is wired to the quiescence gate', () => {
     };
     // Stubbed so no test zips a real data directory into a real backups folder.
     const createRecoveryPoint = async () => { recoveryCalls.push('archive'); return { success: true, filename: 'backup-pre-restore.zip' }; };
-    registerSettingsRoutes(app, { exchangeIPCMap: { coinbase: ipc }, rescheduleBackupTimer: () => {}, createRecoveryPoint });
+    // The archive pre-flight is stubbed to pass (recording its options) unless
+    // a test exercises the real one against the missing archive.
+    const checkRestorePreconditions = realPreflight
+      ? undefined
+      : async (filename, options) => { preflightCalls.push({ filename, options }); return { ok: true }; };
+    registerSettingsRoutes(app, { exchangeIPCMap: { coinbase: ipc }, rescheduleBackupTimer: () => {}, createRecoveryPoint, checkRestorePreconditions });
     return async (body = {}) => {
       const res = { statusCode: 200, body: null, status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
       await handler({ params: { filename: 'backup-2026-01-01.zip' }, body }, res);
@@ -519,8 +525,32 @@ describe('settings route is wired to the quiescence gate', () => {
     assert.deepEqual(recoveryCalls, ['archive'], 'the live data is archived before the applier runs');
     assert.equal(res.statusCode, 500);
     assert.equal(res.body.code, 'restore-failed');
-    assert.equal(res.body.error, 'Backup not found. Engines stopped for the restore are still stopped: coinbase BTC-USDC — restart them from the dashboard.');
+    assert.equal(res.body.error, 'Backup not found. Engines stopped for the restore were restarted: coinbase BTC-USDC.');
     assert.deepEqual(res.body.stoppedEngines, ['coinbase BTC-USDC']);
+    assert.deepEqual(res.body.restartedEngines, ['coinbase BTC-USDC']);
+  });
+
+  it('refuses a missing archive before stopping any engine', async () => {
+    const channels = [];
+    const recoveryCalls = [];
+    const invoke = setup({ isConnected: () => true, request: async (channel) => { channels.push(channel); return { success: true, stopped: [] }; } }, recoveryCalls, { realPreflight: true });
+    const res = await invoke();
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body.error, 'Backup not found');
+    assert.deepEqual(res.body.stoppedEngines, []);
+    assert.deepEqual(channels, [], 'no maintenance window, stop-all or start was sent');
+    assert.deepEqual(recoveryCalls, []);
+    assert.equal(maintenance.isMaintenanceActive(), false);
+  });
+
+  it('passes the operator acknowledgements to the pre-flight', async () => {
+    const preflightCalls = [];
+    const invoke = setup({ isConnected: () => false, request: async () => ({}) }, [], { preflightCalls });
+    await invoke({ acceptLegacyWithoutBase: true, acceptFundRemoval: true });
+    assert.deepEqual(preflightCalls, [{
+      filename: 'backup-2026-01-01.zip',
+      options: { legacyBaseConfig: null, acceptLegacyWithoutBase: true, acceptFundRemoval: true },
+    }]);
   });
 
   it('forwards an explicit force override from the request body', async () => {
