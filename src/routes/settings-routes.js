@@ -34,10 +34,10 @@ const settingsLogger = (route) => createContextLogger({
 
 /**
  * @param {import('express').Express} app
- * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, runBackup: Function, updownService?: Object, sentinelService?: Object, candleCache?: Object}} deps
+ * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, runBackup: Function, updownService?: Object, sentinelService?: Object, candleCache?: Object, getBackupSchedulerStatus?: Function}} deps
  */
 module.exports = (app, deps) => {
-  const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService, sentinelService, candleCache, runBackup } = deps;
+  const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService, sentinelService, candleCache, runBackup, getBackupSchedulerStatus } = deps;
 
   /**
    * Gateway services that own files inside the archive. Each is stopped before
@@ -155,7 +155,7 @@ module.exports = (app, deps) => {
     const backups = listBackups();
     const fundStateBackups = listFundStateBackups();
     const config = getBackupConfig();
-    res.json({ success: true, backups, fundStateBackups, config });
+    res.json({ success: true, backups, fundStateBackups, config, schedulerStatus: getBackupSchedulerStatus?.() ?? null });
   });
 
   app.get('/api/backups/config', (req, res) => {
