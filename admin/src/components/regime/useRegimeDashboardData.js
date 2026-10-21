@@ -1,10 +1,13 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useRegimeEvents } from '../../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../../hooks/useChartDataBuffer'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
+import { EMPTY_SNAPSHOT, STATUS_STALE_MS, stampRegimeStatus, toUnreachableStatus } from '../../utils/regimeStatusSnapshot.mjs'
 
 export default function useRegimeDashboardData(exchange, pair, pairQuery) {
-  const [localStatus, setLocalStatus] = useState(null)
+  const [localSnapshot, setLocalSnapshot] = useState(EMPTY_SNAPSHOT)
+  // seq of the snapshot that went STATUS_STALE_MS without a successor
+  const [silentSeq, setSilentSeq] = useState(null)
   const [config, setConfig] = useState(null)
   const [loading, setLoading] = useState(true)
   const [reads, setReads] = useState({
@@ -30,13 +33,21 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
     statusOwner.invalidate()
     configOwner.invalidate()
   }, [fillsOwner, statusOwner, configOwner])
-  const { status: socketStatus, setStatus: setSocketStatus } = useRegimeEvents(exchange, pair)
+  const { status: socketStatus, statusSeq: socketSeq = 0, setStatus: setSocketStatus } = useRegimeEvents(exchange, pair)
 
-  // Use socket status when available, fall back to local status (for initial load / when engine stopped)
-  const status = socketStatus || localStatus
+  // The newest snapshot wins whichever source it came from, so an HTTP read
+  // after an action or a Retry can replace a stale socket snapshot (#1388).
+  const latest = socketStatus && (!localSnapshot.status || socketSeq > localSnapshot.seq)
+    ? { status: socketStatus, seq: socketSeq }
+    : localSnapshot
+  // No status for STATUS_STALE_MS: show the last snapshot as an unreachable
+  // engine (stopped-status fields only) until a fresh one arrives.
+  const statusSilent = Boolean(latest.status) && silentSeq === latest.seq
+  const status = useMemo(() => statusSilent ? toUnreachableStatus(latest.status) : latest.status, [statusSilent, latest.status])
 
-  // Chart data buffering with cache support
-  const { priceHistory, atrHistory, regimeHistory, initializeFromCache } = useChartDataBuffer(status)
+  // Chart data buffering with cache support. Fed the received snapshot, so a
+  // silent engine adds no synthetic point at its frozen price.
+  const { priceHistory, atrHistory, regimeHistory, initializeFromCache } = useChartDataBuffer(latest.status)
 
   // Sync config from status updates (hot-reload without refresh)
   useEffect(() => {
@@ -69,7 +80,24 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
     return Boolean(valid)
   }, [exchange, pairQuery])
 
-  const fetchStatus = useCallback(() => readSnapshot('status', statusOwner, setLocalStatus), [readSnapshot, statusOwner])
+  const commitLocalStatus = useCallback(value => setLocalSnapshot(stampRegimeStatus(value)), [])
+  const fetchStatus = useCallback(() => readSnapshot('status', statusOwner, commitLocalStatus), [readSnapshot, statusOwner, commitLocalStatus])
+
+  // The engine's process dying sends nothing to the browser, and the socket's
+  // "Live" state only tracks the gateway. Mark the snapshot silent once nothing
+  // has arrived for STATUS_STALE_MS and probe over HTTP: the gateway answers
+  // with the on-disk ENGINE_DOWN status when the engine IPC is gone, or the
+  // running engine's status when the market was just quiet.
+  const hasStatus = Boolean(latest.status)
+  const latestSeq = latest.seq
+  useEffect(() => {
+    if (!hasStatus) return
+    const t = setTimeout(() => {
+      setSilentSeq(latestSeq)
+      fetchStatus()
+    }, STATUS_STALE_MS)
+    return () => clearTimeout(t)
+  }, [hasStatus, latestSeq, fetchStatus])
   const fetchConfig = useCallback(() => readSnapshot('config', configOwner, setConfig), [readSnapshot, configOwner])
   // Keep fillsOwner.read's ownership fence for concurrent marker/action reads.
   const fetchFills = useCallback(() => readSnapshot('fills', fillsOwner, data => {

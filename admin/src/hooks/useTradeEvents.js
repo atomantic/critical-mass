@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { getRealtimeClient } from '../lib/realtime'
+import { EMPTY_SNAPSHOT, mergeRegimeStatus, stampRegimeStatus } from '../utils/regimeStatusSnapshot.mjs'
 
 // Maximum events to keep in history
 const MAX_EVENTS = 50
@@ -54,7 +55,8 @@ export function useTradeEvents(exchange = null) {
 }
 
 export function useRegimeEvents(exchange = null, pair = null) {
-  const [status, setStatus] = useState(null)
+  // { status, seq }: seq orders this snapshot against HTTP reads (#1388).
+  const [snapshot, setSnapshot] = useState(EMPTY_SNAPSHOT)
   const [regimeState, setRegimeState] = useState(null)
   const [healthState, setHealthState] = useState(null)
   const [positionState, setPositionState] = useState(null)
@@ -79,10 +81,9 @@ export function useRegimeEvents(exchange = null, pair = null) {
 
     const handleStatusUpdate = (data) => {
       if (!matchesFund(data) || !data.status) return
-      // Shallow-merge so a truncated emit (e.g., the market service while the
-      // engine is stopped) can't blow away fields like pendingOrders/celestial
-      // that were present in the prior good snapshot.
-      setStatus(prev => prev ? { ...prev, ...data.status } : data.status)
+      // A stopped payload or a running-state change replaces the snapshot;
+      // only running -> running emits merge (#1388).
+      setSnapshot(prev => stampRegimeStatus(mergeRegimeStatus(prev.status, data.status)))
     }
 
     const handleRegimeChange = (data) => {
@@ -130,9 +131,12 @@ export function useRegimeEvents(exchange = null, pair = null) {
   }, [exchange, pair])
 
   const clearEvents = useCallback(() => setEvents([]), [])
+  // Action responses carry a full snapshot: replace, stamped as newest.
+  const setStatus = useCallback(status => setSnapshot(stampRegimeStatus(status)), [])
 
   return {
-    status,
+    status: snapshot.status,
+    statusSeq: snapshot.seq,
     setStatus,
     regimeState,
     healthState,

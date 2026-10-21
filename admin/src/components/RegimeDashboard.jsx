@@ -82,7 +82,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
       {/* Stopped banner when engine is not running but we have data */}
       {status && !error && <StoppedBanner isRunning={isRunning} lastPrice={market.lastPrice} totalAsset={position.totalAsset}
-        engineDown={status?.engineDown} stale={market.stale} />}
+        engineDown={status?.engineDown} stale={market.stale} silent={status?.statusSilent} />}
 
       {/* API-key-denied banner: the exchange rejected the key (commonly the
           server IP is not on the key's allowlist). New orders are halted until
