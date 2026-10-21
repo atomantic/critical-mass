@@ -1,5 +1,5 @@
 // @ts-check
-const { describe, it } = require('node:test');
+const { describe, it, mock, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createOrderExecutor } = require('../src/order-executor');
@@ -1513,5 +1513,166 @@ describe('entry admission — stop/close fences pending entry dispatch (issue #1
     ]);
     assert.equal(placeCalls, 2);
     assert.equal(result.notAdmitted, undefined);
+  });
+});
+
+describe('stale-timeout cancel of restored and partially filled entry bids', () => {
+  // Controlled clock: setTimeout and Date are mocked so the remaining-window
+  // arithmetic is exact and nothing really sleeps. setImmediate stays real and
+  // is used to drain the promise chain after each tick.
+  const NOW = 1_700_000_000_000;
+  const drain = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r)); };
+
+  afterEach(() => mock.timers.reset());
+
+  /** Adapter whose cancel is refused (zero-delay path) and whose getOrder then reports CANCELLED. */
+  const makeStaleAdapter = (restingStatus, cancelledStatus = { status: 'CANCELLED', filledSize: 0, completionPercentage: 0 }) => {
+    const cancelled = new Set();
+    const cancelCalls = [];
+    return {
+      cancelCalls,
+      getOrder: async (id) => (cancelled.has(id) ? cancelledStatus : restingStatus),
+      cancelOrder: async (id) => { cancelled.add(id); cancelCalls.push(id); return { success: false }; },
+      placeLimitBuy: async () => { throw new Error('placeLimitBuy should not be called'); },
+      getOrderFills: async () => [],
+    };
+  };
+
+  const restoreEntry = (exec, orderId, ageMs) => exec.restorePendingOrder(orderId, {
+    type: 'entry', price: 30000, size: 0.1, sizeUsdc: 3000, placedAt: Date.now() - ageMs,
+  });
+
+  it('arms the REMAINING stale window for a restored entry and cancels it when it elapses', async () => {
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: NOW });
+    const adapter = makeStaleAdapter({ status: 'OPEN', filledSize: 0, completionPercentage: 0, side: 'BUY' });
+    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+
+    restoreEntry(exec, 'restored-1', 50_000); // 60s window, 50s already elapsed → 10s left
+
+    mock.timers.tick(9_000);
+    await drain();
+    assert.deepEqual(adapter.cancelCalls, [], 'not cancelled before its window elapses');
+
+    mock.timers.tick(1_000);
+    await drain();
+    assert.deepEqual(adapter.cancelCalls, ['restored-1'], 'cancelled once the remaining window elapsed');
+    assert.equal(exec.getPendingCounts().entries, 0, 'no longer blocks new reactive entries');
+    exec.clearTimers();
+  });
+
+  it('arms the remainder of the entry\'s saved adaptive staleMs, not the global window, for a restored entry', async () => {
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: NOW });
+    const adapter = makeStaleAdapter({ status: 'OPEN', filledSize: 0, completionPercentage: 0, side: 'BUY' });
+    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+
+    // 300s adaptive window with 50s elapsed: 250s left, well past the 60s global window.
+    exec.restorePendingOrder('restored-deep', {
+      type: 'entry', price: 30000, size: 0.1, sizeUsdc: 3000, placedAt: Date.now() - 50_000, staleMs: 300_000,
+    });
+
+    mock.timers.tick(100_000);
+    await drain();
+    assert.deepEqual(adapter.cancelCalls, [], 'the global 60s window must not cancel a deeper bid early');
+
+    mock.timers.tick(149_000);
+    await drain();
+    assert.deepEqual(adapter.cancelCalls, [], 'still inside the saved window');
+
+    mock.timers.tick(1_000);
+    await drain();
+    assert.deepEqual(adapter.cancelCalls, ['restored-deep'], 'cancelled when the saved window elapses');
+    exec.clearTimers();
+  });
+
+  it('gives an already-overdue restored entry a short grace period instead of cancelling instantly', async () => {
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: NOW });
+    const adapter = makeStaleAdapter({ status: 'OPEN', filledSize: 0, completionPercentage: 0, side: 'BUY' });
+    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+
+    restoreEntry(exec, 'restored-overdue', 3 * 60 * 60_000);
+
+    mock.timers.tick(4_000);
+    await drain();
+    assert.deepEqual(adapter.cancelCalls, [], 'startup gets a grace period to book offline partials');
+
+    mock.timers.tick(1_000);
+    await drain();
+    assert.deepEqual(adapter.cancelCalls, ['restored-overdue']);
+    exec.clearTimers();
+  });
+
+  it('does not postpone the timer when the same entry is restored again (reconcile re-arm)', async () => {
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: NOW });
+    const adapter = makeStaleAdapter({ status: 'OPEN', filledSize: 0, completionPercentage: 0, side: 'BUY' });
+    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+
+    restoreEntry(exec, 'restored-twice', 50_000);
+    mock.timers.tick(6_000);
+    restoreEntry(exec, 'restored-twice', 56_000);
+    mock.timers.tick(4_000);
+    await drain();
+
+    assert.deepEqual(adapter.cancelCalls, ['restored-twice'], 'cancelled exactly once, on the original schedule');
+    exec.clearTimers();
+  });
+
+  for (const [label, resting] of [
+    ['PARTIALLY_FILLED', { status: 'PARTIALLY_FILLED', filledSize: 0.04, completionPercentage: 40, side: 'BUY' }],
+    ['OPEN with completionPercentage > 0 (Coinbase)', { status: 'OPEN', filledSize: 0.04, completionPercentage: 40, side: 'BUY' }],
+  ]) {
+    it(`cancels a partially filled entry at its stale timeout and books the partial — ${label}`, async () => {
+      mock.timers.enable({ apis: ['setTimeout', 'Date'], now: NOW });
+      const adapter = makeStaleAdapter(resting, { status: 'CANCELLED', filledSize: 0.04, completionPercentage: 40, side: 'BUY' });
+      const captured = [];
+      const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {
+        onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+      });
+
+      restoreEntry(exec, 'partial-stale', 50_000);
+      mock.timers.tick(10_000);
+      await drain();
+
+      assert.deepEqual(adapter.cancelCalls, ['partial-stale']);
+      assert.equal(captured.length, 1, 'the filled portion is routed through onFillDetected');
+      assert.equal(captured[0].status.isPartialFill, true);
+      assert.equal(captured[0].status.filledSize, 0.04);
+      assert.equal(exec.getPendingCounts().entries, 0, 'the resting remainder no longer blocks new entries');
+      exec.clearTimers();
+    });
+  }
+});
+
+describe('getOrder lookup failures are logged, not swallowed', () => {
+  it('still treats a failing getOrder as unknown (order stays tracked) and logs a warning once per window', async () => {
+    const warnings = [];
+    const origWarn = console.warn;
+    const origLog = console.log;
+    const capture = (...args) => { warnings.push(args.map(String).join(' ')); };
+    console.warn = capture;
+    console.log = capture;
+    try {
+      const adapter = {
+        getOrder: async () => { throw new Error('401 unauthorized'); },
+        cancelOrder: async () => { throw new Error('should not cancel'); },
+        getOrderFills: async () => [],
+      };
+      const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+      exec.restorePendingOrder('lookup-fail-1', { type: 'entry', price: 30000, size: 0.1, sizeUsdc: 3000, placedAt: Date.now() });
+      exec.restorePendingOrder('lookup-fail-2', { type: 'entry', price: 30000, size: 0.1, sizeUsdc: 3000, placedAt: Date.now() });
+
+      const result = await exec.checkPendingOrderFills();
+      await exec.checkPendingOrderFills();
+
+      assert.equal(result.filled, 0);
+      assert.equal(result.cancelled, 0);
+      assert.equal(exec.getPendingCounts().entries, 2, 'null semantics unchanged: both orders stay tracked');
+      const lookupLogs = warnings.filter(w => w.includes('getOrder failed') && w.includes('401 unauthorized'));
+      assert.equal(lookupLogs.length, 1, 'one rate-limited warning with the error message');
+      assert.ok(lookupLogs[0].includes('lookup-fail-1'), 'warning names the order id');
+      exec.clearTimers();
+    } finally {
+      console.warn = origWarn;
+      console.log = origLog;
+    }
   });
 });

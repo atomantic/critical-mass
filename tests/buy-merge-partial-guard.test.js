@@ -572,3 +572,35 @@ describe('untracked sell with no bodies — only the engine\'s own TP closes the
     });
   }
 });
+
+describe('merge pre-check lookup failure is logged, not swallowed', () => {
+  it('a rejecting getOrder keeps the null (unknown) control flow and warns once with the error text', async () => {
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (line) => { warnings.push(String(line)); };
+    let cancelCalls = 0;
+    try {
+      const target = makeBody('target', 50000, 0.01, 'tp-lookup-fail');
+      const eng = makeEngine({
+        bodies: [target],
+        adapter: {
+          getOrder: async () => { throw new Error('HTTP 429 rate limited'); },
+          getOpenOrders: async () => [],
+          getOrderFills: async () => buyFills('buy-lookup-fail', 0.01, 50000),
+        },
+        executor: { cancelBodyTpOrder: async () => { cancelCalls++; return { cancelled: true }; } },
+      });
+
+      await eng._test.handleOrderFill({ orderId: 'buy-lookup-fail', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(cancelCalls, 1, 'an unknown pre-check does not block the merge (null semantics unchanged)');
+    const lookupWarnings = warnings.filter(w => w.includes('getOrder(tp-lookup-fail) failed'));
+    assert.equal(lookupWarnings.length, 1, `rate-limited to one warning, got ${lookupWarnings.length}`);
+    assert.match(lookupWarnings[0], /HTTP 429 rate limited/);
+    assert.match(lookupWarnings[0], /coinbase/);
+    assert.match(lookupWarnings[0], new RegExp(TEST_PAIR));
+  });
+});

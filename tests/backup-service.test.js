@@ -603,6 +603,63 @@ describe('backup-service — pruneBackups retention', () => {
     assert.equal(fs.existsSync(corrupt), true);
   });
 
+  describe('integrity tests are not repeated on every list/prune (event-loop stall)', () => {
+    // `unzip` shim that logs each invocation's flags, then runs the real binary,
+    // so the number of full integrity tests (`-tq`) can be counted.
+    let fakeBin;
+    let logFile;
+    const integrityTests = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').filter(line => line === '-tq').length : 0);
+
+    beforeEach(() => {
+      fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-unzip-counter-'));
+      logFile = path.join(fakeBin, 'calls.log');
+      const realUnzip = spawnSync('which', ['unzip']).stdout.toString().trim();
+      fs.writeFileSync(path.join(fakeBin, 'unzip'), `#!/bin/sh\necho "$1" >> "${logFile}"\nexec ${realUnzip} "$@"\n`, { mode: 0o755 });
+      process.env.PATH = `${fakeBin}${path.delimiter}${originalPath}`;
+    });
+
+    afterEach(() => {
+      process.env.PATH = originalPath;
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    });
+
+    it('tests each retained archive once, then serves repeated list and prune calls from the verdict cache', () => {
+      assert.equal(listBackups().length, 5);
+      assert.equal(integrityTests(), 5, 'first look at five unseen archives');
+
+      listBackups();
+      listBackups();
+      pruneBackups(5);
+      assert.equal(integrityTests(), 5, 'no archive is re-tested while unchanged');
+    });
+
+    it('re-tests an archive whose size or mtime changed instead of reusing its earlier verdict (bit rot that changes neither is only caught after a restart)', () => {
+      assert.equal(listBackups().length, 5);
+      const victim = path.join(BACKUP_DIR, `backup-${prefix}-2.zip`);
+      const before = fs.statSync(victim);
+      fs.writeFileSync(victim, 'truncated by a failed copy');
+      fs.utimesSync(victim, before.atime, before.mtime);
+      const baseline = integrityTests();
+
+      const names = listBackups().map(backup => backup.filename);
+      assert.equal(integrityTests(), baseline + 1, 'only the changed archive is re-tested');
+      assert.equal(names.includes(`backup-${prefix}-2.zip`), false);
+      assert.equal(names.length, 4);
+    });
+
+    it('lists a freshly created backup without re-running its integrity test', async () => {
+      listBackups();
+      const result = await createBackup();
+      assert.equal(result.success, true, result.error);
+      created.push(path.join(BACKUP_DIR, result.filename));
+      assert.ok(integrityTests() >= 6, 'createBackup validated the new archive before publishing');
+      const afterCreate = integrityTests();
+
+      assert.ok(listBackups().some(backup => backup.filename === result.filename));
+      assert.equal(integrityTests(), afterCreate, 'listing reuses the verdict earned at publish time');
+    });
+  });
+
   it('anchors the schedule to the newest valid archive, not a newer corrupt one', async () => {
     const corrupt = path.join(BACKUP_DIR, `backup-${prefix}-newer-corrupt.zip`);
     fs.writeFileSync(corrupt, 'partial archive');

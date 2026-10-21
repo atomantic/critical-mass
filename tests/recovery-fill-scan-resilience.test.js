@@ -60,6 +60,7 @@ describe('recovery.getRecentFills resilience (issue #679 follow-up)', () => {
     };
     const fillLedger = {
       ingestFill: () => ({ ingested: false }),
+      persist: () => {},
       getCurrentCycleFills: () => [],
       rebuildPositionFromFills: () => ({ totalAsset: 0, totalCostBasis: 0, avgCostBasis: 0 }),
     };

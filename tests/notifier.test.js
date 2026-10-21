@@ -414,7 +414,7 @@ describe('createNotifier() integration (fs-mocked config, stubbed fetch)', () =>
     setupFsMocks(RUNNING_CONFIG);
     originalFetch = global.fetch;
     global.fetch = async () => { throw new Error('network down'); };
-    notifier = createNotifier();
+    notifier = createNotifier({ sleep: async () => {} });
     notifier.start();
 
     let unhandled = null;
@@ -424,13 +424,224 @@ describe('createNotifier() integration (fs-mocked config, stubbed fetch)', () =>
 
     emit('buy_filled', 'oops');
     t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
-    await flushMicrotasks();
-    await flushMicrotasks();
+    for (let i = 0; i < 6; i++) await flushMicrotasks();
 
     const stats = notifier.getStats();
     assert.equal(stats.sent, 0);
-    assert.equal(stats.errors, 1);
+    assert.equal(stats.errors, 1, 'counted once per dropped batch, after the retries are exhausted');
     assert.equal(unhandled, null);
+  });
+
+  describe('Telegram send retry', () => {
+    const response = (status, body = {}) => ({
+      ok: status >= 200 && status < 300, status, statusText: `HTTP ${status}`, json: async () => body,
+    });
+
+    /** Notifier with a recorded, instant sleep, and a fetch that plays back `statuses` in order. */
+    const setup = (t, steps) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      setupFsMocks(RUNNING_CONFIG);
+      const sleeps = [];
+      let i = 0;
+      const calls = stubFetch(async () => {
+        const step = steps[Math.min(i++, steps.length - 1)];
+        if (step instanceof Error) throw step;
+        return step;
+      });
+      notifier = createNotifier({ sleep: async (ms) => { sleeps.push(ms); } });
+      notifier.start();
+      return { calls, sleeps };
+    };
+
+    it('retries a thrown fetch and delivers the batch on the next attempt', async (t) => {
+      const { calls, sleeps } = setup(t, [new Error('network down'), response(200)]);
+      emit('buy_filled', 'fatal fault');
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      assert.equal(await notifier.flush(), true, 'flush() waits for the retry');
+
+      assert.equal(calls.length, 2);
+      assert.equal(calls[1].body.text, calls[0].body.text, 'the same batch is resent');
+      assert.deepEqual(sleeps, [1000]);
+      const stats = notifier.getStats();
+      assert.equal(stats.sent, 1);
+      assert.equal(stats.errors, 0);
+    });
+
+    it('honors Telegram retry_after on a 429, capped at 30s', async (t) => {
+      const { calls, sleeps } = setup(t, [
+        response(429, { description: 'Too Many Requests', parameters: { retry_after: 7 } }),
+        response(429, { description: 'Too Many Requests', parameters: { retry_after: 120 } }),
+        response(200),
+      ]);
+      emit('buy_filled', 'burst');
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      assert.equal(await notifier.flush(), true);
+
+      assert.equal(calls.length, 3);
+      assert.deepEqual(sleeps, [7000, 30000]);
+    });
+
+    it('retries a 5xx, then gives up after the retry budget and counts one error', async (t) => {
+      const { calls, sleeps } = setup(t, [response(502, { description: 'Bad Gateway' })]);
+      emit('buy_filled', 'doomed');
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      assert.equal(await notifier.flush(), false);
+
+      assert.equal(calls.length, 4, 'first attempt plus three retries');
+      assert.deepEqual(sleeps, [1000, 2000, 4000], 'exponential backoff');
+      const stats = notifier.getStats();
+      assert.equal(stats.sent, 0);
+      assert.equal(stats.errors, 1);
+    });
+
+    it('a critical alert (safe_mode) hit by a transient outage is retried until Telegram recovers, not dropped', async (t) => {
+      const { calls, sleeps } = setup(t, [
+        response(503, { description: 'Service Unavailable' }),
+        new Error('socket hang up'),
+        response(200),
+      ]);
+      emit('safe_mode', 'circuit breaker tripped');
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      assert.equal(await notifier.flush(), true);
+
+      assert.equal(calls.length, 3);
+      assert.ok(calls.every(c => c.body.text === calls[0].body.text), 'the same alert text is resent on every attempt');
+      assert.ok(calls[2].body.text.includes('circuit breaker tripped'));
+      assert.deepEqual(sleeps, [1000, 2000]);
+      const stats = notifier.getStats();
+      assert.equal(stats.sent, 1);
+      assert.equal(stats.errors, 0);
+    });
+
+    it('does not retry a non-retryable 4xx', async (t) => {
+      const { calls, sleeps } = setup(t, [response(401, { description: 'Unauthorized' })]);
+      emit('buy_filled', 'bad token');
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      assert.equal(await notifier.flush(), false);
+
+      assert.equal(calls.length, 1);
+      assert.deepEqual(sleeps, []);
+      assert.equal(notifier.getStats().errors, 1);
+    });
+
+    it('delivers batches in enqueue order even while an earlier batch is sleeping between retries', async (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      setupFsMocks(RUNNING_CONFIG);
+      const releaseSleep = [];
+      let first = true;
+      const calls = stubFetch(async () => {
+        if (first) { first = false; return response(502, { description: 'Bad Gateway' }); }
+        return response(200);
+      });
+      notifier = createNotifier({ sleep: () => new Promise((resolve) => releaseSleep.push(resolve)) });
+      notifier.start();
+
+      emit('buy_filled', 'batch A');
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      await flushMicrotasks();
+      assert.equal(calls.length, 1);
+      assert.equal(releaseSleep.length, 1, 'batch A is sleeping before its retry');
+
+      emit('buy_filled', 'batch B');
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      await flushMicrotasks();
+      assert.equal(calls.length, 1, 'batch B must not overtake the retrying batch A');
+
+      releaseSleep[0]();
+      assert.equal(await notifier.flush(), true);
+      assert.deepEqual(calls.map(c => /batch ([AB])/.exec(c.body.text)[1]), ['A', 'A', 'B']);
+    });
+
+    it('flush() sends its batch immediately instead of queueing behind a batch that is sleeping between retries', async (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      setupFsMocks(RUNNING_CONFIG);
+      const releaseSleep = [];
+      let first = true;
+      const calls = stubFetch(async () => {
+        if (first) { first = false; return response(502, { description: 'Bad Gateway' }); }
+        return response(200);
+      });
+      notifier = createNotifier({ sleep: () => new Promise((resolve) => releaseSleep.push(resolve)) });
+      notifier.start();
+
+      emit('buy_filled', 'batch A');
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      await flushMicrotasks();
+      assert.equal(releaseSleep.length, 1, 'batch A is sleeping before its retry');
+
+      // The process-guard path: a fatal-fault alert is flushed while A is still backing off
+      emit('sentinel_critical', 'fatal fault');
+      const fatalFlush = notifier.flush();
+      await flushMicrotasks();
+      assert.equal(calls.length, 2, 'the urgent batch is sent without waiting for A');
+      assert.ok(calls[1].body.text.includes('fatal fault'));
+
+      releaseSleep[0]();
+      assert.equal(await fatalFlush, true);
+    });
+
+    it('stop() during a retry sleep abandons the retry and resolves promptly', async (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      setupFsMocks(RUNNING_CONFIG);
+      const calls = stubFetch(async () => response(429, { description: 'Too Many Requests', parameters: { retry_after: 30 } }));
+      // A sleep that never finishes on its own: only stop() can end the wait.
+      notifier = createNotifier({ sleep: () => new Promise(() => {}) });
+      notifier.start();
+
+      emit('buy_filled', 'outage');
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      await flushMicrotasks();
+      assert.equal(calls.length, 1, 'first attempt failed and the retry is sleeping');
+
+      assert.equal(await notifier.stop(), false);
+      assert.equal(calls.length, 1, 'no further attempt is made after stop');
+      assert.equal(notifier.getStats().errors, 1);
+    });
+
+    it('stop() enforces an overall drain deadline when an attempt hangs', async (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      setupFsMocks(RUNNING_CONFIG);
+      const hung = [];
+      stubFetch(() => new Promise((resolve) => hung.push(resolve)));
+      notifier = createNotifier();
+      notifier.start();
+
+      emit('buy_filled', 'hung');
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      await flushMicrotasks();
+
+      const drain = notifier.stop();
+      let stopped = false;
+      drain.then(() => { stopped = true; });
+      t.mock.timers.tick(9_000);
+      await flushMicrotasks();
+      assert.equal(stopped, false);
+      t.mock.timers.tick(1_000);
+      assert.equal(await drain, false);
+
+      // Let the abandoned attempt finish so teardown's own stop() can drain.
+      for (const release of hung) release({ ok: true, json: async () => ({}) });
+      await flushMicrotasks();
+    });
+
+    it('resends a Markdown parse rejection once as plain text', async (t) => {
+      const { calls, sleeps } = setup(t, [
+        response(400, { description: "Bad Request: can't parse entities: Can't find end of the entity" }),
+        response(200),
+      ]);
+      emit('buy_filled', 'usdc_cap_exceeded');
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      assert.equal(await notifier.flush(), true);
+
+      assert.equal(calls.length, 2);
+      assert.equal(calls[0].body.parse_mode, 'Markdown');
+      assert.equal(calls[0].body.text.includes('usdc\\_cap\\_exceeded'), true, 'first attempt carries the Markdown escapes');
+      assert.equal(calls[1].body.parse_mode, undefined);
+      assert.ok(calls[1].body.text.includes('usdc_cap_exceeded'));
+      assert.ok(!calls[1].body.text.includes('\\'), 'escapes are dropped for the plain-text resend');
+      assert.deepEqual(sleeps, [], 'no backoff for the plain-text resend');
+      assert.equal(notifier.getStats().sent, 1);
+    });
   });
 
   it('stop() flushes the pending queue instead of dropping it', (t) => {
@@ -469,13 +680,16 @@ describe('createNotifier() integration (fs-mocked config, stubbed fetch)', () =>
     let stopped = false;
     drain.then(() => { stopped = true; });
     await flushMicrotasks();
-    assert.equal(calls.length, 2, 'stop starts the newly queued batch');
+    assert.equal(calls.length, 1, 'sends are serialized: the newly queued batch waits behind the in-flight one');
     assert.equal(stopped, false);
     completions.shift()();
     await flushMicrotasks();
-    assert.equal(calls.length, 3, 'the prior flush still owns its second batch');
+    assert.equal(calls.length, 2, 'the prior flush still owns its second batch, which goes out next');
+    assert.ok(calls[1].body.text.includes('b'.repeat(100)));
     completions.shift()();
     await flushMicrotasks();
+    assert.equal(calls.length, 3, 'the batch queued during the first send goes out last');
+    assert.ok(calls[2].body.text.includes('queued during the first send'));
     assert.equal(stopped, false);
     completions.shift()();
     assert.equal(await drain, true);

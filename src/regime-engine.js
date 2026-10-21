@@ -774,6 +774,28 @@ const annotateBodyBuyFills = (positionState, fillLedger, cycleFills) => {
 };
 
 /**
+ * Collapse execution rows into one record per orderId (size/quote/fee summed,
+ * timestamp = last row) so a multi-row order is matched and annotated once.
+ */
+const groupFillsByOrder = (fills) => {
+  const byOrder = new Map();
+  for (const f of fills) {
+    const fee = f.netFee || f.fee || 0;
+    const agg = byOrder.get(f.orderId);
+    if (!agg) {
+      byOrder.set(f.orderId, { orderId: f.orderId, size: f.size, quoteAmount: f.quoteAmount, fee, timestamp: f.timestamp, price: f.price, rows: 1 });
+      continue;
+    }
+    agg.size += f.size;
+    agg.quoteAmount += f.quoteAmount;
+    agg.fee += fee;
+    agg.timestamp = Math.max(agg.timestamp, f.timestamp);
+    agg.rows++;
+  }
+  return [...byOrder.values()].map(o => (o.rows > 1 && o.size > 0 ? { ...o, price: o.quoteAmount / o.size } : o));
+};
+
+/**
  * Buy matching a sell: similar asset size (±1%), earlier than the sell, not
  * already consumed, and closest in time (a body TP is placed right after its buy).
  */
@@ -795,11 +817,30 @@ const matchBuyForSell = (sellFill, buyFills, consumed) => {
  */
 const annotateBodySells = ({ fillLedger, positionState, logger, baseCurrency, exchange, roundAsset }, cycleFills) => {
   const coreTpOrderId = positionState.activeTpOrderId;
-  const sellsToAnnotate = cycleFills.filter(f =>
-    f.side === 'sell' && f.orderId !== coreTpOrderId
-    && (!(f.isBodyOwned || f.isSatellite) || (f.bodyPnl ?? f.satellitePnl) < 0 || (f.bodyHoldbackAsset ?? f.satelliteHoldbackAsset) < 0)
-  );
-  const buyFills = cycleFills.filter(f => f.side === 'buy');
+  // Ownership is decided per ORDER, not per row: annotateFillsByOrderId writes
+  // every row of an order, but a row ingested after an annotation carries none
+  // of it. Foreign sells (`untrackedSell`, #750) and timestamp-folded rows
+  // (`cycleAttribution: 'timeframe'`, #705) were deliberately left unattributed,
+  // and an order with a valid annotation is already booked; re-booking either
+  // would turn it into realized P&L or overwrite the correct per-order bodyPnl.
+  const sellRowsByOrder = new Map();
+  const skippedOrderIds = new Set();
+  for (const f of cycleFills) {
+    if (f.side !== 'sell' || f.orderId === coreTpOrderId) continue;
+    if (!sellRowsByOrder.has(f.orderId)) sellRowsByOrder.set(f.orderId, []);
+    sellRowsByOrder.get(f.orderId).push(f);
+    const invalidAnnotation = (f.bodyPnl ?? f.satellitePnl) < 0 || (f.bodyHoldbackAsset ?? f.satelliteHoldbackAsset) < 0;
+    if (f.untrackedSell || f.cycleAttribution === 'timeframe'
+      || ((f.isBodyOwned || f.isSatellite) && !invalidAnnotation)) skippedOrderIds.add(f.orderId);
+  }
+  // Chronological by aggregate (last-row) timestamp: grouping keeps each order at
+  // its first row's position, so interleaved partial fills of two orders would
+  // otherwise let the later-completing order claim the nearer buy first.
+  const sellsToAnnotate = groupFillsByOrder([...sellRowsByOrder]
+    .filter(([orderId]) => !skippedOrderIds.has(orderId))
+    .flatMap(([, rows]) => rows))
+    .sort((a, b) => a.timestamp - b.timestamp);
+  const buyFills = groupFillsByOrder(cycleFills.filter(f => f.side === 'buy'));
   const consumedBuyOrderIds = new Set();
   let annotatedCount = 0;
 
@@ -808,8 +849,8 @@ const annotateBodySells = ({ fillLedger, positionState, logger, baseCurrency, ex
     if (!matchingBuy) continue;
 
     consumedBuyOrderIds.add(matchingBuy.orderId);
-    const costBasis = matchingBuy.quoteAmount + (matchingBuy.netFee || matchingBuy.fee || 0);
-    const proceeds = sellFill.quoteAmount - (sellFill.netFee || sellFill.fee || 0);
+    const costBasis = matchingBuy.quoteAmount + matchingBuy.fee;
+    const proceeds = sellFill.quoteAmount - sellFill.fee;
     const pnl = proceeds - costBasis;
     const holdbackAsset = roundAsset(matchingBuy.size - sellFill.size);
 
@@ -1023,6 +1064,41 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const config = getRegimeConfig(exchange, pair);
   const baseCurrency = getBaseCurrency(productId);
   const logger = createContextLogger({ exchange, pair });
+
+  // Exchange lookups whose failure the caller treats as "unknown" (null), not
+  // as an error. The null result is unchanged, but a persistent auth,
+  // rate-limit or transport failure must not be indistinguishable from "not
+  // found": warn with the error text, at most once a minute per lookup so a
+  // per-tick caller cannot flood the log.
+  const LOOKUP_WARN_INTERVAL_MS = 60_000;
+  const lookupWarnedAt = new Map();
+  const lookupOrNull = (label, subject, lookup) => lookup.catch(err => {
+    const key = `${label}:${subject}`;
+    const now = Date.now();
+    if (now - (lookupWarnedAt.get(key) ?? -Infinity) >= LOOKUP_WARN_INTERVAL_MS) {
+      if (lookupWarnedAt.size >= 500) lookupWarnedAt.clear();
+      lookupWarnedAt.set(key, now);
+      const message = err?.message ?? String(err);
+      logger.warn(`⚠️ [${exchange}] ${label}(${subject}) failed on ${pair}: ${message} — treated as unknown`, {
+        exchange, pair, lookup: label, subject, error: message,
+      });
+    }
+    return null;
+  });
+
+  // Stale window to re-arm a restored resting entry with. A row saved by
+  // placeEntryBid carries the adaptive window it was placed with; a row from
+  // before that was persisted (or an orphan adopted at startup) has none, and
+  // its offset is unknown. Fall back to the longest window the adaptive timeout
+  // can produce (the maxIntervalMs cap, never below orderStaleMs) rather than the
+  // floor: a deep bid restored with the floor is cancelled seconds after restart
+  // though its window may have been minutes. The cap still bounds how long a
+  // resting entry can block new reactive entries.
+  const restoredEntryStaleMs = (savedEntry) => {
+    if (Number.isFinite(savedEntry?.staleMs) && savedEntry.staleMs > 0) return savedEntry.staleMs;
+    const longest = Math.max(config.orderStaleMs || 0, config.maxIntervalMs || 0);
+    return longest > 0 ? longest : undefined;
+  };
 
   // Prefix used in log lines and trade events to identify this fund
   const fundLabel = `${exchange}/${pair}`;
@@ -1645,7 +1721,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // since a transient failure is expected to recover on its own.
     const balanceAmbiguous = sharingQuote.length > 1;
     const quoteBalance = (!balanceAmbiguous && typeof adapter.getAccountBalance === 'function')
-      ? await adapter.getAccountBalance(quoteCurrency).catch(() => null)
+      ? await lookupOrNull('getAccountBalance', quoteCurrency, adapter.getAccountBalance(quoteCurrency))
       : null;
     const availableBalance = quoteBalance ? (parseFloat(quoteBalance.available) || 0) : 0;
 
@@ -2145,7 +2221,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const offlineBodies = positionState.celestialBodies || [];
     const bodiesToCheck = offlineBodies.filter(b => b.tpOrderId && !openOrderIds.has(b.tpOrderId));
     const bodyStatuses = await Promise.all(
-      bodiesToCheck.map(b => adapter.getOrder(b.tpOrderId).catch(() => null))
+      bodiesToCheck.map(b => lookupOrNull('getOrder', b.tpOrderId, adapter.getOrder(b.tpOrderId)))
     );
     const bodyStatusByOrderId = new Map(
       bodiesToCheck.map((b, i) => [b.tpOrderId, bodyStatuses[i]])
@@ -2456,6 +2532,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           size: savedEntry.assetQty,
           sizeUsdc: savedEntry.sizeUsdc,
           placedAt: restoredPlacedAt,
+          staleMs: restoredEntryStaleMs(savedEntry),
         });
         restoredEntries++;
         logger.info(`🔄 [${exchange}] Restored pending entry: ${order.orderId} @ ${fmtPrice(savedEntry.price)}`);
@@ -2490,6 +2567,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             size: order.originalSize,
             sizeUsdc: order.originalSize * order.price,
             placedAt: orphanPlacedAt,
+            staleMs: restoredEntryStaleMs(),
           });
           // Keep the adopted order in the persisted pending list so it
           // survives the next restart, then book its filled tranche through
@@ -2510,6 +2588,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               assetQty: Math.max(0, order.originalSize - heldQty),
               sizeUsdc: Math.max(0, order.originalSize * order.price - heldCost),
               placedAt: orphanPlacedAt,
+              staleMs: restoredEntryStaleMs(),
             });
           }
           await bookStartupOpenEntryPartial(order, orphanPlacedAt, 'orphan entry');
@@ -2522,7 +2601,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           if (cancelResult.success) {
             logger.info(`✅ [${exchange}] Cancelled orphan entry ${order.orderId.slice(0, 8)}`);
           } else {
-            const orphanStatus = await adapter.getOrder(order.orderId).catch(() => null);
+            const orphanStatus = await lookupOrNull('getOrder', order.orderId, adapter.getOrder(order.orderId));
             if (orphanStatus?.status === 'FILLED') {
               logger.info(`📋 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} already filled — recovery will process`);
             } else {
@@ -3020,7 +3099,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (cancelResult.success) {
         logger.info(`🗑️ [${exchange}] Cancelled stale order from _cancelOnStartup: ${staleOrderId}`);
       } else {
-        const status = await adapter.getOrder(staleOrderId).catch(() => null);
+        const status = await lookupOrNull('getOrder', staleOrderId, adapter.getOrder(staleOrderId));
         if (status && (status.status === 'FILLED' || status.status === 'CANCELLED')) {
           logger.info(`ℹ️ [${exchange}] Stale order ${staleOrderId} already ${status.status}`);
         } else {
@@ -4076,7 +4155,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         placedQty = Number(open.originalSize) || ((Number(open.filledSize) || 0) + (Number(open.size) || 0));
       } else {
         // A terminal order reports no placed size; a full fill's filled size is it.
-        const status = await adapter.getOrder(orderId).catch(() => null);
+        const status = await lookupOrNull('getOrder', orderId, adapter.getOrder(orderId));
         if (status && isFilledStatus(status)) placedQty = Number(status.filledSize) || 0;
       }
       if (!(placedQty > 0)) {
@@ -4305,29 +4384,47 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // at commit time to detect a cycle turnover mid-pass (issue #711).
     const ingestCycleId = fillLedger.getCurrentCycleId();
 
-    // Ingest each fill and collect the normalized fills
+    // Ingest each fill and collect the normalized fills. Rows are batched
+    // (skipPersist) and flushed once below: a large order can carry 100+
+    // execution rows, and a full-ledger rewrite per row blocks the event loop
+    // for seconds. The flush still lands before any booking.
     const ingestedFills = [];
-    for (const fill of rawFills) {
-      let result;
-      try {
-        result = fillLedger.ingestFill(fill, orderPlacedAt);
-      } catch (err) {
-        if (!(err instanceof FillValidationError)) throw err;
-        // Rejected before any ledger mutation. Skip it: the gap-fill fallback
-        // below reconciles against the cumulative ledger total, so the missing
-        // quantity is still handled without booking the malformed record.
-        logger.error(`❌ [${exchange}] Rejected invalid fill for ${fillData.orderId}: ${err.message}`, {
-          orderId: fillData.orderId, tradeId: err.tradeId, reason: err.reason,
-        });
-        continue;
+    try {
+      for (const fill of rawFills) {
+        let result;
+        try {
+          result = fillLedger.ingestFill(fill, orderPlacedAt, { skipPersist: true });
+        } catch (err) {
+          if (!(err instanceof FillValidationError)) throw err;
+          // Rejected before any ledger mutation. Skip it: the gap-fill fallback
+          // below reconciles against the cumulative ledger total, so the missing
+          // quantity is still handled without booking the malformed record.
+          logger.error(`❌ [${exchange}] Rejected invalid fill for ${fillData.orderId}: ${err.message}`, {
+            orderId: fillData.orderId, tradeId: err.tradeId, reason: err.reason,
+          });
+          continue;
+        }
+        // A real ID can replace terminal coverage and cross beyond it. The
+        // ledger returns only still-unbooked covered rows plus the excess
+        // tranche, so previously represented quantity never grows a body or
+        // gets booked a second time.
+        if (Array.isArray(result.bookableFills)) ingestedFills.push(...result.bookableFills);
+        else if (result.fill && !result.identityReplacement) ingestedFills.push(result.fill);
       }
-      // A real ID can replace terminal coverage and cross beyond it. The
-      // ledger returns only still-unbooked covered rows plus the excess
-      // tranche, so previously represented quantity never grows a body or
-      // gets booked a second time.
-      if (Array.isArray(result.bookableFills)) ingestedFills.push(...result.bookableFills);
-      else if (result.fill && !result.identityReplacement) ingestedFills.push(result.fill);
+    } catch (err) {
+      // Flush rows ingested before the failing one so they keep the durability
+      // they had when every row persisted on its own. The ingest error stays
+      // the root cause even if this flush fails too.
+      try {
+        fillLedger.persist();
+      } catch (persistErr) {
+        logger.error(`❌ [${exchange}] Ledger flush after failed ingest for ${fillData.orderId} also failed: ${persistErr.message}`, {
+          orderId: fillData.orderId, error: persistErr.message,
+        });
+      }
+      throw err;
     }
+    fillLedger.persist();
 
     // Use ingested fills (which have quoteAmount) for aggregation
     // Fall back to getting fills from ledger if all were duplicates
@@ -5093,16 +5190,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // would clobber that linkage and make the remaining tranche's cost basis
     // vanish from heldOpenBuyCostBasis until the residual TP fills.
     if (!isPartial) {
-      const annotatedSrcIds = new Set();
-      for (const srcId of (body.sourceOrderIds || [])) {
-        fillLedger.annotateFillsByOrderId(srcId, { sellOrderId: fillData.orderId });
-        annotatedSrcIds.add(srcId);
-      }
+      // One ledger write for every linked buy (a merged body can own hundreds),
+      // not a full-ledger rewrite per buy.
+      const linkedSrcIds = new Set(body.sourceOrderIds || []);
       for (const buyOrder of (body.buyOrders || [])) {
-        if (buyOrder.orderId !== 'core-migration' && !annotatedSrcIds.has(buyOrder.orderId)) {
-          fillLedger.annotateFillsByOrderId(buyOrder.orderId, { sellOrderId: fillData.orderId });
-        }
+        if (buyOrder.orderId !== 'core-migration') linkedSrcIds.add(buyOrder.orderId);
       }
+      fillLedger.annotateFillsByOrderIds(linkedSrcIds, { sellOrderId: fillData.orderId });
     }
 
     // Record the aggregate closed trade. A second booking of the same
@@ -5367,10 +5461,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       for (const fill of cycleFills) {
         // Timestamp-folded buys (#705) are not in the core position this TP sold.
         if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId && fill.cycleAttribution !== 'timeframe') {
-          fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: fillData.orderId });
           buyOrderIds.add(fill.orderId);
         }
       }
+      fillLedger.annotateFillsByOrderIds(buyOrderIds, { sellOrderId: fillData.orderId });
 
       // Preserve the legacy audit record before resetCycle clears its
       // cost basis. Safe to call every pass — record() accumulates only a
@@ -5897,7 +5991,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // holds and double-attributing the sold tranche's cost. Don't merge; route
     // the buy to its own new body instead.
     if (mergeTarget && mergeTarget.tpOrderId) {
-      const targetTpStatus = await adapter.getOrder(mergeTarget.tpOrderId).catch(() => null);
+      const targetTpStatus = await lookupOrNull('getOrder', mergeTarget.tpOrderId, adapter.getOrder(mergeTarget.tpOrderId));
       if (targetTpStatus && targetTpStatus.filledSize > 0) {
         logger.warn(`⚠️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP partially filled (${targetTpStatus.filledSize} ${baseCurrency}) — routing buy to its own body (issue #201)`);
         mergeTarget = null;
@@ -6750,7 +6844,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Build the payload orderExecutor.restorePendingOrder expects from a saved
    * pendingEntryOrders/pendingLadderOrders row, shared by catchUpTerminalEntry's
    * failure path and reconcileTick's still-resting orphan re-arm.
-   * @param {{price?: number, assetQty?: number, sizeUsdc?: number, placedAt?: number, ladderIndex?: number}} savedEntry
+   * @param {{price?: number, assetQty?: number, sizeUsdc?: number, placedAt?: number, staleMs?: number, ladderIndex?: number}} savedEntry
    * @param {'entry'|'ladder_entry'} entryType
    */
   const buildRestoreSpec = (savedEntry, entryType) => {
@@ -6761,6 +6855,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       sizeUsdc: savedEntry.sizeUsdc,
       placedAt: savedEntry.placedAt || Date.now(),
     };
+    if (entryType === 'entry') restoreSpec.staleMs = restoredEntryStaleMs(savedEntry);
     if (entryType === 'ladder_entry' && savedEntry.ladderIndex !== undefined) {
       restoreSpec.ladderIndex = savedEntry.ladderIndex;
     }
@@ -7086,7 +7181,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                   // order stayed open for days). The startup path is immune because
                   // it cross-checks getOpenOrders (openOrderIds) first; mirror that
                   // here before acting on a terminal status.
-                  const openOrders = await adapter.getOpenOrders(productId).catch(() => null);
+                  const openOrders = await lookupOrNull('getOpenOrders', productId, adapter.getOpenOrders(productId));
                   // openOrders === null → getOpenOrders failed; treat as
                   // inconclusive and keep the order (never orphan on a failed check).
                   const stillOpen = openOrders === null || isOrderStillOpen(openOrders, body.tpOrderId);
@@ -7380,7 +7475,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Calculate remaining budget, capped at actual available balance
       let remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
       const quoteCurrency = getQuoteCurrency(productId);
-      const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
+      const quoteBalance = await lookupOrNull('getAccountBalance', quoteCurrency, adapter.getAccountBalance(quoteCurrency));
       if (!quoteBalance) {
         // Can't verify balance — skip ladder to avoid placing orders we can't fund
         return;
@@ -7573,7 +7668,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // available quote balance so a maxUsdcDeployed cap above funded capital can't
     // make the engine hot-loop on unfundable orders. Mirror the ladder path.
     const quoteCurrency = getQuoteCurrency(productId);
-    const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
+    const quoteBalance = await lookupOrNull('getAccountBalance', quoteCurrency, adapter.getAccountBalance(quoteCurrency));
     const availableQuote = quoteBalance ? (quoteBalance.available || 0) : null;
     const budget = resolveEntryBudget(sizing.sizeUsdc, availableQuote, minSize);
     if (budget.action === 'skip') {
@@ -7649,6 +7744,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           assetQty: result.assetQty,
           sizeUsdc: sizing.sizeUsdc,
           placedAt: Date.now(),
+          // The adaptive window this bid was placed with, so a restart re-arms
+          // the same deadline instead of the orderStaleMs floor.
+          staleMs: entryStaleMs,
         });
         saveLiveState();
       }
@@ -7978,7 +8076,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Fall back to a fresh fetch only if that data is missing for some reason.
       let fillData = result.filledSize > 0 ? result : null;
       if (!fillData) {
-        fillData = await adapter.getOrder(result.filledOrderId).catch(() => null);
+        fillData = await lookupOrNull('getOrder', result.filledOrderId, adapter.getOrder(result.filledOrderId));
       }
       if (fillData) {
         orderExecutor.markSettled(result.filledOrderId);
@@ -8002,12 +8100,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       // Link all current-cycle non-body buys to this sell order (skip body-owned buys)
       const cycleFills = fillLedger.getCurrentCycleFills();
+      const coreBuyOrderIds = new Set();
       for (const fill of cycleFills) {
         // Timestamp-folded buys (#705) are not in the core position this TP sells.
         if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId && fill.cycleAttribution !== 'timeframe') {
-          fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: result.orderId });
+          coreBuyOrderIds.add(fill.orderId);
         }
       }
+      fillLedger.annotateFillsByOrderIds(coreBuyOrderIds, { sellOrderId: result.orderId });
 
       if (result.updated) {
         logger.info(`📝 [${exchange}] TP ${result.orderId ? 'updated' : 'placed'}: ${sellQty} ${baseCurrency} @ ${fmtPrice(tpPrice)} (holdback=${holdbackQty.toFixed(6)} ${baseCurrency} ≈$${profitAssetValue.toFixed(2)})`);
@@ -9348,7 +9448,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Check both orders for partial fills before merging
     for (const body of [source, target]) {
       if (body.tpOrderId) {
-        const orderStatus = await adapter.getOrder(body.tpOrderId).catch(() => null);
+        const orderStatus = await lookupOrNull('getOrder', body.tpOrderId, adapter.getOrder(body.tpOrderId));
         if (orderStatus && orderStatus.filledSize > 0) {
           const which = body === source ? 'Source' : 'Target';
           return { success: false, message: `${which} body ${body.id.slice(-8)} has a partially filled TP order (${orderStatus.filledSize} filled) — cannot merge` };
@@ -9737,7 +9837,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Fetch actual exchange balance to cap budget at reality
     const quoteCurrency = getQuoteCurrency(productId);
-    const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
+    const quoteBalance = await lookupOrNull('getAccountBalance', quoteCurrency, adapter.getAccountBalance(quoteCurrency));
     const exchangeBalance = quoteBalance ? (parseFloat(quoteBalance.available) || 0) : null;
     if (exchangeBalance !== null && exchangeBalance < remainingBudget) {
       remainingBudget = exchangeBalance;
@@ -9850,7 +9950,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const allocatedCapital = getAllocatedCapital();
     let remainingBudget = config.maxUsdcDeployed - allocatedCapital;
     const quoteCurrency = getQuoteCurrency(productId);
-    const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
+    const quoteBalance = await lookupOrNull('getAccountBalance', quoteCurrency, adapter.getAccountBalance(quoteCurrency));
     if (!quoteBalance) {
       return { success: false, message: 'Could not fetch account balance — skipping ladder' };
     }
@@ -9914,7 +10014,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const cancelTimeSpend = midCancelSpend + unbookedFills.reduce((sum, u) => sum + (Number(u.cost) || 0), 0);
     let postCancelQuote = availableQuote;
     if (cancelTimeSpend > 0) {
-      const freshBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
+      const freshBalance = await lookupOrNull('getAccountBalance', quoteCurrency, adapter.getAccountBalance(quoteCurrency));
       postCancelQuote = freshBalance
         ? Math.min(availableQuote, parseFloat(freshBalance.available) || 0)
         : Math.max(0, availableQuote - cancelTimeSpend);

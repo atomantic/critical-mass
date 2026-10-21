@@ -101,6 +101,38 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
   // Track stale order timeouts for cleanup on shutdown
   const staleTimers = new Set();
+  /** @type {Map<string, any>} orderId -> its live stale timer, so a re-restored entry is never double-armed */
+  const staleTimerByOrder = new Map();
+
+  // A restored entry whose stale window already elapsed during downtime is
+  // cancelled this soon after restore, not instantly — startup is still
+  // booking offline partials for it.
+  const RESTORED_STALE_MIN_MS = 5_000;
+
+  const LOOKUP_FAILURE_LOG_INTERVAL_MS = 60_000;
+  /** @type {Map<string, number>} lookup context -> last time its failure was logged */
+  const lookupFailureLoggedAt = new Map();
+
+  /**
+   * adapter.getOrder() that resolves null on failure — callers treat null as
+   * "unknown, keep tracking" — but leaves a rate-limited warning so a
+   * persistent auth/rate-limit/transport failure is not silent.
+   * @param {string} orderId
+   * @param {string} context - Short label for the call site (also the rate-limit key)
+   * @returns {Promise<any|null>}
+   */
+  const lookupOrderOrNull = (orderId, context) => adapter.getOrder(orderId).catch(err => {
+    const now = Date.now();
+    if (now - (lookupFailureLoggedAt.get(context) || 0) >= LOOKUP_FAILURE_LOG_INTERVAL_MS) {
+      lookupFailureLoggedAt.set(context, now);
+      logger.warn(`⚠️ [${exchange}] getOrder failed during ${context} for ${orderId} (${productId}): ${err?.message || err} — treating as unknown`, {
+        orderId,
+        context,
+        error: err?.message || String(err),
+      });
+    }
+    return null;
+  });
 
   /** @type {Map<string, number>} orderId -> settlement timestamp.
    * Distinguishes "we removed this from pendingOrders intentionally" from
@@ -214,7 +246,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
       if (!result.success) {
         // Cancel call rejected — check terminal state before deciding to retry
-        const status = await adapter.getOrder(orderId).catch(() => null);
+        const status = await lookupOrderOrNull(orderId, 'cancel-rejected check');
         if (isFilledStatus(status)) {
           logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} already filled (discovered during cancel)`, {
             orderId,
@@ -246,7 +278,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       // Cancel ack'd — poll for the status to actually settle. Do NOT re-cancel.
       for (let poll = 0; poll < maxPollAttempts; poll++) {
         await new Promise(r => setTimeout(r, poll === 0 ? verifyDelayMs : pollDelayMs));
-        const verified = await adapter.getOrder(orderId).catch(() => null);
+        const verified = await lookupOrderOrNull(orderId, 'cancel verify poll');
 
         if (isFilledStatus(verified)) {
           logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`, {
@@ -371,7 +403,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       // Brief delay lets the order propagate; only treat as cancelled when Coinbase explicitly
       // says so with zero filledSize — a thrown error / null response means "unknown", keep tracking.
       await new Promise(r => setTimeout(r, 750));
-      const orderStatus = await adapter.getOrder(result.orderId).catch(() => null);
+      const orderStatus = await lookupOrderOrNull(result.orderId, 'entry bid verify');
 
       if (orderStatus && orderStatus.status === 'CANCELLED' && orderStatus.filledSize === 0) {
         logger.warn(`⚠️ [${exchange}] Order ${result.orderId} was immediately cancelled by exchange`, { orderId: result.orderId });
@@ -734,6 +766,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const staleMs = staleMsOverride ?? getEffectiveStaleMs();
     const timer = setTimeout(() => {
       staleTimers.delete(timer);
+      if (staleTimerByOrder.get(orderId) === timer) staleTimerByOrder.delete(orderId);
       const order = pendingOrders.get(orderId);
       if (!order || order.type !== 'entry') return;
 
@@ -759,8 +792,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             }
           } else if (normalizedStatus === 'CANCELLED') {
             handleCancelledOrder(orderId, order, status, 'Stale check');
-          } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0) {
-            // Not filled at all (as of this snapshot) — cancel. Use safeCancelOrder
+          } else if (normalizedStatus === 'OPEN' || normalizedStatus === 'PARTIALLY_FILLED') {
+            // Still resting past its stale window — cancel, including a bid that
+            // has partially filled (Coinbase reports that as OPEN with
+            // completionPercentage > 0): the timer is one-shot, so leaving it
+            // would keep it resting and block every new reactive entry until
+            // price returns. The cancel result routes any filled portion
+            // through onFillDetected below. Use safeCancelOrder
             // instead of a raw adapter.cancelOrder: the exchange refuses a cancel
             // when the order already filled, and a fill (full or partial) can also
             // land while the cancel is in flight. Either race must be routed
@@ -805,13 +843,15 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
               logger.warn(`⚠️ [${exchange}] Stale order cancel for ${orderId} left in unknown state — keeping tracked for polling backstop`, { orderId });
             }).catch(err => logger.error(`❌ [${exchange}] Stale order cancel failed for ${orderId}: ${err.message}`, { orderId, error: err.message }));
           }
-          // Partially filled orders are left alone - WebSocket should handle incremental fills
         })
         .catch(err => {
           logger.error(`❌ [${exchange}] Stale order check failed for ${orderId}: ${err.message}`, { orderId, error: err.message });
         });
     }, staleMs);
+    // Pending stale checks must not keep the process alive on their own
+    timer.unref?.();
     staleTimers.add(timer);
+    staleTimerByOrder.set(orderId, timer);
   };
 
   /**
@@ -826,7 +866,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     let polled = 0; // count of order-status round-trips that actually succeeded
 
     for (const [orderId, order] of pendingOrders) {
-      const status = await adapter.getOrder(orderId).catch(() => null);
+      const status = await lookupOrderOrNull(orderId, 'pending-order fill poll');
       if (!status) continue;
       polled++; // a non-null status proves the order-status REST path is alive
 
@@ -948,7 +988,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         // omits filledSize for a genuinely-partial cancel (issue #674 Fix
         // step 1).
         const cancelledStatus = typeof adapter.getOrder === 'function'
-          ? await adapter.getOrder(orderId).catch(() => null)
+          ? await lookupOrderOrNull(orderId, 'SAFE-mode cancel verify')
           : null;
 
         if (isFilledStatus(cancelledStatus)) {
@@ -991,7 +1031,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       }
 
       // Refused cancel — inspect terminal state before dropping tracking.
-      const status = await adapter.getOrder(orderId).catch(() => null);
+      const status = await lookupOrderOrNull(orderId, 'SAFE-mode refused-cancel check');
 
       if (isFilledStatus(status)) {
         logger.info(`📋 [${exchange}] Entry order ${orderId.slice(0, 8)} already filled (discovered during SAFE-mode cancel) — routing fill`, {
@@ -1165,6 +1205,18 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    */
   const restorePendingOrder = (orderId, order) => {
     pendingOrders.set(orderId, order);
+
+    // A restored resting entry needs its own stale timer — the one placeEntryBid
+    // armed died with the previous process. Arm only the REMAINDER of its window
+    // (placedAt is the exchange creation time when known), and skip when a timer
+    // is already live so repeated re-arms (reconcile sweeps) cannot postpone it.
+    if (order.type === 'entry' && !staleTimerByOrder.has(orderId)) {
+      const windowMs = order.staleMs ?? getEffectiveStaleMs();
+      if (Number.isFinite(windowMs)) {
+        const elapsedMs = Math.max(0, Date.now() - (order.placedAt || Date.now()));
+        scheduleStaleOrderTimeout(orderId, Math.max(RESTORED_STALE_MIN_MS, windowMs - elapsedMs));
+      }
+    }
 
     if (order.type === 'take_profit') {
       activeTpOrderId = orderId;
@@ -1493,7 +1545,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
       if (result.success) {
         // Verify order is actually open (post-only can be immediately cancelled)
-        const orderStatus = await adapter.getOrder(result.orderId).catch(() => null);
+        const orderStatus = await lookupOrderOrNull(result.orderId, 'ladder order verify');
 
         // Only treat as immediately cancelled when we positively know it's cancelled.
         // If we failed to fetch status (null), track the order and let later refresh reconcile.
@@ -1753,7 +1805,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     getPendingLadderOrders,
     isLadderOrder,
     // Timer cleanup
-    clearTimers: () => { for (const t of staleTimers) clearTimeout(t); staleTimers.clear(); },
+    clearTimers: () => { for (const t of staleTimers) clearTimeout(t); staleTimers.clear(); staleTimerByOrder.clear(); },
     // Price precision
     setPriceIncrement: (inc) => { priceIncrement = inc; },
   };

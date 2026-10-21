@@ -3,7 +3,8 @@
  * Backup Service
  *
  * Handles scheduled and manual backups of trading data files.
- * Archive creation uses async spawn for zip/unzip; restore and listing use spawnSync.
+ * Archive creation uses async spawn for zip/unzip; restore and listing use spawnSync
+ * (listing only on a cold cache — see archiveValidityCache).
  * Excludes credentials, live configuration, and the backup directory from archives.
  *
  * Archives also carry a versioned manifest (`backup-manifest.json`) holding a
@@ -444,6 +445,46 @@ const validateBackupArchiveAsync = async (zipPath, { allowLegacy = false } = {})
 };
 
 /**
+ * Archive verdicts keyed by `path:mtimeMs:size`. A full integrity test
+ * (`unzip -tq`) decompresses the whole archive and, run synchronously, stalls
+ * the gateway event loop for ~0.5 s per 16 MB — so a given file state is tested
+ * at most once per process: createBackup seeds the verdict it already earned
+ * before publishing, and listing / scheduling reuse it.
+ *
+ * Guarantee: an archive is re-tested whenever its path, mtime or size changes,
+ * and after a gateway restart. Silent corruption that changes neither mtime nor
+ * size (bit rot) is NOT detected until then; verdict age is deliberately not
+ * bounded, since a periodic re-test would reintroduce the event-loop stall this
+ * cache removes. Restore does not use this cache or validateBackupArchive: it
+ * relies on the CRC checks `unzip` performs while extracting.
+ */
+const archiveValidityCache = new Map();
+
+const archiveValidityKey = (filePath, stats) => `${filePath}:${stats.mtimeMs}:${stats.size}`;
+
+/**
+ * Cached validity of an archive file in its current state (legacy pre-manifest
+ * archives are admitted, as listing and scheduling always did).
+ * @param {string} filePath
+ * @param {import('fs').Stats} stats
+ * @returns {boolean}
+ */
+const isArchiveListable = (filePath, stats) => {
+  const key = archiveValidityKey(filePath, stats);
+  if (!archiveValidityCache.has(key)) {
+    archiveValidityCache.set(key, validateBackupArchive(filePath, { allowLegacy: true }).ok);
+  }
+  return archiveValidityCache.get(key);
+};
+
+/** Drop verdicts for archive states that no longer exist so the cache cannot grow without bound. */
+const pruneArchiveValidityCache = (liveKeys) => {
+  for (const key of archiveValidityCache.keys()) {
+    if (!liveKeys.has(key)) archiveValidityCache.delete(key);
+  }
+};
+
+/**
  * Create a backup of all data files
  * @param {Object} options
  * @param {boolean} [options.includePriceCache=false] - Include price cache files (~45MB per exchange)
@@ -550,6 +591,8 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
   }
 
   const stats = fs.statSync(path.join(paths.backupsDir, filename));
+  // Validated just above (the async check) — listing must not re-test it.
+  archiveValidityCache.set(archiveValidityKey(publishedPath, stats), true);
   return { success: true, filename, sizeBytes: stats.size };
 };
 
@@ -560,17 +603,21 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
 const listBackups = () => {
   ensureBackupsDir();
 
+  const liveKeys = new Set();
   const files = fs.readdirSync(BACKUPS_DIR)
     .filter(f => f.startsWith('backup-') && f.endsWith('.zip'))
     .filter((filename) => {
       const filePath = path.join(BACKUPS_DIR, filename);
       try {
-        if (!fs.lstatSync(filePath).isFile()) return false;
-        return validateBackupArchive(filePath, { allowLegacy: true }).ok;
+        const stats = fs.lstatSync(filePath);
+        if (!stats.isFile()) return false;
+        liveKeys.add(archiveValidityKey(filePath, stats));
+        return isArchiveListable(filePath, stats);
       } catch (_error) {
         return false;
       }
     });
+  pruneArchiveValidityCache(liveKeys);
 
   return files
     .map(filename => {
@@ -702,8 +749,6 @@ const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 };
 
-const archiveValidityCache = new Map();
-
 /**
  * Epoch ms of the newest valid archive, or null when none exist. Anchors the schedule.
  * @returns {number | null}
@@ -715,17 +760,13 @@ const getNewestBackupTime = () => {
     if (!filename.startsWith('backup-') || !filename.endsWith('.zip')) continue;
     const filePath = path.join(BACKUPS_DIR, filename);
     const stats = fs.lstatSync(filePath);
-    if (stats.isFile()) candidates.push({ filePath, mtimeMs: Math.round(stats.mtimeMs), size: stats.size });
+    if (stats.isFile()) candidates.push({ filePath, stats, mtimeMs: Math.round(stats.mtimeMs) });
   }
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
   // Only the newest candidates are integrity-tested (not every retained ZIP), and
   // verdicts are cached so a corrupt partial never anchors the schedule nor re-tests.
-  for (const { filePath, mtimeMs, size } of candidates) {
-    const key = `${filePath}:${mtimeMs}:${size}`;
-    if (!archiveValidityCache.has(key)) {
-      archiveValidityCache.set(key, validateBackupArchive(filePath, { allowLegacy: true }).ok);
-    }
-    if (archiveValidityCache.get(key)) return mtimeMs;
+  for (const { filePath, stats, mtimeMs } of candidates) {
+    if (isArchiveListable(filePath, stats)) return mtimeMs;
   }
   return null;
 };
