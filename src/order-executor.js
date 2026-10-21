@@ -329,6 +329,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       return { success: false, notAdmitted: true, errorMessage: ENTRY_NOT_ADMITTED };
     }
 
+    // A zero/missing/crossed book would make sizeUsdc / bidPrice Infinity.
+    // Reject before any placement intent is recorded (#1336).
+    if (!(currentBid > 0 && currentAsk > 0) || currentBid > currentAsk) {
+      return { success: false, errorMessage: 'invalid bid/ask' };
+    }
+
     // Calculate bid price with offset below current bid (use dynamic offset if provided)
     const offsetBps = effectiveOffsetBps ?? config.entryOffsetBps;
     const offsetMultiplier = 1 - (offsetBps / BASIS_POINTS_DIVISOR);

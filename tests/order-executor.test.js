@@ -874,6 +874,18 @@ describe('order-executor placement paths — unknown-outcome reconciliation (iss
     assert.equal(result.orderId, 'real-entry-1');
   });
 
+  it('placeEntryBid rejects an invalid bid/ask before touching the exchange (#1336)', async () => {
+    let placeCalls = 0;
+    const adapter = { placeLimitBuy: async () => { placeCalls++; return { orderId: 'x' }; } };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+    for (const [bid, ask] of [[0, 0], [100, 0], [0, 100], [NaN, 100], [101, 100]]) {
+      const result = await exec.placeEntryBid(1000, bid, ask);
+      assert.equal(result.success, false);
+      assert.equal(result.errorMessage, 'invalid bid/ask');
+    }
+    assert.equal(placeCalls, 0);
+  });
+
   it('placeTakeProfitOrder adopts a reconciled order', async () => {
     let placeCalls = 0;
     const adapter = {

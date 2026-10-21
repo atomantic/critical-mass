@@ -76,6 +76,28 @@ describe('coinbase user-channel authentication', () => {
   });
 });
 
+describe('coinbase ticker bid/ask guard (#1336)', () => {
+  it('withholds ticks with a missing, zero, or crossed side', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    FakeWebSocket.reset();
+    const ticks = [];
+    const feed = createWebSocketFeed('coinbase', { productId: 'BTC-USD', publicOnly: true, onTicker: (d) => ticks.push(d) });
+    feed.connect();
+    const sock = FakeWebSocket.instances[0];
+    sock.open();
+    const send = (t2) => sock.receive(JSON.stringify({ channel: 'ticker', events: [{ type: 'update', tickers: [{ product_id: 'BTC-USD', price: '100', ...t2 }] }] }));
+    send({ best_bid: '0', best_ask: '0' });
+    send({ best_ask: '101' });
+    send({ best_bid: '102', best_ask: '101' });
+    assert.equal(ticks.length, 0);
+    send({ best_bid: '99', best_ask: '101' });
+    feed.disconnect();
+    assert.equal(ticks.length, 1);
+    assert.equal(ticks[0].bid, 99);
+    assert.equal(ticks[0].ask, 101);
+  });
+});
+
 const VARIANTS = [
   { exchange: 'coinbase', openDelayMs: 0, connectMessage: '🔌 [coinbase] Connecting to WebSocket...', heartbeat: '{"channel":"heartbeats","client_id":"","timestamp":"2026-10-19T00:00:00Z","sequence_num":1,"events":[{"current_time":"2026-10-19 00:00:00","heartbeat_counter":1}]}' },
   { exchange: 'gemini', openDelayMs: 0, connectMessage: '🔌 [gemini] Connecting to Gemini WebSocket...', heartbeat: '{"type":"heartbeat","timestamp":1}' },

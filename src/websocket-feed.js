@@ -223,10 +223,16 @@ const createWebSocketFeed = (exchange, config) => {
         const price = parseFloat(ticker.price);
         if (!Number.isFinite(price) || price <= 0) continue;
 
+        // Withhold ticks with a missing/zero/crossed side (a 0 bid divides to
+        // Infinity in entry sizing); mirrors the Gemini/Crypto.com feeds (#1336).
+        const bid = parseFloat(ticker.best_bid);
+        const ask = parseFloat(ticker.best_ask);
+        if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || bid > ask) continue;
+
         const tickerData = {
           price,
-          bid: parseFloat(ticker.best_bid || 0),
-          ask: parseFloat(ticker.best_ask || 0),
+          bid,
+          ask,
           bidSize: parseFloat(ticker.best_bid_quantity || 0),
           askSize: parseFloat(ticker.best_ask_quantity || 0),
           volume24h: parseFloat(ticker.volume_24_h || 0),
