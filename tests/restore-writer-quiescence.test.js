@@ -467,6 +467,14 @@ describe('settings route is wired to the quiescence gate', () => {
     assert.equal(forced.statusCode, 500, 'force skips the gate and reaches the applier');
     assert.equal(forced.body.code, 'restore-failed');
   });
+
+  it('forwards legacyBaseConfig from the request body to the archive applier', async () => {
+    const invoke = setup({ isConnected: () => false, request: async () => ({}) });
+    // A non-object reaches restoreBackup's own validation, proving it was forwarded.
+    const res = await invoke({ force: true, legacyBaseConfig: 'not-a-config' });
+    assert.equal(res.statusCode, 500);
+    assert.equal(res.body.code, 'legacy-base-invalid');
+  });
 });
 
 describe('regime engine stop tears down timers even when the state save throws', () => {

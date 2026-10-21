@@ -282,6 +282,9 @@ module.exports = (app, deps) => {
       // A legacy (manifest-less) archive is refused unless the operator has
       // explicitly accepted a data-only restore in the confirmation UI (#430).
       restore: (name) => restoreBackup(name, {
+        // The source machine's base config.json makes a legacy archive portable
+        // (UPGRADE.md); restoreBackup rejects anything that is not an object.
+        legacyBaseConfig: req.body?.legacyBaseConfig ?? null,
         acceptLegacyWithoutBase: req.body?.acceptLegacyWithoutBase === true,
         // Explicit operator acknowledgement that the archive would remove
         // funds this machine currently runs from its configuration (#533).
