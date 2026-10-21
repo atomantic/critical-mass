@@ -1806,6 +1806,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Dry-run counterpart of saveLiveStateGuarded for the save timer. Dry-run is
+   * a per-fund setting, so live funds share this process: a full disk must not
+   * turn a dry-run save into an uncaughtException that exits them all (#532).
+   * @param {string} source - Caller label for the log line
+   * @returns {boolean} Whether the save succeeded
+   */
+  const saveDryRunStateGuarded = (source) => {
+    try {
+      saveDryRunState();
+      return true;
+    } catch (err) {
+      logger.error(`❌ [${fundLabel}] Dry-run state save failed from ${source}: ${err.message}`, {
+        action: 'save-dry-run-state', source, error: err.message,
+      });
+      return false;
+    }
+  };
+
+  /**
    * Load dry-run state from disk
    * @returns {boolean} Whether state was loaded
    */
@@ -3483,7 +3502,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       startFillDriftSweep();
     } else {
       // Start periodic state saving for dry-run (every 60 seconds)
-      stateSaveInterval = setInterval(saveDryRunState, 60000);
+      stateSaveInterval = setInterval(() => saveDryRunStateGuarded('state-save-timer'), 60000);
     }
 
     invalidateEntryAdmission();
@@ -10480,6 +10499,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       checkOfflineOrderFills,
       // Background persistence guards (issue #532)
       saveLiveStateGuarded,
+      saveDryRunStateGuarded,
       reloadStateFromDisk,
       getHealth: () => healthMonitor.getState(),
       healthMonitor,

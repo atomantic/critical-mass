@@ -342,7 +342,19 @@ const saveState = (exchange, exchangeState, pair) => {
     if (!pendingSave) {
       pendingSave = setTimeout(() => {
         pendingSave = null;
-        const fundCount = flushPendingStates();
+        // A timer callback: a write error (ENOSPC/EACCES/EROFS) thrown here is
+        // an uncaughtException that exits the engine process and every live
+        // fund in it (#532). Unwritten funds stay queued for the next save.
+        let fundCount;
+        try {
+          fundCount = flushPendingStates();
+        } catch (err) {
+          dryRunStateLogger.error(`❌ Debounced dry-run state save failed: ${err.message}`, {
+            saveMode: 'debounced',
+            error: err.message,
+          });
+          return;
+        }
         lastSaveTime = Date.now();
         dryRunStateLogger.info(`💾 Dry-run state saved for ${fundCount} fund(s)`, {
           fundCount,

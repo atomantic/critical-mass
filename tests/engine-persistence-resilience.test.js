@@ -229,6 +229,16 @@ describe('regime engine survives persistence failures', () => {
     assert.equal(engine._test.getHealth().mode, 'ACTIVE', 'one transient failure is not an emergency');
   });
 
+  it('keeps a process with live funds running when a dry-run fund\'s timer save throws', () => {
+    const dryRunEngine = createRegimeEngine('coinbase', TEST_PAIR, { dryRun: true, productId: 'BTC-USDC' }, {});
+    try {
+      breakDisk();
+      assert.equal(dryRunEngine._test.saveDryRunStateGuarded('state-save-timer'), false);
+    } finally {
+      dryRunEngine._test.clearTimers();
+    }
+  });
+
   it('enters SAFE mode after sustained failures without cancelling resting orders', async () => {
     breakDisk();
 
