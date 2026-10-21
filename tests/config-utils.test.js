@@ -1364,6 +1364,29 @@ describe('updateAggressivenessPresets', () => {
   });
 });
 
+describe('aggressiveness preset override persistence (#1400)', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('persists only the edited key, not every level and key', () => {
+    const fsm = setupFsMocks({ base: { exchanges: {}, global: {} }, user: null });
+    updateAggressivenessPresets({ moderate: { ...DEFAULT_AGGRESSIVENESS_PRESETS.moderate, cautionScale: 0.42 } });
+    assert.deepStrictEqual(fsm.written().global.aggressivenessPresets, { moderate: { cautionScale: 0.42 } });
+  });
+
+  it('picks up a later default change for keys that were not overridden', () => {
+    setupFsMocks({ base: { exchanges: {}, global: {} }, user: { global: { aggressivenessPresets: { moderate: { cautionScale: 0.42 } } } } });
+    const result = getAggressivenessPresets();
+    assert.equal(result.moderate.cautionScale, 0.42);
+    assert.equal(result.aggressive.kFactor, DEFAULT_AGGRESSIVENESS_PRESETS.aggressive.kFactor);
+  });
+
+  it('ignores stored out-of-range legacy values and falls back to the default', () => {
+    setupFsMocks({ base: { exchanges: {}, global: {} }, user: { global: { aggressivenessPresets: { moderate: { kFactor: 0.9 } } } } });
+    mock.method(console, 'warn', () => {});
+    assert.equal(getAggressivenessPresets().moderate.kFactor, DEFAULT_AGGRESSIVENESS_PRESETS.moderate.kFactor);
+  });
+});
+
 // ============================================================================
 // Structural Parity: config.example.json vs DEFAULT_AGGRESSIVENESS_PRESETS
 // ============================================================================
