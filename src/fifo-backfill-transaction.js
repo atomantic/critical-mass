@@ -1,14 +1,14 @@
 /** Durable, idempotent cohort replacement for the offline FIFO repair. */
 const fs = require('fs');
 const path = require('path');
-const { createHash, randomUUID } = require('crypto');
+const { randomUUID } = require('crypto');
+const { sha256Hex: hash, UUID_RE } = require('./shared-utils');
 const { execFileSync } = require('child_process');
 const { DATA_DIR, APP_ROOT } = require('./paths');
 const { atomicWriteSync, fsyncFile } = require('./durable-write');
 const { fsyncDir } = require('./fsync-dir');
 
 const JOURNAL_FILENAME = '.fifo-backfill-journal.json';
-const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 // Presence, including an unreadable journal, is fail-closed. Completed journals
 // are archived before this marker is removed, so no parsing is needed by guards.
@@ -40,7 +40,7 @@ const validateEntry = (entry, dataDir) => {
 
 const readJournal = (file, dataDir) => {
   const journal = JSON.parse(fs.readFileSync(file, 'utf8'));
-  if (journal.version !== 1 || typeof journal.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(journal.id) || !Array.isArray(journal.entries) || !['staging', 'staged', 'applying', 'rolling-back', 'committed', 'rolled-back'].includes(journal.status)) {
+  if (journal.version !== 1 || typeof journal.id !== 'string' || !UUID_RE.test(journal.id) || !Array.isArray(journal.entries) || !['staging', 'staged', 'applying', 'rolling-back', 'committed', 'rolled-back'].includes(journal.status)) {
     throw new Error('Invalid backfill journal; preserve it for recovery');
   }
   const files = journal.entries.map((entry) => validateEntry(entry, dataDir));

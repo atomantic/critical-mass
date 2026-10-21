@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **[issue-1361] Re-declared small helpers hoisted** — Coinbase order-result mapping (`mapOrderResponse`), `safeJsonParse` (websocket modules), and sha256/UUID helpers (journal transactions) now live once. TP-optimizer adjustment and ladder-order merges remain.
+
 ### Fixed
 - **[issue-1503] Sentinel keeps running and UpDown signal changes keep flowing when a state save fails** — `PUT /api/sentinel/config` always restarts Sentinel even if the stop-time alert-state save throws, and reports that the config was saved but alert state could not be written. UpDown records the scorecard prediction and emits `updown:signal` even when `persistState()` fails, logging the failure.
 - **[issue-1502] Exchange WebSocket reconnect backoff keeps growing when a connection opens and then closes straight away** — The backoff now resets only after the first inbound frame following subscribe, or after the socket stays open for 30s, instead of on `open`. An exchange that accepts the upgrade and then drops the socket (auth/subscribe rejection, connection-rate limit) no longer gets reconnects at the base delay indefinitely.

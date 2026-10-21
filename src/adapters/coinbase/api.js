@@ -25,6 +25,20 @@ const { validateCoinbaseKeys, createKeyFileLoader } = require('../key-validation
 const BASE_URL = 'https://api.coinbase.com';
 
 /**
+ * Map a Coinbase create-order response to the adapter's placement result.
+ * @param {any} result - Raw create-order response
+ * @param {string} clientOrderId
+ * @param {Object} [extra] - Call-specific fields (baseSize, limitPrice, ...)
+ */
+const mapOrderResponse = (result, clientOrderId, extra = {}) => ({
+  orderId: result.order_id || result.success_response?.order_id,
+  clientOrderId,
+  success: result.success || !!result.success_response,
+  errorMessage: result.failure_response?.message || result.error_response?.message,
+  ...extra,
+});
+
+/**
  * Create a Coinbase adapter instance
  * @param {string|null} [keysPath] - Path to keys file (defaults to data/coinbase-keys.json)
  * @returns {ExchangeAdapter} Coinbase adapter with all required methods
@@ -401,15 +415,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
     const result = await makeRequest('POST', '/api/v3/brokerage/orders', orderData);
 
-    return {
-      orderId: result.order_id || result.success_response?.order_id,
-      clientOrderId,
-      success: result.success || !!result.success_response,
-      errorMessage: result.failure_response?.message || result.error_response?.message,
-      baseSize: roundedAmount,
-      limitPrice: roundedPrice,
-      postOnly,
-    };
+    return mapOrderResponse(result, clientOrderId, { baseSize: roundedAmount, limitPrice: roundedPrice, postOnly });
   };
 
   /**
@@ -773,15 +779,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
     const result = await makeRequest('POST', '/api/v3/brokerage/orders', orderData);
 
-    return {
-      orderId: result.order_id || result.success_response?.order_id,
-      clientOrderId,
-      success: result.success || !!result.success_response,
-      errorMessage: result.failure_response?.message || result.error_response?.message,
-      baseSize: roundedAmount,
-      stopPrice: roundedStopPrice,
-      limitPrice: roundedLimitPrice,
-    };
+    return mapOrderResponse(result, clientOrderId, { baseSize: roundedAmount, stopPrice: roundedStopPrice, limitPrice: roundedLimitPrice });
   };
 
   /**
@@ -812,13 +810,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
     const result = await makeRequest('POST', '/api/v3/brokerage/orders', orderData);
 
-    return {
-      orderId: result.order_id || result.success_response?.order_id,
-      clientOrderId,
-      success: result.success || !!result.success_response,
-      errorMessage: result.failure_response?.message || result.error_response?.message,
-      baseSize: roundedAmount,
-    };
+    return mapOrderResponse(result, clientOrderId, { baseSize: roundedAmount });
   };
 
   return adapter;

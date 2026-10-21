@@ -15,6 +15,7 @@
  */
 
 const { createWebSocketLifecycle } = require('../../websocket-lifecycle');
+const { safeJsonParse } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
 const CRYPTOCOM_WS_URL = 'wss://stream.crypto.com/exchange/v1/market';
@@ -25,9 +26,6 @@ const POST_CONNECT_DELAY = 1000; // Wait 1s before subscribing
  * @param {string} data
  * @returns {Object|null}
  */
-const safeJsonParse = (data) => {
-  try { return JSON.parse(data); } catch { return null; }
-};
 
 /**
  * Convert standard product ID (e.g. CRO-USD) to Crypto.com instrument (CRO_USD)

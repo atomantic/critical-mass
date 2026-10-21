@@ -18,6 +18,7 @@ const { createWebSocketLifecycle } = require('./websocket-lifecycle');
 const { signJwt } = require('./jwt');
 const crypto = require('crypto');
 const { preparePrivateKey } = require('./adapters/coinbase/auth');
+const { safeJsonParse } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 
 /**
@@ -68,9 +69,6 @@ const generateWsJWT = (apiKey, apiSecret) => {
  * @param {string} data - JSON string
  * @returns {Object|null} Parsed object or null
  */
-const safeJsonParse = (data) => {
-  try { return JSON.parse(data); } catch { return null; }
-};
 
 /**
  * Create WebSocket feed manager
