@@ -566,8 +566,8 @@
  *
  * Volatility Clock Parameters
  * @property {number} atrPeriod - Periods for ATR calculation (default: 14)
- * @property {number} kFactor - ATR multiplier for entry trigger (default: 0.6)
- * @property {number} minIntervalMs - Minimum time between entries (default: 60000)
+ * @property {number} kFactor - ATR multiplier for entry trigger (default: 0.65)
+ * @property {number} minIntervalMs - Minimum time between entries (default: 120000)
  * @property {number} maxIntervalMs - Maximum time between entries (default: 3600000)
  *
  * Regime Detection Parameters
@@ -583,7 +583,7 @@
  * @property {number} harvestScale - Size multiplier in HARVEST (default: 1.0)
  * @property {number} cautionScale - Size multiplier in CAUTION (default: 0.5)
  * @property {number} trendScale - Size multiplier in TREND (default: 0.0)
- * @property {number} maxCycleBuys - Maximum buys per cycle (default: 10)
+ * @property {number} maxCycleBuys - Maximum buys per cycle (default: 15)
  * @property {number} cycleResetHours - Hours after which to auto-reset cycle buys at max (default: 72, 0 to disable)
  * @property {number} liquidityFactorCap - Maximum liquidity multiplier (default: 2.0)
  * @property {number} divergenceScalePct - Price divergence % from avg cost at which liquidity factor reaches cap (default: 5)
@@ -623,8 +623,9 @@
  * @property {number} wsConnectGraceMs - Initial WebSocket connect window before a not-yet-connected feed counts as ws_disconnected (default: 30000)
  *
  * Invariant Parameters
- * @property {number} maxOpenOrders - Maximum concurrent orders (default: 3)
- * @property {number} reconcileIntervalMs - State reconciliation frequency (default: 300000)
+ * @property {number} maxOpenOrders - Maximum concurrent orders (default: 100)
+ * @property {number} reconcileIntervalMs - State reconciliation frequency (default: 60000)
+ * @property {number} fillDriftSweepMs - How often to re-check the exchange for fills missing from the local ledger; detect-only, 0 disables (default: 1800000)
  *
  * Tail Event Parameters
  * @property {number} maxSpreadBps - Spread pause threshold (default: 50)
