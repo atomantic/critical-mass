@@ -29,7 +29,7 @@ let read
 beforeAll(async () => {
   window.history.replaceState({}, '', '/coinbase/BTC-USDC/config')
   vi.stubGlobal('fetch', vi.fn((url, options) => {
-    if (options?.method) return Promise.resolve(response({}))
+    if (options?.method && options.method !== 'GET') return Promise.resolve(response({}))
     if (url === '/api/exchanges') return Promise.resolve(response({ exchanges: ['coinbase', 'gemini'].map(name => ({
       name, pair: 'BTC-USDC', productId: 'BTC-USDC', strategy: 'regime', regimeEnabled: true,
     })) }))
@@ -56,7 +56,7 @@ beforeEach(() => {
     return response({})
   })
   vi.stubGlobal('fetch', vi.fn((url, options) => {
-    if (options?.method) return Promise.resolve(response({}))
+    if (options?.method && options.method !== 'GET') return Promise.resolve(response({}))
     if (url === '/api/exchanges') return Promise.resolve(response({ exchanges: ['coinbase', 'gemini'].map(name => ({
       name, pair: 'BTC-USDC', productId: 'BTC-USDC', strategy: 'regime', regimeEnabled: true,
     })) }))
@@ -95,7 +95,7 @@ it('never renders or writes A config while B loads, then saves only B values wit
   expect(screen.getByText('Loading configuration...')).toBeTruthy()
   expectUnknownStatus()
   fireEvent.click(saveButton())
-  expect(fetch.mock.calls.some(([, options]) => options?.method)).toBe(false)
+  expect(fetch.mock.calls.some(([, options]) => options?.method && options.method !== 'GET')).toBe(false)
 
   await act(async () => summaryB.resolve(response({ config: config(222) })))
   const input = await screen.findByLabelText('Base Size (USDC)')
