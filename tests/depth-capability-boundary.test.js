@@ -34,6 +34,7 @@ function view(name, props = {}, notificationConfig = {}) {
     useState(initial) { const key = slot(initial); return [state[key], value => { state[key] = typeof value === 'function' ? value(state[key]) : value }] },
     useRef(initial) { return state[slot(() => ({ current: initial }))] },
     useEffect(effect) { if (!mounted) effects.push(effect) },
+    useCallback(fn) { return fn },
   }
   const exports = {}
   const context = vm.createContext({ exports, module: { exports }, React: hooks,

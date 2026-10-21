@@ -192,25 +192,25 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   }, [initialConfig]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch aggressiveness presets for regime mode
-  const loadPresets = useCallback(async (signal) => {
+  const loadPresets = useCallback(async (isStale = () => false) => {
     try {
-      const res = await fetch('/api/presets/aggressiveness', { signal })
+      const res = await fetch('/api/presets/aggressiveness')
       const data = res.ok ? await res.json() : null
-      if (signal?.aborted) return
+      if (isStale()) return
       if (data?.presets) {
         setPresets(data.presets)
         setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
         setPresetsError(null)
       } else setPresetsError(res.ok ? 'Presets unavailable' : `Presets unavailable (HTTP ${res.status})`)
     } catch (err) {
-      if (!signal?.aborted) setPresetsError('Presets unavailable: request failed')
+      if (!isStale()) setPresetsError('Presets unavailable: request failed')
     }
   }, [])
   useEffect(() => {
     if (!isRegime) return
-    const controller = new AbortController()
-    loadPresets(controller.signal)
-    return () => controller.abort()
+    let stale = false
+    loadPresets(() => stale)
+    return () => { stale = true }
   }, [isRegime, loadPresets])
 
   // Do not render editable defaults or retain a previous draft when this fund's
