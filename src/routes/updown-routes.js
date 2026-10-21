@@ -14,6 +14,7 @@ const { createContextLogger } = require('../logger');
 const { UPDOWN_DATA_DIR } = require('../paths');
 const { validateEndpointUrl, safeFetch } = require('../url-validator');
 const { parseAllowedOrigins } = require('../ai-security');
+const { parsePaging } = require('./route-utils');
 const {
   buildScorecardAnalysis,
   buildIndicatorTimeframeHeatmap,
@@ -774,9 +775,11 @@ module.exports = (app, deps) => {
       const upWins = upTrades.filter(t => t.pnl > 0).length;
       const downWins = downTrades.filter(t => t.pnl > 0).length;
 
+      const paging = parsePaging(req.query);
       res.json({
         success: true,
-        trades,
+        trades: paging ? trades.slice(paging.offset, paging.offset + paging.limit) : trades,
+        ...(paging && { total: trades.length, limit: paging.limit, offset: paging.offset }),
         summary: {
           totalCost, totalReturn, totalPnl, wins, losses, count: trades.length,
           upWinRate: upTrades.length > 0 ? Math.round(upWins / upTrades.length * 10000) / 100 : null,

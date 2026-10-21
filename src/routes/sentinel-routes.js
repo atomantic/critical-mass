@@ -7,7 +7,7 @@
 
 const { createContextLogger } = require('../logger');
 const { validateEndpointUrl } = require('../url-validator');
-const { asyncRoute } = require('./route-utils');
+const { asyncRoute, parsePaging } = require('./route-utils');
 const { validateConfigUpdate, SENTINEL_CONFIG_SCHEMA, validateSentinelConfigUpdate } = require('../config-validator');
 
 /**
@@ -36,7 +36,16 @@ module.exports = (app, deps) => {
   app.get('/api/sentinel/alerts', (req, res) => {
     const filter = {};
     if (req.query.severity) filter.severity = req.query.severity;
-    res.json({ success: true, alerts: sentinelService.getAlerts(filter) });
+    const alerts = sentinelService.getAlerts(filter);
+    const paging = parsePaging(req.query);
+    if (!paging) return res.json({ success: true, alerts });
+    res.json({
+      success: true,
+      alerts: alerts.slice(paging.offset, paging.offset + paging.limit),
+      total: alerts.length,
+      limit: paging.limit,
+      offset: paging.offset,
+    });
   });
 
   app.post('/api/sentinel/poll', asyncRoute(async (req, res) => {
