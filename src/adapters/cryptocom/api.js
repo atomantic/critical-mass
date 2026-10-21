@@ -286,16 +286,6 @@ const createCryptocomAdapter = (keysPath = null) => {
   };
 
   /**
-   * Extract base currency from product ID
-   * @param {string} productId - Product ID (e.g., 'BTC-USDC' or 'BTC_USDT')
-   * @returns {string} Base currency
-   */
-  const getBaseCurrency = (productId) => {
-    const parts = productId.replace('_', '-').split('-');
-    return parts[0] || 'BTC';
-  };
-
-  /**
    * Get account balance for a specific currency
    * @param {string} currency - Currency code (e.g., 'USDT', 'BTC')
    * @returns {Promise<AccountBalance>}

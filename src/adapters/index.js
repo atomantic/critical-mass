@@ -93,17 +93,9 @@ const getAdapter = (exchange, options = {}) => {
   return adapterCache.get(cacheKey);
 };
 
-/**
- * Clear adapter cache (useful for testing or config changes)
- */
-const clearAdapterCache = () => {
-  adapterCache.clear();
-};
-
 module.exports = {
   createAdapter,
   getAdapter,
   getSupportedExchanges,
   isSupported,
-  clearAdapterCache,
 };
