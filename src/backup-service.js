@@ -385,10 +385,20 @@ const describeLayoutTranslation = ({ zipPath, snapshot, destinationConfig }) => 
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 const appendManifest = async (zipPath, manifest) => {
-  const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-backup-manifest-'));
-  fs.writeFileSync(path.join(stagingDir, MANIFEST_FILENAME), JSON.stringify(manifest, null, 2));
-  const result = await spawnAsync('zip', ['-q', '-g', zipPath, MANIFEST_FILENAME], { cwd: stagingDir });
-  fs.rmSync(stagingDir, { recursive: true, force: true });
+  // A staging failure (e.g. a full temp volume) is reported, not thrown: a
+  // throw would skip createBackup's cleanup and strand the unlisted
+  // .backup-*.tmp.zip in backups/ for good.
+  let stagingDir = null;
+  let result;
+  try {
+    stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-backup-manifest-'));
+    fs.writeFileSync(path.join(stagingDir, MANIFEST_FILENAME), JSON.stringify(manifest, null, 2));
+    result = await spawnAsync('zip', ['-q', '-g', zipPath, MANIFEST_FILENAME], { cwd: stagingDir });
+  } catch (error) {
+    return { success: false, error: `Failed to write backup manifest: ${error.message}` };
+  } finally {
+    if (stagingDir) fs.rmSync(stagingDir, { recursive: true, force: true });
+  }
   if (result.error || result.status !== 0) {
     const error = result.error
       ? result.error.message

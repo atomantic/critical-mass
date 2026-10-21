@@ -87,6 +87,29 @@ describe('backup configuration JSON diagnostics', () => {
   });
 });
 
+describe('backup-service — createBackup cleanup when the manifest cannot be staged', () => {
+  const root = path.join(DATA_DIR, 'manifest-staging-fixture');
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  it('reports the failure and leaves no temporary archive behind', async (t) => {
+    const dataDir = path.join(root, 'data');
+    const baseConfigFile = path.join(root, 'base.json');
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(dataDir, 'state.json'), '{}');
+    fs.writeFileSync(baseConfigFile, '{}');
+    const realWrite = fs.writeFileSync;
+    t.mock.method(fs, 'writeFileSync', (file, ...rest) => {
+      if (String(file).endsWith('backup-manifest.json')) throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+      return realWrite(file, ...rest);
+    });
+
+    const result = await createBackup({ paths: { dataDir, baseConfigFile } });
+    assert.equal(result.success, false);
+    assert.match(result.error, /Failed to write backup manifest: ENOSPC/);
+    assert.deepEqual(fs.readdirSync(path.join(dataDir, 'backups')), []);
+  });
+});
+
 describe('backup-service — createBackup/restoreBackup', () => {
   const createdBackups = [];
 
