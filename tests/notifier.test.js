@@ -126,7 +126,7 @@ describe('formatFundSummaryLines multi-fund daily summary (issue #397)', () => {
 });
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(require('../src/paths').DATA_DIR, 'config.json');
 
 // Mirrors src/notifier.js MAX_MESSAGE_LENGTH (not exported: it's an internal
 // batching constant, not part of the module's public contract).

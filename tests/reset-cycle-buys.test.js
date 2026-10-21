@@ -17,7 +17,7 @@ const { createRegimeEngine, restorePersistedCycleId } = require('../src/regime-e
 const { loadRegimeState } = require('../src/state-tracker');
 
 const TEST_PAIR = '__test232__';
-const JUNK_DIR = path.join(__dirname, '..', 'data', 'coinbase', TEST_PAIR);
+const JUNK_DIR = path.join(require('../src/paths').DATA_DIR, 'coinbase', TEST_PAIR);
 
 const engines = [];
 
@@ -257,7 +257,7 @@ describe('#675 recalculateAndRefresh re-points the persisted activeCycleId', () 
   // Own throwaway pair so the ledger starts empty (the #232 tests above leave
   // fills in TEST_PAIR's ledger).
   const PAIR_675 = '__test675__';
-  after(() => fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', PAIR_675), { recursive: true, force: true }));
+  after(() => fs.rmSync(path.join(require('../src/paths').DATA_DIR, 'coinbase', PAIR_675), { recursive: true, force: true }));
 
   it('follows the live cycle through orphan-recovery renumbering and persists it', () => {
     const eng = createRegimeEngine('coinbase', PAIR_675, { dryRun: false, productId: PAIR_675, maxCycleBuys: 3 }, {});
@@ -293,7 +293,7 @@ describe('#675 recalculateAndRefresh re-points the persisted activeCycleId', () 
 
   it('anchors recalc on the persisted boundary when the ledger guessed a different cycle', () => {
     const PAIR = '__test675b__';
-    after(() => fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', PAIR), { recursive: true, force: true }));
+    after(() => fs.rmSync(path.join(require('../src/paths').DATA_DIR, 'coinbase', PAIR), { recursive: true, force: true }));
     const eng = createRegimeEngine('coinbase', PAIR, { dryRun: false, productId: PAIR, maxCycleBuys: 3 }, {});
     engines.push(eng);
     const ledger = eng.getFillLedger();
@@ -338,11 +338,11 @@ describe('#675 recalculateAndRefresh re-points the persisted activeCycleId', () 
 
 describe('#705 live-cycle start boundary and counter resync', () => {
   const PAIR_705 = '__test705__';
-  after(() => fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', PAIR_705), { recursive: true, force: true }));
+  after(() => fs.rmSync(path.join(require('../src/paths').DATA_DIR, 'coinbase', PAIR_705), { recursive: true, force: true }));
 
   it('resetCycleBuys persists the new cycle\'s start time and a restart restores it', async () => {
     const PAIR = '__test705r__';
-    after(() => fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', PAIR), { recursive: true, force: true }));
+    after(() => fs.rmSync(path.join(require('../src/paths').DATA_DIR, 'coinbase', PAIR), { recursive: true, force: true }));
     const eng = createRegimeEngine('coinbase', PAIR, { dryRun: false, productId: PAIR, maxCycleBuys: 3 }, {});
     engines.push(eng);
     eng._test.setRunning(true);
@@ -418,7 +418,7 @@ describe('#705 boot orphan-buy recovery skips timestamp-folded fills', () => {
   const { repairHistoricalFillAnnotations } = require('../src/regime-engine');
   const { createFillLedger } = require('../src/fill-ledger');
   const PAIR = '__test705s__';
-  after(() => fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', PAIR), { recursive: true, force: true }));
+  after(() => fs.rmSync(path.join(require('../src/paths').DATA_DIR, 'coinbase', PAIR), { recursive: true, force: true }));
 
   it('never offers a timeframe-attributed buy to a body merge (no automatic TP for unlinked imports)', () => {
     const ledger = createFillLedger('coinbase', PAIR, PAIR);

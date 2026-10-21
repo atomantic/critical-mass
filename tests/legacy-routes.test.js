@@ -20,7 +20,7 @@ const registerSettingsRoutes = require('../src/routes/settings-routes');
 
 // Resolved paths matching what config-utils.js computes internally
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(require('../src/paths').DATA_DIR, 'config.json');
 
 const SECRET_TOKEN = '123456:SECRET-BOT-TOKEN-abcdef';
 

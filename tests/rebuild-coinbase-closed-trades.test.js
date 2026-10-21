@@ -70,10 +70,13 @@ describe('rebuild-coinbase-closed-trades', () => {
   it('refuses to apply to the live data root while the engine is recorded as running', () => {
     const { root, fund } = fixture();
     writeJson(path.join(fund, 'regime-engine-running.json'), { running: true });
-    // Make the fixture the "live" root so the guard runs without touching real data.
+    // Make the fixture the "live" root (an APP_ROOT whose data/ is the fixture)
+    // so the guard runs without touching real data.
+    const appRoot = fs.mkdtempSync(path.join(root, 'app-'));
+    fs.symlinkSync(root, path.join(appRoot, 'data'));
     const preload = path.join(root, 'live-root.js');
     const pathsModule = path.join(__dirname, '..', 'src', 'paths.js');
-    fs.writeFileSync(preload, `require(${JSON.stringify(pathsModule)}).DATA_DIR = ${JSON.stringify(root)};\n`);
+    fs.writeFileSync(preload, `require(${JSON.stringify(pathsModule)}).APP_ROOT = ${JSON.stringify(appRoot)};\n`);
 
     const result = spawnSync(process.execPath, ['--require', preload, script, '--apply'], {
       env: { ...process.env, CRITICAL_MASS_DATA_DIR: root },

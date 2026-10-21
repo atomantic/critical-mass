@@ -54,7 +54,7 @@ const {
 
 // Resolved paths matching what config-utils.js computes internally
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
-const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+const USER_CONFIG_FILE = path.join(require('../src/paths').DATA_DIR, 'config.json');
 
 const contextFor = (lines, prefix) => {
   const line = lines.find(candidate => candidate.startsWith(prefix));

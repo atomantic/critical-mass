@@ -5,7 +5,8 @@
  * temp root so a suite that forgets to clean up its fixtures cannot leave them
  * in the shared system temp directory.
  *
- * - allocates one unique root under os.tmpdir() and points TMPDIR/TMP/TEMP at it
+ * - allocates one unique root under os.tmpdir() and points TMPDIR/TMP/TEMP at it,
+ *   plus CRITICAL_MASS_DATA_DIR at <root>/data (the suite never sees the live data/)
  * - preserves the quiet-console preload, serial concurrency, the tests/*.test.js
  *   selection and any extra CLI arguments, and the child's exit status
  * - removes ONLY its own root after the child closes (success, failure or signal)
@@ -40,6 +41,22 @@ function defaultChildArgs(extraArgs) {
   ];
 }
 
+/** Sorted recursive listing (path, size, mtime) of the checkout's data/, or [] if absent. */
+function listLiveData() {
+  const base = path.join(REPO_ROOT, 'data');
+  const out = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      const st = fs.lstatSync(full);
+      out.push(`${path.relative(base, full)}:${st.size}:${st.mtimeMs}`);
+      if (entry.isDirectory()) walk(full);
+    }
+  };
+  if (fs.existsSync(base)) walk(base);
+  return out.sort();
+}
+
 /**
  * @param {{ childArgs?: string[], extraArgs?: string[], killGraceMs?: number }} [options]
  * @returns {Promise<number>} the exit code the runner should exit with
@@ -47,7 +64,12 @@ function defaultChildArgs(extraArgs) {
 function runOwned(options = {}) {
   const { extraArgs = [], killGraceMs = KILL_GRACE_MS } = options;
   const childArgs = options.childArgs || defaultChildArgs(extraArgs);
+  const liveBefore = options.childArgs ? null : listLiveData();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), ROOT_PREFIX));
+  // Disposable data root: src/paths.js resolves DATA_DIR from this, so the
+  // suite can never reach the checkout's live data/.
+  const dataRoot = path.join(root, 'data');
+  fs.mkdirSync(dataRoot);
 
   return new Promise((resolve) => {
     // detached => own process group, so signals reach any grandchildren too.
@@ -55,7 +77,7 @@ function runOwned(options = {}) {
       cwd: REPO_ROOT,
       stdio: 'inherit',
       detached: true,
-      env: { ...process.env, TMPDIR: root, TMP: root, TEMP: root },
+      env: { ...process.env, TMPDIR: root, TMP: root, TEMP: root, CRITICAL_MASS_DATA_DIR: dataRoot },
     });
 
     let killTimer = null;
@@ -94,6 +116,10 @@ function runOwned(options = {}) {
       } catch (error) {
         console.error(`test runner: cleanup failed; retaining its temporary root: ${error.message}`);
         code = 1;
+      }
+      if (liveBefore && JSON.stringify(listLiveData()) !== JSON.stringify(liveBefore)) {
+        console.error('test runner: the suite created or modified files under the checkout\'s data/ (or the engine did concurrently); tests must use the disposable data root');
+        code = code || 1;
       }
       for (const [signal, handler] of handlers) process.off(signal, handler);
       resolve(code);

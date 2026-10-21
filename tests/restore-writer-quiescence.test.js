@@ -542,7 +542,7 @@ describe('settings route is wired to the quiescence gate', () => {
 
 describe('regime engine stop tears down timers even when the state save throws', () => {
   const TEST_PAIR = '__test429__';
-  const JUNK_DIR = path.join(__dirname, '..', 'data', 'coinbase', TEST_PAIR);
+  const JUNK_DIR = path.join(require('../src/paths').DATA_DIR, 'coinbase', TEST_PAIR);
 
   after(() => {
     mock.restoreAll();

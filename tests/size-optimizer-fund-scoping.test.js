@@ -72,7 +72,7 @@ const { createRegimeEngine } = require('../src/regime-engine');
 
 // Dash-shaped so getQuoteCurrency splits it as a real pair would ('-USDC' -> 'USDC').
 const TEST_PAIR = '__TEST694FS__-USDC';
-const JUNK_DIR = path.join(__dirname, '..', 'data', 'coinbase', TEST_PAIR);
+const JUNK_DIR = path.join(require('../src/paths').DATA_DIR, 'coinbase', TEST_PAIR);
 
 const engines = [];
 after(() => {
