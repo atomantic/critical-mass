@@ -3,6 +3,7 @@ import { useState, useEffect, useId } from 'react'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { CartesianChart } from './charts/primitives/CartesianChart'
 import { pairQuery } from '../utils/api'
+import { apiPost } from '../utils/apiClient'
 
 // Time periods adjusted per interval type
 const getPeriodsForInterval = (intervalType) => {
@@ -146,14 +147,9 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`/api/${exchange}/backtest/run${pairQuery(pair)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
-      })
-      const data = await res.json()
-      if (!data.success) throw new Error(data.error)
-      setResults(data)
+      const res = await apiPost(`/api/${exchange}/backtest/run${pairQuery(pair)}`, params)
+      if (!res.ok) throw new Error(res.error)
+      setResults(res.data)
     } catch (err) {
       setError(err.message)
     } finally {
