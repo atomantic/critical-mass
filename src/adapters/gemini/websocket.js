@@ -15,6 +15,7 @@
  */
 
 const { createWebSocketLifecycle } = require('../../websocket-lifecycle');
+const { safeJsonParse } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
 const GEMINI_WS_URL = 'wss://api.gemini.com/v2/marketdata';
@@ -24,9 +25,6 @@ const GEMINI_WS_URL = 'wss://api.gemini.com/v2/marketdata';
  * @param {string} data
  * @returns {Object|null}
  */
-const safeJsonParse = (data) => {
-  try { return JSON.parse(data); } catch { return null; }
-};
 
 /**
  * Convert standard product ID (e.g. BTC-USD) to Gemini symbol (btcusd)

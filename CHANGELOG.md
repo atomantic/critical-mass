@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **[issue-1361] Re-declared small helpers hoisted** — Coinbase order-result mapping (`mapOrderResponse`), `safeJsonParse` (websocket modules), and sha256/UUID helpers (journal transactions) now live once. TP-optimizer adjustment and ladder-order merges remain.
+
 ### Fixed
 - **[issue-1504] The admin shows an error with Retry when the fund list fails to load** — A failed or non-ok `/api/exchanges` load no longer leaves default-derived fund badges, strategy tabs and Start/Stop; the header shows "Could not load funds" with Retry (and "Refresh Exchanges" toasts if it fails again). Creating a fund now checks `res.ok` before parsing JSON, awaits the follow-up refresh, and shows the success toast and navigates even when the list refresh fails, with a warning not to create it again.
 - **[issue-1503] Sentinel keeps running and UpDown signal changes keep flowing when a state save fails** — `PUT /api/sentinel/config` always restarts Sentinel even if the stop-time alert-state save throws, and reports that the config was saved but alert state could not be written. UpDown records the scorecard prediction and emits `updown:signal` even when `persistState()` fails, logging the failure.

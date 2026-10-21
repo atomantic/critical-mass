@@ -540,7 +540,20 @@ const finiteFloat = (value, fallback = 0) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
+/** Parse JSON, returning null on malformed input. */
+const safeJsonParse = (data) => {
+  try { return JSON.parse(data); } catch { return null; }
+};
+
+/** @param {string|Buffer} bytes */
+const sha256Hex = (bytes) => require('crypto').createHash('sha256').update(bytes).digest('hex');
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 module.exports = {
+  safeJsonParse,
+  sha256Hex,
+  UUID_RE,
   BASIS_POINTS_DIVISOR,
   ENTRY_NOT_ADMITTED,
   isFilledStatus,
