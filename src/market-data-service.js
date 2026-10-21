@@ -2129,7 +2129,11 @@ const createMarketDataService = (exchange, pair) => {
     setOnStatusUpdate,
     // Health state (issue #228) — null until start() creates the monitor (or
     // a test injects one via _test.injectHealthMonitor).
-    getHealthState: () => (healthMonitor ? healthMonitor.getState() : null),
+    // `userChannel` ('subscribed' | 'degraded' | null when not configured)
+    // surfaces lost real-time fill detection on the user channel (issue #1382).
+    getHealthState: () => (healthMonitor
+      ? { ...healthMonitor.getState(), userChannel: wsFeed?.getStatus?.().userChannel ?? null }
+      : null),
     // Resolves once order work accepted before stop() has finished. Queued
     // work re-checks the stopped flag after every await, so after stop()
     // this only waits out REST calls already in flight.
@@ -2147,6 +2151,7 @@ const createMarketDataService = (exchange, pair) => {
       injectAdapter: (a) => { _adapterOverride = a; },
       injectRegimeDetector: (d) => { regimeDetector = d; },
       injectHealthMonitor: (hm) => { healthMonitor = hm; },
+      injectWsFeed: (feed) => { wsFeed = feed; },
       getActiveAdapter,
       pendingTerminalRetries,
       pendingPartialRetries,

@@ -76,6 +76,99 @@ describe('coinbase user-channel authentication', () => {
   });
 });
 
+describe('coinbase user-channel recovery (#1382)', () => {
+  const crypto = require('node:crypto');
+  const jwt = require('../src/jwt');
+  const { privateKey } = crypto.generateKeyPairSync('ec', {
+    namedCurve: 'prime256v1',
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+  const USER_RETRY = 30000;
+  const userSubs = (sock) => sock.frames.filter(message => message.channel === 'user');
+
+  const openUserFeed = (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    FakeWebSocket.reset();
+    const feed = createWebSocketFeed('coinbase', { productId: 'BTC-USD', apiKey: 'organizations/o/apiKeys/k', apiSecret: privateKey });
+    return feed;
+  };
+
+  it('retries the user subscription after a JWT signing failure and reports degraded meanwhile', (t) => {
+    const realSign = jwt.signJwt;
+    let calls = 0;
+    t.mock.method(jwt, 'signJwt', (...args) => {
+      calls++;
+      if (calls === 1) throw new Error('signer unavailable');
+      return realSign(...args);
+    });
+    const feed = openUserFeed(t);
+    assert.equal(feed.getStatus().userChannel, 'degraded', 'not subscribed before connect');
+    feed.connect();
+    const sock = FakeWebSocket.instances[0];
+    sock.open();
+    assert.equal(userSubs(sock).length, 0);
+    assert.equal(feed.getStatus().userChannel, 'degraded');
+
+    t.mock.timers.tick(USER_RETRY - 1);
+    assert.equal(userSubs(sock).length, 0);
+    t.mock.timers.tick(1);
+    assert.equal(userSubs(sock).length, 1, 'user subscription retried on the same socket');
+    assert.equal(feed.getStatus().userChannel, 'subscribed');
+    assert.equal(FakeWebSocket.instances.length, 1, 'no reconnect needed');
+    feed.disconnect();
+  });
+
+  it('resubscribes after an error frame with doubling backoff, then reconnects after three failed retries', (t) => {
+    const feed = openUserFeed(t);
+    feed.connect();
+    const sock = FakeWebSocket.instances[0];
+    sock.open();
+    assert.equal(userSubs(sock).length, 1);
+    assert.equal(feed.getStatus().userChannel, 'subscribed');
+
+    const reject = () => sock.receive(JSON.stringify({ type: 'error', message: 'authentication failure' }));
+    let expected = 1;
+    for (const delay of [30000, 60000, 120000]) {
+      reject();
+      assert.equal(feed.getStatus().userChannel, 'degraded');
+      reject(); // a duplicate error while a retry is pending does not reschedule
+      // Keep the liveness watchdog fed while we wait.
+      for (let second = 1; second < delay / 1000; second++) { t.mock.timers.tick(1000); sock.receive('{}'); }
+      t.mock.timers.tick(999);
+      assert.equal(userSubs(sock).length, expected, `no resubscribe before ${delay}ms`);
+      t.mock.timers.tick(1);
+      expected++;
+      assert.equal(userSubs(sock).length, expected, `resubscribed after ${delay}ms`);
+      assert.equal(feed.getStatus().userChannel, 'subscribed');
+    }
+    assert.equal(sock.closeCalls.length, 0);
+    reject();
+    assert.equal(sock.closeCalls.length, 1, 'socket terminated after retries are exhausted');
+    assert.equal(feed.getStatus().userChannel, 'degraded');
+    t.mock.timers.tick(1000);
+    assert.equal(FakeWebSocket.instances.length, 2, 'lifecycle reconnects');
+    const replacement = FakeWebSocket.instances[1];
+    replacement.open();
+    assert.equal(userSubs(replacement).length, 1, 'fresh socket resubscribes the user channel');
+    assert.equal(feed.getStatus().userChannel, 'subscribed');
+    feed.disconnect();
+    assert.equal(feed.getStatus().userChannel, 'degraded');
+  });
+
+  it('reports no user channel in public-only mode', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    FakeWebSocket.reset();
+    const feed = createWebSocketFeed('coinbase', { productId: 'BTC-USD', publicOnly: true });
+    feed.connect();
+    FakeWebSocket.instances[0].open();
+    FakeWebSocket.instances[0].receive(JSON.stringify({ type: 'error', message: 'bad product' }));
+    t.mock.timers.tick(USER_RETRY * 10);
+    assert.equal(feed.getStatus().userChannel, null);
+    feed.disconnect();
+  });
+});
+
 describe('coinbase ticker bid/ask guard (#1336)', () => {
   it('withholds ticks with a missing, zero, or crossed side', (t) => {
     t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
