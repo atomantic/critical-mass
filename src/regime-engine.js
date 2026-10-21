@@ -2107,8 +2107,33 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Why a state reload must not run right now, or null when it is safe.
+   *
+   * Fill handlers book a sale in memory (commitSellBooking /
+   * recordBuyConsumption) and persist only after awaiting exchange work — the
+   * partial body-TP path awaits placeBodyTp, the merge-snapshot path awaits
+   * cancelBodyTpOrder. fillLedger.load() inside that window wipes the booking
+   * AND the dirty flag, so the handler's later persist() is a no-op and the
+   * sale's P&L is lost for good (issue #1407). The ledger is deliberately NOT
+   * persisted first instead: that would overwrite the operator's on-disk fix.
+   * @returns {string|null}
+   */
+  const describeReloadBlocker = () => {
+    if (engineLocks.isMutatingPosition()) return 'a merge, reconcile, or fill is in progress';
+    if (engineLocks.isLadderBusy()) return 'a ladder rebuild, cancel, or cycle reset is in progress';
+    if (tpPlacementInFlight.size > 0) return 'a body take-profit placement is in flight';
+    if (extendInFlight.size > 0) return 'a body extend is in progress';
+    if (fillLedger.isDirty()) return 'the fill ledger has unsaved in-memory changes';
+    return null;
+  };
+
+  /**
    * SIGUSR1 handler: re-read regime state and the fill ledger from disk so an
    * operator can apply a manual state fix without restarting the engine.
+   *
+   * Refused (logged + an `error` trade event, nothing reloaded) while the fund
+   * is mutating — see describeReloadBlocker (issue #1407). The operator
+   * re-sends the signal once the fund settles.
    *
    * Guarded because a throw from a signal listener is an uncaughtException, and
    * the exact workflow this exists for — hand-editing regime-state.json — is
@@ -2121,8 +2146,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const reloadStateFromDisk = () => {
     const startedAt = Date.now();
-    logger.info(`🔄 [${exchange}] SIGUSR1 received — reloading state from disk`);
+    logger.info(`🔄 [${fundLabel}] SIGUSR1 received — reloading state from disk`);
     try {
+      // Inside the try: a throw from a signal listener is an uncaughtException.
+      const blocker = describeReloadBlocker();
+      if (blocker) {
+        logger.warn(
+          `⏸️ [${fundLabel}] SIGUSR1 state reload deferred — ${blocker}; nothing was reloaded. Re-send SIGUSR1 to retry once the fund settles.`,
+          { action: 'sigusr1-reload', deferred: true, reason: blocker, ...engineLocks.getFlags() }
+        );
+        tradeEvents.emitTradeEvent(
+          'error',
+          exchange,
+          `State reload deferred — ${blocker}; nothing was reloaded. Retry the reload (SIGUSR1) once the fund settles.`,
+          { action: 'sigusr1-reload', deferred: true, reason: blocker, pair }
+        );
+        return false;
+      }
       const savedState = loadFundRegimeState(exchange, pair);
       const diskPos = savedState?.position;
       if (!diskPos) {
@@ -3335,7 +3375,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   const installStateReloadSignal = () => {
-    // SIGUSR1: reload state from disk (for applying manual state fixes without restart)
+    // SIGUSR1: reload state from disk (for applying manual state fixes without restart).
+    // One listener per fund, so a single signal reloads EVERY live fund in this
+    // exchange process, not just the one whose files were edited. Each fund
+    // decides independently: a fund mid-fill defers (see reloadStateFromDisk)
+    // while the idle ones reload — re-send the signal for the deferred fund.
     if (!isDryRun && !stateReloadSignalInstalled) {
       process.on('SIGUSR1', reloadStateFromDisk);
       stateReloadSignalInstalled = true;
