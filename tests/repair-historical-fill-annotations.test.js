@@ -5,8 +5,9 @@
 // fill ledger; step 0 (orphan buy recovery) is pinned in reset-cycle-buys.test.js.
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('fs');
-const path = require('path');
+
+const { createIsolatedDataDir } = require('./test-data-dir');
+const isolatedData = createIsolatedDataDir('cm-repair-hist-annot-test');
 
 const { repairHistoricalFillAnnotations } = require('../src/regime-engine');
 const { createFillLedger } = require('../src/fill-ledger');
@@ -15,7 +16,7 @@ const { createFillLedger } = require('../src/fill-ledger');
 // createFillLedger on the same pair would reload it.
 const PAIRS = [];
 after(() => {
-  for (const pair of PAIRS) fs.rmSync(path.join(__dirname, '..', 'data', 'coinbase', pair), { recursive: true, force: true });
+  isolatedData.cleanup();
 });
 
 const T0 = Date.parse('2026-01-01T00:00:00.000Z');
