@@ -85,7 +85,9 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
       await fetchData()
       pending = false
     }
-    setLoading(true)
+    // Only the first read gates the page. A page/filter/sort change or a poll
+    // keeps the current view mounted: the gate would unmount Manual Trades and
+    // discard its scan results and any half-filled import or recovery form.
     refresh()
     const interval = setInterval(refresh, 10000)
     return () => { reader.invalidate(); clearInterval(interval) }
