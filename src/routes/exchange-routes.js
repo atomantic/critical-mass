@@ -6,19 +6,14 @@
 const stateTracker = require('../state-tracker');
 const { buildFundSummary, buildDcaFundSummary } = require('../fund-summary');
 const {
-  getExchangeConfig,
   getFundConfig,
   getGlobalConfig,
-  getConfiguredExchanges,
   getConfiguredFunds,
   getEnabledExchanges,
-  getEnabledFunds,
   getFundsForExchange,
   getDefaultPair,
   resolveConfiguredPair,
   getRegimeConfig,
-  updateExchangeConfig,
-  updateFundConfig,
   setFundEnabled,
   setFundDryRun,
   addFund,
@@ -28,8 +23,7 @@ const {
   productIdMatchesPair,
   getFundStateConflict,
 } = require('../config-utils');
-const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
-const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
+const { createContextLogger, getLogFile } = require('../logger');
 const { syncFundOrders, runIntervalCycle, resumePendingBuy, executeConsolidation, reconcilePlacementIntent, retryFailedSell } = require('../dca-engine');
 const { shouldAutoResumeRegime, readBooleanFlag } = require('../shared-utils');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');

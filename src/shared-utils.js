@@ -10,7 +10,6 @@ const fs = require('fs');
 const path = require('path');
 const stateTracker = require('./state-tracker');
 const { createContextLogger } = require('./logger');
-const { DATA_DIR } = require('./paths');
 const { jsonReadError } = require('./json-diagnostics');
 const { getFibonacciBuyAmount } = require('./fibonacci-utils');
 const {

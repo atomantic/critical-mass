@@ -5,7 +5,6 @@
  */
 
 const { runBacktest, getPriceData } = require('./backtest-engine');
-const { getIntervalConfig } = require('./interval-utils');
 const {
   OPTIMIZER_INTERVALS: DEFAULT_INTERVALS,
   DEFAULT_BUY_AMOUNTS,

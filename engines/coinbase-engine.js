@@ -19,12 +19,10 @@
 const path = require('path');
 const { createContextLogger } = require('../src/logger');
 const {
-  getExchangeConfig,
   initializeConfigBase,
   getFundConfig,
   getRegimeConfig,
   getConfiguredExchanges,
-  getConfiguredFunds,
   getFundsForExchange,
   resolveConfiguredPair,
 } = require('../src/config-utils');

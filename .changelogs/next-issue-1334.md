@@ -1,0 +1,1 @@
+- **[issue-1334] Remove unused imports left behind in exchange routes, DCA/optimizer engines, state tracker, shared utils, Gemini adapter and Coinbase engine** — Dropped dead `require` bindings (no behavior change); each removed name was verified to occur only in its own import.
