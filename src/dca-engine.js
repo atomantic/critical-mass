@@ -976,6 +976,23 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
 
   // Check current price against max threshold
   const currentPrice = await adapter.getCurrentPrice(config.productId);
+  // Fail closed: NaN/0/negative compare false against maxBuyPrice and would
+  // silently bypass the operator's risk cap on a market-buy path.
+  if (!Number.isFinite(currentPrice) || !(currentPrice > 0)) {
+    cycleLogger.error(`❌ [${exchange}] Invalid ${config.productId} price from adapter: ${currentPrice} — refusing to trade`, {
+      exchange,
+      productId: config.productId,
+      currentPrice: String(currentPrice),
+    });
+    // Throw rather than return: the scheduler only re-runs a cycle from its
+    // rejection path (planScheduledRetry), and an unusable ticker is a
+    // transient data error, not a deliberate skip like price_too_high.
+    throw Object.assign(new Error(`Unusable ${config.productId} price from ${exchange} adapter: ${currentPrice}`), {
+      code: 'PRICE_UNAVAILABLE',
+      exchange,
+      productId: config.productId,
+    });
+  }
   cycleLogger.info(`ℹ️ [${exchange}] Current ${config.productId} price: ${currentPrice.toFixed(2)}`);
   tradeEvents.priceCheck(exchange, config.productId, currentPrice);
 

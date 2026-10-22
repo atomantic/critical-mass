@@ -12,7 +12,7 @@
 const { roundAsset, roundPrice } = require('./volatility-utils');
 const { createMutex } = require('./async-mutex');
 const { getBaseCurrency } = require('./config-utils');
-const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, sleep } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isPostOnlyRejection, sleep } = require('./shared-utils');
 const { placeWithUnknownReconcile } = require('./order-manager');
 const { createContextLogger } = require('./logger');
 const { createOrderLookups } = require('./executor-contract');
@@ -179,20 +179,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   // via try/finally, so this timer should essentially never fire.
   const TP_MUTEX_DEADLOCK_GUARD_MS = 5 * 60 * 1000; // 300s, > 2× the ~127s ceiling
   const tpMutex = createMutex(TP_MUTEX_DEADLOCK_GUARD_MS);
-
-  /**
-   * Check if error indicates a post-only rejection (price moved)
-   * @param {string} errorMessage - Error message from exchange
-   * @returns {boolean} True if post-only rejection
-   */
-  const isPostOnlyRejection = (errorMessage) => {
-    const msg = (errorMessage || '').toLowerCase();
-    return msg.includes('post_only') ||
-           msg.includes('post only') ||
-           msg.includes('would cross') ||
-           msg.includes('would immediately match') ||
-           msg.includes('price is too aggressive');
-  };
 
   /**
    * Safe cancel: cancel order, then check status on failure to detect fills
@@ -581,7 +567,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       } catch (err) {
         // POST_ONLY_REJ means TP price is below current bid — price already passed TP level.
         // Retry without POST_ONLY so the order fills immediately as a taker.
-        if (err.message && err.message.includes('POST_ONLY_REJ')) {
+        if (isPostOnlyRejection(err)) {
           logger.info(`⚡ [${exchange}] TP price ${fmtPrice(roundedPrice)} below bid — retrying as taker order`, {
             orderType: 'take_profit',
             price: roundedPrice,

@@ -364,3 +364,24 @@ describe('reconcilePlacementIntent fund scoping (issue #546)', () => {
     assert.equal((await dcaEngine.runIntervalCycle(EXCHANGE, DEFAULT_PAIR)).status, 'success');
   });
 });
+
+describe('runIntervalCycle invalid price guard', () => {
+  it('fails closed by rejecting (so the scheduler retries) and never buys when the adapter price is NaN, 0 or negative', async () => {
+    seedState(DEFAULT_PAIR);
+    const goodPrice = FUND_CONFIGS[DEFAULT_PAIR].price;
+    try {
+      for (const bad of [NaN, 0, -5, undefined]) {
+        // The adapter stub in beforeEach reads this fund's price on each call.
+        FUND_CONFIGS[DEFAULT_PAIR].price = bad;
+        await assert.rejects(
+          () => dcaEngine.runIntervalCycle(EXCHANGE, DEFAULT_PAIR),
+          { code: 'PRICE_UNAVAILABLE', exchange: EXCHANGE },
+          String(bad)
+        );
+      }
+    } finally {
+      FUND_CONFIGS[DEFAULT_PAIR].price = goodPrice;
+    }
+    assert.equal(buys.length, 0, 'no market buy may be placed on an unusable price');
+  });
+});

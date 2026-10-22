@@ -4,7 +4,7 @@ const { createContextLogger } = require('./logger');
 const { getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
 const { PLACEMENT_RETRY_DELAY_MS } = require('./timing-constants');
 const { getBaseCurrency } = require('./config-utils');
-const { isFilledStatus, sleep } = require('./shared-utils');
+const { isFilledStatus, isPostOnlyRejection, sleep } = require('./shared-utils');
 const {
   getBlockingPlacementIntents,
   recordPlacementIntent,
@@ -749,6 +749,14 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     // Get fresh price for each attempt
     const currentPrice = await adapter.getCurrentPrice(config.productId);
+    // Fail closed: a NaN/0 price makes `sellPrice <= currentPrice` false and
+    // would skip the post-only market check below.
+    if (!Number.isFinite(currentPrice) || !(currentPrice > 0)) {
+      lastError = `Invalid current price ${currentPrice} for ${config.productId}`;
+      logger.warn(`⚠️ ${lastError}, skipping sell attempt ${attempt + 1}`, { attempt: attempt + 1, currentPrice });
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      continue;
+    }
     const sellQuantity = buyDetails.sellQuantity ?? buyDetails.assetAmount * (1 - config.holdbackPercent / 100);
     const sellPrice = buyDetails.price * priceMultiplier;
 
@@ -800,7 +808,7 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
     });
 
     // If post-only rejection, increase price
-    if (lastError && lastError.includes('post only')) {
+    if (isPostOnlyRejection(lastError)) {
       priceMultiplier += 0.01;
     }
 
