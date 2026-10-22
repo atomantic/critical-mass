@@ -6,8 +6,8 @@
 // partial-fill row of the same orderId, so summing across rows inflates
 // Total P&L and Holdback by Nx for any TP that filled in N partials.
 //
-// admin/src/components/transactionsRegimePnl.js is the extracted pure
-// aggregation function (imported by TransactionsRegime.jsx) that dedupes
+// shared/transactions-regime-pnl.mjs is the extracted pure
+// aggregation function (used by the server and the admin) that dedupes
 // these annotations once per orderId and prorates them across partial rows,
 // so per-row display shows a fair share and the sum across rows reproduces
 // exactly the single annotated total.
@@ -17,7 +17,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
 const modulePath = pathToFileURL(
-  path.join(__dirname, '..', 'admin', 'src', 'components', 'transactionsRegimePnl.js')
+  path.join(__dirname, '..', 'shared', 'transactions-regime-pnl.mjs')
 ).href;
 
 describe('transactionsRegimePnl.computeFillsWithPnL', () => {
