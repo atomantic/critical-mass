@@ -9,7 +9,7 @@
  */
 
 const { connectWebSocket } = require('../websocket-connection');
-const { MSG_TYPE, DEFAULT_TIMEOUT, createMessage, serialize, deserialize } = require('./ipc-protocol');
+const { MSG_TYPE, IPC_SECRET_HEADER, getIpcSecret, DEFAULT_TIMEOUT, createMessage, serialize, deserialize } = require('./ipc-protocol');
 const { createContextLogger } = require('../logger');
 
 /**
@@ -30,6 +30,7 @@ const ipcClientLogger = (name) => createContextLogger({ module: 'ipc-client', pe
  * @param {(() => void)} [options.onDisconnect] - Callback when disconnected
  * @param {number} [options.reconnectMin] - Min reconnect delay (default: 1000ms)
  * @param {number} [options.reconnectMax] - Max reconnect delay (default: 30000ms)
+ * @param {string} [options.secret] - Shared IPC secret (default: env/file via getIpcSecret)
  * @returns {Object}
  */
 const createIPCClient = (url, name, options = {}) => {
@@ -40,6 +41,7 @@ const createIPCClient = (url, name, options = {}) => {
     onDisconnect = null,
     reconnectMin = 1000,
     reconnectMax = 30000,
+    secret = null,
   } = options;
 
   /** @type {import('../websocket-connection').WebSocketConnection | null} */
@@ -60,7 +62,15 @@ const createIPCClient = (url, name, options = {}) => {
 
     shouldReconnect = true;
 
-    const socket = connectWebSocket(url);
+    // Resolved per attempt so a secret file that appears late (or an
+    // unreadable data dir) is retried by the normal reconnect backoff.
+    let headers;
+    try {
+      headers = { [IPC_SECRET_HEADER]: secret ?? getIpcSecret() };
+    } catch (err) {
+      logger.warn(`⚠️ 🔗 [${name}] IPC secret unavailable, connecting without it: ${String(err)}`, { event: 'secret', error: String(err) });
+    }
+    const socket = connectWebSocket(url, headers ? { headers } : undefined);
     ws = socket;
     // Handlers act only while this socket is the current one: a close that
     // lands after disconnect() or a reconnect must not touch its successor.
