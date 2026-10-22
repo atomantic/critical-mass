@@ -1,9 +1,22 @@
 import { Component, useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react'
-import { Routes, Route, Link, useLocation, useNavigate, Navigate } from './lib/router'
+import { Routes, Route, Link, NavLink, useLocation, useNavigate, Navigate } from './lib/router'
 import ExchangeSelector from './components/ExchangeSelector'
 import AddFundModal from './components/AddFundModal'
 import RetryBanner from './components/ui/RetryBanner'
 import ModalDialog from './components/ModalDialog'
+
+// Top-level section links, rendered in both the desktop bar and the mobile menu.
+const SECTION_LINKS = [
+  { to: '/', label: 'Funds', end: true },
+  { to: '/notifications', label: 'Notifications' },
+  { to: '/backups', label: 'Backups' },
+  { to: '/systems', label: 'Systems' },
+  { to: '/updown', label: 'UpDown' },
+  { to: '/sentinel', label: 'Sentinel' },
+  { to: '/ai', label: 'AI Providers' },
+  { to: '/gateway', label: 'Gateway' },
+]
+
 const Dashboard = lazy(() => import('./components/Dashboard'))
 const ConfigEditor = lazy(() => import('./components/ConfigEditor'))
 const TransactionsDCA = lazy(() => import('./components/TransactionsDCA'))
@@ -661,116 +674,35 @@ function AppContent() {
 
               {/* Bottom row on mobile / Right side on desktop */}
               <nav aria-label="Sections" className="hidden lg:flex items-center justify-end gap-4">
-                <Link
-                  to="/"
-                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  Funds
-                </Link>
-                <Link
-                  to="/notifications"
-                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  Notifications
-                </Link>
-                <Link
-                  to="/backups"
-                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  Backups
-                </Link>
-                <Link
-                  to="/systems"
-                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  Systems
-                </Link>
-                <Link
-                  to="/updown"
-                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  UpDown
-                </Link>
-                <Link
-                  to="/sentinel"
-                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  Sentinel
-                </Link>
-                <Link
-                  to="/ai"
-                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  AI Providers
-                </Link>
-                <Link
-                  to="/gateway"
-                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  Gateway
-                </Link>
+                {SECTION_LINKS.map(({ to, label, end }) => (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    end={end}
+                    className="min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap inline-flex"
+                    activeClassName="text-white underline underline-offset-4 decoration-blue-500"
+                  >
+                    {label}
+                  </NavLink>
+                ))}
               </nav>
             </div>
 
             {/* Mobile menu dropdown */}
             {mobileMenuOpen && (
               <nav aria-label="Sections" className="lg:hidden mt-2 pt-2 border-t border-gray-700 flex flex-col gap-1">
-                <Link
-                  to="/"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
-                >
-                  Funds
-                </Link>
-                <Link
-                  to="/notifications"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
-                >
-                  Notifications
-                </Link>
-                <Link
-                  to="/backups"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
-                >
-                  Backups
-                </Link>
-                <Link
-                  to="/systems"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
-                >
-                  Systems
-                </Link>
-                <Link
-                  to="/updown"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
-                >
-                  UpDown
-                </Link>
-                <Link
-                  to="/sentinel"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
-                >
-                  Sentinel
-                </Link>
-                <Link
-                  to="/ai"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
-                >
-                  AI Providers
-                </Link>
-                <Link
-                  to="/gateway"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
-                >
-                  Gateway
-                </Link>
+                {SECTION_LINKS.map(({ to, label, end }) => (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    end={end}
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
+                    activeClassName="text-white bg-gray-700"
+                  >
+                    {label}
+                  </NavLink>
+                ))}
               </nav>
             )}
           </div>

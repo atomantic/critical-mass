@@ -65,6 +65,19 @@ export function Link({ to, replace, onClick, target, ...rest }) {
   return <a href={to} target={target} onClick={handleClick} {...rest} />
 }
 
+// Like react-router's NavLink: marks the link whose route is showing with
+// aria-current="page" and an `active` class suffix. A link matches its own path
+// and anything below it, or only the exact path when `end` is passed.
+export function NavLink({ to, end = false, className, activeClassName = '', ...rest }) {
+  const { location } = useRouter('NavLink')
+  const current = location.pathname.replace(/\/+$/, '') || '/'
+  const target = to.replace(/\/+$/, '') || '/'
+  const isActive = current === target || (!end && target !== '/' && current.startsWith(`${target}/`))
+  const resolvedClass = typeof className === 'function' ? className({ isActive }) : className
+  const classes = [resolvedClass, isActive ? activeClassName : ''].filter(Boolean).join(' ')
+  return <Link to={to} aria-current={isActive ? 'page' : undefined} className={classes || undefined} {...rest} />
+}
+
 // Marker element: <Routes> reads its props and never renders it directly.
 export function Route() {
   return null
