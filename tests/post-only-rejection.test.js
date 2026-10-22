@@ -88,7 +88,7 @@ describe('post-only rejection call paths', () => {
     const result = await exec.placeTakeProfitOrder(0.01, 105000, { forceUpdate: true });
     assert.equal(result.success, true);
     assert.equal(result.orderId, 'tp-taker-2');
-    assert.equal(exec.getActiveTpOrderId(), 'tp-taker-2');
+    assert.equal(exec._test.getActiveTpOrderId(), 'tp-taker-2');
     assert.equal(exec.isTrackedTpOrder('tp-taker-2'), true);
     assert.deepEqual(calls, [undefined, { postOnly: false }]);
     assert.deepEqual(intentActions, ['take_profit', 'take_profit_taker']);
@@ -108,7 +108,7 @@ describe('post-only rejection call paths', () => {
       /taker rejected: insufficient funds/,
     );
     assert.equal(calls, 2, 'exactly one maker attempt and one taker retry');
-    assert.equal(exec.getActiveTpOrderId(), null);
+    assert.equal(exec._test.getActiveTpOrderId(), null);
 
     // A clean (non-thrown) taker failure is reported, not retried a third time.
     let cleanCalls = 0;
@@ -124,7 +124,7 @@ describe('post-only rejection call paths', () => {
     assert.equal(result.success, false);
     assert.equal(result.errorMessage, 'taker refused');
     assert.equal(cleanCalls, 2);
-    assert.equal(exec2.getActiveTpOrderId(), null);
+    assert.equal(exec2._test.getActiveTpOrderId(), null);
   });
 
   it('TP placement makes exactly one attempt for a non-post-only exception', async () => {
@@ -133,7 +133,7 @@ describe('post-only rejection call paths', () => {
     const exec = createOrderExecutor('gemini', tpConfig(), adapter, 'BTC-USDC');
     await assert.rejects(() => exec.placeTakeProfitOrder(0.01, 105000, { forceUpdate: true }), /insufficient funds/);
     assert.equal(calls, 1, 'no taker retry');
-    assert.equal(exec.getActiveTpOrderId(), null);
+    assert.equal(exec._test.getActiveTpOrderId(), null);
   });
 
   describe('placeEntryBid post-only retry', () => {
