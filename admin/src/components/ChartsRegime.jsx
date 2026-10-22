@@ -8,6 +8,7 @@ import CumulativePnlChart from './charts/CumulativePnlChart'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { deriveRegimeCumulativePnl } from '../utils/regimeFillGroups.mjs'
+import { apiGet } from '../utils/apiClient'
 
 export function deriveFillMarker(status) {
   if (!status) return ''
@@ -77,9 +78,9 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
     try {
       const candlesQuery = pair ? `?granularity=ONE_MINUTE&limit=60&pair=${encodeURIComponent(pair)}` : '?granularity=ONE_MINUTE&limit=60'
       const read = async (url, name) => {
-        const response = await fetch(url, { signal: controller.signal })
-        if (!response.ok) throw new Error(`${name} fetch failed: HTTP ${response.status}`)
-        return response.json()
+        const result = await apiGet(url, { signal: controller.signal })
+        if (!result.ok) throw new Error(`${name} fetch failed: HTTP ${result.status}`)
+        return result.data
       }
       const results = await Promise.allSettled([
         read(`/api/${exchange}/regime/status${pairQuery}`, 'Status'),
@@ -126,9 +127,9 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
     const controller = new AbortController()
     session.fillsController = controller
     try {
-      const response = await fetch(`/api/${exchange}/regime/fills/cycles${pairQuery}`, { signal: controller.signal })
-      if (!response.ok) throw new Error(`Fills fetch failed: HTTP ${response.status}`)
-      const fillsData = await response.json()
+      const result = await apiGet(`/api/${exchange}/regime/fills/cycles${pairQuery}`, { signal: controller.signal })
+      if (!result.ok) throw new Error(`Fills fetch failed: HTTP ${result.status}`)
+      const fillsData = result.data
       if (!session.active) return
       setFillAggregates(fillsData)
       setStale(false)

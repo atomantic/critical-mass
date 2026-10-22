@@ -4,6 +4,7 @@ import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import ManualTrades from './ManualTrades'
 import { createTransactionsReader } from '../utils/transactionsRead.mjs'
+import { apiGet } from '../utils/apiClient'
 
 const EMPTY_SUMMARY = { totalBuys: 0, totalSells: 0, totalAssetBought: 0, totalBtcSold: 0, totalFees: 0, totalPnL: 0, totalHoldbackBtc: 0, totalHoldbackValue: 0 }
 const EMPTY_PAGE = { page: 0, pageCount: 1, total: 0, start: 0, end: 0, hasPrev: false, hasNext: false }
@@ -43,11 +44,10 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
     setFillsError(null)
     setPage(0)
     revision.current = null
-    fetch(`/api/${exchange}/config${pairQuery}`, { signal: controller.signal })
-      .then(res => res.ok ? res.json() : null)
-      .then(data => {
-        if (!controller.signal.aborted && activeFund.current === fund && data) {
-          setProductId(data.config?.productId || data.productId || null)
+    apiGet(`/api/${exchange}/config${pairQuery}`, { signal: controller.signal })
+      .then(result => {
+        if (!controller.signal.aborted && activeFund.current === fund && result.ok) {
+          setProductId(result.data.config?.productId || result.data.productId || null)
         }
       }).catch(() => {})
     return () => controller.abort()
