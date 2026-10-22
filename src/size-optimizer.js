@@ -19,6 +19,7 @@
 const { BASE_SIZE_USDC_BOUNDS } = require('./regime-sizing-contract');
 const { roundUSDC } = require('./volatility-utils');
 const { createContextLogger } = require('./logger');
+const { createAdjustmentHistory } = require('./adjustment-history');
 
 /**
  * @typedef {Object} CycleRecord
@@ -63,7 +64,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
   let recentCycles = [];
 
   /** @type {Array<{timestamp: number, baseSizeUsdc: number, maxUsdcDeployed: number, maxCycleBuys?: number, reason: string}>} */
-  let adjustmentHistory = [];
+  const adjustmentHistory = createAdjustmentHistory();
 
   let lastEvaluationTime = Date.now();
   let lastEvaluationCycle = 0;
@@ -196,11 +197,6 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
         maxCycleBuys: adjustment.maxCycleBuys,
         reason: adjustment.reason,
       });
-
-      // Keep history manageable
-      if (adjustmentHistory.length > 50) {
-        adjustmentHistory.shift();
-      }
 
       if (callbacks.onAdjustment) {
         callbacks.onAdjustment(adjustment);
@@ -362,7 +358,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
     lastEvaluationTime,
     lastEvaluationCycle,
     lastKnownBalance,
-    adjustmentHistory: [...adjustmentHistory],
+    adjustmentHistory: adjustmentHistory.export(),
   });
 
   /**
@@ -386,9 +382,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
     lastEvaluationCycle = state.lastEvaluationCycle || 0;
     lastKnownBalance = state.lastKnownBalance || 0;
 
-    if (state.adjustmentHistory) {
-      adjustmentHistory = state.adjustmentHistory.map(a => ({ ...a }));
-    }
+    adjustmentHistory.import(state.adjustmentHistory);
 
     logger.info(`📊 [${exchange}] Size optimizer restored: ${totalCycleCount} cycles, avg ${avgStepsUsed.toFixed(1)} steps, p90 ${p90StepsUsed} steps`, {
       totalCycleCount, averageStepsUsed: avgStepsUsed, p90StepsUsed,
@@ -416,7 +410,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
       maxUsdcDeployed: config.maxUsdcDeployed,
       maxCycleBuys: config.maxCycleBuys,
     },
-    adjustmentHistory: adjustmentHistory.slice(-10),
+    adjustmentHistory: adjustmentHistory.tail(),
   });
 
   /**
@@ -424,7 +418,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
    */
   const reset = () => {
     recentCycles = [];
-    adjustmentHistory = [];
+    adjustmentHistory.clear();
     lastEvaluationTime = Date.now();
     lastEvaluationCycle = 0;
     totalCycleCount = 0;
