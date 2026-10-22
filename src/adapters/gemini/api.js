@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { getRestAuthHeaders } = require('./auth');
 const { createBaseAdapter, createAmbiguousPlacementError, restQueueTiming } = require('../base-adapter');
 const { validateStandardExchangeKeys, createKeyFileLoader } = require('../key-validation');
-const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
+const { incrementToDecimals, floorToIncrement, finiteFloat, sleep: defaultSleep } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 const { REST_TIMEOUT_MS } = require('../../timing-constants');
 
@@ -40,8 +40,6 @@ const RATE_LIMIT_BACKOFF_MS = 500;  // linear: 500ms, 1000ms
 // as an unknown outcome carrying the client_order_id instead of a plain network
 // error that a caller would read as "it never happened". (#427)
 const ORDER_PLACEMENT_ENDPOINT = '/v1/order/new';
-
-const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Await `waitPromise` (if any) and, when running inside a
