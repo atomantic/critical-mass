@@ -9,6 +9,7 @@ import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { deriveRegimeCumulativePnl } from '../utils/regimeFillGroups.mjs'
 import { apiGet } from '../utils/apiClient'
+import { pnlColorClass } from '../utils/pnlFormat.mjs'
 
 export function deriveFillMarker(status) {
   if (!status) return ''
@@ -272,7 +273,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
           <div className="text-xs text-gray-400">Regime</div>
         </div>
         <div className="bg-gray-800 rounded-lg p-3 text-center">
-          <div className={`text-lg font-bold ${(position.realizedPnL || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+          <div className={`text-lg font-bold ${pnlColorClass(position.realizedPnL || 0)}`}>
             {formatCurrency(position.realizedPnL || 0)}
           </div>
           <div className="text-xs text-gray-400">Realized P&L</div>
@@ -318,7 +319,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
                 <CumulativePnlChart points={pnlData} />
                 <div className="flex justify-between text-xs text-gray-400 mt-2">
                   <span>First Fill</span>
-                  <span className={pnlData[pnlData.length - 1]?.cumulative >= 0 ? 'text-green-400' : 'text-red-400'}>
+                  <span className={pnlColorClass(pnlData[pnlData.length - 1]?.cumulative)}>
                     Total: {formatCurrency(pnlData[pnlData.length - 1]?.cumulative || 0)}
                   </span>
                   <span>Latest</span>

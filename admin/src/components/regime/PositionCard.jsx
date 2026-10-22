@@ -4,6 +4,7 @@ import { describeActionFailure } from '../../utils/actionFailure.mjs'
 import { apiPost } from '../../utils/apiClient'
 import { formatPriceByMagnitude, formatCurrency } from '../charts/chartUtils'
 import CapitalAdjust from './CapitalAdjust'
+import { pnlColorClass } from '../../utils/pnlFormat.mjs'
 
 /**
  * RegimeDashboard "Position" card — current position, unrealized/realized
@@ -91,7 +92,7 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
       <div className="mt-2 pt-2 border-t border-gray-700 grid grid-cols-2 gap-2 text-xs">
         <div className="bg-gray-900/50 rounded-sm p-2 min-w-0">
           <div className="text-gray-400">Unrealized P&L</div>
-          <div className={`font-mono text-base ${position.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+          <div className={`font-mono text-base ${pnlColorClass(position.unrealizedPnL)}`}>
             {formatCurrency(position.unrealizedPnL || 0)}
           </div>
         </div>
@@ -106,7 +107,7 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
             const pct = denom > 0 ? (usdPnL / denom) * 100 : 0
             return <>
               <div className="text-gray-400 truncate">Realized P&L {pct ? `(${pct.toFixed(2)}%)` : ''}</div>
-              <div className={`font-mono text-base ${usdPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              <div className={`font-mono text-base ${pnlColorClass(usdPnL)}`}>
                 {formatCurrency(usdPnL)}
               </div>
               {assetPnL > 0 && (

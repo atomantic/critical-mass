@@ -7,6 +7,7 @@ import { plural } from '../utils/plural.mjs'
 import { describeActionFailure } from '../utils/actionFailure.mjs'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
 import { describeConfigSaveError } from '../utils/configSaveError.mjs'
+import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 
 // Available options for optimizer
 const ALL_INTERVALS = ['5min', '10min', '30min', '1hour', '4hour', 'daily']
@@ -540,8 +541,8 @@ function Optimizer({ exchange = 'coinbase', pair }) {
                   </div>
                   <div>
                     <span className="text-gray-400">ROI:</span>
-                    <span className={`ml-1 ${currentBest.metrics.roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {currentBest.metrics.roi >= 0 ? '+' : ''}{formatPercent(currentBest.metrics.roi)}
+                    <span className={`ml-1 ${pnlColorClass(currentBest.metrics.roi)}`}>
+                      {signedPrefix(currentBest.metrics.roi)}{formatPercent(currentBest.metrics.roi)}
                     </span>
                   </div>
                 </div>
@@ -665,8 +666,8 @@ function Optimizer({ exchange = 'coinbase', pair }) {
                       <td className="py-2 pr-4">{result.holdbackPercent}%</td>
                       <td className="py-2 pr-4">{result.period}</td>
                       <td className="py-2 pr-4 font-medium text-green-400">{formatCurrency(result.totalValue)}</td>
-                      <td className={`py-2 pr-4 ${result.roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {result.roi >= 0 ? '+' : ''}{formatPercent(result.roi)}
+                      <td className={`py-2 pr-4 ${pnlColorClass(result.roi)}`}>
+                        {signedPrefix(result.roi)}{formatPercent(result.roi)}
                       </td>
                       <td className="py-2 pr-4">{formatPercent(result.fillRate)}</td>
                       <td className="py-2 pr-4">

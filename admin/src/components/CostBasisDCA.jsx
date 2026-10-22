@@ -3,6 +3,7 @@ import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { apiGet } from '../utils/apiClient'
+import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 
 function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', pair }) {
   const baseCurrency = getBaseCurrency(summary?.config?.productId)
@@ -58,7 +59,7 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
   const priceKnown = currentPrice !== null
   const NA = '—'
   const price = currentPrice || 0
-  const pct = (v) => `(${v >= 0 ? '+' : ''}${v.toFixed(2)}%)`
+  const pct = (v) => `(${signedPrefix(v)}${v.toFixed(2)}%)`
   // Calculate unrealized P&L
   const reservesCurrentValue = costBasis.reservesAsset * price
   const reservesUnrealizedPnL = reservesCurrentValue - costBasis.reservesCostBasis
@@ -129,8 +130,8 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
             <div className="flex justify-between border-t border-gray-700 pt-2 mt-2">
               <span className="text-gray-400">Unrealized P&L:</span>
               {priceKnown ? (
-                <span className={reservesUnrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
-                  {reservesUnrealizedPnL >= 0 ? '+' : ''}{formatCurrency(reservesUnrealizedPnL)}
+                <span className={pnlColorClass(reservesUnrealizedPnL)}>
+                  {signedPrefix(reservesUnrealizedPnL)}{formatCurrency(reservesUnrealizedPnL)}
                   <span className="text-sm ml-1">{pct(reservesPnLPercent)}</span>
                 </span>
               ) : <span className="text-gray-400">{NA}</span>}
@@ -161,8 +162,8 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
             <div className="flex justify-between border-t border-gray-700 pt-2 mt-2">
               <span className="text-gray-400">Unrealized P&L:</span>
               {priceKnown ? (
-                <span className={pendingUnrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
-                  {pendingUnrealizedPnL >= 0 ? '+' : ''}{formatCurrency(pendingUnrealizedPnL)}
+                <span className={pnlColorClass(pendingUnrealizedPnL)}>
+                  {signedPrefix(pendingUnrealizedPnL)}{formatCurrency(pendingUnrealizedPnL)}
                   <span className="text-sm ml-1">{pct(pendingPnLPercent)}</span>
                 </span>
               ) : <span className="text-gray-400">{NA}</span>}
@@ -193,8 +194,8 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
             <div className="flex justify-between border-t border-gray-700 pt-2 mt-2">
               <span className="text-gray-400">Unrealized P&L:</span>
               {priceKnown ? (
-                <span className={totalUnrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
-                  {totalUnrealizedPnL >= 0 ? '+' : ''}{formatCurrency(totalUnrealizedPnL)}
+                <span className={pnlColorClass(totalUnrealizedPnL)}>
+                  {signedPrefix(totalUnrealizedPnL)}{formatCurrency(totalUnrealizedPnL)}
                   <span className="text-sm ml-1">{pct(totalPnLPercent)}</span>
                 </span>
               ) : <span className="text-gray-400">{NA}</span>}
@@ -207,8 +208,8 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
       {realizedPnL !== 0 && (
         <div className="bg-gray-800 rounded-lg p-4">
           <h3 className="text-lg font-semibold mb-3">Realized P&L (from filled sell orders)</h3>
-          <div className={`text-3xl font-bold ${realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-            {realizedPnL >= 0 ? '+' : ''}{formatCurrency(realizedPnL)}
+          <div className={`text-3xl font-bold ${pnlColorClass(realizedPnL)}`}>
+            {signedPrefix(realizedPnL)}{formatCurrency(realizedPnL)}
           </div>
         </div>
       )}
@@ -270,14 +271,14 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
                       </td>
                       <td className="py-2">
                         {order.status === 'filled' ? (
-                          <span className={order.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {order.realizedPnL >= 0 ? '+' : ''}{formatCurrency(order.realizedPnL)}
+                          <span className={pnlColorClass(order.realizedPnL)}>
+                            {signedPrefix(order.realizedPnL)}{formatCurrency(order.realizedPnL)}
                           </span>
                         ) : !priceKnown ? (
                           <span className="text-gray-400">{NA}</span>
                         ) : (
-                          <span className={unrealized >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {unrealized >= 0 ? '+' : ''}{unrealizedPercent.toFixed(1)}%
+                          <span className={pnlColorClass(unrealized)}>
+                            {signedPrefix(unrealized)}{unrealizedPercent.toFixed(1)}%
                           </span>
                         )}
                       </td>

@@ -17,6 +17,7 @@ import { runDashboardAction } from '../utils/dashboardAction.mjs'
 import { formatCountdown } from '../utils/countdown.mjs'
 import ToggleSwitch from './ToggleSwitch'
 import StatCard from './StatCard'
+import { signedPrefix } from '../utils/pnlFormat.mjs'
 
 function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const convertTitleId = useId()
@@ -366,13 +367,13 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
                     />
                     <StatCard
                       label="Float P&L"
-                      value={hasHoldingCostBasis && priceKnown ? `${floatPnL >= 0 ? '+' : ''}${formatCurrency(floatPnL)}` : NA}
-                      subtext={!hasHoldingCostBasis ? 'Unavailable for Fibonacci DCA' : priceKnown ? `${floatPnLPct >= 0 ? '+' : ''}${floatPnLPct.toFixed(1)}%` : 'Price unavailable'}
+                      value={hasHoldingCostBasis && priceKnown ? `${signedPrefix(floatPnL)}${formatCurrency(floatPnL)}` : NA}
+                      subtext={!hasHoldingCostBasis ? 'Unavailable for Fibonacci DCA' : priceKnown ? `${signedPrefix(floatPnLPct)}${floatPnLPct.toFixed(1)}%` : 'Price unavailable'}
                       color={!hasHoldingCostBasis || !priceKnown ? 'blue' : floatPnL >= 0 ? 'green' : 'red'}
                     />
                     <StatCard
                       label="Realized"
-                      value={hasRealizedPnL ? `${totalRealizedLiquid >= 0 ? '+' : ''}${formatCurrency(totalRealizedLiquid)}` : NA}
+                      value={hasRealizedPnL ? `${signedPrefix(totalRealizedLiquid)}${formatCurrency(totalRealizedLiquid)}` : NA}
                       subtext={!hasRealizedPnL ? 'Unavailable for Simple DCA' : assetReserves > 0 ? <span className="flex flex-col leading-tight"><span className="text-white">{formatCurrency(realizedPnL)} USD</span><span className="text-orange-400">+{assetReserves.toFixed(8)} {baseCurrency}</span></span> : null}
                       color={!hasRealizedPnL ? 'blue' : totalRealizedLiquid >= 0 ? 'green' : 'red'}
                     />

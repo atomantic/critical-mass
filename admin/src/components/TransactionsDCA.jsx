@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { plural } from '../utils/plural.mjs'
+import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 
 function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrency = 'USDC' }) {
   const [filter, setFilter] = useState('all')
@@ -118,13 +119,13 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
                     </td>
                     <td className="px-4 py-3">{formatPrice(tx.Price)}</td>
                     <td className="px-4 py-3 font-mono">
-                      <span className={tx['BTC Amount'] >= 0 ? 'text-green-400' : 'text-red-400'}>
-                        {tx['BTC Amount'] >= 0 ? '+' : ''}{formatAsset(tx['BTC Amount'])}
+                      <span className={pnlColorClass(tx['BTC Amount'])}>
+                        {signedPrefix(tx['BTC Amount'])}{formatAsset(tx['BTC Amount'])}
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={tx['USDC Amount'] >= 0 ? 'text-green-400' : 'text-red-400'}>
-                        {tx['USDC Amount'] >= 0 ? '+' : ''}{formatCurrency(tx['USDC Amount'])}
+                      <span className={pnlColorClass(tx['USDC Amount'])}>
+                        {signedPrefix(tx['USDC Amount'])}{formatCurrency(tx['USDC Amount'])}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-red-400">{formatCurrency(tx.Fees)}</td>

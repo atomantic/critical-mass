@@ -9,6 +9,7 @@ import ClosedFundCard from './ClosedFundCard'
 import { EXCHANGE_ICONS, EXCHANGE_COLORS } from './exchangeStyles'
 import { REGIME_COLORS, HEALTH_COLORS } from './regime/regimeStyles'
 import { apiGet } from '../utils/apiClient'
+import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
 
@@ -299,8 +300,8 @@ function Overview() {
         </div>
         <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">
           <div className="text-xs text-gray-400 mb-1">Unrealized P&L</div>
-          <div className={`text-base sm:text-lg font-bold truncate ${totals.unrealized >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-            {totals.unrealized >= 0 ? '+' : ''}{formatCurrency(totals.unrealized)}
+          <div className={`text-base sm:text-lg font-bold truncate ${pnlColorClass(totals.unrealized)}`}>
+            {signedPrefix(totals.unrealized)}{formatCurrency(totals.unrealized)}
           </div>
           <div className="text-xs text-gray-400 truncate">paper value if sold now</div>
           {totals.expectedCycleGain > 0 && (
@@ -312,8 +313,8 @@ function Overview() {
         </div>
         <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">
           <div className="text-xs text-gray-400 mb-1">Realized P&L</div>
-          <div className={`text-base sm:text-lg font-bold truncate ${totals.realized >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-            {totals.realized >= 0 ? '+' : ''}{formatCurrency(totals.realized)}
+          <div className={`text-base sm:text-lg font-bold truncate ${pnlColorClass(totals.realized)}`}>
+            {signedPrefix(totals.realized)}{formatCurrency(totals.realized)}
           </div>
           {Object.entries(quoteBreakdown).map(([quote, amounts]) => (
             <div key={quote} className="text-xs text-white font-mono truncate">{formatCurrency(amounts.realized)} {quote}</div>
@@ -324,7 +325,7 @@ function Overview() {
         </div>
         <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">
           <div className="text-xs text-gray-400 mb-1">Estimated APY</div>
-          <div className={`text-base sm:text-lg font-bold ${weightedApy >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+          <div className={`text-base sm:text-lg font-bold ${pnlColorClass(weightedApy)}`}>
             {weightedApy.toFixed(1)}%
           </div>
           {totalAnnualLiquid > 0 && (
@@ -438,14 +439,14 @@ function Overview() {
                 </div>
                 <div className="min-w-0">
                   <div className="text-xs text-gray-400">Unrealized P&L</div>
-                  <div className={`font-mono truncate ${card.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  <div className={`font-mono truncate ${pnlColorClass(card.unrealizedPnL)}`}>
                     {card.totalCostBasis > 0
-                      ? `${card.unrealizedPnL >= 0 ? '+' : ''}${formatCurrency(card.unrealizedPnL)}`
+                      ? `${signedPrefix(card.unrealizedPnL)}${formatCurrency(card.unrealizedPnL)}`
                       : '-'}
                   </div>
                   {card.totalCostBasis > 0 && (
                     <div className={`text-xs ${card.unrealizedPct >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                      {card.unrealizedPct >= 0 ? '+' : ''}{card.unrealizedPct.toFixed(2)}%
+                      {signedPrefix(card.unrealizedPct)}{card.unrealizedPct.toFixed(2)}%
                     </div>
                   )}
                   {card.totalCostBasis > 0 && <div className="text-[10px] text-gray-400">if sold now</div>}
@@ -455,11 +456,11 @@ function Overview() {
                 </div>
                 <div className="min-w-0">
                   <div className="text-xs text-gray-400 truncate">Realized P&L {card.totalLiquidValuePercent ? `(${card.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
-                  <div className={`font-mono truncate ${(card.totalLiquidValue ?? card.realizedUsdcPnL) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  <div className={`font-mono truncate ${pnlColorClass(card.totalLiquidValue ?? card.realizedUsdcPnL)}`}>
                     {card.totalLiquidValue !== undefined
-                      ? `${card.totalLiquidValue >= 0 ? '+' : ''}${formatCurrency(card.totalLiquidValue)}`
+                      ? `${signedPrefix(card.totalLiquidValue)}${formatCurrency(card.totalLiquidValue)}`
                       : card.realizedUsdcPnL !== 0
-                        ? `${card.realizedUsdcPnL >= 0 ? '+' : ''}${formatCurrency(card.realizedUsdcPnL)}`
+                        ? `${signedPrefix(card.realizedUsdcPnL)}${formatCurrency(card.realizedUsdcPnL)}`
                         : '-'}
                   </div>
                   <div className="text-xs text-white font-mono truncate">{formatCurrency(card.realizedUsdcPnL)} {card.quoteCurrency}</div>
@@ -469,7 +470,7 @@ function Overview() {
                 </div>
                 <div className="min-w-0">
                   <div className="text-xs text-gray-400">Est. APY</div>
-                  <div className={`font-mono ${card.estimatedApy >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  <div className={`font-mono ${pnlColorClass(card.estimatedApy)}`}>
                     {card.estimatedApy !== 0 ? `${card.estimatedApy.toFixed(1)}%` : '-'}
                   </div>
                 </div>

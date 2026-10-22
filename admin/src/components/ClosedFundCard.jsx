@@ -1,6 +1,7 @@
 import { Link } from '../lib/router'
 import { plural } from '../utils/plural.mjs'
 import { formatCurrency } from './charts/chartUtils'
+import { signedPrefix } from '../utils/pnlFormat.mjs'
 
 // Closed fund summary link. Flex-wrap + min-w-0/break-words keep identity and
 // result summary inside the card at any container width.
@@ -24,7 +25,7 @@ function ClosedFundCard({ card, icon, iconClass }) {
         <span className="text-gray-400">{plural(card.cyclesCompleted, "cycle")}</span>
         {card.realizedPnL !== 0 && (
           <span className={`font-mono ${card.realizedPnL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-            {card.realizedPnL >= 0 ? '+' : ''}{formatCurrency(card.realizedPnL)}
+            {signedPrefix(card.realizedPnL)}{formatCurrency(card.realizedPnL)}
           </span>
         )}
         <span className="px-1.5 py-0.5 rounded-sm bg-gray-700 text-gray-400">Closed</span>
