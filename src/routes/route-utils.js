@@ -6,6 +6,10 @@
  */
 
 const { resolveConfiguredPair } = require('../config-utils');
+const { IPC_ERROR_CODE } = require('../ipc/ipc-protocol');
+const { createContextLogger } = require('../logger');
+
+const routeUtilsLogger = createContextLogger({ module: 'route-utils' });
 
 /**
  * Resolve the trading pair from a request's query string, falling back to the
@@ -68,6 +72,87 @@ const getSafeIPC = (exchangeIPCMap, exchange) => {
 };
 
 /**
+ * Bind `getSafeIPC` to a route module's exchange->client map so handlers can
+ * call `getIPC(exchange)` without re-declaring the closure.
+ * @param {Object} exchangeIPCMap
+ * @returns {(exchange: string) => Object}
+ */
+const createIPCResolver = (exchangeIPCMap) => (exchange) => getSafeIPC(exchangeIPCMap, exchange);
+
+// ---------------------------------------------------------------------------
+// Engine IPC failure contract
+//
+// A gateway->engine request can fail three ways, and each maps to one HTTP
+// status (see IPC_ERROR_CODE in ipc-protocol.js):
+//   - transport / timeout (or an untagged rejection, e.g. a missing client):
+//       the engine is unreachable            -> 503 "Engine unavailable: ..."
+//   - handler (the engine answered with an error reply; its handler threw):
+//       the engine is healthy, the request blew up -> 500, raw message logged
+//       server-side only (same policy as error-middleware.js for 5xx)
+//   - a resolved `{ success: false, ... }` domain reply:
+//       the engine refused the request       -> its explicit `statusCode`, else 400
+// The failure kind rides on `engineError`'s result under a non-enumerable
+// symbol so it never reaches the JSON body or deepEqual comparisons.
+// ---------------------------------------------------------------------------
+
+const IPC_FAILURE_STATUS = Symbol('ipcFailureStatus');
+const IPC_FAILURE_KIND = Symbol('ipcFailureKind');
+
+const HANDLER_FAILURE_MESSAGE = 'Internal server error — see engine logs';
+
+/**
+ * Turn a rejected IPC request into a `{ success: false, error }` result carrying
+ * its HTTP status. Use as `ipc.request(...).catch(engineError)`.
+ * @param {Error & {code?: string}} err
+ * @returns {{success: false, error: string}}
+ */
+const engineError = (err) => {
+  const handlerFailure = err?.code === IPC_ERROR_CODE.HANDLER;
+  if (handlerFailure) {
+    routeUtilsLogger.error(`❌ Engine handler failed: ${err.message}`, { action: 'engine-handler-error', error: err.message });
+  }
+  const result = {
+    success: false,
+    error: handlerFailure ? HANDLER_FAILURE_MESSAGE : `Engine unavailable: ${err?.message}`,
+  };
+  Object.defineProperty(result, IPC_FAILURE_STATUS, { value: handlerFailure ? 500 : 503 });
+  Object.defineProperty(result, IPC_FAILURE_KIND, {
+    value: handlerFailure ? IPC_ERROR_CODE.HANDLER : (err?.code === IPC_ERROR_CODE.TIMEOUT ? IPC_ERROR_CODE.TIMEOUT : IPC_ERROR_CODE.TRANSPORT),
+  });
+  return result;
+};
+
+/**
+ * Failure kind of a result produced by `engineError`, or null for an engine
+ * domain reply.
+ * @param {Object} result
+ * @returns {string | null}
+ */
+const ipcFailureKind = (result) => result?.[IPC_FAILURE_KIND] ?? null;
+
+/**
+ * HTTP status and body for a failed engine result (see contract above).
+ * @param {{error?: string, statusCode?: number}} result - `engineError` output or an engine `{success:false}` reply
+ * @returns {{status: number, body: Object}}
+ */
+const ipcFailureResponse = (result) => {
+  const tagged = result?.[IPC_FAILURE_STATUS];
+  if (tagged) return { status: tagged, body: result };
+  const explicit = result?.statusCode;
+  return { status: Number.isInteger(explicit) && explicit >= 400 && explicit < 600 ? explicit : 400, body: result };
+};
+
+/**
+ * Send the response for a failed engine result.
+ * @param {import('express').Response} res
+ * @param {Object} result
+ */
+const sendIpcFailure = (res, result) => {
+  const { status, body } = ipcFailureResponse(result);
+  return res.status(status).json(body);
+};
+
+/**
  * Wrap an async route handler so a thrown error or rejected promise is
  * forwarded to Express's error pipeline via `next(err)` — funneled into the
  * JSON error-handling middleware registered in server.js — instead of
@@ -125,4 +210,4 @@ const pagedEnvelope = (all, paging, alias) => {
   return { success: true, items, ...(alias && { [alias]: items }), total: all.length, limit: paging.limit, offset: paging.offset };
 };
 
-module.exports = { parsePaging, pagedEnvelope, MAX_PAGE_LIMIT, resolvePairParam, getIPC, getSafeIPC, withConfiguredPair, asyncRoute, tradeResultStatusCode };
+module.exports = { parsePaging, pagedEnvelope, MAX_PAGE_LIMIT, resolvePairParam, getIPC, getSafeIPC, createIPCResolver, engineError, ipcFailureKind, ipcFailureResponse, sendIpcFailure, withConfiguredPair, asyncRoute, tradeResultStatusCode };

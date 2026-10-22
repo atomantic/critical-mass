@@ -1,6 +1,7 @@
 require('./src/runtime-env').loadRuntimeEnv();
 
 const express = require('express');
+const { IPC_CHANNELS } = require('./src/ipc/ipc-protocol');
 const { spawn } = require('child_process');
 
 const path = require('path');
@@ -298,7 +299,17 @@ const createExchangeIPC = (port, name) => {
   const client = createIPCClient(`ws://127.0.0.1:${port}`, name, {
     onEvent: (msg) => {
       forwardIPCEvent(io, msg);
-      for (const listener of ipcEventListeners) listener(name, msg);
+      // Isolate each listener so one throwing does not starve the rest; the
+      // first failure is rethrown for the IPC client's rate-limited logging.
+      let failure = null;
+      for (const listener of ipcEventListeners) {
+        try {
+          listener(name, msg);
+        } catch (err) {
+          failure = failure || err;
+        }
+      }
+      if (failure) throw failure;
     },
     onConnect: () => log('INFO', `🔗 Gateway connected to ${name} engine IPC`),
     onDisconnect: () => log('INFO', `🔗 Gateway disconnected from ${name} engine IPC`),
@@ -323,7 +334,7 @@ const candleCache = createCandleCache();
 // fake volatility) and drive the BTC UpDown predictor. Use the exchange's
 // default pair as that canonical series (issue #110 M3).
 ipcEventListeners.push((name, msg) => {
-  if (msg.channel === 'regime:status') {
+  if (msg.channel === IPC_CHANNELS.REGIME_STATUS) {
     const pair = msg.payload?.pair;
     if (pair && pair !== getDefaultPair(name)) return;
     const market = msg.payload?.status?.market || msg.payload?.market;
@@ -343,7 +354,7 @@ const updownService = createUpDownService(io, { exchangeIPCMap, readJSON, writeJ
 // Only the default (BTC) pair — a second coinbase fund must not drive the BTC
 // UpDown predictor with its own asset's price (issue #110 M3).
 ipcEventListeners.push((name, msg) => {
-  if (name === 'coinbase' && msg.channel === 'regime:status') {
+  if (name === 'coinbase' && msg.channel === IPC_CHANNELS.REGIME_STATUS) {
     const pair = msg.payload?.pair;
     if (pair && pair !== getDefaultPair('coinbase')) return;
     const market = msg.payload?.status?.market || msg.payload?.market;

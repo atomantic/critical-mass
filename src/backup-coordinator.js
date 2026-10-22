@@ -1,5 +1,6 @@
 // @ts-check
 const { beginMaintenance, endMaintenance } = require('./restore-maintenance');
+const { IPC_CHANNELS } = require('./ipc/ipc-protocol');
 const { ENGINE_MAINTENANCE_TTL_MS, DEFAULT_STOP_TIMEOUT_MS, DEFAULT_DRAIN_TIMEOUT_MS } = require('./restore-coordinator');
 
 /** Manual and scheduled backups share the restore lock and fail closed. */
@@ -26,10 +27,10 @@ const performBackup = async ({
       // Include even timed-out opens/pauses in cleanup: the engine may still
       // execute a request after the caller lost its acknowledgement.
       opened.push(exchange);
-      const ack = await request(exchange, 'engine:maintenance', { active: true, kind: 'backup', reason, ttlMs: ENGINE_MAINTENANCE_TTL_MS });
+      const ack = await request(exchange, IPC_CHANNELS.ENGINE_MAINTENANCE, { active: true, kind: 'backup', reason, ttlMs: ENGINE_MAINTENANCE_TTL_MS });
       if (ack?.success !== true || !ack.maintenance || ack.maintenance.reason !== reason || (ack.maintenance.kind !== undefined && ack.maintenance.kind !== 'backup')) throw new Error(`Engine ${exchange} did not confirm its maintenance window`);
       paused.push(exchange);
-      const quiet = await request(exchange, 'engine:backup-pause');
+      const quiet = await request(exchange, IPC_CHANNELS.ENGINE_BACKUP_PAUSE);
       if (quiet?.success !== true || quiet.quiesced !== true) throw new Error(`Engine ${exchange} did not confirm quiescence`);
     }
     for (const writer of gatewayWriters) {
@@ -46,11 +47,11 @@ const performBackup = async ({
     logger.error(`Backup ${kind} failed: ${err.message}`, { action: 'create-backup', kind });
   } finally {
     for (const exchange of paused.reverse()) {
-      const ack = await request(exchange, 'engine:backup-resume').catch((err) => ({ success: false, error: err.message }));
+      const ack = await request(exchange, IPC_CHANNELS.ENGINE_BACKUP_RESUME).catch((err) => ({ success: false, error: err.message }));
       if (ack?.success !== true) warnings.push(`Engine ${exchange} failed to resume after backup`);
     }
     for (const exchange of opened.reverse()) {
-      await request(exchange, 'engine:maintenance', { active: false }).catch((err) => warnings.push(`Engine ${exchange} maintenance release failed: ${err.message}`));
+      await request(exchange, IPC_CHANNELS.ENGINE_MAINTENANCE, { active: false }).catch((err) => warnings.push(`Engine ${exchange} maintenance release failed: ${err.message}`));
     }
     for (const writer of writers.reverse()) {
       await Promise.resolve().then(() => writer.resume()).catch((err) => warnings.push(`${writer.name} failed to resume: ${err.message}`));

@@ -25,6 +25,9 @@ const MSG_TYPE = {
  * runtime request timeout.
  */
 const IPC_CHANNELS = Object.freeze({
+  ENGINE_MAINTENANCE: 'engine:maintenance',
+  ENGINE_BACKUP_PAUSE: 'engine:backup-pause',
+  ENGINE_BACKUP_RESUME: 'engine:backup-resume',
   REGIME_START: 'regime:start',
   REGIME_STOP: 'regime:stop',
   REGIME_RECALCULATE: 'regime:recalculate',
@@ -62,9 +65,24 @@ const IPC_CHANNELS = Object.freeze({
   REGIME_SET_BODY_TP: 'regime:set-body-tp',
   REGIME_SET_BODY_TP_PRICE: 'regime:set-body-tp-price',
   REGIME_STATUS: 'regime:status',
+  REGIME_STOP_ALL: 'regime:stop-all',
   REGIME_UNACCOUNTED_FILLS: 'regime:unaccounted-fills',
   REGIME_UNACCOUNTED_FILLS_STATUS: 'regime:unaccounted-fills-status',
   REGIME_UPDATE_CONFIG: 'regime:update-config',
+});
+
+/**
+ * Machine-readable `code` the gateway IPC client attaches to every Error it
+ * rejects a request with, so routes can tell an unreachable engine from a
+ * healthy engine whose handler threw:
+ *  - transport: no usable connection (not connected, socket closed/not open)
+ *  - timeout:   the engine did not answer before the deadline
+ *  - handler:   the engine answered with an error reply (its handler threw)
+ */
+const IPC_ERROR_CODE = Object.freeze({
+  TRANSPORT: 'transport',
+  TIMEOUT: 'timeout',
+  HANDLER: 'handler',
 });
 
 const DEFAULT_TIMEOUT = 10_000; // 10s for request/response
@@ -110,4 +128,4 @@ const deserialize = (data) => JSON.parse(data);
 
 const { IPC_SECRET_HEADER, getIpcSecret, ipcSecretMatches } = require('./ipc-secret');
 
-module.exports = { IPC_SECRET_HEADER, getIpcSecret, ipcSecretMatches, MSG_TYPE, IPC_CHANNELS, DEFAULT_TIMEOUT, createMessage, serialize, deserialize };
+module.exports = { IPC_SECRET_HEADER, getIpcSecret, ipcSecretMatches, MSG_TYPE, IPC_CHANNELS, IPC_ERROR_CODE, DEFAULT_TIMEOUT, createMessage, serialize, deserialize };

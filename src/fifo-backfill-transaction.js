@@ -1,5 +1,6 @@
 /** Durable, idempotent cohort replacement for the offline FIFO repair. */
 const fs = require('fs');
+const { IPC_CHANNELS } = require('./ipc/ipc-protocol');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { sha256Hex: hash, UUID_RE, sleep } = require('./shared-utils');
@@ -181,7 +182,7 @@ const withStoppedWriters = async (operation, {
       const deadline = Date.now() + timeoutMs;
       while (!ipc.isConnected() && Date.now() < deadline) await sleep(25);
       if (!ipc.isConnected()) throw new Error(`Cannot confirm ${exchange} engine shutdown`);
-      const ack = await ipc.request('engine:maintenance', { active: true, kind: 'restore', reason: 'FIFO backfill', ttlMs: 60 * 60_000 }, exchange, timeoutMs);
+      const ack = await ipc.request(IPC_CHANNELS.ENGINE_MAINTENANCE, { active: true, kind: 'restore', reason: 'FIFO backfill', ttlMs: 60 * 60_000 }, exchange, timeoutMs);
       if (ack?.success !== true || !ack.maintenance || !Number.isFinite(ack.maintenance.expiresAt) || ack.maintenance.expiresAt <= Date.now() + timeoutMs + 60_000) throw new Error(`No maintenance acknowledgement from ${exchange}`);
       const stopped = await requestEngineStop(exchange, ipc, timeoutMs);
       if (!stopped.confirmed) throw new Error(`Cannot confirm ${exchange} engine shutdown (${stopped.reason})`);
@@ -196,7 +197,7 @@ const withStoppedWriters = async (operation, {
   } finally {
     for (const { exchange, ipc } of clients) {
       // Pending journals remain an independent durable gate after this window.
-      await ipc.request('engine:maintenance', { active: false }, exchange, timeoutMs).catch(() => {});
+      await ipc.request(IPC_CHANNELS.ENGINE_MAINTENANCE, { active: false }, exchange, timeoutMs).catch(() => {});
       ipc.disconnect();
     }
   }

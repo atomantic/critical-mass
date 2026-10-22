@@ -15,6 +15,8 @@
  *   fund is disabled, since nothing is expected to be trading there).
  */
 
+const { IPC_CHANNELS } = require('./ipc/ipc-protocol');
+
 const DEFAULT_PROBE_TIMEOUT_MS = 3000;
 
 const FAILURE_STATUSES = new Set(['safe', 'auth_denied', 'error', 'timeout', 'unreachable']);
@@ -77,7 +79,7 @@ const interpretFundReply = (reply) => {
 const probeFund = async (ipc, exchange, pair, timeoutMs) => {
   let reply;
   try {
-    reply = await ipc.request('regime:status', {}, exchange, pair, timeoutMs);
+    reply = await ipc.request(IPC_CHANNELS.REGIME_STATUS, {}, exchange, pair, timeoutMs);
   } catch (err) {
     const msg = err?.message || String(err);
     const isTimeout = /timeout/i.test(msg);

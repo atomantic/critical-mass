@@ -17,7 +17,7 @@ const http = require('node:http');
 const path = require('node:path');
 
 const { createIPCClient } = require('../src/ipc/ipc-client');
-const { DEFAULT_TIMEOUT, MSG_TYPE, createMessage } = require('../src/ipc/ipc-protocol');
+const { DEFAULT_TIMEOUT, MSG_TYPE, createMessage, IPC_SECRET_HEADER, getIpcSecret } = require('../src/ipc/ipc-protocol');
 const configUtils = require('../src/config-utils');
 const { registerEngineLifecycleHandlers } = require('../src/engine-lifecycle-handlers');
 const { fundKey, fundLabel } = require('../src/shared-utils');
@@ -65,6 +65,26 @@ describe('IPC process-only upgrade boundary', () => {
     req.on('response', (res) => { res.resume(); resolve(res.statusCode); });
     req.on('error', reject);
     req.end();
+  });
+
+  it('admits an Origin-less loopback process only when it presents the shared secret', async () => {
+    let requests = 0;
+    const { server, url } = await startEngineIpc((ipc) => {
+      ipc.onRequest('test:echo', async () => { requests++; return { success: true }; });
+    });
+    onCleanup(() => server.stop());
+    assert.equal(new URL(url).hostname, '127.0.0.1');
+    // Loopback alone is not a credential: no Origin and no secret is refused (#1580)...
+    assert.equal(await rawUpgrade(url, {}), 401);
+    // ...and the same upgrade carrying the shared secret is admitted.
+    assert.equal(await rawUpgrade(url, { [IPC_SECRET_HEADER]: getIpcSecret() }), 101);
+    // The production client resolves and sends the secret itself.
+    const client = createIPCClient(url, 'headerless');
+    onCleanup(() => client.disconnect());
+    client.connect();
+    await until(() => client.isConnected(), 'headerless process connection');
+    assert.deepEqual(await client.request('test:echo', {}), { success: true });
+    assert.equal(requests, 1);
   });
 
   for (const origin of ['https://untrusted.example', 'same-origin', 'null', '']) {

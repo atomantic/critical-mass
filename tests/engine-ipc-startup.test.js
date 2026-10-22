@@ -88,6 +88,7 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
     '../src/transactions-regime-query': require('../src/transactions-regime-query'),
     '../src/manual-trade-import': {},
     '../src/unaccounted-fills-jobs': require('../src/unaccounted-fills-jobs'),
+    '../src/ipc/ipc-protocol': require('../src/ipc/ipc-protocol'),
     '../src/ipc/ipc-server': { createIPCServer: () => ipc },
     '../src/ipc/regime-ipc-handlers': require('../src/ipc/regime-ipc-handlers'),
     '../src/ipc/realtime-proxy': { createRealtimeProxy: () => ({}), forwardTradeEvents: () => {} },

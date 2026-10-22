@@ -76,3 +76,64 @@ describe('IPC client malformed-frame handling', () => {
     assert.equal(events[0].channel, 'tick');
   });
 });
+
+describe('IPC client callback containment', () => {
+  const eventFrame = (channel) => serialize(createMessage(MSG_TYPE.EVENT, channel, { n: 1 }));
+
+  it('contains a throwing onEvent and keeps delivering later events', () => {
+    let uncaught = null;
+    const onUncaught = (err) => { uncaught = err; };
+    process.on('uncaughtException', onUncaught);
+    try {
+      let calls = 0;
+      const { sock } = openClient({ onEvent: () => { calls++; if (calls === 1) throw new Error('bad listener'); } });
+      assert.doesNotThrow(() => sock.receive(eventFrame('regime:status')));
+      assert.doesNotThrow(() => sock.receive(eventFrame('regime:status')));
+      assert.equal(calls, 2, 'later event must still be delivered');
+      assert.equal(uncaught, null);
+    } finally {
+      process.removeListener('uncaughtException', onUncaught);
+    }
+  });
+
+  it('contains throwing onConnect and onDisconnect callbacks', () => {
+    FakeWebSocket.instances = [];
+    const client = createIPCClient('ws://127.0.0.1:5573', 'test', {
+      onConnect: () => { throw new Error('connect boom'); },
+      onDisconnect: () => { throw new Error('disconnect boom'); },
+      reconnectMin: 60_000,
+    });
+    openClients.push(client);
+    client.connect();
+    const sock = FakeWebSocket.instances[0];
+    assert.doesNotThrow(() => sock.open());
+    assert.doesNotThrow(() => sock.peerClose());
+  });
+});
+
+describe('IPC client failure codes', () => {
+  const { IPC_ERROR_CODE } = require('../src/ipc/ipc-protocol');
+
+  it('tags a request while disconnected as transport', async () => {
+    FakeWebSocket.instances = [];
+    const client = createIPCClient('ws://127.0.0.1:5573', 'test');
+    await assert.rejects(client.request('regime:status', {}, 'coinbase'), (err) => err.code === IPC_ERROR_CODE.TRANSPORT);
+  });
+
+  it('tags an engine error reply as handler', async () => {
+    const { client, sock } = openClient();
+    const pending = client.request('regime:status', {}, 'coinbase');
+    const sent = JSON.parse(sock.sent[sock.sent.length - 1]);
+    sock.receive(serialize(createMessage(MSG_TYPE.RESPONSE, 'regime:status', null, { id: sent.id, error: 'handler blew up' })));
+    await assert.rejects(pending, (err) => err.code === IPC_ERROR_CODE.HANDLER && err.message === 'handler blew up');
+  });
+
+  it('tags a deadline miss as timeout and a closed socket as transport', async () => {
+    const { client, sock } = openClient();
+    const timedOut = client.request('regime:status', {}, 'coinbase', 5);
+    await assert.rejects(timedOut, (err) => err.code === IPC_ERROR_CODE.TIMEOUT);
+    const closing = client.request('regime:status', {}, 'coinbase', 5000);
+    sock.peerClose();
+    await assert.rejects(closing, (err) => err.code === IPC_ERROR_CODE.TRANSPORT);
+  });
+});

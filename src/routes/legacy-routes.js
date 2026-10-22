@@ -4,6 +4,7 @@
  */
 
 const stateTracker = require('../state-tracker');
+const { IPC_CHANNELS } = require('../ipc/ipc-protocol');
 const { getExchangeConfig, getDefaultPair, getFundsForExchange, setExchangeEnabled, setExchangeDryRun, getGlobalConfig } = require('../config-utils');
 const { syncFundOrders, runIntervalCycle } = require('../dca-engine');
 const { createContextLogger, getLogFile } = require('../logger');
@@ -85,7 +86,7 @@ module.exports = (app, deps) => {
     const result = await persistConfigUpdate('coinbase', pair, prepared, getSafeIPC(exchangeIPCMap, 'coinbase'));
     if (!result.applied) {
       logger.error(`❌ 🚨 [coinbase/${pair}] Config persisted but live engine update failed: ${result.error}`, {
-        action: 'update-config', channel: 'regime:update-config',
+        action: 'update-config', channel: IPC_CHANNELS.REGIME_UPDATE_CONFIG,
         persisted: true, applied: false, error: result.error,
       });
       return res.status(503).json({
@@ -116,12 +117,12 @@ module.exports = (app, deps) => {
       // No coinbase fund means no fund engine is running to notify.
       if (pair) {
         try {
-          const engineResult = await getSafeIPC(exchangeIPCMap, 'coinbase').request('regime:update-config', { dryRun }, 'coinbase', pair);
+          const engineResult = await getSafeIPC(exchangeIPCMap, 'coinbase').request(IPC_CHANNELS.REGIME_UPDATE_CONFIG, { dryRun }, 'coinbase', pair);
           if (engineResult?.success === false) throw new Error(engineResult.error || engineResult.message || 'Engine rejected config update');
         } catch (err) {
           legacyLogger('/api/config').error(`❌ 🚨 [coinbase/${pair}] Dry-run setting persisted but live engine update failed: ${err.message}`, {
             action: 'toggle-dry-run',
-            channel: 'regime:update-config',
+            channel: IPC_CHANNELS.REGIME_UPDATE_CONFIG,
             persisted: true,
             applied: false,
             error: err.message,

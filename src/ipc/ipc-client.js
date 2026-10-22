@@ -9,8 +9,18 @@
  */
 
 const { connectWebSocket } = require('../websocket-connection');
-const { MSG_TYPE, IPC_SECRET_HEADER, getIpcSecret, DEFAULT_TIMEOUT, createMessage, serialize, deserialize } = require('./ipc-protocol');
+const { MSG_TYPE, IPC_ERROR_CODE, IPC_SECRET_HEADER, getIpcSecret, DEFAULT_TIMEOUT, createMessage, serialize, deserialize } = require('./ipc-protocol');
 const { createContextLogger } = require('../logger');
+
+const CALLBACK_ERROR_LOG_MS = 10_000;
+
+/**
+ * Build the Error a request rejects with, tagged with its IPC failure kind.
+ * @param {string} message
+ * @param {string} code - One of IPC_ERROR_CODE
+ * @returns {Error & {code: string}}
+ */
+const ipcError = (message, code) => Object.assign(new Error(message), { code });
 
 /**
  * Context logger for the gateway-side IPC client. `peer` names the engine this
@@ -57,6 +67,34 @@ const createIPCClient = (url, name, options = {}) => {
   /** @type {Map<string, { resolve: Function, reject: Function, timer: NodeJS.Timeout }>} */
   const pendingRequests = new Map();
 
+  /** @type {Map<string, number>} callback key -> last time a failure was logged */
+  const lastCallbackErrorLog = new Map();
+
+  /**
+   * Run a consumer callback so a throw cannot escape into the socket event
+   * handler (where it would surface as an uncaughtException and take the
+   * gateway down). Failures are logged at most once per CALLBACK_ERROR_LOG_MS
+   * per key because engine events arrive continuously.
+   * @param {string} key - Event channel or lifecycle callback name
+   * @param {() => void} fn
+   */
+  const containCallback = (key, fn) => {
+    try {
+      fn();
+    } catch (err) {
+      const now = Date.now();
+      const last = lastCallbackErrorLog.get(key);
+      if (last !== undefined && now - last < CALLBACK_ERROR_LOG_MS) return;
+      lastCallbackErrorLog.set(key, now);
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(`❌ 🔗 [${name}] IPC ${key} callback threw: ${message}`, {
+        event: 'callback-error',
+        channel: key,
+        error: message,
+      });
+    }
+  };
+
   const connect = () => {
     if (ws && (ws.isOpen() || ws.isConnecting())) return;
 
@@ -93,7 +131,7 @@ const createIPCClient = (url, name, options = {}) => {
       // ignore the unknown message type.
       if (onEvent) socket.send(serialize(createMessage(MSG_TYPE.SUBSCRIBE, 'events', null)));
 
-      if (onConnect) onConnect();
+      if (onConnect) containCallback('onConnect', onConnect);
     });
 
     socket.on('message', (data) => {
@@ -123,11 +161,11 @@ const createIPCClient = (url, name, options = {}) => {
       // Reject all pending requests
       for (const [, pending] of pendingRequests) {
         clearTimeout(pending.timer);
-        pending.reject(new Error(`IPC connection closed (${name})`));
+        pending.reject(ipcError(`IPC connection closed (${name})`, IPC_ERROR_CODE.TRANSPORT));
       }
       pendingRequests.clear();
 
-      if (wasConnected && onDisconnect) onDisconnect();
+      if (wasConnected && onDisconnect) containCallback('onDisconnect', onDisconnect);
 
       if (shouldReconnect) {
         reconnectTimer = setTimeout(() => {
@@ -167,7 +205,7 @@ const createIPCClient = (url, name, options = {}) => {
         clearTimeout(pending.timer);
         pendingRequests.delete(msg.id);
         if (msg.error) {
-          pending.reject(new Error(msg.error));
+          pending.reject(ipcError(msg.error, IPC_ERROR_CODE.HANDLER));
         } else {
           pending.resolve(msg.payload);
         }
@@ -176,7 +214,7 @@ const createIPCClient = (url, name, options = {}) => {
     }
 
     if (msg.type === MSG_TYPE.EVENT && onEvent) {
-      onEvent(msg);
+      containCallback(`event:${msg.channel}`, () => onEvent(msg));
     }
   };
 
@@ -207,20 +245,20 @@ const createIPCClient = (url, name, options = {}) => {
 
     return new Promise((resolve, reject) => {
       if (!connected) {
-        return reject(new Error(`IPC not connected (${name})`));
+        return reject(ipcError(`IPC not connected (${name})`, IPC_ERROR_CODE.TRANSPORT));
       }
 
       const msg = createMessage(MSG_TYPE.REQUEST, channel, payload, { exchange, pair });
       const timer = setTimeout(() => {
         pendingRequests.delete(msg.id);
-        reject(new Error(`IPC request timeout: ${channel} (${name})`));
+        reject(ipcError(`IPC request timeout: ${channel} (${name})`, IPC_ERROR_CODE.TIMEOUT));
       }, timeout);
 
       pendingRequests.set(msg.id, { resolve, reject, timer });
       if (!ws || !ws.isOpen()) {
         clearTimeout(timer);
         pendingRequests.delete(msg.id);
-        return reject(new Error(`IPC WebSocket not open (${name})`));
+        return reject(ipcError(`IPC WebSocket not open (${name})`, IPC_ERROR_CODE.TRANSPORT));
       }
       ws.send(serialize(msg));
     });
@@ -254,7 +292,7 @@ const createIPCClient = (url, name, options = {}) => {
 
     for (const [, pending] of pendingRequests) {
       clearTimeout(pending.timer);
-      pending.reject(new Error(`IPC client disconnected (${name})`));
+      pending.reject(ipcError(`IPC client disconnected (${name})`, IPC_ERROR_CODE.TRANSPORT));
     }
     pendingRequests.clear();
 
