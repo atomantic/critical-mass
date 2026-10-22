@@ -12,12 +12,6 @@ const { connectWebSocket } = require('../websocket-connection');
 const { MSG_TYPE, IPC_ERROR_CODE, IPC_SECRET_HEADER, getIpcSecret, DEFAULT_TIMEOUT, createMessage, serialize, deserialize } = require('./ipc-protocol');
 const { createContextLogger } = require('../logger');
 
-/**
- * Context logger for the gateway-side IPC client. `peer` names the engine this
- * socket talks to; transport detail rides along per call.
- * @param {string} name - Engine the client is connected to
- * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
- */
 const CALLBACK_ERROR_LOG_MS = 10_000;
 
 /**
@@ -28,6 +22,12 @@ const CALLBACK_ERROR_LOG_MS = 10_000;
  */
 const ipcError = (message, code) => Object.assign(new Error(message), { code });
 
+/**
+ * Context logger for the gateway-side IPC client. `peer` names the engine this
+ * socket talks to; transport detail rides along per call.
+ * @param {string} name - Engine the client is connected to
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
 const ipcClientLogger = (name) => createContextLogger({ module: 'ipc-client', peer: name });
 
 /**
