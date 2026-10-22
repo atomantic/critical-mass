@@ -70,6 +70,8 @@ function KeysConfig({ exchange, funds = [], onSave }) {
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // The delete confirmation is a native modal that sits above the toast stack, so its failure is shown inside it.
+  const [deleteError, setDeleteError] = useState(null)
   // Load failure is a persistent state of this panel, so it stays inline; save/delete results are toasts.
   const [loadError, setLoadError] = useState(null)
   const notify = useNotify()
@@ -192,6 +194,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
 
   const handleDelete = async () => {
     setDeleting(true)
+    setDeleteError(null)
     try {
       const result = await apiDelete(`/api/${exchange}/keys`, { allowEmpty: true })
       if (result.ok) {
@@ -201,7 +204,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
         await fetchKeys(true)
         onSave?.()
       } else {
-        notify('error', describeMutationFailure(result, 'Failed to delete keys'))
+        setDeleteError(describeMutationFailure(result, 'Failed to delete keys'))
       }
     } finally {
       setDeleting(false)
@@ -416,7 +419,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
         {/* Delete Confirmation Modal */}
         {confirmDelete && (
           <ModalDialog
-            onClose={() => setConfirmDelete(false)}
+            onClose={() => { setConfirmDelete(false); setDeleteError(null) }}
             labelledBy="delete-keys-title"
             describedBy="delete-keys-desc"
             dismissible={!deleting}
@@ -427,11 +430,12 @@ function KeysConfig({ exchange, funds = [], onSave }) {
               {exchange === 'gemini' && 'If this key has "Requires Heartbeat" enabled, Gemini cancels its open orders about 5 minutes after heartbeats stop. '}
               Exchanges show the secret only once, so reconnecting usually means creating a new key.
             </p>
+            {deleteError && <p role="alert" className="text-red-300 mb-4">{deleteError}</p>}
             <div className="flex flex-col-reverse sm:flex-row gap-3 sm:justify-end">
               <button
                 type="button"
                 autoFocus
-                onClick={() => setConfirmDelete(false)}
+                onClick={() => { setConfirmDelete(false); setDeleteError(null) }}
                 disabled={deleting}
                 className="min-h-11 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded-lg font-medium transition-colors"
               >

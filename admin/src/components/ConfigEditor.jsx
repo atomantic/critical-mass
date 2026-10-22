@@ -299,7 +299,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         // that a restart is required; reverting here would display stale state.
         if (result.config) loadDraft(result.config)
         setIsDirty(false)
-        notify('warning', 'Configuration saved, but the live engine is still using the previous settings. Restart the engine to apply it.')
+        notify('warning', 'Configuration saved, but the live engine is still using the previous settings. Restart the engine to apply it.', { sticky: true })
         onSave?.()
       } else {
         notify('error', describeWriteFailure(res))
@@ -346,7 +346,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         // when available and refetch the parent config, but never roll back to
         // the stale pre-request value merely because live IPC propagation failed.
         adoptPersisted?.(result.config)
-        notify('warning', `${label} saved, but the live engine is still using the previous setting. Restart the engine to apply it.`)
+        notify('warning', `${label} saved, but the live engine is still using the previous setting. Restart the engine to apply it.`, { sticky: true })
         onSave?.()
       } else {
         revert()

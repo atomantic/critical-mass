@@ -159,7 +159,7 @@ function BackupRestore() {
       const data = result.data || {}
       if (result.ok) {
         const created = `Backup created: ${data.filename} (${formatBytes(data.sizeBytes)})`
-        if (data.warnings?.length) notify('warning', `${created}. ${data.warnings.join('. ')}. Check engine status before resuming trading.`)
+        if (data.warnings?.length) notify('warning', `${created}. ${data.warnings.join('. ')}. Check engine status before resuming trading.`, { sticky: true })
         else notify('success', created)
         fetchData({ silent: true })
       } else {

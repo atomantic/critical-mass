@@ -25,12 +25,14 @@ export const useToast = () => useContext(ToastContext)
  * that modal.
  */
 
-// notify(type, message, title?) is sugar over addToast for the common "report
-// the outcome of this request" call. type: success | error | warning | info.
+// notify(type, message, { title, sticky }) is sugar over addToast for the common
+// "report the outcome of this request" call. type: success | error | warning |
+// info. Errors never auto-close; pass `sticky` to keep a warning the operator must
+// act on (e.g. "restart the engine to apply") until dismissed.
 export function useNotify() {
   const { addToast } = useToast()
-  return useCallback((type, message, title) => {
-    if (message) addToast({ type, title, message })
+  return useCallback((type, message, { title, sticky } = {}) => {
+    if (message) addToast({ type, title, message, sticky })
   }, [addToast])
 }
 
@@ -72,12 +74,12 @@ const toastIcons = {
   ),
 }
 
-function Toast({ id, type, title, message, onClose }) {
+function Toast({ id, type, title, message, sticky, onClose }) {
   const timerRef = useRef(null)
   const [paused, setPaused] = useState(false)
-  const persistent = type === 'error'
+  const persistent = type === 'error' || Boolean(sticky)
 
-  // Errors stay until dismissed; other toasts auto-close but pause on hover/focus
+  // Errors (and toasts added with `sticky`) stay until dismissed; other toasts auto-close but pause on hover/focus
   useEffect(() => {
     if (persistent || paused) return undefined
     timerRef.current = setTimeout(() => onClose(id), 5000)
@@ -119,9 +121,9 @@ function Toast({ id, type, title, message, onClose }) {
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([])
 
-  const addToast = useCallback(({ type = 'info', title, message }) => {
+  const addToast = useCallback(({ type = 'info', title, message, sticky = false }) => {
     const id = Date.now() + Math.random()
-    setToasts((prev) => [...prev.slice(-4), { id, type, title, message }])
+    setToasts((prev) => [...prev.slice(-4), { id, type, title, message, sticky }])
   }, [])
 
   const removeToast = useCallback((id) => {
