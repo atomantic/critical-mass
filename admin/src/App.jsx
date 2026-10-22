@@ -44,6 +44,7 @@ import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
 import { pairQuery as buildPairQuery } from './utils/api'
 import { apiGet, apiPost, describeMutationFailure } from './utils/apiClient'
+import usePolling from './hooks/usePolling'
 
 // Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "CRO_USD" -> "USD", "BTCUSD" -> "USD")
 export function getQuoteCurrency(productId) {
@@ -566,25 +567,14 @@ function AppContent() {
     if (urlExchange && urlExchange !== lastExchange) setLastExchange(urlExchange)
   }, [urlExchange, lastExchange])
 
-  useEffect(() => {
-    if (currentExchange) {
-      fetchData()
-      // Set up auto-refresh
-      const interval = setInterval(fetchData, 30000)
-      return () => clearInterval(interval)
-    }
-  }, [currentExchange, currentPair])
+  usePolling(fetchData, 30000, { enabled: Boolean(currentExchange), deps: [currentExchange, currentPair] })
 
   // Fetch regime status when on regime strategy
+  const pollRegime = currentStrategy === 'regime' && Boolean(currentExchange)
   useEffect(() => {
-    if (currentStrategy === 'regime' && currentExchange) {
-      fetchRegimeStatus()
-      const interval = setInterval(fetchRegimeStatus, 5000)
-      return () => clearInterval(interval)
-    } else {
-      setRegimeRunning(false)
-    }
-  }, [currentExchange, currentPair, currentStrategy])
+    if (!pollRegime) setRegimeRunning(false)
+  }, [pollRegime])
+  usePolling(fetchRegimeStatus, 5000, { enabled: pollRegime, deps: [currentExchange, currentPair, currentStrategy] })
 
   // Get the current sub-path (tab) without the exchange/pair prefix
   const getSubPath = () => {

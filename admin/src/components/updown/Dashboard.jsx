@@ -18,6 +18,7 @@ import { labelHistoryActions } from '../../constants/signals'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { apiPost, describeMutationFailure } from '../../utils/apiClient'
+import usePolling from '../../hooks/usePolling'
 
 export default function UpDownDashboard() {
   const { connected, tick, indicators: rawIndicators, signal, scorecard: socketScorecard } = useUpDownSocket()
@@ -72,14 +73,10 @@ export default function UpDownDashboard() {
     setLoading(false)
   }, [statusOwner])
 
-  useEffect(() => {
-    fetchStatus()
-    const interval = setInterval(fetchStatus, 10000)
-    return () => {
-      clearInterval(interval)
-      statusOwner.invalidate()
-    }
-  }, [fetchStatus, statusOwner])
+  usePolling(fetchStatus, 10000, {
+    deps: [fetchStatus, statusOwner],
+    onCleanup: () => statusOwner.invalidate(),
+  })
 
   // Track signal changes for chart annotations + audio alerts
   useEffect(() => {

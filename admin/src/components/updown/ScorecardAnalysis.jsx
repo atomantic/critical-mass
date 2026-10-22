@@ -7,6 +7,7 @@ import { INDICATORS, INDICATOR_LABELS } from '../../../../shared/indicator-confi
 import StatCard from '../StatCard'
 import { TF_ORDER } from '../../utils/timeframes.mjs'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
+import usePolling from '../../hooks/usePolling'
 
 const RANGES = [
   { label: '1d', days: 1 },
@@ -75,13 +76,11 @@ export default function ScorecardAnalysis() {
 
   useEffect(() => {
     setError(null)
-    fetchData()
-    const interval = setInterval(fetchData, 60000)
-    return () => {
-      clearInterval(interval)
-      owner.invalidate()
-    }
   }, [fetchData, owner])
+  usePolling(fetchData, 60000, {
+    deps: [fetchData, owner],
+    onCleanup: () => owner.invalidate(),
+  })
 
   const data = snapshot?.range === range ? snapshot.data : null
   const s = data?.summary

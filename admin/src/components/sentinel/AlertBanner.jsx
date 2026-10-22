@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Link } from '../../lib/router'
 import { apiGet } from '../../utils/apiClient'
 import { completePagedItems } from '../../utils/pagedList.mjs'
+import usePolling from '../../hooks/usePolling'
 
 /**
  * Compact alert banner shown globally when critical/warning sentinel alerts are active.
@@ -10,8 +11,7 @@ import { completePagedItems } from '../../utils/pagedList.mjs'
 export default function AlertBanner() {
   const [activeAlerts, setActiveAlerts] = useState([])
 
-  useEffect(() => {
-    const fetchAlerts = async () => {
+  const fetchAlerts = async () => {
       try {
         const { ok, data } = await apiGet('/api/sentinel/status')
         if (!ok) return
@@ -30,12 +30,8 @@ export default function AlertBanner() {
       } catch {
         // silently fail
       }
-    }
-
-    fetchAlerts()
-    const interval = setInterval(fetchAlerts, 30000)
-    return () => clearInterval(interval)
-  }, [])
+  }
+  usePolling(fetchAlerts, 30000)
 
   if (activeAlerts.length === 0) return null
 

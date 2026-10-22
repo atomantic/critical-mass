@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { apiGet, apiPost, apiPut, describeMutationFailure } from '../utils/apiClient'
+import usePolling from '../hooks/usePolling'
 
 const EVENT_GROUPS = {
   'Critical': [
@@ -93,10 +94,8 @@ function NotificationsConfig() {
 
   useEffect(() => {
     fetchConfig()
-    fetchStats()
-    const interval = setInterval(fetchStats, 10000)
-    return () => clearInterval(interval)
   }, [])
+  usePolling(fetchStats, 10000)
 
   const handleSave = async () => {
     if (pendingSave.current) return

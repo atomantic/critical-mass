@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { apiGet } from '../utils/apiClient'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
+import usePolling from '../hooks/usePolling'
 
 function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', pair }) {
   const baseCurrency = getBaseCurrency(summary?.config?.productId)
@@ -13,37 +14,36 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
   const [priceError, setPriceError] = useState(null)
   const [retryKey, setRetryKey] = useState(0)
 
-  useEffect(() => {
-    let controller = null
-    const fetchPrice = async () => {
-      controller?.abort()
-      const ctrl = new AbortController()
-      controller = ctrl
-      try {
-        const res = await apiGet(`/api/${exchange}/status${pairQuery}`, { signal: ctrl.signal })
-        if (ctrl.signal.aborted) return
-        if (!res.ok) throw new Error(res.error)
-        const data = res.data
-        const price = Number(data.currentPrice)
-        setCurrentPrice(price > 0 ? price : null)
-        setPriceError(data.apiError || (price > 0 ? null : 'Price unavailable.'))
-      } catch (err) {
-        if (err?.name === 'AbortError' || ctrl.signal.aborted) return
-        console.error('Failed to fetch price:', err)
-        setCurrentPrice(null)
-        setPriceError(err.message || 'Could not load price.')
-      }
+  const priceController = useRef(null)
+  const fetchPrice = async () => {
+    priceController.current?.abort()
+    const ctrl = new AbortController()
+    priceController.current = ctrl
+    try {
+      const res = await apiGet(`/api/${exchange}/status${pairQuery}`, { signal: ctrl.signal })
+      if (ctrl.signal.aborted) return
+      if (!res.ok) throw new Error(res.error)
+      const data = res.data
+      const price = Number(data.currentPrice)
+      setCurrentPrice(price > 0 ? price : null)
+      setPriceError(data.apiError || (price > 0 ? null : 'Price unavailable.'))
+    } catch (err) {
+      if (err?.name === 'AbortError' || ctrl.signal.aborted) return
+      console.error('Failed to fetch price:', err)
+      setCurrentPrice(null)
+      setPriceError(err.message || 'Could not load price.')
     }
-    // Drop the previous fund's price immediately on switch
+  }
+  // Drop the previous fund's price immediately on switch (declared before the
+  // poll so it runs before the first fetch).
+  useEffect(() => {
     setCurrentPrice(null)
     setPriceError(null)
-    fetchPrice()
-    const interval = setInterval(fetchPrice, 10000)
-    return () => {
-      clearInterval(interval)
-      controller?.abort()
-    }
   }, [exchange, pairQuery, retryKey])
+  usePolling(fetchPrice, 10000, {
+    deps: [exchange, pairQuery, retryKey],
+    onCleanup: () => priceController.current?.abort(),
+  })
 
   if (!summary?.costBasis) {
     return (
