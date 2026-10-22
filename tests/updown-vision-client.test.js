@@ -187,4 +187,30 @@ describe('createVisionClient.analyzeScreenshot', () => {
     assert.equal(result.status, 422);
     assert.equal(result.raw, '');
   });
+
+  it('hides a "Blocked endpoint" redirect refusal behind the generic 502', async () => {
+    const { client } = makeClient({ fetchImpl: () => { throw new Error('Blocked endpoint redirect to http://169.254.169.254'); } });
+    const result = await client.analyzeScreenshot(baseArgs(makeLogger()));
+    assert.deepEqual(result, { ok: false, status: 502, error: 'AI provider endpoint is misconfigured. Contact the administrator.' });
+  });
+
+  it('tolerates a non-ok response whose body cannot be read', async () => {
+    const { client } = makeClient({
+      fetchImpl: () => ({ ok: false, status: 500, text: async () => { throw new Error('stream closed'); } }),
+    });
+    const result = await client.analyzeScreenshot(baseArgs(makeLogger()));
+    assert.deepEqual(result, { ok: false, status: 502, error: 'AI provider returned 500: ' });
+  });
+
+  it('aborts the request at provider.timeout', async () => {
+    const { client } = makeClient({
+      fetchImpl: (_url, opts) => new Promise((_resolve, reject) => {
+        opts.signal.addEventListener('abort', () => reject(new Error('This operation was aborted')));
+      }),
+    });
+    const args = baseArgs(makeLogger());
+    args.provider.timeout = 20;
+    const result = await client.analyzeScreenshot(args);
+    assert.deepEqual(result, { ok: false, status: 502, error: 'AI request failed: This operation was aborted' });
+  });
 });

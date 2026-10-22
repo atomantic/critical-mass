@@ -19,7 +19,6 @@ const parseFiniteNumber = (v) => {
   return NaN;
 };
 
-
 const ALLOWED_EXTRACTED_KEYS = new Set([
   'screenType', 'currentPrice', 'direction', 'range', 'target', 'stop',
   'expiresIn', 'upPrice', 'downPrice', 'maxProfit', 'maxLoss',
@@ -119,7 +118,6 @@ For "position" screen:
 }
 
 If you cannot read a value, use null. Return ONLY the JSON object.`;
-
 
 /**
  * Strip thinking tags / markdown fences / preamble and parse the first JSON
