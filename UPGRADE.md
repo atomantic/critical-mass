@@ -4,6 +4,28 @@ Step-by-step instructions for breaking changes that require operator action.
 
 ---
 
+## Rollback Over Newer Trading Data Is Not Supported (Unreleased)
+
+Running an older Critical Mass build over trading data written by a newer one is
+**unsupported**. Some fields change meaning between releases (for example the fill
+ledger's `consumedBy` and `bodyBookedSize` markers, first shipped in v2.26.0, and the
+UpDown paper book's `contractSizeBtc`). An older build keeps those fields but does
+not maintain them, so a later re-upgrade would misread what it left behind: sold
+quantity counted as held again, booked fills treated as unbooked, paper P&L rescaled
+twice.
+
+`fill-ledger.json` rows and `updown-state.json` now carry a `formatVersion`. A build
+that finds a version newer than it understands refuses to start with a "written by a
+newer build" error and leaves the file untouched (a live ledger reload keeps its
+in-memory state instead). Files with no version are treated as the oldest format and
+load normally.
+
+To roll back, restore a backup taken **before** the upgrade rather than pointing the
+older image at the current `data/` directory. Builds older than this change cannot
+check the marker, so the guard only protects rollbacks from this release onward.
+
+---
+
 ## Base Defaults Stay Pinned Across Upgrades (Unreleased)
 
 Gateway and engine startup now record the full parsed base configuration in

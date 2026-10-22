@@ -24,6 +24,14 @@ const { quarantineIfUnreadable } = require('../state-tracker');
 const updownLogger = createContextLogger({ module: 'updown-service' });
 
 const STATE_FILE = 'updown-state.json';
+/**
+ * On-disk format revision of updown-state.json (issue #1397). A build refuses a
+ * file stamped newer than it understands: running an older build over newer
+ * paper-book data is unsupported (e.g. a pre-contractSizeBtc build drops that
+ * field, so the next upgrade would rescale P&L a second time). A missing stamp
+ * means a pre-versioning file (revision 0).
+ */
+const STATE_FORMAT_VERSION = 1;
 const SIGNAL_INTERVAL_MS = 5_000;
 const TICK_THROTTLE_MS = 1_000;
 const PRICE_STALE_MS = 30_000;
@@ -127,6 +135,9 @@ const createUpDownService = (io, deps) => {
   const loadState = () => {
     quarantineIfUnreadable(stateFilePath, updownLogger);
     const saved = readJSON(stateFilePath, null);
+    if (Number(saved?.formatVersion) > STATE_FORMAT_VERSION) {
+      throw new Error(`UpDown state at ${stateFilePath} was written by a newer build (format v${saved.formatVersion}; this build supports up to v${STATE_FORMAT_VERSION}). Running an older build over newer trading data is not supported — upgrade to the build that wrote it, or restore a backup taken before the upgrade (see UPGRADE.md).`);
+    }
     // A reload is a replacement, not a merge: after a restore, fields absent from
     // the restored file must not keep pre-restore in-memory values.
     contract = { expiry: null, target: null, stop: null, range: null, direction: null };
@@ -189,6 +200,7 @@ const createUpDownService = (io, deps) => {
   const persistState = () => {
     const flushSetup = signalEngine.getFlushSetupState?.();
     writeJSON(stateFilePath, {
+      formatVersion: STATE_FORMAT_VERSION,
       contract,
       position,
       signalHistory: signalHistory.slice(-MAX_SIGNAL_HISTORY),
