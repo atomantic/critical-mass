@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-1599] Placement-intent reconciliation lives in `src/regime-placement-reconciler.js`** — the ~340-line cluster in `regime-engine` that adopts, clears or blocks on persisted placement intents (`reconcilePlacementIntent`, `recoverPlacementIntent`, `reconcilePendingPlacements`, `blockingPlacementIntents` and their helpers) is now `createPlacementReconciler({...})`, taking accessors for the reassignable position state, order executor and adapter. The engine keeps acquiring the engine lock at its call sites. Behavior unchanged.
 - **[issue-1593] Admin P&L colour and sign logic uses shared helpers** — `pnlColorClass` and `signedPrefix` in `admin/src/utils/pnlFormat.mjs` replace ~94 inline `>= 0 ? ...` ternaries across 23 admin components. Presentation only; output is identical (zero stays green with a `+`). The two local `pnlColor` helpers in the updown panels keep their own neutral zero colour.
 
 ### Security
