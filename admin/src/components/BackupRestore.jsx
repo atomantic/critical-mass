@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { formatBytes } from '../utils/format.mjs'
 import { plural } from '../utils/plural.mjs'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
 import ModalDialog from './ModalDialog'
@@ -16,12 +17,6 @@ const FUND_STATE_INTERVAL_OPTIONS = [
   { label: '6 hours', value: 6 * 60 * 60 * 1000 },
   { label: '12 hours', value: 12 * 60 * 60 * 1000 },
 ]
-
-const formatBytes = (bytes) => {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
 
 function BackupRestore() {
   const [config, setConfig] = useState(null)
