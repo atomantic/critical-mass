@@ -86,7 +86,7 @@ const validateTradeDescription = (body) => {
 const execFileAsync = promisify(execFile);
 
 // PM2 process names are passed as argv entries, but still constrain them.
-const PM2_PROCESS_NAME_RE = /^[A-Za-z0-9._-]+$/;
+const PM2_PROCESS_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 const PM2_PREFLIGHT_TIMEOUT_MS = 10_000;
 
 /**

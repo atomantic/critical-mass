@@ -144,7 +144,7 @@ describe('POST /api/updown/restart validates PM2 process (issue #534)', () => {
     const oldEnv = process.env.PM2_PROCESS_NAME;
     let spawned = 0;
     childProcess.execFile = () => { spawned++; };
-    process.env.PM2_PROCESS_NAME = 'x; touch /tmp/pwned';
+    process.env.PM2_PROCESS_NAME = '--help';
     try {
       delete require.cache[require.resolve('../src/routes/updown-routes')];
       const registerUpdownRoutes = require('../src/routes/updown-routes');
