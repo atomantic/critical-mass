@@ -60,7 +60,7 @@ function createView(component, extraStubs = {}, fetchResponse = null) {
     if (options.method) writes.push({ url, method: options.method, body: options.body && JSON.parse(options.body) })
     return (fetchResponse && fetchResponse(url, options)) || { ok: true, status: 200, json: async () => url === '/api/providers'
       ? { providers: [{ id: 'one', name: 'Test Provider', enabled: true, type: 'api' }], activeProvider: 'one' }
-      : { success: true, runs: [], trades: [], summary: null } }
+      : { success: true, runs: [], items: [], trades: [], total: 0, summary: null } }
   }
   const stubs = {
     react: hooks,
@@ -73,6 +73,7 @@ function createView(component, extraStubs = {}, fetchResponse = null) {
     '../ModalDialog': { default: ({ children }) => children },
     '../../utils/runLifecycle.mjs': { createRunLifecycle: () => ({ execute: value => executed.push(value), dispose() {} }) },
     '../../utils/apiClient': apiClientStub(fetch),
+    '../../utils/pagedList.mjs': { completePagedItems: async (_url, page) => page.items },
     '../../utils/dashboardAction.mjs': { runDashboardAction: async action => { await action.request(); await action.onSuccess() } },
     ...extraStubs,
   }

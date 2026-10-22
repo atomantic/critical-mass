@@ -35,7 +35,7 @@ const setup = async (method, request) => {
   let mounted = false
   const fetchStub = async (url, options) => {
     calls.push({ url, ...options })
-    return options?.method ? request() : response(true, { success: true, trades: [trade], summary: null })
+    return options?.method ? request() : response(true, { success: true, items: [trade], trades: [trade], total: 1, summary: null })
   }
   const component = vm.runInNewContext(componentSource, {
     useId: () => `trade-control-${idCursor++}`,
@@ -53,6 +53,7 @@ const setup = async (method, request) => {
     runDashboardAction,
     ...(({ apiRequest, apiDelete }) => ({ apiRequest, apiDelete }))(apiClientStub((...args) => fetchStub(...args))),
     parseTradeAmountExpression,
+    completePagedItems: async (_url, page) => page.items,
     // The owner's default transport is this realm's global fetch; route it to the stub.
     createRequestOwner: () => createRequestOwner({ fetchImpl: (...args) => fetchStub(...args) }),
     fetch: (...args) => fetchStub(...args),
