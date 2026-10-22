@@ -67,7 +67,23 @@ const validateExecutor = (executor, name) => {
   }
 };
 
+/**
+ * Order lookups that are byte-identical in both executors. Both close over
+ * their own `pendingOrders` Map, so this factory takes it and returns the
+ * shared read-only helpers to be spread into each executor's return object.
+ * @param {Map<string, any>} pendingOrders - Executor's pending order map
+ * @returns {{isLadderOrder: (orderId: string) => boolean, getOrderPlacedAt: (orderId: string) => (number|null)}}
+ */
+const createOrderLookups = (pendingOrders) => ({
+  isLadderOrder: (orderId) => pendingOrders.get(orderId)?.type === 'ladder_entry',
+  getOrderPlacedAt: (orderId) => {
+    const order = pendingOrders.get(orderId);
+    return order ? order.placedAt : null;
+  },
+});
+
 module.exports = {
+  createOrderLookups,
   REQUIRED_EXECUTOR_METHODS,
   TEST_ONLY_EXECUTOR_METHODS,
   validateExecutor,

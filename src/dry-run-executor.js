@@ -17,6 +17,7 @@ const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, ENTRY_NOT_ADMITTED } = require('./shared-utils');
 const { DEFAULT_FEE_RATE_PER_SIDE } = require('../shared/fee-defaults.mjs');
 const { createContextLogger } = require('./logger');
+const { createOrderLookups } = require('./executor-contract');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -94,6 +95,7 @@ const getOrderIdCounter = () => orderIdCounter;
 const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, productId, deps = {}) => {
   /** @type {Map<string, SimulatedOrder>} */
   const pendingOrders = new Map();
+  const orderLookups = createOrderLookups(pendingOrders);
   const baseCurrency = getBaseCurrency(productId);
   const logger = deps.logger || createContextLogger({ exchange, pair: productId, mode: 'dry-run' });
   let priceIncrement = 0.01; // Updated via setPriceIncrement from product details
@@ -918,26 +920,6 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   };
 
   /**
-   * Check if an order is a ladder entry order
-   * @param {string} orderId - Order ID to check
-   * @returns {boolean}
-   */
-  const isLadderOrder = (orderId) => {
-    const order = pendingOrders.get(orderId);
-    return order?.type === 'ladder_entry';
-  };
-
-  /**
-   * Get the placedAt timestamp for an order
-   * @param {string} orderId - Order ID
-   * @returns {number|null} Timestamp when order was placed, or null if not found
-   */
-  const getOrderPlacedAt = (orderId) => {
-    const order = pendingOrders.get(orderId);
-    return order ? order.placedAt : null;
-  };
-
-  /**
    * Mark an orderId as settled (for interface parity with live executor)
    * @param {string} orderId - Order ID
    */
@@ -1326,7 +1308,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     handleOrderFill,
     handleOrderCancel,
     markSettled,
-    getOrderPlacedAt,
+    ...orderLookups,
     getPendingCounts,
     getPendingEntries,
     getActiveTpOrderId,
@@ -1338,7 +1320,6 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     placeLadderOrders,
     cancelAllLadderOrders,
     getPendingLadderOrders,
-    isLadderOrder,
 
     // Body TP functions
     placeBodyTpOrder,
