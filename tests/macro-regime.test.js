@@ -613,11 +613,37 @@ describe('createMacroRegime: start/stop', () => {
     assert.deepEqual(calls, { hourly: 2, daily: 2 }, 'stopping should prevent subsequent updates');
   });
 
-  it('stop() is safe to call without start()', () => {
-    regime = createMacroRegime('test', defaultConfig(), createMockAdapter(), 'BTC-USDC');
-    // Should not throw
+  it('stop() is safe to call without start() and leaves a later start/stop cycle working', async (t) => {
+    t.after(() => {
+      regime?.stop();
+      t.mock.timers.reset();
+    });
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    let candleCalls = 0;
+    const adapter = {
+      getCandles: async () => {
+        candleCalls++;
+        return [];
+      },
+    };
+    const config = { ...defaultConfig(), macroUpdateIntervalMs: 50, longTermBiasEnabled: false };
+    regime = createMacroRegime('test', config, adapter, 'BTC-USDC');
+    const before = regime.getState();
+
+    assert.doesNotThrow(() => regime.stop());
+    assert.doesNotThrow(() => regime.stop(), 'repeated stop() is also safe');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(candleCalls, 0, 'stop() must not fetch candles');
+    assert.deepEqual(regime.getState(), before, 'stop() must not change state');
+
+    regime.start();
+    await new Promise(resolve => setImmediate(resolve));
+    const afterStart = candleCalls;
+    assert.ok(afterStart > 0, 'start() after a no-op stop() still runs the initial update');
     regime.stop();
-    assert.ok(true);
+    t.mock.timers.tick(200);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(candleCalls, afterStart, 'no interval updates after the stop()');
   });
 });
 
