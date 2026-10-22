@@ -1,7 +1,7 @@
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from '../src/lib/router'
+import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from '../src/lib/router'
 
 // Mirrors the shape of admin/src/App.jsx's route table, including its
 // declaration order: param routes are declared BEFORE the static
@@ -190,6 +190,34 @@ describe('admin router', () => {
       renderLink({ onClick: (event) => event.preventDefault() })
       fireEvent.click(screen.getByText('go gateway'))
       expect(currentPath()).toBe('/')
+    })
+  })
+
+  describe('NavLink', () => {
+    const renderNav = (pathname) => renderAt(pathname, <>
+      <NavLink to="/" end className={({ isActive }) => (isActive ? 'on' : 'off')} activeClassName="active">Funds</NavLink>
+      <NavLink to="/gateway" activeClassName="active">Gateway</NavLink>
+      <NavLink to="/gateway/logs" activeClassName="active">Logs</NavLink>
+    </>)
+
+    it('marks only the current section with aria-current and the active class', () => {
+      renderNav('/gateway')
+      const gateway = screen.getByText('Gateway')
+      expect(gateway.getAttribute('aria-current')).toBe('page')
+      expect(gateway.className).toBe('active')
+      expect(screen.getByText('Funds').getAttribute('aria-current')).toBeNull()
+      expect(screen.getByText('Funds').className).toBe('off')
+    })
+
+    it('matches nested paths unless end is set', () => {
+      renderNav('/gateway/logs')
+      expect(screen.getByText('Gateway').getAttribute('aria-current')).toBe('page')
+      expect(screen.getByText('Logs').getAttribute('aria-current')).toBe('page')
+    })
+
+    it('treats the root link as active only on the exact root path', () => {
+      renderNav('/gateway')
+      expect(screen.getByText('Funds').getAttribute('aria-current')).toBeNull()
     })
   })
 })
