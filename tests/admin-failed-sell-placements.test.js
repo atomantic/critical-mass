@@ -94,7 +94,7 @@ describe('Dashboard wiring (issue #1035)', () => {
 
   it('posts the buy id to the retry route and refreshes status afterwards', () => {
     assert.match(source, /retry-failed-sell\$\{pairQuery\}/)
-    assert.match(source, /apiPost\(`/api/\$\{exchange\}/retry-failed-sell\$\{pairQuery\}`, \{ buyOrderId \}\)/)
+    assert.match(source, /apiPost\(`\/api\/\$\{exchange\}\/retry-failed-sell\$\{pairQuery\}`, \{ buyOrderId \}\)/)
     assert.match(source, /onSettled: \(\) => fetchLive\(\)/)
   })
 })
