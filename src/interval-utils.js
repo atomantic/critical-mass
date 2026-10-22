@@ -87,16 +87,6 @@ const normalizeConfig = (config) => ({
 });
 
 /**
- * Get interval amount (allocation per interval)
- * @param {ExchangeConfig} config - Configuration object
- * @returns {number} Amount per interval
- */
-const getIntervalAmount = (config) => {
-  const normalized = normalizeConfig(config);
-  return normalized.totalAllocation / normalized.intervalsToSpread;
-};
-
-/**
  * Format interval for display
  * @param {IntervalType} intervalType - Interval type
  * @returns {string} Human-readable label
@@ -198,7 +188,6 @@ module.exports = {
   getRunIdentifier,
   hasRunThisInterval,
   normalizeConfig,
-  getIntervalAmount,
   formatInterval,
   getTimeUntilNext,
   SCHEDULED_RETRY_DELAYS_MS,

@@ -132,34 +132,6 @@ const resetFibState = () => ({
   fibSellOrderCoveredPosition: 0,
 });
 
-/**
- * Get a preview of the Fibonacci sequence amounts for display
- * @param {number} baseAmount - Base amount to multiply
- * @param {number} count - Number of positions to show (default: 8)
- * @returns {number[]} Array of buy amounts
- */
-const getFibonacciPreview = (baseAmount, count = 8) => {
-  const preview = [];
-  for (let i = 0; i < count; i++) {
-    preview.push(getFibonacciBuyAmount(i, baseAmount));
-  }
-  return preview;
-};
-
-/**
- * Calculate cumulative total spent after N Fibonacci buys
- * @param {number} position - Last position (0-indexed, inclusive)
- * @param {number} baseAmount - Base amount per multiplier
- * @returns {number} Total spent through position N
- */
-const getFibonacciCumulativeSpend = (position, baseAmount) => {
-  let total = 0;
-  for (let i = 0; i <= position; i++) {
-    total += getFibonacciBuyAmount(i, baseAmount);
-  }
-  return total;
-};
-
 module.exports = {
   FIBONACCI,
   getFibonacciMultiplier,
@@ -170,6 +142,4 @@ module.exports = {
   createInitialFibState,
   resetFibState,
   getUncoveredFibBuys,
-  getFibonacciPreview,
-  getFibonacciCumulativeSpend,
 };
