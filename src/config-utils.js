@@ -946,6 +946,25 @@ const resolveConfiguredPair = (exchange, pair) => {
 };
 
 /**
+ * Resolve a possibly-omitted pair to a concrete fund pair, or throw.
+ * The single DCA-side "pair or default pair" resolver: an explicit (non-empty)
+ * pair wins, else the exchange's default configured pair. It never invents a
+ * placeholder name, so a missing fund fails loudly instead of pointing path
+ * lookups at a non-existent `data/<exchange>/default`. Does not validate an
+ * explicit pair against config (use `resolveConfiguredPair` for untrusted
+ * route/IPC input).
+ * @param {string} exchange
+ * @param {string} [pair]
+ * @returns {string}
+ * @throws {Error} When no pair is given and the exchange has no default fund
+ */
+const requireFundPair = (exchange, pair) => {
+  const resolved = pair || getDefaultPair(exchange);
+  if (!resolved) throw new Error(`No configured fund pair for ${exchange}`);
+  return resolved;
+};
+
+/**
  * Get the merged configuration for a specific fund (exchange + pair).
  * Resolves the fund's pair-level block, merges with DEFAULTS, and applies
  * interval normalization. If pair is omitted, falls back to the default pair.
@@ -1614,6 +1633,7 @@ module.exports = {
   getConfiguredFunds,
   getFundsForExchange,
   resolveConfiguredPair,
+  requireFundPair,
   getEnabledFunds,
   getFundConfig,
   updateFundConfig,

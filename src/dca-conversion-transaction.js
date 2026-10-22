@@ -48,12 +48,12 @@ const JOURNAL_STATUSES = new Set(['staging', 'publishing']);
 
 
 /**
- * Resolve the fund pair the same way migration.resolveFundDataDir does.
+ * Resolve the fund pair; throws when none is configured (no 'default' placeholder).
  * @param {string} exchange
  * @param {string} [pair]
  * @returns {string}
  */
-const resolvePair = (exchange, pair) => pair || require('./config-utils').getDefaultPair(exchange) || 'default';
+const resolvePair = (exchange, pair) => require('./config-utils').requireFundPair(exchange, pair);
 
 /**
  * @param {string} exchange
