@@ -40,7 +40,7 @@ describe('dry-run body-TP cost basis — round-trip fee parity (#133)', () => {
     const tpRes = await exec.placeBodyTpOrder(qty, tpPrice, 'body-1');
     assert.ok(tpRes.success);
 
-    const bodyInfo = exec.getBodyByTpOrderId(tpRes.orderId);
+    const bodyInfo = exec._test.getBodyByTpOrderId(tpRes.orderId);
     assert.ok(bodyInfo, 'body tracking should exist');
 
     // Cost basis must be entry-priced + entry fee (NOT TP-priced, NOT gross).
@@ -93,7 +93,7 @@ describe('dry-run body-TP cost basis — round-trip fee parity (#133)', () => {
     const qty = placed.assetQty;
 
     const tpRes = await exec.placeBodyTpOrder(qty, 110_000, 'body-1');
-    const bodyInfo = exec.getBodyByTpOrderId(tpRes.orderId);
+    const bodyInfo = exec._test.getBodyByTpOrderId(tpRes.orderId);
     // Zero fee => basis is exactly the entry notional.
     assert.ok(Math.abs(bodyInfo.costBasis - qty * placed.price) < 1e-6);
   });
@@ -119,7 +119,7 @@ describe('dry-run body-TP cost basis — per-body avgBuyPrice, not cross-body dr
     exec.checkEntryFills(placed2.price);
     const tpRes2 = await exec.placeBodyTpOrder(placed2.assetQty, 165_000, 'body-2', 150_000);
 
-    const bodyInfo2 = exec.getBodyByTpOrderId(tpRes2.orderId);
+    const bodyInfo2 = exec._test.getBodyByTpOrderId(tpRes2.orderId);
     const expectedBasis2 = (placed2.assetQty * 150_000) * (1 + config.feeRate);
     assert.ok(
       Math.abs(bodyInfo2.costBasis - expectedBasis2) < 1e-6,
@@ -136,7 +136,7 @@ describe('dry-run body-TP cost basis — per-body avgBuyPrice, not cross-body dr
     exec.checkEntryFills(placed.price);
     const tpRes = await exec.placeBodyTpOrder(placed.assetQty, 110_000, 'body-1');
 
-    const bodyInfo = exec.getBodyByTpOrderId(tpRes.orderId);
+    const bodyInfo = exec._test.getBodyByTpOrderId(tpRes.orderId);
     const expectedBasis = (placed.assetQty * placed.price) * (1 + config.feeRate);
     assert.ok(Math.abs(bodyInfo.costBasis - expectedBasis) < 1e-6);
   });

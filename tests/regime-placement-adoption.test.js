@@ -67,7 +67,7 @@ describe('regime operator placement adoption', () => {
     assert.equal(diskPosition().celestialBodies[0].tpOrderId, 'adopted');
     assert.equal(diskPosition().assetOnOrder, 0.9);
     assert.equal(engine.getFillLedger().getFillsForOrder('buy-1')[0].sellOrderId, 'adopted');
-    assert.equal(executor.getBodyByTpOrderId('adopted').bodyId, 'body-1');
+    assert.equal(executor._test.getBodyByTpOrderId('adopted').bodyId, 'body-1');
     assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
     assert.equal((await engine.reconcilePlacementIntent(id, 'adopt')).success, false);
   });

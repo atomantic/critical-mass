@@ -1430,7 +1430,7 @@ describe('isTrackedTpOrder — legacy core TP ownership (issue #672)', () => {
     exec.restorePendingOrder('tp-core', { type: 'take_profit', price: 2400, size: 0.1, sizeUsdc: 240, placedAt: Date.now() });
     assert.equal(exec.isTrackedTpOrder('tp-core'), true);
     exec.handleOrderFill('tp-core');
-    assert.equal(exec.getActiveTpOrderId(), null, 'fill cleared the active TP');
+    assert.equal(exec._test.getActiveTpOrderId(), null, 'fill cleared the active TP');
     assert.equal(exec.isTrackedTpOrder('tp-core'), true, 'recently-settled take_profit still counts as the engine\'s own TP');
   });
 

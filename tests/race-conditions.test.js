@@ -213,7 +213,7 @@ describe('Race 1: Duplicate TP prevention', () => {
 
     // Place initial TP
     await executor.placeTakeProfitOrder(0.01, 100000, { forceUpdate: true });
-    assert.ok(executor.getActiveTpOrderId());
+    assert.ok(executor._test.getActiveTpOrderId());
 
     // Now try to place a new TP — should detect fill-during-cancel
     const result = await executor.placeTakeProfitOrder(0.01, 105000, { forceUpdate: true });
@@ -295,7 +295,7 @@ describe('Race 1: Duplicate TP prevention', () => {
     ]);
 
     assert.equal(live.size, 1, `exactly one TP should be live, found ${[...live].join(',')}`);
-    assert.ok(live.has(executor.getActiveTpOrderId()), 'the tracked active TP is the live one');
+    assert.ok(live.has(executor._test.getActiveTpOrderId()), 'the tracked active TP is the live one');
   });
 });
 

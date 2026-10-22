@@ -1311,7 +1311,6 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     ...orderLookups,
     getPendingCounts,
     getPendingEntries,
-    getActiveTpOrderId,
     isTrackedTpOrder,
     clearTimers,
     restorePendingOrder,
@@ -1325,16 +1324,17 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     placeBodyTpOrder,
     cancelBodyTpOrder,
     isBodyTpOrder,
-    getBodyByTpOrderId,
     restoreBodyTpOrder,
     removeBodyTracking,
     // Legacy aliases for backward compatibility
     placeSatelliteTpOrder: placeBodyTpOrder,
     cancelSatelliteTpOrder: cancelBodyTpOrder,
     isSatelliteTpOrder: isBodyTpOrder,
-    getSatelliteByTpOrderId: getBodyByTpOrderId,
     restoreSatelliteTpOrder: restoreBodyTpOrder,
     removeSatelliteTracking: removeBodyTracking,
+
+    // Test-only observability (issue #1611): no production caller
+    _test: { getActiveTpOrderId, getBodyByTpOrderId },
 
     // Dry-run specific methods
     checkTpFills,
