@@ -8,32 +8,52 @@
  * that does throw is an AbortError, so callers using an AbortSignal can ignore
  * it the way they already do. Pass `allowEmpty: true` for replies that legitimately carry no body.
  *
- * The wire format is plain fetch, so the global 401 hook in OperatorLogin keeps
- * working and call sites can adopt this file by file.
+ * Every request made here (and by `apiFetch`, for helpers that need the raw
+ * Response) tells `onUnauthorized` subscribers about a 401, so the operator
+ * sign-in boundary does not have to patch `window.fetch`.
  */
 import { describeActionFailure } from './actionFailure.mjs'
 
 // A non-JSON body (proxy 5xx page, empty 204) reads as null rather than throwing.
-const parseBody = (res) => res.json().catch(() => null)
+// `asText` reads a plain-text body (e.g. a stored prompt) as a string instead.
+const parseBody = (res, asText) => (asText ? res.text() : res.json()).catch(() => null)
 
-// `rawBody` sends a File/Blob as-is under `contentType` (e.g. a screenshot upload) instead of JSON.
-export async function apiRequest(method, url, { body, rawBody, contentType, signal, allowEmpty = false } = {}) {
+const unauthorizedHandlers = new Set()
+
+// Subscribe to 401 replies from any API request. Returns the unsubscribe function.
+export function onUnauthorized(handler) {
+  unauthorizedHandlers.add(handler)
+  return () => { unauthorizedHandlers.delete(handler) }
+}
+
+// fetch that reports a 401 reply to `onUnauthorized` subscribers. For low-level
+// helpers that inject their own transport and need the raw Response; everything
+// else should call apiGet/apiPost/apiPut/apiDelete.
+export async function apiFetch(url, init) {
+  const res = await fetch(url, init)
+  if (res.status === 401) unauthorizedHandlers.forEach(handler => handler())
+  return res
+}
+
+// `headers` adds request headers; `rawBody` sends a File/Blob as-is under `contentType` (e.g. a screenshot upload) instead of JSON.
+export async function apiRequest(method, url, { body, rawBody, contentType, signal, allowEmpty = false, asText = false, headers } = {}) {
   const init = { method, signal }
+  if (headers) init.headers = { ...headers }
   if (rawBody !== undefined) {
-    init.headers = { 'Content-Type': contentType }
+    init.headers = { ...init.headers, 'Content-Type': contentType }
     init.body = rawBody
   } else if (body !== undefined) {
-    init.headers = { 'Content-Type': 'application/json' }
+    init.headers = { ...init.headers, 'Content-Type': 'application/json' }
     init.body = JSON.stringify(body)
   }
   let res
   try {
-    res = await fetch(url, init)
+    res = await apiFetch(url, init)
   } catch (err) {
     if (err?.name === 'AbortError') throw err
     return { ok: false, status: 0, data: null, error: err?.message || 'Network error' }
   }
-  const data = await parseBody(res)
+  const data = await parseBody(res, asText)
   // A fetch Response always carries a numeric status. A stand-in that only sets
   // `ok` is treated as 200 or as no status at all, so callers can keep using status.
   const status = typeof res.status === 'number' ? res.status : (res.ok ? 200 : 0)
@@ -46,6 +66,7 @@ export async function apiRequest(method, url, { body, rawBody, contentType, sign
 export const apiGet = (url, opts) => apiRequest('GET', url, opts)
 export const apiPost = (url, body, opts) => apiRequest('POST', url, { ...opts, body })
 export const apiPut = (url, body, opts) => apiRequest('PUT', url, { ...opts, body })
+export const apiPatch = (url, body, opts) => apiRequest('PATCH', url, { ...opts, body })
 export const apiDelete = (url, opts) => apiRequest('DELETE', url, opts)
 
 // Operator-facing reason for a failed mutation. status 0 means no reply was

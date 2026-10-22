@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { apiGet, apiPost, apiPut, onUnauthorized } from '../utils/apiClient'
 
 export default function OperatorLogin({ children }) {
   const [status, setStatus] = useState('loading')
@@ -14,26 +15,15 @@ export default function OperatorLogin({ children }) {
   // check. If a session expires or a password change revokes it, the mounted
   // SPA must return to sign-in instead of merely showing API errors while
   // continuing to render privileged controls.
-  useEffect(() => {
-    const originalFetch = window.fetch
-    const authenticatedFetch = async (...args) => {
-      const response = await originalFetch.apply(window, args)
-      if (response.status === 401) setStatus('anonymous')
-      return response
-    }
-    window.fetch = authenticatedFetch
-    return () => {
-      if (window.fetch === authenticatedFetch) window.fetch = originalFetch
-    }
-  }, [])
+  useEffect(() => onUnauthorized(() => setStatus('anonymous')), [])
 
   const checkSession = async () => {
     setStatus('loading')
     setError('')
     try {
-      const response = await fetch('/api/auth/session')
-      if (!response.ok) throw new Error(`Session probe failed (HTTP ${response.status})`)
-      const session = await response.json()
+      const probe = await apiGet('/api/auth/session')
+      if (!probe.ok) throw new Error(`Session probe failed (HTTP ${probe.status})`)
+      const session = probe.data
       if (typeof session.required !== 'boolean' || typeof session.authenticated !== 'boolean') {
         throw new Error('Session probe returned an invalid response')
       }
@@ -57,36 +47,29 @@ export default function OperatorLogin({ children }) {
       setError('Password and confirmation do not match.')
       return
     }
-    const headers = { 'Content-Type': 'application/json' }
+    const headers = {}
     if (bootstrapRequired && bootstrapSecret) headers['X-Operator-Bootstrap'] = bootstrapSecret
-    try {
-      const response = await fetch(
-        bootstrapRequired ? '/api/auth/password' : '/api/auth/session',
-        {
-          method: bootstrapRequired ? 'PUT' : 'POST',
-          headers,
-          body: JSON.stringify({ password }),
-        },
-      )
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}))
-        const fallback = bootstrapRequired
-          ? 'Operator setup failed.'
-          : response.status === 401
-            ? 'That password was not accepted.'
-            : `Sign-in failed (HTTP ${response.status}).`
-        setError(data.error || fallback)
+    const send = bootstrapRequired ? apiPut : apiPost
+    const result = await send(bootstrapRequired ? '/api/auth/password' : '/api/auth/session', { password }, { headers, allowEmpty: true })
+    if (!result.ok) {
+      if (result.status === 0) {
+        setError('Could not reach the gateway. Your password was not checked — try again.')
         return
       }
-      setPassword('')
-      setConfirm('')
-      setBootstrapSecret('')
-      setRequired(true)
-      setBootstrapRequired(false)
-      setStatus('authenticated')
-    } catch {
-      setError('Could not reach the gateway. Your password was not checked — try again.')
+      const fallback = bootstrapRequired
+        ? 'Operator setup failed.'
+        : result.status === 401
+          ? 'That password was not accepted.'
+          : `Sign-in failed (HTTP ${result.status}).`
+      setError(result.data?.error || fallback)
+      return
     }
+    setPassword('')
+    setConfirm('')
+    setBootstrapSecret('')
+    setRequired(true)
+    setBootstrapRequired(false)
+    setStatus('authenticated')
   }
 
   if (status === 'authenticated') return children

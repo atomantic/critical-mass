@@ -7,6 +7,7 @@ import {
   computeStochasticSeries,
   computeMACDSeries,
 } from '../utils/computeIndicatorSeries'
+import { apiGet } from '../utils/apiClient'
 import computeHeikinAshi from '../utils/computeHeikinAshi'
 import { createCandleLabelCache } from '../utils/candleLabels.mjs'
 
@@ -408,10 +409,10 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     setError(null)
     const doFetch = () => {
       controller = new AbortController()
-      fetch(`/api/candles/${exchange}`, { signal: controller.signal })
-        .then(r => {
-          if (!r.ok) throw new Error(`Candle history request failed (${r.status})`)
-          return r.json()
+      apiGet(`/api/candles/${exchange}`, { signal: controller.signal })
+        .then(result => {
+          if (!result.ok) throw new Error(result.status ? `Candle history request failed (${result.status})` : result.error)
+          return result.data
         })
         .then(data => {
           if (cancelled) return

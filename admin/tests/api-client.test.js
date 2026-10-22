@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { apiGet, apiPost, apiDelete, describeMutationFailure } from '../src/utils/apiClient'
+import { apiGet, apiPost, apiDelete, apiFetch, onUnauthorized, describeMutationFailure } from '../src/utils/apiClient'
 
 const reply = (status, body) => ({
   ok: status >= 200 && status < 300,
@@ -79,5 +79,51 @@ describe('describeMutationFailure', () => {
 
   it('falls back when no reason is present', () => {
     expect(describeMutationFailure({ status: 500, error: null }, 'Import failed')).toBe('Import failed')
+  })
+})
+
+describe('onUnauthorized', () => {
+  it('notifies subscribers of a 401 from apiGet and still returns the failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(401, { error: 'Sign in required' })))
+    const handler = vi.fn()
+    const off = onUnauthorized(handler)
+    expect(await apiGet('/api/x')).toMatchObject({ ok: false, status: 401, error: 'Sign in required' })
+    expect(handler).toHaveBeenCalledTimes(1)
+    off()
+  })
+
+  it('notifies on a 401 read through apiFetch and returns the raw response', async () => {
+    const raw = reply(401, {})
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(raw))
+    const handler = vi.fn()
+    const off = onUnauthorized(handler)
+    expect(await apiFetch('/api/x')).toBe(raw)
+    expect(handler).toHaveBeenCalledTimes(1)
+    off()
+  })
+
+  it('stays quiet for other failures and after unsubscribing', async () => {
+    const handler = vi.fn()
+    const off = onUnauthorized(handler)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(403, { error: 'no' })))
+    await apiGet('/api/x')
+    off()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(401, {})))
+    await apiGet('/api/x')
+    expect(handler).not.toHaveBeenCalled()
+  })
+})
+
+describe('request options', () => {
+  it('merges custom headers with the JSON content type', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(reply(200, { ok: 1 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await apiPost('/api/x', { a: 1 }, { headers: { 'X-Operator-Bootstrap': 's' } })
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({ 'X-Operator-Bootstrap': 's', 'Content-Type': 'application/json' })
+  })
+
+  it('reads a plain-text body as a string with asText', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => 'saved prompt' }))
+    expect(await apiGet('/api/p', { asText: true })).toMatchObject({ ok: true, data: 'saved prompt' })
   })
 })

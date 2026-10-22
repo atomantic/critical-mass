@@ -1,3 +1,4 @@
+import { apiFetch } from './apiClient.js'
 // Ownership fence for overlapping dashboard reads (#508).
 //
 // Dashboards refresh the same snapshot from several triggers at once — initial
@@ -13,7 +14,7 @@
 // browser stops work nobody will read.
 
 export const createRequestOwner = ({
-  fetchImpl = (...args) => fetch(...args),
+  fetchImpl = apiFetch,
   createAbortController = () => new AbortController(),
 } = {}) => {
   const state = { generation: 0, controller: null }
