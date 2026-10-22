@@ -195,7 +195,7 @@ describe('admin router', () => {
 
   describe('NavLink', () => {
     const renderNav = (pathname) => renderAt(pathname, <>
-      <NavLink to=/ end className={({ isActive }) => (isActive ? 'on' : 'off')} activeClassName=active>Funds</NavLink>
+      <NavLink to="/" end className={({ isActive }) => (isActive ? 'on' : 'off')} activeClassName="active">Funds</NavLink>
       <NavLink to="/gateway" activeClassName="active">Gateway</NavLink>
       <NavLink to="/gateway/logs" activeClassName="active">Logs</NavLink>
     </>)

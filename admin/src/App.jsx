@@ -679,8 +679,7 @@ function AppContent() {
                     key={to}
                     to={to}
                     end={end}
-                    className="min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap inline-flex"
-                    activeClassName="text-white underline underline-offset-4 decoration-blue-500"
+                    className={({ isActive }) => `min-h-11 inline-flex items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm hover:text-white transition-colors whitespace-nowrap ${isActive ? 'text-white underline underline-offset-4 decoration-blue-500' : 'text-gray-400'}`}
                   >
                     {label}
                   </NavLink>
@@ -697,8 +696,7 @@ function AppContent() {
                     to={to}
                     end={end}
                     onClick={() => setMobileMenuOpen(false)}
-                    className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center"
-                    activeClassName="text-white bg-gray-700"
+                    className={({ isActive }) => `min-h-11 px-3 py-2 text-sm hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center ${isActive ? 'text-white bg-gray-700' : 'text-gray-400'}`}
                   >
                     {label}
                   </NavLink>
