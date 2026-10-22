@@ -27,7 +27,7 @@ const { createNewBody, syncPositionState, mergeIntoBody, computeBuyOrderShortfal
 const { loadFundRegimeState, saveFundRegimeState } = require('./state-tracker');
 const { STATUS, INTENT_PHASE, SIZE_EPSILON, getUncoveredSize } = require('./manual-trades');
 const { FillValidationError, validateFillInput, LEGACY_CONSUMPTION_KEY } = require('./fill-ledger');
-const { readBooleanFlag, isFilledStatus, isCancelledStatus } = require('./shared-utils');
+const { readBooleanFlag, isFilledStatus, isCancelledStatus, sleep } = require('./shared-utils');
 const { getRegimeConfig } = require('./config-utils');
 
 /** Logger used when a caller supplies none (tests, CLI paths). */
@@ -403,7 +403,7 @@ const createManualTradeImporter = ({
         return block(`the client order id lookup failed (${err.message})`);
       }
       if (found || attempt >= retryDelaysMs.length) break;
-      await new Promise((r) => setTimeout(r, retryDelaysMs[attempt]));
+      await sleep(retryDelaysMs[attempt]);
     }
 
     if (found && !found.orderId) return block('the exchange returned a match with no order id');
