@@ -34,14 +34,19 @@ async function buildFundStatus(exchange, pair, route, module = 'fund-status') {
 
   if (adapter.hasValidKeys && adapter.hasValidKeys()) {
     keysConfigured = true;
-    try {
-      // Balances first: a ticker without a usable price throws, and the
-      // status page should still show the balances it could read.
-      quoteBalance = await adapter.getAccountBalance(quoteCurrency);
-      assetBalance = await adapter.getAccountBalance(getBaseCurrency(config.productId));
-      currentPrice = await adapter.getCurrentPrice(config.productId);
-    } catch (err) {
-      apiError = err.message || 'API connection failed';
+    // Each read is independent: a ticker without a usable price must not hide
+    // the balances, and a transient balance error must not blank the price.
+    const [quoteRes, assetRes, priceRes] = await Promise.allSettled([
+      adapter.getAccountBalance(quoteCurrency),
+      adapter.getAccountBalance(getBaseCurrency(config.productId)),
+      adapter.getCurrentPrice(config.productId),
+    ]);
+    if (quoteRes.status === 'fulfilled') quoteBalance = quoteRes.value;
+    if (assetRes.status === 'fulfilled') assetBalance = assetRes.value;
+    if (priceRes.status === 'fulfilled') currentPrice = priceRes.value;
+    const failed = [quoteRes, assetRes, priceRes].find((r) => r.status === 'rejected');
+    if (failed) {
+      apiError = failed.reason?.message || 'API connection failed';
       createContextLogger({ module, exchange, pair, route }).error(`❌ [${exchange}/${pair}] Status check failed: ${apiError}`, {
         action: 'status',
         productId: config.productId,
