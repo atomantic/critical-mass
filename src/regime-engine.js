@@ -6239,16 +6239,393 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Reconcile step: poll the executor for entry fills the WebSocket may have
+   * missed and stamp order-status liveness. Returns the dispatched chain, or null.
+   */
+  const reconcileEntryFills = () => {
+    // Check for entry fills that WebSocket might have missed
+    if (!orderExecutor.capabilities?.liveReconciliation) return null;
+    return orderExecutor.checkPendingOrderFills()
+      .then(result => {
+        // A SUCCESSFUL order-status poll proves the order-status REST path
+        // is alive even when no WS order event has arrived. lastOrderUpdateMs
+        // was otherwise refreshed ONLY by WS order events, so a resting TP
+        // that legitimately goes quiet for >staleOrdersMs (default 60s, equal
+        // to reconcileIntervalMs) tripped stale_orders → SAFE during normal
+        // operation. Gate on result.polled > 0 (at least one getOrder
+        // round-trip actually returned) — NOT on mere promise resolution:
+        // getOrder failures are swallowed to null, so resolving with zero
+        // successful polls (REST down, or no pending orders) must NOT stamp
+        // liveness, or the stale-orders net couldn't detect a simultaneously
+        // dead WS feed + dead REST poll (issue #110 M6).
+        if (result.polled > 0) healthMonitor.recordOrderUpdate();
+        if (result.filled > 0 || result.cancelled > 0) {
+          logger.info(`🔄 [${exchange}] Reconcile fill check: ${result.filled} filled, ${result.cancelled} cancelled`);
+        }
+      })
+      .catch(err => {
+        logger.error(`❌ [${exchange}] Fill check failed: ${err.message}`, { error: err.message });
+      });
+  };
+
+  /**
+   * Reconcile step: re-detect saved entry/ladder orders that fell out of executor
+   * tracking (issue #673). Returns the dispatched chain, or null.
+   */
+  const sweepOrphanedSavedOrders = () => {
+    // Sweep for saved entry/ladder orders that have fallen out of the
+    // executor's own tracking without ever reaching a terminal outcome in
+    // positionState (issue #673). checkPendingOrderFills (above) and
+    // handleCancelledOrder both delete a terminal order from
+    // orderExecutor's pendingOrders BEFORE invoking onFillDetected, and
+    // onFillDetected's engine-level retry (issue #679) is bounded — once it
+    // exhausts its retries it gives up, but only a SUCCESSFUL
+    // handleOrderFill removes the row from positionState.pendingEntryOrders
+    // / pendingLadderOrders. Nothing else re-polled those lists at
+    // runtime — only the startup catch-up did — so a transient error after
+    // a buy fill could leave it invisible to both the executor and the
+    // fill pipeline until the process restarted. This sweep re-detects the
+    // gap every reconcile tick instead.
+    if (!orderExecutor.capabilities?.liveReconciliation) return null;
+    return (async () => {
+      const trackedIds = new Set(
+        orderExecutor.getPendingOrdersList()
+          .filter(o => o.type === 'entry' || o.type === 'ladder_entry')
+          .map(o => o.orderId)
+      );
+      // Dedupe by orderId (entry list wins ties) rather than concatenating
+      // both lists directly — an orderId should never legitimately sit in
+      // both, but if a stray duplicate row ever did, processing it twice
+      // in the same pass would waste a redundant getOrder/handleOrderFill
+      // round trip and, on a failure, let the second restorePendingOrder
+      // call silently overwrite the first with the wrong type/ladderIndex
+      // (issue #673).
+      const orphanMap = new Map();
+      for (const savedEntry of positionState.pendingEntryOrders || []) {
+        if (!orphanMap.has(savedEntry.orderId)) orphanMap.set(savedEntry.orderId, { savedEntry, entryType: 'entry' });
+      }
+      for (const savedEntry of positionState.pendingLadderOrders || []) {
+        if (!orphanMap.has(savedEntry.orderId)) orphanMap.set(savedEntry.orderId, { savedEntry, entryType: 'ladder_entry' });
+      }
+      const orphans = [...orphanMap.values()].filter(({ savedEntry }) => !trackedIds.has(savedEntry.orderId));
+
+      for (const { savedEntry, entryType } of orphans) {
+        // The dedup key for any terminal buy collapses to the bare
+        // orderId (makeFillDedupKey), regardless of isPartialFill/size.
+        // If the polling callback path is already mid-flight or
+        // engine-level-retrying (issue #679) this exact order, skip it
+        // BEFORE spending a getOrder round trip — let it finish instead
+        // of racing a second handleOrderFill call for the same orderId.
+        // shouldSkipBuyRecommit dedups any true overlap that slips past
+        // this, but avoiding the race (and the wasted network call) is
+        // cheaper than relying on that alone. If it eventually exhausts
+        // its retries, both maps clear the key and this sweep catches it
+        // up on a later tick.
+        if (recentlyProcessedFills.has(savedEntry.orderId) || incompleteFillRetries.has(savedEntry.orderId)) {
+          continue;
+        }
+
+        let orderStatus;
+        try {
+          orderStatus = await adapter.getOrder(savedEntry.orderId);
+        } catch (err) {
+          logger.warn(
+            `⚠️ [${exchange}] Reconcile: could not check orphaned ${entryType} ${savedEntry.orderId.slice(0, 8)} (untracked by executor): ${err.message} — will retry next tick`,
+            { orderId: savedEntry.orderId, entryType, error: err.message }
+          );
+          continue;
+        }
+        if (!isTerminalStatus(orderStatus)) {
+          // Still live on the exchange (OPEN/PARTIALLY_FILLED) — re-arm
+          // executor tracking instead of merely skipping it, so the
+          // ordinary checkPendingOrderFills polling path (with its own
+          // advancing-partial routing via partialFillTracker) picks it
+          // back up on the next tick. Without this, an order that fell
+          // out of tracking while still resting would only ever be
+          // re-checked by THIS sweep's own terminal-only gate, silently
+          // missing any intermediate partial fill until it eventually
+          // reaches a terminal state (issue #673).
+          orderExecutor.restorePendingOrder(savedEntry.orderId, buildRestoreSpec(savedEntry, entryType));
+          continue;
+        }
+
+        logger.warn(
+          `⚠️ [${exchange}] Reconcile: orphaned ${entryType} ${savedEntry.orderId.slice(0, 8)} is ${orderStatus.status} but missing from executor tracking — catching up`,
+          { orderId: savedEntry.orderId, entryType, status: orderStatus.status }
+        );
+        const result = await catchUpTerminalEntry(savedEntry, orderStatus, entryType);
+        if (result.outcome === 'empty') {
+          // Truly empty cancel — safe to purge, nothing to record.
+          if (entryType === 'ladder_entry') {
+            positionState.pendingLadderOrders = (positionState.pendingLadderOrders || [])
+              .filter(o => o.orderId !== savedEntry.orderId);
+          } else {
+            positionState.pendingEntryOrders = (positionState.pendingEntryOrders || [])
+              .filter(e => e.orderId !== savedEntry.orderId);
+          }
+          saveLiveState();
+        }
+      }
+    })().catch(err => {
+      logger.error(`❌ [${exchange}] Orphaned entry/ladder sweep failed: ${err.message}`, { error: err.message });
+    });
+  };
+
+  /**
+   * Reconcile step: detect a fill/not-found on the legacy single TP order the
+   * WebSocket may have missed. Returns the dispatched chain, or null.
+   */
+  const reconcileLegacyTp = () => {
+    // Check for TP order fill that WebSocket might have missed
+    if (isDryRun || !positionState.activeTpOrderId) return null;
+    return adapter.getOrder(positionState.activeTpOrderId)
+      .then(async (orderStatus) => {
+        // Coinbase can flip completionPercentage to 100 a tick before status
+        // flips to FILLED — match the rest of the codebase's fill detection so
+        // the reconcile backstop acts during that window (issue #155).
+        if (isFilledStatus(orderStatus)) {
+          logger.info(
+            `✅ [${exchange}] Reconcile detected TP order ${positionState.activeTpOrderId} filled (WebSocket missed)`,
+            { orderId: positionState.activeTpOrderId, orderType: 'take_profit', status: orderStatus.status }
+          );
+          // Build fill data in the format handleOrderFill expects
+          const fillData = {
+            orderId: positionState.activeTpOrderId,
+            side: 'sell',
+            status: 'FILLED',
+            filledSize: parseFloat(orderStatus.filledSize || 0),
+            filledValue: parseFloat(orderStatus.filledValue || 0),
+            averageFilledPrice: parseFloat(orderStatus.averageFilledPrice || 0),
+          };
+          orderExecutor.markSettled(positionState.activeTpOrderId);
+          await handleOrderFill(fillData);
+        }
+      })
+      .catch(err => {
+        // Order not found might mean it was cancelled or doesn't exist
+        if (isOrderNotFoundError(err)) {
+          logger.warn(
+            `⚠️ [${exchange}] TP order ${positionState.activeTpOrderId} not found on exchange, clearing`,
+            { orderId: positionState.activeTpOrderId, orderType: 'take_profit', error: err.message }
+          );
+          const cancelledTpId = positionState.activeTpOrderId;
+          positionState.activeTpOrderId = null;
+          orderExecutor.handleOrderCancel(cancelledTpId);
+        } else {
+          logger.error(
+            `❌ [${exchange}] TP order check failed: ${err.message}`,
+            { orderId: positionState.activeTpOrderId, orderType: 'take_profit', error: err.message }
+          );
+        }
+      });
+  };
+
+  /**
+   * Reconcile step: check each celestial body TP for fills/cancellations the
+   * WebSocket may have missed. Returns one dispatched chain per body with a TP.
+   */
+  const reconcileBodyTps = () => {
+    // Check celestial body TP orders for fills/cancellations that WebSocket might have missed
+    const chains = [];
+    for (const body of [...(positionState.celestialBodies || [])]) {
+      if (!body.tpOrderId) continue;
+      chains.push(adapter.getOrder(body.tpOrderId)
+        .then(async (bodyStatus) => {
+          if (isFilledStatus(bodyStatus)) {
+            const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+            logger.info(
+              `${tierCfg.emoji} [${exchange}] Reconcile detected body TP ${body.tpOrderId} filled`,
+              { bodyId: body.id, orderId: body.tpOrderId, orderType: 'body_tp', status: bodyStatus.status }
+            );
+            const fillData = {
+              orderId: body.tpOrderId,
+              side: 'sell',
+              status: 'FILLED',
+              filledSize: parseFloat(bodyStatus.filledSize || 0),
+              filledValue: parseFloat(bodyStatus.filledValue || 0),
+              averageFilledPrice: parseFloat(bodyStatus.averageFilledPrice || 0),
+            };
+            orderExecutor.markSettled(body.tpOrderId);
+            await handleOrderFill(fillData);
+          } else if (isCancelledStatus(bodyStatus)) {
+            const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+            // A cancel-for-replace whose booking failed (#670) left the
+            // execution it knew about on the body; retry with it rather
+            // than trusting a status that may omit the filled size.
+            const knownExecution = knownTpCancelExecution(body, bodyStatus);
+            if (knownExecution) {
+              orderExecutor.markSettled(body.tpOrderId);
+              await bookTpCancelExecution(body, body.tpOrderId, knownExecution, 'Reconcile retry');
+            } else if (bodyStatus.filledSize > 0) {
+              // Route partials through handleOrderFill before re-placing — otherwise
+              // they're lost (Gemini has no order-events WS, and polling drops the
+              // order from pendingOrders once it sees CANCELLED).
+              logger.warn(
+                `⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} with ${bodyStatus.filledSize} partial fill — routing through handleOrderFill`,
+                {
+                  bodyId: body.id,
+                  orderId: body.tpOrderId,
+                  status: bodyStatus.status,
+                  filledSize: bodyStatus.filledSize,
+                }
+              );
+              orderExecutor.markSettled(body.tpOrderId);
+              await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', bodyStatus));
+            } else {
+              // A freshly-placed TP can transiently read CANCELLED/FAILED from
+              // Coinbase's eventually-consistent historical-order endpoint
+              // (getOrder), even while the order is genuinely live on the book.
+              // Trusting that single read here clears tracking AND re-places —
+              // orphaning the live order and leaving a duplicate sell (the
+              // 0824cc36 incident: getOrder said CANCELLED 6s after placement,
+              // order stayed open for days). The startup path is immune because
+              // it cross-checks getOpenOrders (openOrderIds) first; mirror that
+              // here before acting on a terminal status.
+              const openOrders = await lookupOrNull('getOpenOrders', productId, adapter.getOpenOrders(productId));
+              // openOrders === null → getOpenOrders failed; treat as
+              // inconclusive and keep the order (never orphan on a failed check).
+              const stillOpen = openOrders === null || isOrderStillOpen(openOrders, body.tpOrderId);
+              if (stillOpen) {
+                logger.warn(
+                  `⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} read ${bodyStatus.status} but still OPEN on exchange — ignoring false terminal status`,
+                  { bodyId: body.id, orderId: body.tpOrderId, status: bodyStatus.status, stillOpen: true }
+                );
+              } else {
+                logger.warn(
+                  `⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} — clearing for re-placement`,
+                  { bodyId: body.id, orderId: body.tpOrderId, status: bodyStatus.status }
+                );
+                orderExecutor.removeBodyTracking(body.tpOrderId);
+                body.tpOrderId = null;
+                body.tpPrice = 0;
+                body.assetOnOrder = 0;
+                saveLiveState();
+                await placeBodyTp(body);
+              }
+            }
+          } else if (bodyStatus.status === 'OPEN' || bodyStatus.status === 'PENDING' || bodyStatus.status === 'PARTIALLY_FILLED') {
+            if (bodyStatus.filledSize > 0) {
+              // Route partials through handleOrderFill — cancelPartialFillOrder
+              // freezes the order and the partial-fill branch resizes the body,
+              // which also handles the stale-size case implicitly.
+              logger.warn(
+                `⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} has ${bodyStatus.filledSize} partial fill while OPEN — routing through handleOrderFill`,
+                {
+                  bodyId: body.id,
+                  orderId: body.tpOrderId,
+                  status: bodyStatus.status,
+                  filledSize: bodyStatus.filledSize,
+                }
+              );
+              orderExecutor.markSettled(body.tpOrderId);
+              await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', bodyStatus));
+            } else {
+              // Pure stale-size detection (body merged/modified, TP placed for old size).
+              const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+              const { sellQty } = positionSizer.calculateTakeProfitSize(
+                body.assetQty, body.avgPrice, body.tpPrice, tierCfg.holdbackScale
+              );
+              if (body.needsTpReprice || Math.abs(sellQty - body.assetOnOrder) > 0.00000001) {
+                logger.warn(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP stale (onOrder=${body.assetOnOrder}, expected=${sellQty}) — cancelling for re-place`);
+                if (await cancelBodyTpForReplace(body, 'Reconcile stale-size') === 'cancelled') {
+                  body.needsTpReprice = false;
+                  saveLiveState();
+                  await placeBodyTp(body);
+                }
+              }
+            }
+          }
+        })
+        .catch(async (err) => {
+          // Order not found or invalid — likely cancelled externally or ID no longer valid
+          if (isOrderNotFoundError(err)) {
+            logger.warn(
+              `⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} not found on exchange — clearing for re-placement`,
+              { bodyId: body.id, orderId: body.tpOrderId, orderType: 'body_tp', error: err.message }
+            );
+            orderExecutor.removeBodyTracking(body.tpOrderId);
+            body.tpOrderId = null;
+            body.tpPrice = 0;
+            body.assetOnOrder = 0;
+            saveLiveState();
+            await placeBodyTp(body);
+          }
+        })
+        // Terminal guard: this getOrder chain is fire-and-forget inside the
+        // loop, and both the .then and .catch handlers above await
+        // handleOrderFill / placeBodyTp, which can themselves reject. Without
+        // this, such a rejection escapes as an unhandled rejection and
+        // crashes the process (Node ≥15) — the reconcile loop re-checks this
+        // body on the next tick anyway (issue #99).
+        .catch(err => {
+          logger.error(
+            `❌ [${exchange}] Body ${body.id.slice(-8)} TP reconcile handler error: ${err.message}`,
+            { bodyId: body.id, orderId: body.tpOrderId, orderType: 'body_tp', error: err.message }
+          );
+        }));
+    }
+    return chains;
+  };
+
+  /**
+   * Reconcile step: recompute balance/qty fields from the fill ledger and merge
+   * them into the live position. Returns the dispatched chain.
+   */
+  const reconcileRecoveredPosition = () => {
+    return recoveryModule.reconcile(positionState, fillLedger)
+      .then(result => {
+        if (result.updated) {
+          // MERGE the recomputed balance/qty fields into the EXISTING state —
+          // do NOT wholesale-replace. rebuildPositionFromFills returns a
+          // minimal object (activeTpOrderId:null, cyclesCompleted:0, no
+          // lifecycle / ladder / pending-order / macroRegime fields), so a
+          // wholesale swap would: flip a DRAINING fund back to ACTIVE, null
+          // activeTpOrderId while the core TP still rests (→ duplicate sell),
+          // drop ladderActive/pendingLadderOrders/pendingEntryOrders (→ double
+          // ladders + orphaned orders), and reset cyclesCompleted. Only the
+          // fields rebuildPositionFromFills authoritatively recomputes from
+          // the ledger are copied over (issue #97).
+          const rebuilt = result.position;
+          const RECONCILED_FIELDS = [
+            'totalAsset', 'totalCostBasis', 'avgCostBasis', 'cycleBuys',
+            'lastEntryPrice', 'lastEntryTime', 'anchorPrice',
+          ];
+          for (const field of RECONCILED_FIELDS) {
+            if (rebuilt[field] !== undefined) positionState[field] = rebuilt[field];
+          }
+          // Re-sync totals from bodies (celestial mode): rebuildPositionFromFills
+          // skips body-owned fills, so when bodies exist the body-derived
+          // aggregate is authoritative and overrides the core-only totals above.
+          const bodies = positionState.celestialBodies || [];
+          if (bodies.length > 0) {
+            celestialHierarchy.syncPositionState(positionState, bodies);
+          }
+          // rebuildPositionFromFills excludes body-owned buys, so the cycleBuys
+          // copied above is 0 in celestial mode — restore it from the all-buys
+          // count so a reconcile-triggered rebuild doesn't wipe the live counter
+          // and re-open per-cycle step exposure (issue #210-A).
+          if (config.celestialEnabled !== false) {
+            positionState.cycleBuys = fillLedger.getCurrentCycleAllBuysCount();
+          }
+          logger.info(`🔄 [${exchange}] Position reconciled from exchange (${bodies.length} bodies, lifecycle=${positionState.lifecycle || 'n/a'} preserved)`);
+        }
+      })
+      .catch(err => {
+        logger.error(`❌ [${exchange}] Reconciliation failed: ${err.message}`, { error: err.message });
+      });
+  };
+
+  /**
    * One reconciliation pass. Extracted from the setInterval callback so the
    * #196 lock-release integration test can drive a single tick directly (via the
    * _test hooks) without a lingering interval. Behaviour is identical to the
    * inlined callback it replaced.
    */
   const reconcileTick = () => {
-      if (!isRunning) return; // Guard against firing after stop
-      return engineLocks.withReconcileLock(async () => {
+    if (!isRunning) return; // Guard against firing after stop
+    return engineLocks.withReconcileLock(async () => {
       // Collect every async chain this tick dispatches so the reconcile lock is
-      // held until ALL of them settle — the body-TP chains below cancel/replace
+      // held until ALL of them settle — the body-TP chains cancel/replace
       // TPs fire-and-forget, and clearing the flag on the recovery promise alone
       // would let a merge (or the next reconcile tick) race an in-flight TP
       // re-placement (#189 review).
@@ -6259,361 +6636,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         logger.error(`❌ [${exchange}] Owed cycle reset failed (will retry next reconcile): ${err.message}`, { error: err.message });
       });
       const pending = [];
-
-      // Check for entry fills that WebSocket might have missed
-      if (orderExecutor.capabilities?.liveReconciliation) {
-        pending.push(orderExecutor.checkPendingOrderFills()
-          .then(result => {
-            // A SUCCESSFUL order-status poll proves the order-status REST path
-            // is alive even when no WS order event has arrived. lastOrderUpdateMs
-            // was otherwise refreshed ONLY by WS order events, so a resting TP
-            // that legitimately goes quiet for >staleOrdersMs (default 60s, equal
-            // to reconcileIntervalMs) tripped stale_orders → SAFE during normal
-            // operation. Gate on result.polled > 0 (at least one getOrder
-            // round-trip actually returned) — NOT on mere promise resolution:
-            // getOrder failures are swallowed to null, so resolving with zero
-            // successful polls (REST down, or no pending orders) must NOT stamp
-            // liveness, or the stale-orders net couldn't detect a simultaneously
-            // dead WS feed + dead REST poll (issue #110 M6).
-            if (result.polled > 0) healthMonitor.recordOrderUpdate();
-            if (result.filled > 0 || result.cancelled > 0) {
-              logger.info(`🔄 [${exchange}] Reconcile fill check: ${result.filled} filled, ${result.cancelled} cancelled`);
-            }
-          })
-          .catch(err => {
-            logger.error(`❌ [${exchange}] Fill check failed: ${err.message}`, { error: err.message });
-          }));
+      for (const chain of [reconcileEntryFills(), sweepOrphanedSavedOrders(), reconcileLegacyTp()]) {
+        if (chain) pending.push(chain);
       }
-
-      // Sweep for saved entry/ladder orders that have fallen out of the
-      // executor's own tracking without ever reaching a terminal outcome in
-      // positionState (issue #673). checkPendingOrderFills (above) and
-      // handleCancelledOrder both delete a terminal order from
-      // orderExecutor's pendingOrders BEFORE invoking onFillDetected, and
-      // onFillDetected's engine-level retry (issue #679) is bounded — once it
-      // exhausts its retries it gives up, but only a SUCCESSFUL
-      // handleOrderFill removes the row from positionState.pendingEntryOrders
-      // / pendingLadderOrders. Nothing else re-polled those lists at
-      // runtime — only the startup catch-up did — so a transient error after
-      // a buy fill could leave it invisible to both the executor and the
-      // fill pipeline until the process restarted. This sweep re-detects the
-      // gap every reconcile tick instead.
-      if (orderExecutor.capabilities?.liveReconciliation) {
-        pending.push((async () => {
-          const trackedIds = new Set(
-            orderExecutor.getPendingOrdersList()
-              .filter(o => o.type === 'entry' || o.type === 'ladder_entry')
-              .map(o => o.orderId)
-          );
-          // Dedupe by orderId (entry list wins ties) rather than concatenating
-          // both lists directly — an orderId should never legitimately sit in
-          // both, but if a stray duplicate row ever did, processing it twice
-          // in the same pass would waste a redundant getOrder/handleOrderFill
-          // round trip and, on a failure, let the second restorePendingOrder
-          // call silently overwrite the first with the wrong type/ladderIndex
-          // (issue #673).
-          const orphanMap = new Map();
-          for (const savedEntry of positionState.pendingEntryOrders || []) {
-            if (!orphanMap.has(savedEntry.orderId)) orphanMap.set(savedEntry.orderId, { savedEntry, entryType: 'entry' });
-          }
-          for (const savedEntry of positionState.pendingLadderOrders || []) {
-            if (!orphanMap.has(savedEntry.orderId)) orphanMap.set(savedEntry.orderId, { savedEntry, entryType: 'ladder_entry' });
-          }
-          const orphans = [...orphanMap.values()].filter(({ savedEntry }) => !trackedIds.has(savedEntry.orderId));
-
-          for (const { savedEntry, entryType } of orphans) {
-            // The dedup key for any terminal buy collapses to the bare
-            // orderId (makeFillDedupKey), regardless of isPartialFill/size.
-            // If the polling callback path is already mid-flight or
-            // engine-level-retrying (issue #679) this exact order, skip it
-            // BEFORE spending a getOrder round trip — let it finish instead
-            // of racing a second handleOrderFill call for the same orderId.
-            // shouldSkipBuyRecommit dedups any true overlap that slips past
-            // this, but avoiding the race (and the wasted network call) is
-            // cheaper than relying on that alone. If it eventually exhausts
-            // its retries, both maps clear the key and this sweep catches it
-            // up on a later tick.
-            if (recentlyProcessedFills.has(savedEntry.orderId) || incompleteFillRetries.has(savedEntry.orderId)) {
-              continue;
-            }
-
-            let orderStatus;
-            try {
-              orderStatus = await adapter.getOrder(savedEntry.orderId);
-            } catch (err) {
-              logger.warn(
-                `⚠️ [${exchange}] Reconcile: could not check orphaned ${entryType} ${savedEntry.orderId.slice(0, 8)} (untracked by executor): ${err.message} — will retry next tick`,
-                { orderId: savedEntry.orderId, entryType, error: err.message }
-              );
-              continue;
-            }
-            if (!isTerminalStatus(orderStatus)) {
-              // Still live on the exchange (OPEN/PARTIALLY_FILLED) — re-arm
-              // executor tracking instead of merely skipping it, so the
-              // ordinary checkPendingOrderFills polling path (with its own
-              // advancing-partial routing via partialFillTracker) picks it
-              // back up on the next tick. Without this, an order that fell
-              // out of tracking while still resting would only ever be
-              // re-checked by THIS sweep's own terminal-only gate, silently
-              // missing any intermediate partial fill until it eventually
-              // reaches a terminal state (issue #673).
-              orderExecutor.restorePendingOrder(savedEntry.orderId, buildRestoreSpec(savedEntry, entryType));
-              continue;
-            }
-
-            logger.warn(
-              `⚠️ [${exchange}] Reconcile: orphaned ${entryType} ${savedEntry.orderId.slice(0, 8)} is ${orderStatus.status} but missing from executor tracking — catching up`,
-              { orderId: savedEntry.orderId, entryType, status: orderStatus.status }
-            );
-            const result = await catchUpTerminalEntry(savedEntry, orderStatus, entryType);
-            if (result.outcome === 'empty') {
-              // Truly empty cancel — safe to purge, nothing to record.
-              if (entryType === 'ladder_entry') {
-                positionState.pendingLadderOrders = (positionState.pendingLadderOrders || [])
-                  .filter(o => o.orderId !== savedEntry.orderId);
-              } else {
-                positionState.pendingEntryOrders = (positionState.pendingEntryOrders || [])
-                  .filter(e => e.orderId !== savedEntry.orderId);
-              }
-              saveLiveState();
-            }
-          }
-        })().catch(err => {
-          logger.error(`❌ [${exchange}] Orphaned entry/ladder sweep failed: ${err.message}`, { error: err.message });
-        }));
-      }
-
-      // Check for TP order fill that WebSocket might have missed
-      if (!isDryRun && positionState.activeTpOrderId) {
-        pending.push(adapter.getOrder(positionState.activeTpOrderId)
-          .then(async (orderStatus) => {
-            // Coinbase can flip completionPercentage to 100 a tick before status
-            // flips to FILLED — match the rest of the codebase's fill detection so
-            // the reconcile backstop acts during that window (issue #155).
-            if (isFilledStatus(orderStatus)) {
-              logger.info(
-                `✅ [${exchange}] Reconcile detected TP order ${positionState.activeTpOrderId} filled (WebSocket missed)`,
-                { orderId: positionState.activeTpOrderId, orderType: 'take_profit', status: orderStatus.status }
-              );
-              // Build fill data in the format handleOrderFill expects
-              const fillData = {
-                orderId: positionState.activeTpOrderId,
-                side: 'sell',
-                status: 'FILLED',
-                filledSize: parseFloat(orderStatus.filledSize || 0),
-                filledValue: parseFloat(orderStatus.filledValue || 0),
-                averageFilledPrice: parseFloat(orderStatus.averageFilledPrice || 0),
-              };
-              orderExecutor.markSettled(positionState.activeTpOrderId);
-              await handleOrderFill(fillData);
-            }
-          })
-          .catch(err => {
-            // Order not found might mean it was cancelled or doesn't exist
-            if (isOrderNotFoundError(err)) {
-              logger.warn(
-                `⚠️ [${exchange}] TP order ${positionState.activeTpOrderId} not found on exchange, clearing`,
-                { orderId: positionState.activeTpOrderId, orderType: 'take_profit', error: err.message }
-              );
-              const cancelledTpId = positionState.activeTpOrderId;
-              positionState.activeTpOrderId = null;
-              orderExecutor.handleOrderCancel(cancelledTpId);
-            } else {
-              logger.error(
-                `❌ [${exchange}] TP order check failed: ${err.message}`,
-                { orderId: positionState.activeTpOrderId, orderType: 'take_profit', error: err.message }
-              );
-            }
-          }));
-      }
-
-      // Check celestial body TP orders for fills/cancellations that WebSocket might have missed
-      const activeBodies = positionState.celestialBodies || [];
-      if (activeBodies.length > 0) {
-        for (const body of [...activeBodies]) {
-          if (!body.tpOrderId) continue;
-          pending.push(adapter.getOrder(body.tpOrderId)
-            .then(async (bodyStatus) => {
-              if (isFilledStatus(bodyStatus)) {
-                const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-                logger.info(
-                  `${tierCfg.emoji} [${exchange}] Reconcile detected body TP ${body.tpOrderId} filled`,
-                  { bodyId: body.id, orderId: body.tpOrderId, orderType: 'body_tp', status: bodyStatus.status }
-                );
-                const fillData = {
-                  orderId: body.tpOrderId,
-                  side: 'sell',
-                  status: 'FILLED',
-                  filledSize: parseFloat(bodyStatus.filledSize || 0),
-                  filledValue: parseFloat(bodyStatus.filledValue || 0),
-                  averageFilledPrice: parseFloat(bodyStatus.averageFilledPrice || 0),
-                };
-                orderExecutor.markSettled(body.tpOrderId);
-                await handleOrderFill(fillData);
-              } else if (isCancelledStatus(bodyStatus)) {
-                const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-                // A cancel-for-replace whose booking failed (#670) left the
-                // execution it knew about on the body; retry with it rather
-                // than trusting a status that may omit the filled size.
-                const knownExecution = knownTpCancelExecution(body, bodyStatus);
-                if (knownExecution) {
-                  orderExecutor.markSettled(body.tpOrderId);
-                  await bookTpCancelExecution(body, body.tpOrderId, knownExecution, 'Reconcile retry');
-                } else if (bodyStatus.filledSize > 0) {
-                  // Route partials through handleOrderFill before re-placing — otherwise
-                  // they're lost (Gemini has no order-events WS, and polling drops the
-                  // order from pendingOrders once it sees CANCELLED).
-                  logger.warn(
-                    `⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} with ${bodyStatus.filledSize} partial fill — routing through handleOrderFill`,
-                    {
-                      bodyId: body.id,
-                      orderId: body.tpOrderId,
-                      status: bodyStatus.status,
-                      filledSize: bodyStatus.filledSize,
-                    }
-                  );
-                  orderExecutor.markSettled(body.tpOrderId);
-                  await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', bodyStatus));
-                } else {
-                  // A freshly-placed TP can transiently read CANCELLED/FAILED from
-                  // Coinbase's eventually-consistent historical-order endpoint
-                  // (getOrder), even while the order is genuinely live on the book.
-                  // Trusting that single read here clears tracking AND re-places —
-                  // orphaning the live order and leaving a duplicate sell (the
-                  // 0824cc36 incident: getOrder said CANCELLED 6s after placement,
-                  // order stayed open for days). The startup path is immune because
-                  // it cross-checks getOpenOrders (openOrderIds) first; mirror that
-                  // here before acting on a terminal status.
-                  const openOrders = await lookupOrNull('getOpenOrders', productId, adapter.getOpenOrders(productId));
-                  // openOrders === null → getOpenOrders failed; treat as
-                  // inconclusive and keep the order (never orphan on a failed check).
-                  const stillOpen = openOrders === null || isOrderStillOpen(openOrders, body.tpOrderId);
-                  if (stillOpen) {
-                    logger.warn(
-                      `⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} read ${bodyStatus.status} but still OPEN on exchange — ignoring false terminal status`,
-                      { bodyId: body.id, orderId: body.tpOrderId, status: bodyStatus.status, stillOpen: true }
-                    );
-                  } else {
-                    logger.warn(
-                      `⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} — clearing for re-placement`,
-                      { bodyId: body.id, orderId: body.tpOrderId, status: bodyStatus.status }
-                    );
-                    orderExecutor.removeBodyTracking(body.tpOrderId);
-                    body.tpOrderId = null;
-                    body.tpPrice = 0;
-                    body.assetOnOrder = 0;
-                    saveLiveState();
-                    await placeBodyTp(body);
-                  }
-                }
-              } else if (bodyStatus.status === 'OPEN' || bodyStatus.status === 'PENDING' || bodyStatus.status === 'PARTIALLY_FILLED') {
-                if (bodyStatus.filledSize > 0) {
-                  // Route partials through handleOrderFill — cancelPartialFillOrder
-                  // freezes the order and the partial-fill branch resizes the body,
-                  // which also handles the stale-size case implicitly.
-                  logger.warn(
-                    `⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} has ${bodyStatus.filledSize} partial fill while OPEN — routing through handleOrderFill`,
-                    {
-                      bodyId: body.id,
-                      orderId: body.tpOrderId,
-                      status: bodyStatus.status,
-                      filledSize: bodyStatus.filledSize,
-                    }
-                  );
-                  orderExecutor.markSettled(body.tpOrderId);
-                  await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', bodyStatus));
-                } else {
-                  // Pure stale-size detection (body merged/modified, TP placed for old size).
-                  const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-                  const { sellQty } = positionSizer.calculateTakeProfitSize(
-                    body.assetQty, body.avgPrice, body.tpPrice, tierCfg.holdbackScale
-                  );
-                  if (body.needsTpReprice || Math.abs(sellQty - body.assetOnOrder) > 0.00000001) {
-                    logger.warn(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP stale (onOrder=${body.assetOnOrder}, expected=${sellQty}) — cancelling for re-place`);
-                    if (await cancelBodyTpForReplace(body, 'Reconcile stale-size') === 'cancelled') {
-                      body.needsTpReprice = false;
-                      saveLiveState();
-                      await placeBodyTp(body);
-                    }
-                  }
-                }
-              }
-            })
-            .catch(async (err) => {
-              // Order not found or invalid — likely cancelled externally or ID no longer valid
-              if (isOrderNotFoundError(err)) {
-                logger.warn(
-                  `⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} not found on exchange — clearing for re-placement`,
-                  { bodyId: body.id, orderId: body.tpOrderId, orderType: 'body_tp', error: err.message }
-                );
-                orderExecutor.removeBodyTracking(body.tpOrderId);
-                body.tpOrderId = null;
-                body.tpPrice = 0;
-                body.assetOnOrder = 0;
-                saveLiveState();
-                await placeBodyTp(body);
-              }
-            })
-            // Terminal guard: this getOrder chain is fire-and-forget inside the
-            // loop, and both the .then and .catch handlers above await
-            // handleOrderFill / placeBodyTp, which can themselves reject. Without
-            // this, such a rejection escapes as an unhandled rejection and
-            // crashes the process (Node ≥15) — the reconcile loop re-checks this
-            // body on the next tick anyway (issue #99).
-            .catch(err => {
-              logger.error(
-                `❌ [${exchange}] Body ${body.id.slice(-8)} TP reconcile handler error: ${err.message}`,
-                { bodyId: body.id, orderId: body.tpOrderId, orderType: 'body_tp', error: err.message }
-              );
-            }));
-        }
-      }
-
-      pending.push(recoveryModule.reconcile(positionState, fillLedger)
-        .then(result => {
-          if (result.updated) {
-            // MERGE the recomputed balance/qty fields into the EXISTING state —
-            // do NOT wholesale-replace. rebuildPositionFromFills returns a
-            // minimal object (activeTpOrderId:null, cyclesCompleted:0, no
-            // lifecycle / ladder / pending-order / macroRegime fields), so a
-            // wholesale swap would: flip a DRAINING fund back to ACTIVE, null
-            // activeTpOrderId while the core TP still rests (→ duplicate sell),
-            // drop ladderActive/pendingLadderOrders/pendingEntryOrders (→ double
-            // ladders + orphaned orders), and reset cyclesCompleted. Only the
-            // fields rebuildPositionFromFills authoritatively recomputes from
-            // the ledger are copied over (issue #97).
-            const rebuilt = result.position;
-            const RECONCILED_FIELDS = [
-              'totalAsset', 'totalCostBasis', 'avgCostBasis', 'cycleBuys',
-              'lastEntryPrice', 'lastEntryTime', 'anchorPrice',
-            ];
-            for (const field of RECONCILED_FIELDS) {
-              if (rebuilt[field] !== undefined) positionState[field] = rebuilt[field];
-            }
-            // Re-sync totals from bodies (celestial mode): rebuildPositionFromFills
-            // skips body-owned fills, so when bodies exist the body-derived
-            // aggregate is authoritative and overrides the core-only totals above.
-            const bodies = positionState.celestialBodies || [];
-            if (bodies.length > 0) {
-              celestialHierarchy.syncPositionState(positionState, bodies);
-            }
-            // rebuildPositionFromFills excludes body-owned buys, so the cycleBuys
-            // copied above is 0 in celestial mode — restore it from the all-buys
-            // count so a reconcile-triggered rebuild doesn't wipe the live counter
-            // and re-open per-cycle step exposure (issue #210-A).
-            if (config.celestialEnabled !== false) {
-              positionState.cycleBuys = fillLedger.getCurrentCycleAllBuysCount();
-            }
-            logger.info(`🔄 [${exchange}] Position reconciled from exchange (${bodies.length} bodies, lifecycle=${positionState.lifecycle || 'n/a'} preserved)`);
-          }
-        })
-        .catch(err => {
-          logger.error(`❌ [${exchange}] Reconciliation failed: ${err.message}`, { error: err.message });
-        }));
+      pending.push(...reconcileBodyTps());
+      pending.push(reconcileRecoveredPosition());
 
       // Release the lock only after every dispatched chain settles (#189 review).
       return Promise.allSettled(pending);
-      });
+    });
   };
 
   /**
@@ -9277,6 +9308,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       getFillDrift: () => fillDrift,
       getPositionCoverage: () => positionCoverage,
       reconcileTick,
+      reconcileEntryFills,
+      sweepOrphanedSavedOrders,
+      reconcileLegacyTp,
+      reconcileBodyTps,
+      reconcileRecoveredPosition,
       reconcilePendingPlacements,
       checkOfflineOrderFills,
       // Background persistence guards (issue #532)
