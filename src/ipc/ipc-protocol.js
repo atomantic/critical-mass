@@ -108,4 +108,6 @@ const serialize = (msg) => JSON.stringify(msg);
  */
 const deserialize = (data) => JSON.parse(data);
 
-module.exports = { MSG_TYPE, IPC_CHANNELS, DEFAULT_TIMEOUT, createMessage, serialize, deserialize };
+const { IPC_SECRET_HEADER, getIpcSecret, ipcSecretMatches } = require('./ipc-secret');
+
+module.exports = { IPC_SECRET_HEADER, getIpcSecret, ipcSecretMatches, MSG_TYPE, IPC_CHANNELS, DEFAULT_TIMEOUT, createMessage, serialize, deserialize };

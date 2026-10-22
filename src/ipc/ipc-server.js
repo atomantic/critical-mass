@@ -8,7 +8,7 @@
  */
 
 const { WebSocketServer, OPEN } = require('./ws-server');
-const { MSG_TYPE, createMessage, serialize, deserialize } = require('./ipc-protocol');
+const { MSG_TYPE, IPC_SECRET_HEADER, getIpcSecret, ipcSecretMatches, createMessage, serialize, deserialize } = require('./ipc-protocol');
 const { createContextLogger } = require('../logger');
 const { trackPendingWrite } = require('../pending-writes');
 const { setEngineMaintenance, refuseDuringMaintenance } = require('../engine-maintenance');
@@ -32,10 +32,14 @@ const MAX_HELD_EVENTS = 200;
  * Create an IPC server for an engine process
  * @param {number} port - Port to listen on (localhost only)
  * @param {string} name - Human-readable name for logs (e.g. 'coinbase-engine')
+ * @param {{ secret?: string }} [options] - `secret` overrides the shared env/file secret (tests)
  * @returns {Object}
  */
-const createIPCServer = (port, name) => {
+const createIPCServer = (port, name, options = {}) => {
   const logger = ipcServerLogger(name);
+  // Resolved at start() so a missing/unwritable secret fails startup loudly
+  // instead of silently leaving the socket open.
+  const resolveSecret = options.secret ? () => options.secret : () => getIpcSecret();
   /** @type {WebSocketServer | null} */
   let wss = null;
   /** @type {Promise<void> | null} */
@@ -75,12 +79,19 @@ const createIPCServer = (port, name) => {
     if (startPromise) return startPromise;
     let server;
     try {
+      const secret = resolveSecret();
       server = new WebSocketServer({
         port,
         host: '127.0.0.1',
         // Process IPC only: browsers always supply Origin, including opaque
         // ('null') origins. Check presence so an empty header is rejected too.
-        verifyClient: (req) => !shuttingDown && !Object.prototype.hasOwnProperty.call(req.headers, 'origin'),
+        // Then require the shared secret: loopback alone is not a credential.
+        verifyClient: (req) => {
+          if (shuttingDown || Object.prototype.hasOwnProperty.call(req.headers, 'origin')) return false;
+          if (ipcSecretMatches(req.headers[IPC_SECRET_HEADER], secret)) return true;
+          logger.warn(`⚠️ 🔗 [${name}] IPC connection refused: missing or invalid secret`, { event: 'refused', port });
+          return false;
+        },
       });
     } catch (err) {
       return Promise.reject(err);

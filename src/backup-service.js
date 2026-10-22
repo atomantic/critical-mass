@@ -103,6 +103,7 @@ const ROOT_CREDENTIAL_FILES = [
   'operator-auth.json',
   'providers.json',
   'operator-bootstrap-secret',
+  'ipc-secret',
 ];
 
 /** Callers that have no context logger (CLI, tests) get silence, not console noise. */
