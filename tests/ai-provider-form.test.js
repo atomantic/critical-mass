@@ -4,6 +4,7 @@ const path = require('node:path')
 const vm = require('node:vm')
 const { createRequire } = require('node:module')
 const { pathToFileURL } = require('node:url')
+const { apiClientStub } = require('./api-client-harness')
 
 const adminRequire = createRequire(path.join(__dirname, '..', 'admin', 'package.json'))
 const React = adminRequire('react')
@@ -52,6 +53,7 @@ function createView(providers = [], activeProvider = null, runs = [], samples = 
       if (name === 'react') return hooks
       if (name === '../ModalDialog') return { default: ({ children }) => children }
       if (name === '../DestructiveConfirmation') return { default: ({ children }) => children }
+      if (name === '../../utils/apiClient') return apiClientStub(fetch)
       if (name === '../../utils/runLifecycle.mjs') return { createRunLifecycle: () => ({ execute() {}, dispose() {} }), RUN_NOTICE: {} }
       throw new Error(`Unexpected import ${name}`)
     },

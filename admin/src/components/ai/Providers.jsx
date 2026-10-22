@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useId } from 'react'
 import ModalDialog from '../ModalDialog'
 import DestructiveConfirmation from '../DestructiveConfirmation'
+import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../../utils/apiClient'
 import { createRunLifecycle, RUN_NOTICE } from '../../utils/runLifecycle.mjs'
 
 const PROVIDER_TYPES = { cli: 'CLI (unavailable)', api: 'API' }
@@ -9,8 +10,8 @@ const PROVIDER_TYPES = { cli: 'CLI (unavailable)', api: 'API' }
 // per-run metadata (isActive) can tell them apart, so each is looked up.
 async function classifyRun(run) {
   if (run.endTime) return 'done'
-  const response = await fetch(`/api/runs/${run.id}`).catch(() => null)
-  const meta = response?.ok ? await response.json().catch(() => null) : null
+  const result = await apiGet(`/api/runs/${run.id}`)
+  const meta = result.ok ? result.data : null
   if (!meta) return 'unavailable'
   if (meta.endTime) return 'done'
   return meta.isActive === false ? 'interrupted' : 'active'
@@ -27,28 +28,24 @@ const RUN_STATUS_LABELS = {
 // { data } on success, or { error } for a network failure, non-OK status or an
 // unreadable body, so callers never render a failure as "nothing configured".
 async function readJson(url, label) {
-  const response = await fetch(url).catch(() => null)
-  if (!response) return { error: `Could not load ${label}: the server is unreachable.` }
-  if (!response.ok) {
-    const body = await response.json().catch(() => null)
-    const reason = typeof body?.error === 'string' && body.error.trim() ? `: ${body.error}` : ` (HTTP ${response.status}).`
-    return { error: `Could not load ${label}${reason}` }
+  const result = await apiGet(url)
+  if (result.ok) return { data: result.data }
+  if (result.status === 0) return { error: `Could not load ${label}: the server is unreachable.` }
+  if (result.data === null) {
+    return { error: result.status < 400 ? `Could not load ${label}: the response was unreadable.` : `Could not load ${label} (HTTP ${result.status}).` }
   }
-  const data = await response.json().catch(() => null)
-  return data ? { data } : { error: `Could not load ${label}: the response was unreadable.` }
+  const reason = typeof result.data.error === 'string' && result.data.error.trim() ? `: ${result.data.error}` : ` (HTTP ${result.status}).`
+  return { error: `Could not load ${label}${reason}` }
 }
 
-async function requireAcceptedResponse(response) {
-  if (response.ok) return
-  let message = `Request failed (${response.status})`
-  try {
-    const body = await response.json()
-    if (typeof body?.error === 'string' && body.error.trim()) message = body.error
-    else if (Array.isArray(body?.errors) && body.errors.length) message = body.errors.join(', ')
-  } catch {
-    // A non-JSON error still has a useful status for the operator.
-  }
-  throw new Error(message)
+// Throws the operator-facing reason when a provider write was not accepted.
+// The gateway may answer `{ errors: [...] }` (validation) instead of `{ error }`.
+function requireAccepted(result) {
+  if (result.ok) return
+  const body = result.data
+  const hasReason = typeof body?.error === 'string' && body.error.trim()
+  if (!hasReason && Array.isArray(body?.errors) && body.errors.length) throw new Error(body.errors.join(', '))
+  throw new Error(describeMutationFailure(result))
 }
 
 export default function AIProviders() {
@@ -167,9 +164,7 @@ export default function AIProviders() {
   useEffect(() => { loadDataRef.current = loadData })
 
   const handleSetActive = async (id) => {
-    await runMutation('active', () => fetch('/api/providers/active', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id })
-    }), () => setActiveProviderId(id))
+    await runMutation('active', () => apiPut('/api/providers/active', { id }, { allowEmpty: true }), () => setActiveProviderId(id))
   }
 
   const runMutation = async (key, request, onSuccess, onFailure) => {
@@ -178,7 +173,7 @@ export default function AIProviders() {
     setMutationPending(prev => ({ ...prev, [key]: true }))
     setMutationError('')
     try {
-      await requireAcceptedResponse(await request())
+      requireAccepted(await request())
       onSuccess?.()
     } catch (error) {
       setMutationError(error.message || 'The provider change could not be saved. Please try again.')
@@ -191,10 +186,8 @@ export default function AIProviders() {
 
   const handleTest = async (id) => {
     setTestResults(prev => ({ ...prev, [id]: { testing: true } }))
-    const result = await fetch(`/api/providers/${id}/test`, { method: 'POST' })
-      .then(r => r.json())
-      .catch(err => ({ success: false, error: err.message }))
-    setTestResults(prev => ({ ...prev, [id]: result }))
+    const result = await apiPost(`/api/providers/${id}/test`)
+    setTestResults(prev => ({ ...prev, [id]: result.ok ? result.data : { success: false, error: result.error } }))
   }
 
   const handleDelete = async (provider) => {
@@ -203,7 +196,7 @@ export default function AIProviders() {
     mutationLocks.current.add(key)
     setMutationPending(prev => ({ ...prev, [key]: true }))
     try {
-      await requireAcceptedResponse(await fetch(`/api/providers/${provider.id}`, { method: 'DELETE' }))
+      requireAccepted(await apiDelete(`/api/providers/${provider.id}`, { allowEmpty: true }))
       await loadData()
     } finally {
       mutationLocks.current.delete(key)
@@ -212,15 +205,11 @@ export default function AIProviders() {
   }
 
   const handleToggleEnabled = async (provider) => {
-    await runMutation(`enabled:${provider.id}`, () => fetch(`/api/providers/${provider.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...provider, enabled: !provider.enabled })
-    }), loadData)
+    await runMutation(`enabled:${provider.id}`, () => apiPut(`/api/providers/${provider.id}`, { ...provider, enabled: !provider.enabled }, { allowEmpty: true }), loadData)
   }
 
   const handleRefreshModels = async (id) => {
-    await runMutation(`refresh:${id}`, () => fetch(`/api/providers/${id}/refresh-models`, { method: 'POST' }), loadData)
+    await runMutation(`refresh:${id}`, () => apiPost(`/api/providers/${id}/refresh-models`, undefined, { allowEmpty: true }), loadData)
   }
 
   const handleExecuteRun = () => {
@@ -245,12 +234,12 @@ export default function AIProviders() {
   // operator presses Execute, so a rerun is always an explicit new run.
   const handleRerun = async (runId) => {
     setRunActionError('')
-    const response = await fetch(`/api/runs/${runId}/prompt`).catch(() => null)
-    if (!response?.ok) {
-      setRunActionError(`Could not load the original prompt${response ? ` (HTTP ${response.status})` : ''}.`)
+    const result = await apiGet(`/api/runs/${runId}/prompt`, { asText: true })
+    if (!result.ok) {
+      setRunActionError(`Could not load the original prompt${result.status ? ` (HTTP ${result.status})` : ''}.`)
       return
     }
-    setRunPrompt(await response.text())
+    setRunPrompt(result.data)
     setShowRunner(true)
   }
 
@@ -270,11 +259,7 @@ export default function AIProviders() {
   const handleAddSample = async (provider) => {
     if (provider.type !== 'api') return
     if (mutationLocks.current.has('sample-all')) return
-    await runMutation(`sample:${provider.id}`, () => fetch('/api/providers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(provider)
-    }), () => { setSampleProviders(prev => prev.filter(p => p.id !== provider.id)); loadData() })
+    await runMutation(`sample:${provider.id}`, () => apiPost('/api/providers', provider, { allowEmpty: true }), () => { setSampleProviders(prev => prev.filter(p => p.id !== provider.id)); loadData() })
   }
 
   const handleAddAllSamples = async () => {
@@ -282,12 +267,7 @@ export default function AIProviders() {
     let addedAny = false
     await runMutation('sample-all', async () => {
       for (const provider of sampleProviders.filter(sample => sample.type === 'api')) {
-        const response = await fetch('/api/providers', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(provider)
-        })
-        await requireAcceptedResponse(response)
+        requireAccepted(await apiPost('/api/providers', provider, { allowEmpty: true }))
         addedAny = true
         setSampleProviders(prev => prev.filter(sample => sample.id !== provider.id))
       }
@@ -821,10 +801,9 @@ function ProviderForm({ provider, onClose, onSave }) {
     }
 
     try {
-      const response = provider
-        ? await fetch(`/api/providers/${provider.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
-        : await fetch('/api/providers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
-      await requireAcceptedResponse(response)
+      requireAccepted(provider
+        ? await apiPut(`/api/providers/${provider.id}`, data, { allowEmpty: true })
+        : await apiPost('/api/providers', data, { allowEmpty: true }))
       onSave()
     } catch (submitError) {
       setError(submitError.message || 'The provider could not be saved. Please try again.')
