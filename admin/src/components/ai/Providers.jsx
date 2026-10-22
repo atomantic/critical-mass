@@ -1,3 +1,4 @@
+import { TOUCH_TARGET } from '../ui/touchTarget'
 import { useState, useEffect, useRef, useId } from 'react'
 import ModalDialog from '../ModalDialog'
 import DestructiveConfirmation from '../DestructiveConfirmation'
@@ -303,19 +304,19 @@ export default function AIProviders() {
         <div className="flex flex-wrap gap-2">
           <button
             onClick={handleLoadSamples}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-sm"
+            className={`${TOUCH_TARGET} px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-sm`}
           >
             {loadingSamples ? 'Loading...' : 'Load Samples'}
           </button>
           <button
             onClick={() => setShowRunner(!showRunner)}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm"
+            className={`${TOUCH_TARGET} px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm`}
           >
             {showRunner ? 'Hide Runner' : 'Run Prompt'}
           </button>
           <button
             onClick={() => { setEditingProvider(null); setShowForm(true) }}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-sm"
+            className={`${TOUCH_TARGET} px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-sm`}
           >
             Add Provider
           </button>
@@ -358,7 +359,7 @@ export default function AIProviders() {
             <button
               onClick={handleExecuteRun}
               disabled={!runPrompt.trim() || !activeProviderId || !!runningId || runPending}
-              className="px-6 py-2 bg-green-800 hover:bg-green-900 text-white rounded-lg transition-colors disabled:opacity-50 text-sm"
+              className={`${TOUCH_TARGET} px-6 py-2 bg-green-800 hover:bg-green-900 text-white rounded-lg transition-colors disabled:opacity-50 text-sm`}
             >
               {runningId || runPending ? 'Running...' : 'Execute'}
             </button>
@@ -366,7 +367,7 @@ export default function AIProviders() {
               <button
                 onClick={() => handleStopRun()}
                 disabled={stopPending}
-                className="px-4 py-2 bg-red-700 hover:bg-red-800 text-white rounded-lg transition-colors text-sm disabled:opacity-50"
+                className={`${TOUCH_TARGET} px-4 py-2 bg-red-700 hover:bg-red-800 text-white rounded-lg transition-colors text-sm disabled:opacity-50`}
               >
                 {stopPending ? 'Stopping...' : runNotice?.kind === RUN_NOTICE.STOP ? 'Retry Stop' : 'Stop'}
               </button>
@@ -386,7 +387,7 @@ export default function AIProviders() {
               {runNotice.kind === RUN_NOTICE.READ && (
                 <button
                   onClick={() => lifecycleRef.current.refresh()}
-                  className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm shrink-0"
+                  className={`${TOUCH_TARGET} px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm shrink-0`}
                 >
                   Retry
                 </button>
@@ -411,13 +412,13 @@ export default function AIProviders() {
               <button
                 onClick={handleAddAllSamples}
                 disabled={Boolean(mutationPending['sample-all'] || Object.keys(mutationPending).some(key => key.startsWith('sample:') && mutationPending[key]))}
-                className="px-4 py-1.5 bg-green-800 hover:bg-green-900 text-white rounded-lg transition-colors text-sm"
+                className={`${TOUCH_TARGET} px-4 py-1.5 bg-green-800 hover:bg-green-900 text-white rounded-lg transition-colors text-sm`}
               >
                 {mutationPending['sample-all'] ? 'Adding...' : `Add All (${sampleProviders.length})`}
               </button>
               <button
                 onClick={() => setShowSamples(false)}
-                className="px-3 py-1.5 text-sm text-gray-400 hover:text-white"
+                className={`${TOUCH_TARGET} px-3 py-1.5 text-sm text-gray-400 hover:text-white`}
               >
                 Close
               </button>
@@ -453,7 +454,7 @@ export default function AIProviders() {
                 <button
                   onClick={() => handleAddSample(sp)}
                   disabled={Boolean(mutationPending[`sample:${sp.id}`] || mutationPending['sample-all'])}
-                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm disabled:opacity-50 shrink-0"
+                  className={`${TOUCH_TARGET} px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm disabled:opacity-50 shrink-0`}
                 >
                   {mutationPending[`sample:${sp.id}`] ? 'Adding...' : 'Add'}
                 </button>
@@ -467,8 +468,8 @@ export default function AIProviders() {
         <div role="alert" className="bg-gray-800 border border-gray-700 rounded-xl p-4 text-center">
           <p className="text-red-400">{samplesError}</p>
           <div className="mt-2 flex justify-center gap-4">
-            <button onClick={handleLoadSamples} className="text-sm text-indigo-400 hover:text-indigo-300">Retry</button>
-            <button onClick={() => setShowSamples(false)} className="text-sm text-gray-400 hover:text-white">Close</button>
+            <button onClick={handleLoadSamples} className={`${TOUCH_TARGET} text-sm text-indigo-400 hover:text-indigo-300`}>Retry</button>
+            <button onClick={() => setShowSamples(false)} className={`${TOUCH_TARGET} text-sm text-gray-400 hover:text-white`}>Close</button>
           </div>
         </div>
       )}
@@ -476,7 +477,7 @@ export default function AIProviders() {
       {showSamples && !samplesError && sampleProviders.length === 0 && !loadingSamples && (
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 text-center">
           <p className="text-gray-400">No supported API sample providers are available.</p>
-          <button onClick={() => setShowSamples(false)} className="mt-2 text-sm text-indigo-400 hover:text-indigo-300">Close</button>
+          <button onClick={() => setShowSamples(false)} className={`${TOUCH_TARGET} mt-2 text-sm text-indigo-400 hover:text-indigo-300`}>Close</button>
         </div>
       )}
 
@@ -485,7 +486,7 @@ export default function AIProviders() {
           <span>{providersLoaded ? `${providersError} Showing the last loaded providers.` : providersError}</span>
           <button
             onClick={loadData}
-            className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm shrink-0"
+            className={`${TOUCH_TARGET} px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm shrink-0`}
           >
             Retry
           </button>
@@ -559,7 +560,7 @@ export default function AIProviders() {
                   <button
                     onClick={() => handleTest(provider.id)}
                     disabled={testResults[provider.id]?.testing}
-                    className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors disabled:opacity-50"
+                    className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors disabled:opacity-50`}
                   >
                     {testResults[provider.id]?.testing ? 'Testing...' : 'Test'}
                   </button>
@@ -569,7 +570,7 @@ export default function AIProviders() {
                   <button
                     onClick={() => handleRefreshModels(provider.id)}
                     disabled={Boolean(mutationPending[`refresh:${provider.id}`])}
-                    className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors"
+                    className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors`}
                   >
                     Refresh
                   </button>
@@ -579,7 +580,7 @@ export default function AIProviders() {
                   <button
                     onClick={() => handleToggleEnabled(provider)}
                     disabled={Boolean(mutationPending[`enabled:${provider.id}`])}
-                    className={`px-3 py-1.5 text-sm rounded transition-colors ${
+                    className={`${TOUCH_TARGET} px-3 py-1.5 text-sm rounded transition-colors ${
                       provider.enabled
                         ? 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30'
                         : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
@@ -593,7 +594,7 @@ export default function AIProviders() {
                   <button
                     onClick={() => handleSetActive(provider.id)}
                     disabled={Boolean(mutationPending.active)}
-                    className="px-3 py-1.5 text-sm bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 rounded-sm transition-colors"
+                    className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 rounded-sm transition-colors`}
                   >
                     Set Default
                   </button>
@@ -601,7 +602,7 @@ export default function AIProviders() {
 
                 <button
                   onClick={() => { setEditingProvider(provider); setShowForm(true) }}
-                  className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors"
+                  className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors`}
                 >
                   Edit
                 </button>
@@ -609,7 +610,7 @@ export default function AIProviders() {
                 <button
                   onClick={() => setDeleteProvider(provider)}
                   disabled={Boolean(mutationPending[`delete:${provider.id}`])}
-                  className="px-3 py-1.5 text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-sm transition-colors"
+                  className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-sm transition-colors`}
                 >
                   Delete
                 </button>
@@ -623,7 +624,7 @@ export default function AIProviders() {
             <p>No providers configured.</p>
             <button
               onClick={handleLoadSamples}
-              className="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm"
+              className={`${TOUCH_TARGET} mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm`}
             >
               Load Sample Providers
             </button>
@@ -637,7 +638,7 @@ export default function AIProviders() {
           <span>{runs.length > 0 ? `${runsError} Showing the last loaded runs.` : runsError}</span>
           <button
             onClick={loadData}
-            className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm shrink-0"
+            className={`${TOUCH_TARGET} px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm shrink-0`}
           >
             Retry
           </button>
@@ -676,7 +677,7 @@ export default function AIProviders() {
                     <button
                       onClick={() => handleAttachRun(run.id)}
                       disabled={attached}
-                      className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors disabled:opacity-50"
+                      className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors disabled:opacity-50`}
                     >
                       {status === 'active' ? (attached ? 'Attached' : 'Attach') : 'View'}
                     </button>
@@ -684,7 +685,7 @@ export default function AIProviders() {
                       <button
                         onClick={() => handleStopRun(run.id)}
                         disabled={stopPending}
-                        className="px-3 py-1.5 text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-sm transition-colors disabled:opacity-50"
+                        className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-sm transition-colors disabled:opacity-50`}
                       >
                         Stop
                       </button>
@@ -693,7 +694,7 @@ export default function AIProviders() {
                       <button
                         onClick={() => handleRerun(run.id)}
                         title="Load the full original prompt into the runner; nothing runs until Execute"
-                        className="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors"
+                        className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors`}
                       >
                         Rerun
                       </button>
@@ -953,10 +954,10 @@ function ProviderForm({ provider, onClose, onSave }) {
           </label>
 
           <div className="flex justify-end gap-3 pt-4">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-gray-400 hover:text-white">
+            <button type="button" onClick={onClose} className={`${TOUCH_TARGET} px-4 py-2 text-gray-400 hover:text-white`}>
               Cancel
             </button>
-            <button type="submit" disabled={pending} className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50">
+            <button type="submit" disabled={pending} className={`${TOUCH_TARGET} px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50`}>
               {pending ? 'Saving...' : provider ? 'Save' : 'Create'}
             </button>
           </div>

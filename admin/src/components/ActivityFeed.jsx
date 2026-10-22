@@ -1,3 +1,4 @@
+import { TOUCH_TARGET } from './ui/touchTarget'
 import { useState } from 'react'
 import { useTradeEvents } from '../hooks/useTradeEvents'
 
@@ -50,14 +51,14 @@ function ActivityFeed({ exchange = null, maxEvents = 10, showWhenEmpty = true })
             {events.length > maxEvents && (
               <button
                 onClick={() => setExpanded(!expanded)}
-                className="text-xs text-gray-400 hover:text-white"
+                className={`${TOUCH_TARGET} px-2 py-2 -ml-2 text-xs text-gray-400 hover:text-white`}
               >
                 {expanded ? 'Show less' : `Show all (${events.length})`}
               </button>
             )}
             <button
               onClick={clearEvents}
-              className="text-xs text-gray-400 hover:text-white"
+              className={`${TOUCH_TARGET} px-2 py-2 -mr-2 text-xs text-gray-400 hover:text-white`}
             >
               Clear
             </button>

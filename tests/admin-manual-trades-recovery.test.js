@@ -98,6 +98,7 @@ function createView(respond) {
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../utils/pnlFormat.mjs': { pnlColorClass: n => (n >= 0 ? 'text-green-400' : 'text-red-400'), signedPrefix: n => (n >= 0 ? '+' : '') },
     '../App': { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' },
+    './ui/touchTarget': { TOUCH_TARGET: 'min-h-11' },
     '../utils/unaccountedFillsScan.mjs': { runUnaccountedFillsScan: async () => ({ status: 'cancelled' }), describeScanProgress: () => '' },
   }
   const exports = {}

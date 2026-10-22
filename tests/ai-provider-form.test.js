@@ -51,6 +51,7 @@ function createView(providers = [], activeProvider = null, runs = [], samples = 
   const context = vm.createContext({ React, exports, module: { exports }, fetch,
     require: name => {
       if (name === 'react') return hooks
+      if (name === '../ui/touchTarget') return { TOUCH_TARGET: 'min-h-11' }
       if (name === '../ModalDialog') return { default: ({ children }) => children }
       if (name === '../DestructiveConfirmation') return { default: ({ children }) => children }
       if (name === '../../utils/apiClient') return apiClientStub(fetch)

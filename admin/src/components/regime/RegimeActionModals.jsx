@@ -1,3 +1,4 @@
+import { TOUCH_TARGET } from '../ui/touchTarget'
 import React from 'react'
 import ModalDialog from '../ModalDialog'
 import { plural } from '../../utils/plural.mjs'
@@ -80,7 +81,7 @@ const RegimeActionModals = ({
           </p>
           <div className="flex justify-end gap-3">
             <button
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
               onClick={() => onDismissCancelLadder()}
               disabled={cancellingLadder}
               autoFocus
@@ -88,7 +89,7 @@ const RegimeActionModals = ({
               Keep ladder
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded-sm transition-colors disabled:opacity-50"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded-sm transition-colors disabled:opacity-50`}
               onClick={onExecuteCancelLadder}
               disabled={cancellingLadder}
             >
@@ -115,7 +116,7 @@ const RegimeActionModals = ({
           </p>
           <div className="flex justify-end gap-3">
             <button
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
               onClick={() => onDismissCollapseAll()}
               disabled={collapsingAll}
               autoFocus
@@ -123,7 +124,7 @@ const RegimeActionModals = ({
               Keep bodies
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-amber-600 hover:bg-amber-500 rounded-sm transition-colors disabled:opacity-50"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-amber-600 hover:bg-amber-500 rounded-sm transition-colors disabled:opacity-50`}
               onClick={onExecuteCollapseAll}
               disabled={collapsingAll}
             >
@@ -150,7 +151,7 @@ const RegimeActionModals = ({
           </p>
           <div className="flex justify-end gap-3">
             <button
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
               onClick={() => onDismissResetCycle()}
               disabled={resettingCycle}
               autoFocus
@@ -158,7 +159,7 @@ const RegimeActionModals = ({
               Cancel
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded-sm transition-colors disabled:opacity-50"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded-sm transition-colors disabled:opacity-50`}
               onClick={onExecuteResetCycle}
               disabled={resettingCycle}
             >
@@ -190,7 +191,7 @@ const RegimeActionModals = ({
           </p>
           <div className="flex justify-end gap-3">
             <button
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
               onClick={() => onDismissIntent()}
               disabled={reconcilingIntent}
               autoFocus
@@ -198,7 +199,7 @@ const RegimeActionModals = ({
               Cancel
             </button>
             <button
-              className={`px-4 py-2 text-sm text-white rounded-sm transition-colors disabled:opacity-50 ${intentConfirm.action === 'adopt' ? 'bg-blue-600 hover:bg-blue-500' : 'bg-amber-600 hover:bg-amber-500'}`}
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white rounded-sm transition-colors disabled:opacity-50 ${intentConfirm.action === 'adopt' ? 'bg-blue-600 hover:bg-blue-500' : 'bg-amber-600 hover:bg-amber-500'}`}
               onClick={onExecuteIntent}
               disabled={reconcilingIntent}
             >
@@ -223,14 +224,14 @@ const RegimeActionModals = ({
           </p>
           <div className="flex justify-end gap-3">
             <button
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
               onClick={() => onDismissResumeDrawdown()}
               autoFocus
             >
               Cancel
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-green-800 hover:bg-green-900 rounded-sm transition-colors"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-green-800 hover:bg-green-900 rounded-sm transition-colors`}
               onClick={onExecuteResumeDrawdown}
             >
               Resume Trading
@@ -256,7 +257,7 @@ const RegimeActionModals = ({
           </p>
           <div className="flex justify-end gap-3">
             <button
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
               onClick={() => onDismissRollUp()}
               disabled={rollingUp}
               autoFocus
@@ -264,7 +265,7 @@ const RegimeActionModals = ({
               Keep separate
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded-sm transition-colors disabled:opacity-50"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded-sm transition-colors disabled:opacity-50`}
               onClick={() => onExecuteRollUp(rollUpConfirm.bodyId)}
               disabled={rollingUp}
             >
@@ -288,13 +289,13 @@ const RegimeActionModals = ({
           {/* Mode tabs */}
           <div className="flex mb-3 border border-gray-600 rounded-sm overflow-hidden">
             <button
-              className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${tpEditModal.mode === 'pct' ? 'bg-cyan-800 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'}`}
+              className={`${TOUCH_TARGET} flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${tpEditModal.mode === 'pct' ? 'bg-cyan-800 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'}`}
               onClick={() => onSetTpMode('pct')}
             >
               Percentage
             </button>
             <button
-              className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${tpEditModal.mode === 'price' ? 'bg-cyan-800 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'}`}
+              className={`${TOUCH_TARGET} flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${tpEditModal.mode === 'price' ? 'bg-cyan-800 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'}`}
               onClick={() => onSetTpMode('price')}
             >
               Limit Price
@@ -367,7 +368,7 @@ const RegimeActionModals = ({
           )}
           <div className="flex justify-end gap-3 mt-4">
             <button
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
               onClick={() => onDismissSetTp()}
               disabled={settingTp}
             >
@@ -375,7 +376,7 @@ const RegimeActionModals = ({
             </button>
             {tpEditModal.mode === 'pct' ? (
               <button
-                className="px-4 py-2 text-sm text-white bg-cyan-700 hover:bg-cyan-600 rounded-sm transition-colors disabled:opacity-50"
+                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-cyan-700 hover:bg-cyan-600 rounded-sm transition-colors disabled:opacity-50`}
                 onClick={() => onExecuteSetTp('pct')}
                 disabled={settingTp || !tpEditModal.inputValue || parseFloat(tpEditModal.inputValue) <= 0}
               >
@@ -383,7 +384,7 @@ const RegimeActionModals = ({
               </button>
             ) : (
               <button
-                className="px-4 py-2 text-sm text-white bg-cyan-700 hover:bg-cyan-600 rounded-sm transition-colors disabled:opacity-50"
+                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-cyan-700 hover:bg-cyan-600 rounded-sm transition-colors disabled:opacity-50`}
                 onClick={() => onExecuteSetTp('price')}
                 disabled={settingTp || !tpEditModal.priceValue || parseFloat(tpEditModal.priceValue) <= (tpEditModal.avgPrice || 0)}
               >
@@ -453,7 +454,7 @@ const RegimeActionModals = ({
           </p>
           <div className="flex justify-end gap-3">
             <button
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
               onClick={() => onDismissConvert()}
               disabled={converting}
               autoFocus
@@ -461,7 +462,7 @@ const RegimeActionModals = ({
               Cancel
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded-sm transition-colors disabled:opacity-50"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded-sm transition-colors disabled:opacity-50`}
               onClick={onExecuteConvert}
               disabled={converting}
             >

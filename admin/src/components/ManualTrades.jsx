@@ -1,3 +1,4 @@
+import { TOUCH_TARGET } from './ui/touchTarget'
 import { Fragment, useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { formatCurrency, formatPrice, formatDateTime } from './charts/chartUtils'
 import { pairQuery as buildPairQuery } from '../utils/api'
@@ -428,7 +429,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
           onClick={handleExpand}
           aria-expanded={expanded}
           aria-controls="manual-trades-content"
-          className="flex items-center gap-2 p-0 bg-transparent border-0 text-gray-300 hover:text-gray-100 transition-colors focus:outline-hidden focus:ring-2 focus:ring-purple-400 focus:ring-offset-2 focus:ring-offset-gray-800 rounded-sm"
+          className={`${TOUCH_TARGET} flex items-center gap-2 p-0 bg-transparent border-0 text-gray-300 hover:text-gray-100 transition-colors focus:outline-hidden focus:ring-2 focus:ring-purple-400 focus:ring-offset-2 focus:ring-offset-gray-800 rounded-sm`}
         >
           <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>&#9654;</span>
           Manual Trades
@@ -663,7 +664,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                       No {importModal.side === 'buy' ? 'sell' : 'buy'} orders available to pair with.
                     </p>
                   ) : (
-                    <div className="mb-3 max-h-48 overflow-y-auto">
+                    <div className="mb-3 max-h-48 overflow-y-auto overflow-x-auto">
                       <table className="w-full text-xs">
                         <thead className="sticky top-0 bg-gray-800">
                           <tr className="text-gray-400 text-left">

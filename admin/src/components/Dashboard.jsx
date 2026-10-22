@@ -1,3 +1,4 @@
+import { TOUCH_TARGET } from './ui/touchTarget'
 import { getIntervalMs } from '../utils/intervals.mjs'
 import { plural } from '../utils/plural.mjs'
 import { fetchConvertPreview } from './regime/useDcaConversion'
@@ -611,7 +612,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
           </p>
           <div className="flex justify-end gap-3">
             <button
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
               onClick={() => setShowConvertConfirm(false)}
               disabled={converting}
               autoFocus
@@ -619,7 +620,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
               Cancel
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded-sm transition-colors disabled:opacity-50"
+              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded-sm transition-colors disabled:opacity-50`}
               onClick={handleExecuteExport}
               disabled={converting}
             >
