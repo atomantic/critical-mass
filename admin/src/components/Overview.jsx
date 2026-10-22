@@ -8,6 +8,7 @@ import AddFundModal from './AddFundModal'
 import ClosedFundCard from './ClosedFundCard'
 import { EXCHANGE_ICONS, EXCHANGE_COLORS } from './exchangeStyles'
 import { REGIME_COLORS, HEALTH_COLORS } from './regime/regimeStyles'
+import { apiGet } from '../utils/apiClient'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
 
@@ -37,15 +38,9 @@ function Overview() {
   const { statuses: wsStatuses, connected } = useMultiRegimeStatuses()
 
   const refreshExchanges = async () => {
-    try {
-      const res = await fetch('/api/exchanges')
-      if (res.ok) {
-        const data = await res.json().catch(() => ({}))
-        setExchanges(data.exchanges || [])
-      }
-    } catch {
-      // Network hiccup — the existing exchange list stays as-is; caller UI isn't gated on this.
-    }
+    // A failed read leaves the existing exchange list as-is; caller UI isn't gated on this.
+    const result = await apiGet('/api/exchanges')
+    if (result.ok) setExchanges(result.data.exchanges || [])
   }
 
   // Per-fund key used in statusMap. The /api/exchanges response now returns
@@ -58,23 +53,17 @@ function Overview() {
   const load = async () => {
     setLoading(true)
     try {
-      const res = await fetch('/api/exchanges')
+      const res = await apiGet('/api/exchanges')
       if (!res.ok) throw new Error(`Exchange list request failed (HTTP ${res.status})`)
-      const data = await res.json()
-      const exchangeList = data.exchanges || []
+      const exchangeList = res.data.exchanges || []
       setExchanges(exchangeList)
       setExchangesError(null)
 
       const entries = await Promise.all(exchangeList.map(async (ex) => {
-        try {
-          const pairParam = ex.pair || ex.productId || ''
-          const r = await fetch(`/api/${ex.name}/regime/status?pair=${encodeURIComponent(pairParam)}`)
-          if (!r.ok) return [fundKey(ex), null, 'error']
-          const d = await r.json()
-          return [fundKey(ex), d.status || null, d.status ? 'ok' : 'error']
-        } catch {
-          return [fundKey(ex), null, 'error']
-        }
+        const pairParam = ex.pair || ex.productId || ''
+        const r = await apiGet(`/api/${ex.name}/regime/status?pair=${encodeURIComponent(pairParam)}`)
+        if (!r.ok) return [fundKey(ex), null, 'error']
+        return [fundKey(ex), r.data.status || null, r.data.status ? 'ok' : 'error']
       }))
       setStatusMap(Object.fromEntries(entries.map(([key, status]) => [key, status])))
       setStatusState(Object.fromEntries(entries.map(([key, , state]) => [key, state])))

@@ -3,6 +3,7 @@ import { plural } from '../utils/plural.mjs'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
+import { apiGet } from '../utils/apiClient'
 
 function CostBasisRegime({ exchange = 'coinbase', pair }) {
   const [status, setStatus] = useState(null)
@@ -25,9 +26,9 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
     session.controller = controller
 
     const read = async (endpoint, name) => {
-      const response = await fetch(`/api/${exchange}/${endpoint}${pairQuery}`, { signal: controller.signal })
-      if (!response.ok) throw new Error(`${name} fetch failed: HTTP ${response.status}`)
-      return response.json()
+      const result = await apiGet(`/api/${exchange}/${endpoint}${pairQuery}`, { signal: controller.signal })
+      if (!result.ok) throw new Error(result.status ? `${name} fetch failed: HTTP ${result.status}` : result.error)
+      return result.data
     }
 
     try {
