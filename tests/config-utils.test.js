@@ -1860,3 +1860,25 @@ describe('fund deletion tombstones', () => {
     }
   });
 });
+
+describe('requireFundPair', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('returns an explicit pair as-is', (t) => {
+    setupPublishedConfig(t, { base: TOMBSTONE_BASE });
+    assert.equal(configUtils.requireFundPair('coinbase', 'ETH-USDC'), 'ETH-USDC');
+  });
+
+  it('falls back to the exchange default pair when omitted', (t) => {
+    setupPublishedConfig(t, { base: TOMBSTONE_BASE });
+    for (const empty of [undefined, null, '']) {
+      assert.equal(configUtils.requireFundPair('coinbase', empty), 'BTC-USDC');
+    }
+  });
+
+  it('throws (no "default" placeholder) when there is no pair and no default fund', (t) => {
+    setupPublishedConfig(t, { base: TOMBSTONE_BASE });
+    assert.throws(() => configUtils.requireFundPair('nonexistent-exchange'),
+      /No configured fund pair for nonexistent-exchange/);
+  });
+});
