@@ -8,7 +8,7 @@ export default function FillTimeStats({ fillTimeStats, effectiveStaleMs, orderSt
         <div className="bg-gray-800 rounded-lg p-3">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-medium text-gray-400">Fill Time Stats (7d)</h3>
-            <span className="text-[10px] text-gray-400">
+            <span className="text-2xs text-gray-400">
               {plural(fillTimeStats.count, "fill")}
             </span>
           </div>
@@ -29,7 +29,7 @@ export default function FillTimeStats({ fillTimeStats, effectiveStaleMs, orderSt
               </div>
             </div>
 
-            <div className="flex justify-between text-[10px]">
+            <div className="flex justify-between text-2xs">
               <span className="text-gray-400">
                 Range: {(fillTimeStats.minMs / 1000).toFixed(1)}s - {(fillTimeStats.maxMs / 1000).toFixed(1)}s
               </span>
@@ -39,7 +39,7 @@ export default function FillTimeStats({ fillTimeStats, effectiveStaleMs, orderSt
             </div>
 
             {effectiveStaleMs && (
-              <div className="text-[10px] text-gray-400 pt-1 border-t border-gray-700">
+              <div className="text-2xs text-gray-400 pt-1 border-t border-gray-700">
                 Timeout: {(effectiveStaleMs / 1000).toFixed(1)}s
                 {effectiveStaleMs !== orderStaleMs && (
                   <span className="text-purple-400 ml-1">(regime-adjusted)</span>

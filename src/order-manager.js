@@ -4,7 +4,7 @@ const { createContextLogger } = require('./logger');
 const { getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
 const { PLACEMENT_RETRY_DELAY_MS } = require('./timing-constants');
 const { getBaseCurrency } = require('./config-utils');
-const { isFilledStatus } = require('./shared-utils');
+const { isFilledStatus, sleep } = require('./shared-utils');
 const {
   getBlockingPlacementIntents,
   recordPlacementIntent,
@@ -76,7 +76,7 @@ const safeGetOrderFillSummary = async (adapter, orderId, { retries = 2, retryDel
     } catch (err) {
       lastErr = err;
       if (attempt < retries) {
-        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+        await sleep(retryDelayMs);
       }
     }
   }
@@ -145,7 +145,7 @@ const awaitBuyOutcome = async (orderId, adapter, { maxAttempts = BUY_FILL_POLL.m
   let statusReadFailures = 0;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    if (attempt > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
+    if (attempt > 0) await sleep(delayMs);
 
     let order;
     try {
@@ -486,7 +486,7 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
       return null;
     });
     if (lookupError || found || attempt >= retryDelaysMs.length) break;
-    await new Promise((r) => setTimeout(r, retryDelaysMs[attempt]));
+    await sleep(retryDelaysMs[attempt]);
   }
 
   if (lookupError) {
@@ -804,7 +804,7 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
       priceMultiplier += 0.01;
     }
 
-    await new Promise(resolve => setTimeout(resolve, PLACEMENT_RETRY_DELAY_MS));
+    await sleep(PLACEMENT_RETRY_DELAY_MS);
   }
 
   throw new Error(`Failed to place sell order after ${maxRetries} attempts: ${lastError}`);

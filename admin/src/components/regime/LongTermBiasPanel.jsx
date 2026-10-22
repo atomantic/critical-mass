@@ -63,11 +63,11 @@ export default function LongTermBiasPanel({ bias, config, presets, exchange, pai
           <h3 className="text-xs font-medium text-gray-400">
             Long-Term Bias<ConfigTooltip tip={LONG_TERM_BIAS_TOOLTIP} align="left" width="w-80" />
           </h3>
-          <span className={`px-1.5 py-0.5 rounded-sm text-[10px] ${healthStyle.bg} ${healthStyle.text}`}>
+          <span className={`px-1.5 py-0.5 rounded-sm text-2xs ${healthStyle.bg} ${healthStyle.text}`}>
             {healthStyle.label}
           </span>
         </div>
-        <div className="text-[10px] text-gray-400">
+        <div className="text-2xs text-gray-400">
           Need ≥30 daily candles. Currently have {bias.sampleSize || 0}.
           {bias.cache?.lastRefresh ? ` Last refresh ${new Date(bias.cache.lastRefresh).toLocaleTimeString()}.` : ' Refreshing...'}
         </div>
@@ -85,10 +85,10 @@ export default function LongTermBiasPanel({ bias, config, presets, exchange, pai
           Long-Term Bias<ConfigTooltip tip={LONG_TERM_BIAS_TOOLTIP} align="left" width="w-80" />
         </h3>
         <div className="flex items-center gap-1">
-          <span className={`px-1.5 py-0.5 rounded-sm text-[10px] ${healthStyle.bg} ${healthStyle.text}`}>
+          <span className={`px-1.5 py-0.5 rounded-sm text-2xs ${healthStyle.bg} ${healthStyle.text}`}>
             {healthStyle.label}
           </span>
-          <span className="px-1.5 py-0.5 rounded-sm text-[10px] bg-gray-900 text-gray-400 border border-gray-700">
+          <span className="px-1.5 py-0.5 rounded-sm text-2xs bg-gray-900 text-gray-400 border border-gray-700">
             Advisory
           </span>
         </div>
@@ -96,7 +96,7 @@ export default function LongTermBiasPanel({ bias, config, presets, exchange, pai
 
       {/* Score bar */}
       <div className="mb-2">
-        <div className="flex items-center justify-between text-[10px] text-gray-400 mb-0.5">
+        <div className="flex items-center justify-between text-2xs text-gray-400 mb-0.5">
           <span>Depression Score</span>
           <span className={`font-mono ${suggestedStyle.text}`}>{scorePct}/100</span>
         </div>
@@ -115,7 +115,7 @@ export default function LongTermBiasPanel({ bias, config, presets, exchange, pai
           <span className={`font-semibold ${suggestedStyle.text}`}>{suggestedStyle.label}</span>
         </div>
         {currentLevel && (
-          <div className="flex items-center justify-between text-[10px] text-gray-400 mt-0.5">
+          <div className="flex items-center justify-between text-2xs text-gray-400 mt-0.5">
             <span>Current</span>
             <span>
               {currentLabel}
@@ -129,7 +129,7 @@ export default function LongTermBiasPanel({ bias, config, presets, exchange, pai
             onClick={handleApplySuggested}
             disabled={applying}
             title={`Apply ${suggestedLabel} preset to ${exchange}`}
-            className={`mt-2 w-full px-2 py-1 text-[11px] font-medium rounded-sm border transition-all ${suggestedStyle.border} ${suggestedStyle.text} hover:bg-gray-900/60 ${applying ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+            className={`mt-2 w-full px-2 py-1 text-2xs font-medium rounded-sm border transition-all ${suggestedStyle.border} ${suggestedStyle.text} hover:bg-gray-900/60 ${applying ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
           >
             {applying ? 'Applying…' : `Apply Suggested (${suggestedLabel})`}
           </button>

@@ -485,7 +485,7 @@ function FilledOrdersSection({ fillsUnavailable = false, retry, liveFills, fillA
                             {fillSearchId ? cycle.sells.length : cycle.sellCount ?? cycle.sells.length} {(fillSearchId ? cycle.sells.length : cycle.sellCount ?? cycle.sells.length) === 1 ? 'sell' : 'sells'}, {cycle.buyCount} {cycle.buyCount === 1 ? 'buy' : 'buys'}
                           </span>
                           {cycle.minTs < Infinity && (
-                            <span className="text-[10px] text-gray-400 font-mono">
+                            <span className="text-2xs text-gray-400 font-mono">
                               {new Date(cycle.minTs).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                               {cycle.maxTs > cycle.minTs && ` – ${new Date(cycle.maxTs).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`}
                             </span>

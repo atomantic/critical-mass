@@ -189,7 +189,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
             title={`Daily SMAs — 50: $${dailySMA.sma50?.toFixed(0)} | 100: $${dailySMA.sma100?.toFixed(0)} | 200: $${dailySMA.sma200?.toFixed(0)} | Price vs SMA200: ${dailySMA.priceVsSMA200?.toFixed(1)}% | ${dailySMA.goldenCross ? 'Golden Cross (50>200)' : dailySMA.deathCross ? 'Death Cross (50<200)' : 'No cross'}`}
           >
             {dailySMA.goldenCross ? 'GC' : dailySMA.deathCross ? 'DC' : 'SMA'}
-            <span className="ml-1 text-[10px] opacity-70">{signedPrefix(dailySMA.priceVsSMA200)}{dailySMA.priceVsSMA200?.toFixed(1)}%</span>
+            <span className="ml-1 text-2xs opacity-70">{signedPrefix(dailySMA.priceVsSMA200)}{dailySMA.priceVsSMA200?.toFixed(1)}%</span>
           </div>
         )}
 

@@ -61,7 +61,7 @@ const { createPlacementReconciler } = require('./regime-placement-reconciler');
 const celestialHierarchy = require('./celestial-hierarchy');
 const { createDryRunFillHandlers } = require('./regime-dry-run-fills');
 const { DEFAULT_FEE_RATE_PER_SIDE } = require('../shared/fee-defaults.mjs');
-const { fmtCurrency: fmtPrice, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement, sleep } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 const { DEFAULT_MAX_USDC_DEPLOYED } = require('./fund-defaults');
 const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
@@ -682,7 +682,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       for (;;) {
         const deadline = Date.now() + flashEntryWaitMs;
         while (engineLocks.isEntryInProgress() && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 25));
+          await sleep(25);
         }
         const placementInFlight = engineLocks.isEntryInProgress();
         if (placementInFlight) {
@@ -3939,7 +3939,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         `⏳ [${exchange}] No fills yet for ${fillData.orderId}, retrying in 2s (status shows ${fillData.filledSize} filled)`,
         { orderId: fillData.orderId, side: fillData.side, filledSize: fillData.filledSize, retryDelayMs: FILL_RETRY_DELAY_MS }
       );
-      await new Promise(r => setTimeout(r, FILL_RETRY_DELAY_MS));
+      await sleep(FILL_RETRY_DELAY_MS);
       try {
         rawFills = await adapter.getOrderFills(fillData.orderId);
       } catch (err) {
@@ -7306,7 +7306,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     let placed = await placeBodyTp(body);
     if (!placed && !body.tpOrderId) {
       logger.warn(`⚠️ [${exchange}] ${context} TP placement failed for body ${body.id.slice(-8)}, retrying after 1s...`);
-      await new Promise(r => setTimeout(r, PLACEMENT_RETRY_DELAY_MS));
+      await sleep(PLACEMENT_RETRY_DELAY_MS);
       placed = await placeBodyTp(body);
       if (!placed && !body.tpOrderId) {
         logger.error(

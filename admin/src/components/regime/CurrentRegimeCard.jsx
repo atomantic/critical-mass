@@ -9,10 +9,10 @@ export default function CurrentRegimeCard({ regime, healthMode, macroEnabled, ma
     <>
       <div className={`col-span-1 ${regimeStyle.bg} border ${regimeStyle.border} rounded-sm p-1.5`}>
         <div className="flex items-center justify-between">
-          <span className="text-[10px] text-gray-400">
+          <span className="text-2xs text-gray-400">
             Regime<ConfigTooltip tip={REGIME_TOOLTIPS.micro} align="left" width="w-80" />
           </span>
-          <span className={`${healthStyle.bg} ${healthStyle.text} px-1 py-0.5 rounded-sm text-[10px]`}>
+          <span className={`${healthStyle.bg} ${healthStyle.text} px-1 py-0.5 rounded-sm text-2xs`}>
             {healthMode || 'ACTIVE'}
           </span>
         </div>
@@ -25,13 +25,13 @@ export default function CurrentRegimeCard({ regime, healthMode, macroEnabled, ma
           const ltStyle = lt?.ready ? SUGGESTED_LEVEL_STYLES[lt.suggestedLevel] : null
           return (
             <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-              <span className={`px-1 py-0.5 rounded-sm text-[10px] ${macroStyle.bg} border ${macroStyle.border} ${macroStyle.text}`}>
+              <span className={`px-1 py-0.5 rounded-sm text-2xs ${macroStyle.bg} border ${macroStyle.border} ${macroStyle.text}`}>
                 {macroStyle.label}
               </span>
-              <span className="text-[10px] text-gray-400">{macro.score?.toFixed(0)}</span>
+              <span className="text-2xs text-gray-400">{macro.score?.toFixed(0)}</span>
               {ltStyle && (
                 <span
-                  className={`px-1 py-0.5 rounded-sm text-[10px] ${ltStyle.bg} border ${ltStyle.border} ${ltStyle.text}`}
+                  className={`px-1 py-0.5 rounded-sm text-2xs ${ltStyle.bg} border ${ltStyle.border} ${ltStyle.text}`}
                   title={`Long-term bias: ${(lt.score * 100).toFixed(0)}/100 — suggests ${ltStyle.label}`}
                 >
                   🤖 {ltStyle.label}
@@ -40,7 +40,7 @@ export default function CurrentRegimeCard({ regime, healthMode, macroEnabled, ma
             </div>
           )
         })() : (
-          <div className="text-[10px] text-gray-400">
+          <div className="text-2xs text-gray-400">
             Since {regime.since ? new Date(regime.since).toLocaleTimeString() : '-'}
           </div>
         )}

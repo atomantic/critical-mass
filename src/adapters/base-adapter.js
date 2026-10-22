@@ -182,7 +182,8 @@ const createBaseAdapter = (exchangeName) => ({
   },
 });
 
-const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// The one shared sleep (#1605); exported so adapters can inject/override it in tests.
+const { sleep: defaultSleep } = require('../shared-utils');
 
 /**
  * Await `waitPromise` (if any) and, when running inside a

@@ -449,9 +449,9 @@ function Overview() {
                       {signedPrefix(card.unrealizedPct)}{card.unrealizedPct.toFixed(2)}%
                     </div>
                   )}
-                  {card.totalCostBasis > 0 && <div className="text-[10px] text-gray-400">if sold now</div>}
+                  {card.totalCostBasis > 0 && <div className="text-2xs text-gray-400">if sold now</div>}
                   {card.expectedCycleGain > 0 && (
-                    <div className="text-[10px] text-cyan-400 font-mono truncate">+{formatCurrency(card.expectedCycleGain)} at target</div>
+                    <div className="text-2xs text-cyan-400 font-mono truncate">+{formatCurrency(card.expectedCycleGain)} at target</div>
                   )}
                 </div>
                 <div className="min-w-0">
@@ -491,25 +491,25 @@ function Overview() {
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="bg-green-900/20 border border-green-700/30 rounded-sm p-1.5 min-w-0 overflow-hidden">
-                      <div className="text-green-400/70 text-[10px]">Daily ({card.dailyReturnPercent.toFixed(2)}%)</div>
+                      <div className="text-green-400/70 text-2xs">Daily ({card.dailyReturnPercent.toFixed(2)}%)</div>
                       <div className="font-mono text-xs text-green-400 truncate">
                         {formatCurrency(card.estimatedDailyUsdc + (card.estimatedDailyAsset * card.lastPrice))}
                       </div>
-                      <div className="text-white text-[10px] font-mono truncate">{formatCurrency(card.estimatedDailyUsdc)} {card.quoteCurrency}</div>
+                      <div className="text-white text-2xs font-mono truncate">{formatCurrency(card.estimatedDailyUsdc)} {card.quoteCurrency}</div>
                       {card.estimatedDailyAsset > 0 && (
-                        <div className="text-orange-400 text-[10px] font-mono truncate">
+                        <div className="text-orange-400 text-2xs font-mono truncate">
                           +{formatAsset(card.estimatedDailyAsset, card.baseCurrency)} ({formatCurrency(card.estimatedDailyAsset * card.lastPrice)})
                         </div>
                       )}
                     </div>
                     <div className="bg-cyan-900/20 border border-cyan-700/30 rounded-sm p-1.5 min-w-0 overflow-hidden">
-                      <div className="text-cyan-400/70 text-[10px] truncate">Annual ({card.estimatedApy > 9999 ? '>9999' : card.estimatedApy.toFixed(0)}% APY)</div>
+                      <div className="text-cyan-400/70 text-2xs truncate">Annual ({card.estimatedApy > 9999 ? '>9999' : card.estimatedApy.toFixed(0)}% APY)</div>
                       <div className="font-mono text-xs text-cyan-400 truncate">
                         {formatCurrency((card.estimatedDailyUsdc * 365) + (card.estimatedDailyAsset * 365 * card.lastPrice))}/yr
                       </div>
-                      <div className="text-white text-[10px] font-mono truncate">{formatCurrency(card.estimatedDailyUsdc * 365)} {card.quoteCurrency}</div>
+                      <div className="text-white text-2xs font-mono truncate">{formatCurrency(card.estimatedDailyUsdc * 365)} {card.quoteCurrency}</div>
                       {card.estimatedDailyAsset > 0 && (
-                        <div className="text-orange-400 text-[10px] font-mono truncate">
+                        <div className="text-orange-400 text-2xs font-mono truncate">
                           +{(card.estimatedDailyAsset * 365).toFixed(6)} {card.baseCurrency} ({formatCurrency(card.estimatedDailyAsset * 365 * card.lastPrice)})
                         </div>
                       )}

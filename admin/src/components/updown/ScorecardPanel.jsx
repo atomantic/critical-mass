@@ -72,9 +72,9 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
       {/* Perp long paper book — 0.01 BTC per contract, flatten on Close */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] uppercase tracking-wide text-gray-400">Perp long P&amp;L (0.01 BTC / contract)</span>
+          <span className="text-2xs uppercase tracking-wide text-gray-400">Perp long P&amp;L (0.01 BTC / contract)</span>
           {perp?.contracts > 0 && (
-            <span className="text-[10px] font-mono text-teal-400">{perp.contracts} open @ {scoreUsd(perp.avgEntry)}</span>
+            <span className="text-2xs font-mono text-teal-400">{perp.contracts} open @ {scoreUsd(perp.avgEntry)}</span>
           )}
         </div>
         <div className="flex items-center justify-between mb-1">
@@ -103,7 +103,7 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
       {/* Directional accuracy — still used for adaptive indicator weights */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] uppercase tracking-wide text-gray-400">UP precision (options)</span>
+          <span className="text-2xs uppercase tracking-wide text-gray-400">UP precision (options)</span>
           <div className="flex items-center gap-1">
             <StreakIcon size={14} className={streakColor} />
             <span className={`text-xs font-mono ${streakColor}`}>
@@ -203,7 +203,7 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
                   }`}
                 >
                   <div className="font-medium">{tf}</div>
-                  <div className="font-mono text-[10px]">
+                  <div className="font-mono text-2xs">
                     {data?.accuracy != null ? `${data.accuracy.toFixed(0)}%` : '---'}
                   </div>
                 </div>

@@ -27,7 +27,7 @@ export default function ToggleSwitch({ label, checked, onChange, disabled = fals
           </span>
         </button>
       </div>
-      {hint && <div id={hintId} className="text-[10px] text-gray-400 leading-tight">{hint}</div>}
+      {hint && <div id={hintId} className="text-2xs text-gray-400 leading-tight">{hint}</div>}
     </div>
   )
 }

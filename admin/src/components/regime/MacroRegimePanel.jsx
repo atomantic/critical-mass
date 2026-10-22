@@ -23,7 +23,7 @@ export default function MacroRegimePanel({ config, macro }) {
               <h3 className="text-xs font-medium text-gray-400">
                 Macro Regime<ConfigTooltip tip={REGIME_TOOLTIPS.macro} align="left" width="w-80" />
               </h3>
-              <span className={`px-1.5 py-0.5 rounded-sm text-[10px] font-medium ${macroStyle.bg} ${macroStyle.text}`}>
+              <span className={`px-1.5 py-0.5 rounded-sm text-2xs font-medium ${macroStyle.bg} ${macroStyle.text}`}>
                 {macroStyle.label} ({m.score?.toFixed(0)})
               </span>
             </div>
@@ -47,19 +47,19 @@ export default function MacroRegimePanel({ config, macro }) {
             </div>
             <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-gray-700">
               <div className="text-center">
-                <div className="text-[10px] text-gray-400">Size</div>
+                <div className="text-2xs text-gray-400">Size</div>
                 <div className={`text-xs font-mono ${mults.size !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.size}x</div>
               </div>
               <div className="text-center">
-                <div className="text-[10px] text-gray-400">TP</div>
+                <div className="text-2xs text-gray-400">TP</div>
                 <div className={`text-xs font-mono ${mults.tp !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.tp}x</div>
               </div>
               <div className="text-center">
-                <div className="text-[10px] text-gray-400">Offset</div>
+                <div className="text-2xs text-gray-400">Offset</div>
                 <div className={`text-xs font-mono ${mults.offset !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.offset}x</div>
               </div>
             </div>
-            <div className="text-[10px] text-gray-400 mt-1">
+            <div className="text-2xs text-gray-400 mt-1">
               Updated {m.lastUpdate ? new Date(m.lastUpdate).toLocaleTimeString() : 'never'} | {m.candles?.hourly || 0}h/{m.candles?.daily || 0}d candles
             </div>
           </div>

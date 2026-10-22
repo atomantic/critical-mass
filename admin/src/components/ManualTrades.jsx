@@ -570,7 +570,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                 >
                   Pair with Match
                   {matchSuggestions.length > 0 && (
-                    <span className="ml-1 text-[10px] opacity-60">({matchSuggestions.length})</span>
+                    <span className="ml-1 text-2xs opacity-60">({matchSuggestions.length})</span>
                   )}
                 </button>
               </div>
@@ -606,7 +606,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
 
                       {importMode === 'place' ? (
                         <div className="mb-3">
-                          <label htmlFor="recovery-buy-price" className="block text-[10px] text-gray-400 mb-1">Recovery Buy Limit Price ({quoteCurrency})</label>
+                          <label htmlFor="recovery-buy-price" className="block text-2xs text-gray-400 mb-1">Recovery Buy Limit Price ({quoteCurrency})</label>
                           <input
                             id="recovery-buy-price"
                             type="number"
@@ -615,13 +615,13 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                             placeholder={`Price per ${baseCurrency}`}
                             className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-xs text-gray-300"
                           />
-                          <div className="text-[10px] text-gray-400 mt-0.5">
+                          <div className="text-2xs text-gray-400 mt-0.5">
                             Will place a good-till-cancelled limit buy for {importModal.totalBtc.toFixed(8)} {baseCurrency}
                           </div>
                         </div>
                       ) : (
                         <div className="mb-3">
-                          <label htmlFor="existing-buy-order-id" className="block text-[10px] text-gray-400 mb-1">Existing Buy Order ID</label>
+                          <label htmlFor="existing-buy-order-id" className="block text-2xs text-gray-400 mb-1">Existing Buy Order ID</label>
                           <input
                             id="existing-buy-order-id"
                             type="text"
@@ -645,7 +645,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                         />
                         Create celestial body for TP management
                       </label>
-                      <div className="text-[10px] text-gray-400 mt-1 ml-5">
+                      <div className="text-2xs text-gray-400 mt-1 ml-5">
                         {createBody
                           ? 'Engine will create a satellite body and place a take-profit sell order'
                           : 'Buy fills will be ingested into the ledger without TP management'}
@@ -710,7 +710,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                                         style={{ width: `${s.score * 100}%` }}
                                       />
                                     </div>
-                                    <span className="text-[10px] text-gray-400 w-8 text-right">
+                                    <span className="text-2xs text-gray-400 w-8 text-right">
                                       {(s.score * 100).toFixed(0)}%
                                     </span>
                                   </div>
@@ -742,7 +742,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                                 {signedPrefix(pnl)}{formatCurrency(pnl)} P&L
                               </span>
                               {Math.abs(importModal.totalBtc - selectedMatch.totalBtc) > 0.000001 && (
-                                <span className="text-[10px] text-yellow-500">
+                                <span className="text-2xs text-yellow-500">
                                   (size mismatch: {importModal.totalBtc.toFixed(8)} vs {selectedMatch.totalBtc.toFixed(8)})
                                 </span>
                               )}
@@ -757,7 +757,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
 
               {/* Note field */}
               <div className="mb-3">
-                <label htmlFor="import-note" className="block text-[10px] text-gray-400 mb-1">Note (optional)</label>
+                <label htmlFor="import-note" className="block text-2xs text-gray-400 mb-1">Note (optional)</label>
                 <input
                   id="import-note"
                   type="text"
@@ -798,7 +798,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
               <button
                 onClick={fetchManualTrades}
                 disabled={tradesLoading}
-                className="ml-auto px-2 py-0.5 rounded-sm text-[10px] bg-gray-700 text-gray-400 hover:bg-gray-600 border border-gray-600"
+                className="ml-auto px-2 py-0.5 rounded-sm text-2xs bg-gray-700 text-gray-400 hover:bg-gray-600 border border-gray-600"
               >
                 {tradesLoading ? '...' : 'Refresh'}
               </button>
@@ -849,11 +849,11 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                         <Fragment key={trade.id}>
                         <tr className="border-t border-gray-700/50 hover:bg-gray-700/30">
                           <td className="px-2 py-1">
-                            <span className={`px-1.5 py-0.5 rounded-sm text-[10px] border ${STATUS_COLORS[trade.status] || STATUS_COLORS.dismissed}`}>
+                            <span className={`px-1.5 py-0.5 rounded-sm text-2xs border ${STATUS_COLORS[trade.status] || STATUS_COLORS.dismissed}`}>
                               {pendingImport ? 'Import unfinished' : STATUS_LABELS[trade.status] || trade.status}
                             </span>
                           </td>
-                          <td className="px-2 py-1 text-[10px] text-gray-400">
+                          <td className="px-2 py-1 text-2xs text-gray-400">
                             {isPaired ? 'Pair' : isBuyFirst ? 'Buy\u2192TP' : 'Sell\u2192Buy'}
                           </td>
                           <td className="px-2 py-1 font-mono text-gray-400">{truncId(anchorId)}</td>
@@ -883,7 +883,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                               <button
                                 onClick={() => handleCheckStatus(trade.id)}
                                 disabled={checking[trade.id]}
-                                className="px-2 py-0.5 rounded-sm text-[10px] bg-yellow-600/30 text-yellow-400 hover:bg-yellow-600/50 border border-yellow-500/30"
+                                className="px-2 py-0.5 rounded-sm text-2xs bg-yellow-600/30 text-yellow-400 hover:bg-yellow-600/50 border border-yellow-500/30"
                               >
                                 {checking[trade.id] ? 'Checking...' : 'Check Status'}
                               </button>
@@ -893,14 +893,14 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                                 <button
                                   type="button"
                                   onClick={() => openRecoveryForm(trade, 'retry')}
-                                  className="px-2 py-0.5 rounded-sm text-[10px] bg-purple-600/30 text-purple-300 hover:bg-purple-600/50 border border-purple-500/30"
+                                  className="px-2 py-0.5 rounded-sm text-2xs bg-purple-600/30 text-purple-300 hover:bg-purple-600/50 border border-purple-500/30"
                                 >
                                   Retry recovery
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => openRecoveryForm(trade, 'link')}
-                                  className="px-2 py-0.5 rounded-sm text-[10px] bg-blue-600/30 text-blue-300 hover:bg-blue-600/50 border border-blue-500/30"
+                                  className="px-2 py-0.5 rounded-sm text-2xs bg-blue-600/30 text-blue-300 hover:bg-blue-600/50 border border-blue-500/30"
                                 >
                                   Link replacement
                                 </button>
@@ -910,7 +910,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                         </tr>
                         {(showRecovery || pendingImport || notice) && (
                           <tr className="bg-gray-900/30">
-                            <td colSpan={9} className="px-2 pb-2 text-[10px] text-gray-300">
+                            <td colSpan={9} className="px-2 pb-2 text-2xs text-gray-300">
                               {pendingImport && <p className="text-amber-300 break-all">
                                 This buy was recorded, but its body import did not finish. Resume the existing import to finish linking or creating the body; this may place its take-profit sell.
                                 {' '}Buy {trade.buyOrderId} &middot; body {trade.bodyIntent.bodyId}
