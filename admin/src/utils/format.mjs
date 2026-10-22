@@ -18,7 +18,7 @@ export function formatUsd(value, { compact = false, decimals = 2 } = {}) {
     currency: 'USD',
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
-  }).format(value)
+  }).format(value + 0) // + 0 normalizes -0 to 0
 }
 
 // "12.34%" — nullish/NaN-ish input renders as 0.
