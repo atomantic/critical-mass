@@ -86,6 +86,8 @@ const createBackupScheduler = ({
     const config = getConfig();
     if (!config.enabled) return;
     const token = armTokens.get(name);
+    // Snapshot now: reschedule() flips firstArm before a promised newest() settles.
+    const startup = firstArm;
     const schedule = (deadline) => {
       if (armTokens.get(name) !== token || isStopping()) return;
       deadlines.set(name, deadline);
@@ -105,7 +107,7 @@ const createBackupScheduler = ({
       const pending = deadlines.get(name);
       // A pending deadline stays valid only while it is still the grace for the same overdue state.
       const keep = pending !== undefined && due <= pending && pending <= Math.max(due, now() + MIN_DELAY_MS + offset);
-      schedule(keep ? pending : Math.max(due, now() + MIN_DELAY_MS + (firstArm ? offset : 0)));
+      schedule(keep ? pending : Math.max(due, now() + MIN_DELAY_MS + (startup ? offset : 0)));
     };
     // A sync newest() arms immediately (the timer is in place on return); a
     // promised one (non-blocking archive validation) arms when it settles.
@@ -117,7 +119,7 @@ const createBackupScheduler = ({
       return;
     }
     if (newest && typeof newest.then === 'function') {
-      newest.then(applyDue, lookupFailed);
+      newest.then(applyDue).catch(lookupFailed);
       return;
     }
     try {
