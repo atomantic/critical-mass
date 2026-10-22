@@ -251,10 +251,17 @@ describe('Required methods stay live-called (issue #678)', () => {
   // them — only this test file and order-executor.test.js did. This test
   // guards against that recurring: every REQUIRED_EXECUTOR_METHODS entry
   // must be reachable from src/regime-engine.js, the only production caller
-  // of the executor contract, unless explicitly carved out below.
-  const regimeEngineSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'regime-engine.js'), 'utf8');
+  // of the executor contract, unless explicitly carved out below. The engine's
+  // extracted sub-modules (src/regime-*.js) reach the executor through a
+  // `getOrderExecutor()` accessor; startup recovery (issue #1601) is the only
+  // caller of the restore* methods, so they count as engine calls too.
+  const srcDir = path.join(__dirname, '..', 'src');
+  const regimeEngineSource = fs.readdirSync(srcDir)
+    .filter(name => /^regime-.*\.js$/.test(name))
+    .map(name => fs.readFileSync(path.join(srcDir, name), 'utf8'))
+    .join('\n');
   const calledByEngine = new Set(
-    [...regimeEngineSource.matchAll(/orderExecutor\.([a-zA-Z]+)/g)].map(m => m[1])
+    [...regimeEngineSource.matchAll(/(?:orderExecutor|getOrderExecutor\(\))\.([a-zA-Z]+)/g)].map(m => m[1])
   );
 
   // Issue #725 resolved every entry this allowlist used to carry; the remaining
