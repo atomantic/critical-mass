@@ -68,6 +68,7 @@ function view(name, fetchImpl, extra = {}) {
     '../utils/pnlFormat.mjs': { pnlColorClass: n => (n >= 0 ? 'text-green-400' : 'text-red-400'), signedPrefix: n => (n >= 0 ? '+' : '') },
     '../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
     '../utils/apiClient': apiClientStub(fetchImpl),
+    '../hooks/usePolling': { __esModule: true, default: (fn, ms, { immediate = true, enabled = true } = {}) => { hooks.useEffect(() => { if (enabled && immediate) fn() }) }, usePolling: (fn, ms, { immediate = true, enabled = true } = {}) => { hooks.useEffect(() => { if (enabled && immediate) fn() }) } },
     '../utils/intervals.mjs': { getIntervalMs: () => 86400000 },
     '../utils/requestOwner.mjs': { createRequestOwner: () => createRequestOwner({ fetchImpl }) },
     '../utils/dashboardAction.mjs': {},

@@ -31,6 +31,8 @@ before(async () => {
       '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
       '../utils/pnlFormat.mjs': { pnlColorClass: n => (n >= 0 ? 'text-green-400' : 'text-red-400'), signedPrefix: n => (n >= 0 ? '+' : '') },
       '../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
+      // Static markup never runs effects; polling is inert here.
+      '../hooks/usePolling': { __esModule: true, default: () => {}, usePolling: () => {} },
       '../utils/intervals.mjs': { getIntervalMs: () => 86400000 },
       '../utils/countdown.mjs': { formatCountdown },
       './StatCard': StatCard,

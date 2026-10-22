@@ -1,5 +1,6 @@
 const { before, describe, it } = require('node:test')
 const { apiClientStub } = require('./api-client-harness')
+const { compileUsePollingCode, loadUsePolling } = require('./use-polling-harness')
 const assert = require('node:assert/strict')
 const path = require('node:path')
 const vm = require('node:vm')
@@ -9,6 +10,7 @@ const { pathToFileURL } = require('node:url')
 const adminRequire = createRequire(path.join(__dirname, '..', 'admin', 'package.json'))
 const React = adminRequire('react')
 let componentCode
+let pollingCode
 
 before(async () => {
   const { rolldown } = await import(pathToFileURL(adminRequire.resolve('rolldown')).href)
@@ -17,6 +19,7 @@ before(async () => {
     external: () => true,
     transform: { jsx: 'react' },
   })
+  pollingCode = await compileUsePollingCode()
   try { componentCode = (await bundle.generate({ format: 'cjs' })).output[0].code } finally { await bundle.close() }
 })
 
@@ -89,8 +92,13 @@ function createView(props = {}) {
   let nextTimer = 0
   let now = 0
   const fetchImpl = (url, options) => new Promise((resolve, reject) => { requests.push({ url, options, resolve, reject, settled: false }) })
+  const clock = {
+    setInterval: (callback, ms) => { assert.equal(ms, 10000); const id = ++nextTimer; timers.set(id, { callback, next: now + ms, ms }); return id },
+    clearInterval: id => timers.delete(id),
+  }
   const stubs = {
     react: React,
+    '../hooks/usePolling': loadUsePolling(pollingCode, React, clock),
     '../utils/apiClient': apiClientStub(fetchImpl),
     './charts/chartUtils': { formatCurrency: value => `$${value}`, formatPrice: value => `$${value}`, formatAsset: String },
     '../App': {

@@ -96,6 +96,7 @@ function createView(name) {
           ),
         }
       }
+      if (name === '../hooks/usePolling') { const usePolling = (fn, ms, { immediate = true, enabled = true } = {}) => { hooks.useEffect(() => { if (enabled && immediate) fn() }) }; return { __esModule: true, default: usePolling, usePolling } }
       if (name === './ModalDialog') return ({ children }) => children
       throw new Error(`Unexpected fixture import ${name}`)
     },
