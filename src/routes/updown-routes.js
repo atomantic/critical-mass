@@ -8,7 +8,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { createContextLogger } = require('../logger');
 const { UPDOWN_DATA_DIR } = require('../paths');
@@ -82,8 +82,11 @@ const validateTradeDescription = (body) => {
   return null;
 };
 
-// Promisified child_process.exec for use in async routes
-const execAsync = promisify(exec);
+// Promisified child_process.execFile (argument array, no shell) for use in async routes
+const execFileAsync = promisify(execFile);
+
+// PM2 process names are passed as argv entries, but still constrain them.
+const PM2_PROCESS_NAME_RE = /^[A-Za-z0-9._-]+$/;
 const PM2_PREFLIGHT_TIMEOUT_MS = 10_000;
 
 /**
@@ -443,10 +446,15 @@ module.exports = (app, deps) => {
 
     logger.info('ℹ️ 🔄 PM2 restart requested via API', { action: 'restart', processName });
 
+    if (!PM2_PROCESS_NAME_RE.test(processName)) {
+      logger.error('❌ 🔄 PM2_PROCESS_NAME contains unsupported characters', { action: 'restart-preflight', processName });
+      return res.status(500).json({ success: false, error: 'PM2_PROCESS_NAME is invalid — fix the server configuration' });
+    }
+
     // Pre-flight check: verify PM2 is managing this process
     try {
       // A wedged PM2 daemon would otherwise hold this request open forever.
-      await execAsync(`pm2 describe ${processName}`, { timeout: PM2_PREFLIGHT_TIMEOUT_MS });
+      await execFileAsync('pm2', ['describe', processName], { timeout: PM2_PREFLIGHT_TIMEOUT_MS });
     } catch (err) {
       const errorMsg = err.killed
         ? `PM2 did not respond within ${PM2_PREFLIGHT_TIMEOUT_MS / 1000}s — check the PM2 daemon on the host, then retry`
@@ -465,7 +473,7 @@ module.exports = (app, deps) => {
 
     // Schedule the actual restart with error logging
     setTimeout(() => {
-      exec(`pm2 restart ${processName}`, (err, stdout, stderr) => {
+      execFile('pm2', ['restart', processName], (err, stdout, stderr) => {
         if (err) {
           const firstLine = stderr?.split('\n')[0] || err.message || 'Unknown error';
           logger.error(`❌ 🔄 PM2 restart failed code=${err.code} stderr=${firstLine}`, {
