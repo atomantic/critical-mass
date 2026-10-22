@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Signal, Minus } from '../icons'
 import { signalBadgeColors, getSignalIcon, getActionLabel, labelHistoryActions } from '../../constants/signals'
+import { apiGet } from '../../utils/apiClient'
 
 function ConfidenceBar({ value }) {
   const pct = Math.max(0, Math.min(100, (value ?? 0) * 100))
@@ -32,8 +33,7 @@ export default function SignalPanel({ signal, indicators, position }) {
   // are merged in rather than replaced; a failed read is reported, not shown
   // as an empty history.
   const fetchHistory = useCallback(async (isActive = () => true) => {
-    const res = await fetch('/api/updown/signals').catch(() => null)
-    const data = res?.ok ? await res.json().catch(() => null) : null
+    const { data } = await apiGet('/api/updown/signals')
     if (!isActive()) return
     if (!Array.isArray(data?.signals)) {
       setHistoryError('Signal history unavailable.')

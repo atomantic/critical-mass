@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Crosshair, Save, Trash2 } from '../icons'
 import { calculateManualPositionPnl } from './position-tracker-math'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
+import { apiPut, apiDelete, describeMutationFailure } from '../../utils/apiClient'
 
 export default function PositionTracker({ initialPosition, currentPrice, contractPnl, priceFresh }) {
   const [entryPrice, setEntryPrice] = useState('')
@@ -37,19 +38,12 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
     setSaving(true)
     setError('')
     try {
-      const res = await fetch('/api/updown/position', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          entryPrice: Number(entryPrice),
-          contracts: Number(amount),
-          direction: 'up',
-        }),
+      const res = await apiPut('/api/updown/position', {
+        entryPrice: Number(entryPrice),
+        contracts: Number(amount),
+        direction: 'up',
       })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to save tracker')
-      }
+      if (!res.ok) throw new Error(describeMutationFailure(res, 'Failed to save tracker'))
       setHasPosition(true)
     } catch (err) {
       setError(err.message || 'Failed to save tracker')
@@ -62,8 +56,8 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
     setClearing(true)
     setError('')
     try {
-      const res = await fetch('/api/updown/position', { method: 'DELETE' })
-      if (!res.ok) throw new Error('Failed to clear tracker')
+      const res = await apiDelete('/api/updown/position')
+      if (!res.ok) throw new Error(describeMutationFailure(res, 'Failed to clear tracker'))
       setEntryPrice('')
       setAmount('')
       setDirection('Up')
