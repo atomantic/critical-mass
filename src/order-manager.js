@@ -2,6 +2,7 @@
 const { getAdapter } = require('./adapters');
 const { createContextLogger } = require('./logger');
 const { getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
+const { PLACEMENT_RETRY_DELAY_MS } = require('./timing-constants');
 const { getBaseCurrency } = require('./config-utils');
 const { isFilledStatus } = require('./shared-utils');
 const {
@@ -803,7 +804,7 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
       priceMultiplier += 0.01;
     }
 
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, PLACEMENT_RETRY_DELAY_MS));
   }
 
   throw new Error(`Failed to place sell order after ${maxRetries} attempts: ${lastError}`);
