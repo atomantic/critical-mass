@@ -87,6 +87,6 @@ it('gives the unmatched-order Import and Dismiss actions a touch-sized target', 
   for (const name of ['Import', 'Dismiss']) {
     const button = await screen.findByRole('button', { name })
     expect(button.className).toContain('min-h-11')
-    expect(button.className).not.toContain('text-[10px]')
+    expect(button.className).not.toContain('text-2xs')
   }
 })

@@ -86,7 +86,7 @@ function IndicatorSubChart({ kind, data, timeframe }) {
   const { title, ...chart } = SUB_CHARTS[kind]
   return (
     <div>
-      <div className="text-[10px] text-gray-400 pl-8 -mb-1">{title} ({timeframe})</div>
+      <div className="text-2xs text-gray-400 pl-8 -mb-1">{title} ({timeframe})</div>
       <CartesianChart data={data} height={80} margin={SUB_MARGIN} xAxis={SUB_X_AXIS} {...chart} />
     </div>
   )

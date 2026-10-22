@@ -350,7 +350,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
               <label htmlFor={field.key} className="block text-sm font-medium text-gray-300 mb-1 flex items-center gap-2">
                 {field.label}
                 {isStored && (
-                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[10px] font-medium bg-green-900/50 border border-green-700 text-green-200">
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-2xs font-medium bg-green-900/50 border border-green-700 text-green-200">
                     configured
                   </span>
                 )}

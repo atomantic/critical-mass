@@ -17,7 +17,7 @@ export default function EntryStatusCard({ healthMode, regimeMode, celestial, mac
     <>
       <div className="col-span-1">
         <div className="bg-gray-900 rounded-sm p-1.5 h-full">
-          <div className="text-[10px] text-gray-400 mb-0.5">
+          <div className="text-2xs text-gray-400 mb-0.5">
             Entry Status<ConfigTooltip tip={REGIME_TOOLTIPS.entryStatus} align="left" width="w-72" />
           </div>
           <div className="space-y-0.5">

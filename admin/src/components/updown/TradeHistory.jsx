@@ -192,23 +192,23 @@ export default function TradeHistory() {
       {summary && (<>
         <div className="grid grid-cols-2 gap-1.5 mb-2 text-xs">
           <div className="bg-gray-900 rounded-sm px-2 py-1">
-            <div className="text-gray-400 text-[10px]">P&L</div>
+            <div className="text-gray-400 text-2xs">P&L</div>
             <div className={`font-mono font-semibold ${pnlColor(summary.totalPnl)}`}>
               {signedPrefix(summary.totalPnl)}{fmt(summary.totalPnl)}
             </div>
           </div>
           <div className="bg-gray-900 rounded-sm px-2 py-1">
-            <div className="text-gray-400 text-[10px]">Win Rate</div>
+            <div className="text-gray-400 text-2xs">Win Rate</div>
             <div className="font-mono font-medium text-white">
-              {winRate}% <span className="text-gray-400 text-[10px]">{summary.wins}W/{summary.losses}L</span>
+              {winRate}% <span className="text-gray-400 text-2xs">{summary.wins}W/{summary.losses}L</span>
             </div>
           </div>
           <div className="bg-gray-900 rounded-sm px-2 py-1">
-            <div className="text-gray-400 text-[10px]">Cost</div>
+            <div className="text-gray-400 text-2xs">Cost</div>
             <div className="font-mono font-medium text-white">{fmt(summary.totalCost)}</div>
           </div>
           <div className="bg-gray-900 rounded-sm px-2 py-1">
-            <div className="text-gray-400 text-[10px]">Return</div>
+            <div className="text-gray-400 text-2xs">Return</div>
             <div className="font-mono font-medium text-white">{fmt(summary.totalReturn)}</div>
           </div>
         </div>
@@ -242,7 +242,7 @@ export default function TradeHistory() {
           </div>
           <div className="grid grid-cols-3 gap-2">
             <div>
-              <label htmlFor={dateId} className="text-[10px] text-gray-400 block mb-0.5">Date</label>
+              <label htmlFor={dateId} className="text-2xs text-gray-400 block mb-0.5">Date</label>
               <input
                 id={dateId}
                 disabled={busy}
@@ -253,7 +253,7 @@ export default function TradeHistory() {
               />
             </div>
             <div>
-              <label htmlFor={costId} className="text-[10px] text-gray-400 block mb-0.5">Cost (Open)</label>
+              <label htmlFor={costId} className="text-2xs text-gray-400 block mb-0.5">Cost (Open)</label>
               <input
                 id={costId}
                 disabled={busy}
@@ -268,14 +268,14 @@ export default function TradeHistory() {
                 className={`w-full bg-gray-800 border rounded-sm px-2 py-1 text-xs text-white placeholder-gray-400 focus:outline-hidden ${validationErrors.cost ? 'border-red-500 focus:border-red-500' : 'border-gray-700 focus:border-emerald-500'}`}
               />
               {validationErrors.cost && (
-                <div id={costErrorId} role="alert" className="text-[10px] text-red-400 mt-0.5">{validationErrors.cost}</div>
+                <div id={costErrorId} role="alert" className="text-2xs text-red-400 mt-0.5">{validationErrors.cost}</div>
               )}
               {isExpression(form.cost) && !Number.isNaN(parsedCost) && (
-                <div className="text-[10px] text-emerald-400 mt-0.5">= {fmt(parsedCost)}</div>
+                <div className="text-2xs text-emerald-400 mt-0.5">= {fmt(parsedCost)}</div>
               )}
             </div>
             <div>
-              <label htmlFor={returnId} className="text-[10px] text-gray-400 block mb-0.5">Return (Close)</label>
+              <label htmlFor={returnId} className="text-2xs text-gray-400 block mb-0.5">Return (Close)</label>
               <input
                 id={returnId}
                 disabled={busy}
@@ -290,15 +290,15 @@ export default function TradeHistory() {
                 className={`w-full bg-gray-800 border rounded-sm px-2 py-1 text-xs text-white placeholder-gray-400 focus:outline-hidden ${validationErrors.returnAmount ? 'border-red-500 focus:border-red-500' : 'border-gray-700 focus:border-emerald-500'}`}
               />
               {validationErrors.returnAmount && (
-                <div id={returnErrorId} role="alert" className="text-[10px] text-red-400 mt-0.5">{validationErrors.returnAmount}</div>
+                <div id={returnErrorId} role="alert" className="text-2xs text-red-400 mt-0.5">{validationErrors.returnAmount}</div>
               )}
               {isExpression(form.returnAmount) && !Number.isNaN(parsedReturnAmount) && (
-                <div className="text-[10px] text-emerald-400 mt-0.5">= {fmt(parsedReturnAmount)}</div>
+                <div className="text-2xs text-emerald-400 mt-0.5">= {fmt(parsedReturnAmount)}</div>
               )}
             </div>
           </div>
           <div>
-            <label htmlFor={boughtId} className="text-[10px] text-gray-400 block mb-0.5">Bought at (optional — teaches the dip-buy detector your entry)</label>
+            <label htmlFor={boughtId} className="text-2xs text-gray-400 block mb-0.5">Bought at (optional — teaches the dip-buy detector your entry)</label>
             <input
               id={boughtId}
               disabled={busy}
@@ -309,7 +309,7 @@ export default function TradeHistory() {
             />
           </div>
           <div>
-            <label className="text-[10px] text-gray-400 block mb-0.5">Direction</label>
+            <label className="text-2xs text-gray-400 block mb-0.5">Direction</label>
             <div className="flex gap-1">
               {['', 'up', 'down'].map(d => (
                 <button
@@ -329,7 +329,7 @@ export default function TradeHistory() {
             </div>
           </div>
           <div>
-            <label htmlFor={noteId} className="text-[10px] text-gray-400 block mb-0.5">Note (optional)</label>
+            <label htmlFor={noteId} className="text-2xs text-gray-400 block mb-0.5">Note (optional)</label>
             <input
               id={noteId}
               disabled={busy}

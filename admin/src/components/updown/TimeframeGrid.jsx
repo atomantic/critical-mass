@@ -76,7 +76,7 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
   return (
     <div className={`bg-gray-800 rounded-lg border p-2 ${alignmentTint} lg:col-span-1`}>
       <h3
-        className="text-[10px] font-semibold text-gray-400 mb-1 uppercase tracking-wider cursor-help"
+        className="text-2xs font-semibold text-gray-400 mb-1 uppercase tracking-wider cursor-help"
         title={`Shows weighted indicator scores across ${TF_ORDER.length} timeframes. When most timeframes agree on direction, signals are stronger. The 5 core timeframes (1m, 3m, 5m, 15m, 1h) contribute to the composite score.`}
       >Timeframe Alignment</h3>
 
@@ -88,7 +88,7 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
 
           return (
             <div key={row.key} className={`flex items-center gap-1.5 px-1.5 rounded-sm ${cfg.bgTint}`} title={TF_TOOLTIPS[row.key]}>
-              <span className="text-[10px] font-mono text-gray-400 w-6 text-right shrink-0 cursor-help">{row.key}</span>
+              <span className="text-2xs font-mono text-gray-400 w-6 text-right shrink-0 cursor-help">{row.key}</span>
               <cfg.Icon size={12} className={cfg.color} />
               <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden" title={`Signal strength: ${Math.abs(row.score).toFixed(0)}% — bar shows relative magnitude`}>
                 <div
@@ -97,21 +97,21 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
                 />
               </div>
               <span
-                className={`text-[10px] font-mono w-8 text-right cursor-help ${cfg.color}`}
+                className={`text-2xs font-mono w-8 text-right cursor-help ${cfg.color}`}
                 title={`Weighted score: ${row.score.toFixed(1)} (range -100 to +100). >+15 = bullish, <-15 = bearish`}
               >
                 {signedPrefix(row.score)}{row.score.toFixed(0)}
               </span>
               {row.volumeSurge?.surgeRatio > 1.5 && (
-                <span className="text-[9px] font-mono text-yellow-400 shrink-0" title={`Volume surge ${row.volumeSurge.surgeRatio.toFixed(1)}x`}>
+                <span className="text-2xs font-mono text-yellow-400 shrink-0" title={`Volume surge ${row.volumeSurge.surgeRatio.toFixed(1)}x`}>
                   V{row.volumeSurge.surgeRatio.toFixed(1)}x
                 </span>
               )}
               {row.divergence?.type === 'bullish' && (
-                <span className="text-[9px] font-bold text-green-400 shrink-0" title={`Bullish divergence (${(row.divergence.strength * 100).toFixed(0)}%)`}>DIV</span>
+                <span className="text-2xs font-bold text-green-400 shrink-0" title={`Bullish divergence (${(row.divergence.strength * 100).toFixed(0)}%)`}>DIV</span>
               )}
               {row.divergence?.type === 'bearish' && (
-                <span className="text-[9px] font-bold text-red-400 shrink-0" title={`Bearish divergence (${(row.divergence.strength * 100).toFixed(0)}%)`}>DIV</span>
+                <span className="text-2xs font-bold text-red-400 shrink-0" title={`Bearish divergence (${(row.divergence.strength * 100).toFixed(0)}%)`}>DIV</span>
               )}
               {row.momentum?.acceleration === 'accelerating' && (
                 <ChevronsUp size={10} className={`shrink-0 ${row.momentum.direction === 'up' ? 'text-green-400' : 'text-red-400'}`} title="Accelerating" />
@@ -131,9 +131,9 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
           className={`flex items-center gap-1.5 px-1.5 rounded-sm border-t border-gray-700 mt-1 pt-1 ${tickCfg.bgTint}`}
           title="Real-time tick momentum from raw price updates (not candle-based). Shows basis points moved and price velocity in $/sec."
         >
-          <span className="text-[10px] font-mono text-gray-400 w-6 text-right shrink-0 cursor-help">Tick</span>
+          <span className="text-2xs font-mono text-gray-400 w-6 text-right shrink-0 cursor-help">Tick</span>
           <tickCfg.Icon size={12} className={tickCfg.color} />
-          <div className="flex-1 text-[10px] font-mono text-gray-400">
+          <div className="flex-1 text-2xs font-mono text-gray-400">
             {tickMomentum
               ? `${tickMomentum.magnitude.toFixed(1)}bp ${signedPrefix(tickMomentum.velocity)}${tickMomentum.velocity.toFixed(1)}$/s`
               : '---'}
@@ -142,7 +142,7 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
       </div>
 
       {/* Alignment summary */}
-      <div className="mt-1 flex items-center gap-2 text-[10px] font-mono cursor-help" title="Count of timeframes pointing up/down/neutral (includes tick). Strong alignment (3+ majority) tints the panel border green or red.">
+      <div className="mt-1 flex items-center gap-2 text-2xs font-mono cursor-help" title="Count of timeframes pointing up/down/neutral (includes tick). Strong alignment (3+ majority) tints the panel border green or red.">
         <span className="text-green-400">{alignment.up}&#8593;</span>
         <span className="text-red-400">{alignment.down}&#8595;</span>
         <span className="text-gray-400">{alignment.neutral}&mdash;</span>
