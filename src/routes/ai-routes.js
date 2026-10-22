@@ -55,7 +55,7 @@ module.exports = (app, { DATA_DIR }, { allowedOrigins = parseAllowedOrigins(), f
   /** @param {import('express').Response} res @param {unknown} body */
   const sendRedacted = (res, body) => res.json(redactSecrets(body));
   /** @param {import('express').Response} res */
-  const providerNotFound = (res) => res.status(404).json({ error: 'Provider not found' });
+  const providerNotFound = (res) => res.status(404).json({ success: false, error: 'Provider not found' });
 
   // ── Providers ──────────────────────────────────────────────────────────
   // Static segments are registered before /:id so they are never read as IDs.
@@ -66,7 +66,7 @@ module.exports = (app, { DATA_DIR }, { allowedOrigins = parseAllowedOrigins(), f
 
   app.put('/api/providers/active', (req, res) => {
     const id = req.body?.id;
-    if (!id) return res.status(400).json({ error: 'Provider ID required' });
+    if (!id) return res.status(400).json({ success: false, error: 'Provider ID required' });
     const provider = providers.setActive(id);
     return provider ? sendRedacted(res, provider) : providerNotFound(res);
   });
@@ -99,7 +99,7 @@ module.exports = (app, { DATA_DIR }, { allowedOrigins = parseAllowedOrigins(), f
 
   app.post('/api/providers/:id/refresh-models', asyncRoute(async (req, res) => {
     const result = await providers.refreshModels(req.params.id);
-    if ('error' in result) return res.status(502).json({ error: result.error });
+    if ('error' in result) return res.status(502).json({ success: false, error: result.error });
     return sendRedacted(res, result.provider);
   }));
 
@@ -107,7 +107,7 @@ module.exports = (app, { DATA_DIR }, { allowedOrigins = parseAllowedOrigins(), f
 
   /** Reject a malformed run ID before it can reach a filesystem path. */
   const withRunId = (handler) => (req, res, next) => (
-    isValidRunId(req.params.runId) ? handler(req, res, next) : res.status(400).json({ error: 'Invalid run ID' })
+    isValidRunId(req.params.runId) ? handler(req, res, next) : res.status(400).json({ success: false, error: 'Invalid run ID' })
   );
 
   app.get('/api/runs', (req, res) => {
@@ -121,32 +121,32 @@ module.exports = (app, { DATA_DIR }, { allowedOrigins = parseAllowedOrigins(), f
   });
 
   app.delete('/api/runs', (req, res) => {
-    if (req.query.filter !== 'failed') return res.status(400).json({ error: 'Only filter=failed is supported for bulk delete' });
+    if (req.query.filter !== 'failed') return res.status(400).json({ success: false, error: 'Only filter=failed is supported for bulk delete' });
     return res.json({ deletedCount: runs.removeFailed() });
   });
 
   app.get('/api/runs/:runId', withRunId((req, res) => {
     const run = runs.get(req.params.runId);
-    return run ? res.json(run) : res.status(404).json({ error: 'Run not found' });
+    return run ? res.json(run) : res.status(404).json({ success: false, error: 'Run not found' });
   }));
 
   app.get('/api/runs/:runId/output', withRunId((req, res) => {
     const output = runs.output(req.params.runId);
-    return output === null ? res.status(404).json({ error: 'Run not found' }) : res.type('text/plain').send(output);
+    return output === null ? res.status(404).json({ success: false, error: 'Run not found' }) : res.type('text/plain').send(output);
   }));
 
   app.get('/api/runs/:runId/prompt', withRunId((req, res) => {
     const prompt = runs.prompt(req.params.runId);
-    return prompt === null ? res.status(404).json({ error: 'Run not found' }) : res.type('text/plain').send(prompt);
+    return prompt === null ? res.status(404).json({ success: false, error: 'Run not found' }) : res.type('text/plain').send(prompt);
   }));
 
   app.post('/api/runs/:runId/stop', withRunId(asyncRoute(async (req, res) => {
-    if (!(await runs.stop(req.params.runId))) return res.status(404).json({ error: 'Run not found or not active' });
+    if (!(await runs.stop(req.params.runId))) return res.status(404).json({ success: false, error: 'Run not found or not active' });
     return res.json({ success: true });
   })));
 
   app.delete('/api/runs/:runId', withRunId((req, res) => {
-    if (!runs.remove(req.params.runId)) return res.status(404).json({ error: 'Run not found' });
+    if (!runs.remove(req.params.runId)) return res.status(404).json({ success: false, error: 'Run not found' });
     return res.status(204).end();
   }));
 };
