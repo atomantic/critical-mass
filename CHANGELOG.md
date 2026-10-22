@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+- **[issue-1590] Dockerfile base images are pinned by digest** — both `FROM node:26-alpine` stages now reference `node:26-alpine@sha256:40cd011b…797`, so a republished tag can no longer change the production image (which holds the exchange keys) without a diff. Dependabot's existing `docker` ecosystem entry proposes digest bumps.
+
 ### Fixed
 - **[issue-1592] Backup scheduler no longer runs synchronous archive integrity tests on the gateway event loop at startup** — `getNewestBackupTimeAsync` walks the retained archives newest-first through the non-blocking validator, and the scheduler accepts a promised `newest()`; a lookup superseded by a later arm is dropped. The synchronous `getNewestBackupTime` stays for existing callers. Scheduling results are unchanged.
 - **[issue-1581] Successful operator sign-ins no longer consume the failed-attempt budget, and login throttling can be per-client behind a proxy** — `POST /api/auth/session`, `PUT /api/auth/password` and `DELETE /api/auth/password` now refund the reserved attempt once the password is verified (as the bearer path already did), so repeated successful sign-ins cannot lock the operator out. With `OPERATOR_TRUST_PROXY=true` the budget is keyed on the last valid `X-Forwarded-For` hop (the one the trusted proxy wrote) instead of the socket address. Default behavior (socket address) is unchanged.
