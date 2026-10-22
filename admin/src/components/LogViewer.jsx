@@ -71,7 +71,7 @@ export default function LogViewer({ processName }) {
   const status = describeStatus(subscribed, terminal)
 
   const logContent = (
-    <div className={fullscreen ? 'fixed inset-0 z-50 bg-gray-900 flex flex-col' : ''}>
+    <div className={fullscreen ? 'fixed inset-0 z-50 h-dvh bg-gray-900 flex flex-col' : ''}>
       {/* Header bar */}
       <div className="flex items-center gap-3 px-4 py-2 bg-gray-800 border-b border-gray-700 flex-wrap">
         <div className="flex items-center gap-2">

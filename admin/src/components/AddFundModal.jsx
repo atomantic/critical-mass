@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState } from 'react'
+import ModalDialog from './ModalDialog'
 import { apiPost } from '../utils/apiClient'
 
 /**
@@ -63,7 +64,9 @@ const formatPairForExchange = (input, exchange) => {
   return cleaned
 }
 
-function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
+// Mounted only while open (ModalDialog's mount-once contract), so every open
+// starts from fresh initial state — no reset-on-open effect needed.
+function AddFundDialog({ onClose, onCreated, exchanges = [] }) {
   // The exchanges prop contains one entry per (exchange, pair) fund — collapse
   // to unique exchange names so the dropdown lists each exchange once.
   const exchangeNames = Array.from(new Set((exchanges || []).map(e => e.name)))
@@ -74,65 +77,8 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
   const [dryRun, setDryRun] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
-  const inputRef = useRef(null)
-  const modalRef = useRef(null)
-  const previouslyFocusedRef = useRef(null)
 
   const fmt = EXCHANGE_FORMATS[exchange] || fallbackFormat
-
-  useEffect(() => {
-    let focusTimer
-    if (open) {
-      previouslyFocusedRef.current = document.activeElement
-      const ex = exchangeNames[0] || 'gemini'
-      setError(null)
-      setExchange(ex)
-      setPair(EXCHANGE_FORMATS[ex]?.defaultPair || '')
-      setTotalAllocation('5000')
-      setDryRun(true)
-      // Focus and select the pair input on open so the user can immediately type to replace
-      focusTimer = setTimeout(() => {
-        inputRef.current?.focus()
-        inputRef.current?.select()
-      }, 50)
-    }
-    return () => {
-      clearTimeout(focusTimer)
-      if (open) previouslyFocusedRef.current?.focus?.()
-    }
-  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!open) return undefined
-
-    const handleKeyDown = (event) => {
-      if (event.key === 'Escape' && !submitting) {
-        event.preventDefault()
-        onClose?.()
-        return
-      }
-      if (event.key !== 'Tab') return
-
-      const focusable = modalRef.current?.querySelectorAll(
-        'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
-      )
-      if (!focusable?.length) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first.focus()
-      }
-    }
-
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [open, submitting, onClose])
 
   // When the exchange dropdown changes, re-format the existing pair value
   // to the new exchange's separator convention. This lets the operator type
@@ -200,19 +146,8 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
     }
   }
 
-  if (!open) return null
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onClick={() => !submitting && onClose?.()}>
-      <div
-        ref={modalRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="add-fund-title"
-        aria-describedby="add-fund-description"
-        className="bg-gray-800 rounded-lg border border-gray-700 shadow-xl w-full max-w-md max-h-[calc(100dvh-1.5rem)] overflow-y-auto p-4 sm:p-6"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <ModalDialog onClose={onClose} labelledBy="add-fund-title" describedBy="add-fund-description" dismissible={!submitting}>
         <h2 id="add-fund-title" className="text-lg font-bold text-white mb-4">Add Fund</h2>
         <p id="add-fund-description" className="text-sm text-gray-400 mb-4">
           Create a new trading fund on an existing exchange. The fund is created stopped, and in <span className="text-purple-400">dry-run mode</span> unless you untick the box below. Nothing trades until you press Start in the fund header, so review its config first.
@@ -238,7 +173,7 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
             <label htmlFor="add-fund-pair" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Pair</label>
             <input
               id="add-fund-pair"
-              ref={inputRef}
+              autoFocus
               type="text"
               value={pair}
               onChange={(e) => setPair(formatPairForExchange(e.target.value, exchange))}
@@ -304,9 +239,13 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalDialog>
   )
+}
+
+function AddFundModal({ open, ...props }) {
+  if (!open) return null
+  return <AddFundDialog {...props} />
 }
 
 export default AddFundModal
