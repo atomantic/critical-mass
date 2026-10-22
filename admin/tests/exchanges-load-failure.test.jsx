@@ -10,6 +10,9 @@ vi.mock('../src/hooks/useTradeEvents', () => ({
   useRegimeEvents: () => ({ connected: false }),
 }))
 
+HTMLDialogElement.prototype.showModal = function () { this.open = true; this.querySelector('[autofocus]')?.focus() }
+HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event('close')) }
+
 const response = (data, ok = true, status = ok ? 200 : 502) => ({ ok, status, json: async () => data })
 const fund = (name) => ({ name, pair: 'BTC-USDC', productId: 'BTC-USDC', strategy: 'regime', regimeEnabled: true })
 let exchangesHandler, created

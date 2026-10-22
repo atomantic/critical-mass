@@ -148,97 +148,97 @@ function AddFundDialog({ onClose, onCreated, exchanges = [] }) {
 
   return (
     <ModalDialog onClose={onClose} labelledBy="add-fund-title" describedBy="add-fund-description" dismissible={!submitting}>
-        <h2 id="add-fund-title" className="text-lg font-bold text-white mb-4">Add Fund</h2>
-        <p id="add-fund-description" className="text-sm text-gray-400 mb-4">
-          Create a new trading fund on an existing exchange. The fund is created stopped, and in <span className="text-purple-400">dry-run mode</span> unless you untick the box below. Nothing trades until you press Start in the fund header, so review its config first.
-        </p>
+      <h2 id="add-fund-title" className="text-lg font-bold text-white mb-4">Add Fund</h2>
+      <p id="add-fund-description" className="text-sm text-gray-400 mb-4">
+        Create a new trading fund on an existing exchange. The fund is created stopped, and in <span className="text-purple-400">dry-run mode</span> unless you untick the box below. Nothing trades until you press Start in the fund header, so review its config first.
+      </p>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label htmlFor="add-fund-exchange" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Exchange</label>
-            <select
-              id="add-fund-exchange"
-              value={exchange}
-              onChange={(e) => handleExchangeChange(e.target.value)}
-              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white focus:border-blue-500 focus:outline-hidden"
-              disabled={submitting}
-            >
-              {exchangeNames.map((name) => (
-                <option key={name} value={name}>{name}</option>
-              ))}
-            </select>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label htmlFor="add-fund-exchange" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Exchange</label>
+          <select
+            id="add-fund-exchange"
+            value={exchange}
+            onChange={(e) => handleExchangeChange(e.target.value)}
+            className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white focus:border-blue-500 focus:outline-hidden"
+            disabled={submitting}
+          >
+            {exchangeNames.map((name) => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label htmlFor="add-fund-pair" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Pair</label>
+          <input
+            id="add-fund-pair"
+            autoFocus
+            onFocus={(e) => e.target.select()}
+            type="text"
+            value={pair}
+            onChange={(e) => setPair(formatPairForExchange(e.target.value, exchange))}
+            placeholder={fmt.placeholder}
+            className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-hidden"
+            disabled={submitting}
+            autoComplete="off"
+          />
+          <div className="text-xs text-gray-400 mt-1">{fmt.hint}</div>
+        </div>
+
+        <div>
+          <label htmlFor="add-fund-allocation" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Initial Capital (quote currency)</label>
+          <input
+            id="add-fund-allocation"
+            type="number"
+            min="0"
+            step="100"
+            value={totalAllocation}
+            onChange={(e) => setTotalAllocation(e.target.value)}
+            className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-hidden"
+            disabled={submitting}
+          />
+          <div className="text-xs text-gray-400 mt-1">Seeds <span className="font-mono">deposited capital</span> and <span className="font-mono">max deployed</span> for this fund. You can adjust both later in the fund's config.</div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <input
+            id="addFundDryRun"
+            type="checkbox"
+            checked={dryRun}
+            onChange={(e) => setDryRun(e.target.checked)}
+            className="w-4 h-4 bg-gray-900 border-gray-700 rounded-sm"
+            disabled={submitting}
+          />
+          <label htmlFor="addFundDryRun" className="text-sm text-gray-300">
+            Start in dry-run mode (recommended)
+          </label>
+        </div>
+
+        {error && (
+          <div className="bg-red-900/50 border border-red-700 text-red-200 text-sm rounded-sm p-3">
+            {error}
           </div>
+        )}
 
-          <div>
-            <label htmlFor="add-fund-pair" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Pair</label>
-            <input
-              id="add-fund-pair"
-              autoFocus
-              type="text"
-              value={pair}
-              onChange={(e) => setPair(formatPairForExchange(e.target.value, exchange))}
-              onFocus={(e) => e.target.select()}
-              placeholder={fmt.placeholder}
-              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-hidden"
-              disabled={submitting}
-              autoComplete="off"
-            />
-            <div className="text-xs text-gray-400 mt-1">{fmt.hint}</div>
-          </div>
-
-          <div>
-            <label htmlFor="add-fund-allocation" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Initial Capital (quote currency)</label>
-            <input
-              id="add-fund-allocation"
-              type="number"
-              min="0"
-              step="100"
-              value={totalAllocation}
-              onChange={(e) => setTotalAllocation(e.target.value)}
-              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-hidden"
-              disabled={submitting}
-            />
-            <div className="text-xs text-gray-400 mt-1">Seeds <span className="font-mono">deposited capital</span> and <span className="font-mono">max deployed</span> for this fund. You can adjust both later in the fund's config.</div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <input
-              id="addFundDryRun"
-              type="checkbox"
-              checked={dryRun}
-              onChange={(e) => setDryRun(e.target.checked)}
-              className="w-4 h-4 bg-gray-900 border-gray-700 rounded-sm"
-              disabled={submitting}
-            />
-            <label htmlFor="addFundDryRun" className="text-sm text-gray-300">
-              Start in dry-run mode (recommended)
-            </label>
-          </div>
-
-          {error && (
-            <div className="bg-red-900/50 border border-red-700 text-red-200 text-sm rounded-sm p-3">
-              {error}
-            </div>
-          )}
-
-          <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={submitting}
-              className="min-h-11 px-4 py-2 text-sm text-gray-300 hover:text-white"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="min-h-11 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm font-medium text-white"
-            >
-              {submitting ? 'Creating...' : 'Create Fund'}
-            </button>
-          </div>
-        </form>
+        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="min-h-11 px-4 py-2 text-sm text-gray-300 hover:text-white"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="min-h-11 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm font-medium text-white"
+          >
+            {submitting ? 'Creating...' : 'Create Fund'}
+          </button>
+        </div>
+      </form>
     </ModalDialog>
   )
 }
