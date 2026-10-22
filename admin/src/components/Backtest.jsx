@@ -4,6 +4,7 @@ import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { CartesianChart } from './charts/primitives/CartesianChart'
 import { pairQuery } from '../utils/api'
 import { apiPost } from '../utils/apiClient'
+import { formatPercent } from '../utils/format.mjs'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 
 // Time periods adjusted per interval type
@@ -142,7 +143,6 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
   // formatCurrency for balances/totals (fixed 2 decimals)
   // formatPrice for prices (smart decimals based on magnitude)
   const formatBase = (n) => (n || 0).toFixed(8)
-  const formatPercent = (n) => `${(n || 0).toFixed(2)}%`
 
   const runBacktest = async () => {
     setLoading(true)

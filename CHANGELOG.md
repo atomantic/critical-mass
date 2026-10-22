@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-1595] Admin currency, percent, byte and local-timestamp formatters are consolidated** — new `admin/src/utils/format.mjs` (`formatUsd({compact,decimals})`, `formatPercent`, `formatLocalStamp`, `formatBytes`, also re-exported from `chartUtils`) replaces the local copies in TradeHistory, ScorecardPanel, Backtest, Optimizer, BackupRestore, TransactionsDCA, regimeFormat and chartDataText. Output is unchanged apart from non-finite values in TradeHistory now showing `---`.
 - **[issue-1593] Admin P&L colour and sign logic uses shared helpers** — `pnlColorClass` and `signedPrefix` in `admin/src/utils/pnlFormat.mjs` replace ~94 inline `>= 0 ? ...` ternaries across 23 admin components. Presentation only; output is identical (zero stays green with a `+`). The two local `pnlColor` helpers in the updown panels keep their own neutral zero colour.
 
 ### Security

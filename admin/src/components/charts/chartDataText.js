@@ -3,6 +3,7 @@
 // text alternative cannot drift apart. Missing values (null/undefined/NaN) stay distinct from 0.
 
 import { formatPrice } from './chartUtils'
+import { formatLocalStamp, formatPercent } from '../../utils/format.mjs'
 
 export const TABLE_PAGE_SIZE = 100
 
@@ -22,7 +23,7 @@ export function formatClock(ts) {
 export function formatStamp(ts) {
   if (!isValidTimestamp(ts)) return 'unknown time'
   const d = new Date(ts)
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${formatClock(ts)}`
+  return formatLocalStamp(ts)
 }
 
 export function formatSpan(ms) {
@@ -37,7 +38,7 @@ export function formatSpan(ms) {
 }
 
 export const formatUsd = (v) => (isNum(v) ? formatPrice(v) : 'missing')
-export const formatPct = (v) => (isNum(v) ? `${v.toFixed(2)}%` : 'missing')
+export const formatPct = (v) => (isNum(v) ? formatPercent(v) : 'missing')
 
 /**
  * Summarize one numeric series. Missing values are counted but excluded from first/latest/min/max.

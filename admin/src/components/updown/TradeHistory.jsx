@@ -9,16 +9,9 @@ import { completePagedItems } from '../../utils/pagedList.mjs'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { parseTradeAmountExpression } from './tradeAmountExpression'
 import { signedPrefix } from '../../utils/pnlFormat.mjs'
+import { formatUsd } from '../../utils/format.mjs'
 
-function fmt(v) {
-  if (v == null) return '---'
-  const abs = Math.abs(v)
-  // Compact format: $1.6K instead of $1,573.31 to fit narrow panels
-  if (abs >= 1000) {
-    return (v < 0 ? '-' : '') + '$' + (abs / 1000).toFixed(1).replace(/\.0$/, '') + 'K'
-  }
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v)
-}
+const fmt = (v) => formatUsd(v, { compact: true, decimals: 0 })
 
 function fmtDate(d) {
   if (!d) return '---'
