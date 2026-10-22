@@ -137,7 +137,7 @@ describe('ConfigEditor shared write gate (issue #455)', () => {
       configEditorSource,
       /text: 'Configuration saved, but the live engine is still using the previous settings\. Restart the engine to apply it\.',/,
     )
-    assert.equal((configEditorSource.match(/text: describeConfigSaveError\(res\.status, result\)\.message/g) || []).length, 2, 'both save paths use the shared humanized error description')
+    assert.equal((configEditorSource.match(/text: describeWriteFailure\(res\)/g) || []).length, 2, 'both save paths use the shared humanized error description')
     assert.match(configEditorSource, /text: `\$\{label\} saved`/)
     assert.match(
       configEditorSource,
