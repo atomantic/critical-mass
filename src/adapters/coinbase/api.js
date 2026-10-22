@@ -2,10 +2,10 @@
 const path = require('path');
 const crypto = require('crypto');
 const { getAuthHeaders } = require('./auth');
-const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
+const { createBaseAdapter, createAmbiguousPlacementError, buildFill, createPriceUnavailableError } = require('../base-adapter');
+const { withAbortTimeout, createNetworkError } = require('../http');
 const { incrementToDecimals, floorToIncrement, finiteFloat, sleep: defaultSleep } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
-const { REST_TIMEOUT_MS } = require('../../timing-constants');
 const { validateCoinbaseKeys, createKeyFileLoader } = require('../key-validation');
 
 /**
@@ -31,6 +31,8 @@ const HTTP_RETRY_MAX = 2;
 const HTTP_RETRY_BASE_MS = 1000;
 const HTTP_RETRY_CEILING_MS = 10000;
 const RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504]);
+// Returned from the deadline-scoped request body to ask the attempt loop to retry.
+const HTTP_RETRY = Symbol('coinbase-http-retry');
 
 /**
  * Parse a Retry-After header (delta-seconds or HTTP date) to milliseconds.
@@ -187,61 +189,63 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
       // `finally` only after the whole request (headers + body) settles —
       // mirrors the Gemini/Crypto.com adapters, which keep body reads inside
       // the same try/signal scope. (#428)
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
       try {
-        const response = await fetch(`${BASE_URL}${apiPath}`, {
-          ...fetchOptions,
-          signal: controller.signal,
+        const outcome = await withAbortTimeout(async (signal, controller) => {
+          const response = await fetch(`${BASE_URL}${apiPath}`, {
+            ...fetchOptions,
+            signal,
+          });
+
+          if (!response.ok) {
+            // A server/gateway failure is not proof that the matching engine
+            // rejected the order. Reconcile the sent id instead of releasing
+            // its intent and allowing the next cycle to submit another order.
+            if (method === 'POST' && isOrderPlacementEndpoint(apiPath) && response.status >= 500) {
+              // We do not need the error body; abort it before finally clears
+              // the deadline so a stalled body cannot retain the connection.
+              controller.abort();
+              throw createAmbiguousPlacementError('Coinbase', `${method} ${apiPath.split('?')[0]}`, data?.client_order_id, `HTTP ${response.status}`);
+            }
+            if (method === 'GET' && RETRYABLE_HTTP_STATUSES.has(response.status) && httpRetries < HTTP_RETRY_MAX && attempt < retries) {
+              const delay = computeHttpRetryDelayMs(httpRetries, parseRetryAfterMs(response.headers?.get?.('retry-after')), random);
+              const endpoint = apiPath.split('?')[0];
+              logger.warn(`⚠️ [coinbase] HTTP ${response.status} on ${method} ${endpoint}, retrying in ${delay}ms (retry ${httpRetries + 1}/${HTTP_RETRY_MAX})`, {
+                pair: getPairFromApiPath(apiPath),
+                method,
+                endpoint,
+                status: response.status,
+                delayMs: delay,
+              });
+              httpRetries++;
+              pendingDelayMs = delay;
+              controller.abort();
+              return HTTP_RETRY; // withAbortTimeout's finally clears the deadline timer
+            }
+            const errData = await response.json().catch(() => ({}));
+            const message = errData.message || errData.error_details || response.statusText;
+            const errorData = errData.error || '';
+            const cleanError = new Error(`Coinbase API ${response.status}: ${message}${errorData ? ` (${errorData})` : ''}`);
+            cleanError.status = response.status;
+            cleanError.endpoint = `${method} ${apiPath}`;
+            throw cleanError;
+          }
+
+          // A 2xx whose body we cannot decode (undecodable JSON, or the body
+          // stalls/resets and the deadline above aborts it) is the same
+          // ambiguity as a lost response on a placement POST: Coinbase accepted
+          // something we can't read, so the outcome is unknown, not a clean
+          // failure. (#427/#428)
+          if (method === 'POST' && isOrderPlacementEndpoint(apiPath)) {
+            try {
+              return await response.json();
+            } catch (err) {
+              throw createAmbiguousPlacementError('Coinbase', `${method} ${apiPath.split('?')[0]}`, data?.client_order_id, `undecodable response: ${err.message}`);
+            }
+          }
+          return await response.json();
         });
-
-        if (!response.ok) {
-          // A server/gateway failure is not proof that the matching engine
-          // rejected the order. Reconcile the sent id instead of releasing
-          // its intent and allowing the next cycle to submit another order.
-          if (method === 'POST' && isOrderPlacementEndpoint(apiPath) && response.status >= 500) {
-            // We do not need the error body; abort it before finally clears
-            // the deadline so a stalled body cannot retain the connection.
-            controller.abort();
-            throw createAmbiguousPlacementError('Coinbase', `${method} ${apiPath.split('?')[0]}`, data?.client_order_id, `HTTP ${response.status}`);
-          }
-          if (method === 'GET' && RETRYABLE_HTTP_STATUSES.has(response.status) && httpRetries < HTTP_RETRY_MAX && attempt < retries) {
-            const delay = computeHttpRetryDelayMs(httpRetries, parseRetryAfterMs(response.headers?.get?.('retry-after')), random);
-            const endpoint = apiPath.split('?')[0];
-            logger.warn(`⚠️ [coinbase] HTTP ${response.status} on ${method} ${endpoint}, retrying in ${delay}ms (retry ${httpRetries + 1}/${HTTP_RETRY_MAX})`, {
-              pair: getPairFromApiPath(apiPath),
-              method,
-              endpoint,
-              status: response.status,
-              delayMs: delay,
-            });
-            httpRetries++;
-            pendingDelayMs = delay;
-            controller.abort();
-            continue; // finally clears the deadline timer
-          }
-          const errData = await response.json().catch(() => ({}));
-          const message = errData.message || errData.error_details || response.statusText;
-          const errorData = errData.error || '';
-          const cleanError = new Error(`Coinbase API ${response.status}: ${message}${errorData ? ` (${errorData})` : ''}`);
-          cleanError.status = response.status;
-          cleanError.endpoint = `${method} ${apiPath}`;
-          throw cleanError;
-        }
-
-        // A 2xx whose body we cannot decode (undecodable JSON, or the body
-        // stalls/resets and the deadline above aborts it) is the same
-        // ambiguity as a lost response on a placement POST: Coinbase accepted
-        // something we can't read, so the outcome is unknown, not a clean
-        // failure. (#427/#428)
-        if (method === 'POST' && isOrderPlacementEndpoint(apiPath)) {
-          try {
-            return await response.json();
-          } catch (err) {
-            throw createAmbiguousPlacementError('Coinbase', `${method} ${apiPath.split('?')[0]}`, data?.client_order_id, `undecodable response: ${err.message}`);
-          }
-        }
-        return await response.json();
+        if (outcome === HTTP_RETRY) continue;
+        return outcome;
       } catch (err) {
         lastError = err;
         // Already-classified outcomes must propagate untouched: a definitive
@@ -252,8 +256,6 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
         if (typeof lastError.status === 'number' || lastError.unknownOutcome) {
           throw lastError;
         }
-      } finally {
-        clearTimeout(timeout);
       }
 
       // Only reachable for an unclassified transport/decode failure: either
@@ -298,10 +300,7 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
       }
 
       // Non-retryable error or out of retries
-      const cleanError = new Error(`Coinbase API network error: ${lastError.message}`);
-      cleanError.status = 'network';
-      cleanError.endpoint = `${method} ${apiPath}`;
-      throw cleanError;
+      throw createNetworkError(`Coinbase API network error: ${lastError.message}`, `${method} ${apiPath}`);
     }
   };
 
@@ -362,7 +361,11 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
    */
   adapter.getCurrentPrice = async (productId) => {
     const data = await makeRequest('GET', `/api/v3/brokerage/products/${productId}`);
-    return parseFloat(data.price);
+    const price = parseFloat(data?.price);
+    if (!Number.isFinite(price) || price <= 0) {
+      throw createPriceUnavailableError('coinbase', productId, data?.price);
+    }
+    return price;
   };
 
   /**
@@ -665,22 +668,23 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
       const quoteAmount = sizeInQuote ? rawSize : price * size;
 
       return {
-        tradeId: fill.trade_id,
-        orderId: fill.order_id,
-        productId: fill.product_id,
-        side: fill.side,
-        price,
-        size,
-        sizeInQuote: quoteAmount,
-        // Fee breakdown
-        commission: parseFloat(fill.commission || 0),
-        totalCommission: parseFloat(commissionDetail.total_commission || fill.commission || 0),
-        rebate: parseFloat(commissionDetail.rebate || 0),
-        netFee: parseFloat(commissionDetail.total_commission || fill.commission || 0) - parseFloat(commissionDetail.rebate || 0),
+        ...buildFill({
+          tradeId: fill.trade_id,
+          orderId: fill.order_id,
+          productId: fill.product_id,
+          side: fill.side,
+          price,
+          size,
+          sizeInQuote: quoteAmount,
+          // Fee breakdown
+          commission: parseFloat(fill.commission || 0),
+          totalCommission: parseFloat(commissionDetail.total_commission || fill.commission || 0),
+          rebate: parseFloat(commissionDetail.rebate || 0),
+          tradeTime: fill.trade_time,
+          liquidityIndicator: fill.liquidity_indicator, // MAKER or TAKER
+        }),
         // Raw commission detail for debugging
-        commissionDetail: commissionDetail,
-        tradeTime: fill.trade_time,
-        liquidityIndicator: fill.liquidity_indicator, // MAKER or TAKER
+        commissionDetail,
       };
     }).filter(fill => {
       // Dedup before callers size bodies/recovery orders, but reject conflicting

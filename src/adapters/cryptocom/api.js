@@ -2,11 +2,14 @@
 const path = require('path');
 const crypto = require('crypto');
 const { createAuthenticatedRequest } = require('./auth');
-const { createBaseAdapter, createAmbiguousPlacementError, restQueueTiming } = require('../base-adapter');
+const {
+  createBaseAdapter, createAmbiguousPlacementError, defaultSleep, awaitAndAccountQueuedTime,
+  collectOrderFillsWithRetry, buildFill, createPriceUnavailableError,
+} = require('../base-adapter');
+const { withAbortTimeout, createNetworkError, createPublicNetworkError } = require('../http');
 const { validateStandardExchangeKeys, createKeyFileLoader } = require('../key-validation');
-const { incrementToDecimals, floorToIncrement, finiteFloat, sleep } = require('../../shared-utils');
+const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
-const { REST_TIMEOUT_MS } = require('../../timing-constants');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -31,7 +34,7 @@ const REST_BASE_URL = 'https://api.crypto.com/exchange/v1';
 const ORDER_PLACEMENT_METHOD = 'private/create-order';
 const TRADE_SCAN_INTERVAL_MS = 200;
 const TRADE_SCAN_MAX_PAGES = 64;
-const FILL_SCAN_RETRY_DELAY_MS = 750;
+const FILL_SCAN_RETRY_DELAY_MS = 750; // paces reconciliation-scan page retries (fill-scan retries use base-adapter's default)
 // Consecutive transient page failures a reconciliation scan retries in place
 // (its cursor never moves on a failed page) before rejecting (issue #966).
 const RECONCILIATION_SCAN_MAX_RETRIES = 3;
@@ -67,12 +70,7 @@ const createCryptocomAdapter = (keysPath = null) => {
     const now = Date.now();
     const waitMs = Math.max(0, nextTradeRequestAt - now);
     nextTradeRequestAt = Math.max(now, nextTradeRequestAt) + TRADE_SCAN_INTERVAL_MS;
-    if (waitMs > 0) {
-      const startedAt = Date.now();
-      await sleep(waitMs);
-      const store = restQueueTiming.getStore();
-      if (store) store.queuedMs += Date.now() - startedAt;
-    }
+    if (waitMs > 0) await awaitAndAccountQueuedTime(defaultSleep(waitMs));
   };
 
   const keyLoader = createKeyFileLoader({
@@ -109,32 +107,27 @@ const createCryptocomAdapter = (keysPath = null) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
     const body = createAuthenticatedRequest(method, params, apiKey, apiSecret);
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
     let response;
     let rawText;
     try {
-      response = await fetch(`${REST_BASE_URL}/${method}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-      rawText = await response.text();
+      ({ response, rawText } = await withAbortTimeout(async (signal) => {
+        const res = await fetch(`${REST_BASE_URL}/${method}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal,
+        });
+        return { response: res, rawText: await res.text() };
+      }));
     } catch (err) {
-      clearTimeout(timeout);
       // Placement must not degrade to a plain network error: the request may
       // have reached the matching engine, so the outcome is unknown and must
       // stay reconcilable by client_oid rather than look like a clean failure.
       if (method === ORDER_PLACEMENT_METHOD) {
         throw createAmbiguousPlacementError('Crypto.com', method, params?.client_oid, err.message);
       }
-      const cleanError = new Error(`Crypto.com API network: ${err.message}`);
-      cleanError.status = 'network';
-      cleanError.endpoint = method;
-      throw cleanError;
+      throw createNetworkError(`Crypto.com API network: ${err.message}`, method);
     }
-    clearTimeout(timeout);
 
     if (!response.ok) {
       // A 5xx may originate after the order reached the matching engine.
@@ -197,29 +190,19 @@ const createCryptocomAdapter = (keysPath = null) => {
       ? `${REST_BASE_URL}/${method}?${queryString}`
       : `${REST_BASE_URL}/${method}`;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
     let response;
     let rawText;
     try {
-      response = await fetch(url, {
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-      });
-      rawText = await response.text();
+      ({ response, rawText } = await withAbortTimeout(async (signal) => {
+        const res = await fetch(url, {
+          headers: { 'Content-Type': 'application/json' },
+          signal,
+        });
+        return { response: res, rawText: await res.text() };
+      }));
     } catch (err) {
-      clearTimeout(timeout);
-      const networkError = new Error(
-        err && err.name === 'AbortError'
-          ? `Crypto.com public request timed out for ${method}`
-          : `Crypto.com public request failed for ${method}: ${err && err.message ? err.message : String(err)}`
-      );
-      networkError.status = 'network';
-      networkError.endpoint = method;
-      networkError.cause = err;
-      throw networkError;
+      throw createPublicNetworkError('Crypto.com', method, err);
     }
-    clearTimeout(timeout);
 
     if (!response.ok) {
       throw new Error(`Crypto.com API ${response.status}: ${response.statusText}`);
@@ -303,7 +286,11 @@ const createCryptocomAdapter = (keysPath = null) => {
     }
 
     // 'a' is the last trade price
-    return parseFloat(ticker.a || ticker.b || 0);
+    const price = parseFloat(ticker.a || ticker.b);
+    if (!Number.isFinite(price) || price <= 0) {
+      throw createPriceUnavailableError('cryptocom', productId, ticker.a || ticker.b);
+    }
+    return price;
   };
 
   /**
@@ -343,7 +330,13 @@ const createCryptocomAdapter = (keysPath = null) => {
       throw new Error(`Instrument not found: ${instrument}`);
     }
 
-    const price = await adapter.getCurrentPrice(productId);
+    // Limit placements only need the increments; a ticker without a usable
+    // price must not block them, so it is reported as null here and rejected
+    // by the one caller that prices off it (placeMarketBuy).
+    const price = await adapter.getCurrentPrice(productId).catch((err) => {
+      if (err?.code === 'PRICE_UNAVAILABLE') return null;
+      throw err;
+    });
 
     // Crypto.com uses qty_tick_size for base increment and price_tick_size for quote
     const baseIncrement = instrumentData.qty_tick_size?.toString() || '0.00000001';
@@ -373,6 +366,7 @@ const createCryptocomAdapter = (keysPath = null) => {
     const details = await adapter.getProductDetails(productId);
     const qtyTickSize = parseFloat(details.baseIncrement) || 1;
     const price = details.price;
+    if (!(price > 0)) throw createPriceUnavailableError('cryptocom', productId, price);
 
     // Calculate quantity from notional, round down to tick size
     const rawQuantity = quoteAmount / price;
@@ -885,55 +879,43 @@ const createCryptocomAdapter = (keysPath = null) => {
     // (checkPendingOrderFills) removes a terminal order from tracking
     // BEFORE invoking its fill callback, so a reject here on a merely
     // transient gap can strand that fill with no automatic retry path.
-    const FILL_SCAN_RETRIES = 2;
+    // One page budget shared by every retry so a persistently lagging index
+    // cannot multiply the per-call request ceiling.
     const budget = { remaining: TRADE_SCAN_MAX_PAGES };
-    let matching;
-    let totalMatched;
-    for (let attempt = 0; ; attempt++) {
-      const rawTrades = await walkTrades({
-        instrument,
-        startNs: BigInt(Math.trunc(windowStartMs)) * NS_PER_MS,
-        endNs: BigInt(Math.trunc(windowEndMs)) * NS_PER_MS,
-        budget,
-      });
-      matching = rawTrades.filter(t => String(t.order_id) === String(orderId));
-      totalMatched = matching.reduce((sum, t) => sum + parseFloat(t.traded_quantity || t.quantity || 0), 0);
-      if (totalMatched >= cumulativeQuantity - 1e-9 || attempt >= FILL_SCAN_RETRIES) break;
-      const startedAt = Date.now();
-      await sleep(FILL_SCAN_RETRY_DELAY_MS);
-      const store = restQueueTiming.getStore();
-      if (store) store.queuedMs += Date.now() - startedAt;
-    }
-
-    if (totalMatched < cumulativeQuantity - 1e-9) {
-      throw Object.assign(
-        new Error(`Crypto.com getOrderFills: fills incomplete for ${orderId}: ${totalMatched} of ${cumulativeQuantity}`),
-        { incompleteFills: true }
-      );
-    }
+    const matching = await collectOrderFillsWithRetry({
+      expected: cumulativeQuantity,
+      label: 'Crypto.com',
+      orderId,
+      sumOf: (t) => parseFloat(t.traded_quantity || t.quantity || 0),
+      fetchMatching: async () => {
+        const rawTrades = await walkTrades({
+          instrument,
+          startNs: BigInt(Math.trunc(windowStartMs)) * NS_PER_MS,
+          endNs: BigInt(Math.trunc(windowEndMs)) * NS_PER_MS,
+          budget,
+        });
+        return rawTrades.filter(t => String(t.order_id) === String(orderId));
+      },
+    });
 
     return matching.map(trade => {
       const price = parseFloat(trade.traded_price || trade.price || 0);
       const size = parseFloat(trade.traded_quantity || trade.quantity || 0);
       const feeAmount = parseFloat(trade.fee || 0);
 
-      return {
+      return buildFill({
         tradeId: trade.trade_id?.toString(),
         orderId: trade.order_id?.toString(),
         productId: trade.instrument_name,
         side: (trade.side || '').toUpperCase(),
         price,
         size,
-        sizeInQuote: price * size,
         commission: feeAmount,
-        totalCommission: feeAmount,
-        rebate: 0,
-        netFee: feeAmount,
         tradeTime: (trade.create_time || trade.trade_time)
           ? new Date(trade.create_time || trade.trade_time).toISOString()
           : new Date().toISOString(),
         liquidityIndicator: trade.liquidity_indicator || 'TAKER',
-      };
+      });
     });
   };
 
@@ -995,10 +977,7 @@ const createCryptocomAdapter = (keysPath = null) => {
         logger.warn(`Crypto.com reconciliation scan page failed; retrying from the same cursor (${failures}/${maxConsecutiveFailures}): ${err.message}`, {
           instrument, pages: scan.pages, error: err.message,
         });
-        const startedAt = Date.now();
-        await sleep(FILL_SCAN_RETRY_DELAY_MS * failures);
-        const store = restQueueTiming.getStore();
-        if (store) store.queuedMs += Date.now() - startedAt;
+        await awaitAndAccountQueuedTime(defaultSleep(FILL_SCAN_RETRY_DELAY_MS * failures));
       }
     }
     report();

@@ -2,11 +2,14 @@
 const path = require('path');
 const crypto = require('crypto');
 const { getRestAuthHeaders } = require('./auth');
-const { createBaseAdapter, createAmbiguousPlacementError, restQueueTiming } = require('../base-adapter');
+const {
+  createBaseAdapter, createAmbiguousPlacementError, defaultSleep, awaitAndAccountQueuedTime,
+  collectOrderFillsWithRetry, buildFill, createPriceUnavailableError,
+} = require('../base-adapter');
+const { withAbortTimeout, createNetworkError, createPublicNetworkError } = require('../http');
 const { validateStandardExchangeKeys, createKeyFileLoader } = require('../key-validation');
-const { incrementToDecimals, floorToIncrement, finiteFloat, sleep: defaultSleep } = require('../../shared-utils');
+const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
-const { REST_TIMEOUT_MS } = require('../../timing-constants');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -40,24 +43,6 @@ const RATE_LIMIT_BACKOFF_MS = 500;  // linear: 500ms, 1000ms
 // as an unknown outcome carrying the client_order_id instead of a plain network
 // error that a caller would read as "it never happened". (#427)
 const ORDER_PLACEMENT_ENDPOINT = '/v1/order/new';
-
-/**
- * Await `waitPromise` (if any) and, when running inside a
- * `restQueueTiming.run(...)` store (see base-adapter.js), add the elapsed
- * time to `store.queuedMs` so `instrumentAdapterForHealth` can subtract
- * client-side throttle/backoff wait from the latency it attributes to the
- * exchange (issue #680). A no-op — and therefore harmless — when no store is
- * present (e.g. a call made outside health instrumentation, or in tests).
- * @param {Promise<void>|null|undefined} waitPromise
- * @returns {Promise<void>}
- */
-const awaitAndAccountQueuedTime = async (waitPromise) => {
-  if (!waitPromise) return;
-  const startedAt = Date.now();
-  await waitPromise;
-  const store = restQueueTiming.getStore();
-  if (store) store.queuedMs += Date.now() - startedAt;
-};
 
 /**
  * Build a self-spacing gate that serializes callers to at most one request per
@@ -156,20 +141,19 @@ const createGeminiAdapter = (keysPath = null) => {
       const { apiKey, apiSecret } = adapter.loadCredentials();
       const headers = getRestAuthHeaders(apiKey, apiSecret, endpoint, payload);
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
       let response;
       let rawText;
       try {
-        response = await fetch(`${REST_BASE_URL}${endpoint}`, {
-          method: 'POST',
-          headers,
-          signal: controller.signal,
-        });
-        // Preserve big integers as strings using regex before JSON parse
-        rawText = await response.text();
+        ({ response, rawText } = await withAbortTimeout(async (signal) => {
+          const res = await fetch(`${REST_BASE_URL}${endpoint}`, {
+            method: 'POST',
+            headers,
+            signal,
+          });
+          // Preserve big integers as strings using regex before JSON parse
+          return { response: res, rawText: await res.text() };
+        }));
       } catch (err) {
-        clearTimeout(timeout);
         // Network errors are NOT retried: the request may have reached the
         // matching engine, so a blind retry could double-place an order.
         // Placement specifically must not degrade to a plain network error —
@@ -177,12 +161,8 @@ const createGeminiAdapter = (keysPath = null) => {
         if (endpoint === ORDER_PLACEMENT_ENDPOINT) {
           throw createAmbiguousPlacementError('Gemini', `POST ${endpoint}`, payload?.client_order_id, err.message);
         }
-        const cleanError = new Error(`Gemini API network: ${err.message}`);
-        cleanError.status = 'network';
-        cleanError.endpoint = `POST ${endpoint}`;
-        throw cleanError;
+        throw createNetworkError(`Gemini API network: ${err.message}`, `POST ${endpoint}`);
       }
-      clearTimeout(timeout);
 
       if (!response.ok) {
         // A 5xx may originate after the order reached the matching engine.
@@ -225,31 +205,18 @@ const createGeminiAdapter = (keysPath = null) => {
    * @returns {Promise<any>} API response
    */
   const makePublicRequest = async (endpoint) => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
-    let response;
-    let json;
     try {
-      response = await fetch(`${REST_BASE_URL}${endpoint}`, { signal: controller.signal });
-      if (!response.ok) {
-        throw new Error(`Gemini API ${response.status}: ${response.statusText}`);
-      }
-      json = await response.json();
+      return await withAbortTimeout(async (signal) => {
+        const response = await fetch(`${REST_BASE_URL}${endpoint}`, { signal });
+        if (!response.ok) {
+          throw new Error(`Gemini API ${response.status}: ${response.statusText}`);
+        }
+        return response.json();
+      });
     } catch (err) {
-      clearTimeout(timeout);
       if (err.status || err.message?.startsWith('Gemini API')) throw err;
-      const networkError = new Error(
-        err && err.name === 'AbortError'
-          ? `Gemini public request timed out for ${endpoint}`
-          : `Gemini public request failed for ${endpoint}: ${err && err.message ? err.message : String(err)}`
-      );
-      networkError.status = 'network';
-      networkError.endpoint = endpoint;
-      networkError.cause = err;
-      throw networkError;
+      throw createPublicNetworkError('Gemini', endpoint, err);
     }
-    clearTimeout(timeout);
-    return json;
   };
 
   /**
@@ -297,7 +264,11 @@ const createGeminiAdapter = (keysPath = null) => {
   adapter.getCurrentPrice = async (productId) => {
     const symbol = toGeminiSymbol(productId);
     const ticker = await makePublicRequest(`/v1/pubticker/${symbol}`);
-    return parseFloat(ticker.last);
+    const price = parseFloat(ticker?.last);
+    if (!Number.isFinite(price) || price <= 0) {
+      throw createPriceUnavailableError('gemini', productId, ticker?.last);
+    }
+    return price;
   };
 
   /**
@@ -322,7 +293,13 @@ const createGeminiAdapter = (keysPath = null) => {
   adapter.getProductDetails = async (productId) => {
     const symbol = toGeminiSymbol(productId);
     const details = await makePublicRequest(`/v1/symbols/details/${symbol}`);
-    const price = await adapter.getCurrentPrice(productId);
+    // Limit placements only need the increments; a ticker without a usable
+    // price must not block them, so it is reported as null here and rejected
+    // by the one caller that prices off it (placeMarketBuy).
+    const price = await adapter.getCurrentPrice(productId).catch((err) => {
+      if (err?.code === 'PRICE_UNAVAILABLE') return null;
+      throw err;
+    });
 
     return {
       baseIncrement: details.tick_size?.toString() || '0.00000001',
@@ -352,6 +329,7 @@ const createGeminiAdapter = (keysPath = null) => {
     // (issue #208B)
     const product = await adapter.getProductDetails(productId);
     const currentPrice = product.price;
+    if (!(currentPrice > 0)) throw createPriceUnavailableError('gemini', productId, currentPrice);
     const baseIncrement = parseFloat(product.baseIncrement);
     const quoteIncrement = parseFloat(product.quoteIncrement);
     const baseDecimals = incrementToDecimals(product.baseIncrement);
@@ -813,48 +791,35 @@ const createGeminiAdapter = (keysPath = null) => {
     // BEFORE invoking its fill callback, and Gemini has no order-event
     // WebSocket to rediscover it afterward, so a reject here on a merely
     // transient gap can strand that fill with no automatic retry path.
-    const FILL_SCAN_RETRIES = 2;
-    const FILL_SCAN_RETRY_DELAY_MS = 750;
-    let fills;
-    let totalMatched;
-    for (let attempt = 0; ; attempt++) {
-      const trades = await fetchTradesSince(symbol, sinceMs);
-      fills = trades
-        .filter(trade => trade.order_id?.toString() === orderId.toString())
-        .map(trade => {
-          const price = parseFloat(trade.price || 0);
-          const size = parseFloat(trade.amount || 0);
-          const feeAmount = parseFloat(trade.fee_amount || 0);
+    return collectOrderFillsWithRetry({
+      expected: executedAmount,
+      label: '[gemini]',
+      orderId,
+      sumOf: (fill) => Number(fill.size || 0),
+      fetchMatching: async () => {
+        const trades = await fetchTradesSince(symbol, sinceMs);
+        return trades
+          .filter(trade => trade.order_id?.toString() === orderId.toString())
+          .map(trade => {
+            const price = parseFloat(trade.price || 0);
+            const size = parseFloat(trade.amount || 0);
+            const feeAmount = parseFloat(trade.fee_amount || 0);
 
-          return {
-            tradeId: trade.tid?.toString(),
-            orderId: trade.order_id?.toString(),
-            productId: trade.symbol,
-            side: trade.type?.toUpperCase(),
-            price,
-            size,
-            sizeInQuote: price * size,
-            commission: feeAmount,
-            totalCommission: feeAmount,
-            rebate: 0, // Gemini doesn't have maker rebates in the same way
-            netFee: feeAmount,
-            tradeTime: new Date(trade.timestampms).toISOString(),
-            liquidityIndicator: trade.is_maker ? 'MAKER' : 'TAKER',
-          };
-        });
-      totalMatched = fills.reduce((sum, fill) => sum + Number(fill.size || 0), 0);
-      if (totalMatched >= executedAmount - 1e-9 || attempt >= FILL_SCAN_RETRIES) break;
-      await awaitAndAccountQueuedTime(defaultSleep(FILL_SCAN_RETRY_DELAY_MS));
-    }
-
-    if (totalMatched < executedAmount - 1e-9) {
-      throw Object.assign(
-        new Error(`[gemini] getOrderFills: fills incomplete for ${orderId}: ${totalMatched} of ${executedAmount}`),
-        { incompleteFills: true }
-      );
-    }
-
-    return fills;
+            // Gemini doesn't have maker rebates in the same way (rebate 0).
+            return buildFill({
+              tradeId: trade.tid?.toString(),
+              orderId: trade.order_id?.toString(),
+              productId: trade.symbol,
+              side: trade.type?.toUpperCase(),
+              price,
+              size,
+              commission: feeAmount,
+              tradeTime: new Date(trade.timestampms).toISOString(),
+              liquidityIndicator: trade.is_maker ? 'MAKER' : 'TAKER',
+            });
+          });
+      },
+    });
   };
 
   /**

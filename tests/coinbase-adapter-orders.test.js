@@ -277,7 +277,7 @@ describe('coinbase response-body boundary within timeout (issue #428)', () => {
     // the second attempt fires, so drain in small steps rather than one tick.
     for (let elapsed = 0; elapsed < 32000; elapsed += 1000) {
       mock.timers.tick(1000);
-      await Promise.resolve();
+      await flushMicrotasks(); // drain the whole abort-to-retry promise chain, not a fixed hop count
     }
     await pending;
 
