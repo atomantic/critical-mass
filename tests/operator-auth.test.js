@@ -10,7 +10,6 @@ const path = require('path');
 const {
   BOOTSTRAP_HEADER,
   createOperatorAuth,
-  isLoopbackAddress,
   isLoopbackRequest,
   MIN_BOOTSTRAP_SECRET_LENGTH,
   MIN_PASSWORD_LENGTH,
@@ -19,7 +18,7 @@ const {
 } = require('../src/operator-auth');
 const { signJwt } = require('../src/jwt');
 const { readJSON, writeJSON } = require('../src/shared-utils');
-const { createCorsMiddleware } = require('../src/gateway-listen');
+const { createCorsMiddleware, isLoopbackHost } = require('../src/gateway-listen');
 
 const PASSWORD = 'gateway-password-1';
 const NEW_PASSWORD = 'gateway-password-2';
@@ -113,11 +112,11 @@ describe('operator authentication bootstrap', () => {
   });
 
   it('recognizes only direct loopback addresses as locally trusted', () => {
-    assert.equal(isLoopbackAddress('127.0.0.1'), true);
-    assert.equal(isLoopbackAddress('::1'), true);
-    assert.equal(isLoopbackAddress('::ffff:127.0.0.1'), true);
-    assert.equal(isLoopbackAddress('100.83.147.46'), false);
-    assert.equal(isLoopbackAddress('::ffff:192.168.1.10'), false);
+    assert.equal(isLoopbackHost('127.0.0.1'), true);
+    assert.equal(isLoopbackHost('::1'), true);
+    assert.equal(isLoopbackHost('::ffff:127.0.0.1'), true);
+    assert.equal(isLoopbackHost('100.83.147.46'), false);
+    assert.equal(isLoopbackHost('::ffff:192.168.1.10'), false);
 
     const request = (remoteAddress, forwardedFor = '', host = 'localhost:5570', forwardedHost = '') => ({
       socket: { remoteAddress },

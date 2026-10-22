@@ -12,8 +12,6 @@ const {
   createInitialFibState,
   resetFibState,
   getUncoveredFibBuys,
-  getFibonacciPreview,
-  getFibonacciCumulativeSpend,
 } = require('../src/fibonacci-utils');
 
 // ============================================================================
@@ -211,56 +209,6 @@ describe('resetFibState', () => {
     assert.notEqual(reset1, reset2);
   });
 });
-
-// ============================================================================
-// getFibonacciPreview
-// ============================================================================
-describe('getFibonacciPreview', () => {
-  it('returns default 8 entries when count is omitted', () => {
-    const preview = getFibonacciPreview(10);
-    assert.equal(preview.length, 8);
-  });
-
-  it('returns the correct buy amounts for baseAmount=10', () => {
-    const preview = getFibonacciPreview(10, 5);
-    // Multipliers for pos 0..4: 1, 1, 2, 3, 5
-    assert.deepStrictEqual(preview, [10, 10, 20, 30, 50]);
-  });
-
-  it('returns an empty array when count is 0', () => {
-    const preview = getFibonacciPreview(100, 0);
-    assert.deepStrictEqual(preview, []);
-  });
-
-  it('handles count of 1', () => {
-    const preview = getFibonacciPreview(25, 1);
-    assert.deepStrictEqual(preview, [25]);
-  });
-});
-
-// ============================================================================
-// getFibonacciCumulativeSpend
-// ============================================================================
-describe('getFibonacciCumulativeSpend', () => {
-  it('returns baseAmount for position 0 (single buy)', () => {
-    assert.equal(getFibonacciCumulativeSpend(0, 100), 100);
-  });
-
-  it('sums first two positions correctly (both multiplier 1)', () => {
-    // position 0: 1*100=100, position 1: 1*100=100, total=200
-    assert.equal(getFibonacciCumulativeSpend(1, 100), 200);
-  });
-
-  it('sums through position 4 correctly', () => {
-    // Multipliers: 1+1+2+3+5 = 12, at baseAmount 10 = 120
-    assert.equal(getFibonacciCumulativeSpend(4, 10), 120);
-  });
-
-  it('returns 0 when baseAmount is 0', () => {
-    assert.equal(getFibonacciCumulativeSpend(10, 0), 0);
-  });
-});
-
 
 describe('getUncoveredFibBuys', () => {
   const cases = [
