@@ -34,6 +34,10 @@ const {
   LEGACY_EXCHANGE,
 } = require('./legacy-namespace-migration');
 
+// Lazy on purpose: logger.js requires migration.js (resolveFundDataDir), so the
+// logger is resolved at call time to avoid a circular-import partial export.
+const migrationLog = () => require('./logger').createContextLogger({ component: 'migration' });
+
 const KEYS_DIR = DATA_DIR; // Keys stored alongside data
 
 /**
@@ -133,7 +137,7 @@ const migrateKeys = () => {
       console.log('  Migrate: keys.json -> data/coinbase-keys.json (root file renamed to keys.json.migrated)');
       return true;
     } catch (err) {
-      console.log(`  ⚠️  Keys migration failed, will retry next startup: ${err.message}`);
+      migrationLog().warn(`Keys migration failed, will retry next startup: ${err.message}`);
       return false;
     }
   }
@@ -174,7 +178,7 @@ const retireLegacyKeysFileIfAlreadyMigrated = () => {
     fs.renameSync(oldKeysFile, `${oldKeysFile}.migrated`);
     console.log('  Retired already-migrated root keys.json -> keys.json.migrated');
   } catch (err) {
-    console.log(`  ⚠️  Could not retire already-migrated keys.json: ${err.message}`);
+    migrationLog().warn(`Could not retire already-migrated keys.json: ${err.message}`);
   }
 };
 
@@ -654,7 +658,7 @@ const unstrandExchangeLevelFiles = ({ exchange, label, matches, reconcile }) => 
  * @returns {'skipped'}
  */
 const keepRebuiltExchangeCopy = ({ name, pairName, label }) => {
-  console.log(`  ⚠️  [${label}] Skip un-stranding (exchange-level file already exists): ${pairName}/${name}`);
+  migrationLog().warn(`[${label}] Skip un-stranding (exchange-level file already exists): ${pairName}/${name}`);
   return 'skipped';
 };
 
@@ -713,7 +717,7 @@ const mergeStrandedPriceCache = ({ src, dst, name, pairName, exchange, label }) 
   const exchangeLevel = readPriceCacheEnvelope(dst);
   if (!stranded || !exchangeLevel) {
     const unreadable = [!stranded && `${pairName}/${name}`, !exchangeLevel && `${exchange}/${name}`].filter(Boolean).join(', ');
-    console.log(`  ⚠️  [${label}] Left ${pairName}/${name} in place — not a mergeable cache envelope (unparseable or no prices array: ${unreadable})`);
+    migrationLog().warn(`[${label}] Left ${pairName}/${name} in place — not a mergeable cache envelope (unparseable or no prices array: ${unreadable})`);
     return 'skipped';
   }
 
@@ -1008,7 +1012,7 @@ const migrateExchangeToPairs = (exchange) => {
   });
   const moved = movedNames.length;
   for (const name of movedNames) console.log(`  ✓ ${name}`);
-  for (const name of skippedFiles) console.log(`  ⚠️  Skip (target exists): ${name}`);
+  for (const name of skippedFiles) migrationLog().warn(`Skip (target exists): ${name}`);
 
   // Clean up any OTHER empty pair subdirectories (e.g. created by the API
   // server using a non-default pair key before migration ran). Only removes
