@@ -8,6 +8,7 @@
 
 const { createCandleAggregator } = require('./candle-aggregator');
 const { createContextLogger } = require('./logger');
+const { CANDLE_FETCH_TIMEOUT_MS } = require('./timing-constants');
 
 /**
  * Context logger for the shared candle cache. `exchange` is supplied per call
@@ -65,7 +66,7 @@ const fetchCoinbaseCandles = async (tf, hours, granularity) => {
     );
     const url = `${COINBASE_EXCHANGE_URL}/products/BTC-USD/candles?granularity=${granularity}&start=${new Date(pageStartMs).toISOString()}&end=${new Date(pageEndMs).toISOString()}`;
     const controller = new AbortController();
-    const fetchTimeout = setTimeout(() => controller.abort(), 15000);
+    const fetchTimeout = setTimeout(() => controller.abort(), CANDLE_FETCH_TIMEOUT_MS);
     let res, raw;
     try {
       res = await fetch(url, { signal: controller.signal });
@@ -112,7 +113,7 @@ const fetchCryptocomCandles = async (tf, hours, cryptocomTf) => {
   const startTs = endTs - hours * 3_600_000;
   const url = `${CRYPTOCOM_API_URL}/get-candlestick?instrument_name=BTC_USDT&timeframe=${cryptocomTf}&start_ts=${startTs}&end_ts=${endTs}`;
   const controller = new AbortController();
-  const fetchTimeout = setTimeout(() => controller.abort(), 15000);
+  const fetchTimeout = setTimeout(() => controller.abort(), CANDLE_FETCH_TIMEOUT_MS);
   let res, json;
   try {
     res = await fetch(url, { signal: controller.signal });
@@ -144,7 +145,7 @@ const fetchCryptocomCandles = async (tf, hours, cryptocomTf) => {
 const fetchGeminiCandles = async (tf, hours, geminiTf) => {
   const url = `${GEMINI_API_URL}/candles/btcusd/${geminiTf}`;
   const controller = new AbortController();
-  const fetchTimeout = setTimeout(() => controller.abort(), 15000);
+  const fetchTimeout = setTimeout(() => controller.abort(), CANDLE_FETCH_TIMEOUT_MS);
   let res, raw;
   try {
     res = await fetch(url, { signal: controller.signal });

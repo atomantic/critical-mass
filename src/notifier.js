@@ -10,6 +10,7 @@ const { tradeEvents } = require('./trade-events');
 const { getNotificationConfig, getConfiguredFunds, getFundConfig, getBaseCurrency } = require('./config-utils');
 const { loadFundRegimeState } = require('./state-tracker');
 const { createContextLogger } = require('./logger');
+const { NOTIFIER_REQUEST_TIMEOUT_MS } = require('./timing-constants');
 
 /**
  * Module-level context logger. The notifier is exchange-agnostic (it fans out
@@ -285,7 +286,7 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
   const attemptTelegramSend = async (text, markdown) => {
     const url = `${TELEGRAM_API}${config.telegram.botToken}/sendMessage`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const timeout = setTimeout(() => controller.abort(), NOTIFIER_REQUEST_TIMEOUT_MS);
     try {
       const resp = await fetch(url, {
         method: 'POST',
@@ -689,7 +690,7 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
 
     const url = `${TELEGRAM_API}${config.telegram.botToken}/sendMessage`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const timeout = setTimeout(() => controller.abort(), NOTIFIER_REQUEST_TIMEOUT_MS);
     try {
       const resp = await fetch(url, {
         method: 'POST',
