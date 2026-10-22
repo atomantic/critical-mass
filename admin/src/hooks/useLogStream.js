@@ -3,6 +3,10 @@ import { getRealtimeClient } from '../lib/realtime'
 import { shouldAcceptFlushResult } from '../utils/flushResult.mjs'
 
 const MAX_LINES = 2000
+// Incoming lines are collected and flushed into React state at most once per
+// window, so a burst (engine restart, error loop) costs one array copy and one
+// render per tick instead of one per line.
+const FLUSH_INTERVAL_MS = 100
 
 export function useLogStream(processName, { lines = 500 } = {}) {
   const [logs, setLogs] = useState([])
@@ -16,11 +20,37 @@ export function useLogStream(processName, { lines = 500 } = {}) {
   // { reason: 'error' | 'exited' | 'crashed', message?, code?, signal? }.
   const [terminal, setTerminal] = useState(null)
   const logsRef = useRef([])
+  // Lines received since the last flush, plus the pending flush timer. Both are
+  // dropped by resetLogs so a reset can never be followed by stale lines.
+  const pendingRef = useRef([])
+  const flushTimerRef = useRef(null)
+  const nextIdRef = useRef(0)
   // The in-flight flush request (if any): { processName }. Cleared the
   // instant it settles — success, failure, disconnect, or a process switch —
   // so a duplicate or stale 'logs:flushed' can never be double-applied or
   // applied to the wrong process.
   const pendingFlushRef = useRef(null)
+
+  // Drop buffered and pending lines and any scheduled flush. Used by clear,
+  // resubscribe, reconnect and retry.
+  const resetLogs = useCallback(() => {
+    if (flushTimerRef.current != null) {
+      clearTimeout(flushTimerRef.current)
+      flushTimerRef.current = null
+    }
+    pendingRef.current = []
+    logsRef.current = []
+    setLogs([])
+  }, [])
+
+  const flushPending = useCallback(() => {
+    flushTimerRef.current = null
+    if (pendingRef.current.length === 0) return
+    const combined = logsRef.current.concat(pendingRef.current)
+    pendingRef.current = []
+    logsRef.current = combined.length > MAX_LINES ? combined.slice(-MAX_LINES) : combined
+    setLogs(logsRef.current)
+  }, [])
 
   useEffect(() => {
     if (!processName) return
@@ -29,9 +59,13 @@ export function useLogStream(processName, { lines = 500 } = {}) {
 
     const handleLine = (data) => {
       if (data.processName !== processName) return
-      const entry = { line: data.line, type: data.type, timestamp: data.timestamp }
-      logsRef.current = [...logsRef.current.slice(-(MAX_LINES - 1)), entry]
-      setLogs(logsRef.current)
+      nextIdRef.current += 1
+      // Stable per-line id: the row key, so React keeps existing DOM rows
+      // instead of re-rendering every row when the buffer shifts.
+      pendingRef.current.push({ id: nextIdRef.current, line: data.line, type: data.type, timestamp: data.timestamp })
+      if (flushTimerRef.current == null) {
+        flushTimerRef.current = setTimeout(flushPending, FLUSH_INTERVAL_MS)
+      }
     }
 
     const handleSubscribed = () => {
@@ -63,8 +97,7 @@ export function useLogStream(processName, { lines = 500 } = {}) {
     // instant it disconnects.
     const handleConnect = () => {
       setTerminal(null)
-      logsRef.current = []
-      setLogs([])
+      resetLogs()
       socket.emit('logs:subscribe', { processName, lines })
     }
     const handleDisconnect = () => {
@@ -90,12 +123,16 @@ export function useLogStream(processName, { lines = 500 } = {}) {
     socket.on('disconnect', handleDisconnect)
 
     if (socket.connected) {
-      logsRef.current = []
-      setLogs([])
+      resetLogs()
       socket.emit('logs:subscribe', { processName, lines })
     }
 
     return () => {
+      if (flushTimerRef.current != null) {
+        clearTimeout(flushTimerRef.current)
+        flushTimerRef.current = null
+      }
+      pendingRef.current = []
       socket.emit('logs:unsubscribe')
       socket.off('logs:line', handleLine)
       socket.off('logs:subscribed', handleSubscribed)
@@ -114,12 +151,11 @@ export function useLogStream(processName, { lines = 500 } = {}) {
       pendingFlushRef.current = null
       setFlushing(false)
     }
-  }, [processName, lines])
+  }, [processName, lines, resetLogs, flushPending])
 
   const clear = useCallback(() => {
-    logsRef.current = []
-    setLogs([])
-  }, [])
+    resetLogs()
+  }, [resetLogs])
 
   const flush = useCallback(() => {
     if (!processName || pendingFlushRef.current) return
@@ -136,10 +172,9 @@ export function useLogStream(processName, { lines = 500 } = {}) {
     if (!processName) return
     setTerminal(null)
     const socket = getRealtimeClient()
-    logsRef.current = []
-    setLogs([])
+    resetLogs()
     socket.emit('logs:subscribe', { processName, lines })
-  }, [processName, lines])
+  }, [processName, lines, resetLogs])
 
   return { logs, subscribed, clear, flush, flushing, flushResult, terminal, retry }
 }

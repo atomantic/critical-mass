@@ -92,6 +92,23 @@ describe('owned AI provider and run routes', () => {
     fs.rmSync(path.join(dataDir, 'runs'), { recursive: true, force: true });
   });
 
+  it('returns the shared { success: false, error } envelope on failures', async () => {
+    const missingProvider = await api('/api/providers/does-not-exist/test', { method: 'POST' });
+    assert.equal(missingProvider.status, 404);
+    assert.equal(missingProvider.json.success, false);
+    assert.equal(typeof missingProvider.json.error, 'string');
+
+    const missingRun = await api('/api/runs/0123456789abcdef0123456789abcdef');
+    assert.equal(missingRun.status, 404);
+    assert.equal(missingRun.json.success, false);
+    assert.match(missingRun.json.error, /Run not found/);
+
+    const badRequest = await api('/api/runs', { method: 'POST', body: { prompt: 'p' } });
+    assert.equal(badRequest.status, 400);
+    assert.equal(badRequest.json.success, false);
+    assert.match(badRequest.json.error, /providerId is required/);
+  });
+
   it('starts empty without writing a providers file', async () => {
     const res = await api('/api/providers');
     assert.equal(res.status, 200);

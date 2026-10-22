@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useId } from 'react'
+import { memo, useState, useEffect, useRef, useId } from 'react'
 import { useLogStream } from '../hooks/useLogStream'
 import { useToast } from './Toast'
 import { flushResultToast } from '../utils/flushResult.mjs'
@@ -19,6 +19,23 @@ const describeStatus = (subscribed, terminal) => {
     : `Crashed${terminal.code != null ? ` (code ${terminal.code})` : ''}${terminal.signal ? ` (${terminal.signal})` : ''}`
   return { text, dotClass: 'bg-red-500', textClass: 'text-red-400' }
 }
+
+const formatTime = (ts) => {
+  const d = new Date(ts)
+  return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    + '.' + String(d.getMilliseconds()).padStart(3, '0')
+}
+
+// Memoized so a row only re-renders when its own entry changes; log entries are
+// immutable once buffered, so new lines don't touch existing rows.
+const LogRow = memo(function LogRow({ entry }) {
+  return (
+    <div className="flex gap-2 hover:bg-gray-900/50">
+      <span className="text-gray-400 shrink-0 select-none">{formatTime(entry.timestamp)}</span>
+      <span className={entry.type === 'stderr' ? 'text-red-400' : 'text-gray-300'}>{entry.line}</span>
+    </div>
+  )
+})
 
 export default function LogViewer({ processName }) {
   const tailSelectId = useId()
@@ -52,12 +69,6 @@ export default function LogViewer({ processName }) {
   }
 
   const status = describeStatus(subscribed, terminal)
-
-  const formatTime = (ts) => {
-    const d = new Date(ts)
-    return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-      + '.' + String(d.getMilliseconds()).padStart(3, '0')
-  }
 
   const logContent = (
     <div className={fullscreen ? 'fixed inset-0 z-50 bg-gray-900 flex flex-col' : ''}>
@@ -129,12 +140,7 @@ export default function LogViewer({ processName }) {
             {subscribed ? 'Waiting for log output...' : terminal ? status.text : `Connecting to ${processName}...`}
           </div>
         ) : (
-          logs.map((entry, i) => (
-            <div key={i} className="flex gap-2 hover:bg-gray-900/50">
-              <span className="text-gray-400 shrink-0 select-none">{formatTime(entry.timestamp)}</span>
-              <span className={entry.type === 'stderr' ? 'text-red-400' : 'text-gray-300'}>{entry.line}</span>
-            </div>
-          ))
+          logs.map((entry) => <LogRow key={entry.id} entry={entry} />)
         )}
       </div>
     </div>
