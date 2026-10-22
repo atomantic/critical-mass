@@ -33,7 +33,7 @@ const {
 } = require('./src/interval-utils');
 const { runIntervalCycle } = require('./src/dca-engine');
 const { createNotifier } = require('./src/notifier');
-const { createBackup, pruneBackups, createFundStateBackup, getNewestBackupTime, getNewestFundStateBackupTime } = require('./src/backup-service');
+const { createBackup, pruneBackups, createFundStateBackup, getNewestBackupTimeAsync, getNewestFundStateBackupTime } = require('./src/backup-service');
 const { createBackupScheduler } = require('./src/backup-scheduler');
 const { DATA_DIR } = require('./src/paths');
 const {
@@ -247,7 +247,7 @@ const backupScheduler = createBackupScheduler({
       label: 'full archive',
       failLabel: 'Scheduled backup',
       intervalKey: 'intervalMs',
-      newest: getNewestBackupTime,
+      newest: getNewestBackupTimeAsync,
       run: async (config) => {
         log('INFO', '💾 Running scheduled backup...');
         const result = await runBackup('full archive', () => createBackup({ includePriceCache: config.includePriceCache }));

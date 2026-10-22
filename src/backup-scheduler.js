@@ -11,7 +11,7 @@ const MAX_TIMER_MS = 2 ** 31 - 1;
  *
  * @param {Object} deps
  * @param {() => {enabled: boolean} & Record<string, any>} deps.getConfig
- * @param {Record<string, {label: string, failLabel: string, intervalKey: string, startupOffsetMs?: number, newest: () => number | null, run: (config: any) => Promise<{success: boolean, code?: string, error?: string}>}>} deps.kinds
+ * @param {Record<string, {label: string, failLabel: string, intervalKey: string, startupOffsetMs?: number, newest: () => number | null | Promise<number | null>, run: (config: any) => Promise<{success: boolean, code?: string, error?: string}>}>} deps.kinds
  * @param {() => number} [deps.now]
  * @param {(fn: () => void, ms: number) => any} [deps.setTimer]
  * @param {(handle: any) => void} [deps.clearTimer]
@@ -25,6 +25,8 @@ const createBackupScheduler = ({
   isStopping = () => false, track = (promise) => promise, log, alert = () => {},
 }) => {
   const timers = new Map();
+  // Bumped on every disarm so a pending async newest() lookup from an earlier arm is dropped.
+  const armTokens = new Map();
   const inFlight = new Set();
   const lastRunAt = new Map();
   let firstArm = true;
@@ -53,6 +55,7 @@ const createBackupScheduler = ({
   };
 
   const disarm = (name) => {
+    armTokens.set(name, (armTokens.get(name) ?? 0) + 1);
     if (timers.has(name)) clearTimer(timers.get(name));
     timers.delete(name);
   };
@@ -61,9 +64,9 @@ const createBackupScheduler = ({
   // startup offset are applied once rather than re-granted on every settings save.
   const deadlines = new Map();
 
-  const dueFor = (name, config) => {
+  const dueFor = (name, config, newest) => {
     const kind = kinds[name];
-    const last = Math.max(kind.newest() ?? -Infinity, lastRunAt.get(name) ?? -Infinity);
+    const last = Math.max(newest ?? -Infinity, lastRunAt.get(name) ?? -Infinity);
     return last === -Infinity ? -Infinity : last + config[kind.intervalKey];
   };
 
@@ -82,24 +85,46 @@ const createBackupScheduler = ({
     if (isStopping() || inFlight.has(name)) return;
     const config = getConfig();
     if (!config.enabled) return;
-    let deadline;
+    const token = armTokens.get(name);
+    const schedule = (deadline) => {
+      if (armTokens.get(name) !== token || isStopping()) return;
+      deadlines.set(name, deadline);
+      startTimer(name, deadline);
+    };
+    const lookupFailed = (err) => {
+      log('ERROR', `💾 ${kinds[name].failLabel} schedule lookup failed: ${err.message}`);
+      schedule(now() + FAILURE_RETRY_MS);
+    };
     if (retryMs !== undefined) {
-      deadline = now() + retryMs;
-    } else {
-      try {
-        const due = dueFor(name, config);
-        const offset = kinds[name].startupOffsetMs ?? 0;
-        const pending = deadlines.get(name);
-        // A pending deadline stays valid only while it is still the grace for the same overdue state.
-        const keep = pending !== undefined && due <= pending && pending <= Math.max(due, now() + MIN_DELAY_MS + offset);
-        deadline = keep ? pending : Math.max(due, now() + MIN_DELAY_MS + (firstArm ? offset : 0));
-      } catch (err) {
-        log('ERROR', `💾 ${kinds[name].failLabel} schedule lookup failed: ${err.message}`);
-        deadline = now() + FAILURE_RETRY_MS;
-      }
+      schedule(now() + retryMs);
+      return;
     }
-    deadlines.set(name, deadline);
-    startTimer(name, deadline);
+    const applyDue = (newest) => {
+      const due = dueFor(name, config, newest);
+      const offset = kinds[name].startupOffsetMs ?? 0;
+      const pending = deadlines.get(name);
+      // A pending deadline stays valid only while it is still the grace for the same overdue state.
+      const keep = pending !== undefined && due <= pending && pending <= Math.max(due, now() + MIN_DELAY_MS + offset);
+      schedule(keep ? pending : Math.max(due, now() + MIN_DELAY_MS + (firstArm ? offset : 0)));
+    };
+    // A sync newest() arms immediately (the timer is in place on return); a
+    // promised one (non-blocking archive validation) arms when it settles.
+    let newest;
+    try {
+      newest = kinds[name].newest();
+    } catch (err) {
+      lookupFailed(err);
+      return;
+    }
+    if (newest && typeof newest.then === 'function') {
+      newest.then(applyDue, lookupFailed);
+      return;
+    }
+    try {
+      applyDue(newest);
+    } catch (err) {
+      lookupFailed(err);
+    }
   };
 
   const fire = (name) => {

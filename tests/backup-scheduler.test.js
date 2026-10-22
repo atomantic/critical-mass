@@ -146,6 +146,40 @@ describe('backup scheduler', () => {
     assert.equal(alerts.length, 2);
   });
 
+  it('arms from a promised newest() once it settles, and drops a lookup superseded by a later arm', async () => {
+    const clock = 1_000_000_000_000;
+    const timers = [];
+    const resolvers = [];
+    let lookups = 0;
+    const scheduler = createBackupScheduler({
+      getConfig: () => ({ enabled: true, intervalMs: 24 * HOUR }),
+      now: () => clock,
+      setTimer: (fn, ms) => { const t = { fn, ms, live: true }; timers.push(t); return t; },
+      clearTimer: (t) => { t.live = false; },
+      log: () => {},
+      kinds: {
+        archive: {
+          label: 'archive', failLabel: 'archive', intervalKey: 'intervalMs',
+          newest: () => { lookups += 1; return new Promise((resolve) => resolvers.push(resolve)); },
+          run: async () => ({ success: true }),
+        },
+      },
+    });
+    const flush = () => new Promise((r) => setImmediate(r));
+    const liveTimers = () => timers.filter((t) => t.live);
+
+    scheduler.reschedule();
+    assert.equal(liveTimers().length, 0, 'nothing armed until the lookup settles');
+    // A second arm supersedes the first lookup; only the latest one may schedule.
+    scheduler.reschedule();
+    assert.equal(lookups, 2);
+    resolvers[0](clock - 30 * HOUR); // stale: must be dropped
+    resolvers[1](clock - 23 * HOUR);
+    await flush();
+    assert.equal(liveTimers().length, 1);
+    assert.equal(liveTimers()[0].ms, HOUR);
+  });
+
   it('arms nothing when disabled and stop() clears timers', () => {
     const h = harness({ config: { enabled: false } });
     h.scheduler.reschedule();
