@@ -4,6 +4,9 @@ const os = require('os')
 const path = require('path')
 const { atomicWriteSync } = require('../durable-write')
 const { setTimeout: delay } = require('timers/promises')
+const { createContextLogger } = require('../logger')
+
+const scorecardLog = createContextLogger({ component: 'scorecard-maintenance' })
 
 const lockPath = (directory) => path.join(directory, '.maintenance-lock')
 
@@ -57,7 +60,7 @@ const reclaimStaleLock = (directory) => {
     return false
   }
   fs.rmSync(aside, { recursive: true, force: true })
-  console.warn(`Reclaimed stale scorecard maintenance lock ${lock} from dead pid ${pid}`)
+  scorecardLog.warn(`Reclaimed stale scorecard maintenance lock ${lock} from dead pid ${pid}`)
   return true
 }
 

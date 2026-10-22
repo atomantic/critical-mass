@@ -44,6 +44,9 @@ const { randomUUID } = require('crypto');
 const { fsyncDir } = require('./fsync-dir');
 const { fsyncFile } = require('./durable-write');
 
+// Lazy: logger.js -> migration.js -> this module, so the logger is resolved at call time.
+const namespaceLog = () => require('./logger').createContextLogger({ component: 'namespace-migration' });
+
 /** The single exchange that existed before namespacing. */
 const LEGACY_EXCHANGE = 'coinbase';
 
@@ -195,7 +198,7 @@ const breakStaleLock = (lockPath, isStale, now = Date.now) => {
   try {
     const owner = readLockOwner(lockPath);
     if (owner && isStale(owner)) {
-      console.log(`  ⚠️  [Namespace Migration] Breaking abandoned migration lock (pid ${owner.pid ?? 'unknown'})`);
+      namespaceLog().warn(`Breaking abandoned migration lock (pid ${owner.pid ?? 'unknown'})`);
       fs.unlinkSync(lockPath);
     }
   } finally {
