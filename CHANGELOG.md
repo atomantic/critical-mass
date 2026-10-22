@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-1608] Size and TP optimizers share one adjustment-history module** — `src/adjustment-history.js` (`createAdjustmentHistory`: push with 50-entry cap, tail, export, import, clear) replaces the duplicated push-and-trim, export/import and `slice(-10)` code in `size-optimizer.js` and `tp-optimizer.js`. Persisted `adjustmentHistory` shape and status output are unchanged.
 - **[issue-1593] Admin P&L colour and sign logic uses shared helpers** — `pnlColorClass` and `signedPrefix` in `admin/src/utils/pnlFormat.mjs` replace ~94 inline `>= 0 ? ...` ternaries across 23 admin components. Presentation only; output is identical (zero stays green with a `+`). The two local `pnlColor` helpers in the updown panels keep their own neutral zero colour.
 
 ### Security

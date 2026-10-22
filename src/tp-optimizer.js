@@ -11,6 +11,7 @@
  */
 
 const { createContextLogger } = require('./logger');
+const { createAdjustmentHistory } = require('./adjustment-history');
 
 /**
  * @typedef {Object} CycleRecord
@@ -101,7 +102,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
   let recentCycles = [];
 
   /** @type {Array<{timestamp: number, tpMin: number, tpMax: number, holdback: number, reason: string}>} */
-  let adjustmentHistory = [];
+  const adjustmentHistory = createAdjustmentHistory();
 
   let lastEvaluationTime = Date.now();
   let lastEvaluationCycle = 0;
@@ -300,10 +301,6 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
       holdbackRatio: adjustment.holdbackRatio,
       reason: adjustment.reason,
     });
-
-    if (adjustmentHistory.length > 50) {
-      adjustmentHistory.shift();
-    }
 
     if (callbacks.onAdjustment) {
       callbacks.onAdjustment(adjustment);
@@ -522,7 +519,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
     },
     lastEvaluationTime,
     lastEvaluationCycle,
-    adjustmentHistory: [...adjustmentHistory],
+    adjustmentHistory: adjustmentHistory.export(),
     volSamples: [...volSamples],
     volHistogram: volHistogram.map(b => ({ ...b })),
     totalVolSampleCount,
@@ -566,9 +563,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
     lastEvaluationTime = state.lastEvaluationTime || Date.now();
     lastEvaluationCycle = state.lastEvaluationCycle || 0;
 
-    if (state.adjustmentHistory) {
-      adjustmentHistory = state.adjustmentHistory.map(a => ({ ...a }));
-    }
+    adjustmentHistory.import(state.adjustmentHistory);
 
     // Restore vol state
     if (state.volSamples) {
@@ -609,7 +604,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
       lastEvaluationCycle,
       cyclesSinceEval: totalSampleCount - lastEvaluationCycle,
       histogramShapeMismatch,
-      adjustmentHistory: adjustmentHistory.slice(-10),
+      adjustmentHistory: adjustmentHistory.tail(),
       currentConfig: {
         tpMinPercent: config.tpMinPercent,
         tpMaxPercent: config.tpMaxPercent,
@@ -624,7 +619,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
   const reset = () => {
     histogram = createEmptyHistogram();
     recentCycles = [];
-    adjustmentHistory = [];
+    adjustmentHistory.clear();
     lastEvaluationTime = Date.now();
     lastEvaluationCycle = 0;
     totalSampleCount = 0;
