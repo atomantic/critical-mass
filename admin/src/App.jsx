@@ -293,7 +293,7 @@ function AppContent() {
   const fetchExchanges = async (autoSelect = false) => {
     const result = await apiGet('/api/exchanges')
     if (!result.ok) {
-      setExchangesError(result.status ? `Gateway returned ${result.status}` : result.error)
+      setExchangesError(result.status >= 400 ? `Gateway returned ${result.status}` : result.error)
       return false
     }
     const data = result.data
