@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+- **[issue-1590] Dockerfile base images are pinned by digest** — both `FROM node:26-alpine` stages now reference `node:26-alpine@sha256:40cd011b…797`, so a republished tag can no longer change the production image (which holds the exchange keys) without a diff. Dependabot's existing `docker` ecosystem entry proposes digest bumps.
+
 ### Fixed
 - **[issue-1583] Operator sessions are revocable and signed with a key not derivable from the password hash** — the auth record now holds a random per-install `sessionKey` and an incrementing `sessionEpoch`; session JWTs are signed with that key and carry the epoch. `DELETE /api/auth/session` bumps the epoch (revoking every copy of the cookie, i.e. sign-out is sign-out-everywhere) and a password change bumps it too; only the current epoch verifies. Reading `data/operator-auth.json` alone no longer lets anyone mint sessions without the key, though the file still holds the key, so keep treating it as secret. Existing auth records are migrated lazily on first start (written atomically, file permissions unchanged); this signs out existing browser sessions exactly once.
 - **[issue-1612] The admin header switches to the hamburger menu below 1280px instead of 1024px** — the eight desktop section links (with the logo) need roughly 990px, which overflowed the ~940px header content width at 1024-1100px. The header's `lg:` breakpoint classes (row layout, hamburger, desktop nav, link sizing and the mobile dropdown) now use `xl:` so the bar only renders on screens wide enough to fit it. Layout at 1280px and wider is unchanged.
