@@ -8,7 +8,7 @@
 
 const fs = require('fs');
 
-const round2 = (n) => Math.round(n * 10000) / 100;
+const toPercent2 = (n) => Math.round(n * 10000) / 100;
 
 /**
  * @param {{ path: string, writeJSON: (path: string, data: any) => void }} deps
@@ -50,8 +50,8 @@ const createTradeLog = ({ path: tradesPath, writeJSON }) => {
       wins: trades.filter(t => t.pnl > 0).length,
       losses: trades.filter(t => t.pnl <= 0).length,
       count: trades.length,
-      upWinRate: upTrades.length > 0 ? round2(upWins / upTrades.length) : null,
-      downWinRate: downTrades.length > 0 ? round2(downWins / downTrades.length) : null,
+      upWinRate: upTrades.length > 0 ? toPercent2(upWins / upTrades.length) : null,
+      downWinRate: downTrades.length > 0 ? toPercent2(downWins / downTrades.length) : null,
       upCount: upTrades.length,
       downCount: downTrades.length,
     };

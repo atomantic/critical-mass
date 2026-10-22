@@ -84,7 +84,7 @@ const createFlushSetupState = () => ({
   lastExit: null,
 });
 
-const round2 = (n) => Math.round(n * 100) / 100;
+const { round2 } = require('../value-guards');
 
 /**
  * Advance the setup by one completed 1m bar.

@@ -14,7 +14,7 @@
 const { resolveAction, signalSide } = require('./signal-actions')
 const { PERP_CONTRACT_SIZE_BTC, calculatePerpPnl } = require('./perp-contract')
 
-const round2 = (n) => Math.round(n * 100) / 100
+const { round2 } = require('../value-guards')
 const round8 = (n) => Math.round(n * 1e8) / 1e8
 
 const cloneLot = (lot) => ({
