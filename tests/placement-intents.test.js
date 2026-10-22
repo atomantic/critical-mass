@@ -541,7 +541,7 @@ describe('operator adoption is exactly once', () => {
 
     assert.equal(result.tracked, true);
     assert.equal(executor.isBodyTpOrder('tp-9'), true);
-    assert.equal(executor.getBodyByTpOrderId('tp-9')?.bodyId, 'body-1');
+    assert.equal(executor._test.getBodyByTpOrderId('tp-9')?.bodyId, 'body-1');
   });
 
   it('refuses to track an intent whose action maps to no order type', () => {

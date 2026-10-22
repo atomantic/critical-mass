@@ -25,7 +25,7 @@ const bodyBasisFor = async (config) => {
   exec.checkEntryFills(placed.price);
   const tpRes = await exec.placeBodyTpOrder(placed.assetQty, 110_000, 'body-1');
   assert.ok(tpRes.success);
-  return exec.getBodyByTpOrderId(tpRes.orderId).costBasis;
+  return exec._test.getBodyByTpOrderId(tpRes.orderId).costBasis;
 };
 
 describe('fallback fee rate (shared/fee-defaults)', () => {

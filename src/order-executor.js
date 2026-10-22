@@ -1795,7 +1795,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     getPendingCounts,
     getPendingEntries,
     getPendingOrdersList,
-    getActiveTpOrderId,
     isTrackedTpOrder,
     restorePendingOrder,
     checkPendingOrderFills,
@@ -1808,10 +1807,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     placeBodyTpOrder,
     cancelBodyTpOrder,
     isBodyTpOrder,
-    getBodyByTpOrderId,
     restoreBodyTpOrder,
     removeBodyTracking,
     adoptPlacement,
+    // Test-only observability (issue #1611): no production caller
+    _test: { getActiveTpOrderId, getBodyByTpOrderId },
     // Ladder mode functions
     placeLadderOrders,
     cancelAllLadderOrders,

@@ -878,9 +878,8 @@
  * @property {() => Array<any>} [getPendingOrdersList]
  * @property {() => number} [getEffectiveStaleMs]
  * @property {(found: any, intent: any) => {tracked: boolean, message: string}} [adoptPlacement]
- * @property {() => string|null} [getActiveTpOrderId] - Not contract-required (issue #725): implemented by both executors, but no production caller — test-only observability for TP-placement concurrency safety
- * @property {(orderId: string) => boolean} [isBodyTpOrder] - Not contract-required (issue #725): implemented by both executors, but no production caller — regime-engine.js resolves body ownership from positionState.celestialBodies instead
- * @property {(tpOrderId: string) => Object|null} [getBodyByTpOrderId] - Not contract-required (issue #725): implemented by both executors, but no production caller outside their own internal fill handling (dry-run) — test-only read of a body's stamped cost basis
+ * @property {(orderId: string) => boolean} [isBodyTpOrder] - Not contract-required: called by regime-placement-reconciler, not regime-engine
+ * @property {{getActiveTpOrderId: () => string|null, getBodyByTpOrderId: (tpOrderId: string) => Object|null}} [_test] - Test-only observability (issue #1611); no production caller
  */
 
 /**
