@@ -9,6 +9,7 @@ const { REST_TIMEOUT_MS } = require('./timing-constants');
 const { atomicWriteSync } = require('./state-tracker');
 const { getFibonacciBuyAmount, getAverageCostBasis, getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
 const { createContextLogger } = require('./logger');
+const { sleep } = require('./shared-utils');
 
 const BASE_URL = 'https://api.coinbase.com';
 
@@ -261,7 +262,7 @@ const fetchPriceData = async (intervals, intervalType = 'daily', exchange = 'coi
       }
       if (isRateLimitError(failure)) {
         // Back off (growing with each consecutive 429) and retry the same window.
-        await new Promise(r => setTimeout(r, rateLimitBackoffMs * consecutiveFailures));
+        await sleep(rateLimitBackoffMs * consecutiveFailures);
         continue;
       }
     } else {
@@ -281,7 +282,7 @@ const fetchPriceData = async (intervals, intervalType = 'daily', exchange = 'coi
 
     // Small delay to avoid rate limiting
     if (remaining > 0) {
-      await new Promise(r => setTimeout(r, 100));
+      await sleep(100);
     }
   }
 
@@ -457,7 +458,7 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
 
         end = start;
         if (end > fetchStartSeconds) {
-          await new Promise(r => setTimeout(r, 100));
+          await sleep(100);
         }
       }
 

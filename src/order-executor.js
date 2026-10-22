@@ -12,7 +12,7 @@
 const { roundAsset, roundPrice } = require('./volatility-utils');
 const { createMutex } = require('./async-mutex');
 const { getBaseCurrency } = require('./config-utils');
-const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, sleep } = require('./shared-utils');
 const { placeWithUnknownReconcile } = require('./order-manager');
 const { createContextLogger } = require('./logger');
 const { createOrderLookups } = require('./executor-contract');
@@ -266,7 +266,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             attempt: attempt + 1,
             maxAttempts: maxAckRetries,
           });
-          await new Promise(r => setTimeout(r, pollDelayMs));
+          await sleep(pollDelayMs);
           continue;
         }
         logger.error(`🚨 [${exchange}] Cancel rejected for ${orderId.slice(0, 8)} after ${maxAckRetries} retries, status=${status?.status || 'unknown'}`, {
@@ -279,7 +279,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
       // Cancel ack'd — poll for the status to actually settle. Do NOT re-cancel.
       for (let poll = 0; poll < maxPollAttempts; poll++) {
-        await new Promise(r => setTimeout(r, poll === 0 ? verifyDelayMs : pollDelayMs));
+        await sleep(poll === 0 ? verifyDelayMs : pollDelayMs);
         const verified = await lookupOrderOrNull(orderId, 'cancel verify poll');
 
         if (isFilledStatus(verified)) {
@@ -410,7 +410,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       // Verify order is actually open on exchange (post-only orders can be immediately cancelled).
       // Brief delay lets the order propagate; only treat as cancelled when Coinbase explicitly
       // says so with zero filledSize — a thrown error / null response means "unknown", keep tracking.
-      await new Promise(r => setTimeout(r, 750));
+      await sleep(750);
       const orderStatus = await lookupOrderOrNull(result.orderId, 'entry bid verify');
 
       if (orderStatus && orderStatus.status === 'CANCELLED' && orderStatus.filledSize === 0) {
@@ -1510,13 +1510,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   // ============================================================================
   // Ladder Mode Functions
   // ============================================================================
-
-  /**
-   * Sleep utility for rate limiting
-   * @param {number} ms - Milliseconds to sleep
-   * @returns {Promise<void>}
-   */
-  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
   /**
    * Place multiple ladder entry orders

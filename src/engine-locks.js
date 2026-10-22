@@ -28,6 +28,7 @@
  *     lock (it takes it only when free, otherwise runs unserialised).
  */
 const { AsyncLocalStorage } = require('node:async_hooks');
+const { sleep: defaultSleep } = require('./shared-utils');
 
 /** How long a fill will poll for an in-flight merge before proceeding anyway. */
 const FILL_WAIT_MS = 15000;
@@ -54,8 +55,6 @@ const BUSY_STRUCTURE = 'A merge or reconcile is already in progress';
 const BUSY_POSITION = 'A merge, reconcile, or fill is in progress — try again';
 const FILL_GATE_CLOSED_CODE = 'FILL_GATE_CLOSED';
 const BUSY_LADDER = 'A ladder rebuild, cancel, or cycle reset is in progress — try again';
-
-const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * @param {object} [opts]
