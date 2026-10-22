@@ -15,6 +15,7 @@ const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus } = require('./shared-utils');
 const { placeWithUnknownReconcile } = require('./order-manager');
 const { createContextLogger } = require('./logger');
+const { createOrderLookups } = require('./executor-contract');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -52,6 +53,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   });
   /** @type {Map<string, PendingOrder>} */
   const pendingOrders = new Map();
+  const orderLookups = createOrderLookups(pendingOrders);
   const baseCurrency = getBaseCurrency(productId);
 
   let lastTpPrice = 0;
@@ -677,16 +679,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
     logger.warn(`⚠️ [${exchange}] Cancel TP failed for ${orderToCancel}: unknown state`, { orderId: orderToCancel, status: 'unknown' });
     return { cancelled: false, filled: false, filledSize: 0 };
-  };
-
-  /**
-   * Get the placedAt timestamp for an order
-   * @param {string} orderId - Order ID
-   * @returns {number|null} Timestamp when order was placed, or null if not found
-   */
-  const getOrderPlacedAt = (orderId) => {
-    const order = pendingOrders.get(orderId);
-    return order ? order.placedAt : null;
   };
 
   /**
@@ -1791,16 +1783,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     return ladderOrders.sort((a, b) => b.price - a.price); // Sort by price descending (top of ladder first)
   };
 
-  /**
-   * Check if an order is a ladder entry order
-   * @param {string} orderId - Order ID to check
-   * @returns {boolean}
-   */
-  const isLadderOrder = (orderId) => {
-    const order = pendingOrders.get(orderId);
-    return order?.type === 'ladder_entry';
-  };
-
   return {
     capabilities: {
       liveReconciliation: true,
@@ -1825,7 +1807,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     restorePendingOrder,
     checkPendingOrderFills,
     // Fill time tracking
-    getOrderPlacedAt,
+    ...orderLookups,
     // Regime-based stale timeout
     setStaleTimeoutMultiplier,
     getEffectiveStaleMs,
@@ -1841,7 +1823,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     placeLadderOrders,
     cancelAllLadderOrders,
     getPendingLadderOrders,
-    isLadderOrder,
     // Timer cleanup
     clearTimers: () => { for (const t of staleTimers) clearTimeout(t); staleTimers.clear(); staleTimerByOrder.clear(); },
     // Price precision
