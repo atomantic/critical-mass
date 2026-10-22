@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState } from 'react'
+import ModalDialog from './ModalDialog'
 import { apiPost } from '../utils/apiClient'
 
 /**
@@ -63,7 +64,9 @@ const formatPairForExchange = (input, exchange) => {
   return cleaned
 }
 
-function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
+// Mounted only while open (ModalDialog's mount-once contract), so every open
+// starts from fresh initial state — no reset-on-open effect needed.
+function AddFundDialog({ onClose, onCreated, exchanges = [] }) {
   // The exchanges prop contains one entry per (exchange, pair) fund — collapse
   // to unique exchange names so the dropdown lists each exchange once.
   const exchangeNames = Array.from(new Set((exchanges || []).map(e => e.name)))
@@ -74,65 +77,8 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
   const [dryRun, setDryRun] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
-  const inputRef = useRef(null)
-  const modalRef = useRef(null)
-  const previouslyFocusedRef = useRef(null)
 
   const fmt = EXCHANGE_FORMATS[exchange] || fallbackFormat
-
-  useEffect(() => {
-    let focusTimer
-    if (open) {
-      previouslyFocusedRef.current = document.activeElement
-      const ex = exchangeNames[0] || 'gemini'
-      setError(null)
-      setExchange(ex)
-      setPair(EXCHANGE_FORMATS[ex]?.defaultPair || '')
-      setTotalAllocation('5000')
-      setDryRun(true)
-      // Focus and select the pair input on open so the user can immediately type to replace
-      focusTimer = setTimeout(() => {
-        inputRef.current?.focus()
-        inputRef.current?.select()
-      }, 50)
-    }
-    return () => {
-      clearTimeout(focusTimer)
-      if (open) previouslyFocusedRef.current?.focus?.()
-    }
-  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!open) return undefined
-
-    const handleKeyDown = (event) => {
-      if (event.key === 'Escape' && !submitting) {
-        event.preventDefault()
-        onClose?.()
-        return
-      }
-      if (event.key !== 'Tab') return
-
-      const focusable = modalRef.current?.querySelectorAll(
-        'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
-      )
-      if (!focusable?.length) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first.focus()
-      }
-    }
-
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [open, submitting, onClose])
 
   // When the exchange dropdown changes, re-format the existing pair value
   // to the new exchange's separator convention. This lets the operator type
@@ -200,113 +146,106 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
     }
   }
 
-  if (!open) return null
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onClick={() => !submitting && onClose?.()}>
-      <div
-        ref={modalRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="add-fund-title"
-        aria-describedby="add-fund-description"
-        className="bg-gray-800 rounded-lg border border-gray-700 shadow-xl w-full max-w-md max-h-[calc(100dvh-1.5rem)] overflow-y-auto p-4 sm:p-6"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 id="add-fund-title" className="text-lg font-bold text-white mb-4">Add Fund</h2>
-        <p id="add-fund-description" className="text-sm text-gray-400 mb-4">
-          Create a new trading fund on an existing exchange. The fund is created stopped, and in <span className="text-purple-400">dry-run mode</span> unless you untick the box below. Nothing trades until you press Start in the fund header, so review its config first.
-        </p>
+    <ModalDialog onClose={onClose} labelledBy="add-fund-title" describedBy="add-fund-description" dismissible={!submitting}>
+      <h2 id="add-fund-title" className="text-lg font-bold text-white mb-4">Add Fund</h2>
+      <p id="add-fund-description" className="text-sm text-gray-400 mb-4">
+        Create a new trading fund on an existing exchange. The fund is created stopped, and in <span className="text-purple-400">dry-run mode</span> unless you untick the box below. Nothing trades until you press Start in the fund header, so review its config first.
+      </p>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label htmlFor="add-fund-exchange" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Exchange</label>
-            <select
-              id="add-fund-exchange"
-              value={exchange}
-              onChange={(e) => handleExchangeChange(e.target.value)}
-              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white focus:border-blue-500 focus:outline-hidden"
-              disabled={submitting}
-            >
-              {exchangeNames.map((name) => (
-                <option key={name} value={name}>{name}</option>
-              ))}
-            </select>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label htmlFor="add-fund-exchange" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Exchange</label>
+          <select
+            id="add-fund-exchange"
+            value={exchange}
+            onChange={(e) => handleExchangeChange(e.target.value)}
+            className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white focus:border-blue-500 focus:outline-hidden"
+            disabled={submitting}
+          >
+            {exchangeNames.map((name) => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label htmlFor="add-fund-pair" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Pair</label>
+          <input
+            id="add-fund-pair"
+            autoFocus
+            onFocus={(e) => e.target.select()}
+            type="text"
+            value={pair}
+            onChange={(e) => setPair(formatPairForExchange(e.target.value, exchange))}
+            placeholder={fmt.placeholder}
+            className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-hidden"
+            disabled={submitting}
+            autoComplete="off"
+          />
+          <div className="text-xs text-gray-400 mt-1">{fmt.hint}</div>
+        </div>
+
+        <div>
+          <label htmlFor="add-fund-allocation" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Initial Capital (quote currency)</label>
+          <input
+            id="add-fund-allocation"
+            type="number"
+            min="0"
+            step="100"
+            value={totalAllocation}
+            onChange={(e) => setTotalAllocation(e.target.value)}
+            className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-hidden"
+            disabled={submitting}
+          />
+          <div className="text-xs text-gray-400 mt-1">Seeds <span className="font-mono">deposited capital</span> and <span className="font-mono">max deployed</span> for this fund. You can adjust both later in the fund's config.</div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <input
+            id="addFundDryRun"
+            type="checkbox"
+            checked={dryRun}
+            onChange={(e) => setDryRun(e.target.checked)}
+            className="w-4 h-4 bg-gray-900 border-gray-700 rounded-sm"
+            disabled={submitting}
+          />
+          <label htmlFor="addFundDryRun" className="text-sm text-gray-300">
+            Start in dry-run mode (recommended)
+          </label>
+        </div>
+
+        {error && (
+          <div className="bg-red-900/50 border border-red-700 text-red-200 text-sm rounded-sm p-3">
+            {error}
           </div>
+        )}
 
-          <div>
-            <label htmlFor="add-fund-pair" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Pair</label>
-            <input
-              id="add-fund-pair"
-              ref={inputRef}
-              type="text"
-              value={pair}
-              onChange={(e) => setPair(formatPairForExchange(e.target.value, exchange))}
-              onFocus={(e) => e.target.select()}
-              placeholder={fmt.placeholder}
-              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-hidden"
-              disabled={submitting}
-              autoComplete="off"
-            />
-            <div className="text-xs text-gray-400 mt-1">{fmt.hint}</div>
-          </div>
-
-          <div>
-            <label htmlFor="add-fund-allocation" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Initial Capital (quote currency)</label>
-            <input
-              id="add-fund-allocation"
-              type="number"
-              min="0"
-              step="100"
-              value={totalAllocation}
-              onChange={(e) => setTotalAllocation(e.target.value)}
-              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-hidden"
-              disabled={submitting}
-            />
-            <div className="text-xs text-gray-400 mt-1">Seeds <span className="font-mono">deposited capital</span> and <span className="font-mono">max deployed</span> for this fund. You can adjust both later in the fund's config.</div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <input
-              id="addFundDryRun"
-              type="checkbox"
-              checked={dryRun}
-              onChange={(e) => setDryRun(e.target.checked)}
-              className="w-4 h-4 bg-gray-900 border-gray-700 rounded-sm"
-              disabled={submitting}
-            />
-            <label htmlFor="addFundDryRun" className="text-sm text-gray-300">
-              Start in dry-run mode (recommended)
-            </label>
-          </div>
-
-          {error && (
-            <div className="bg-red-900/50 border border-red-700 text-red-200 text-sm rounded-sm p-3">
-              {error}
-            </div>
-          )}
-
-          <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={submitting}
-              className="min-h-11 px-4 py-2 text-sm text-gray-300 hover:text-white"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="min-h-11 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm font-medium text-white"
-            >
-              {submitting ? 'Creating...' : 'Create Fund'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="min-h-11 px-4 py-2 text-sm text-gray-300 hover:text-white"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="min-h-11 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm font-medium text-white"
+          >
+            {submitting ? 'Creating...' : 'Create Fund'}
+          </button>
+        </div>
+      </form>
+    </ModalDialog>
   )
+}
+
+function AddFundModal({ open, ...props }) {
+  if (!open) return null
+  return <AddFundDialog {...props} />
 }
 
 export default AddFundModal
