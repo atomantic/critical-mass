@@ -8,7 +8,7 @@
  */
 
 const { WebSocketServer, OPEN } = require('./ws-server');
-const { MSG_TYPE, IPC_SECRET_HEADER, getIpcSecret, ipcSecretMatches, createMessage, serialize, deserialize } = require('./ipc-protocol');
+const { MSG_TYPE, IPC_CHANNELS, IPC_SECRET_HEADER, getIpcSecret, ipcSecretMatches, createMessage, serialize, deserialize } = require('./ipc-protocol');
 const { createContextLogger } = require('../logger');
 const { trackPendingWrite } = require('../pending-writes');
 const { setEngineMaintenance, refuseDuringMaintenance } = require('../engine-maintenance');
@@ -64,13 +64,13 @@ const createIPCServer = (port, name, options = {}) => {
   // window here before a backup restore so this process stops mutating the
   // files being replaced (issue #429). Registering it centrally keeps the three
   // engine entry points identical and impossible to forget.
-  requestHandlers.set('engine:maintenance', async (payload) => {
+  requestHandlers.set(IPC_CHANNELS.ENGINE_MAINTENANCE, async (payload) => {
     const ack = setEngineMaintenance(payload);
     logger.info(
       ack.maintenance
         ? `ℹ️ 🔗 [${name}] Maintenance window OPEN (${ack.maintenance.reason}), mutating requests blocked until ${new Date(ack.maintenance.expiresAt).toISOString()}`
         : `ℹ️ 🔗 [${name}] Maintenance window closed, mutating requests accepted again`,
-      { channel: 'engine:maintenance', active: Boolean(ack.maintenance), kind: ack.maintenance?.kind, reason: ack.maintenance?.reason },
+      { channel: IPC_CHANNELS.ENGINE_MAINTENANCE, active: Boolean(ack.maintenance), kind: ack.maintenance?.kind, reason: ack.maintenance?.reason },
     );
     return ack;
   });
@@ -251,7 +251,7 @@ const createIPCServer = (port, name, options = {}) => {
 
       try {
         const run = () => handler(msg.payload, msg.exchange, msg.pair);
-        const result = await (['engine:maintenance', 'engine:backup-pause', 'engine:backup-resume'].includes(msg.channel) ? run() : trackPendingWrite(`ipc:${msg.channel}`, run));
+        const result = await ([IPC_CHANNELS.ENGINE_MAINTENANCE, IPC_CHANNELS.ENGINE_BACKUP_PAUSE, IPC_CHANNELS.ENGINE_BACKUP_RESUME].includes(msg.channel) ? run() : trackPendingWrite(`ipc:${msg.channel}`, run));
         const response = createMessage(MSG_TYPE.RESPONSE, msg.channel, result, { id: msg.id });
         ws.send(serialize(response));
       } catch (err) {

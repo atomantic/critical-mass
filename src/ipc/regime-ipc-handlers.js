@@ -302,7 +302,9 @@ const registerRegimeIpcHandlers = (ipcServer, deps) => {
         adapter, position: savedState.position, exchange, pair: resolvedPair,
         logger: logger(exchange, resolvedPair),
       });
-      if (!lookup.ok) return { running: false, success: false, error: lookup.error };
+      // The exchange order lookup failed: an upstream outage, so 503 (the gateway
+      // no longer infers it from the word "unavailable" in the message).
+      if (!lookup.ok) return { running: false, success: false, error: lookup.error, statusCode: 503 };
       if (lookup.order) orders.push(lookup.order);
     }
 

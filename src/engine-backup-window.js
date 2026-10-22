@@ -1,5 +1,6 @@
 // @ts-check
 const { getEngineMaintenance, setEngineMaintenance, setEngineBackupPaused, DEFAULT_MAINTENANCE_TTL_MS } = require('./engine-maintenance');
+const { IPC_CHANNELS } = require('./ipc/ipc-protocol');
 
 // Grace after the gateway's maintenance window expires before this process
 // treats the pause as abandoned, and the retry cadence while writers drain.
@@ -111,7 +112,7 @@ const registerEngineBackupHandlers = (registry, {
     if (pausePromise) void recoverAbandonedPause('gateway disconnected');
   });
 
-  registry.onRequest('engine:backup-pause', async () => {
+  registry.onRequest(IPC_CHANNELS.ENGINE_BACKUP_PAUSE, async () => {
     // A self-recovery still restarting the previous generation's owners must
     // finish before a new gateway captures the registry as quiesced.
     await resumePromise;
@@ -143,7 +144,7 @@ const registerEngineBackupHandlers = (registry, {
     })().catch((err) => ({ success: false, error: err.message }));
     return pausePromise;
   });
-  registry.onRequest('engine:backup-resume', async () => {
+  registry.onRequest(IPC_CHANNELS.ENGINE_BACKUP_RESUME, async () => {
     await pausePromise;
     if (!paused) {
       await resumePromise;

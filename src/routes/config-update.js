@@ -6,6 +6,7 @@
 const {
   getRegimeConfig, getFundConfig, updateFundConfig, productIdMatchesPair,
 } = require('../config-utils');
+const { IPC_CHANNELS } = require('../ipc/ipc-protocol');
 const { validateAndSanitizeRegimeConfig } = require('../config-validator');
 
 // These fields belong to the fund block, but are also part of the engine view.
@@ -95,7 +96,7 @@ const persistConfigUpdate = async (exchange, pair, prepared, ipc, onPersist = ()
   const config = fullConfig ? undefined : buildClientConfig(exchange, pair);
   if (!fullConfig || Object.keys(engineUpdates).length) {
     try {
-      const result = await ipc.request('regime:update-config', engineUpdates, exchange, pair);
+      const result = await ipc.request(IPC_CHANNELS.REGIME_UPDATE_CONFIG, engineUpdates, exchange, pair);
       if (result?.success === false) throw new Error(result.error || result.message || 'Engine rejected config update');
     } catch (err) {
       return { persisted: true, applied: false, error: err.message, config };

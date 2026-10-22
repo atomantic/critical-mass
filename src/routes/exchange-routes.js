@@ -4,6 +4,7 @@
  */
 
 const stateTracker = require('../state-tracker');
+const { IPC_CHANNELS } = require('../ipc/ipc-protocol');
 const { buildActiveFundSummary } = require('../fund-summary');
 const { buildFundStatus } = require('../fund-status');
 const {
@@ -27,7 +28,7 @@ const { syncFundOrders, runIntervalCycle, resumePendingBuy, executeConsolidation
 const { shouldAutoResumeRegime, readBooleanFlag } = require('../shared-utils');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { prepareConfigUpdate, persistConfigUpdate } = require('./config-update');
-const { resolvePairParam, getSafeIPC, asyncRoute, tradeResultStatusCode, parsePaging, pagedEnvelope } = require('./route-utils');
+const { resolvePairParam, createIPCResolver, asyncRoute, tradeResultStatusCode, parsePaging, pagedEnvelope } = require('./route-utils');
 
 /**
  * Tag a rejected promise's error with an HTTP status before rethrowing, so
@@ -73,7 +74,7 @@ const exchangeLogger = (exchange, pair, route) => createContextLogger({
  */
 module.exports = (app, deps) => {
   const { exchangeIPCMap, parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
-  const getIPC = (exchange) => getSafeIPC(exchangeIPCMap, exchange);
+  const getIPC = createIPCResolver(exchangeIPCMap);
 
   // Get list of all exchanges (with each fund flattened into the array).
   // Returns one entry per (exchange, pair) — the legacy `name` field is the
@@ -333,7 +334,7 @@ module.exports = (app, deps) => {
     const result = await persistConfigUpdate(exchange, pair, prepared, getIPC(exchange));
     if (!result.applied) {
       logger.error(`❌ 🚨 [${exchange}/${pair}] Config persisted but live engine update failed: ${result.error}`, {
-        action: 'update-config', channel: 'regime:update-config',
+        action: 'update-config', channel: IPC_CHANNELS.REGIME_UPDATE_CONFIG,
         persisted: true, applied: false, error: result.error,
       });
       return res.status(503).json({
@@ -378,12 +379,12 @@ module.exports = (app, deps) => {
         dryRun,
       });
       try {
-        const engineResult = await getIPC(exchange).request('regime:update-config', { dryRun }, exchange, pair);
+        const engineResult = await getIPC(exchange).request(IPC_CHANNELS.REGIME_UPDATE_CONFIG, { dryRun }, exchange, pair);
         if (engineResult?.success === false) throw new Error(engineResult.error || engineResult.message || 'Engine rejected config update');
       } catch (err) {
         logger.error(`❌ 🚨 [${exchange}/${pair}] Dry-run setting persisted but live engine update failed: ${err.message}`, {
           action: 'toggle-dry-run',
-          channel: 'regime:update-config',
+          channel: IPC_CHANNELS.REGIME_UPDATE_CONFIG,
           persisted: true,
           applied: false,
           error: err.message,

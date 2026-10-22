@@ -21,6 +21,7 @@
 const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('./paths');
+const { IPC_CHANNELS } = require('./ipc/ipc-protocol');
 const { JOURNAL_FILENAME } = require('./restore-apply');
 const { hasPendingBackfill } = require('./fifo-backfill-transaction');
 const { createContextLogger } = require('./logger');
@@ -39,23 +40,24 @@ const MAX_MAINTENANCE_TTL_MS = 60 * 60_000;
  * rather than a temporarily unavailable dashboard panel.
  */
 const MAINTENANCE_SAFE_CHANNELS = new Set([
-  'engine:maintenance',
-  'engine:backup-pause',
-  'engine:backup-resume',
-  'regime:stop',
-  'regime:stop-all',
-  'regime:status',
-  'regime:config',
-  'regime:chart-data',
-  'regime:fills',
-  'regime:open-orders',
-  'regime:unaccounted-fills',
-  'regime:unaccounted-fills-status',
-  'regime:manual-trades',
-  'regime:preview-ladder',
-  'regime:dry-run-log',
-  'regime:dry-run-pnl',
-  'regime:dry-run-state',
+  IPC_CHANNELS.ENGINE_MAINTENANCE,
+  IPC_CHANNELS.ENGINE_BACKUP_PAUSE,
+  IPC_CHANNELS.ENGINE_BACKUP_RESUME,
+  IPC_CHANNELS.REGIME_STOP,
+  IPC_CHANNELS.REGIME_STOP_ALL,
+  IPC_CHANNELS.REGIME_STATUS,
+  IPC_CHANNELS.REGIME_CONFIG,
+  IPC_CHANNELS.REGIME_CHART_DATA,
+  IPC_CHANNELS.REGIME_FILLS,
+  IPC_CHANNELS.REGIME_FILLS_CYCLES,
+  IPC_CHANNELS.REGIME_OPEN_ORDERS,
+  IPC_CHANNELS.REGIME_UNACCOUNTED_FILLS,
+  IPC_CHANNELS.REGIME_UNACCOUNTED_FILLS_STATUS,
+  IPC_CHANNELS.REGIME_MANUAL_TRADES,
+  IPC_CHANNELS.REGIME_PREVIEW_LADDER,
+  IPC_CHANNELS.REGIME_DRY_RUN_LOG,
+  IPC_CHANNELS.REGIME_DRY_RUN_PNL,
+  IPC_CHANNELS.REGIME_DRY_RUN_STATE,
 ]);
 
 /** @typedef {'backup' | 'restore' | 'generic'} MaintenanceKind */
@@ -131,17 +133,17 @@ const setEngineMaintenance = (payload = {}) => {
  * @returns {{success: false, code: string, error: string, heldBy: string, expiresAt: number} | null} Refusal, or null to allow
  */
 const refuseDuringMaintenance = (channel) => {
-  if (restoreQuiescing && !['engine:maintenance', 'regime:stop-all'].includes(channel)) {
+  if (restoreQuiescing && ![IPC_CHANNELS.ENGINE_MAINTENANCE, IPC_CHANNELS.REGIME_STOP_ALL].includes(channel)) {
     return { success: false, code: 'maintenance-in-progress', error: 'Engine restore writers are still quiescing', heldBy: 'restore writer drain', expiresAt: 0 };
   }
-  if (backupPaused && !['engine:maintenance', 'engine:backup-pause', 'engine:backup-resume'].includes(channel)) {
+  if (backupPaused && ![IPC_CHANNELS.ENGINE_MAINTENANCE, IPC_CHANNELS.ENGINE_BACKUP_PAUSE, IPC_CHANNELS.ENGINE_BACKUP_RESUME].includes(channel)) {
     return { success: false, code: 'maintenance-in-progress', error: 'Engine backup writers are paused', heldBy: 'backup writer pause', expiresAt: 0 };
   }
   const backupWindow = getEngineMaintenance();
-  if (backupWindow?.kind === 'restore' && !['engine:maintenance', 'regime:stop-all'].includes(channel)) {
+  if (backupWindow?.kind === 'restore' && ![IPC_CHANNELS.ENGINE_MAINTENANCE, IPC_CHANNELS.REGIME_STOP_ALL].includes(channel)) {
     return { success: false, code: 'maintenance-in-progress', error: `Engine is paused for ${backupWindow.reason}`, heldBy: backupWindow.reason, expiresAt: backupWindow.expiresAt };
   }
-  if (backupWindow?.kind === 'backup' && !['engine:maintenance', 'engine:backup-pause', 'engine:backup-resume'].includes(channel)) {
+  if (backupWindow?.kind === 'backup' && ![IPC_CHANNELS.ENGINE_MAINTENANCE, IPC_CHANNELS.ENGINE_BACKUP_PAUSE, IPC_CHANNELS.ENGINE_BACKUP_RESUME].includes(channel)) {
     return { success: false, code: 'maintenance-in-progress', error: 'Engine is paused for a backup', heldBy: backupWindow.reason, expiresAt: backupWindow.expiresAt };
   }
   if (MAINTENANCE_SAFE_CHANNELS.has(channel)) return null;

@@ -26,6 +26,7 @@
  */
 
 const { beginMaintenance, endMaintenance } = require('./restore-maintenance');
+const { IPC_CHANNELS } = require('./ipc/ipc-protocol');
 const { FILL_DRAIN_MS } = require('./engine-locks');
 
 /** Engines flush state on stop; give them meaningfully longer than a status poll. */
@@ -96,7 +97,7 @@ const requestEngineStop = async (exchange, ipc, timeoutMs) => {
     return { exchange, confirmed: false, reason: 'ipc-disconnected' };
   }
 
-  const outcome = await ipc.request('regime:stop-all', {}, exchange, timeoutMs)
+  const outcome = await ipc.request(IPC_CHANNELS.REGIME_STOP_ALL, {}, exchange, timeoutMs)
     .then((ack) => ({ ok: true, ack }), (err) => ({ ok: false, err }));
 
   if (!outcome.ok) {
@@ -133,7 +134,7 @@ const setEngineMaintenanceWindows = async ({ exchangeIPCMap, configuredExchanges
     // stop gate below is what decides whether that engine blocks the restore.
     if (typeof ipc.isConnected === 'function' && !ipc.isConnected()) return null;
     const failure = await ipc
-      .request('engine:maintenance', { active, kind: 'restore', reason, ttlMs: ENGINE_MAINTENANCE_TTL_MS }, exchange, timeoutMs)
+      .request(IPC_CHANNELS.ENGINE_MAINTENANCE, { active, kind: 'restore', reason, ttlMs: ENGINE_MAINTENANCE_TTL_MS }, exchange, timeoutMs)
       .then(() => null, (err) => err);
     if (failure) {
       logger.warn(`⚠️ 💾 Engine "${exchange}" did not acknowledge the maintenance window (${active ? 'open' : 'close'}): ${failure.message}`, {
@@ -213,7 +214,7 @@ const restartStoppedFunds = async ({ funds, exchangeIPCMap, logger, filename, ti
       const fund = describeFund({ exchange, pair });
       const outcome = !ipc || typeof ipc.request !== 'function'
         ? { error: 'no IPC client' }
-        : await ipc.request('regime:start', {}, exchange, pair, timeoutMs).then(
+        : await ipc.request(IPC_CHANNELS.REGIME_START, {}, exchange, pair, timeoutMs).then(
           (ack) => (ack?.success === true ? {} : { error: (typeof ack?.error === 'string' && ack.error) || 'engine refused the start' }),
           (err) => ({ error: err?.message || String(err) }),
         );

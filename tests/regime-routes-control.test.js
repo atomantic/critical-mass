@@ -772,3 +772,57 @@ describe('long-running engine commands carry an IPC deadline the operation fits 
     });
   }
 });
+
+describe('engine IPC failure contract (architecture #10)', () => {
+  afterEach(() => mock.restoreAll());
+
+  const withCode = (message, code) => Object.assign(new Error(message), { code });
+  const route = 'POST /api/:exchange/regime/resume';
+
+  it('maps transport and timeout failures to 503 with the "Engine unavailable:" prefix', async () => {
+    for (const code of ['transport', 'timeout']) {
+      const app = setupApp(() => Promise.reject(withCode('socket gone', code)));
+      const res = await invoke(app, route, reqFor({}));
+      assert.equal(res.statusCode, 503, code);
+      assert.equal(res.body.error, 'Engine unavailable: socket gone');
+      mock.restoreAll();
+    }
+  });
+
+  it('maps a handler throw inside a healthy engine to 500 without leaking its message', async () => {
+    const app = setupApp(() => Promise.reject(withCode('TypeError: cannot read /secret/path', 'handler')));
+    const res = await invoke(app, route, reqFor({}));
+    assert.equal(res.statusCode, 500);
+    assert.equal(res.body.success, false);
+    assert.doesNotMatch(res.body.error, /secret|unavailable/i);
+  });
+
+  it('does not serve an offline status or claim engineDown when the engine handler threw', async () => {
+    // An offline status IS available here, so only the engineHandlerFailed
+    // guard keeps the route from serving it.
+    mock.method(regimeStatusModule, 'buildStoppedRegimeStatus', () => ({ isRunning: false }));
+    const app = setupApp(() => Promise.reject(withCode('boom', 'handler')));
+    const res = await invoke(app, 'GET /api/:exchange/regime/status', reqFor({}));
+    assert.equal(res.statusCode, 500);
+    assert.equal(res.body.engineDown, undefined);
+  });
+
+  it('derives a domain reply status from its statusCode, never from the word "unavailable"', async () => {
+    let app = setupApp(() => Promise.resolve({ success: false, error: 'Ledger unavailable right now' }));
+    let res = await invoke(app, route, reqFor({}));
+    assert.equal(res.statusCode, 400);
+    mock.restoreAll();
+
+    app = setupApp(() => Promise.resolve({ success: false, error: 'upstream down', statusCode: 503 }));
+    res = await invoke(app, route, reqFor({}));
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.body.error, 'upstream down');
+  });
+
+  it('keeps the failure marker out of the JSON body', async () => {
+    const app = setupApp(() => Promise.reject(new Error('plain rejection')));
+    const res = await invoke(app, route, reqFor({}));
+    assert.equal(res.statusCode, 503);
+    assert.deepEqual(res.body, { success: false, error: 'Engine unavailable: plain rejection' });
+  });
+});

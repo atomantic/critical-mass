@@ -18,6 +18,7 @@
  */
 
 const path = require('path');
+const { IPC_CHANNELS } = require('../src/ipc/ipc-protocol');
 const { createContextLogger } = require('../src/logger');
 const {
   initializeConfigBase,
@@ -249,7 +250,7 @@ registerEngineBackupHandlers(ipcServer, {
   logger: engineLogger(EXCHANGE_NAME),
 });
 
-ipcServer.onRequest('regime:stop-all', createEngineStopAllHandler({
+ipcServer.onRequest(IPC_CHANNELS.REGIME_STOP_ALL, createEngineStopAllHandler({
   regimeEngines, cancelStarts, drainPendingWrites,
   stopMarketServices: stopAllMarketDataServices, drainMarketStarts: drainMarketDataStarts,
   clearCaches: () => { removeAllChartDataBuffers(); standaloneLedgers.clear(); manualTradeStores.clear(); },
