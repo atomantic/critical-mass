@@ -5,6 +5,7 @@ const { getIntervalConfig } = require('./interval-utils');
 const { getAuthHeaders } = require('./auth');
 const { getExchangeDataDir } = require('./migration');
 const { getAdapter } = require('./adapters');
+const { REST_TIMEOUT_MS } = require('./timing-constants');
 const { atomicWriteSync } = require('./state-tracker');
 const { getFibonacciBuyAmount, getAverageCostBasis, getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
 const { createContextLogger } = require('./logger');
@@ -63,7 +64,7 @@ const makeRequest = async (method, apiPath) => {
   const headers = getAuthHeaders(apiKey, apiSecret, method, apiPath);
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
+  const timeout = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
   let resp;
   let respData;
   try {
@@ -72,7 +73,7 @@ const makeRequest = async (method, apiPath) => {
   } catch (err) {
     clearTimeout(timeout);
     if (err && err.name === 'AbortError') {
-      throw new Error(`Coinbase request timed out after 30000ms: ${method} ${apiPath}`);
+      throw new Error(`Coinbase request timed out after ${REST_TIMEOUT_MS}ms: ${method} ${apiPath}`);
     }
     throw new Error(`Coinbase request failed: ${method} ${apiPath} - ${err && err.message ? err.message : String(err)}`);
   }

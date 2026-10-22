@@ -6,6 +6,7 @@ const { createBaseAdapter, createAmbiguousPlacementError, restQueueTiming } = re
 const { validateStandardExchangeKeys, createKeyFileLoader } = require('../key-validation');
 const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
+const { REST_TIMEOUT_MS } = require('../../timing-constants');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -158,7 +159,7 @@ const createGeminiAdapter = (keysPath = null) => {
       const headers = getRestAuthHeaders(apiKey, apiSecret, endpoint, payload);
 
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 30000);
+      const timeout = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
       let response;
       let rawText;
       try {
@@ -227,7 +228,7 @@ const createGeminiAdapter = (keysPath = null) => {
    */
   const makePublicRequest = async (endpoint) => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
     let response;
     let json;
     try {

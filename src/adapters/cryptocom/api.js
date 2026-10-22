@@ -6,6 +6,7 @@ const { createBaseAdapter, createAmbiguousPlacementError, restQueueTiming } = re
 const { validateStandardExchangeKeys, createKeyFileLoader } = require('../key-validation');
 const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
+const { REST_TIMEOUT_MS } = require('../../timing-constants');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -109,7 +110,7 @@ const createCryptocomAdapter = (keysPath = null) => {
     const body = createAuthenticatedRequest(method, params, apiKey, apiSecret);
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
     let response;
     let rawText;
     try {
@@ -197,7 +198,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       : `${REST_BASE_URL}/${method}`;
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
     let response;
     let rawText;
     try {
