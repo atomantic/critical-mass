@@ -538,7 +538,6 @@ module.exports = {
   MAX_PASSWORD_BYTES,
   SESSION_TTL_SECONDS,
   createOperatorAuth,
-  isLoopbackAddress: isLoopbackHost,
   isLoopbackRequest,
   parseCookies,
   readBearerToken,
