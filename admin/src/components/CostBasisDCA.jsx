@@ -10,6 +10,7 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
   // null = unknown (never 0, which would render $0 value and -100% P&L)
   const [currentPrice, setCurrentPrice] = useState(null)
   const [priceError, setPriceError] = useState(null)
+  const [retryKey, setRetryKey] = useState(0)
 
   useEffect(() => {
     let controller = null
@@ -41,7 +42,7 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
       clearInterval(interval)
       controller?.abort()
     }
-  }, [exchange, pairQuery])
+  }, [exchange, pairQuery, retryKey])
 
   if (!summary?.costBasis) {
     return (
@@ -88,7 +89,7 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
       {priceError && (
         <div role="alert" className="flex items-center justify-between gap-2 text-sm text-red-400">
           <span>{priceError}</span>
-          <button type="button" onClick={fetchPrice} className="px-2 py-1 rounded bg-gray-700 text-white">Retry</button>
+          <button type="button" onClick={() => setRetryKey(k => k + 1)} className="px-2 py-1 rounded bg-gray-700 text-white">Retry</button>
         </div>
       )}
       {/* Current Price Banner */}
