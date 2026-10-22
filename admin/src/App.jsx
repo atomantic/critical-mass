@@ -741,17 +741,17 @@ function AppContent() {
                 {!fundsUnavailable && currentStrategy === 'regime' && regimeRunning !== null && (<>
 
                     {regimeDryRun && (
-                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-[10px] md:text-xs font-medium rounded-sm">
+                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-2xs md:text-xs font-medium rounded-sm">
                         DRY-RUN
                       </span>
                     )}
                     {regimeLifecycle === 'draining' && (
-                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-yellow-900/50 border border-yellow-500 text-yellow-300 text-[10px] md:text-xs font-medium rounded-sm animate-pulse" title="Draining: blocking new entries; will close after current cycle's TP fills.">
+                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-yellow-900/50 border border-yellow-500 text-yellow-300 text-2xs md:text-xs font-medium rounded-sm animate-pulse" title="Draining: blocking new entries; will close after current cycle's TP fills.">
                         DRAINING
                       </span>
                     )}
                     {regimeLifecycle === 'closed' && (
-                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-red-900/50 border border-red-500 text-red-300 text-[10px] md:text-xs font-medium rounded-sm" title="Fund is closed. Click Reopen to reactivate.">
+                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-red-900/50 border border-red-500 text-red-300 text-2xs md:text-xs font-medium rounded-sm" title="Fund is closed. Click Reopen to reactivate.">
                         CLOSED
                       </span>
                     )}
@@ -773,7 +773,7 @@ function AppContent() {
                           <button
                             onClick={handleResetDryRun}
                             disabled={resetting}
-                            className={`${REGIME_ACTION_TOUCH_TARGET} px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded-sm text-[10px] md:text-xs transition-colors`}
+                            className={`${REGIME_ACTION_TOUCH_TARGET} px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded-sm text-2xs md:text-xs transition-colors`}
                             title="Reset dry-run state"
                           >
                             {resetting ? '...' : 'Reset'}

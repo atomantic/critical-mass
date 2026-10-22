@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { createAuthenticatedRequest } = require('./auth');
 const { createBaseAdapter, createAmbiguousPlacementError, restQueueTiming } = require('../base-adapter');
 const { validateStandardExchangeKeys, createKeyFileLoader } = require('../key-validation');
-const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
+const { incrementToDecimals, floorToIncrement, finiteFloat, sleep } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 const { REST_TIMEOUT_MS } = require('../../timing-constants');
 
@@ -69,7 +69,7 @@ const createCryptocomAdapter = (keysPath = null) => {
     nextTradeRequestAt = Math.max(now, nextTradeRequestAt) + TRADE_SCAN_INTERVAL_MS;
     if (waitMs > 0) {
       const startedAt = Date.now();
-      await new Promise(resolve => setTimeout(resolve, waitMs));
+      await sleep(waitMs);
       const store = restQueueTiming.getStore();
       if (store) store.queuedMs += Date.now() - startedAt;
     }
@@ -900,7 +900,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       totalMatched = matching.reduce((sum, t) => sum + parseFloat(t.traded_quantity || t.quantity || 0), 0);
       if (totalMatched >= cumulativeQuantity - 1e-9 || attempt >= FILL_SCAN_RETRIES) break;
       const startedAt = Date.now();
-      await new Promise(resolve => setTimeout(resolve, FILL_SCAN_RETRY_DELAY_MS));
+      await sleep(FILL_SCAN_RETRY_DELAY_MS);
       const store = restQueueTiming.getStore();
       if (store) store.queuedMs += Date.now() - startedAt;
     }
@@ -996,7 +996,7 @@ const createCryptocomAdapter = (keysPath = null) => {
           instrument, pages: scan.pages, error: err.message,
         });
         const startedAt = Date.now();
-        await new Promise(resolve => setTimeout(resolve, FILL_SCAN_RETRY_DELAY_MS * failures));
+        await sleep(FILL_SCAN_RETRY_DELAY_MS * failures);
         const store = restQueueTiming.getStore();
         if (store) store.queuedMs += Date.now() - startedAt;
       }

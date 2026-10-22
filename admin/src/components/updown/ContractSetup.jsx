@@ -339,7 +339,7 @@ export default function ContractSetup({ initialContract }) {
             <div className="flex items-center gap-2 mb-2">
               <span className="text-xs font-medium text-purple-400">Extracted Values</span>
               {preview.screenType && (
-                <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                <span className={`text-2xs px-1.5 py-0.5 rounded font-medium ${
                   preview.screenType === 'select' ? 'bg-blue-900/50 text-blue-400' :
                   preview.screenType === 'order' ? 'bg-yellow-900/50 text-yellow-400' :
                   'bg-green-900/50 text-green-400'

@@ -170,7 +170,7 @@ const BG_600_ALLOWLIST = new Set([
   // translucent status pills: bg-*-600/NN + text-*-400, a distinct pattern from solid buttons
   "admin/src/components/ManualTrades.jsx::buy_pending: 'bg-yellow-600/30 text-yellow-400 border-yellow-500/30',",
   "admin/src/components/ManualTrades.jsx::completed: 'bg-green-600/30 text-green-400 border-green-500/30',",
-  'admin/src/components/ManualTrades.jsx::className="px-2 py-0.5 rounded-sm text-[10px] bg-yellow-600/30 text-yellow-400 hover:bg-yellow-600/50 border border-yellow-500/30"',
+  'admin/src/components/ManualTrades.jsx::className="px-2 py-0.5 rounded-sm text-2xs bg-yellow-600/30 text-yellow-400 hover:bg-yellow-600/50 border border-yellow-500/30"',
   'admin/src/components/updown/PositionTracker.jsx::className="py-2 px-3 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 rounded-sm text-sm text-red-400 transition-colors flex items-center gap-1"',
   // read-only table-cell status indicators, not action buttons
   "admin/src/components/updown/TradeHistory.jsx::? d === 'up' ? 'bg-green-600 text-white' : d === 'down' ? 'bg-red-600 text-white' : 'bg-gray-600 text-white'",
