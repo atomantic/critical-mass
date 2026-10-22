@@ -1459,26 +1459,32 @@ const withPlacementIntentsLock = (file, fn) => {
   const lock = `${file}.lock`;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const deadline = Date.now() + INTENT_LOCK_TIMEOUT_MS;
+  const token = randomUUID();
+  // The lock appears already holding its owner record: stage the directory, then
+  // rename it into place (fails if a non-empty lock exists), so a lock never
+  // exists ownerless and an age-based reclaim cannot steal a paused creator's lock.
+  const staged = `${lock}.new-${process.pid}-${token}`;
   for (;;) {
+    fs.mkdirSync(staged, { mode: 0o700 });
     try {
-      fs.mkdirSync(lock, { mode: 0o700 });
+      fs.writeFileSync(path.join(staged, 'owner.json'), JSON.stringify({ pid: process.pid, host: os.hostname(), token }), { mode: 0o600 });
+      fs.renameSync(staged, lock);
       break;
     } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
+      fs.rmSync(staged, { recursive: true, force: true });
+      if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(err.code)) throw err;
       if (Date.now() > deadline) throw new Error(`placement intents lock ${lock} still held after ${INTENT_LOCK_TIMEOUT_MS / 1000}s; refusing to write without it`);
       if (isIntentLockStale(lock)) reclaimStaleIntentLock(lock);
       sleepSync(INTENT_LOCK_POLL_MS);
     }
   }
   try {
-    // Best effort: without owner.json a stale lock is reclaimed by age instead of by dead pid.
-    try {
-      const fd = fs.openSync(path.join(lock, 'owner.json'), 'w', 0o600);
-      try { fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: os.hostname() })); } finally { fs.closeSync(fd); }
-    } catch { /* ignore */ }
     return fn();
   } finally {
-    fs.rmSync(lock, { recursive: true, force: true });
+    // Release only a lock that is still ours.
+    try {
+      if (JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8')).token === token) fs.rmSync(lock, { recursive: true, force: true });
+    } catch { /* already reclaimed */ }
   }
 };
 
