@@ -816,6 +816,28 @@ const getNewestBackupTime = () => {
 };
 
 /**
+ * Non-blocking getNewestBackupTime for the scheduler. A cold gateway start has
+ * an empty verdict cache, so the sync variant would run unzip tests on the
+ * event loop for every candidate it walks past.
+ * @returns {Promise<number | null>}
+ */
+const getNewestBackupTimeAsync = async () => {
+  ensureBackupsDir();
+  const candidates = [];
+  for (const filename of fs.readdirSync(BACKUPS_DIR)) {
+    if (!filename.startsWith('backup-') || !filename.endsWith('.zip')) continue;
+    const filePath = path.join(BACKUPS_DIR, filename);
+    const stats = fs.lstatSync(filePath);
+    if (stats.isFile()) candidates.push({ filePath, stats, mtimeMs: Math.round(stats.mtimeMs) });
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const { filePath, stats, mtimeMs } of candidates) {
+    if (await isArchiveListableAsync(filePath, stats)) return mtimeMs;
+  }
+  return null;
+};
+
+/**
  * Epoch ms of the newest fund-state snapshot, or null when none exist.
  * @returns {number | null}
  */
@@ -1516,6 +1538,7 @@ module.exports = {
   listBackups,
   listFundStateBackups,
   getNewestBackupTime,
+  getNewestBackupTimeAsync,
   getNewestFundStateBackupTime,
   deleteBackup,
   pruneBackups,

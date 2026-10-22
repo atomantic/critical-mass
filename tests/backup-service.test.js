@@ -29,6 +29,7 @@ const {
   restoreBackup,
   inspectBackup,
   getNewestBackupTime,
+  getNewestBackupTimeAsync,
 } = require('../src/backup-service');
 const { GLOBAL_DEFAULTS } = require('../src/config-utils');
 Object.assign(pathsModule, originalPaths);
@@ -747,6 +748,11 @@ describe('backup-service — pruneBackups retention', () => {
       assert.ok((await listBackups()).some(backup => backup.filename === result.filename));
       assert.equal(integrityTests(), afterCreate, 'listing reuses the verdict earned at publish time');
     });
+  });
+
+  it('getNewestBackupTimeAsync matches the sync anchor without blocking on a cold verdict cache', async () => {
+    const expected = getNewestBackupTime();
+    assert.equal(await getNewestBackupTimeAsync(), expected);
   });
 
   it('anchors the schedule to the newest valid archive, not a newer corrupt one', async () => {
