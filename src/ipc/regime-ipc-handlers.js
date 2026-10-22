@@ -22,7 +22,7 @@ const { IPC_CHANNELS } = require('./ipc-protocol');
  */
 const registerRegimeIpcHandlers = (ipcServer, deps) => {
   const {
-    regimeEngines, resolvePair, fundKey, fundLabel, logger, exchangeName, ioProxy,
+    regimeEngines, resolvePair, fundKey, fundLabel, logger, ioProxy,
     getStartStatus, getStandaloneLedger, getActiveLedger, getManualTradeStore,
     invalidateStandaloneLedger, unaccountedFillsJobs,
     getFundConfig, getRegimeConfig, getMarketDataService, getChartData, getAdapter,
