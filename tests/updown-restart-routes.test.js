@@ -44,12 +44,12 @@ describe('POST /api/updown/restart validates PM2 process (issue #534)', () => {
     // on a machine that happens to have it installed. Assign a plain stub,
     // which has no custom symbol, so promisify wraps the stub itself.
     const childProcess = require('child_process');
-    const realExec = childProcess.exec;
+    const realExecFile = childProcess.execFile;
     const commands = [];
-    childProcess.exec = (cmd, options, done) => {
+    childProcess.execFile = (cmd, args, options, done) => {
       const callback = typeof options === 'function' ? options : done;
-      commands.push(cmd);
-      callback(null, cmd.includes('pm2 describe') ? '{"name": "critical-mass"}' : 'restarted', '');
+      commands.push([cmd, ...args].join(' '));
+      callback(null, args[0] === 'describe' ? '{"name": "critical-mass"}' : 'restarted', '');
     };
 
     try {
@@ -71,16 +71,16 @@ describe('POST /api/updown/restart validates PM2 process (issue #534)', () => {
       assert.equal(res.body.message, 'Restarting...');
       assert.ok(commands.some(cmd => cmd.includes('pm2 describe')), 'pre-flight check ran through the stub');
     } finally {
-      childProcess.exec = realExec;
+      childProcess.execFile = realExecFile;
       delete require.cache[require.resolve('../src/routes/updown-routes')];
     }
   });
 
   it('answers 503 naming an unresponsive PM2 daemon when the pre-flight check times out', async () => {
     const childProcess = require('child_process');
-    const realExec = childProcess.exec;
+    const realExecFile = childProcess.execFile;
     const seenOptions = [];
-    childProcess.exec = (cmd, options, done) => {
+    childProcess.execFile = (cmd, args, options, done) => {
       seenOptions.push(options);
       done(Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }), '', '');
     };
@@ -101,7 +101,7 @@ describe('POST /api/updown/restart validates PM2 process (issue #534)', () => {
       assert.match(res.body.error, /PM2 did not respond/);
       assert.ok(seenOptions[0]?.timeout > 0, 'the pre-flight exec is bounded');
     } finally {
-      childProcess.exec = realExec;
+      childProcess.execFile = realExecFile;
       delete require.cache[require.resolve('../src/routes/updown-routes')];
     }
   });
@@ -135,6 +135,34 @@ describe('POST /api/updown/restart validates PM2 process (issue #534)', () => {
       } else {
         process.env.PM2_PROCESS_NAME = oldEnv;
       }
+    }
+  });
+
+  it('rejects an invalid PM2_PROCESS_NAME without spawning anything (issue #1586)', async () => {
+    const childProcess = require('child_process');
+    const realExecFile = childProcess.execFile;
+    const oldEnv = process.env.PM2_PROCESS_NAME;
+    let spawned = 0;
+    childProcess.execFile = () => { spawned++; };
+    process.env.PM2_PROCESS_NAME = '--help';
+    try {
+      delete require.cache[require.resolve('../src/routes/updown-routes')];
+      const registerUpdownRoutes = require('../src/routes/updown-routes');
+      const app = createFakeApp();
+      registerUpdownRoutes(app, {
+        updownService: { getTradeContext: () => ({}) },
+        candleCache: { getAllCandles: () => [] },
+        readJSON: () => ({ trades: [], nextId: 1 }),
+        writeJSON: () => {},
+        DATA_DIR: '/tmp/updown-test',
+      });
+      const res = await invoke(app, 'POST /api/updown/restart');
+      assert.equal(res.statusCode, 500);
+      assert.equal(spawned, 0);
+    } finally {
+      childProcess.execFile = realExecFile;
+      if (oldEnv === undefined) delete process.env.PM2_PROCESS_NAME; else process.env.PM2_PROCESS_NAME = oldEnv;
+      delete require.cache[require.resolve('../src/routes/updown-routes')];
     }
   });
 });
