@@ -258,7 +258,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
           <div className="text-xs font-medium text-indigo-300">Ladder Settings</div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div>
-              <label htmlFor={athDropId} className="text-[10px] text-gray-400 block mb-1">ATH Drop %</label>
+              <label htmlFor={athDropId} className="text-2xs text-gray-400 block mb-1">ATH Drop %</label>
               <input
                 id={athDropId}
                 aria-describedby={`${athDropId}-hint`}
@@ -278,10 +278,10 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
                 disabled={placingLadder}
                 className="w-full bg-gray-700 text-white text-xs rounded-sm px-2 py-1"
               />
-              <div id={`${athDropId}-hint`} className="text-[10px] text-gray-400 mt-0.5">Range: 10–95</div>
+              <div id={`${athDropId}-hint`} className="text-2xs text-gray-400 mt-0.5">Range: 10–95</div>
             </div>
             <div>
-              <label htmlFor={spacingModeId} className="text-[10px] text-gray-400 block mb-1">Spacing Mode</label>
+              <label htmlFor={spacingModeId} className="text-2xs text-gray-400 block mb-1">Spacing Mode</label>
               <select
                 id={spacingModeId}
                 value={ladderEdits.ladderSpacingMode}
@@ -299,7 +299,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
               </select>
             </div>
             <div>
-              <label htmlFor={sizeModeId} className="text-[10px] text-gray-400 block mb-1">Size Mode</label>
+              <label htmlFor={sizeModeId} className="text-2xs text-gray-400 block mb-1">Size Mode</label>
               <select
                 id={sizeModeId}
                 value={ladderEdits.ladderSizeMode}
@@ -318,7 +318,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
               </select>
             </div>
             <div>
-              <label htmlFor={minSpacingId} className="text-[10px] text-gray-400 block mb-1">Min Spacing %</label>
+              <label htmlFor={minSpacingId} className="text-2xs text-gray-400 block mb-1">Min Spacing %</label>
               <input
                 id={minSpacingId}
                 aria-describedby={`${minSpacingId}-hint`}
@@ -338,7 +338,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
                 disabled={placingLadder}
                 className="w-full bg-gray-700 text-white text-xs rounded-sm px-2 py-1"
               />
-              <div id={`${minSpacingId}-hint`} className="text-[10px] text-gray-400 mt-0.5">Range: 0.01–5</div>
+              <div id={`${minSpacingId}-hint`} className="text-2xs text-gray-400 mt-0.5">Range: 0.01–5</div>
             </div>
           </div>
           {/* Preview */}

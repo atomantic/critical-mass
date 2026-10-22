@@ -2,6 +2,9 @@
 
 @theme {
   --breakpoint-3xl: 120rem;
+  /* Smallest admin caption/badge size (issue #1603). Sits below the Tailwind
+     text-xs (12px) step; replaces the one-off text-[9px]/[10px]/[11px] values. */
+  --text-2xs: 0.6875rem;
 }
 
 /* Preserve the v3 defaults where components do not specify a utility. */

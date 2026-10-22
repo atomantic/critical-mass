@@ -15,7 +15,7 @@ export default function AuthDeniedBanner({ health, handleResumeFromAuthDenied, r
                 The exchange rejected the API key (commonly the server IP is not on the key's allowlist). New orders are halted; existing orders are left untouched. Allowlist the IP, then resume — the engine also auto-resumes once an API call succeeds again.
               </div>
               {health.reason && (
-                <div className="text-red-400/80 text-[11px] mt-1 font-mono break-all">{health.reason}</div>
+                <div className="text-red-400/80 text-2xs mt-1 font-mono break-all">{health.reason}</div>
               )}
             </div>
           </div>

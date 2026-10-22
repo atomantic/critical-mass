@@ -4,7 +4,7 @@ export default function LongTermBiasDetails({ c, bias, coveragePct }) {
   return (
     <>
       {/* Component breakdown */}
-      <div className="space-y-1 text-[10px]">
+      <div className="space-y-1 text-2xs">
         <div className="flex items-center justify-between">
           <span className="text-gray-400">Percentile of range ({(c.percentile?.weight * 100 || 0).toFixed(0)}%)</span>
           <span className="font-mono text-gray-300">{((c.percentile?.score || 0) * 100).toFixed(0)}</span>
@@ -25,7 +25,7 @@ export default function LongTermBiasDetails({ c, bias, coveragePct }) {
         </div>
       </div>
 
-      <div className="text-[10px] text-gray-400 mt-2 pt-2 border-t border-gray-700 flex items-center justify-between">
+      <div className="text-2xs text-gray-400 mt-2 pt-2 border-t border-gray-700 flex items-center justify-between">
         <span>
           {bias.sampleSize || 0} / {bias.cache?.lookbackDays || 0}d
           <span className="text-gray-400 ml-1">({coveragePct.toFixed(0)}%)</span>

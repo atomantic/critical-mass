@@ -29,7 +29,7 @@ function FormInput({ label, hint, value, onChange, type = 'text', className = ''
           onChange={(e) => onChange(e.target.value)}
           className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white focus:outline-hidden focus:border-blue-500"
         />
-        {hint && <div id={hintId} className="text-[10px] text-gray-400 mt-0.5 leading-tight">{hint}</div>}
+        {hint && <div id={hintId} className="text-2xs text-gray-400 mt-0.5 leading-tight">{hint}</div>}
       </div>
     )
   }
@@ -56,7 +56,7 @@ function FormInput({ label, hint, value, onChange, type = 'text', className = ''
         onBlur={() => setDraft(null)}
         className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white focus:outline-hidden focus:border-blue-500"
       />
-      {hint && <div id={hintId} className="text-[10px] text-gray-400 mt-0.5 leading-tight">{hint}</div>}
+      {hint && <div id={hintId} className="text-2xs text-gray-400 mt-0.5 leading-tight">{hint}</div>}
     </div>
   )
 }
@@ -78,7 +78,7 @@ function FormSelect({ label, hint, value, onChange, options, className = '' }) {
           <option key={opt.value} value={opt.value}>{opt.label}</option>
         ))}
       </select>
-      {hint && <div id={hintId} className="text-[10px] text-gray-400 mt-0.5 leading-tight">{hint}</div>}
+      {hint && <div id={hintId} className="text-2xs text-gray-400 mt-0.5 leading-tight">{hint}</div>}
     </div>
   )
 }
@@ -825,7 +825,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                     />
                     <label htmlFor="ladderAutoSwitch" className="text-sm text-gray-300">Auto-Switch on Vol</label>
                   </div>
-                  <div className="text-[10px] text-gray-400 mt-0.5 leading-tight">Switch from reactive to ladder when vol spikes</div>
+                  <div className="text-2xs text-gray-400 mt-0.5 leading-tight">Switch from reactive to ladder when vol spikes</div>
                 </div>
                 {regimeConfig.ladderAutoSwitch && (
                   <FormInput label="Auto-Switch Vol Mult" hint="Switch to ladder when realized volatility reaches this multiple of its baseline (1.5 = 50% above)" value={regimeConfig.ladderAutoSwitchVolMult || 2.0} onChange={(v) => handleRegimeChange('ladderAutoSwitchVolMult', v)} type="number" />
@@ -1095,7 +1095,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                       />
                       <label htmlFor="cancelEntriesOnFlash" className="text-sm text-gray-300">Cancel Entries on Flash</label>
                     </div>
-                    <div className="text-[10px] text-gray-400 mt-0.5 leading-tight">Pull all pending entries during flash events</div>
+                    <div className="text-2xs text-gray-400 mt-0.5 leading-tight">Pull all pending entries during flash events</div>
                   </div>
                 </>
               )}
