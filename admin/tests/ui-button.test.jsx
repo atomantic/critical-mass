@@ -19,6 +19,13 @@ it('Button supports the secondary variant and extra classes', () => {
   expect(b.className).toContain('ml-2')
 })
 
+it('Button maps dialog variants to their colours', () => {
+  render(<><Button variant="cancel">C</Button><Button variant="warning">W</Button><Button variant="destructive">D</Button></>)
+  expect(screen.getByRole('button', { name: 'C' }).className).toContain('text-gray-400')
+  expect(screen.getByRole('button', { name: 'W' }).className).toContain('bg-yellow-800')
+  expect(screen.getByRole('button', { name: 'D' }).className).toContain('bg-red-700')
+})
+
 it('RetryBanner shows the message and fires onRetry', () => {
   const onRetry = vi.fn()
   render(<RetryBanner message="Boom" onRetry={onRetry} />)

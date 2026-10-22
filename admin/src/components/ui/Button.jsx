@@ -4,6 +4,15 @@ const VARIANTS = {
   primary: 'bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50',
   secondary: 'bg-gray-700 hover:bg-gray-600 text-gray-200 disabled:opacity-50',
   danger: 'bg-red-800 hover:bg-red-700 text-white disabled:opacity-50',
+  // Dialog Cancel: muted text that brightens on hover.
+  cancel: 'bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-white disabled:opacity-50',
+  // Brighter red than `danger` for confirm-destructive actions.
+  destructive: 'bg-red-700 hover:bg-red-800 text-white disabled:opacity-50',
+  warning: 'bg-yellow-800 hover:bg-yellow-900 text-white disabled:opacity-50',
+  caution: 'bg-amber-600 hover:bg-amber-500 text-white disabled:opacity-50',
+  success: 'bg-green-800 hover:bg-green-900 text-white disabled:opacity-50',
+  accent: 'bg-cyan-700 hover:bg-cyan-600 text-white disabled:opacity-50',
+  purple: 'bg-purple-600 hover:bg-purple-700 text-white disabled:opacity-50',
   ghost: 'bg-transparent hover:bg-gray-700/60 text-gray-300 disabled:opacity-50',
 }
 

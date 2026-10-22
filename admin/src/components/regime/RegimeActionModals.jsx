@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { TOUCH_TARGET } from '../ui/touchTarget'
 import React from 'react'
 import ModalDialog from '../ModalDialog'
@@ -80,21 +81,19 @@ const RegimeActionModals = ({
             The fund will no longer place new ladder orders and will only enter positions through reactive buys (market, fill-or-kill).
           </p>
           <div className="flex justify-end gap-3">
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
+            <Button variant="cancel"
               onClick={() => onDismissCancelLadder()}
               disabled={cancellingLadder}
               autoFocus
             >
               Keep ladder
-            </button>
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded-sm transition-colors disabled:opacity-50`}
+            </Button>
+            <Button variant="destructive"
               onClick={onExecuteCancelLadder}
               disabled={cancellingLadder}
             >
               {cancellingLadder ? 'Cancelling orders…' : 'Cancel ladder orders'}
-            </button>
+            </Button>
           </div>
         </ModalDialog>
       )}
@@ -115,21 +114,19 @@ const RegimeActionModals = ({
             Aborts if any TP has a partial fill. Final TP% is capped at the highest body's pre-merge TP%, so the combined sell price can only move down.
           </p>
           <div className="flex justify-end gap-3">
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
+            <Button variant="cancel"
               onClick={() => onDismissCollapseAll()}
               disabled={collapsingAll}
               autoFocus
             >
               Keep bodies
-            </button>
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-amber-600 hover:bg-amber-500 rounded-sm transition-colors disabled:opacity-50`}
+            </Button>
+            <Button variant="caution"
               onClick={onExecuteCollapseAll}
               disabled={collapsingAll}
             >
               {collapsingAll ? 'Collapsing…' : 'Collapse All'}
-            </button>
+            </Button>
           </div>
         </ModalDialog>
       )}
@@ -150,21 +147,19 @@ const RegimeActionModals = ({
             Resets the cycle buy counter ({position.cycleBuys}/{config?.maxCycleBuys}) to 0. The reset is persistent and survives an engine restart.
           </p>
           <div className="flex justify-end gap-3">
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
+            <Button variant="cancel"
               onClick={() => onDismissResetCycle()}
               disabled={resettingCycle}
               autoFocus
             >
               Cancel
-            </button>
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded-sm transition-colors disabled:opacity-50`}
+            </Button>
+            <Button variant="warning"
               onClick={onExecuteResetCycle}
               disabled={resettingCycle}
             >
               {resettingCycle ? 'Resetting…' : 'Reset cycle & resume buying'}
-            </button>
+            </Button>
           </div>
         </ModalDialog>
       )}
@@ -190,23 +185,21 @@ const RegimeActionModals = ({
             {intentConfirm.intent?.clientOrderId ? ` · client order ${intentConfirm.intent.clientOrderId}` : ' · no client order id recorded'}
           </p>
           <div className="flex justify-end gap-3">
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
+            <Button variant="cancel"
               onClick={() => onDismissIntent()}
               disabled={reconcilingIntent}
               autoFocus
             >
               Cancel
-            </button>
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white rounded-sm transition-colors disabled:opacity-50 ${intentConfirm.action === 'adopt' ? 'bg-blue-600 hover:bg-blue-500' : 'bg-amber-600 hover:bg-amber-500'}`}
+            </Button>
+            <Button variant={intentConfirm.action === 'adopt' ? 'primary' : 'caution'}
               onClick={onExecuteIntent}
               disabled={reconcilingIntent}
             >
               {reconcilingIntent
                 ? 'Working…'
                 : intentConfirm.action === 'adopt' ? 'Look up & adopt' : 'Discard intent'}
-            </button>
+            </Button>
           </div>
         </ModalDialog>
       )}
@@ -223,19 +216,17 @@ const RegimeActionModals = ({
             Resume trading from the drawdown pause? This resets the peak equity to current levels.
           </p>
           <div className="flex justify-end gap-3">
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
+            <Button variant="cancel"
               onClick={() => onDismissResumeDrawdown()}
               autoFocus
             >
               Cancel
-            </button>
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-green-800 hover:bg-green-900 rounded-sm transition-colors`}
+            </Button>
+            <Button variant="success"
               onClick={onExecuteResumeDrawdown}
             >
               Resume Trading
-            </button>
+            </Button>
           </div>
         </ModalDialog>
       )}
@@ -256,21 +247,19 @@ const RegimeActionModals = ({
             Both TP orders will be cancelled, buys combined, and a new TP placed for the merged body.
           </p>
           <div className="flex justify-end gap-3">
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
+            <Button variant="cancel"
               onClick={() => onDismissRollUp()}
               disabled={rollingUp}
               autoFocus
             >
               Keep separate
-            </button>
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded-sm transition-colors disabled:opacity-50`}
+            </Button>
+            <Button variant="warning"
               onClick={() => onExecuteRollUp(rollUpConfirm.bodyId)}
               disabled={rollingUp}
             >
               {rollingUp ? 'Merging...' : 'Roll Up'}
-            </button>
+            </Button>
           </div>
         </ModalDialog>
       )}
@@ -367,29 +356,26 @@ const RegimeActionModals = ({
             </div>
           )}
           <div className="flex justify-end gap-3 mt-4">
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
+            <Button variant="cancel"
               onClick={() => onDismissSetTp()}
               disabled={settingTp}
             >
               Cancel
-            </button>
+            </Button>
             {tpEditModal.mode === 'pct' ? (
-              <button
-                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-cyan-700 hover:bg-cyan-600 rounded-sm transition-colors disabled:opacity-50`}
+              <Button variant="accent"
                 onClick={() => onExecuteSetTp('pct')}
                 disabled={settingTp || !tpEditModal.inputValue || parseFloat(tpEditModal.inputValue) <= 0}
               >
                 {settingTp ? 'Placing...' : 'Set TP%'}
-              </button>
+              </Button>
             ) : (
-              <button
-                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-cyan-700 hover:bg-cyan-600 rounded-sm transition-colors disabled:opacity-50`}
+              <Button variant="accent"
                 onClick={() => onExecuteSetTp('price')}
                 disabled={settingTp || !tpEditModal.priceValue || parseFloat(tpEditModal.priceValue) <= (tpEditModal.avgPrice || 0)}
               >
                 {settingTp ? 'Placing...' : 'Set Price'}
-              </button>
+              </Button>
             )}
           </div>
         </ModalDialog>
@@ -453,21 +439,19 @@ const RegimeActionModals = ({
               : 'This will disable the DCA engine, create backup files, and build regime state with celestial bodies for each open position. Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.'}
           </p>
           <div className="flex justify-end gap-3">
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
+            <Button variant="cancel"
               onClick={() => onDismissConvert()}
               disabled={converting}
               autoFocus
             >
               Cancel
-            </button>
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded-sm transition-colors disabled:opacity-50`}
+            </Button>
+            <Button
               onClick={onExecuteConvert}
               disabled={converting}
             >
               {convertPreview?.merge ? (converting ? 'Importing…' : 'Confirm Import') : (converting ? 'Upgrading…' : 'Confirm Upgrade')}
-            </button>
+            </Button>
           </div>
         </ModalDialog>
       )}
