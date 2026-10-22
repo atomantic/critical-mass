@@ -756,6 +756,37 @@ describe('operator authentication resource bounds', () => {
     });
   });
 
+  it('does not charge successful logins against the failed-attempt budget (#1581)', async () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    await withServer({ authFile, readJSON, writeJSON, now: () => 0 }, async ({ baseUrl }) => {
+      for (let i = 0; i < 4; i++) {
+        assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: 'wrong-password' })).status, 401);
+      }
+      for (let i = 0; i < 10; i++) {
+        assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD })).status, 200);
+      }
+      assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: 'wrong-password' })).status, 401);
+      assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: 'wrong-password' })).status, 429);
+    });
+  });
+
+  it('keys the budget on the first X-Forwarded-For hop only when the proxy is trusted (#1581)', async () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    await withServer({ authFile, readJSON, writeJSON, now: () => 0, trustProxy: true }, async ({ baseUrl }) => {
+      const attacker = { 'X-Forwarded-For': '192.0.2.1, 10.0.0.1' };
+      for (let i = 0; i < 5; i++) {
+        assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: 'wrong-password' }, attacker)).status, 401);
+      }
+      assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD }, attacker)).status, 429);
+      const operator = { 'X-Forwarded-For': '192.0.2.2' };
+      assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD }, operator)).status, 200);
+      const bogus = { 'X-Forwarded-For': 'not-an-ip' };
+      assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD }, bogus)).status, 200);
+    });
+  });
+
   it('limits wrong-password guesses before hashing and allows login after the window', async (t) => {
     const authFile = tmpAuthFile();
     seedPassword(authFile);
