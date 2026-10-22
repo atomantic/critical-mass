@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Signal, Minus } from '../icons'
-import { apiGet } from '../../utils/apiClient'
 import { signalBadgeColors, getSignalIcon, getActionLabel, labelHistoryActions } from '../../constants/signals'
 import { apiGet } from '../../utils/apiClient'
 
