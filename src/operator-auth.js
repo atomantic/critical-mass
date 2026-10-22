@@ -120,6 +120,8 @@ const makeRecord = async (password) => {
     kdf: 'scrypt',
     salt,
     hash: await hashPassword(password, salt),
+    sessionKey: crypto.randomBytes(32).toString('hex'),
+    sessionEpoch: 1,
     updatedAt: new Date().toISOString(),
   };
 };
@@ -139,6 +141,7 @@ const makeRecord = async (password) => {
  *   configured secret, a generated owner-only secret file that enrollment must
  *   present (X-Operator-Bootstrap). It never enables a remote listener.
  * @param {Function} [opts.onPasswordChanged] Called after successful credential persistence
+ * @param {Function} [opts.onSessionsRevoked] Called after sign-out bumps the session epoch
  * @param {Function} [opts.onPasswordRemoved]
  * @param {() => number} [opts.now] Clock for the peer attempt window
  * @param {(req: import('express').Request) => boolean} [opts.isTrustedBootstrapRequest]
@@ -195,6 +198,7 @@ const createOperatorAuth = ({
   bootstrapSecretFile = '',
   localBootstrapSecretFile = '',
   onPasswordChanged = null,
+  onSessionsRevoked = null,
   onPasswordRemoved = null,
   isTrustedBootstrapRequest = isLoopbackRequest,
   now = Date.now,
@@ -296,19 +300,34 @@ const createOperatorAuth = ({
     !authFileUnreadable && bootstrapSecretHash && bootstrapSecretHash !== record?.bootstrapConsumedHash
   );
 
-  const sessionSecret = () => crypto.createHash('sha256')
-    .update(`critical-mass-session:${record?.hash || 'bootstrap'}`)
-    .digest('hex');
+  // Sessions are signed with a random per-install key that is independent of the
+  // password hash, and carry the epoch they were minted in. Bumping the epoch
+  // (sign-out, password change) revokes every outstanding session.
+  const sessionEpoch = () => (Number.isInteger(record?.sessionEpoch) ? record.sessionEpoch : 1);
+  const sessionSecret = () => record?.sessionKey || '';
+
+  // Lazy migration: records written before sessionKey existed get one on first
+  // load. This signs out existing browser sessions exactly once.
+  if (record?.salt && record?.hash && !record.sessionKey) {
+    const migrated = { ...record, sessionKey: crypto.randomBytes(32).toString('hex'), sessionEpoch: 1 };
+    try {
+      if (authFile && writeJSON) writeJSON(authFile, migrated);
+    } catch (error) {
+      log('WARN', `🔐 Could not persist the new session key to ${authFile}: ${error.message}. Sessions will reset on restart.`);
+    }
+    record = migrated;
+  }
 
   const createSession = () => signJwt(
-    { sub: 'operator', role: 'operator' },
+    { sub: 'operator', role: 'operator', ep: sessionEpoch() },
     sessionSecret(),
     { algorithm: 'HS256', audience: 'critical-mass', issuer: 'critical-mass', expiresIn: SESSION_TTL_SECONDS }
   );
 
-  const verifySession = (token) => Boolean(
-    verifyHs256Jwt(token, sessionSecret(), { audience: 'critical-mass', issuer: 'critical-mass' })
-  );
+  const verifySession = (token) => {
+    const claims = verifyHs256Jwt(token, sessionSecret(), { audience: 'critical-mass', issuer: 'critical-mass' });
+    return Boolean(claims) && claims.ep === sessionEpoch();
+  };
 
   const passwordMatches = async (password) => {
     if (!password || !record?.salt || !record?.hash) return false;
@@ -447,6 +466,7 @@ const createOperatorAuth = ({
       if (record !== previousRecord) throw authError(409, 'Operator password changed; retry with current credentials');
       persist({
         ...nextRecord,
+        sessionEpoch: sessionEpoch() + 1,
         bootstrapConsumedHash: bootstrapSecretHash || record?.bootstrapConsumedHash || null,
       });
       onPasswordChanged?.();
@@ -484,8 +504,14 @@ const createOperatorAuth = ({
     });
 
     app.delete('/api/auth/session', async (req, res) => {
-      if ((await authenticate(req.headers, peerOf(req), req.operatorAttemptReserved))?.source === 'session' && !requestOriginMatches(req)) {
+      const auth = await authenticate(req.headers, peerOf(req), req.operatorAttemptReserved);
+      if (auth?.source === 'session' && !requestOriginMatches(req)) {
         return res.status(403).json({ error: 'Request origin is not authorized' });
+      }
+      // Only a valid session may revoke: bump the epoch so a copied cookie dies too.
+      if (auth?.source === 'session' && hasPassword()) {
+        persist({ ...record, sessionEpoch: sessionEpoch() + 1 });
+        onSessionsRevoked?.();
       }
       res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict', path: '/' });
       res.status(204).send();
