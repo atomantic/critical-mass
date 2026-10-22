@@ -5,6 +5,7 @@ import { History, Plus, Trash2, Edit3, Check, X, ArrowUp, ArrowDown } from '../i
 import { useToast } from '../Toast'
 import { runDashboardAction } from '../../utils/dashboardAction.mjs'
 import { apiDelete, apiRequest } from '../../utils/apiClient'
+import { completePagedItems } from '../../utils/pagedList.mjs'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { parseTradeAmountExpression } from './tradeAmountExpression'
 
@@ -74,7 +75,7 @@ export default function TradeHistory() {
     const { owned, data } = await tradesOwner.read('/api/updown/trades')
     if (!owned) return
     if (data?.success && Array.isArray(data.items)) {
-      setTrades(data.items)
+      setTrades(await completePagedItems('/api/updown/trades', data))
       setSummary(data.summary ?? null)
       setLoaded(true)
       setLoadError(null)

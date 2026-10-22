@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import DestructiveConfirmation from '../DestructiveConfirmation'
 import useSentinelSocket from '../../hooks/useSentinelSocket'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
+import { completePagedItems } from '../../utils/pagedList.mjs'
 import { apiGet, apiPost, apiPut, apiDelete } from '../../utils/apiClient'
 
 const TOUCH_BTN = 'min-h-11 min-w-11 shrink-0 inline-flex items-center justify-center'
@@ -66,7 +67,7 @@ export default function SentinelDashboard() {
       return
     }
     setAlertsError(null)
-    setAlertsView({ filter, alerts: data.items })
+    setAlertsView({ filter, alerts: await completePagedItems(url, data) })
   }, [filter, alertsOwner])
 
   // `throwOnError` lets a confirmation dialog own the failure message instead of the page banner.
@@ -204,7 +205,8 @@ export default function SentinelDashboard() {
     try {
       const { ok, data } = await apiGet('/api/sentinel/alerts')
       if (!ok) throw new Error('Unable to load alerts. Please try again.')
-      setConfirmation({ kind: 'alerts', count: data.total ?? data.items.length, active: data.items.filter(alert => !alert.dismissed).length })
+      const all = await completePagedItems('/api/sentinel/alerts', data)
+      setConfirmation({ kind: 'alerts', count: all.length, active: all.filter(alert => !alert.dismissed).length })
     } catch {
       setConfirmationError('Unable to load alerts. Please try again before clearing them.')
     }
