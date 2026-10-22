@@ -25,3 +25,12 @@ it('keeps a zero-height slot before and after alerts arrive and pins the banner 
   expect(link.className).toContain('z-40')
   expect(link.closest('[data-testid="alert-banner-slot"]').className).toContain('h-0')
 })
+
+it('reserves bottom padding on body while the fixed banner is visible and restores it on unmount', async () => {
+  document.body.style.paddingBottom = ''
+  const { unmount } = render(<AlertBanner />)
+  await screen.findByText(/Feed down/)
+  expect(document.body.style.paddingBottom).not.toBe('')
+  unmount()
+  expect(document.body.style.paddingBottom).toBe('')
+})

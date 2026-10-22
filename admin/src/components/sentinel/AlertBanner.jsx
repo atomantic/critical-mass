@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from '../../lib/router'
 import { apiGet } from '../../utils/apiClient'
 import { completePagedItems } from '../../utils/pagedList.mjs'
@@ -10,6 +10,17 @@ import usePolling from '../../hooks/usePolling'
  */
 export default function AlertBanner() {
   const [activeAlerts, setActiveAlerts] = useState([])
+  const linkRef = useRef(null)
+  const visible = activeAlerts.length > 0
+
+  // The banner is fixed (out of flow), so reserve its height as body padding
+  // while visible; otherwise it permanently covers the last rows of the page.
+  useEffect(() => {
+    if (!visible) return undefined
+    const prev = document.body.style.paddingBottom
+    document.body.style.paddingBottom = `${linkRef.current?.offsetHeight || 40}px`
+    return () => { document.body.style.paddingBottom = prev }
+  }, [visible])
 
   const fetchAlerts = async () => {
       try {
@@ -44,6 +55,7 @@ export default function AlertBanner() {
   return (
     <div data-testid="alert-banner-slot" className="h-0">
     <Link
+      ref={linkRef}
       to="/sentinel"
       className={`fixed inset-x-0 bottom-0 z-40 inline-flex items-center gap-2 px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-sm w-full shadow-lg focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-0 ${
         hasCritical
