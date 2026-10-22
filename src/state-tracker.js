@@ -1,6 +1,7 @@
 // @ts-check
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { randomUUID } = require('crypto');
 const {
   normalizeConfig,
@@ -1396,6 +1397,74 @@ const savePlacementIntents = (intents, exchange = 'coinbase', pair) => {
   atomicWriteSync(file, JSON.stringify({ version: 1, intents }, null, 2));
 };
 
+// The intents file is shared by the gateway and engine processes, and each
+// mutation is load -> change -> atomic rewrite (with an fsync). Without a lock
+// two processes interleaving in that window lose one writer's change. The lock
+// is a directory (mkdir is atomic) beside the file; waiting is a synchronous
+// sleep because every caller of the mutators is synchronous.
+const INTENT_LOCK_TIMEOUT_MS = 10_000;
+const INTENT_LOCK_STALE_MS = 30_000;
+const INTENT_LOCK_POLL_MS = 5;
+
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * A lock is reclaimed only when its owner (on this host) is provably gone, or
+ * it is far older than any critical section here (milliseconds).
+ * @param {string} lock - Lock directory
+ * @returns {boolean}
+ */
+const isIntentLockStale = (lock) => {
+  let ageMs;
+  try { ageMs = Date.now() - fs.statSync(lock).mtimeMs; } catch { return false; }
+  try {
+    const owner = JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8'));
+    if (owner.host === os.hostname() && Number.isInteger(owner.pid) && ageMs > 1000) {
+      try { process.kill(owner.pid, 0); } catch (err) { if (err.code === 'ESRCH') return true; }
+    }
+  } catch { /* owner file not written yet or unreadable: fall back to age */ }
+  return ageMs > INTENT_LOCK_STALE_MS;
+};
+
+/**
+ * Run `fn` holding the cross-process lock for a fund's intents file.
+ * @template T
+ * @param {string} file - Intents file path
+ * @param {() => T} fn - Synchronous critical section
+ * @returns {T}
+ */
+const withPlacementIntentsLock = (file, fn) => {
+  const lock = `${file}.lock`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const deadline = Date.now() + INTENT_LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      fs.mkdirSync(lock, { mode: 0o700 });
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      if (isIntentLockStale(lock)) {
+        // Rename aside first so concurrent reclaimers cannot remove a lock another process just took.
+        const aside = `${lock}.stale-${process.pid}-${randomUUID()}`;
+        try { fs.renameSync(lock, aside); fs.rmSync(aside, { recursive: true, force: true }); } catch { /* lost the reclaim race */ }
+        continue;
+      }
+      if (Date.now() > deadline) throw new Error(`placement intents lock ${lock} still held after ${INTENT_LOCK_TIMEOUT_MS / 1000}s; refusing to write without it`);
+      sleepSync(INTENT_LOCK_POLL_MS);
+    }
+  }
+  try {
+    // Best effort: without owner.json a stale lock is reclaimed by age instead of by dead pid.
+    try {
+      const fd = fs.openSync(path.join(lock, 'owner.json'), 'w', 0o600);
+      try { fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: os.hostname() })); } finally { fs.closeSync(fd); }
+    } catch { /* ignore */ }
+    return fn();
+  } finally {
+    fs.rmSync(lock, { recursive: true, force: true });
+  }
+};
+
 /**
  * Persist a pending placement intent BEFORE the order POST is dispatched.
  *
@@ -1421,7 +1490,9 @@ const recordPlacementIntent = (descriptor) => {
     updatedAt: now,
   };
 
-  savePlacementIntents([...loadPlacementIntents(exchange, pair), intent], exchange, pair);
+  withPlacementIntentsLock(getPlacementIntentsFile(exchange, pair), () => {
+    savePlacementIntents([...loadPlacementIntents(exchange, pair), intent], exchange, pair);
+  });
   return intent;
 };
 
@@ -1433,15 +1504,16 @@ const recordPlacementIntent = (descriptor) => {
  * @param {Object} patch - Fields to merge
  * @returns {Object|null} Updated intent, or null when it no longer exists
  */
-const updatePlacementIntent = (exchange, pair, intentId, patch) => {
-  const intents = loadPlacementIntents(exchange, pair);
-  const index = intents.findIndex(i => i?.id === intentId);
-  if (index === -1) return null;
+const updatePlacementIntent = (exchange, pair, intentId, patch) =>
+  withPlacementIntentsLock(getPlacementIntentsFile(exchange, pair), () => {
+    const intents = loadPlacementIntents(exchange, pair);
+    const index = intents.findIndex(i => i?.id === intentId);
+    if (index === -1) return null;
 
-  const updated = intents.map((intent, i) => (i === index ? { ...intent, ...patch, updatedAt: Date.now() } : intent));
-  savePlacementIntents(updated, exchange, pair);
-  return updated[index];
-};
+    const updated = intents.map((intent, i) => (i === index ? { ...intent, ...patch, updatedAt: Date.now() } : intent));
+    savePlacementIntents(updated, exchange, pair);
+    return updated[index];
+  });
 
 /**
  * Mark a dispatched intent as unresolved — the outcome was ambiguous and
@@ -1495,15 +1567,16 @@ const retainPlacementIntentInProcess = (intentId) => {
  * @param {string} intentId - Intent id
  * @returns {Object|null} The removed intent, or null if it was already resolved
  */
-const resolvePlacementIntent = (exchange, pair, intentId) => {
-  const intents = loadPlacementIntents(exchange, pair);
-  const removed = intents.find(i => i?.id === intentId);
-  if (!removed) return null;
+const resolvePlacementIntent = (exchange, pair, intentId) =>
+  withPlacementIntentsLock(getPlacementIntentsFile(exchange, pair), () => {
+    const intents = loadPlacementIntents(exchange, pair);
+    const removed = intents.find(i => i?.id === intentId);
+    if (!removed) return null;
 
-  savePlacementIntents(intents.filter(i => i?.id !== intentId), exchange, pair);
-  retainedIntentIds.delete(intentId);
-  return removed;
-};
+    savePlacementIntents(intents.filter(i => i?.id !== intentId), exchange, pair);
+    retainedIntentIds.delete(intentId);
+    return removed;
+  });
 
 /**
  * Intents whose outcome this process knows is definitive (accepted and handed
