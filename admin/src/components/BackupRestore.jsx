@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { plural } from '../utils/plural.mjs'
-import { describeActionFailure } from '../utils/actionFailure.mjs'
+import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
 import ModalDialog from './ModalDialog'
 
 const INTERVAL_OPTIONS = [
@@ -88,9 +88,8 @@ function BackupRestore() {
       if (current()) (silent ? setRefreshError : setError)(text)
     }
     try {
-      const res = await fetch('/api/backups')
-      if (res.ok) {
-        const data = await res.json()
+      const { ok, status, data, error } = await apiGet('/api/backups')
+      if (ok) {
         if (!current()) return
         setBackups(data.backups || [])
         setFundStateBackups(data.fundStateBackups || [])
@@ -99,10 +98,8 @@ function BackupRestore() {
         }
         setRefreshError(null)
       } else {
-        fail(`Failed to load backups (HTTP ${res.status})`)
+        fail(status ? `Failed to load backups (HTTP ${status})` : error || 'Failed to load backups')
       }
-    } catch (err) {
-      fail(err.message || 'Failed to load backups')
     } finally {
       if (!silent && current()) setLoading(false)
     }
@@ -126,14 +123,12 @@ function BackupRestore() {
     // ticked for a previous one must never carry over.
     setLegacyAcknowledged(false)
     setFundRemovalAcknowledged(false)
-    fetch(`/api/backups/${restoreTarget}/compatibility`)
-      .then(res => res.json().then(data => ({ ok: res.ok, status: res.status, data })))
-      .then(({ ok, status, data }) => {
+    apiGet(`/api/backups/${restoreTarget}/compatibility`)
+      .then(({ ok, data, error }) => {
         if (cancelled) return
-        if (ok && data?.success) setCompatibility(data)
-        else setCompatibilityError(describeActionFailure(status, data))
+        if (ok && data.success) setCompatibility(data)
+        else setCompatibilityError(error || 'Request failed')
       })
-      .catch(err => { if (!cancelled) setCompatibilityError(err.message || 'Request failed') })
       .finally(() => { if (!cancelled) setCompatibilityLoading(false) })
     return () => { cancelled = true }
   }, [restoreTarget])
@@ -145,23 +140,17 @@ function BackupRestore() {
     setSaving(true)
     setMessage(null)
     try {
-      const res = await fetch('/api/backups/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        if (!data.config) throw new Error('Saved settings could not be confirmed')
-        setConfig(data.config)
+      const result = await apiPut('/api/backups/config', config)
+      if (!result.ok) {
+        const { data, status } = result
+        setMessage({ type: 'error', text: data?.errors?.join('; ') || (status ? data?.error || `Failed to save settings (HTTP ${status})` : describeMutationFailure(result, 'Failed to save settings')) })
+      } else if (!result.data.config) {
+        setMessage({ type: 'error', text: 'Saved settings could not be confirmed' })
+      } else {
+        setConfig(result.data.config)
         dirty.current = false
         setMessage({ type: 'success', text: 'Backup settings saved!' })
-      } else {
-        const data = await res.json().catch(() => ({}))
-        setMessage({ type: 'error', text: data.errors?.join('; ') || data.error || `Failed to save settings (HTTP ${res.status})` })
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Failed to save settings' })
     } finally {
       pendingSave.current = false
       setSaving(false)
@@ -172,23 +161,20 @@ function BackupRestore() {
     setCreating(true)
     setMessage(null)
     try {
-      const res = await fetch('/api/backups', { method: 'POST' })
-      if (res.ok) {
-        const data = await res.json()
+      const result = await apiPost('/api/backups')
+      const data = result.data || {}
+      if (result.ok) {
         const created = `Backup created: ${data.filename} (${formatBytes(data.sizeBytes)})`
         setMessage(data.warnings?.length
           ? { type: 'warning', text: `${created}. ${data.warnings.join('. ')}. Check engine status before resuming trading.` }
           : { type: 'success', text: created })
         fetchData({ silent: true })
       } else {
-        const data = await res.json().catch(() => ({}))
         const warnings = data.warnings?.length
           ? `. ${data.warnings.join('. ')}. Check engine status before resuming trading.`
           : ''
-        setMessage({ type: 'error', text: `Backup failed: ${describeActionFailure(res.status, data)}${warnings}` })
+        setMessage({ type: 'error', text: `Backup failed: ${describeMutationFailure(result)}${warnings}` })
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Failed to create backup' })
     } finally {
       setCreating(false)
     }
@@ -205,13 +191,9 @@ function BackupRestore() {
     setMessage(null)
     let blocked = null
     try {
-      const res = await fetch(`/api/backups/fund-state/${encodeURIComponent(snapshotId)}/${encodeURIComponent(exchange)}/${encodeURIComponent(pair)}/restore`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (res.ok && data.success) {
+      const result = await apiPost(`/api/backups/fund-state/${encodeURIComponent(snapshotId)}/${encodeURIComponent(exchange)}/${encodeURIComponent(pair)}/restore`, { force })
+      const data = result.data || {}
+      if (result.ok && data.success) {
         setMessage({
           type: data.forced || data.warnings?.length ? 'error' : 'success',
           text: [
@@ -222,15 +204,13 @@ function BackupRestore() {
           ].join(' '),
         })
         fetchData({ silent: true })
-      } else if (res.status === 409 && data.code === 'writers-not-quiesced') {
+      } else if (result.status === 409 && data.code === 'writers-not-quiesced') {
         // Nothing was written. Keep the dialog open and offer the override.
         blocked = data.unconfirmed || []
         setMessage({ type: 'error', text: data.error || 'Restore blocked: writers did not confirm shutdown' })
       } else {
-        setMessage({ type: 'error', text: data.error || 'Fund-state restore failed' })
+        setMessage({ type: 'error', text: data.error || describeMutationFailure(result, 'Fund-state restore failed') })
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Fund-state restore failed' })
     } finally {
       setFundStateRestoring(false)
       setFundStateBlockedBy(blocked)
@@ -249,16 +229,13 @@ function BackupRestore() {
     const { filename } = deleteConfirm
     setDeleting(filename)
     try {
-      const res = await fetch(`/api/backups/${filename}`, { method: 'DELETE' })
-      if (res.ok) {
+      const result = await apiDelete(`/api/backups/${filename}`, { allowEmpty: true })
+      if (result.ok) {
         setMessage({ type: 'success', text: `Deleted ${filename}` })
         fetchData({ silent: true })
       } else {
-        const data = await res.json().catch(() => ({}))
-        setMessage({ type: 'error', text: `Could not delete ${filename}: ${data.error || `HTTP ${res.status}`}` })
+        setMessage({ type: 'error', text: `Could not delete ${filename}: ${result.data?.error || (result.status ? `HTTP ${result.status}` : describeMutationFailure(result))}` })
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Failed to delete backup' })
     } finally {
       setDeleting(null)
       setDeleteConfirm(null)
@@ -271,13 +248,9 @@ function BackupRestore() {
     setMessage(null)
     let blocked = null
     try {
-      const res = await fetch(`/api/backups/${restoreTarget}/restore`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force, acceptLegacyWithoutBase: legacyAcknowledged, acceptFundRemoval: fundRemovalAcknowledged }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (res.ok && data.success) {
+      const result = await apiPost(`/api/backups/${restoreTarget}/restore`, { force, acceptLegacyWithoutBase: legacyAcknowledged, acceptFundRemoval: fundRemovalAcknowledged })
+      const data = result.data || {}
+      if (result.ok && data.success) {
         setMessage({
           type: data.forced || data.warnings?.length ? 'error' : 'success',
           text: [
@@ -290,7 +263,7 @@ function BackupRestore() {
             ...(data.warnings || []),
           ].join(' '),
         })
-      } else if (res.status === 409 && data.code === 'writers-not-quiesced') {
+      } else if (result.status === 409 && data.code === 'writers-not-quiesced') {
         // Nothing was written. Keep the target selected and offer the override.
         blocked = data.unconfirmed || []
         setMessage({ type: 'error', text: data.error || 'Restore blocked: writers did not confirm shutdown' })
@@ -307,10 +280,8 @@ function BackupRestore() {
           text: `${data.error || 'Restore failed and could not be rolled back.'} Do NOT start engines: restart the gateway to retry the rollback, and keep the retained recovery files until it succeeds.`,
         })
       } else {
-        setMessage({ type: 'error', text: `Restore failed: ${describeActionFailure(res.status, data)}` })
+        setMessage({ type: 'error', text: `Restore failed: ${describeMutationFailure(result)}` })
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'Failed to restore backup' })
     } finally {
       setBlockedBy(blocked)
       setForceAcknowledged(false)
