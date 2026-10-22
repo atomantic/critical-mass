@@ -694,10 +694,10 @@ describe('fund lifecycle routes', () => {
         params: { exchange: 'coinbase' }, query: { pair: 'ETH-USDC' },
       });
 
-      assert.equal(btc.body.length, 1);
-      assert.equal(btc.body[0]['Order ID'], 'buy-btc');
-      assert.equal(eth.body.length, 1);
-      assert.equal(eth.body[0]['Order ID'], 'buy-eth');
+      assert.equal(btc.body.items.length, 1);
+      assert.equal(btc.body.items[0]['Order ID'], 'buy-btc');
+      assert.equal(eth.body.items.length, 1);
+      assert.equal(eth.body.items[0]['Order ID'], 'buy-eth');
     });
   });
 });

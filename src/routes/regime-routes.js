@@ -12,7 +12,7 @@ const { buildStoppedRegimeStatus } = require('../regime-status');
 const { createContextLogger } = require('../logger');
 const { readBooleanFlag } = require('../shared-utils');
 const { parseFillsQuery } = require('../transactions-regime-query');
-const { getSafeIPC, withConfiguredPair, asyncRoute } = require('./route-utils');
+const { getSafeIPC, withConfiguredPair, asyncRoute, parsePaging } = require('./route-utils');
 const { IPC_CHANNELS } = require('../ipc/ipc-protocol');
 const { LADDER_WAIT_MS, FILL_DRAIN_MS } = require('../engine-locks');
 
@@ -558,7 +558,7 @@ module.exports = (app, deps) => {
   app.get('/api/:exchange/regime/dry-run/log', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const limit = parseInt(req.query.limit) || 100;
+    const { limit } = parsePaging(req.query, 100);
     const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_DRY_RUN_LOG, { limit }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);

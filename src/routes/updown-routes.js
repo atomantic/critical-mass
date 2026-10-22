@@ -14,7 +14,7 @@ const { createContextLogger } = require('../logger');
 const { UPDOWN_DATA_DIR } = require('../paths');
 const { validateEndpointUrl, safeFetch } = require('../url-validator');
 const { parseAllowedOrigins } = require('../ai-security');
-const { parsePaging } = require('./route-utils');
+const { parsePaging, pagedEnvelope } = require('./route-utils');
 const { createTradeLog } = require('../updown/trade-log');
 const { createVisionClient, parseFiniteNumber, sanitizeExtractedFields } = require('../updown/vision-client');
 const {
@@ -514,11 +514,8 @@ module.exports = (app, deps) => {
     try {
       const trades = tradeLog.list();
 
-      const paging = parsePaging(req.query);
       res.json({
-        success: true,
-        trades: paging ? trades.slice(paging.offset, paging.offset + paging.limit) : trades,
-        ...(paging && { total: trades.length, limit: paging.limit, offset: paging.offset }),
+        ...pagedEnvelope(trades, parsePaging(req.query), 'trades'),
         summary: tradeLog.summarize(trades),
       });
     } catch (err) {

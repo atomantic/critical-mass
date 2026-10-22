@@ -61,12 +61,12 @@ export default function SentinelDashboard() {
     const url = filter !== 'all' ? `/api/sentinel/alerts?severity=${filter}` : '/api/sentinel/alerts'
     const { owned, data } = await alertsOwner.read(url)
     if (!owned) return
-    if (!Array.isArray(data?.alerts)) {
+    if (!Array.isArray(data?.items)) {
       setAlertsError('Could not load alerts.')
       return
     }
     setAlertsError(null)
-    setAlertsView({ filter, alerts: data.alerts })
+    setAlertsView({ filter, alerts: data.items })
   }, [filter, alertsOwner])
 
   // `throwOnError` lets a confirmation dialog own the failure message instead of the page banner.
@@ -204,7 +204,7 @@ export default function SentinelDashboard() {
     try {
       const { ok, data } = await apiGet('/api/sentinel/alerts')
       if (!ok) throw new Error('Unable to load alerts. Please try again.')
-      setConfirmation({ kind: 'alerts', count: data.alerts.length, active: data.alerts.filter(alert => !alert.dismissed).length })
+      setConfirmation({ kind: 'alerts', count: data.total ?? data.items.length, active: data.items.filter(alert => !alert.dismissed).length })
     } catch {
       setConfirmationError('Unable to load alerts. Please try again before clearing them.')
     }

@@ -97,20 +97,32 @@ const tradeResultStatusCode = (result) => (result?.status === 'buy_fill_pending'
 const MAX_PAGE_LIMIT = 500;
 
 /**
- * Opt-in paging for list endpoints. Returns null when the request carries neither
- * `limit` nor `offset` (callers keep their legacy full response); otherwise a
- * bounded `{ limit, offset }` (limit defaults to and is capped at MAX_PAGE_LIMIT).
+ * Bounded paging for list endpoints. Always returns `{ limit, offset }`: a missing
+ * or invalid `limit` falls back to `defaultLimit` (MAX_PAGE_LIMIT unless given) and
+ * any limit is capped at MAX_PAGE_LIMIT, so an unpaged request is never unbounded.
  * @param {Object} query - Express req.query
- * @returns {{limit: number, offset: number}|null}
+ * @param {number} [defaultLimit] - limit used when the request sends none
+ * @returns {{limit: number, offset: number}}
  */
-const parsePaging = (query) => {
-  if (query?.limit === undefined && query?.offset === undefined) return null;
-  const limit = parseInt(query.limit, 10);
-  const offset = parseInt(query.offset, 10);
+const parsePaging = (query, defaultLimit = MAX_PAGE_LIMIT) => {
+  const limit = parseInt(query?.limit, 10);
+  const offset = parseInt(query?.offset, 10);
   return {
-    limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, MAX_PAGE_LIMIT) : MAX_PAGE_LIMIT,
+    limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, MAX_PAGE_LIMIT) : Math.min(defaultLimit, MAX_PAGE_LIMIT),
     offset: Number.isFinite(offset) && offset > 0 ? offset : 0,
   };
 };
 
-module.exports = { parsePaging, MAX_PAGE_LIMIT, resolvePairParam, getIPC, getSafeIPC, withConfiguredPair, asyncRoute, tradeResultStatusCode };
+/**
+ * The one paged-list envelope: `{ success, items, total, limit, offset }`. `alias`
+ * also publishes the page under a legacy key (`trades`, `alerts`) for one release.
+ * @param {Array} all - the full list
+ * @param {{limit: number, offset: number}} paging
+ * @param {string} [alias]
+ */
+const pagedEnvelope = (all, paging, alias) => {
+  const items = all.slice(paging.offset, paging.offset + paging.limit);
+  return { success: true, items, ...(alias && { [alias]: items }), total: all.length, limit: paging.limit, offset: paging.offset };
+};
+
+module.exports = { parsePaging, pagedEnvelope, MAX_PAGE_LIMIT, resolvePairParam, getIPC, getSafeIPC, withConfiguredPair, asyncRoute, tradeResultStatusCode };

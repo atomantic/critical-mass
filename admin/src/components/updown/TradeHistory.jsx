@@ -73,8 +73,8 @@ export default function TradeHistory() {
   const fetchTrades = useCallback(async () => {
     const { owned, data } = await tradesOwner.read('/api/updown/trades')
     if (!owned) return
-    if (data?.success && Array.isArray(data.trades)) {
-      setTrades(data.trades)
+    if (data?.success && Array.isArray(data.items)) {
+      setTrades(data.items)
       setSummary(data.summary ?? null)
       setLoaded(true)
       setLoadError(null)

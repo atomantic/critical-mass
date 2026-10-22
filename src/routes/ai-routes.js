@@ -111,7 +111,7 @@ module.exports = (app, { DATA_DIR }, { allowedOrigins = parseAllowedOrigins(), f
   );
 
   app.get('/api/runs', (req, res) => {
-    const paging = parsePaging(req.query) || { limit: DEFAULT_RUN_LIST_LIMIT, offset: 0 };
+    const paging = parsePaging(req.query, DEFAULT_RUN_LIST_LIMIT);
     const source = typeof req.query.source === 'string' ? req.query.source : 'all';
     res.json(runs.list({ ...paging, source }));
   });
