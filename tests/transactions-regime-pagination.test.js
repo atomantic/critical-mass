@@ -6,9 +6,9 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const dir = path.join(__dirname, '..', 'admin', 'src', 'components');
-const pageMod = () => import(pathToFileURL(path.join(dir, 'transactionsRegimePage.js')).href);
-const pnlMod = () => import(pathToFileURL(path.join(dir, 'transactionsRegimePnl.js')).href);
+const dir = path.join(__dirname, '..', 'shared');
+const pageMod = () => import(pathToFileURL(path.join(dir, 'transactions-regime-page.mjs')).href);
+const pnlMod = () => import(pathToFileURL(path.join(dir, 'transactions-regime-pnl.mjs')).href);
 
 function makeFills(n) {
   return Array.from({ length: n }, (_, i) => ({

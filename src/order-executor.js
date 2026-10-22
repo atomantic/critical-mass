@@ -760,6 +760,23 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     }
   };
 
+  // Fire-and-forget wrapper for call sites that must not await (inside polling
+  // loops / .then chains). handleCancelledOrder is async, so any rejection
+  // (throwing callback, null status) would otherwise surface as an unhandled
+  // rejection and take down the whole exchange engine.
+  const settleCancelled = (orderId, order, status, context) => {
+    Promise.resolve()
+      .then(() => handleCancelledOrder(orderId, order, status, context))
+      .catch(err => {
+        logger.error(`❌ [${exchange}] ${context} cancelled-order handling failed for ${orderId}: ${err?.message || err}`, {
+          orderId,
+          orderType: order?.type,
+          context,
+          error: err?.message || String(err),
+        });
+      });
+  };
+
   /**
    * Schedule stale order timeout for entry order
    * Uses the per-order adaptive timeout when provided (already ATR-scaled, so
@@ -797,7 +814,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
               callbacks.onFillDetected(orderId, { ...status, placedAt });
             }
           } else if (normalizedStatus === 'CANCELLED') {
-            handleCancelledOrder(orderId, order, status, 'Stale check');
+            settleCancelled(orderId, order, status, 'Stale check');
           } else if (normalizedStatus === 'OPEN' || normalizedStatus === 'PARTIALLY_FILLED') {
             // Still resting past its stale window — cancel, including a bid that
             // has partially filled (Coinbase reports that as OPEN with
@@ -840,7 +857,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
                 return;
               }
               if (result.cancelled) {
-                handleCancelledOrder(orderId, order, { status: 'CANCELLED', side: 'buy', ...details }, 'Stale check');
+                settleCancelled(orderId, order, { status: 'CANCELLED', side: 'buy', ...details }, 'Stale check');
                 return;
               }
               // Neither filled nor cancelled (ack'd but never settled, or the
@@ -937,7 +954,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         // (issue #673) permanently unpolled once its status came back
         // EXPIRED/FAILED: tracked (so the sweep no longer saw it as an
         // orphan) but never revisited by this loop either.
-        handleCancelledOrder(orderId, order, status, 'Fill check');
+        settleCancelled(orderId, order, status, 'Fill check');
         cancelled++;
       }
     }
@@ -1061,7 +1078,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       if (normalizedStatus === 'CANCELLED') {
         // Cleanly cancelled (possibly with partial fills) — the shared handler
         // routes any partial through onFillDetected before dropping tracking.
-        handleCancelledOrder(orderId, order, status, 'SAFE-mode cancel');
+        settleCancelled(orderId, order, status, 'SAFE-mode cancel');
         cancelled++;
         continue;
       }
