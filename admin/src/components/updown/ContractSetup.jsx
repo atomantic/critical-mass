@@ -104,7 +104,7 @@ export default function ContractSetup({ initialContract }) {
     setSaving(true)
     setSaved(false)
     setSaveError('')
-    const result = await apiPut('/api/updown/contract', contract, { allowEmpty: true })
+    const result = await apiPut('/api/updown/contract', contract)
     setSaving(false)
     if (!result.ok) {
       setSaveError(describeMutationFailure(result, 'Failed to save contract'))

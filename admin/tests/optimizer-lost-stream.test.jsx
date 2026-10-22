@@ -19,7 +19,7 @@ async function startRun() {
   vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
     if (opts?.method === 'POST') {
       const { runId } = JSON.parse(opts.body)
-      return { status: 200, json: async () => ({ success: true, streaming: true, runId }) }
+      return { ok: true, status: 200, json: async () => ({ success: true, streaming: true, runId }) }
     }
     return { status: 200, ok: true, json: async () => ({ success: false }) }
   }))

@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { Crosshair, Save, Trash2 } from '../icons'
-import { apiDelete, apiPut, describeMutationFailure } from '../../utils/apiClient'
 import { calculateManualPositionPnl } from './position-tracker-math'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
+import { apiPut, apiDelete, describeMutationFailure } from '../../utils/apiClient'
 
 export default function PositionTracker({ initialPosition, currentPrice, contractPnl, priceFresh }) {
   const [entryPrice, setEntryPrice] = useState('')
@@ -37,29 +37,36 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
   const handleSave = async () => {
     setSaving(true)
     setError('')
-    const result = await apiPut('/api/updown/position', {
-      entryPrice: Number(entryPrice),
-      contracts: Number(amount),
-      direction: 'up',
-    }, { allowEmpty: true })
-    if (result.ok) setHasPosition(true)
-    else setError(describeMutationFailure(result, 'Failed to save tracker'))
-    setSaving(false)
+    try {
+      const res = await apiPut('/api/updown/position', {
+        entryPrice: Number(entryPrice),
+        contracts: Number(amount),
+        direction: 'up',
+      })
+      if (!res.ok) throw new Error(describeMutationFailure(res, 'Failed to save tracker'))
+      setHasPosition(true)
+    } catch (err) {
+      setError(err.message || 'Failed to save tracker')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const handleClear = async () => {
     setClearing(true)
     setError('')
-    const result = await apiDelete('/api/updown/position', { allowEmpty: true })
-    if (result.ok) {
+    try {
+      const res = await apiDelete('/api/updown/position')
+      if (!res.ok) throw new Error(describeMutationFailure(res, 'Failed to clear tracker'))
       setEntryPrice('')
       setAmount('')
       setDirection('Up')
       setHasPosition(false)
-    } else {
-      setError(describeMutationFailure(result, 'Failed to clear tracker'))
+    } catch (err) {
+      setError(err.message || 'Failed to clear tracker')
+    } finally {
+      setClearing(false)
     }
-    setClearing(false)
   }
 
   // Computed P&L

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Signal, Minus } from '../icons'
 import { apiGet } from '../../utils/apiClient'
 import { signalBadgeColors, getSignalIcon, getActionLabel, labelHistoryActions } from '../../constants/signals'
+import { apiGet } from '../../utils/apiClient'
 
 function ConfidenceBar({ value }) {
   const pct = Math.max(0, Math.min(100, (value ?? 0) * 100))

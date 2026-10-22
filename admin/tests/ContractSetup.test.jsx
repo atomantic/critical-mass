@@ -182,7 +182,7 @@ describe('ContractSetup failure recovery', () => {
     }))
     render(<ContractSetup />)
 
-    expect((await screen.findByRole('alert')).textContent).toMatch(/^Could not load AI providers \(.*502.*\)|^Could not load AI providers \(The server/)
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not load AI providers (The server rejected the request (HTTP 502)')
     down = false
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByRole('option', { name: 'Provider A' })).toBeTruthy()

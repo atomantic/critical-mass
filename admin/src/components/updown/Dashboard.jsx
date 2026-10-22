@@ -118,20 +118,30 @@ export default function UpDownDashboard() {
     // Any status read started before this action describes the pre-action
     // service; drop it so only the post-action refresh may commit (#508).
     statusOwner.invalidate()
-    const result = await apiPost('/api/updown/start', undefined, { allowEmpty: true })
-    if (result.ok) await fetchStatus()
-    else setError(describeMutationFailure(result, 'Failed to start'))
-    setStarting(false)
+    try {
+      const res = await apiPost('/api/updown/start')
+      if (!res.ok) throw new Error(describeMutationFailure(res, 'Failed to start'))
+      await fetchStatus()
+    } catch (err) {
+      setError(err.message || 'Failed to start')
+    } finally {
+      setStarting(false)
+    }
   }
 
   const handleStop = async () => {
     setStopping(true)
     setError(null)
     statusOwner.invalidate()
-    const result = await apiPost('/api/updown/stop', undefined, { allowEmpty: true })
-    if (result.ok) await fetchStatus()
-    else setError(describeMutationFailure(result, 'Failed to stop'))
-    setStopping(false)
+    try {
+      const res = await apiPost('/api/updown/stop')
+      if (!res.ok) throw new Error(describeMutationFailure(res, 'Failed to stop'))
+      await fetchStatus()
+    } catch (err) {
+      setError(err.message || 'Failed to stop')
+    } finally {
+      setStopping(false)
+    }
   }
 
   const isRunning = status?.running || false
@@ -243,11 +253,16 @@ export default function UpDownDashboard() {
               onClick={async () => {
                 setRestarting(true)
                 setError(null)
-                const result = await apiPost('/api/updown/restart')
-                if (!result.ok || result.data.success !== true) {
-                  setError(result.ok ? (result.data.error || 'Restart request failed') : describeMutationFailure(result, 'Restart request failed'))
+                try {
+                  const res = await apiPost('/api/updown/restart')
+                  if (!res.ok || res.data.success !== true) {
+                    throw new Error(describeMutationFailure(res, 'Restart request failed'))
+                  }
+                } catch (err) {
+                  setError(err.message || 'Restart request failed')
+                } finally {
+                  setRestarting(false)
                 }
-                setRestarting(false)
               }}
               disabled={restarting}
               className={`${ENGINE_CONTROL_CLASS} rounded-sm transition-colors ${restarting ? 'bg-yellow-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}

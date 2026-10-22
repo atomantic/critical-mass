@@ -5,6 +5,7 @@ import { pairQuery as buildPairQuery } from '../utils/api'
 import { getRealtimeClient } from '../lib/realtime'
 import { plural } from '../utils/plural.mjs'
 import { describeActionFailure } from '../utils/actionFailure.mjs'
+import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
 import { describeConfigSaveError } from '../utils/configSaveError.mjs'
 
 // Available options for optimizer
@@ -148,11 +149,10 @@ function Optimizer({ exchange = 'coinbase', pair }) {
     setProgress(null)
     setCurrentBest(null)
 
-    fetch(`/api/${exchange}/optimizer/cache${pairQuery}`, { signal: controller.signal })
-      .then(async res => {
-        const data = await res.json().catch(() => ({}))
-        if (!res.ok) throw new Error(`Could not load cached optimizer results. ${describeActionFailure(res.status, data)}`)
-        return data
+    apiGet(`/api/${exchange}/optimizer/cache${pairQuery}`, { signal: controller.signal })
+      .then(res => {
+        if (!res.ok) throw new Error(`Could not load cached optimizer results. ${res.error}`)
+        return res.data
       })
       .then(data => {
         if (cacheRequestGenerationRef.current !== requestGeneration) return
@@ -229,22 +229,18 @@ function Optimizer({ exchange = 'coinbase', pair }) {
     const runId = globalThis.crypto?.randomUUID?.() || `optimizer_${Date.now()}_${Math.random().toString(36).slice(2)}`
     activeRunIdRef.current = runId
 
-    fetch(`/api/${exchange}/optimizer/run${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        fundSize,
-        forceRefresh,
-        intervals: selectedIntervals,
-        markups: selectedMarkups,
-        periods: selectedPeriods,
-        buyAmounts,
-        runId
-      })
+    apiPost(`/api/${exchange}/optimizer/run${pairQuery}`, {
+      fundSize,
+      forceRefresh,
+      intervals: selectedIntervals,
+      markups: selectedMarkups,
+      periods: selectedPeriods,
+      buyAmounts,
+      runId
     })
-      .then(async res => ({ status: res.status, data: await res.json().catch(() => ({})) }))
-      .then(({ status, data }) => {
+      .then(({ ok, status, data, error }) => {
         if (activeRunIdRef.current !== runId) return
+        if (!ok) throw new Error(describeMutationFailure({ status, error }))
         if (!data.success) throw new Error(describeActionFailure(status, data))
         // Cached results come via HTTP response
         if (data.cached) {
@@ -267,10 +263,9 @@ function Optimizer({ exchange = 'coinbase', pair }) {
   }
 
   const clearCache = async () => {
-    fetch(`/api/${exchange}/optimizer/cache${pairQuery}`, { method: 'DELETE' })
-      .then(async res => {
-        const data = await res.json().catch(() => ({}))
-        if (!res.ok || data.success === false) throw new Error(`Could not clear cached results. ${describeActionFailure(res.status, data)}`)
+    apiDelete(`/api/${exchange}/optimizer/cache${pairQuery}`)
+      .then(res => {
+        if (!res.ok) throw new Error(`Could not clear cached results. ${describeMutationFailure(res)}`)
         setResults(null)
       })
       .catch(err => setError(err.message))
@@ -285,14 +280,9 @@ function Optimizer({ exchange = 'coinbase', pair }) {
       holdbackPercent: result.holdbackPercent
     }
 
-    fetch(`/api/${exchange}/config${pairQuery}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config)
-    })
-      .then(async res => ({ status: res.status, data: await res.json().catch(() => ({})) }))
+    apiPut(`/api/${exchange}/config${pairQuery}`, config)
       .then(({ status, data }) => {
-        if (data.success) {
+        if (data?.success) {
           addToast({
             type: 'success',
             title: 'Settings Applied',
