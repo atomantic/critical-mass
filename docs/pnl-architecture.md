@@ -81,8 +81,9 @@ position.heldAssetCostBasis ← per buy order: cost × (size − Σ consumedBy) 
 it consumed from each buy order (sold + booked holdback), so a buy order can
 be partly closed. See `docs/fill-ledger-sell-linkage.md`.
 
-All three are derived in `src/fill-ledger.js:computeRealizedFromCyclePairs()`,
-invoked by `src/regime-engine.js:refreshRealizedFromCyclePairs()` on every
+All three are derived by the pure `computeRealizedFromCyclePairs(fills)` in
+`src/fill-ledger-realized.js`, exposed (memoized on the ledger version) as the
+fill ledger's `computeRealizedFromCyclePairs()` method and invoked by `src/regime-engine.js:refreshRealizedFromCyclePairs()` on every
 state save and status emit. closed-trades.json is an audit log only.
 
 ### Why per-sell annotations
