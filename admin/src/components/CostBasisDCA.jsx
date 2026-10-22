@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
@@ -11,26 +11,37 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
   const [currentPrice, setCurrentPrice] = useState(null)
   const [priceError, setPriceError] = useState(null)
 
-  const fetchPrice = useCallback(async () => {
-    try {
-      const res = await apiGet(`/api/${exchange}/status${pairQuery}`)
-      if (!res.ok) throw new Error(res.error)
-      const data = res.data
-      const price = Number(data.currentPrice)
-      setCurrentPrice(price > 0 ? price : null)
-      setPriceError(data.apiError || (price > 0 ? null : 'Price unavailable.'))
-    } catch (err) {
-      console.error('Failed to fetch price:', err)
-      setCurrentPrice(null)
-      setPriceError(err.message || 'Could not load price.')
-    }
-  }, [exchange, pairQuery])
-
   useEffect(() => {
+    let controller = null
+    const fetchPrice = async () => {
+      controller?.abort()
+      const ctrl = new AbortController()
+      controller = ctrl
+      try {
+        const res = await apiGet(`/api/${exchange}/status${pairQuery}`, { signal: ctrl.signal })
+        if (ctrl.signal.aborted) return
+        if (!res.ok) throw new Error(res.error)
+        const data = res.data
+        const price = Number(data.currentPrice)
+        setCurrentPrice(price > 0 ? price : null)
+        setPriceError(data.apiError || (price > 0 ? null : 'Price unavailable.'))
+      } catch (err) {
+        if (err?.name === 'AbortError' || ctrl.signal.aborted) return
+        console.error('Failed to fetch price:', err)
+        setCurrentPrice(null)
+        setPriceError(err.message || 'Could not load price.')
+      }
+    }
+    // Drop the previous fund's price immediately on switch
+    setCurrentPrice(null)
+    setPriceError(null)
     fetchPrice()
     const interval = setInterval(fetchPrice, 10000)
-    return () => clearInterval(interval)
-  }, [fetchPrice])
+    return () => {
+      clearInterval(interval)
+      controller?.abort()
+    }
+  }, [exchange, pairQuery])
 
   if (!summary?.costBasis) {
     return (

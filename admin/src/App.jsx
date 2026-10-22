@@ -1088,7 +1088,7 @@ function AppContent() {
               <Route path="/:exchange/:pair/cost-basis" element={
                 currentStrategy === 'regime'
                   ? <CostBasisRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
-                  : <CostBasisDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} exchange={currentExchange} pair={currentPair} />
+                  : <CostBasisDCA key={`${currentExchange}-${currentPair}`} summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} exchange={currentExchange} pair={currentPair} />
               } />
               <Route path="/:exchange/:pair/transactions" element={
                 currentStrategy === 'regime'
