@@ -35,9 +35,11 @@ async function buildFundStatus(exchange, pair, route, module = 'fund-status') {
   if (adapter.hasValidKeys && adapter.hasValidKeys()) {
     keysConfigured = true;
     try {
-      currentPrice = await adapter.getCurrentPrice(config.productId);
+      // Balances first: a ticker without a usable price throws, and the
+      // status page should still show the balances it could read.
       quoteBalance = await adapter.getAccountBalance(quoteCurrency);
       assetBalance = await adapter.getAccountBalance(getBaseCurrency(config.productId));
+      currentPrice = await adapter.getCurrentPrice(config.productId);
     } catch (err) {
       apiError = err.message || 'API connection failed';
       createContextLogger({ module, exchange, pair, route }).error(`❌ [${exchange}/${pair}] Status check failed: ${apiError}`, {

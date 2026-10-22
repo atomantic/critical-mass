@@ -2652,8 +2652,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         logger.info(`📋 [${exchange}] Processed offline fills: TP=${offlineFills.tpFilled}, entries=${offlineFills.entriesFilled}`);
       }
 
-      // Get current price and re-evaluate position
-      const currentPrice = await adapter.getCurrentPrice(productId);
+      // Get current price and re-evaluate position. A ticker without a usable
+      // price (adapter throws PRICE_UNAVAILABLE) skips the re-evaluation, as a
+      // NaN price did before the adapters started rejecting it; the next tick
+      // re-evaluates anyway, and this must not block the fund's start.
+      const currentPrice = await adapter.getCurrentPrice(productId).catch((err) => {
+        if (err?.code !== 'PRICE_UNAVAILABLE') throw err;
+        logger.warn(`⚠️ [${exchange}] ${err.message} — skipping post-restart re-evaluation`, { productId });
+        return null;
+      });
       if (currentPrice > 0 && positionState.totalAsset > 0) {
         reEvaluateAfterDowntime(currentPrice);
       }
