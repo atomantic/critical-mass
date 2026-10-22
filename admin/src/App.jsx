@@ -3,6 +3,7 @@ import { Component, useState, useEffect, useLayoutEffect, useRef, lazy, Suspense
 import { Routes, Route, Link, NavLink, useLocation, useNavigate, Navigate } from './lib/router'
 import ExchangeSelector from './components/ExchangeSelector'
 import AddFundModal from './components/AddFundModal'
+import Button from './components/ui/Button'
 import RetryBanner from './components/ui/RetryBanner'
 import ModalDialog from './components/ModalDialog'
 
@@ -861,21 +862,19 @@ function AppContent() {
               />
             </div>
             <div className="flex justify-end gap-3">
-              <button
-                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors disabled:opacity-50`}
+              <Button variant="cancel"
                 onClick={() => setCloseFundDialogOpen(false)}
                 disabled={closing}
                 autoFocus
               >
                 Cancel
-              </button>
-              <button
-                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded-sm transition-colors disabled:opacity-50`}
+              </Button>
+              <Button variant="warning"
                 onClick={submitCloseFund}
                 disabled={closing}
               >
                 {closing ? 'Closing...' : 'Close Fund'}
-              </button>
+              </Button>
             </div>
           </ModalDialog>
         )}
@@ -924,21 +923,19 @@ function AppContent() {
               to resume trading.
             </p>
             <div className="flex justify-end gap-3">
-              <button
-                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors disabled:opacity-50`}
+              <Button variant="cancel"
                 onClick={() => setReopenFundDialogOpen(false)}
                 disabled={reopening}
                 autoFocus
               >
                 Cancel
-              </button>
-              <button
-                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded-sm transition-colors disabled:opacity-50`}
+              </Button>
+              <Button
                 onClick={submitReopenFund}
                 disabled={reopening}
               >
                 {reopening ? 'Reopening...' : 'Reopen Fund'}
-              </button>
+              </Button>
             </div>
           </ModalDialog>
         )}
@@ -959,21 +956,19 @@ function AppContent() {
               This wipes the in-memory dry-run history. Live positions and fills are not affected.
             </p>
             <div className="flex justify-end gap-3">
-              <button
-                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
+              <Button variant="cancel"
                 onClick={() => setResetDryRunConfirm(false)}
                 disabled={resetting}
                 autoFocus
               >
                 Cancel
-              </button>
-              <button
-                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-purple-600 hover:bg-purple-700 rounded-sm transition-colors disabled:opacity-50`}
+              </Button>
+              <Button variant="purple"
                 onClick={handleExecuteResetDryRun}
                 disabled={resetting}
               >
                 {resetting ? 'Resetting…' : 'Reset Dry-Run'}
-              </button>
+              </Button>
             </div>
           </ModalDialog>
         )}
