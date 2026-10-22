@@ -6,9 +6,12 @@ const apiClientStub = (fetchImpl) => {
     const data = body && typeof body === 'object' ? body : {}
     return data.error || data.message || (status ? `HTTP ${status}` : 'Network error')
   }
-  const apiRequest = async (method, url, { body, signal, allowEmpty = false } = {}) => {
+  const apiRequest = async (method, url, { body, rawBody, contentType, signal, allowEmpty = false } = {}) => {
     const init = { method, signal }
-    if (body !== undefined) {
+    if (rawBody !== undefined) {
+      init.headers = { 'Content-Type': contentType }
+      init.body = rawBody
+    } else if (body !== undefined) {
       init.headers = { 'Content-Type': 'application/json' }
       init.body = JSON.stringify(body)
     }
@@ -35,6 +38,11 @@ const apiClientStub = (fetchImpl) => {
     apiPost: (url, body, opts) => apiRequest('POST', url, { ...opts, body }),
     apiPut: (url, body, opts) => apiRequest('PUT', url, { ...opts, body }),
     apiDelete: (url, opts) => apiRequest('DELETE', url, opts),
+    describeMutationFailure: (result, fallback = 'Request failed') => (
+      result.status === 0
+        ? `${result.error || fallback}. The request may have reached the server; refresh status before retrying.`
+        : result.error || fallback
+    ),
   }
 }
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Crosshair, Save, Trash2 } from '../icons'
+import { apiDelete, apiPut, describeMutationFailure } from '../../utils/apiClient'
 import { calculateManualPositionPnl } from './position-tracker-math'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 
@@ -36,43 +37,29 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
   const handleSave = async () => {
     setSaving(true)
     setError('')
-    try {
-      const res = await fetch('/api/updown/position', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          entryPrice: Number(entryPrice),
-          contracts: Number(amount),
-          direction: 'up',
-        }),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to save tracker')
-      }
-      setHasPosition(true)
-    } catch (err) {
-      setError(err.message || 'Failed to save tracker')
-    } finally {
-      setSaving(false)
-    }
+    const result = await apiPut('/api/updown/position', {
+      entryPrice: Number(entryPrice),
+      contracts: Number(amount),
+      direction: 'up',
+    }, { allowEmpty: true })
+    if (result.ok) setHasPosition(true)
+    else setError(describeMutationFailure(result, 'Failed to save tracker'))
+    setSaving(false)
   }
 
   const handleClear = async () => {
     setClearing(true)
     setError('')
-    try {
-      const res = await fetch('/api/updown/position', { method: 'DELETE' })
-      if (!res.ok) throw new Error('Failed to clear tracker')
+    const result = await apiDelete('/api/updown/position', { allowEmpty: true })
+    if (result.ok) {
       setEntryPrice('')
       setAmount('')
       setDirection('Up')
       setHasPosition(false)
-    } catch (err) {
-      setError(err.message || 'Failed to clear tracker')
-    } finally {
-      setClearing(false)
+    } else {
+      setError(describeMutationFailure(result, 'Failed to clear tracker'))
     }
+    setClearing(false)
   }
 
   // Computed P&L

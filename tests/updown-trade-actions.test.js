@@ -19,6 +19,7 @@ TradeHistory`
 const trade = { id: 7, date: '2026-09-09', cost: 500, returnAmount: 650, note: 'test', direction: 'up' }
 const input = { date: trade.date, cost: '200+300', returnAmount: '650', note: 'attempted edit', direction: 'up' }
 const response = (ok, data) => ({ ok, json: async () => data })
+const { apiClientStub } = require('./api-client-harness')
 const flush = () => new Promise(resolve => setImmediate(resolve))
 
 const setup = async (method, request) => {
@@ -50,6 +51,7 @@ const setup = async (method, request) => {
     useEffect: fn => { if (!mounted) fn() },
     useToast: () => ({ addToast: toast => toasts.push(toast) }),
     runDashboardAction,
+    ...(({ apiRequest, apiDelete }) => ({ apiRequest, apiDelete }))(apiClientStub((...args) => fetchStub(...args))),
     parseTradeAmountExpression,
     // The owner's default transport is this realm's global fetch; route it to the stub.
     createRequestOwner: () => createRequestOwner({ fetchImpl: (...args) => fetchStub(...args) }),
@@ -98,7 +100,7 @@ describe('Trade History mutation integration (#336)', () => {
       const h = await setup(method, () => { throw new Error('Disconnected') })
       await h.invoke()
       assertRetained(h)
-      assert.equal(h.toasts[0].message, 'Disconnected')
+      assert.match(h.toasts[0].message, /^Disconnected\. The request may have reached the server/)
       assert.deepEqual(h.changes, [true, false])
     })
 

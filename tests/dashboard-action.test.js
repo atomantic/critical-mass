@@ -40,10 +40,7 @@ describe('DCA dashboard request lifecycle (issue #283)', () => {
 
     const succeeded = await runDashboardAction({
       setBusy: (busy) => busyStates.push(busy),
-      request: async () => ({
-        ok: false,
-        json: async () => ({ error: 'exchange is unavailable' }),
-      }),
+      request: async () => ({ ok: false, status: 503, data: { error: 'exchange is unavailable' }, error: 'exchange is unavailable' }),
       addToast: (toast) => toasts.push(toast),
       failureTitle: 'Order Sync Failed',
       failureMessage: 'Could not sync DCA orders',
@@ -61,11 +58,11 @@ describe('DCA dashboard request lifecycle (issue #283)', () => {
 
     const succeeded = await runDashboardAction({
       setBusy: (busy) => events.push(`busy:${busy}`),
-      request: async () => ({ ok: true, json: async () => { throw new SyntaxError('Unexpected token <') } }),
+      request: async () => ({ ok: true, status: 200, data: null, error: null }),
       addToast: (toast) => toasts.push(toast),
       failureTitle: 'Sell Retry Failed',
       failureMessage: 'Could not place the sell for this buy',
-      onSuccess: async (res) => { await res.json() },
+      onSuccess: async () => { throw new SyntaxError('Unexpected token <') },
       onSettled: () => events.push('settled'),
     })
 
@@ -77,13 +74,28 @@ describe('DCA dashboard request lifecycle (issue #283)', () => {
     assert.match(toasts[0].message, /accepted the request.*Unexpected token <.*Refresh/)
   })
 
+  it('says a lost reply may have been applied when no status was read', async () => {
+    const { runDashboardAction } = await loadAction()
+    const toasts = []
+
+    await runDashboardAction({
+      setBusy: () => {},
+      request: async () => ({ ok: false, status: 0, data: null, error: 'Failed to fetch' }),
+      addToast: (toast) => toasts.push(toast),
+      failureTitle: 'Order Sync Failed',
+      failureMessage: 'Could not sync DCA orders',
+    })
+
+    assert.match(toasts[0].message, /^Failed to fetch\. The request may have reached the server/)
+  })
+
   it('preserves success callbacks and always runs export cleanup', async () => {
     const { runDashboardAction } = await loadAction()
     const events = []
 
     const succeeded = await runDashboardAction({
       setBusy: (busy) => events.push(`busy:${busy}`),
-      request: async () => ({ ok: true }),
+      request: async () => ({ ok: true, status: 200, data: null, error: null }),
       addToast: () => assert.fail('success must not add an error toast'),
       failureTitle: 'Export Failed',
       failureMessage: 'Could not export to regime',

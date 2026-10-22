@@ -16,9 +16,13 @@ import { describeActionFailure } from './actionFailure.mjs'
 // A non-JSON body (proxy 5xx page, empty 204) reads as null rather than throwing.
 const parseBody = (res) => res.json().catch(() => null)
 
-export async function apiRequest(method, url, { body, signal, allowEmpty = false } = {}) {
+// `rawBody` sends a File/Blob as-is under `contentType` (e.g. a screenshot upload) instead of JSON.
+export async function apiRequest(method, url, { body, rawBody, contentType, signal, allowEmpty = false } = {}) {
   const init = { method, signal }
-  if (body !== undefined) {
+  if (rawBody !== undefined) {
+    init.headers = { 'Content-Type': contentType }
+    init.body = rawBody
+  } else if (body !== undefined) {
     init.headers = { 'Content-Type': 'application/json' }
     init.body = JSON.stringify(body)
   }

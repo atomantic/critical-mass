@@ -4,6 +4,7 @@ import { plural } from '../../utils/plural.mjs'
 import { History, Plus, Trash2, Edit3, Check, X, ArrowUp, ArrowDown } from '../icons'
 import { useToast } from '../Toast'
 import { runDashboardAction } from '../../utils/dashboardAction.mjs'
+import { apiDelete, apiRequest } from '../../utils/apiClient'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { parseTradeAmountExpression } from './tradeAmountExpression'
 
@@ -128,11 +129,9 @@ export default function TradeHistory() {
       addToast,
       failureTitle: editId != null ? 'Update trade failed' : 'Save trade failed',
       failureMessage: 'Unable to save trade. Please try again.',
-      request: () => fetch(editId != null ? `/api/updown/trades/${editId}` : '/api/updown/trades', {
-        method: editId != null ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      }),
+      request: () => (editId != null
+        ? apiRequest('PUT', `/api/updown/trades/${editId}`, { body: payload, allowEmpty: true })
+        : apiRequest('POST', '/api/updown/trades', { body: payload, allowEmpty: true })),
       onSuccess: () => {
         resetForm()
         return fetchTrades()
@@ -162,7 +161,7 @@ export default function TradeHistory() {
       addToast,
       failureTitle: 'Delete trade failed',
       failureMessage: 'Unable to delete trade. Please try again.',
-      request: () => fetch(`/api/updown/trades/${id}`, { method: 'DELETE' }),
+      request: () => apiDelete(`/api/updown/trades/${id}`, { allowEmpty: true }),
       onSuccess: fetchTrades,
     })
   }

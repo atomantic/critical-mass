@@ -17,6 +17,7 @@ import { isFreshTick } from './position-tracker-math'
 import { labelHistoryActions } from '../../constants/signals'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
+import { apiPost, describeMutationFailure } from '../../utils/apiClient'
 
 export default function UpDownDashboard() {
   const { connected, tick, indicators: rawIndicators, signal, scorecard: socketScorecard } = useUpDownSocket()
@@ -117,36 +118,20 @@ export default function UpDownDashboard() {
     // Any status read started before this action describes the pre-action
     // service; drop it so only the post-action refresh may commit (#508).
     statusOwner.invalidate()
-    try {
-      const res = await fetch('/api/updown/start', { method: 'POST' })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to start')
-      }
-      await fetchStatus()
-    } catch (err) {
-      setError(err.message || 'Failed to start')
-    } finally {
-      setStarting(false)
-    }
+    const result = await apiPost('/api/updown/start', undefined, { allowEmpty: true })
+    if (result.ok) await fetchStatus()
+    else setError(describeMutationFailure(result, 'Failed to start'))
+    setStarting(false)
   }
 
   const handleStop = async () => {
     setStopping(true)
     setError(null)
     statusOwner.invalidate()
-    try {
-      const res = await fetch('/api/updown/stop', { method: 'POST' })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to stop')
-      }
-      await fetchStatus()
-    } catch (err) {
-      setError(err.message || 'Failed to stop')
-    } finally {
-      setStopping(false)
-    }
+    const result = await apiPost('/api/updown/stop', undefined, { allowEmpty: true })
+    if (result.ok) await fetchStatus()
+    else setError(describeMutationFailure(result, 'Failed to stop'))
+    setStopping(false)
   }
 
   const isRunning = status?.running || false
@@ -258,17 +243,11 @@ export default function UpDownDashboard() {
               onClick={async () => {
                 setRestarting(true)
                 setError(null)
-                try {
-                  const res = await fetch('/api/updown/restart', { method: 'POST' })
-                  const body = await res.json()
-                  if (body.success !== true) {
-                    throw new Error(body.error || 'Restart request failed')
-                  }
-                } catch (err) {
-                  setError(err.message || 'Restart request failed')
-                } finally {
-                  setRestarting(false)
+                const result = await apiPost('/api/updown/restart')
+                if (!result.ok || result.data.success !== true) {
+                  setError(result.ok ? (result.data.error || 'Restart request failed') : describeMutationFailure(result, 'Restart request failed'))
                 }
+                setRestarting(false)
               }}
               disabled={restarting}
               className={`${ENGINE_CONTROL_CLASS} rounded-sm transition-colors ${restarting ? 'bg-yellow-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}

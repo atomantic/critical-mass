@@ -11,7 +11,7 @@ import { useToast } from './Toast'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
-import { apiGet, apiPost } from '../utils/apiClient'
+import { apiGet, apiPost, apiRequest } from '../utils/apiClient'
 import { createRequestOwner } from '../utils/requestOwner.mjs'
 import { runDashboardAction } from '../utils/dashboardAction.mjs'
 import { formatCountdown } from '../utils/countdown.mjs'
@@ -123,11 +123,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const toggleConfig = async (key, value) => {
     await runDashboardAction({
       setBusy: setUpdating,
-      request: () => fetch(`/api/${exchange}/config${pairQuery}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [key]: value })
-      }),
+      request: () => apiRequest('PATCH', `/api/${exchange}/config${pairQuery}`, { body: { [key]: value }, allowEmpty: true }),
       addToast,
       failureTitle: 'Configuration Update Failed',
       failureMessage: 'Could not update DCA configuration',
@@ -138,11 +134,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const handleConsolidate = async () => {
     await runDashboardAction({
       setBusy: setConsolidating,
-      request: () => fetch(`/api/${exchange}/consolidate${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
-      }),
+      request: () => apiPost(`/api/${exchange}/consolidate${pairQuery}`, {}, { allowEmpty: true }),
       addToast,
       failureTitle: 'Consolidation Failed',
       failureMessage: 'Could not consolidate DCA orders',
@@ -153,7 +145,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const handleSync = async () => {
     await runDashboardAction({
       setBusy: setSyncing,
-      request: () => fetch(`/api/${exchange}/sync${pairQuery}`, { method: 'POST' }),
+      request: () => apiPost(`/api/${exchange}/sync${pairQuery}`, undefined, { allowEmpty: true }),
       addToast,
       failureTitle: 'Order Sync Failed',
       failureMessage: 'Could not sync DCA orders',
@@ -164,16 +156,11 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const handleRetrySell = async (buyOrderId) => {
     await runDashboardAction({
       setBusy: (busy) => setRetryingBuyId(busy ? buyOrderId : null),
-      request: () => fetch(`/api/${exchange}/retry-failed-sell${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ buyOrderId })
-      }),
+      request: () => apiPost(`/api/${exchange}/retry-failed-sell${pairQuery}`, { buyOrderId }),
       addToast,
       failureTitle: 'Sell Retry Failed',
       failureMessage: 'Could not place the sell for this buy',
-      onSuccess: async (res) => {
-        const data = await res.json()
+      onSuccess: ({ data }) => {
         addToast({ type: 'success', title: 'Sell Placed', message: data.message || `Sell placed for buy ${buyOrderId}` })
         onRefresh?.()
       },
@@ -205,16 +192,11 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const handleExecuteExport = useCallback(async () => {
     await runDashboardAction({
       setBusy: setConverting,
-      request: () => fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ preview: false, merge: true }),
-      }),
+      request: () => apiPost(`/api/${exchange}/regime/convert-dca${pairQuery}`, { preview: false, merge: true }),
       addToast,
       failureTitle: 'Export Failed',
       failureMessage: 'Could not export to regime',
-      onSuccess: async (res) => {
-        const data = await res.json()
+      onSuccess: ({ data }) => {
         addToast({
           type: 'success',
           title: 'Positions Exported to Regime',
