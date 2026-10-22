@@ -9,7 +9,7 @@ const { atomicWriteSync } = require('./durable-write');
 
 const BASE_SNAPSHOT_FILENAME = 'config-base.snapshot.json';
 const CONFIG_LOCK_DIR = '.config-write.lock';
-const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const { isPlainObject: isObject } = require('./value-guards');
 
 const readConfigObject = (file) => {
   try {

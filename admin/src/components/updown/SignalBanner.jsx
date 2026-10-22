@@ -3,6 +3,7 @@ import { TrendingUp, TrendingDown, Minus, Plus, CircleDot, Clock } from '../icon
 import { formatCountdown } from '../../utils/countdown.mjs'
 import { getActionLabel } from '../../constants/signals'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
+import { signedPrefix } from '../../utils/pnlFormat.mjs'
 
 const BANNER_COLORS = {
   OPEN: 'bg-green-900/40 border-green-600/50',
@@ -115,7 +116,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
                 >
                   <span className="text-xs text-gray-400">{h.key}</span>
                   <HIcon size={12} className={hColor} />
-                  <span className={`text-xs font-mono ${hColor}`}>{h.score >= 0 ? '+' : ''}{h.score.toFixed(0)}</span>
+                  <span className={`text-xs font-mono ${hColor}`}>{signedPrefix(h.score)}{h.score.toFixed(0)}</span>
                 </div>
               )
             })}
@@ -188,7 +189,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
             title={`Daily SMAs — 50: $${dailySMA.sma50?.toFixed(0)} | 100: $${dailySMA.sma100?.toFixed(0)} | 200: $${dailySMA.sma200?.toFixed(0)} | Price vs SMA200: ${dailySMA.priceVsSMA200?.toFixed(1)}% | ${dailySMA.goldenCross ? 'Golden Cross (50>200)' : dailySMA.deathCross ? 'Death Cross (50<200)' : 'No cross'}`}
           >
             {dailySMA.goldenCross ? 'GC' : dailySMA.deathCross ? 'DC' : 'SMA'}
-            <span className="ml-1 text-[10px] opacity-70">{dailySMA.priceVsSMA200 >= 0 ? '+' : ''}{dailySMA.priceVsSMA200?.toFixed(1)}%</span>
+            <span className="ml-1 text-[10px] opacity-70">{signedPrefix(dailySMA.priceVsSMA200)}{dailySMA.priceVsSMA200?.toFixed(1)}%</span>
           </div>
         )}
 

@@ -18,6 +18,7 @@ const { planBuyCorrection, applyPersistedBuyCorrection } = require('./buy-fill-c
 const { planSellCorrection, applyPersistedSellCorrection } = require('./sell-fill-correction');
 const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency } = require('./shared-utils');
+const { isFiniteNumber } = require('./value-guards');
 const { createContextLogger } = require('./logger');
 // Canonical cycle pairing shared with the admin Filled Orders view (issue #697).
 const { pairCycleFills, buyPairKey, isBodyOwnedFill } = require('../shared/cycle-pairing.mjs');
@@ -207,7 +208,6 @@ const normalizeFillInput = (fillData) => {
  */
 const findInvalidLedgerReason = (data) => {
   if (!Array.isArray(data)) return 'top-level value is not an array';
-  const isFiniteNumber = (v) => typeof v === 'number' && Number.isFinite(v);
   const seenTradeIds = new Set();
   for (const fill of data) {
     if (!fill || typeof fill !== 'object') return 'non-object entry';

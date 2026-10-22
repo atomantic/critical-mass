@@ -3,6 +3,7 @@ import { Crosshair, Save, Trash2 } from '../icons'
 import { calculateManualPositionPnl } from './position-tracker-math'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 import { apiPut, apiDelete, describeMutationFailure } from '../../utils/apiClient'
+import { pnlColorClass, signedPrefix } from '../../utils/pnlFormat.mjs'
 
 export default function PositionTracker({ initialPosition, currentPrice, contractPnl, priceFresh }) {
   const [entryPrice, setEntryPrice] = useState('')
@@ -114,14 +115,14 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
           <div className="bg-gray-900 rounded-sm p-3 space-y-1">
             <div className="flex justify-between text-xs">
               <span className="text-gray-400">Unrealized P&L</span>
-              <span className={`font-medium ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {formatCurrency(pnl)} ({pnlPct >= 0 ? '+' : ''}{pnlPct?.toFixed(2)}%)
+              <span className={`font-medium ${pnlColorClass(pnl)}`}>
+                {formatCurrency(pnl)} ({signedPrefix(pnlPct)}{pnlPct?.toFixed(2)}%)
               </span>
             </div>
             {contractPnl != null && (
               <div className="flex justify-between text-xs">
                 <span className="text-gray-400">Contract P&L</span>
-                <span className={`font-medium ${contractPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                <span className={`font-medium ${pnlColorClass(contractPnl)}`}>
                   {formatCurrency(contractPnl)}
                 </span>
               </div>

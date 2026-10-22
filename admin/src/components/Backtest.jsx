@@ -4,6 +4,7 @@ import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { CartesianChart } from './charts/primitives/CartesianChart'
 import { pairQuery } from '../utils/api'
 import { apiPost } from '../utils/apiClient'
+import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 
 // Time periods adjusted per interval type
 const getPeriodsForInterval = (intervalType) => {
@@ -384,14 +385,14 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
               </div>
               <div className="bg-gray-700/50 rounded-sm p-3">
                 <div className="text-sm text-gray-400">ROI</div>
-                <div className={`text-xl font-bold ${results.metrics.roi >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {results.metrics.roi >= 0 ? '+' : ''}{formatPercent(results.metrics.roi)}
+                <div className={`text-xl font-bold ${pnlColorClass(results.metrics.roi)}`}>
+                  {signedPrefix(results.metrics.roi)}{formatPercent(results.metrics.roi)}
                 </div>
               </div>
               <div className="bg-gray-700/50 rounded-sm p-3">
                 <div className="text-sm text-gray-400">Profit/Loss</div>
-                <div className={`text-xl font-bold ${results.metrics.totalValue - results.metrics.roiBasis >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {results.metrics.totalValue - results.metrics.roiBasis >= 0 ? '+' : ''}
+                <div className={`text-xl font-bold ${pnlColorClass(results.metrics.totalValue - results.metrics.roiBasis)}`}>
+                  {signedPrefix(results.metrics.totalValue - results.metrics.roiBasis)}
                   {formatCurrency(results.metrics.totalValue - results.metrics.roiBasis)}
                 </div>
               </div>
@@ -563,8 +564,8 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
                         <td className="py-2">{formatPrice(order.sellTargetPrice)}</td>
                         <td className="py-2 font-mono">{formatBase(order.sellAsset)}</td>
                         <td className="py-2">{formatCurrency(order.currentValue)}</td>
-                        <td className={`py-2 ${order.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {order.unrealizedPnL >= 0 ? '+' : ''}{formatCurrency(order.unrealizedPnL)}
+                        <td className={`py-2 ${pnlColorClass(order.unrealizedPnL)}`}>
+                          {signedPrefix(order.unrealizedPnL)}{formatCurrency(order.unrealizedPnL)}
                         </td>
                       </tr>
                     ))}

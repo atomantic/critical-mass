@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { TrendingUp, TrendingDown, Minus, AlertTriangle, ChevronsUp, ChevronsDown } from '../icons'
 import { TF_ORDER } from '../../utils/timeframes.mjs'
+import { signedPrefix } from '../../utils/pnlFormat.mjs'
 
 const MACD_MIN_CANDLES = 35
 
@@ -99,7 +100,7 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
                 className={`text-[10px] font-mono w-8 text-right cursor-help ${cfg.color}`}
                 title={`Weighted score: ${row.score.toFixed(1)} (range -100 to +100). >+15 = bullish, <-15 = bearish`}
               >
-                {row.score >= 0 ? '+' : ''}{row.score.toFixed(0)}
+                {signedPrefix(row.score)}{row.score.toFixed(0)}
               </span>
               {row.volumeSurge?.surgeRatio > 1.5 && (
                 <span className="text-[9px] font-mono text-yellow-400 shrink-0" title={`Volume surge ${row.volumeSurge.surgeRatio.toFixed(1)}x`}>
@@ -134,7 +135,7 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
           <tickCfg.Icon size={12} className={tickCfg.color} />
           <div className="flex-1 text-[10px] font-mono text-gray-400">
             {tickMomentum
-              ? `${tickMomentum.magnitude.toFixed(1)}bp ${tickMomentum.velocity >= 0 ? '+' : ''}${tickMomentum.velocity.toFixed(1)}$/s`
+              ? `${tickMomentum.magnitude.toFixed(1)}bp ${signedPrefix(tickMomentum.velocity)}${tickMomentum.velocity.toFixed(1)}$/s`
               : '---'}
           </div>
         </div>

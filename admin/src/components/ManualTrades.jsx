@@ -5,6 +5,7 @@ import { plural } from '../utils/plural.mjs'
 import { apiGet, apiPost, describeMutationFailure as mutationError } from '../utils/apiClient'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { runUnaccountedFillsScan, describeScanProgress } from '../utils/unaccountedFillsScan.mjs'
+import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 
 const STATUS_COLORS = {
   sell_recorded: 'bg-blue-600/30 text-blue-400 border-blue-500/30',
@@ -737,8 +738,8 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                               <span className="text-gray-600">&rarr;</span>
                               <span>Sell @ {formatPrice(sellPrice)}</span>
                               <span className="text-gray-600">=</span>
-                              <span className={`font-medium ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                {pnl >= 0 ? '+' : ''}{formatCurrency(pnl)} P&L
+                              <span className={`font-medium ${pnlColorClass(pnl)}`}>
+                                {signedPrefix(pnl)}{formatCurrency(pnl)} P&L
                               </span>
                               {Math.abs(importModal.totalBtc - selectedMatch.totalBtc) > 0.000001 && (
                                 <span className="text-[10px] text-yellow-500">
@@ -863,8 +864,8 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                           <td className="px-2 py-1 text-right text-red-400">
                             {trade.sellPrice ? formatPrice(trade.sellPrice) : '-'}
                           </td>
-                          <td className={`px-2 py-1 text-right font-medium ${pnl === null ? 'text-gray-400' : pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {pnl !== null ? `${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)}` : '-'}
+                          <td className={`px-2 py-1 text-right font-medium ${pnl === null ? 'text-gray-400' : pnlColorClass(pnl)}`}>
+                            {pnl !== null ? `${signedPrefix(pnl)}${formatCurrency(pnl)}` : '-'}
                           </td>
                           <td className="px-2 py-1 text-gray-400 max-w-[120px] truncate" title={trade.note}>
                             {trade.note || '-'}

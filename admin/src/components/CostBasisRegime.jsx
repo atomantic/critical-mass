@@ -4,6 +4,7 @@ import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { apiGet } from '../utils/apiClient'
+import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 
 function CostBasisRegime({ exchange = 'coinbase', pair }) {
   const [status, setStatus] = useState(null)
@@ -181,9 +182,9 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
             </div>
             <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1 border-t border-gray-700 pt-2 mt-2">
               <span className="min-w-0 wrap-break-word text-gray-400">Unrealized P&L:</span>
-              <span className={`min-w-0 max-w-full wrap-break-word text-right ${unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {unrealizedPnL >= 0 ? '+' : ''}{formatCurrency(unrealizedPnL)}
-                <span className="text-sm ml-1">({unrealizedPnLPercent >= 0 ? '+' : ''}{unrealizedPnLPercent.toFixed(2)}%)</span>
+              <span className={`min-w-0 max-w-full wrap-break-word text-right ${pnlColorClass(unrealizedPnL)}`}>
+                {signedPrefix(unrealizedPnL)}{formatCurrency(unrealizedPnL)}
+                <span className="text-sm ml-1">({signedPrefix(unrealizedPnLPercent)}{unrealizedPnLPercent.toFixed(2)}%)</span>
               </span>
             </div>
           </div>
@@ -213,8 +214,8 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
           <div className="space-y-2">
             <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
               <span className="min-w-0 wrap-break-word text-gray-400">{quoteCurrency} Profit:</span>
-              <span className={`min-w-0 max-w-full wrap-break-word text-right text-2xl font-bold ${realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {realizedPnL >= 0 ? '+' : ''}{formatCurrency(realizedPnL)}
+              <span className={`min-w-0 max-w-full wrap-break-word text-right text-2xl font-bold ${pnlColorClass(realizedPnL)}`}>
+                {signedPrefix(realizedPnL)}{formatCurrency(realizedPnL)}
               </span>
             </div>
             <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
@@ -238,8 +239,8 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
             </div>
             <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1 border-t border-gray-700 pt-2 mt-2">
               <span className="min-w-0 wrap-break-word text-gray-400">Total Return:</span>
-              <span className={`min-w-0 max-w-full wrap-break-word text-right ${(realizedPnL + unrealizedPnL + assetReservesUsd) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {(realizedPnL + unrealizedPnL + assetReservesUsd) >= 0 ? '+' : ''}
+              <span className={`min-w-0 max-w-full wrap-break-word text-right ${pnlColorClass(realizedPnL + unrealizedPnL + assetReservesUsd)}`}>
+                {signedPrefix(realizedPnL + unrealizedPnL + assetReservesUsd)}
                 {formatCurrency(realizedPnL + unrealizedPnL + assetReservesUsd)}
               </span>
             </div>
@@ -281,8 +282,8 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
                       </span>
                     </div>
                     {isComplete && (
-                      <span className={`min-w-0 wrap-break-word text-sm ${cyclePnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        P&L: {cyclePnL >= 0 ? '+' : ''}{formatCurrency(cyclePnL)}
+                      <span className={`min-w-0 wrap-break-word text-sm ${pnlColorClass(cyclePnL)}`}>
+                        P&L: {signedPrefix(cyclePnL)}{formatCurrency(cyclePnL)}
                       </span>
                     )}
                   </div>

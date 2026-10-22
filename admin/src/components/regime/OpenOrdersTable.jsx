@@ -4,6 +4,7 @@ import { DEFAULT_FEE_RATE_PER_SIDE } from '../../utils/openOrderEstimates.mjs'
 import { TIERS as CELESTIAL_TIERS, formatTierTooltip } from '../../../../shared/celestial-tiers.mjs'
 import { getPriceDecimals, formatCurrency } from '../charts/chartUtils'
 import { formatDuration, formatTimestamp } from './regimeFormat'
+import { pnlColorClass, signedPrefix } from '../../utils/pnlFormat.mjs'
 
 export const REGIME_ORDER_TOUCH_TARGET = 'min-h-11 min-w-11 inline-flex items-center justify-center regime-order-touch-target'
 
@@ -200,8 +201,8 @@ function OpenOrdersTable({
                   <td className="text-right py-2 pr-2 font-mono text-gray-300 text-xs">
                     ${(order.size * order.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </td>
-                  <td className={`text-right py-2 pr-2 font-mono text-xs ${order.estPnl !== null ? (order.estPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-400'}`} title={order.estSellFee ? `After est. sell fee: $${order.estSellFee.toFixed(4)}` : undefined}>
-                    {order.estPnl !== null ? `${order.estPnl >= 0 ? '+' : ''}${formatCurrency(order.estPnl)}` : '—'}
+                  <td className={`text-right py-2 pr-2 font-mono text-xs ${order.estPnl !== null ? (pnlColorClass(order.estPnl)) : 'text-gray-400'}`} title={order.estSellFee ? `After est. sell fee: $${order.estSellFee.toFixed(4)}` : undefined}>
+                    {order.estPnl !== null ? `${signedPrefix(order.estPnl)}${formatCurrency(order.estPnl)}` : '—'}
                   </td>
                   <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
                     {order.estHoldback !== null ? (
@@ -284,8 +285,8 @@ function OpenOrdersTable({
             <td className="text-right py-2 pr-2 font-mono text-white">{totalSellSize.toFixed(8)}</td>
             <td className="py-2 pr-2"></td>
             <td className="text-right py-2 pr-2 font-mono text-gray-300">${totalSellValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-            <td className={`text-right py-2 pr-2 font-mono ${hasPnl ? (totalSellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-400'}`} title={totalSellFees ? `After est. sell fees: $${totalSellFees.toFixed(4)}` : undefined}>
-              {hasPnl ? `${totalSellPnl >= 0 ? '+' : ''}${formatCurrency(totalSellPnl)}` : '—'}
+            <td className={`text-right py-2 pr-2 font-mono ${hasPnl ? (pnlColorClass(totalSellPnl)) : 'text-gray-400'}`} title={totalSellFees ? `After est. sell fees: $${totalSellFees.toFixed(4)}` : undefined}>
+              {hasPnl ? `${signedPrefix(totalSellPnl)}${formatCurrency(totalSellPnl)}` : '—'}
             </td>
             <td className="text-right py-2 pr-2 font-mono text-cyan-400">
               {hasHoldback ? <span title={`≈${formatCurrency(totalHoldbackValue)}`}>+{totalHoldback.toFixed(8)}</span> : '—'}

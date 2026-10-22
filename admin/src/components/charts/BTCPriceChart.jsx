@@ -6,6 +6,7 @@ import { CartesianChart } from './primitives/CartesianChart'
 import AtomokuCloudRenderer from './AtomokuCloudRenderer'
 import HeikinAshiRenderer from './HeikinAshiRenderer'
 import SignalAnnotationRenderer from './SignalAnnotationRenderer'
+import { pnlColorClass } from '../../utils/pnlFormat.mjs'
 
 // Stable empty arrays to avoid re-render loops from default prop values
 const EMPTY_ARRAY = []
@@ -445,7 +446,7 @@ export default function BTCPriceChart({
                 <div className="bg-gray-900 rounded-sm px-2 py-1 flex items-center justify-between">
                   <span className="text-gray-400">MACD</span>
                   <span className={`font-mono font-medium ${
-                    (currentInd.macd?.histogram ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
+                    pnlColorClass(currentInd.macd?.histogram ?? 0)
                   }`}>{currentInd.macd?.histogram?.toFixed(1) ?? '---'}</span>
                 </div>
               )}
