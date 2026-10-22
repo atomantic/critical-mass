@@ -87,3 +87,26 @@ describe('OperatorLogin recovery', () => {
     expect(screen.getByLabelText('New password')).toBeTruthy()
   })
 })
+
+describe('OperatorLogin session expiry', () => {
+  it('returns to sign-in when any API call later answers 401', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(sessionResponse({ required: true, authenticated: true }))
+      .mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({ error: 'Sign in required' }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const { apiGet } = await import('../src/utils/apiClient')
+    render(<OperatorLogin><p>Private controls</p></OperatorLogin>)
+    await screen.findByText('Private controls')
+    await apiGet('/api/anything')
+    expect(await screen.findByLabelText('Password')).toBeTruthy()
+    expect(screen.queryByText('Private controls')).toBeNull()
+  })
+
+  it('does not patch window.fetch', async () => {
+    const stub = vi.fn().mockResolvedValue(sessionResponse({ required: false, authenticated: false }))
+    vi.stubGlobal('fetch', stub)
+    render(<OperatorLogin><p>Private controls</p></OperatorLogin>)
+    await screen.findByText('Private controls')
+    expect(window.fetch).toBe(stub)
+  })
+})

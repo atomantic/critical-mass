@@ -1,8 +1,9 @@
+import { apiFetch } from './apiClient.js'
 import { createRequestOwner } from './requestOwner.mjs'
 
 // One owner covers the whole fund/page snapshot, including the stale-revision
 // retry and body parsing. An obsolete response cannot commit any sibling data.
-export function createTransactionsReader(fetchImpl = (...args) => fetch(...args)) {
+export function createTransactionsReader(fetchImpl = apiFetch) {
   const owner = createRequestOwner({
     fetchImpl: async (_url, { signal, exchange, pairQuery, query }) => {
       const params = new URLSearchParams(query)

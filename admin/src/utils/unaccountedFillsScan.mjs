@@ -1,3 +1,4 @@
+import { apiFetch } from './apiClient.js'
 // Manual Trades unaccounted-fills read (issue #966).
 //
 // A long exchange history is scanned by an engine-owned job: the start request
@@ -44,7 +45,7 @@ export const runUnaccountedFillsScan = async ({
   exchange,
   pairQuery,
   startDate,
-  fetchImpl = (url) => fetch(url),
+  fetchImpl = apiFetch,
   sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
   isCancelled = () => false,
   onProgress = () => {},
