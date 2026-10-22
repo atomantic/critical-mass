@@ -79,7 +79,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       const candlesQuery = pair ? `?granularity=ONE_MINUTE&limit=60&pair=${encodeURIComponent(pair)}` : '?granularity=ONE_MINUTE&limit=60'
       const read = async (url, name) => {
         const result = await apiGet(url, { signal: controller.signal })
-        if (!result.ok) throw new Error(`${name} fetch failed: HTTP ${result.status}`)
+        if (!result.ok) throw new Error(result.status ? `${name} fetch failed: HTTP ${result.status}` : result.error)
         return result.data
       }
       const results = await Promise.allSettled([
@@ -128,7 +128,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
     session.fillsController = controller
     try {
       const result = await apiGet(`/api/${exchange}/regime/fills/cycles${pairQuery}`, { signal: controller.signal })
-      if (!result.ok) throw new Error(`Fills fetch failed: HTTP ${result.status}`)
+      if (!result.ok) throw new Error(result.status ? `Fills fetch failed: HTTP ${result.status}` : result.error)
       const fillsData = result.data
       if (!session.active) return
       setFillAggregates(fillsData)

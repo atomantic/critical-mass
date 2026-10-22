@@ -1,4 +1,5 @@
 const { before, describe, it } = require('node:test')
+const { apiClientStub } = require('./api-client-harness')
 const assert = require('node:assert/strict')
 const path = require('node:path')
 const vm = require('node:vm')
@@ -87,8 +88,10 @@ function createView(props = {}) {
   const requests = []
   let nextTimer = 0
   let now = 0
+  const fetchImpl = (url, options) => new Promise((resolve, reject) => { requests.push({ url, options, resolve, reject, settled: false }) })
   const stubs = {
     react: React,
+    '../utils/apiClient': apiClientStub(fetchImpl),
     './charts/chartUtils': { formatCurrency: value => `$${value}`, formatPrice: value => `$${value}`, formatAsset: String },
     '../App': {
       getBaseCurrency: productId => productId?.split('-')[0] || 'BTC',
@@ -102,7 +105,7 @@ function createView(props = {}) {
   vm.runInNewContext(componentCode, {
     module: mod, exports: mod.exports, React, AbortController,
     require: name => { assert.ok(stubs[name], `unexpected import ${name}`); return stubs[name] },
-    fetch: (url, options) => new Promise((resolve, reject) => { requests.push({ url, options, resolve, reject, settled: false }) }),
+    fetch: fetchImpl,
     setInterval: (callback, ms) => { assert.equal(ms, 10000); const id = ++nextTimer; timers.set(id, { callback, next: now + ms, ms }); return id },
     clearInterval: id => timers.delete(id),
   })

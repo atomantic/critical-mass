@@ -27,7 +27,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
 
     const read = async (endpoint, name) => {
       const result = await apiGet(`/api/${exchange}/${endpoint}${pairQuery}`, { signal: controller.signal })
-      if (!result.ok) throw new Error(`${name} fetch failed: HTTP ${result.status}`)
+      if (!result.ok) throw new Error(result.status ? `${name} fetch failed: HTTP ${result.status}` : result.error)
       return result.data
     }
 
