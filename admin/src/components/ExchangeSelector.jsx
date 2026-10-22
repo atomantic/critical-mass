@@ -99,7 +99,7 @@ function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, o
         <span className="font-medium capitalize hidden md:inline">{currentExchange}</span>
         <span className="text-gray-400 hidden md:inline">/</span>
         <span className="text-xs md:text-sm text-gray-300 shrink-0">{displayPair}</span>
-        <span className={`text-[10px] md:text-xs px-1 md:px-2 py-0.5 rounded-sm shrink-0 ${currentStatus.color} ${currentStatus.textColor} ${currentStatus.pulse ? 'animate-pulse' : ''}`}>
+        <span className={`text-2xs md:text-xs px-1 md:px-2 py-0.5 rounded-sm shrink-0 ${currentStatus.color} ${currentStatus.textColor} ${currentStatus.pulse ? 'animate-pulse' : ''}`}>
           {currentStatus.label}
         </span>
         <svg className={`w-4 h-4 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -73,7 +73,7 @@ export default function AggressivenessControl({ config, exchange, pairQuery, onC
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs text-gray-400">Aggressiveness Level</span>
         {currentLevel === 'custom' && (
-          <span className="px-1.5 py-0.5 bg-purple-900/50 text-purple-400 text-[10px] rounded-sm">
+          <span className="px-1.5 py-0.5 bg-purple-900/50 text-purple-400 text-2xs rounded-sm">
             Custom
           </span>
         )}

@@ -131,7 +131,7 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
       </div>
 
       {/* Tier legend */}
-      <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[10px]">
+      <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-2xs">
         {TIER_ORDER.map((tier) => {
           const count = tierSummary[tier]
           if (!count) return null
