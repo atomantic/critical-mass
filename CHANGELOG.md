@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-1581] Successful operator sign-ins no longer consume the failed-attempt budget, and login throttling can be per-client behind a proxy** — `POST /api/auth/session`, `PUT /api/auth/password` and `DELETE /api/auth/password` now refund the reserved attempt once the password is verified (as the bearer path already did), so repeated successful sign-ins cannot lock the operator out. With `OPERATOR_TRUST_PROXY=true` the budget is keyed on the last valid `X-Forwarded-For` hop (the one the trusted proxy wrote) instead of the socket address. Default behavior (socket address) is unchanged.
 - **[issue-1620] A failure while booking a cancelled order's partial fill no longer crashes the exchange engine** — the four fire-and-forget `handleCancelledOrder` call sites in the order executor now go through `settleCancelled`, which logs the error (order id, type, context) instead of leaving an unhandled rejection that exits the process for every fund on the exchange.
 
 ### Changed
