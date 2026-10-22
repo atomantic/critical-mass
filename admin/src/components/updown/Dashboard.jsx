@@ -17,6 +17,7 @@ import { isFreshTick } from './position-tracker-math'
 import { labelHistoryActions } from '../../constants/signals'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
+import { apiPost, describeMutationFailure } from '../../utils/apiClient'
 
 export default function UpDownDashboard() {
   const { connected, tick, indicators: rawIndicators, signal, scorecard: socketScorecard } = useUpDownSocket()
@@ -118,11 +119,8 @@ export default function UpDownDashboard() {
     // service; drop it so only the post-action refresh may commit (#508).
     statusOwner.invalidate()
     try {
-      const res = await fetch('/api/updown/start', { method: 'POST' })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to start')
-      }
+      const res = await apiPost('/api/updown/start')
+      if (!res.ok) throw new Error(describeMutationFailure(res, 'Failed to start'))
       await fetchStatus()
     } catch (err) {
       setError(err.message || 'Failed to start')
@@ -136,11 +134,8 @@ export default function UpDownDashboard() {
     setError(null)
     statusOwner.invalidate()
     try {
-      const res = await fetch('/api/updown/stop', { method: 'POST' })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to stop')
-      }
+      const res = await apiPost('/api/updown/stop')
+      if (!res.ok) throw new Error(describeMutationFailure(res, 'Failed to stop'))
       await fetchStatus()
     } catch (err) {
       setError(err.message || 'Failed to stop')
@@ -259,10 +254,9 @@ export default function UpDownDashboard() {
                 setRestarting(true)
                 setError(null)
                 try {
-                  const res = await fetch('/api/updown/restart', { method: 'POST' })
-                  const body = await res.json()
-                  if (body.success !== true) {
-                    throw new Error(body.error || 'Restart request failed')
+                  const res = await apiPost('/api/updown/restart')
+                  if (!res.ok || res.data.success !== true) {
+                    throw new Error(describeMutationFailure(res, 'Restart request failed'))
                   }
                 } catch (err) {
                   setError(err.message || 'Restart request failed')

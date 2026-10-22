@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useId } from 'react'
 import { FileText, Save, Camera, Upload, Check, X, Loader2 } from '../icons'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
+import { apiGet, apiPut, describeMutationFailure } from '../../utils/apiClient'
 
 const LS_PROVIDER_KEY = 'updown-screenshot-provider'
 const LS_MODEL_KEY = 'updown-screenshot-model'
@@ -76,9 +77,8 @@ export default function ContractSetup({ initialContract }) {
   const loadProviders = useCallback(async () => {
     setProvidersError('')
     try {
-      const res = await fetch('/api/updown/providers')
-      const data = await res.json().catch(() => null)
-      if (!res.ok || !data?.success) throw new Error(data?.error || `server error ${res.status}`)
+      const { ok, status, data, error } = await apiGet('/api/updown/providers')
+      if (!ok || !data.success) throw new Error(ok ? `server error ${status}` : error)
       setProviders(data.providers || [])
     } catch (err) {
       setProvidersError(`Could not load AI providers (${err.message}).`)
@@ -109,15 +109,8 @@ export default function ContractSetup({ initialContract }) {
     setSaved(false)
     setSaveError('')
     try {
-      const res = await fetch('/api/updown/contract', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(contract),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to save contract')
-      }
+      const res = await apiPut('/api/updown/contract', contract)
+      if (!res.ok) throw new Error(describeMutationFailure(res, 'Failed to save contract'))
       showSaved()
       return true
     } catch (err) {
