@@ -108,6 +108,27 @@ describe('partial fill callback ownership', () => {
 });
 
 describe('checkPendingOrderFills — CANCELLED with partial fills', () => {
+  it('does not leak an unhandled rejection when onFillDetected throws', async () => {
+    const unhandled = [];
+    const onUnhandled = (err) => unhandled.push(err);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const adapter = makeAdapter({ status: 'CANCELLED', filledSize: 0.05, completionPercentage: 50, side: 'SELL' });
+      const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+        onFillDetected: () => Promise.reject(new Error('boom')),
+      });
+      exec.restorePendingOrder('order-throw', {
+        type: 'body_tp', price: 2400, size: 0.1, sizeUsdc: 240, placedAt: Date.now(),
+      });
+      const result = await exec.checkPendingOrderFills();
+      assert.equal(result.cancelled, 1);
+      await new Promise(r => setTimeout(r, 20));
+      assert.deepEqual(unhandled, []);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('routes partial fills through onFillDetected before clearing', async () => {
     // Models the leak pattern: a TP order cancels (externally or via Gemini
     // heartbeat timeout) with some of its size already filled. Without the
