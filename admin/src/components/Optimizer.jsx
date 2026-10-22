@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { formatCurrency } from './charts/chartUtils'
 import { useToast } from './Toast'
+import Button from './ui/Button'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { getRealtimeClient } from '../lib/realtime'
 import { plural } from '../utils/plural.mjs'
@@ -317,12 +318,9 @@ function Optimizer({ exchange = 'coinbase', pair }) {
       <div className="bg-gray-800 rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-semibold">DCA Parameter Optimizer</h2>
-          <button
-            onClick={() => setShowConfig(!showConfig)}
-            className="text-sm text-blue-400 hover:text-blue-300"
-          >
+          <Button variant="link" size="sm" onClick={() => setShowConfig(!showConfig)}>
             {showConfig ? 'Hide Configuration' : 'Show Configuration'}
-          </button>
+          </Button>
         </div>
 
         <p className="text-gray-400 text-sm mb-4">
@@ -337,12 +335,9 @@ function Optimizer({ exchange = 'coinbase', pair }) {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="text-sm text-gray-400">Intervals to Test</label>
-                <button
-                  onClick={selectAllIntervals}
-                  className="text-xs text-blue-400 hover:text-blue-300"
-                >
+                <Button variant="link" size="xs" onClick={selectAllIntervals}>
                   Select All
-                </button>
+                </Button>
               </div>
               <div className="flex flex-wrap gap-2">
                 {ALL_INTERVALS.map(interval => (
@@ -361,12 +356,9 @@ function Optimizer({ exchange = 'coinbase', pair }) {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="text-sm text-gray-400">Markup Percentages</label>
-                <button
-                  onClick={selectAllMarkups}
-                  className="text-xs text-blue-400 hover:text-blue-300"
-                >
+                <Button variant="link" size="xs" onClick={selectAllMarkups}>
                   Select All
-                </button>
+                </Button>
               </div>
               <div className="flex flex-wrap gap-2">
                 {ALL_MARKUPS.map(markup => (
@@ -385,12 +377,9 @@ function Optimizer({ exchange = 'coinbase', pair }) {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="text-sm text-gray-400">Time Periods</label>
-                <button
-                  onClick={selectAllPeriods}
-                  className="text-xs text-blue-400 hover:text-blue-300"
-                >
+                <Button variant="link" size="xs" onClick={selectAllPeriods}>
                   Select All
-                </button>
+                </Button>
               </div>
               <div className="flex flex-wrap gap-2">
                 {ALL_PERIODS.map(period => (
@@ -444,29 +433,22 @@ function Optimizer({ exchange = 'coinbase', pair }) {
               step="1000"
             />
           </div>
-          <button
+          <Button
+            variant="success"
+            className="font-medium"
             onClick={() => runOptimizer(false)}
             disabled={loading || totalCombinations === 0}
-            className="px-6 py-2 bg-green-800 hover:bg-green-900 disabled:bg-green-950 disabled:cursor-not-allowed rounded-sm font-medium"
           >
             {loading ? 'Running...' : (results?.cached ? 'Load Cached' : `Run ${plural(totalCombinations, 'Test')}`)}
-          </button>
+          </Button>
           {results && (
             <>
-              <button
-                onClick={() => runOptimizer(true)}
-                disabled={loading}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm font-medium"
-              >
+              <Button className="font-medium" onClick={() => runOptimizer(true)} disabled={loading}>
                 {loading ? 'Running...' : 'Force Refresh'}
-              </button>
-              <button
-                onClick={clearCache}
-                disabled={loading}
-                className="px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded-sm font-medium"
-              >
+              </Button>
+              <Button variant="destructive" className="font-medium" onClick={clearCache} disabled={loading}>
                 Clear Cache
-              </button>
+              </Button>
             </>
           )}
         </div>
@@ -625,12 +607,13 @@ function Optimizer({ exchange = 'coinbase', pair }) {
                 <span className="ml-2 text-white font-medium">{formatPercent(results.bestResult.metrics.fillRate)}</span>
               </div>
             </div>
-            <button
+            <Button
+              variant="success"
+              className="mt-4 font-medium"
               onClick={() => applySettings(results.bestResult.params)}
-              className="mt-4 px-4 py-2 bg-green-800 hover:bg-green-900 rounded-sm font-medium text-sm"
             >
               Apply Best Settings to Config
-            </button>
+            </Button>
           </div>
 
           {/* Top Results Table */}
@@ -673,12 +656,9 @@ function Optimizer({ exchange = 'coinbase', pair }) {
                         {result.avgIntervalsToFill ? `${result.avgIntervalsToFill.toFixed(1)}` : 'N/A'}
                       </td>
                       <td className="py-2">
-                        <button
-                          onClick={() => applySettings(result)}
-                          className="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded-sm text-xs"
-                        >
+                        <Button size="xs" onClick={() => applySettings(result)}>
                           Apply
-                        </button>
+                        </Button>
                       </td>
                     </tr>
                   ))}

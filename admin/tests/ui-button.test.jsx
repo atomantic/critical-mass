@@ -33,3 +33,20 @@ it('RetryBanner shows the message and fires onRetry', () => {
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
   expect(onRetry).toHaveBeenCalledTimes(1)
 })
+
+it('Button maps tinted, text-only and responsive-size options', () => {
+  render(<>
+    <Button variant="soft-danger" size="compact">S</Button>
+    <Button variant="quiet">Q</Button>
+    <Button variant="link" size="responsive">L</Button>
+    <Button variant="primary-muted">M</Button>
+  </>)
+  const soft = screen.getByRole('button', { name: 'S' })
+  expect(soft.className).toContain('bg-red-500/20')
+  expect(soft.className).toContain('px-3 py-1.5')
+  expect(screen.getByRole('button', { name: 'Q' }).className).toContain('hover:text-white')
+  const link = screen.getByRole('button', { name: 'L' })
+  expect(link.className).toContain('text-blue-400')
+  expect(link.className).toContain('md:px-3')
+  expect(screen.getByRole('button', { name: 'M' }).className).toContain('bg-blue-600/50')
+})

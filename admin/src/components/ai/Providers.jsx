@@ -1,4 +1,4 @@
-import { TOUCH_TARGET } from '../ui/touchTarget'
+import Button from '../ui/Button'
 import { useState, useEffect, useRef, useId } from 'react'
 import ModalDialog from '../ModalDialog'
 import DestructiveConfirmation from '../DestructiveConfirmation'
@@ -299,24 +299,15 @@ export default function AIProviders() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <h1 className="text-2xl font-bold text-white">AI Providers</h1>
         <div className="flex flex-wrap gap-2">
-          <button
-            onClick={handleLoadSamples}
-            className={`${TOUCH_TARGET} px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-sm`}
-          >
+          <Button variant="secondary" onClick={handleLoadSamples}>
             {loadingSamples ? 'Loading...' : 'Load Samples'}
-          </button>
-          <button
-            onClick={() => setShowRunner(!showRunner)}
-            className={`${TOUCH_TARGET} px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm`}
-          >
+          </Button>
+          <Button onClick={() => setShowRunner(!showRunner)}>
             {showRunner ? 'Hide Runner' : 'Run Prompt'}
-          </button>
-          <button
-            onClick={() => { setEditingProvider(null); setShowForm(true) }}
-            className={`${TOUCH_TARGET} px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors text-sm`}
-          >
+          </Button>
+          <Button variant="secondary" onClick={() => { setEditingProvider(null); setShowForm(true) }}>
             Add Provider
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -351,21 +342,21 @@ export default function AIProviders() {
           />
 
           <div className="flex justify-between items-center">
-            <button
+            <Button
+              variant="success"
               onClick={handleExecuteRun}
               disabled={!runPrompt.trim() || !activeProviderId || !!runningId || runPending}
-              className={`${TOUCH_TARGET} px-6 py-2 bg-green-800 hover:bg-green-900 text-white rounded-lg transition-colors disabled:opacity-50 text-sm`}
             >
               {runningId || runPending ? 'Running...' : 'Execute'}
-            </button>
+            </Button>
             {runningId && (
-              <button
+              <Button
+                variant="destructive"
                 onClick={() => handleStopRun()}
                 disabled={stopPending}
-                className={`${TOUCH_TARGET} px-4 py-2 bg-red-700 hover:bg-red-800 text-white rounded-lg transition-colors text-sm disabled:opacity-50`}
               >
                 {stopPending ? 'Stopping...' : runNotice?.kind === RUN_NOTICE.STOP ? 'Retry Stop' : 'Stop'}
-              </button>
+              </Button>
             )}
           </div>
 
@@ -380,12 +371,14 @@ export default function AIProviders() {
             <div role="alert" className="flex flex-col sm:flex-row sm:items-center gap-2 text-sm text-red-400">
               <span>{runNotice.message}</span>
               {runNotice.kind === RUN_NOTICE.READ && (
-                <button
+                <Button
+                  variant="secondary"
+                  size="compact"
+                  className="shrink-0"
                   onClick={() => lifecycleRef.current.refresh()}
-                  className={`${TOUCH_TARGET} px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm shrink-0`}
                 >
                   Retry
-                </button>
+                </Button>
               )}
             </div>
           )}
@@ -404,19 +397,16 @@ export default function AIProviders() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <h2 className="text-lg font-semibold text-white">Available Sample Providers</h2>
             <div className="flex gap-2">
-              <button
+              <Button
+                variant="success"
                 onClick={handleAddAllSamples}
                 disabled={Boolean(mutationPending['sample-all'] || Object.keys(mutationPending).some(key => key.startsWith('sample:') && mutationPending[key]))}
-                className={`${TOUCH_TARGET} px-4 py-1.5 bg-green-800 hover:bg-green-900 text-white rounded-lg transition-colors text-sm`}
               >
                 {mutationPending['sample-all'] ? 'Adding...' : `Add All (${sampleProviders.length})`}
-              </button>
-              <button
-                onClick={() => setShowSamples(false)}
-                className={`${TOUCH_TARGET} px-3 py-1.5 text-sm text-gray-400 hover:text-white`}
-              >
+              </Button>
+              <Button variant="quiet" size="compact" onClick={() => setShowSamples(false)}>
                 Close
-              </button>
+              </Button>
             </div>
           </div>
           <div className="grid gap-3">
@@ -446,13 +436,13 @@ export default function AIProviders() {
                     )}
                   </div>
                 </div>
-                <button
+                <Button
+                  className="shrink-0"
                   onClick={() => handleAddSample(sp)}
                   disabled={Boolean(mutationPending[`sample:${sp.id}`] || mutationPending['sample-all'])}
-                  className={`${TOUCH_TARGET} px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm disabled:opacity-50 shrink-0`}
                 >
                   {mutationPending[`sample:${sp.id}`] ? 'Adding...' : 'Add'}
-                </button>
+                </Button>
               </div>
             ))}
           </div>
@@ -463,8 +453,8 @@ export default function AIProviders() {
         <div role="alert" className="bg-gray-800 border border-gray-700 rounded-xl p-4 text-center">
           <p className="text-red-400">{samplesError}</p>
           <div className="mt-2 flex justify-center gap-4">
-            <button onClick={handleLoadSamples} className={`${TOUCH_TARGET} text-sm text-indigo-400 hover:text-indigo-300`}>Retry</button>
-            <button onClick={() => setShowSamples(false)} className={`${TOUCH_TARGET} text-sm text-gray-400 hover:text-white`}>Close</button>
+            <Button variant="link" size="compact" onClick={handleLoadSamples}>Retry</Button>
+            <Button variant="quiet" size="compact" onClick={() => setShowSamples(false)}>Close</Button>
           </div>
         </div>
       )}
@@ -472,19 +462,16 @@ export default function AIProviders() {
       {showSamples && !samplesError && sampleProviders.length === 0 && !loadingSamples && (
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 text-center">
           <p className="text-gray-400">No supported API sample providers are available.</p>
-          <button onClick={() => setShowSamples(false)} className={`${TOUCH_TARGET} mt-2 text-sm text-indigo-400 hover:text-indigo-300`}>Close</button>
+          <Button variant="link" size="compact" className="mt-2" onClick={() => setShowSamples(false)}>Close</Button>
         </div>
       )}
 
       {providersError && (
         <div role="alert" className="flex flex-col sm:flex-row sm:items-center gap-2 text-sm text-red-400">
           <span>{providersLoaded ? `${providersError} Showing the last loaded providers.` : providersError}</span>
-          <button
-            onClick={loadData}
-            className={`${TOUCH_TARGET} px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm shrink-0`}
-          >
+          <Button variant="secondary" size="compact" className="shrink-0" onClick={loadData}>
             Retry
-          </button>
+          </Button>
         </div>
       )}
 
@@ -552,63 +539,65 @@ export default function AIProviders() {
 
               <div className="flex flex-wrap items-center gap-2">
                 {provider.type === 'api' && (
-                  <button
+                  <Button
+                    variant="secondary"
+                    size="compact"
                     onClick={() => handleTest(provider.id)}
                     disabled={testResults[provider.id]?.testing}
-                    className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors disabled:opacity-50`}
                   >
                     {testResults[provider.id]?.testing ? 'Testing...' : 'Test'}
-                  </button>
+                  </Button>
                 )}
 
                 {provider.type === 'api' && (
-                  <button
+                  <Button
+                    variant="secondary"
+                    size="compact"
                     onClick={() => handleRefreshModels(provider.id)}
                     disabled={Boolean(mutationPending[`refresh:${provider.id}`])}
-                    className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors`}
                   >
                     Refresh
-                  </button>
+                  </Button>
                 )}
 
                 {provider.type === 'api' && (
-                  <button
+                  <Button
+                    variant={provider.enabled ? 'soft-warning' : 'soft-success'}
+                    size="compact"
                     onClick={() => handleToggleEnabled(provider)}
                     disabled={Boolean(mutationPending[`enabled:${provider.id}`])}
-                    className={`${TOUCH_TARGET} px-3 py-1.5 text-sm rounded transition-colors ${
-                      provider.enabled
-                        ? 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30'
-                        : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
-                    }`}
                   >
                     {provider.enabled ? 'Disable' : 'Enable'}
-                  </button>
+                  </Button>
                 )}
 
                 {provider.type === 'api' && provider.id !== activeProviderId && provider.enabled && (
-                  <button
+                  <Button
+                    variant="soft-info"
+                    size="compact"
                     onClick={() => handleSetActive(provider.id)}
                     disabled={Boolean(mutationPending.active)}
-                    className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 rounded-sm transition-colors`}
                   >
                     Set Default
-                  </button>
+                  </Button>
                 )}
 
-                <button
+                <Button
+                  variant="secondary"
+                  size="compact"
                   onClick={() => { setEditingProvider(provider); setShowForm(true) }}
-                  className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors`}
                 >
                   Edit
-                </button>
+                </Button>
 
-                <button
+                <Button
+                  variant="soft-danger"
+                  size="compact"
                   onClick={() => setDeleteProvider(provider)}
                   disabled={Boolean(mutationPending[`delete:${provider.id}`])}
-                  className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-sm transition-colors`}
                 >
                   Delete
-                </button>
+                </Button>
               </div>
             </div>
           </div>
@@ -617,12 +606,9 @@ export default function AIProviders() {
         {providersLoaded && providers.length === 0 && (
           <div className="text-center py-12 text-gray-400">
             <p>No providers configured.</p>
-            <button
-              onClick={handleLoadSamples}
-              className={`${TOUCH_TARGET} mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm`}
-            >
+            <Button className="mt-3" onClick={handleLoadSamples}>
               Load Sample Providers
-            </button>
+            </Button>
           </div>
         )}
       </div>
@@ -631,12 +617,9 @@ export default function AIProviders() {
       {runsError && (
         <div role="alert" className="mt-8 flex flex-col sm:flex-row sm:items-center gap-2 text-sm text-red-400">
           <span>{runs.length > 0 ? `${runsError} Showing the last loaded runs.` : runsError}</span>
-          <button
-            onClick={loadData}
-            className={`${TOUCH_TARGET} px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm shrink-0`}
-          >
+          <Button variant="secondary" size="compact" className="shrink-0" onClick={loadData}>
             Retry
-          </button>
+          </Button>
         </div>
       )}
       {runs.length > 0 && (
@@ -669,30 +652,33 @@ export default function AIProviders() {
                     <span className={`text-sm ${status === 'interrupted' ? 'text-red-400' : 'text-gray-400'}`}>
                       {run.duration ? `${(run.duration / 1000).toFixed(1)}s` : (RUN_STATUS_LABELS[status] || 'Checking...')}
                     </span>
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="compact"
                       onClick={() => handleAttachRun(run.id)}
                       disabled={attached}
-                      className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors disabled:opacity-50`}
                     >
                       {status === 'active' ? (attached ? 'Attached' : 'Attach') : 'View'}
-                    </button>
+                    </Button>
                     {status === 'active' && (
-                      <button
+                      <Button
+                        variant="soft-danger"
+                        size="compact"
                         onClick={() => handleStopRun(run.id)}
                         disabled={stopPending}
-                        className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-sm transition-colors disabled:opacity-50`}
                       >
                         Stop
-                      </button>
+                      </Button>
                     )}
                     {status !== 'active' && status !== undefined && (
-                      <button
+                      <Button
+                        variant="secondary"
+                        size="compact"
                         onClick={() => handleRerun(run.id)}
                         title="Load the full original prompt into the runner; nothing runs until Execute"
-                        className={`${TOUCH_TARGET} px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors`}
                       >
                         Rerun
-                      </button>
+                      </Button>
                     )}
                   </div>
                 </div>
@@ -949,12 +935,12 @@ function ProviderForm({ provider, onClose, onSave }) {
           </label>
 
           <div className="flex justify-end gap-3 pt-4">
-            <button type="button" onClick={onClose} className={`${TOUCH_TARGET} px-4 py-2 text-gray-400 hover:text-white`}>
+            <Button variant="quiet" onClick={onClose}>
               Cancel
-            </button>
-            <button type="submit" disabled={pending} className={`${TOUCH_TARGET} px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50`}>
+            </Button>
+            <Button type="submit" disabled={pending}>
               {pending ? 'Saving...' : provider ? 'Save' : 'Create'}
-            </button>
+            </Button>
           </div>
         </form>
       </div>

@@ -6,6 +6,7 @@ import { TIERS as CELESTIAL_TIERS, formatTierCapitalRange } from '../../../share
 import { useState, useEffect, useId, useRef, useCallback } from 'react'
 import ToggleSwitch from './ToggleSwitch'
 import { useNotify, useToast } from './Toast'
+import Button from './ui/Button'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 
 // Input component defined OUTSIDE ConfigEditor to prevent re-creation on every render
@@ -210,7 +211,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     return (
       <div className="bg-gray-800 rounded-lg p-4">
         <h2 className="text-lg font-semibold mb-3">Bot Configuration</h2>
-        <button type="button" disabled className="px-4 py-2 rounded bg-blue-800 opacity-50">Save Configuration</button>
+        <Button disabled>Save Configuration</Button>
         {loadError ? (
           <div role="alert" className="mt-4 text-red-200">
             Failed to load configuration: {loadError}
@@ -506,25 +507,23 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       <div className="sticky top-0 z-10 bg-gray-800 border-b border-gray-700 p-4 mb-4">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <button
+            <Button
+              variant={isDirty ? 'primary' : 'primary-muted'}
+              className="font-medium"
               onClick={handleSave}
               disabled={locked}
-              className={`px-4 py-2 rounded font-medium transition-colors ${
-                isDirty
-                  ? 'bg-blue-600 hover:bg-blue-700'
-                  : 'bg-blue-600/50 hover:bg-blue-600'
-              } disabled:bg-blue-800 disabled:cursor-not-allowed`}
             >
               {saving ? 'Saving...' : 'Save Configuration'}
-            </button>
+            </Button>
             {isDirty && (
-              <button
+              <Button
+                variant="secondary"
+                className="font-medium"
                 onClick={handleReset}
                 disabled={locked}
-                className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Reset
-              </button>
+              </Button>
             )}
             {isDirty && (
               <span className="text-sm font-medium text-yellow-400">Unsaved changes</span>
@@ -558,14 +557,15 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         {restartNeeded && (
           <div className="mb-3 p-2 rounded-sm text-sm bg-amber-900/40 border border-amber-700 text-amber-200 flex items-center justify-between gap-3">
             <span>⚠️ Dry-run mode is applied when the engine starts — restart it for this change to take effect.</span>
-            <button
-              type="button"
+            <Button
+              variant="caution"
+              size="xs"
+              className="font-medium whitespace-nowrap"
               onClick={handleRestartEngine}
               disabled={restarting}
-              className="px-3 py-1 rounded-sm bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium disabled:opacity-50 whitespace-nowrap"
             >
               {restarting ? 'Restarting…' : 'Restart Engine'}
-            </button>
+            </Button>
           </div>
         )}
 
@@ -1115,7 +1115,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             {presetsError && !editingPresets && (
               <div role="alert" className="lg:col-span-2 flex items-center gap-3 text-sm text-yellow-400">
                 <span>{presetsError}</span>
-                <button type="button" onClick={() => loadPresets()} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-0.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs">Retry</button>
+                <Button variant="secondary" size="xs" onClick={() => loadPresets()}>Retry</Button>
               </div>
             )}
             {editingPresets && (
@@ -1163,24 +1163,24 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                   })}
                 </div>
                 <div className="flex gap-2 mt-3">
-                  <button
+                  <Button
+                    variant="purple"
+                    size="compact"
+                    className="font-medium"
                     onClick={handleSavePresets}
                     disabled={savingPresets || !presetsDirty}
-                    className={`px-3 py-1.5 text-sm rounded font-medium transition-colors ${
-                      presetsDirty
-                        ? 'bg-purple-600 hover:bg-purple-700 text-white'
-                        : 'bg-purple-600/30 text-purple-300'
-                    } disabled:cursor-not-allowed`}
                   >
                     {savingPresets ? 'Saving...' : presetsDirty ? 'Save Presets *' : 'Save Presets'}
-                  </button>
+                  </Button>
                   {presetsDirty && (
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="compact"
+                      className="font-medium"
                       onClick={handleResetPresets}
-                      className="px-3 py-1.5 text-sm bg-gray-600 hover:bg-gray-500 rounded-sm font-medium transition-colors"
                     >
                       Reset
-                    </button>
+                    </Button>
                   )}
                 </div>
               </SectionCard>

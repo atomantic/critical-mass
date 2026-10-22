@@ -3,6 +3,7 @@ import { formatBytes } from '../utils/format.mjs'
 import { plural } from '../utils/plural.mjs'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
 import ModalDialog from './ModalDialog'
+import Button from './ui/Button'
 import { useNotify, useToast } from './Toast'
 
 const INTERVAL_OPTIONS = [
@@ -318,13 +319,9 @@ function BackupRestore() {
           <div className="bg-red-900/50 border border-red-700 text-red-200 p-4 rounded-lg mb-4">
             {error}
           </div>
-          <button
-            onClick={() => fetchData()}
-            disabled={loading}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
-          >
+          <Button className="font-medium" onClick={() => fetchData()} disabled={loading}>
             {loading ? 'Retrying...' : 'Retry'}
-          </button>
+          </Button>
         </div>
       </div>
     )
@@ -356,21 +353,21 @@ function BackupRestore() {
             Size: <span className="font-mono">{formatBytes(deleteConfirm.sizeBytes || 0)}</span>. This action cannot be undone.
           </p>
           <div className="flex justify-end gap-3">
-            <button
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
+            <Button
+              variant="cancel"
               onClick={() => setDeleteConfirm(null)}
               disabled={deleting}
               autoFocus
             >
               Cancel
-            </button>
-            <button
-              className="px-4 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded-sm transition-colors disabled:opacity-50"
+            </Button>
+            <Button
+              variant="destructive"
               onClick={handleExecuteDelete}
               disabled={deleting}
             >
               {deleting ? 'Deleting…' : 'Delete Backup'}
-            </button>
+            </Button>
           </div>
         </ModalDialog>
       )}
@@ -420,29 +417,29 @@ function BackupRestore() {
             </div>
           )}
           <div className="flex justify-end gap-3">
-            <button
-              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
+            <Button
+              variant="cancel"
               onClick={cancelFundStateRestore}
               disabled={fundStateRestoring}
               autoFocus
             >
               Cancel
-            </button>
-            <button
-              className="px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded-sm transition-colors disabled:opacity-50"
+            </Button>
+            <Button
+              variant="warning"
               onClick={() => handleExecuteFundStateRestore()}
               disabled={fundStateRestoring}
             >
               {fundStateRestoring ? 'Restoring…' : fundStateBlockedBy ? 'Retry Restore' : 'Restore Fund State'}
-            </button>
+            </Button>
             {fundStateBlockedBy && (
-              <button
-                className="px-4 py-2 text-sm text-white bg-red-700 hover:bg-red-800 rounded-sm transition-colors disabled:opacity-50"
+              <Button
+                variant="destructive"
                 onClick={() => handleExecuteFundStateRestore({ force: true })}
                 disabled={fundStateRestoring || !fundStateForceAcknowledged}
               >
                 Force Restore Anyway
-              </button>
+              </Button>
             )}
           </div>
         </ModalDialog>
@@ -455,12 +452,14 @@ function BackupRestore() {
         {refreshError && (
           <div className="mb-4 p-3 rounded-lg bg-yellow-900/50 border border-yellow-700 text-yellow-200 flex items-center justify-between gap-3">
             <span>Backup list may be out of date: {refreshError}</span>
-            <button
+            <Button
+              variant="warning"
+              size="sm"
+              className="font-medium"
               onClick={() => fetchData({ silent: true })}
-              className="px-3 py-1 bg-yellow-800 hover:bg-yellow-900 rounded-sm font-medium transition-colors"
             >
               Refresh
-            </button>
+            </Button>
           </div>
         )}
 
@@ -551,13 +550,9 @@ function BackupRestore() {
           </div>
 
           <div className="flex gap-3 mt-6">
-            <button
-              onClick={handleSaveConfig}
-              disabled={saving}
-              className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
-            >
+            <Button className="flex-1 font-medium" onClick={handleSaveConfig} disabled={saving}>
               {saving ? 'Saving...' : 'Save Settings'}
-            </button>
+            </Button>
           </div>
         </fieldset>
       </div>
@@ -569,13 +564,9 @@ function BackupRestore() {
             <h3 className="text-lg font-semibold">Manual Backup</h3>
             <p className="text-sm text-gray-400 mt-1">Create a backup of all trading data right now</p>
           </div>
-          <button
-            onClick={handleCreateBackup}
-            disabled={creating}
-            className="px-4 py-2 bg-green-800 hover:bg-green-900 disabled:bg-green-950 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
-          >
+          <Button variant="success" className="font-medium" onClick={handleCreateBackup} disabled={creating}>
             {creating ? 'Creating...' : 'Create Backup Now'}
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -600,13 +591,15 @@ function BackupRestore() {
                   {snapshot.funds.map(fund => (
                     <div key={`${snapshot.snapshotId}:${fund.exchange}:${fund.pair}`} className="flex items-center justify-between gap-3 text-xs">
                       <span className="font-mono text-gray-300">{fund.exchange} &middot; {fund.pair} &middot; {plural(fund.files.length, "file")}</span>
-                      <button
+                      <Button
+                        variant="warning"
+                        size="compact"
+                        className="font-medium"
                         onClick={() => handleRestoreFundState(snapshot.snapshotId, fund.exchange, fund.pair)}
                         disabled={restoring || fundStateRestoring}
-                        className="px-3 py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded-sm font-medium transition-colors"
                       >
                         Restore Fund State
-                      </button>
+                      </Button>
                     </div>
                   ))}
                 </div>
@@ -775,28 +768,31 @@ function BackupRestore() {
             </div>
           )}
           <div className="flex gap-3">
-            <button
+            <Button
+              variant="cancel"
+              className="font-medium"
               onClick={cancelRestore}
               disabled={restoring}
-              className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded-lg font-medium transition-colors"
             >
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="warning"
+              className="font-medium"
               onClick={() => handleRestore()}
               disabled={restoring || restoreBlocked}
-              className="px-4 py-2 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
             >
               {restoring ? 'Restoring...' : blockedBy ? 'Retry Restore' : 'Confirm Restore'}
-            </button>
+            </Button>
             {blockedBy && (
-              <button
+              <Button
+                variant="destructive"
+                className="font-medium"
                 onClick={() => handleRestore({ force: true })}
                 disabled={restoring || restoreBlocked || !forceAcknowledged}
-                className="px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-red-900 disabled:text-red-400 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
               >
                 Force Restore Anyway
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -818,20 +814,24 @@ function BackupRestore() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 ml-4 shrink-0">
-                  <button
+                  <Button
+                    variant="warning"
+                    size="xs"
+                    className="font-medium"
                     onClick={() => setRestoreTarget(backup.filename)}
                     disabled={restoring}
-                    className="px-3 py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded-sm text-xs font-medium transition-colors"
                   >
                     Restore
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="xs"
+                    className="font-medium"
                     onClick={() => handleDelete(backup.filename)}
                     disabled={deleting === backup.filename || (deleteConfirm && deleteConfirm.filename === backup.filename)}
-                    className="px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:bg-red-900 disabled:cursor-not-allowed rounded-sm text-xs font-medium transition-colors"
                   >
                     {deleting === backup.filename ? '...' : 'Delete'}
-                  </button>
+                  </Button>
                 </div>
               </div>
             ))}

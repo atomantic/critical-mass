@@ -2,6 +2,8 @@
 // coarse (mobile) viewports reset on md+ so desktop density is unchanged.
 const VARIANTS = {
   primary: 'bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50',
+  // Idle state of a primary action with nothing pending (e.g. Save with no edits).
+  'primary-muted': 'bg-blue-600/50 hover:bg-blue-600 text-white disabled:opacity-50',
   secondary: 'bg-gray-700 hover:bg-gray-600 text-gray-200 disabled:opacity-50',
   danger: 'bg-red-800 hover:bg-red-700 text-white disabled:opacity-50',
   // Dialog Cancel: muted text that brightens on hover.
@@ -14,6 +16,15 @@ const VARIANTS = {
   accent: 'bg-cyan-700 hover:bg-cyan-600 text-white disabled:opacity-50',
   purple: 'bg-purple-600 hover:bg-purple-700 text-white disabled:opacity-50',
   ghost: 'bg-transparent hover:bg-gray-700/60 text-gray-300 disabled:opacity-50',
+  // Tinted row actions: translucent fill with matching text, for dense lists
+  // where a solid button would outweigh the row it sits in.
+  'soft-warning': 'bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-400 disabled:opacity-50',
+  'soft-success': 'bg-green-500/20 hover:bg-green-500/30 text-green-400 disabled:opacity-50',
+  'soft-danger': 'bg-red-500/20 hover:bg-red-500/30 text-red-400 disabled:opacity-50',
+  'soft-info': 'bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400 disabled:opacity-50',
+  // Text-only actions: no fill, muted text that brightens on hover.
+  quiet: 'bg-transparent text-gray-400 hover:text-white disabled:opacity-50',
+  link: 'bg-transparent text-blue-400 hover:text-blue-300 disabled:opacity-50',
 }
 
 const SIZES = {
@@ -21,6 +32,11 @@ const SIZES = {
   sm: 'px-3 py-1 text-sm',
   md: 'px-4 py-2 text-sm',
   lg: 'px-5 py-2.5 text-sm font-medium',
+  // Row actions and inline Retry/Refresh buttons.
+  compact: 'px-3 py-1.5 text-sm',
+  // Dense header controls that shrink below the md breakpoint.
+  responsive: 'px-2 md:px-3 py-1 md:py-1.5 text-xs md:text-sm',
+  'responsive-xs': 'px-1.5 md:px-2 py-0.5 md:py-1 text-2xs md:text-xs',
 }
 
 export const BUTTON_VARIANTS = Object.keys(VARIANTS)
