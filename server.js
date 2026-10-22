@@ -100,6 +100,7 @@ const operatorAuth = createOperatorAuth({
     }),
   // Every attached listener shares the bus and its disconnect cleanup.
   onPasswordChanged: () => io.disconnectSockets(),
+  onSessionsRevoked: () => io.disconnectSockets(),
   onPasswordRemoved: () => {
     setTimeout(() => gracefulShutdown('operator password removal'), 100).unref();
   },

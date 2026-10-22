@@ -17,6 +17,7 @@ const {
   MAX_PASSWORD_BYTES,
   SESSION_TTL_SECONDS,
 } = require('../src/operator-auth');
+const { signJwt } = require('../src/jwt');
 const { readJSON, writeJSON } = require('../src/shared-utils');
 const { createCorsMiddleware } = require('../src/gateway-listen');
 
@@ -538,6 +539,48 @@ describe('operator authentication boundary', () => {
       assert.equal(signedOut.status, 204);
       assert.match(signedOut.headers.get('set-cookie'), /Expires=Thu, 01 Jan 1970 00:00:00 GMT/i);
     });
+  });
+
+  it('sign-out revokes a copied session cookie and sessions use a key independent of the password hash (#1583)', async () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    let revoked = 0;
+    await withServer({ authFile, readJSON, writeJSON, onSessionsRevoked: () => { revoked += 1; } }, async ({ baseUrl }) => {
+      const login = await fetch(`${baseUrl}/api/auth/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      const cookie = login.headers.get('set-cookie').split(';')[0];
+      const saved = readJSON(authFile, null);
+      assert.match(saved.sessionKey, /^[0-9a-f]{64}$/);
+      assert.equal(saved.sessionEpoch, 1);
+      // A token forged from the stored hash alone must not verify.
+      const legacy = crypto.createHash('sha256').update(`critical-mass-session:${saved.hash}`).digest('hex');
+      const forged = signJwt({ sub: 'operator', role: 'operator', ep: 1 }, legacy, {
+        algorithm: 'HS256', audience: 'critical-mass', issuer: 'critical-mass', expiresIn: 60,
+      });
+      const probe = (c) => fetch(`${baseUrl}/api/auth/session`, { headers: { Cookie: c } }).then((r) => r.json());
+      assert.equal((await probe(`critical_mass_operator=${forged}`)).authenticated, false);
+      assert.equal((await probe(cookie)).authenticated, true);
+
+      const out = await fetch(`${baseUrl}/api/auth/session`, { method: 'DELETE', headers: { Cookie: cookie, Origin: baseUrl } });
+      assert.equal(out.status, 204);
+      assert.equal(readJSON(authFile, null).sessionEpoch, 2);
+      assert.equal(revoked, 1);
+      assert.equal((await probe(cookie)).authenticated, false);
+    });
+  });
+
+  it('migrates a legacy auth record to a session key once and persists it (#1583)', () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    assert.equal(readJSON(authFile, null).sessionKey, undefined);
+    createOperatorAuth({ authFile, readJSON, writeJSON });
+    const first = readJSON(authFile, null);
+    assert.match(first.sessionKey, /^[0-9a-f]{64}$/);
+    createOperatorAuth({ authFile, readJSON, writeJSON });
+    assert.equal(readJSON(authFile, null).sessionKey, first.sessionKey);
   });
 
   it('accepts bearer auth (the panel password) and rejects cross-origin session mutations', async () => {
