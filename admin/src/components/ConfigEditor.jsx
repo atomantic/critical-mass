@@ -181,7 +181,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
       setPresetsError(null)
     } else if (result.ok) setPresetsError('Presets unavailable')
-    else setPresetsError(result.status ? `Presets unavailable (HTTP ${result.status})` : 'Presets unavailable: request failed')
+    else setPresetsError(result.status >= 400 ? `Presets unavailable (HTTP ${result.status})` : 'Presets unavailable: request failed')
   }, [])
   useEffect(() => {
     if (!isRegime) return

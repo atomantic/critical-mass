@@ -411,7 +411,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       controller = new AbortController()
       apiGet(`/api/candles/${exchange}`, { signal: controller.signal })
         .then(result => {
-          if (!result.ok) throw new Error(result.status ? `Candle history request failed (${result.status})` : result.error)
+          if (!result.ok) throw new Error(result.status >= 400 ? `Candle history request failed (${result.status})` : result.error)
           return result.data
         })
         .then(data => {
