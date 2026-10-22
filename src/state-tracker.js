@@ -1467,7 +1467,8 @@ const withPlacementIntentsLock = (file, fn) => {
   for (;;) {
     fs.mkdirSync(staged, { mode: 0o700 });
     try {
-      fs.writeFileSync(path.join(staged, 'owner.json'), JSON.stringify({ pid: process.pid, host: os.hostname(), token }), { mode: 0o600 });
+      const fd = fs.openSync(path.join(staged, 'owner.json'), 'w', 0o600);
+      try { fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: os.hostname(), token })); } finally { fs.closeSync(fd); }
       fs.renameSync(staged, lock);
       break;
     } catch (err) {
