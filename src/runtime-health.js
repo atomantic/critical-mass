@@ -31,7 +31,7 @@ const MODE_TO_STATUS = {
   ENGINE_DOWN: 'unreachable',
 };
 
-const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const { isPlainObject: isObject } = require('./value-guards');
 
 /**
  * Interpret a raw `regime:status` IPC reply (envelope

@@ -134,7 +134,7 @@ const pickAllowed = (source, keys) => {
   return out;
 };
 
-const isPlainObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
+const { isPlainObject } = require('./value-guards');
 
 /**
  * Build a self-contained snapshot of the effective non-secret configuration.

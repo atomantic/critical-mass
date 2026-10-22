@@ -16,7 +16,7 @@
 const BASE_SIZE_USDC_BOUNDS = Object.freeze({ min: 1, max: 2000 });
 const MAX_USDC_DEPLOYED_MIN = 0;
 
-const isFiniteNumber = (v) => typeof v === 'number' && Number.isFinite(v);
+const { isFiniteNumber } = require('./value-guards');
 
 /** @returns {string|null} error message or null when valid */
 const validateBaseSizeUsdc = (value) => (
