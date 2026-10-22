@@ -322,7 +322,7 @@ const getManualTradeStore = (exchange, pair) => {
 const unaccountedFillsJobs = createUnaccountedFillsJobs({ logger: engineLogger(EXCHANGE_NAME) });
 
 registerRegimeIpcHandlers(ipcServer, {
-  regimeEngines, resolvePair, fundKey, fundLabel, logger: engineLogger, exchangeName: EXCHANGE_NAME, ioProxy,
+  regimeEngines, resolvePair, fundKey, fundLabel, logger: engineLogger, ioProxy,
   getStartStatus, getStandaloneLedger, getActiveLedger, getManualTradeStore, invalidateStandaloneLedger,
   unaccountedFillsJobs,
   getFundConfig, getRegimeConfig, getMarketDataService, getChartData, getAdapter,
