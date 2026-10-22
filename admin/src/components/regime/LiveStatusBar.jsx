@@ -44,10 +44,10 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
 
     return (
       <div className="bg-gray-900 rounded-sm p-1.5">
-        <div className="text-[10px] text-gray-400 mb-0.5">{label}</div>
+        <div className="text-2xs text-gray-400 mb-0.5">{label}</div>
         <div className="flex items-center gap-1">
           <span className="text-sm font-mono text-cyan-400">{formatCountdown(remaining, 'minutes')}</span>
-          {remaining === 0 && <span className="text-[10px] text-yellow-400 animate-pulse">Ready</span>}
+          {remaining === 0 && <span className="text-2xs text-yellow-400 animate-pulse">Ready</span>}
         </div>
         {total && (
           <div className="h-0.5 bg-gray-700 rounded-full mt-1 overflow-hidden">
@@ -65,10 +65,10 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
     const display = resolveElapsedDisplay(elapsed, now, formatDuration)
     return (
       <div className="bg-gray-900 rounded-sm p-1.5">
-        <div className="text-[10px] text-gray-400 mb-0.5">{label}</div>
+        <div className="text-2xs text-gray-400 mb-0.5">{label}</div>
         <span className="text-sm font-mono text-gray-300">{display.primary}</span>
         {display.secondary && (
-          <div className="text-[10px] text-gray-400">{display.secondary}</div>
+          <div className="text-2xs text-gray-400">{display.secondary}</div>
         )}
       </div>
     )
@@ -86,12 +86,12 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
 
   return (
     <div className="bg-gray-900 rounded-sm p-1.5">
-      <div className="text-[10px] text-gray-400 mb-0.5">ATR Trigger Distance</div>
+      <div className="text-2xs text-gray-400 mb-0.5">ATR Trigger Distance</div>
       <div className="flex items-center justify-between">
         <span className="text-xs font-mono text-gray-300">
           ${formatPriceByMagnitude(distanceToTrigger)} to go
         </span>
-        <span className="text-[10px] text-gray-400">
+        <span className="text-2xs text-gray-400">
           ({progress.toFixed(0)}%)
         </span>
       </div>
@@ -103,7 +103,7 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
           style={{ width: `${progress}%` }}
         />
       </div>
-      <div className="flex justify-between text-[10px] text-gray-400 mt-0.5">
+      <div className="flex justify-between text-2xs text-gray-400 mt-0.5">
         <span>Anchor: ${formatPriceByMagnitude(anchorPrice)}</span>
         <span>Target: ±${formatPriceByMagnitude(triggerDistance)}</span>
       </div>
@@ -117,12 +117,12 @@ export default function LiveStatusBar({ asset, market, position, config, prevPri
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2 sm:gap-3">
         {/* Live Price */}
         <div className="col-span-1">
-          <span className="text-[10px] text-gray-400">{asset} Price</span>
+          <span className="text-2xs text-gray-400">{asset} Price</span>
           <LivePriceTicker
             price={market.lastPrice}
             prevPrice={prevPrice}
           />
-          <div className="text-[10px] text-gray-400">
+          <div className="text-2xs text-gray-400">
             Spread: ${formatPriceByMagnitude(market.spread)} ({market.spread && market.lastPrice ? ((market.spread / market.lastPrice) * 10000).toFixed(1) : '-'} bps)
           </div>
         </div>

@@ -6,7 +6,7 @@ export default function HistoricalAnalytics({ optimalTpAnalytics, tpMinPercent, 
     <>
       {optimalTpAnalytics.cycleCount > 0 ? (
         <>
-          <div className="space-y-1 text-[10px]">
+          <div className="space-y-1 text-2xs">
             <div className="flex justify-between">
               <span className="text-gray-400">Avg Optimal TP</span>
               <span className="text-cyan-400 font-mono font-semibold">
@@ -36,7 +36,7 @@ export default function HistoricalAnalytics({ optimalTpAnalytics, tpMinPercent, 
           {/* Recommended Range */}
           {optimalTpAnalytics.recommendedTpRange && (
             <div className="mt-2 pt-2 border-t border-gray-700">
-              <div className="text-[10px] text-gray-400 mb-1">Recommended TP Range</div>
+              <div className="text-2xs text-gray-400 mb-1">Recommended TP Range</div>
               <div className="flex items-center gap-2">
                 <div className="flex-1 h-2 bg-gray-700 rounded-full relative overflow-hidden">
                   {/* Current config range indicator */}
@@ -64,14 +64,14 @@ export default function HistoricalAnalytics({ optimalTpAnalytics, tpMinPercent, 
                   />
                 </div>
               </div>
-              <div className="flex justify-between text-[10px] mt-1">
+              <div className="flex justify-between text-2xs mt-1">
                 <span className="text-gray-400">0%</span>
                 <span className="text-cyan-400">
                   {optimalTpAnalytics.recommendedTpRange.min?.toFixed(1)}% - {optimalTpAnalytics.recommendedTpRange.max?.toFixed(1)}%
                 </span>
                 <span className="text-gray-400">5%</span>
               </div>
-              <div className="flex justify-between text-[9px] text-gray-400 mt-0.5">
+              <div className="flex justify-between text-2xs text-gray-400 mt-0.5">
                 <span>Config: {tpMinPercent?.toFixed(4)}%-{tpMaxPercent?.toFixed(4)}%</span>
                 <span className="text-blue-400">|</span>
                 <span>Observed</span>
@@ -81,7 +81,7 @@ export default function HistoricalAnalytics({ optimalTpAnalytics, tpMinPercent, 
           )}
         </>
       ) : (
-        <div className="text-gray-400 text-[10px] text-center py-2">
+        <div className="text-gray-400 text-2xs text-center py-2">
           Complete at least one cycle to see analytics
         </div>
       )}
