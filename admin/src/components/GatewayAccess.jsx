@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from '../lib/router'
 import { KeyRound, ScrollText } from './icons'
 import { apiDelete, apiGet, apiPut, apiRequest } from '../utils/apiClient'
+import { useNotify } from './Toast'
 
 export default function GatewayAccess() {
   const [required, setRequired] = useState(null)
@@ -11,7 +12,9 @@ export default function GatewayAccess() {
   const [currentPassword, setCurrentPassword] = useState('')
   const [saving, setSaving] = useState(false)
   const [clearing, setClearing] = useState(false)
-  const [message, setMessage] = useState(null)
+  // Form validation stays inline next to the form; request results are toasts.
+  const [validationError, setValidationError] = useState(null)
+  const notify = useNotify()
 
   const refresh = async () => {
     setRequired(null)
@@ -25,9 +28,9 @@ export default function GatewayAccess() {
 
   const handleSet = async (event) => {
     event.preventDefault()
-    setMessage(null)
+    setValidationError(null)
     if (password !== confirm) {
-      setMessage({ type: 'error', text: 'Password and confirmation do not match' })
+      setValidationError('Password and confirmation do not match')
       return
     }
     setSaving(true)
@@ -38,9 +41,9 @@ export default function GatewayAccess() {
         setPassword('')
         setConfirm('')
         setCurrentPassword('')
-        setMessage({ type: 'success', text: 'Password changed.' })
+        notify('success', 'Password changed.')
       } else {
-        setMessage({ type: 'error', text: result.error || 'Could not save password' })
+        notify('error', result.error || 'Could not save password')
       }
     } finally {
       setSaving(false)
@@ -48,16 +51,15 @@ export default function GatewayAccess() {
   }
 
   const handleClear = async () => {
-    setMessage(null)
     setClearing(true)
     try {
       // apiDelete carries no body, so send the confirmation through the shared request helper.
       const result = await apiRequest('DELETE', '/api/auth/password', { body: { password: currentPassword }, allowEmpty: true })
       if (result.ok) {
-        setMessage({ type: 'success', text: 'Password removed. The gateway will ask you to create a new one when the page reloads.' })
+        notify('success', 'Password removed. The gateway will ask you to create a new one when the page reloads.')
         setTimeout(() => window.location.reload(), 1500)
       } else {
-        setMessage({ type: 'error', text: result.error || 'Could not remove password' })
+        notify('error', result.error || 'Could not remove password')
       }
     } finally {
       setClearing(false)
@@ -68,7 +70,7 @@ export default function GatewayAccess() {
     // The server answers 204, so an empty reply is the success case.
     const result = await apiDelete('/api/auth/session', { allowEmpty: true })
     if (result.ok) window.location.reload()
-    else setMessage({ type: 'error', text: `Sign out failed: ${result.error}` })
+    else notify('error', `Sign out failed: ${result.error}`)
   }
 
   return (
@@ -102,11 +104,9 @@ export default function GatewayAccess() {
         ) : (
         <>
 
-        {message && (
-          <div className={`mb-3 text-sm rounded px-3 py-2 ${
-            message.type === 'success' ? 'bg-green-900/30 text-green-300' : 'bg-red-900/30 text-red-300'
-          }`}>
-            {message.text}
+        {validationError && (
+          <div role="alert" className="mb-3 text-sm rounded px-3 py-2 bg-red-900/30 text-red-300">
+            {validationError}
           </div>
         )}
 

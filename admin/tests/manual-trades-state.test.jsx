@@ -1,6 +1,7 @@
 import React from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, screen } from '@testing-library/react'
+import { renderWithToasts as render } from './renderWithToasts'
 import ManualTrades from '../src/components/ManualTrades'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })

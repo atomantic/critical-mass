@@ -4,6 +4,7 @@ import ModalDialog from '../ModalDialog'
 import DestructiveConfirmation from '../DestructiveConfirmation'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../../utils/apiClient'
 import { createRunLifecycle, RUN_NOTICE } from '../../utils/runLifecycle.mjs'
+import { useNotify } from '../Toast'
 
 const PROVIDER_TYPES = { cli: 'CLI (unavailable)', api: 'API' }
 
@@ -69,7 +70,7 @@ export default function AIProviders() {
   const [runNotice, setRunNotice] = useState(null)
   const [stopPending, setStopPending] = useState(false)
   const [runStatuses, setRunStatuses] = useState({})
-  const [runActionError, setRunActionError] = useState('')
+  const notify = useNotify()
   const [providersLoaded, setProvidersLoaded] = useState(false)
   const [providersError, setProvidersError] = useState('')
   const [runsError, setRunsError] = useState('')
@@ -79,7 +80,6 @@ export default function AIProviders() {
   const [loadingSamples, setLoadingSamples] = useState(false)
   const [runPending, setRunPending] = useState(false)
   const [mutationPending, setMutationPending] = useState({})
-  const [mutationError, setMutationError] = useState('')
   const mutationLocks = useRef(new Set())
   const loadDataRef = useRef(null)
   const loadGenerationRef = useRef(0)
@@ -174,12 +174,11 @@ export default function AIProviders() {
     if (mutationLocks.current.has(key)) return
     mutationLocks.current.add(key)
     setMutationPending(prev => ({ ...prev, [key]: true }))
-    setMutationError('')
     try {
       requireAccepted(await request())
       onSuccess?.()
     } catch (error) {
-      setMutationError(error.message || 'The provider change could not be saved. Please try again.')
+      notify('error', error.message || 'The provider change could not be saved. Please try again.')
       onFailure?.(error)
     } finally {
       mutationLocks.current.delete(key)
@@ -228,7 +227,6 @@ export default function AIProviders() {
 
   const handleAttachRun = (runId) => {
     operatorRunActionRef.current = true
-    setRunActionError('')
     setShowRunner(true)
     lifecycleRef.current.attach(runId)
   }
@@ -236,10 +234,9 @@ export default function AIProviders() {
   // Loads the persisted full prompt into the editor. Nothing runs until the
   // operator presses Execute, so a rerun is always an explicit new run.
   const handleRerun = async (runId) => {
-    setRunActionError('')
     const result = await apiGet(`/api/runs/${runId}/prompt`, { asText: true })
     if (!result.ok) {
-      setRunActionError(`Could not load the original prompt${result.status ? ` (HTTP ${result.status})` : ''}.`)
+      notify('error', `Could not load the original prompt${result.status ? ` (HTTP ${result.status})` : ''}.`)
       return
     }
     setRunPrompt(result.data)
@@ -323,8 +320,6 @@ export default function AIProviders() {
         </div>
       </div>
 
-      {mutationError && <p role="alert" className="text-sm text-red-400">{mutationError}</p>}
-      {runActionError && <p role="alert" className="text-sm text-red-400">{runActionError}</p>}
 
       {/* Prompt Runner */}
       {showRunner && (

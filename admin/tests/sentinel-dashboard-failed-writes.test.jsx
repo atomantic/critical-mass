@@ -1,6 +1,7 @@
 import React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { renderWithToasts as render } from './renderWithToasts'
 import SentinelDashboard from '../src/components/sentinel/Dashboard.jsx'
 
 vi.mock('../src/hooks/useSentinelSocket.js', () => ({

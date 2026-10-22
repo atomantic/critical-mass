@@ -34,6 +34,7 @@ function createView(component, extraStubs = {}, fetchResponse = null) {
   const prefix = `view-${harnessId++}`
   const writes = []
   const executed = []
+  const notices = [] // useNotify toasts: [{ type, message }]
   const effects = []
   let active
   let index
@@ -66,7 +67,7 @@ function createView(component, extraStubs = {}, fetchResponse = null) {
     react: hooks,
     'lucide-react': new Proxy({}, { get: () => () => null }),
     '../icons': new Proxy({}, { get: () => () => null }),
-    '../Toast': { useToast: () => ({ addToast() {} }) },
+    '../Toast': { useToast: () => ({ addToast() {} }), useNotify: () => (type, message) => { notices.push({ type, message }) } },
     '../../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../../utils/pnlFormat.mjs': { pnlColorClass: n => (n >= 0 ? 'text-green-400' : 'text-red-400'), signedPrefix: n => (n >= 0 ? '+' : '') },
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
@@ -96,7 +97,7 @@ function createView(component, extraStubs = {}, fetchResponse = null) {
     return result
   }
   const render = () => renderComponent(context.module.exports)
-  return { render, writes, executed, fetch,
+  return { render, writes, executed, notices, fetch,
     renderChild: element => renderComponent(element.type, element.props, 'modal'),
     async mount() {
       render()
@@ -202,7 +203,8 @@ describe('admin accessible operational forms', () => {
     await setDefault.props.onClick()
     tree = view.render()
     assert.equal(elements(tree).filter(node => node.type === 'span' && text(node) === 'DEFAULT').length, 1)
-    assert.match(text(find(tree, node => node.props?.role === 'alert')), /temporarily unavailable/)
+    assert.deepEqual(view.notices.map(n => n.type), ['error'])
+    assert.match(view.notices[0].message, /temporarily unavailable/)
   })
 
   it('retains the provider form after a network failure and ignores duplicate submits while pending', async () => {
@@ -246,7 +248,8 @@ describe('admin accessible operational forms', () => {
     assert.ok(text(tree).includes('Sample Two'))
     assert.ok(!text(tree).includes('Sample One'))
     assert.equal(view.writes.filter(write => write.method === 'POST').length, 2)
-    assert.match(text(find(tree, node => node.props?.role === 'alert')), /already exists/)
+    assert.deepEqual(view.notices.map(n => n.type), ['error'])
+    assert.match(view.notices[0].message, /already exists/)
   })
 
   it('prevents Add All from racing an individual sample addition', async () => {

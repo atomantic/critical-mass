@@ -7,6 +7,7 @@ import { apiGet, apiPost, describeMutationFailure as mutationError } from '../ut
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { runUnaccountedFillsScan, describeScanProgress } from '../utils/unaccountedFillsScan.mjs'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
+import { useNotify } from './Toast'
 
 const STATUS_COLORS = {
   sell_recorded: 'bg-blue-600/30 text-blue-400 border-blue-500/30',
@@ -85,7 +86,9 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   const [loading, setLoading] = useState(false)
   const [scanProgress, setScanProgress] = useState(null)
   const [tradesLoading, setTradesLoading] = useState(false)
+  // Scan failures and form validation stay inline in the panel; import/dismiss results are toasts.
   const [error, setError] = useState(null)
+  const notify = useNotify()
 
   // Import modal state
   const [importModal, setImportModal] = useState(null) // { order } or null
@@ -246,7 +249,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
         fetchManualTrades()
         setUnaccountedOrders(prev => prev.filter(o => o.orderId !== importModal.orderId))
       } else {
-        setError(mutationError(result, 'Import failed'))
+        notify('error', mutationError(result, 'Import failed'))
       }
     } finally {
       setImporting(false)
@@ -268,7 +271,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
         fetchManualTrades()
         setUnaccountedOrders(prev => prev.filter(o => o.orderId !== importModal.orderId))
       } else {
-        setError(mutationError(result, 'Import failed'))
+        notify('error', mutationError(result, 'Import failed'))
       }
     } finally {
       setImporting(false)
@@ -296,7 +299,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
           prev.filter(o => o.orderId !== buyOrder.orderId && o.orderId !== sellOrder.orderId)
         )
       } else {
-        setError(mutationError(result, 'Import failed'))
+        notify('error', mutationError(result, 'Import failed'))
       }
     } finally {
       setImporting(false)
@@ -393,7 +396,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
       if (result.ok) {
         setUnaccountedOrders(prev => prev.filter(o => o.orderId !== orderId))
       } else {
-        setError(`Could not dismiss order ${truncId(orderId)}: ${mutationError(result, 'request failed')}`)
+        notify('error', `Could not dismiss order ${truncId(orderId)}: ${mutationError(result, 'request failed')}`)
       }
     } finally {
       setDismissing(null)

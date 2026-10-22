@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { apiGet, apiPost, apiPut, describeMutationFailure } from '../utils/apiClient'
 import usePolling from '../hooks/usePolling'
+import { useNotify } from './Toast'
 
 const EVENT_GROUPS = {
   'Critical': [
@@ -33,7 +34,7 @@ function NotificationsConfig() {
   const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
-  const [message, setMessage] = useState(null)
+  const notify = useNotify()
   const [stats, setStats] = useState(null)
   const [refreshError, setRefreshError] = useState(null)
 
@@ -61,7 +62,7 @@ function NotificationsConfig() {
   }
 
   // `silent` refreshes follow a successful write: they must never swap the page
-  // for the loading/error gate, or the save's own result message is erased.
+  // for the loading/error gate (which would unmount the page mid-save).
   const fetchConfig = async ({ silent = false, saved = false } = {}) => {
     if (pendingSave.current && !saved) return
     const request = ++configRequest.current
@@ -102,7 +103,6 @@ function NotificationsConfig() {
     pendingSave.current = true
     configRequest.current += 1 // Invalidate reads started before this write.
     setSaving(true)
-    setMessage(null)
 
     const { depth_pause, ...editableEvents } = config.events || {}
     const payload = { ...config, events: editableEvents }
@@ -121,7 +121,7 @@ function NotificationsConfig() {
       const result = await apiPut('/api/notifications/config', payload, { allowEmpty: true })
 
       if (result.ok) {
-        setMessage({ type: 'success', text: 'Notification settings saved!' })
+        notify('success', 'Notification settings saved!')
         dirty.current = false
         setHasUnsavedChanges(false)
         if (rawToken) {
@@ -132,13 +132,10 @@ function NotificationsConfig() {
         await fetchConfig({ silent: true, saved: true })
         fetchStats()
       } else {
-        setMessage({
-          type: 'error',
-          text: result.data?.errors?.join('; ')
+        notify('error', result.data?.errors?.join('; ')
             || (result.status === 0
               ? describeMutationFailure(result, 'Failed to save settings')
-              : `Failed to save settings (${describeMutationFailure(result, `HTTP ${result.status}`)})`),
-        })
+              : `Failed to save settings (${describeMutationFailure(result, `HTTP ${result.status}`)})`))
       }
     } finally {
       pendingSave.current = false
@@ -148,13 +145,12 @@ function NotificationsConfig() {
 
   const handleTest = async () => {
     setTesting(true)
-    setMessage(null)
     try {
       const result = await apiPost('/api/notifications/test')
       if (result.ok && result.data?.success) {
-        setMessage({ type: 'success', text: 'Test message sent to Telegram!' })
+        notify('success', 'Test message sent to Telegram!')
       } else {
-        setMessage({ type: 'error', text: `Test failed: ${result.data?.error || describeMutationFailure(result, 'Request failed')}` })
+        notify('error', `Test failed: ${result.data?.error || describeMutationFailure(result, 'Request failed')}`)
       }
     } finally {
       setTesting(false)
@@ -229,17 +225,6 @@ function NotificationsConfig() {
           </button>
         </div>
       </div>
-
-      {/* Toast message */}
-      {message && (
-        <div className={`p-3 rounded-lg ${
-          message.type === 'success'
-            ? 'bg-green-900/50 border border-green-700 text-green-200'
-            : 'bg-red-900/50 border border-red-700 text-red-200'
-        }`}>
-          {message.text}
-        </div>
-      )}
 
       {refreshError && (
         <div className="p-3 rounded-lg bg-yellow-900/50 border border-yellow-700 text-yellow-200 flex items-center justify-between gap-3">

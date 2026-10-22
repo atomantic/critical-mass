@@ -1,13 +1,13 @@
 import React from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, renderHook, screen, waitFor } from '@testing-library/react'
+import { renderWithToasts as render } from './renderWithToasts'
 import TransactionsRegime from '../src/components/TransactionsRegime'
 import ConfigEditor from '../src/components/ConfigEditor'
 import Dashboard from '../src/components/Dashboard'
 import AggressivenessControl from '../src/components/regime/AggressivenessControl'
 import useRegimeDashboardData from '../src/components/regime/useRegimeDashboardData'
 
-vi.mock('../src/components/Toast', () => ({ useToast: () => ({ addToast: () => {} }) }))
 vi.mock('../src/lib/realtime', () => ({
   getRealtimeClient: () => ({ on: () => {}, off: () => {}, connect: () => {}, disconnect: () => {}, emit: () => {} }),
 }))

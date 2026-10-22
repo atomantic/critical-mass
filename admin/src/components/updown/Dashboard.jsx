@@ -19,6 +19,7 @@ import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { apiPost, describeMutationFailure } from '../../utils/apiClient'
 import usePolling from '../../hooks/usePolling'
+import { useNotify } from '../Toast'
 
 export default function UpDownDashboard() {
   const { connected, tick, indicators: rawIndicators, signal, scorecard: socketScorecard } = useUpDownSocket()
@@ -37,7 +38,7 @@ export default function UpDownDashboard() {
   const [stopping, setStopping] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const [audioEnabled, setAudioEnabled] = useState(false)
-  const [error, setError] = useState(null)
+  const notify = useNotify()
   const [statusError, setStatusError] = useState(null)
   const prevSignalRef = useRef(null)
   const [signalAnnotations, setSignalAnnotations] = useState([])
@@ -111,7 +112,6 @@ export default function UpDownDashboard() {
 
   const handleStart = async () => {
     setStarting(true)
-    setError(null)
     // Any status read started before this action describes the pre-action
     // service; drop it so only the post-action refresh may commit (#508).
     statusOwner.invalidate()
@@ -120,7 +120,7 @@ export default function UpDownDashboard() {
       if (!res.ok) throw new Error(describeMutationFailure(res, 'Failed to start'))
       await fetchStatus()
     } catch (err) {
-      setError(err.message || 'Failed to start')
+      notify('error', err.message || 'Failed to start')
     } finally {
       setStarting(false)
     }
@@ -128,14 +128,13 @@ export default function UpDownDashboard() {
 
   const handleStop = async () => {
     setStopping(true)
-    setError(null)
     statusOwner.invalidate()
     try {
       const res = await apiPost('/api/updown/stop')
       if (!res.ok) throw new Error(describeMutationFailure(res, 'Failed to stop'))
       await fetchStatus()
     } catch (err) {
-      setError(err.message || 'Failed to stop')
+      notify('error', err.message || 'Failed to stop')
     } finally {
       setStopping(false)
     }
@@ -182,14 +181,6 @@ export default function UpDownDashboard() {
 
   return (
     <div className="space-y-4">
-      {/* Error banner */}
-      {error && (
-        <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-red-200 text-sm flex items-center justify-between">
-          <span>{error}</span>
-          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-300 ml-3">&times;</button>
-        </div>
-      )}
-
       {statusError && (
         <div role="alert" className="flex items-center justify-between gap-2 text-sm text-red-400">
           <span>{statusError} Showing the last loaded status.</span>
@@ -249,14 +240,13 @@ export default function UpDownDashboard() {
             <button
               onClick={async () => {
                 setRestarting(true)
-                setError(null)
                 try {
                   const res = await apiPost('/api/updown/restart')
                   if (!res.ok || res.data.success !== true) {
                     throw new Error(describeMutationFailure(res, 'Restart request failed'))
                   }
                 } catch (err) {
-                  setError(err.message || 'Restart request failed')
+                  notify('error', err.message || 'Restart request failed')
                 } finally {
                   setRestarting(false)
                 }

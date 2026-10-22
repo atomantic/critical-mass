@@ -32,7 +32,7 @@ before(async () => {
 // ownership and network IO replaced. Deferred responses cover ordering, rather
 // than asserting against source text. All mutations remain inside this fixture.
 function createView(name) {
-  const values = [], effects = [], requests = [], queued = []
+  const values = [], effects = [], requests = [], queued = [], notices = []
   let index = 0, mounted = false
   const slot = initial => {
     const key = index++
@@ -99,12 +99,15 @@ function createView(name) {
       }
       if (name === '../hooks/usePolling') { const usePolling = (fn, ms, { immediate = true, enabled = true } = {}) => { hooks.useEffect(() => { if (enabled && immediate) fn() }) }; return asHookModule(usePolling) }
       if (name === './ModalDialog') return ({ children }) => children
+      if (name === './Toast') return { useNotify: () => (type, message) => { notices.push({ type, message }) } }
       throw new Error(`Unexpected fixture import ${name}`)
     },
   })
   vm.runInContext(compiled.get(name), context)
   const render = () => { index = 0; const tree = context.module.exports(); mounted = true; return tree }
-  return { render, requests,
+  return { render, requests, notices,
+    // Page text plus toasts: action results are toasts now, the rest stays inline.
+    shown() { return text(render()) + '\n' + notices.map(n => n.message).join('\n') },
     queue(url, method, result) { queued.push({ url, method, result }) },
     async mount() { render(); effects.forEach(effect => effect()); await flush(); return render() },
   }
@@ -165,7 +168,7 @@ for (const [name, url, fieldId, saveLabel] of [
     await pending
     assert.equal(locked(view.render()), false)
     assert.equal(field(view.render(), fieldId).props.value, name === 'NotificationsConfig' ? 6000 : 9)
-    assert.ok(text(view.render()).includes(failure === 'http' ? 'Failed to save settings' : 'Synthetic transport failure'))
+    assert.ok(view.shown().includes(failure === 'http' ? 'Failed to save settings' : 'Synthetic transport failure'))
     if (name === 'NotificationsConfig') assert.equal(field(view.render(), 'bot-token').props.value, 'synthetic-new-token')
   })
 })
@@ -181,7 +184,7 @@ describe('notification reconciliation and token ownership', () => {
     assert.equal(field(view.render(), 'bot-token').props.value, '')
     assert.equal(field(view.render(), 'bot-token').props.placeholder, '••••••••')
     assert.equal(locked(view.render()), false)
-    assert.ok(text(view.render()).includes('Notification settings saved!'))
+    assert.ok(view.shown().includes('Notification settings saved!'))
     assert.ok(text(view.render()).includes('Settings may be out of date: Failed to load notifications config (HTTP 503)'))
     // A later read cannot replace a draft edited during that read.
     const read = deferred()
@@ -225,7 +228,7 @@ describe('notification reconciliation and token ownership', () => {
     read.reject(new Error('Synthetic refresh failure'))
     await pending
     assert.equal(locked(view.render()), false)
-    assert.ok(text(view.render()).includes('Notification settings saved!'))
+    assert.ok(view.shown().includes('Notification settings saved!'))
     assert.ok(text(view.render()).includes('Settings may be out of date: Synthetic refresh failure'))
   })
 })
@@ -240,9 +243,11 @@ describe('backup list refreshes', () => {
     }))
     await button(view.render(), 'Create Backup Now').props.onClick()
     await flush()
-    const message = find(view.render(), node => node.type === 'div' && node.props.className?.includes('bg-yellow-900/50') && text(node).includes('Backup created:'))
-    assert.ok(text(message).includes('Engine coinbase failed to resume after backup'))
-    assert.ok(text(message).includes('Check engine status'))
+    const [notice] = view.notices
+    assert.equal(notice.type, 'warning')
+    assert.ok(notice.message.includes('Backup created:'))
+    assert.ok(notice.message.includes('Engine coinbase failed to resume after backup'))
+    assert.ok(notice.message.includes('Check engine status'))
     assert.equal(button(view.render(), 'Create Backup Now').props.disabled, false)
   })
 
@@ -254,7 +259,7 @@ describe('backup list refreshes', () => {
       warnings: ['Engine coinbase failed to resume after backup'],
     }, 500))
     await button(view.render(), 'Create Backup Now').props.onClick()
-    const message = text(view.render())
+    const message = view.shown()
     assert.ok(message.includes('Backup failed: Synthetic archive failure'))
     assert.ok(message.includes('Engine coinbase failed to resume after backup'))
     assert.ok(message.includes('Check engine status'))
@@ -272,7 +277,7 @@ describe('backup list refreshes', () => {
     await flush()
     assert.equal(field(view.render(), 'backup-max-count').props.value, 9)
     assert.ok(text(view.render()).includes('fixture.zip'))
-    assert.ok(text(view.render()).includes('Backup created:'))
+    assert.ok(view.shown().includes('Backup created:'))
   })
 
   it('updates lists from an earlier read without replacing a later authoritative save', async () => {
@@ -289,7 +294,7 @@ describe('backup list refreshes', () => {
     await flush()
     assert.equal(field(view.render(), 'backup-max-count').props.value, 9)
     assert.ok(text(view.render()).includes('fixture.zip'))
-    assert.ok(text(view.render()).includes('Backup settings saved!'))
+    assert.ok(view.shown().includes('Backup settings saved!'))
   })
 
   it('keeps unsaved retention while deleting a backup refreshes the archive list', async () => {
@@ -303,7 +308,7 @@ describe('backup list refreshes', () => {
     await button(view.render(), 'Delete Backup').props.onClick()
     await flush()
     assert.equal(field(view.render(), 'backup-max-count').props.value, 9)
-    assert.ok(text(view.render()).includes('Deleted fixture.zip'))
+    assert.ok(view.shown().includes('Deleted fixture.zip'))
     assert.equal(elements(view.render()).some(node => node.type === 'button' && text(node) === 'Delete'), false)
   })
 
@@ -316,7 +321,7 @@ describe('backup list refreshes', () => {
     await button(view.render(), 'Create Backup Now').props.onClick()
     await flush()
     assert.equal(field(view.render(), 'backup-max-count').props.value, 9)
-    assert.ok(text(view.render()).includes('Backup created:'))
+    assert.ok(view.shown().includes('Backup created:'))
     assert.ok(text(view.render()).includes('Backup list may be out of date: Failed to load backups (HTTP 503)'))
   })
 })

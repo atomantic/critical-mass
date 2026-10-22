@@ -1,11 +1,11 @@
 import React from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { renderWithToasts as render } from './renderWithToasts'
 import TradeHistory from '../src/components/updown/TradeHistory'
 import SentinelDashboard from '../src/components/sentinel/Dashboard'
 import AIProviders from '../src/components/ai/Providers'
 import KeysConfig from '../src/components/KeysConfig'
-vi.mock('../src/components/Toast', () => ({ useToast: () => ({ addToast: vi.fn() }) }))
 vi.mock('../src/hooks/useSentinelSocket', () => ({ default: () => ({ connected: true }) }))
 HTMLDialogElement.prototype.showModal = function () { this.open = true; this.querySelector('[autofocus]')?.focus() }
 HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event('close')) }
@@ -33,7 +33,7 @@ function escape() {
   return event
 }
 it('trade delete requires confirmation; Cancel and Escape preserve data; failed writes retain dialog and rows', async () => {
-  render(<TradeHistory />)
+  render(<TradeHistory />, { wrapper: undefined }) // TradeHistory toasts too; this test pins its inline dialog error
   const trigger = await screen.findByRole('button', { name: /Delete trade from/ })
   fireEvent.click(trigger)
   expect(writes).toHaveLength(0)

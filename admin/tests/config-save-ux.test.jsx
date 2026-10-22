@@ -1,5 +1,6 @@
 import React from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { renderWithToasts as render } from './renderWithToasts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import ConfigEditor from '../src/components/ConfigEditor'
 import CapitalAdjust from '../src/components/regime/CapitalAdjust'

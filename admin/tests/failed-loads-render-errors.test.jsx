@@ -1,13 +1,13 @@
 import React from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen } from '@testing-library/react'
+import { renderWithToasts as render } from './renderWithToasts'
 import { BrowserRouter } from '../src/lib/router'
 import AIProviders from '../src/components/ai/Providers'
 import TradeHistory from '../src/components/updown/TradeHistory'
 import ScorecardAnalysis from '../src/components/updown/ScorecardAnalysis'
 import SignalPanel from '../src/components/updown/SignalPanel'
 
-vi.mock('../src/components/Toast', () => ({ useToast: () => ({ addToast: vi.fn() }) }))
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
