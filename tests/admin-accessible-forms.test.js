@@ -74,6 +74,7 @@ function createView(component, extraStubs = {}, fetchResponse = null) {
     '../../utils/format.mjs': { formatUsd: n => `${Number(n).toFixed(2)}` },
     '../DestructiveConfirmation': { default: ({ children }) => children },
     '../ModalDialog': { default: ({ children }) => children },
+    '../ui/touchTarget': { TOUCH_TARGET: 'min-h-11' },
     '../../utils/runLifecycle.mjs': { createRunLifecycle: () => ({ execute: value => executed.push(value), dispose() {} }) },
     '../../utils/apiClient': apiClientStub(fetch),
     '../../utils/pagedList.mjs': { completePagedItems: async (_url, page) => page.items },

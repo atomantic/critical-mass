@@ -350,7 +350,7 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
                 <span title={`Max: ${formatCurrency(ladderPreview.maxUsdcDeployed)} − Allocated: ${formatCurrency(ladderPreview.allocatedCapital)}`}>Budget: {formatCurrency(ladderPreview.totalBudget)}</span>
                 <span>Range: {ladderPreview.lowerBoundPct?.toFixed(1)}%</span>
               </div>
-              <div className="max-h-40 overflow-y-auto">
+              <div className="max-h-40 overflow-y-auto overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="text-gray-400 border-b border-gray-700">

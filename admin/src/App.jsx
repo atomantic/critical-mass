@@ -1,3 +1,4 @@
+import { TOUCH_TARGET } from './components/ui/touchTarget'
 import { Component, useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react'
 import { Routes, Route, Link, NavLink, useLocation, useNavigate, Navigate } from './lib/router'
 import ExchangeSelector from './components/ExchangeSelector'
@@ -112,7 +113,7 @@ const getTabsForStrategy = (strategy) => {
 
 // Valid exchange names
 const VALID_EXCHANGES = ['coinbase', 'gemini', 'cryptocom']
-const REGIME_ACTION_TOUCH_TARGET = 'min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center'
+const REGIME_ACTION_TOUCH_TARGET = TOUCH_TARGET
 
 class RouteErrorBoundary extends Component {
   state = { hasError: false }
@@ -861,7 +862,7 @@ function AppContent() {
             </div>
             <div className="flex justify-end gap-3">
               <button
-                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors disabled:opacity-50"
+                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors disabled:opacity-50`}
                 onClick={() => setCloseFundDialogOpen(false)}
                 disabled={closing}
                 autoFocus
@@ -869,7 +870,7 @@ function AppContent() {
                 Cancel
               </button>
               <button
-                className="px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded-sm transition-colors disabled:opacity-50"
+                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded-sm transition-colors disabled:opacity-50`}
                 onClick={submitCloseFund}
                 disabled={closing}
               >
@@ -924,7 +925,7 @@ function AppContent() {
             </p>
             <div className="flex justify-end gap-3">
               <button
-                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors disabled:opacity-50"
+                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors disabled:opacity-50`}
                 onClick={() => setReopenFundDialogOpen(false)}
                 disabled={reopening}
                 autoFocus
@@ -932,7 +933,7 @@ function AppContent() {
                 Cancel
               </button>
               <button
-                className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded-sm transition-colors disabled:opacity-50"
+                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded-sm transition-colors disabled:opacity-50`}
                 onClick={submitReopenFund}
                 disabled={reopening}
               >
@@ -959,7 +960,7 @@ function AppContent() {
             </p>
             <div className="flex justify-end gap-3">
               <button
-                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors"
+                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
                 onClick={() => setResetDryRunConfirm(false)}
                 disabled={resetting}
                 autoFocus
@@ -967,7 +968,7 @@ function AppContent() {
                 Cancel
               </button>
               <button
-                className="px-4 py-2 text-sm text-white bg-purple-600 hover:bg-purple-700 rounded-sm transition-colors disabled:opacity-50"
+                className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-purple-600 hover:bg-purple-700 rounded-sm transition-colors disabled:opacity-50`}
                 onClick={handleExecuteResetDryRun}
                 disabled={resetting}
               >

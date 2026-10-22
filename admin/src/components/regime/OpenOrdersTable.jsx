@@ -303,7 +303,7 @@ function OpenOrdersTable({
       {entryOrders.length > 0 && (
       <div>
         <div className="text-xs text-gray-400 mb-1">{entryOrders.length} entry {entryOrders.length === 1 ? 'order' : 'orders'}</div>
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto"><table className="w-full text-sm">
         <thead>
           <tr className="text-gray-400 text-xs border-b border-gray-700">
             <th className="text-left py-2 pr-2">Order ID</th>
@@ -328,7 +328,7 @@ function OpenOrdersTable({
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
       </div>
       )}
       </div>

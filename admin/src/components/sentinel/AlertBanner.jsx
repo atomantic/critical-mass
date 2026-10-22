@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from '../../lib/router'
 import { apiGet } from '../../utils/apiClient'
 import { completePagedItems } from '../../utils/pagedList.mjs'
@@ -10,6 +10,17 @@ import usePolling from '../../hooks/usePolling'
  */
 export default function AlertBanner() {
   const [activeAlerts, setActiveAlerts] = useState([])
+  const linkRef = useRef(null)
+  const visible = activeAlerts.length > 0
+
+  // The banner is fixed (out of flow), so reserve its height as body padding
+  // while visible; otherwise it permanently covers the last rows of the page.
+  useEffect(() => {
+    if (!visible) return undefined
+    const prev = document.body.style.paddingBottom
+    document.body.style.paddingBottom = `${linkRef.current?.offsetHeight || 40}px`
+    return () => { document.body.style.paddingBottom = prev }
+  }, [visible])
 
   const fetchAlerts = async () => {
       try {
@@ -33,17 +44,23 @@ export default function AlertBanner() {
   }
   usePolling(fetchAlerts, 30000)
 
-  if (activeAlerts.length === 0) return null
+  // The slot is always rendered as a zero-height anchor so alerts that arrive
+  // after the first paint never push <main> down. The banner itself is fixed
+  // to the bottom edge (beneath the toast stack, z-50) rather than floating
+  // over the top of <main>, where it would cover the first row of content.
+  if (activeAlerts.length === 0) return <div data-testid="alert-banner-slot" className="h-0" />
 
   const hasCritical = activeAlerts.some(a => a.severity === 'critical')
 
   return (
+    <div data-testid="alert-banner-slot" className="h-0">
     <Link
+      ref={linkRef}
       to="/sentinel"
-      className={`inline-flex items-center gap-2 px-4 py-2 text-sm w-full focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-0 ${
+      className={`fixed inset-x-0 bottom-0 z-40 inline-flex items-center gap-2 px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-sm w-full shadow-lg focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-0 ${
         hasCritical
-          ? 'bg-red-900/70 border-b border-red-700 text-red-100 focus-visible:ring-white'
-          : 'bg-yellow-900/70 border-b border-yellow-700 text-yellow-100 focus-visible:ring-white'
+          ? 'bg-red-900/90 border-t border-red-700 text-red-100 focus-visible:ring-white'
+          : 'bg-yellow-900/90 border-t border-yellow-700 text-yellow-100 focus-visible:ring-white'
       }`}
     >
       <span className="font-bold shrink-0">
@@ -55,5 +72,6 @@ export default function AlertBanner() {
       </span>
       <span className="ml-auto text-xs opacity-75 shrink-0">View details</span>
     </Link>
+    </div>
   )
 }
