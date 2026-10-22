@@ -3,7 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { getAuthHeaders } = require('./auth');
 const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
-const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
+const { incrementToDecimals, floorToIncrement, finiteFloat, sleep: defaultSleep } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 const { REST_TIMEOUT_MS } = require('../../timing-constants');
 const { validateCoinbaseKeys, createKeyFileLoader } = require('../key-validation');
@@ -80,7 +80,7 @@ const mapOrderResponse = (result, clientOrderId, extra = {}) => ({
  * @param {{sleep?: (ms: number) => Promise<void>, random?: () => number}} [deps] - Injectable for tests
  * @returns {ExchangeAdapter} Coinbase adapter with all required methods
  */
-const createCoinbaseAdapter = (keysPath = null, { sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)), random = Math.random } = {}) => {
+const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random = Math.random } = {}) => {
   // Resolve keys path
   const resolvedKeysPath = keysPath || path.join(__dirname, '..', '..', '..', 'data', 'coinbase-keys.json');
 

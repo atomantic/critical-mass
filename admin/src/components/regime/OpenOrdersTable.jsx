@@ -187,7 +187,7 @@ function OpenOrdersTable({
                   <td className="text-right py-2 pr-2 font-mono text-white">
                     {order.size?.toFixed(8)}
                     {order.filledSize > 0 && (
-                      <span className="ml-1 px-1 py-0.5 rounded-sm text-[10px] bg-orange-900/50 text-orange-400" title={`${order.filledSize.toFixed(8)} of ${order.size?.toFixed(8)} filled`}>
+                      <span className="ml-1 px-1 py-0.5 rounded-sm text-2xs bg-orange-900/50 text-orange-400" title={`${order.filledSize.toFixed(8)} of ${order.size?.toFixed(8)} filled`}>
                         {order.filledSize.toFixed(8)} filled
                       </span>
                     )}

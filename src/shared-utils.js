@@ -566,6 +566,13 @@ const safeJsonParse = (data) => {
   try { return JSON.parse(data); } catch { return null; }
 };
 
+/**
+ * Resolve after `ms` milliseconds.
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** @param {string|Buffer} bytes */
 const sha256Hex = (bytes) => require('crypto').createHash('sha256').update(bytes).digest('hex');
 
@@ -573,6 +580,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 module.exports = {
   safeJsonParse,
+  sleep,
   sha256Hex,
   UUID_RE,
   BASIS_POINTS_DIVISOR,

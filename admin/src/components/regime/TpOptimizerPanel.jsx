@@ -8,7 +8,7 @@ export default function TpOptimizerPanel({ tpOptimizer }) {
         <div className="bg-gray-800 rounded-lg p-3">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-medium text-gray-400">TP Auto-Management</h3>
-            <span className="px-1.5 py-0.5 bg-green-900/50 text-green-400 text-[10px] rounded-sm">
+            <span className="px-1.5 py-0.5 bg-green-900/50 text-green-400 text-2xs rounded-sm">
               Active
             </span>
           </div>
@@ -16,7 +16,7 @@ export default function TpOptimizerPanel({ tpOptimizer }) {
           <div className="space-y-2 text-xs">
             {/* Current Config */}
             <div className="p-2 bg-gray-900/50 rounded-sm">
-              <div className="text-gray-400 text-[10px] mb-1">Current TP Settings</div>
+              <div className="text-gray-400 text-2xs mb-1">Current TP Settings</div>
               <div className="grid grid-cols-3 gap-2">
                 <div>
                   <span className="text-gray-400">Min:</span>{' '}
@@ -36,7 +36,7 @@ export default function TpOptimizerPanel({ tpOptimizer }) {
             {/* Observed Percentiles */}
             {(tpOptimizer.totalCombinedSamples || tpOptimizer.sampleCount || 0) >= 3 && (
               <div className="p-2 bg-cyan-900/20 border border-cyan-700/30 rounded-sm">
-                <div className="text-cyan-400/70 text-[10px] mb-1">Observed Percentiles ({plural(tpOptimizer.sampleCount || 0, "cycle")} + {tpOptimizer.volSampleCount || 0} vol)</div>
+                <div className="text-cyan-400/70 text-2xs mb-1">Observed Percentiles ({plural(tpOptimizer.sampleCount || 0, "cycle")} + {tpOptimizer.volSampleCount || 0} vol)</div>
                 <div className="grid grid-cols-3 gap-2">
                   <div>
                     <span className="text-gray-400">p25:</span>{' '}
@@ -55,7 +55,7 @@ export default function TpOptimizerPanel({ tpOptimizer }) {
             )}
 
             {/* Evaluation Status */}
-            <div className="flex justify-between text-gray-400 text-[10px]">
+            <div className="flex justify-between text-gray-400 text-2xs">
               <span>Last eval: {tpOptimizer.lastVolEvaluationTime
                 ? `${Math.round((Date.now() - Math.max(tpOptimizer.lastEvaluationTime || 0, tpOptimizer.lastVolEvaluationTime || 0)) / 60000)}m ago`
                 : `${plural(tpOptimizer.cyclesSinceEval || 0, "cycle")} ago`}</span>
@@ -65,10 +65,10 @@ export default function TpOptimizerPanel({ tpOptimizer }) {
             {/* Recent Adjustments */}
             {tpOptimizer.adjustmentHistory?.length > 0 && (
               <div className="pt-2 border-t border-gray-700">
-                <div className="text-gray-400 text-[10px] mb-1">Recent Adjustments</div>
+                <div className="text-gray-400 text-2xs mb-1">Recent Adjustments</div>
                 <div className="space-y-0.5 max-h-16 overflow-y-auto">
                   {tpOptimizer.adjustmentHistory.slice(-3).reverse().map((adj, idx) => (
-                    <div key={idx} className="text-[10px] text-gray-400 flex justify-between">
+                    <div key={idx} className="text-2xs text-gray-400 flex justify-between">
                       <span>{new Date(adj.timestamp).toLocaleTimeString()}</span>
                       <span className="text-cyan-400">{adj.tpMin?.toFixed(1)}%-{adj.tpMax?.toFixed(1)}%</span>
                     </div>

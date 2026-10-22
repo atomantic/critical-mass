@@ -10,7 +10,7 @@ export default function OptimalTpAnalysis({ isDryRun, optimalTpAnalytics, tpMinP
         <div className="bg-gray-800 rounded-lg p-3">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-medium text-gray-400">Optimal TP Analysis</h3>
-            <span className="text-[10px] text-purple-400">
+            <span className="text-2xs text-purple-400">
               {plural(optimalTpAnalytics.cycleCount, "cycle")}
             </span>
           </div>
@@ -18,8 +18,8 @@ export default function OptimalTpAnalysis({ isDryRun, optimalTpAnalytics, tpMinP
           {/* Current Cycle (if in position) */}
           {optimalTpAnalytics.currentCycle && (
             <div className="mb-2 p-2 bg-blue-900/30 border border-blue-700/50 rounded-sm">
-              <div className="text-[10px] text-blue-400 mb-1">Current Position</div>
-              <div className="grid grid-cols-2 gap-1 text-[10px]">
+              <div className="text-2xs text-blue-400 mb-1">Current Position</div>
+              <div className="grid grid-cols-2 gap-1 text-2xs">
                 <div>
                   <span className="text-gray-400">Entry:</span>{' '}
                   <span className="text-white font-mono">${formatPriceByMagnitude(optimalTpAnalytics.currentCycle.entryPrice)}</span>
