@@ -24,6 +24,41 @@ const { validateCoinbaseKeys, createKeyFileLoader } = require('../key-validation
 
 const BASE_URL = 'https://api.coinbase.com';
 
+// GET-only HTTP retry (#1621): 429 and gateway-class 5xx are transient. 3 total
+// attempts (2 retries), each delay capped at 10s. POSTs are never retried.
+const HTTP_RETRY_MAX = 2;
+const HTTP_RETRY_BASE_MS = 1000;
+const HTTP_RETRY_CEILING_MS = 10000;
+const RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504]);
+
+/**
+ * Parse a Retry-After header (delta-seconds or HTTP date) to milliseconds.
+ * @param {string|null|undefined} value
+ * @param {number} [now]
+ * @returns {number|null}
+ */
+const parseRetryAfterMs = (value, now = Date.now()) => {
+  if (value === null || value === undefined || value === '') return null;
+  const secs = Number(value);
+  if (Number.isFinite(secs)) return secs >= 0 ? secs * 1000 : null;
+  const date = Date.parse(String(value));
+  return Number.isNaN(date) ? null : Math.max(0, date - now);
+};
+
+/**
+ * Backoff before the next GET retry: exponential with up to 25% jitter,
+ * raised to Retry-After when the server sent one, capped at the ceiling.
+ * @param {number} retryIndex - zero-based retry number
+ * @param {number|null} retryAfterMs
+ * @param {() => number} random
+ * @returns {number}
+ */
+const computeHttpRetryDelayMs = (retryIndex, retryAfterMs, random) => {
+  const backoff = HTTP_RETRY_BASE_MS * Math.pow(2, retryIndex);
+  const withJitter = backoff + backoff * 0.25 * random();
+  return Math.min(Math.max(withJitter, retryAfterMs ?? 0), HTTP_RETRY_CEILING_MS);
+};
+
 /**
  * Map a Coinbase create-order response to the adapter's placement result.
  * @param {any} result - Raw create-order response
@@ -41,9 +76,10 @@ const mapOrderResponse = (result, clientOrderId, extra = {}) => ({
 /**
  * Create a Coinbase adapter instance
  * @param {string|null} [keysPath] - Path to keys file (defaults to data/coinbase-keys.json)
+ * @param {{sleep?: (ms: number) => Promise<void>, random?: () => number}} [deps] - Injectable for tests
  * @returns {ExchangeAdapter} Coinbase adapter with all required methods
  */
-const createCoinbaseAdapter = (keysPath = null) => {
+const createCoinbaseAdapter = (keysPath = null, { sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)), random = Math.random } = {}) => {
   // Resolve keys path
   const resolvedKeysPath = keysPath || path.join(__dirname, '..', '..', '..', 'data', 'coinbase-keys.json');
 
@@ -125,20 +161,24 @@ const createCoinbaseAdapter = (keysPath = null) => {
    */
   const makeRequest = async (method, apiPath, data = null, retries = 3) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
-    const headers = getAuthHeaders(apiKey, apiSecret, method, apiPath);
-
-    const fetchOptions = {
-      method,
-      headers,
-    };
-
-    if (data) {
-      fetchOptions.headers = { ...headers, 'Content-Type': 'application/json' };
-      fetchOptions.body = JSON.stringify(data);
-    }
+    const body = data ? JSON.stringify(data) : undefined;
 
     let lastError;
+    let httpRetries = 0;
+    let pendingDelayMs = 0;
     for (let attempt = 0; attempt <= retries; attempt++) {
+      if (pendingDelayMs > 0) {
+        await sleep(pendingDelayMs);
+        pendingDelayMs = 0;
+      }
+      // Sign per attempt: the JWT expires after 120s, so a late retry must not
+      // reuse the first attempt's token (#1621).
+      const authHeaders = getAuthHeaders(apiKey, apiSecret, method, apiPath);
+      const fetchOptions = {
+        method,
+        headers: data ? { ...authHeaders, 'Content-Type': 'application/json' } : authHeaders,
+        ...(body !== undefined ? { body } : {}),
+      };
       // The abort deadline must stay armed through the awaited body read, not
       // just the header phase: a reset or stalled body has no application
       // deadline once the timer is cleared early, so it can hang forever
@@ -163,6 +203,21 @@ const createCoinbaseAdapter = (keysPath = null) => {
             // the deadline so a stalled body cannot retain the connection.
             controller.abort();
             throw createAmbiguousPlacementError('Coinbase', `${method} ${apiPath.split('?')[0]}`, data?.client_order_id, `HTTP ${response.status}`);
+          }
+          if (method === 'GET' && RETRYABLE_HTTP_STATUSES.has(response.status) && httpRetries < HTTP_RETRY_MAX && attempt < retries) {
+            const delay = computeHttpRetryDelayMs(httpRetries, parseRetryAfterMs(response.headers?.get?.('retry-after')), random);
+            const endpoint = apiPath.split('?')[0];
+            logger.warn(`⚠️ [coinbase] HTTP ${response.status} on ${method} ${endpoint}, retrying in ${delay}ms (retry ${httpRetries + 1}/${HTTP_RETRY_MAX})`, {
+              pair: getPairFromApiPath(apiPath),
+              method,
+              endpoint,
+              status: response.status,
+              delayMs: delay,
+            });
+            httpRetries++;
+            pendingDelayMs = delay;
+            controller.abort();
+            continue; // finally clears the deadline timer
           }
           const errData = await response.json().catch(() => ({}));
           const message = errData.message || errData.error_details || response.statusText;
@@ -237,7 +292,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
           retries,
           error: lastError.message,
         });
-        await new Promise(resolve => setTimeout(resolve, delay));
+        pendingDelayMs = delay;
         continue;
       }
 
