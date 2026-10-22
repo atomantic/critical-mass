@@ -1409,21 +1409,20 @@ const INTENT_LOCK_POLL_MS = 5;
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 /**
- * A lock is reclaimed only when its owner (on this host) is provably gone, or
- * it is far older than any critical section here (milliseconds).
+ * A lock is reclaimed only when its owner is provably gone: a readable owner.json
+ * on this host naming a pid that no longer exists. A live or foreign-host owner
+ * is never stolen (it may be paused mid-write); age only reclaims a lock with no
+ * readable owner record, i.e. one whose creator died before writing it.
  * @param {string} lock - Lock directory
  * @returns {boolean}
  */
 const isIntentLockStale = (lock) => {
   let ageMs;
   try { ageMs = Date.now() - fs.statSync(lock).mtimeMs; } catch { return false; }
-  try {
-    const owner = JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8'));
-    if (owner.host === os.hostname() && Number.isInteger(owner.pid) && ageMs > 1000) {
-      try { process.kill(owner.pid, 0); } catch (err) { if (err.code === 'ESRCH') return true; }
-    }
-  } catch { /* owner file not written yet or unreadable: fall back to age */ }
-  return ageMs > INTENT_LOCK_STALE_MS;
+  let owner;
+  try { owner = JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8')); } catch { return ageMs > INTENT_LOCK_STALE_MS; }
+  if (owner.host !== os.hostname() || !Number.isInteger(owner.pid)) return false;
+  try { process.kill(owner.pid, 0); return false; } catch (err) { return err.code === 'ESRCH'; }
 };
 
 /**
@@ -1446,7 +1445,12 @@ const withPlacementIntentsLock = (file, fn) => {
       if (isIntentLockStale(lock)) {
         // Rename aside first so concurrent reclaimers cannot remove a lock another process just took.
         const aside = `${lock}.stale-${process.pid}-${randomUUID()}`;
-        try { fs.renameSync(lock, aside); fs.rmSync(aside, { recursive: true, force: true }); } catch { /* lost the reclaim race */ }
+        try {
+          fs.renameSync(lock, aside);
+          // Re-judge what was actually moved: a contender may have reclaimed and re-acquired between our check and the rename.
+          if (isIntentLockStale(aside)) fs.rmSync(aside, { recursive: true, force: true });
+          else fs.renameSync(aside, lock);
+        } catch { /* lost the reclaim race */ }
         continue;
       }
       if (Date.now() > deadline) throw new Error(`placement intents lock ${lock} still held after ${INTENT_LOCK_TIMEOUT_MS / 1000}s; refusing to write without it`);
