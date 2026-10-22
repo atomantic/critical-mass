@@ -127,3 +127,16 @@ describe('request options', () => {
     expect(await apiGet('/api/p', { asText: true })).toMatchObject({ ok: true, data: 'saved prompt' })
   })
 })
+
+describe('run lifecycle transport', () => {
+  it('reports a 401 from the run poller through onUnauthorized', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(reply(401, {})))
+    const { createRunLifecycle } = await import('../src/utils/runLifecycle.mjs')
+    const handler = vi.fn()
+    const off = onUnauthorized(handler)
+    const lifecycle = createRunLifecycle({ setTimer: () => 0, clearTimer: () => {} })
+    lifecycle.stop('r1')
+    await vi.waitFor(() => expect(handler).toHaveBeenCalled())
+    off()
+  })
+})

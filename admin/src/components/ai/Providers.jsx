@@ -11,7 +11,9 @@ const PROVIDER_TYPES = { cli: 'CLI (unavailable)', api: 'API' }
 async function classifyRun(run) {
   if (run.endTime) return 'done'
   const result = await apiGet(`/api/runs/${run.id}`)
-  const meta = result.ok ? result.data : null
+  // The run record carries its own `success` flag, so a failed run is `ok: false` to the client but its metadata is still readable.
+  const readable = result.status >= 200 && result.status < 300 && result.data && typeof result.data === 'object'
+  const meta = readable ? result.data : null
   if (!meta) return 'unavailable'
   if (meta.endTime) return 'done'
   return meta.isActive === false ? 'interrupted' : 'active'
@@ -187,7 +189,7 @@ export default function AIProviders() {
   const handleTest = async (id) => {
     setTestResults(prev => ({ ...prev, [id]: { testing: true } }))
     const result = await apiPost(`/api/providers/${id}/test`)
-    setTestResults(prev => ({ ...prev, [id]: result.ok ? result.data : { success: false, error: result.error } }))
+    setTestResults(prev => ({ ...prev, [id]: result.data && typeof result.data === 'object' ? result.data : { success: false, error: result.error } }))
   }
 
   const handleDelete = async (provider) => {
