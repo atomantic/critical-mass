@@ -13,7 +13,6 @@ const {
   SCHEDULED_RETRY_DELAYS_MS,
   SCHEDULED_FAILURE_ALERT_INTERVAL_MS,
   planScheduledRetry,
-  getIntervalAmount,
   formatInterval,
   getTimeUntilNext,
   getConsolidationRunId,
@@ -194,26 +193,6 @@ describe('normalizeConfig', () => {
   it('prefers intervalsToSpread over daysToSpread when both are present', () => {
     const config = normalizeConfig({ intervalsToSpread: 20, daysToSpread: 90 });
     assert.equal(config.intervalsToSpread, 20);
-  });
-});
-
-// ============================================================================
-// getIntervalAmount
-// ============================================================================
-describe('getIntervalAmount', () => {
-  it('calculates correct amount per interval', () => {
-    const amount = getIntervalAmount({ totalAllocation: 6000, intervalsToSpread: 30, intervalType: '1hour' });
-    assert.equal(amount, 200);
-  });
-
-  it('uses default intervalsToSpread (60) when not provided', () => {
-    const amount = getIntervalAmount({ totalAllocation: 6000 });
-    assert.equal(amount, 100);
-  });
-
-  it('handles fractional results', () => {
-    const amount = getIntervalAmount({ totalAllocation: 1000, intervalsToSpread: 3, intervalType: 'daily' });
-    assert.ok(Math.abs(amount - 333.3333333333333) < 0.0001);
   });
 });
 

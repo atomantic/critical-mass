@@ -332,6 +332,9 @@ const runOptimizer = async ({
           fundSize
         };
 
+        // Release the event loop between combinations: with pre-fetched prices
+        // each simulation is pure CPU, and the optimizer runs in the gateway.
+        await new Promise(resolve => setImmediate(resolve));
         const result = await runSingleBacktest(currentParams, priceCache, exchange, productId);
 
         const fullResult = buildResultRecord(currentParams, result);
