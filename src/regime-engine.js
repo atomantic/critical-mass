@@ -423,7 +423,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let marketState = createInitialMarketState();
   const tradeWindow = createTradeWindow(3 * 60 * 1000);
   Object.defineProperty(marketState, 'trades', { enumerable: true, get: tradeWindow.getTrades });
-  let positionState = createInitialPositionState();
+  const positionState = createInitialPositionState();
+
+  // positionState keeps one object identity for the engine's lifetime so
+  // extracted sub-modules can capture it. Every "reassignment" goes through
+  // here: clear own keys, then copy the new ones in (the caller evaluates
+  // `next` before the clear, so spreads of the old state are safe).
+  const replacePositionState = (next) => {
+    if (next === positionState) return positionState;
+    for (const key of Object.keys(positionState)) delete positionState[key];
+    return Object.assign(positionState, next);
+  };
   // Listener ownership is runtime state; persisted position projections must
   // remain cloneable during buy/sell economic correction transactions.
   let stateReloadSignalInstalled = false;
@@ -1048,7 +1058,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Restore position state
     if (savedState.position) {
-      positionState = { ...createInitialPositionState(), ...savedState.position };
+      replacePositionState({ ...createInitialPositionState(), ...savedState.position });
       restoreEpisodeState(positionState);
     }
 
@@ -1381,7 +1391,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return false;
     }
 
-    positionState = { ...createInitialPositionState(), ...savedState.position };
+    replacePositionState({ ...createInitialPositionState(), ...savedState.position });
     if (savedState.regime) {
       regimeDetector.restoreState(savedState.regime);
     }
@@ -2331,7 +2341,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       logger.info(`ℹ️ [${exchange}] Saved state shows completed cycle (${savedCyclesCompleted} cycles, 0 ${baseCurrency} position) - trusting saved state over recovery`);
     }
 
-    positionState = {
+    replacePositionState({
       ...createInitialPositionState(),
       ...positionState, // Keep saved fields (realizedPnL, cyclesCompleted, celestialBodies, etc.)
       // Only override position fields that come from fill-ledger rebuild
@@ -2345,7 +2355,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       anchorPrice: position.anchorPrice || positionState.anchorPrice,
       activeTpOrderId: savedTpOrderId, // Restore TP tracking (not in fills)
       lastTpPrice: savedTpPrice,
-    };
+    });
 
     // Auto-correct cycleBuys from fill ledger (source of truth). In celestial
     // mode all engine buys are body-owned, so count ALL current-cycle buys —
@@ -2554,7 +2564,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const loaded = loadDryRunState();
     if (!loaded) {
       logger.info(`🧪 [${exchange}] [DRY-RUN] No saved state, starting fresh`);
-      positionState = createInitialPositionState();
+      replacePositionState(createInitialPositionState());
     }
   };
 
@@ -8087,7 +8097,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const resetDryRun = () => {
     if (isDryRun) {
       orderExecutor.resetDryRunState();
-      positionState = createInitialPositionState();
+      replacePositionState(createInitialPositionState());
       // Drop the in-memory risk manager's drawdown peak/pause too — otherwise
       // it survives the positionState wipe and the next metrics tick writes
       // the stale peak/pause right back into the fresh state (issue #742).
@@ -8147,10 +8157,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @param {Object} newPosition - New position values to merge
    */
   const updatePosition = (newPosition) => {
-    positionState = {
+    replacePositionState({
       ...positionState,
       ...newPosition,
-    };
+    });
     saveLiveState();
     logger.info(`🔄 [${exchange}] Position updated externally: buys=${positionState.cycleBuys}, cycles=${positionState.cyclesCompleted}, ${baseCurrency} reserves=${positionState.realizedAssetPnL}`);
   };
