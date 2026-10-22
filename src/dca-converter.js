@@ -12,7 +12,7 @@ const path = require('path');
 const { loadState, saveState, loadFundRegimeState, saveFundRegimeState } = require('./state-tracker');
 const { createFillLedger, isCompletedCycle } = require('./fill-ledger');
 const { createNewBody, classifyTier, syncPositionState } = require('./celestial-hierarchy');
-const { setFundEnabled: setConfigFundEnabled, setExchangeEnabled, getDefaultPair, getRegimeConfig, getFundConfig } = require('./config-utils');
+const { setFundEnabled: setConfigFundEnabled, setExchangeEnabled, requireFundPair, getRegimeConfig, getFundConfig } = require('./config-utils');
 const { resolveFundDataDir } = require('./migration');
 const { runDcaImportTransaction, recoverDcaImport, hasPendingDcaImport } = require('./dca-conversion-transaction');
 const { log } = require('./logger');
@@ -40,13 +40,6 @@ const fundLabel = (exchange, pair) => (pair ? `${exchange}/${pair}` : exchange);
 const setFundEnabled = (exchange, pair, enabled) => (
   pair ? setConfigFundEnabled(exchange, pair, enabled) : setExchangeEnabled(exchange, enabled)
 );
-
-/** Resolve the legacy omitted-pair form before using fund-scoped persistence. */
-const resolveFundPair = (exchange, pair) => {
-  const resolvedPair = pair || getDefaultPair(exchange);
-  if (!resolvedPair) throw new Error(`No configured fund pair for ${exchange}`);
-  return resolvedPair;
-};
 
 /**
  * Back up the state files involved in a DCA conversion.
@@ -130,7 +123,7 @@ const categorizeOrders = (orders) => {
  * @returns {{ pending: number, filled: number, skipped: number, totalBaseQty: number, totalCostBasis: number, pendingBaseQty: number, pendingCostBasis: number, sellOrderIds: string[], productId: string, assetReserves: number }}
  */
 const previewConversion = (exchange, pair) => {
-  pair = resolveFundPair(exchange, pair);
+  pair = requireFundPair(exchange, pair);
   const state = loadState(null, exchange, pair);
   const exchangeConfig = getFundConfig(exchange, pair);
   const orders = state.orders || [];
@@ -504,7 +497,7 @@ const sourceIdentities = (orders) => orders.map((o) => ({ orderId: o.orderId, bu
  * @returns {{ success: boolean, backupDir: string|null, summary: Object }}
  */
 const executeConversion = (exchange, pair) => {
-  pair = resolveFundPair(exchange, pair);
+  pair = requireFundPair(exchange, pair);
   recoverBeforeImport(exchange, pair);
 
   // Nothing importable (e.g. the conversion already completed): a no-op. A
@@ -736,7 +729,7 @@ const findAlreadyImportedBuys = (position, fillLedger, pending) => {
  * @returns {{ success: boolean, backupDir: string|null, summary: Object }}
  */
 const mergeToRegime = (exchange, pair) => {
-  pair = resolveFundPair(exchange, pair);
+  pair = requireFundPair(exchange, pair);
   recoverBeforeImport(exchange, pair);
 
   const eligible = loadEligibleOrders(exchange, pair);

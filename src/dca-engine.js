@@ -48,11 +48,13 @@ const loadConfig = (exchange = 'coinbase', pair) => getFundConfig(exchange, pair
  * have its order land on the exchange's default fund. An omitted pair still
  * resolves to the default fund; `undefined` is preserved when an exchange has
  * no configured fund so downstream path resolution behaves as it always did.
+ * Deliberately lenient (unlike config-utils `requireFundPair`, which throws):
+ * checkStatus and friends are legitimately called for exchanges with no fund.
  * @param {string} exchange - Exchange name
  * @param {string} [pair] - Requested fund pair
  * @returns {string|undefined} Resolved pair
  */
-const resolveFundPair = (exchange, pair) => pair ?? getDefaultPair(exchange) ?? undefined;
+const resolveFundPairOrUndefined = (exchange, pair) => pair ?? getDefaultPair(exchange) ?? undefined;
 
 /**
  * Build a context logger for one DCA cycle operation.
@@ -1170,7 +1172,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
 const checkStatus = async (exchange = 'coinbase', pair) => {
   // Reconciliation writes fills, so the public entry point holds the fund lock
   // across this load/await/save and registers it with the maintenance drain.
-  const fund = resolveFundPair(exchange, pair);
+  const fund = resolveFundPairOrUndefined(exchange, pair);
   const config = loadConfig(exchange, fund);
   const state = stateTracker.loadState(config, exchange, fund);
   const adapter = getAdapter(exchange);
@@ -1465,7 +1467,7 @@ const withFund = (result, pair) => result.then((value) => ({ ...value, pair: pai
  * @returns {Promise<T & {pair: string|null}>} Result carrying its fund
  */
 const runFundWrite = (label, exchange, pair, run) => {
-  const fund = resolveFundPair(exchange, pair);
+  const fund = resolveFundPairOrUndefined(exchange, pair);
   const key = fundKey(exchange, fund);
   return withFund(trackPendingWrite(`${label}:${key}`, () => withFundLock(key, () => run(fund))), fund);
 };
@@ -1479,7 +1481,7 @@ const runFundWrite = (label, exchange, pair, run) => {
 // by the outer cycle's registration, lock and fund.
 module.exports = {
   reconcilePlacementIntent: (exchange = 'coinbase', pair, intentId, action) =>
-    reconcilePlacementIntent(exchange, resolveFundPair(exchange, pair), intentId, action),
+    reconcilePlacementIntent(exchange, resolveFundPairOrUndefined(exchange, pair), intentId, action),
   runIntervalCycle: (exchange = 'coinbase', pair) =>
     runFundWrite('dca-cycle', exchange, pair, (fund) => runIntervalCycle(exchange, fund)),
   resumePendingBuy: (exchange = 'coinbase', pair, orderId) =>
