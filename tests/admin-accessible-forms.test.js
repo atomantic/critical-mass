@@ -4,6 +4,7 @@ const path = require('node:path')
 const vm = require('node:vm')
 const { createRequire } = require('node:module')
 const { pathToFileURL } = require('node:url')
+const { apiClientStub } = require('./api-client-harness')
 
 const adminRequire = createRequire(path.join(__dirname, '..', 'admin', 'package.json'))
 const React = adminRequire('react')
@@ -71,6 +72,7 @@ function createView(component, extraStubs = {}, fetchResponse = null) {
     '../DestructiveConfirmation': { default: ({ children }) => children },
     '../ModalDialog': { default: ({ children }) => children },
     '../../utils/runLifecycle.mjs': { createRunLifecycle: () => ({ execute: value => executed.push(value), dispose() {} }) },
+    '../../utils/apiClient': apiClientStub(fetch),
     '../../utils/dashboardAction.mjs': { runDashboardAction: async action => { await action.request(); await action.onSuccess() } },
     ...extraStubs,
   }

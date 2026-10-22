@@ -1,10 +1,8 @@
-const responseErrorMessage = async (response, fallbackMessage) => {
-  const payload = await response.json().catch(() => ({}))
-  return payload.error || payload.message || fallbackMessage
-}
+import { describeMutationFailure } from './apiClient.js'
 
 const errorText = (error, fallback) => (error instanceof Error && error.message ? error.message : fallback)
 
+// `request` resolves to a shared API client result ({ ok, status, data, error }).
 export const runDashboardAction = async ({
   setBusy,
   request,
@@ -17,15 +15,11 @@ export const runDashboardAction = async ({
   setBusy(true)
 
   try {
-    let response
+    let result
     try {
-      response = await request()
-      if (!response.ok) {
-        addToast({
-          type: 'error',
-          title: failureTitle,
-          message: await responseErrorMessage(response, failureMessage),
-        })
+      result = await request()
+      if (!result.ok) {
+        addToast({ type: 'error', title: failureTitle, message: describeMutationFailure(result, failureMessage) })
         return false
       }
     } catch (error) {
@@ -37,7 +31,7 @@ export const runDashboardAction = async ({
     // unreadable reply body, a failed follow-up refresh) must not be reported
     // as a failure: that invites the operator to repeat an action that took effect.
     try {
-      await onSuccess?.(response)
+      await onSuccess?.(result)
     } catch (error) {
       addToast({
         type: 'warning',

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useId } from 'react'
 import { FileText, Save, Camera, Upload, Check, X, Loader2 } from '../icons'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
-import { apiGet, apiPut, describeMutationFailure } from '../../utils/apiClient'
+import { apiGet, apiPut, apiRequest, describeMutationFailure } from '../../utils/apiClient'
 
 const LS_PROVIDER_KEY = 'updown-screenshot-provider'
 const LS_MODEL_KEY = 'updown-screenshot-model'
@@ -76,13 +76,9 @@ export default function ContractSetup({ initialContract }) {
   // Fetch available AI providers
   const loadProviders = useCallback(async () => {
     setProvidersError('')
-    try {
-      const { ok, status, data, error } = await apiGet('/api/updown/providers')
-      if (!ok || !data.success) throw new Error(ok ? `server error ${status}` : error)
-      setProviders(data.providers || [])
-    } catch (err) {
-      setProvidersError(`Could not load AI providers (${err.message}).`)
-    }
+    const result = await apiGet('/api/updown/providers')
+    if (result.ok) setProviders(result.data.providers || [])
+    else setProvidersError(`Could not load AI providers (${result.error}).`)
   }, [])
   useEffect(() => { loadProviders() }, [loadProviders])
 
@@ -108,17 +104,14 @@ export default function ContractSetup({ initialContract }) {
     setSaving(true)
     setSaved(false)
     setSaveError('')
-    try {
-      const res = await apiPut('/api/updown/contract', contract)
-      if (!res.ok) throw new Error(describeMutationFailure(res, 'Failed to save contract'))
-      showSaved()
-      return true
-    } catch (err) {
-      setSaveError(err.message || 'Failed to save contract')
+    const result = await apiPut('/api/updown/contract', contract)
+    setSaving(false)
+    if (!result.ok) {
+      setSaveError(describeMutationFailure(result, 'Failed to save contract'))
       return false
-    } finally {
-      setSaving(false)
     }
+    showSaved()
+    return true
   }
 
   const handleSave = () => saveContract({
@@ -153,30 +146,21 @@ export default function ContractSetup({ initialContract }) {
     const params = new URLSearchParams({ providerId: selectedProvider })
     if (selectedModel) params.set('model', selectedModel)
 
-    const res = await fetch(`/api/updown/screenshot?${params}`, {
-      method: 'POST',
-      headers: { 'Content-Type': file.type },
-      body: file,
+    // A superseded request aborts; its AbortError is the owner's cue to stay silent.
+    const result = await apiRequest('POST', `/api/updown/screenshot?${params}`, {
+      rawBody: file,
+      contentType: file.type,
       signal: owner.getSignal(),
-    }).catch(err => {
-      if (owner.owns(token)) {
-        setScreenshotError(`Request failed: ${err.message}`)
-        setAnalyzing(false)
-      }
-      return null
-    })
-    if (!owner.owns(token) || !res) return
-
-    const data = await res.json().catch(() => null)
-    if (!owner.owns(token)) return
+    }).catch(() => null)
+    if (!owner.owns(token) || !result) return
     setAnalyzing(false)
 
-    if (!res.ok || !data?.success) {
-      setScreenshotError(data?.error || `Server error ${res.status}`)
+    if (!result.ok) {
+      setScreenshotError(result.status === 0 ? `Request failed: ${result.error}` : result.error)
       return
     }
 
-    setPreview(data.extracted)
+    setPreview(result.data.extracted)
   }, [selectedProvider, selectedModel])
 
   // Drag & drop handlers
