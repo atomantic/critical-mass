@@ -771,7 +771,7 @@ describe('operator authentication resource bounds', () => {
     });
   });
 
-  it('keys the budget on the first X-Forwarded-For hop only when the proxy is trusted (#1581)', async () => {
+  it('keys the budget on the last X-Forwarded-For hop only when the proxy is trusted (#1581)', async () => {
     const authFile = tmpAuthFile();
     seedPassword(authFile);
     await withServer({ authFile, readJSON, writeJSON, now: () => 0, trustProxy: true }, async ({ baseUrl }) => {
@@ -780,6 +780,9 @@ describe('operator authentication resource bounds', () => {
         assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: 'wrong-password' }, attacker)).status, 401);
       }
       assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD }, attacker)).status, 429);
+      // Rotating the client-controlled first hop does not buy a fresh budget.
+      const rotated = { 'X-Forwarded-For': '192.0.2.77, 10.0.0.1' };
+      assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD }, rotated)).status, 429);
       const operator = { 'X-Forwarded-For': '192.0.2.2' };
       assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD }, operator)).status, 200);
       const bogus = { 'X-Forwarded-For': 'not-an-ip' };

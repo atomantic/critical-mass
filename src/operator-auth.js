@@ -203,13 +203,15 @@ const createOperatorAuth = ({
   const attempts = new Map();
   // Behind a reverse proxy every client shares the proxy's socket address, so
   // one party could lock the operator out. With OPERATOR_TRUST_PROXY the proxy
-  // must overwrite X-Forwarded-For; its first valid hop keys the budget.
+  // must append or overwrite X-Forwarded-For; the last hop (the one it wrote)
+  // keys the budget, since earlier hops are client-controlled.
   const peerOf = (req) => {
     const socketPeer = req?.socket?.remoteAddress;
     if (!trustProxy) return socketPeer;
     const raw = req?.headers?.['x-forwarded-for'];
-    const first = (Array.isArray(raw) ? raw[0] : String(raw || '')).split(',')[0].trim();
-    return net.isIP(first) ? first : socketPeer;
+    const hops = (Array.isArray(raw) ? raw.join(',') : String(raw || '')).split(',');
+    const last = hops[hops.length - 1].trim();
+    return net.isIP(last) ? last : socketPeer;
   };
   // A successful credential check must not consume the failed-attempt budget.
   const refundAttempt = (req) => {
@@ -223,7 +225,7 @@ const createOperatorAuth = ({
     for (const [tracked, entry] of attempts) {
       if (time >= entry.expires) attempts.delete(tracked);
     }
-    // Forwarded headers never create a fresh budget. Unknown peers share one.
+    // Without a trusted proxy, forwarded headers never create a fresh budget. Unknown peers share one.
     let entry = attempts.get(peer);
     if (!entry && attempts.size < MAX_TRACKED_PEERS) {
       entry = { count: 0, expires: time + ATTEMPT_WINDOW_MS };
