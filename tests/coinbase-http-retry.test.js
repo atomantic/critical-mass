@@ -85,7 +85,7 @@ describe('coinbase GET 429/5xx retry', () => {
   it('never retries POSTs on 429 or 503', async () => {
     for (const status of [429, 503]) {
       const { adapter, calls, sleeps } = setup([res(status)]);
-      await assert.rejects(() => adapter.placeLimitSell('BTC-USDC', 0.001, 50000, `cid-${status}`));
+      await assert.rejects(() => adapter.cancelOrder(`oid-${status}`));
       assert.equal(calls.length, 1);
       assert.equal(sleeps.length, 0);
     }
