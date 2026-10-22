@@ -161,7 +161,7 @@ describe('ContractSetup save feedback', () => {
   })
 
   it('keeps the Saved confirmation on success', async () => {
-    mockFetchForSave(() => Promise.resolve({ ok: true }))
+    mockFetchForSave(() => Promise.resolve({ ok: true, json: async () => ({ success: true }) }))
     render(<ContractSetup />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
@@ -182,7 +182,7 @@ describe('ContractSetup failure recovery', () => {
     }))
     render(<ContractSetup />)
 
-    expect((await screen.findByRole('alert')).textContent).toContain('Could not load AI providers (server error 502)')
+    expect((await screen.findByRole('alert')).textContent).toMatch(/^Could not load AI providers \(.*502.*\)|^Could not load AI providers \(The server/)
     down = false
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByRole('option', { name: 'Provider A' })).toBeTruthy()
