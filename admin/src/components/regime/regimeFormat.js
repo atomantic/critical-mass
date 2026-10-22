@@ -1,4 +1,5 @@
 // Display formatters shared by RegimeDashboard and its extracted sections.
+import { formatLocalStamp } from '../../utils/format.mjs'
 
 // Format duration in human readable form
 export const formatDuration = (ms) => {
@@ -13,9 +14,4 @@ export const formatDuration = (ms) => {
 }
 
 // Format timestamp as YYYY-MM-DD HH:MM:SS local time
-export const formatTimestamp = (ts) => {
-  if (!ts) return '-'
-  const d = new Date(ts)
-  const pad = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
+export const formatTimestamp = (ts) => (ts ? formatLocalStamp(ts) : '-')

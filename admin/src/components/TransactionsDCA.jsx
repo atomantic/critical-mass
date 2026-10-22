@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
+import { formatLocalStamp } from '../utils/format.mjs'
 import { plural } from '../utils/plural.mjs'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 
@@ -45,9 +46,7 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
     const str = String(ts)
     // If it has time info (contains T or space with time), format in local timezone
     if (str.includes('T') || /\d{2}:\d{2}:\d{2}/.test(str)) {
-      const d = new Date(str)
-      const pad = (n) => String(n).padStart(2, '0')
-      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+      return formatLocalStamp(str)
     }
     // Otherwise just return the date as-is (no fake 00:00:00)
     return str

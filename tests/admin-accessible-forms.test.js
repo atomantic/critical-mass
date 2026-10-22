@@ -71,6 +71,7 @@ function createView(component, extraStubs = {}, fetchResponse = null) {
     '../../utils/pnlFormat.mjs': { pnlColorClass: n => (n >= 0 ? 'text-green-400' : 'text-red-400'), signedPrefix: n => (n >= 0 ? '+' : '') },
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../utils/pnlFormat.mjs': { pnlColorClass: n => (n >= 0 ? 'text-green-400' : 'text-red-400'), signedPrefix: n => (n >= 0 ? '+' : '') },
+    '../../utils/format.mjs': { formatUsd: n => `${Number(n).toFixed(2)}` },
     '../DestructiveConfirmation': { default: ({ children }) => children },
     '../ModalDialog': { default: ({ children }) => children },
     '../../utils/runLifecycle.mjs': { createRunLifecycle: () => ({ execute: value => executed.push(value), dispose() {} }) },

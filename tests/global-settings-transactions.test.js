@@ -60,6 +60,7 @@ function createView(name) {
       if (name === 'react') return hooks
       if (name === '../utils/plural.mjs') return { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` }
       if (name === '../utils/pnlFormat.mjs') return { pnlColorClass: n => (n >= 0 ? 'text-green-400' : 'text-red-400'), signedPrefix: n => (n >= 0 ? '+' : '') }
+      if (name === '../utils/format.mjs') return { formatBytes: n => String(n) }
       if (name === '../utils/actionFailure.mjs') return { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` }
       if (name === '../utils/apiClient' || name === '../utils/apiClient.js') {
         const parseBody = res => res.json().catch(() => null)
