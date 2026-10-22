@@ -47,7 +47,7 @@ it('trade history shows a failed read as an error, not "No trades recorded yet",
   let down = true
   vi.stubGlobal('fetch', vi.fn(async () => down
     ? { ok: false, status: 500, json: async () => ({}) }
-    : ok({ success: true, trades: [{ id: 1, date: '2026-09-09', cost: 500, returnAmount: 600, pnl: 100 }], summary: null })))
+    : ok({ success: true, items: [{ id: 1, date: '2026-09-09', cost: 500, returnAmount: 600, pnl: 100 }], summary: null })))
   render(<TradeHistory />)
   expect((await screen.findByRole('alert')).textContent).toContain('Could not load trade history.')
   expect(screen.queryByText('No trades recorded yet')).toBeNull()

@@ -29,7 +29,7 @@ describe('Sentinel dashboard failed reads', () => {
     let down = true
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (url === '/api/sentinel/status') return down ? unavailable : ok(sentinelStatus)
-      if (url.startsWith('/api/sentinel/alerts')) return ok({ alerts: [] })
+      if (url.startsWith('/api/sentinel/alerts')) return ok({ alerts: [], items: [] })
       return ok({})
     }))
     render(<SentinelDashboard />)
@@ -65,10 +65,10 @@ describe('Sentinel dashboard failed reads', () => {
     vi.stubGlobal('fetch', vi.fn((url) => {
       if (url === '/api/sentinel/status') return Promise.resolve(ok(sentinelStatus))
       if (url === '/api/sentinel/alerts') {
-        return new Promise(resolve => { releaseAll = () => resolve(ok({ alerts: [{ id: 'a', severity: 'info', title: 'Info alert' }] })) })
+        return new Promise(resolve => { releaseAll = () => resolve(ok({ alerts: [{ id: 'a', severity: 'info', title: 'Info alert' }], items: [{ id: 'a', severity: 'info', title: 'Info alert' }] })) })
       }
       if (url === '/api/sentinel/alerts?severity=critical') {
-        return Promise.resolve(ok({ alerts: [{ id: 'c', severity: 'critical', title: 'Critical alert' }] }))
+        return Promise.resolve(ok({ alerts: [{ id: 'c', severity: 'critical', title: 'Critical alert' }], items: [{ id: 'c', severity: 'critical', title: 'Critical alert' }] }))
       }
       return Promise.resolve(ok({}))
     }))
@@ -92,7 +92,7 @@ describe('UpDown dashboard failed status read', () => {
       if (url === '/api/updown/status') {
         return down ? unavailable : ok({ success: true, running: true, contract: { target: 70000, stop: 65000, range: 500, direction: 'up' }, position: null })
       }
-      if (url === '/api/updown/trades') return ok({ success: true, trades: [], summary: null })
+      if (url === '/api/updown/trades') return ok({ success: true, trades: [], items: [], summary: null })
       if (url === '/api/updown/signals') return ok({ signals: [] })
       if (url === '/api/updown/providers') return ok({ success: true, providers: [] })
       return ok({})

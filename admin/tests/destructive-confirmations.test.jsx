@@ -22,7 +22,7 @@ beforeEach(() => {
       if (options.method === 'DELETE' && !fail) providers = []
       return { ok: !fail, status: fail ? 400 : 200, json: async () => fail ? { error: failMessage } : ({}) }
     }
-    return { ok: true, json: async () => url === '/api/providers' ? { providers, activeProvider: 'provider-1' } : url === '/api/runs?limit=20' ? { runs: [] } : url.includes('updown') ? { success: true, trades: [trade] } : url.endsWith('status') ? { config: { feeds: [{ name: 'Example', url: 'https://example.com/rss', enabled: true }] } } : { alerts } }
+    return { ok: true, json: async () => url === '/api/providers' ? { providers, activeProvider: 'provider-1' } : url === '/api/runs?limit=20' ? { runs: [] } : url.includes('updown') ? { success: true, trades: [trade], items: [trade] } : url.endsWith('status') ? { config: { feeds: [{ name: 'Example', url: 'https://example.com/rss', enabled: true }] } } : { alerts, items: alerts } }
   }))
 })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
