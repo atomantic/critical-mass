@@ -1426,6 +1426,29 @@ const isIntentLockStale = (lock) => {
 };
 
 /**
+ * Remove a stale lock under a second, short-lived reclaim mutex. Reclaimers are
+ * serialized and re-judge staleness while holding it, so none can delete a lock
+ * another process acquired after the check (a dead owner's lock is only ever
+ * removed by a reclaimer). Failures are swallowed; the caller's deadline bounds retries.
+ * @param {string} lock - Lock directory
+ */
+const reclaimStaleIntentLock = (lock) => {
+  const mutex = `${lock}.reclaim`;
+  try {
+    fs.mkdirSync(mutex, { mode: 0o700 });
+  } catch (err) {
+    // A reclaimer that died holding the mutex must not wedge reclamation forever.
+    try { if (err.code === 'EEXIST' && Date.now() - fs.statSync(mutex).mtimeMs > INTENT_LOCK_STALE_MS) fs.rmSync(mutex, { recursive: true, force: true }); } catch { /* raced */ }
+    return;
+  }
+  try {
+    if (isIntentLockStale(lock)) fs.rmSync(lock, { recursive: true, force: true });
+  } catch { /* retried until the caller's deadline */ } finally {
+    fs.rmSync(mutex, { recursive: true, force: true });
+  }
+};
+
+/**
  * Run `fn` holding the cross-process lock for a fund's intents file.
  * @template T
  * @param {string} file - Intents file path
@@ -1442,18 +1465,8 @@ const withPlacementIntentsLock = (file, fn) => {
       break;
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
-      if (isIntentLockStale(lock)) {
-        // Rename aside first so concurrent reclaimers cannot remove a lock another process just took.
-        const aside = `${lock}.stale-${process.pid}-${randomUUID()}`;
-        try {
-          fs.renameSync(lock, aside);
-          // Re-judge what was actually moved: a contender may have reclaimed and re-acquired between our check and the rename.
-          if (isIntentLockStale(aside)) fs.rmSync(aside, { recursive: true, force: true });
-          else fs.renameSync(aside, lock);
-        } catch { /* lost the reclaim race */ }
-        continue;
-      }
       if (Date.now() > deadline) throw new Error(`placement intents lock ${lock} still held after ${INTENT_LOCK_TIMEOUT_MS / 1000}s; refusing to write without it`);
+      if (isIntentLockStale(lock)) reclaimStaleIntentLock(lock);
       sleepSync(INTENT_LOCK_POLL_MS);
     }
   }

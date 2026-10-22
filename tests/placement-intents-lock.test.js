@@ -72,4 +72,16 @@ describe('placement intents cross-process lock', () => {
     const intent = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'x' });
     assert.equal(stateTracker.loadPlacementIntents(EXCHANGE, PAIR)[0].id, intent.id);
   });
+
+  it('still honours the deadline when a stale lock cannot be reclaimed', () => {
+    const lock = `${stateTracker.getPlacementIntentsFile(EXCHANGE, PAIR)}.lock`;
+    fs.mkdirSync(lock, { recursive: true });
+    fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: 2 ** 22 - 1, host: os.hostname() }));
+    fs.mkdirSync(`${lock}.reclaim`); // another reclaimer holds the mutex, so reclamation keeps failing
+    const realNow = Date.now.bind(Date);
+    let skew = 0;
+    mock.method(Date, 'now', () => (skew += 4000, realNow() + skew));
+
+    assert.throws(() => stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'x' }), /still held/);
+  });
 });
