@@ -30,7 +30,7 @@ import AlertBanner from './components/sentinel/AlertBanner'
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
 import { pairQuery as buildPairQuery } from './utils/api'
-import { describeActionFailure } from './utils/actionFailure.mjs'
+import { apiGet, apiPost, describeMutationFailure } from './utils/apiClient'
 
 // Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "CRO_USD" -> "USD", "BTCUSD" -> "USD")
 export function getQuoteCurrency(productId) {
@@ -291,18 +291,12 @@ function AppContent() {
   // Fetch list of configured exchanges
   // Resolves true when the list loaded, false when it did not (never rejects).
   const fetchExchanges = async (autoSelect = false) => {
-    let data
-    try {
-      const res = await fetch('/api/exchanges')
-      if (!res.ok) {
-        setExchangesError(`Gateway returned ${res.status}`)
-        return false
-      }
-      data = await res.json()
-    } catch (err) {
-      setExchangesError(err?.message || 'Network error')
+    const result = await apiGet('/api/exchanges')
+    if (!result.ok) {
+      setExchangesError(result.status ? `Gateway returned ${result.status}` : result.error)
       return false
     }
+    const data = result.data
     setExchangesError(null)
     setExchangesLoaded(true)
     setExchanges(data.exchanges || [])
@@ -371,27 +365,25 @@ function AppContent() {
       actionFenceRef.current.navigationGeneration === navigationGeneration &&
       summaryRequestRef.current.generation === requestGeneration
     try {
-      const res = await fetch(`/api/${currentExchange}/summary${pairQuery()}`, { signal: controller.signal })
+      const result = await apiGet(`/api/${currentExchange}/summary${pairQuery()}`, { signal: controller.signal })
       if (!isCurrent()) return
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        if (!isCurrent()) return
-        setError(`Could not load ${currentExchange}/${currentPair}: ${body.error || `HTTP ${res.status}`}`)
+      if (!result.ok) {
+        // No reply read (network failure or a non-JSON 2xx page): the gateway is unreachable.
+        const unreadable = result.status === 0 || (result.status < 400 && result.data === null)
+        setError(unreadable
+          ? `Could not reach the gateway to load ${currentExchange}/${currentPair}.`
+          : `Could not load ${currentExchange}/${currentPair}: ${result.data?.error || `HTTP ${result.status}`}`)
         setLoading(false)
         return
       }
-      const data = await res.json()
-      if (!isCurrent()) return
+      const data = result.data
       setSummarySnapshot({ fund: reqFund, data })
       setLoading(false)
 
       // Also refresh exchanges list to update badges (enabled/dryRun status)
       fetchExchanges()
     } catch (err) {
-      if (err?.name !== 'AbortError' && isCurrent()) {
-        setError(`Could not reach the gateway to load ${currentExchange}/${currentPair}.`)
-        setLoading(false)
-      }
+      if (err?.name !== 'AbortError') throw err
     } finally {
       if (summaryRequestRef.current.controller === controller) summaryRequestRef.current.controller = null
     }
@@ -411,23 +403,22 @@ function AppContent() {
       actionFenceRef.current.navigationGeneration === navigationGeneration &&
       statusRequestRef.current.generation === requestGeneration
     try {
-      const res = await fetch(`/api/${currentExchange}/regime/status${pairQuery()}`, { signal: controller.signal })
+      const result = await apiGet(`/api/${currentExchange}/regime/status${pairQuery()}`, { signal: controller.signal })
       if (!isCurrent()) return
-      if (!res.ok) throw new Error('Failed to fetch engine status')
-      const data = await res.json()
-      if (!isCurrent()) return
-      if (typeof data.status?.isRunning !== 'boolean') throw new Error('Invalid engine status')
+      const data = result.data
+      if (!result.ok || typeof data?.status?.isRunning !== 'boolean') {
+        setRegimeRunning(null)
+        setRegimeDryRun(null)
+        setRegimeLifecycle(null)
+        setStatusError('Failed to fetch engine status')
+        return
+      }
       setStatusError(null)
       setRegimeRunning(data.status?.isRunning || false)
       setRegimeDryRun(data.status?.isDryRun || false)
       setRegimeLifecycle(data.status?.lifecycle?.lifecycle || 'active')
     } catch (err) {
-      if (err?.name !== 'AbortError' && isCurrent()) {
-        setRegimeRunning(null)
-        setRegimeDryRun(null)
-        setRegimeLifecycle(null)
-        setStatusError('Failed to fetch engine status')
-      }
+      if (err?.name !== 'AbortError') throw err
     } finally {
       if (statusRequestRef.current.controller === controller) statusRequestRef.current.controller = null
     }
@@ -437,20 +428,15 @@ function AppContent() {
   const handleStartRegime = async () => {
     const actionGeneration = beginFundAction(setStarting)
     try {
-      const res = await fetch(`/api/${currentExchange}/regime/start${pairQuery()}`, { method: 'POST' })
+      const result = await apiPost(`/api/${currentExchange}/regime/start${pairQuery()}`, undefined, { allowEmpty: true })
       if (!isCurrentFundAction(actionGeneration)) return
-      if (res.ok) {
+      if (result.ok) {
         invalidateStatusRead()
         setRegimeRunning(true)
         fetchRegimeStatus()
       } else {
-        const err = await res.json().catch(() => ({}))
-        if (!isCurrentFundAction(actionGeneration)) return
-        addToast({ type: 'error', title: 'Failed to start regime engine', message: describeActionFailure(res.status, err) })
+        addToast({ type: 'error', title: 'Failed to start regime engine', message: describeMutationFailure(result) })
       }
-    } catch (err) {
-      if (!isCurrentFundAction(actionGeneration)) return
-      addToast({ type: 'error', title: 'Failed to start regime engine', message: err.message || 'Network error' })
     } finally {
       if (isCurrentFundAction(actionGeneration)) setStarting(false)
     }
@@ -460,19 +446,14 @@ function AppContent() {
   const handleStopRegime = async () => {
     const actionGeneration = beginFundAction(setStopping)
     try {
-      const res = await fetch(`/api/${currentExchange}/regime/stop${pairQuery()}`, { method: 'POST' })
+      const result = await apiPost(`/api/${currentExchange}/regime/stop${pairQuery()}`, undefined, { allowEmpty: true })
       if (!isCurrentFundAction(actionGeneration)) return
-      if (res.ok) {
+      if (result.ok) {
         invalidateStatusRead()
         setRegimeRunning(false)
       } else {
-        const err = await res.json().catch(() => ({}))
-        if (!isCurrentFundAction(actionGeneration)) return
-        addToast({ type: 'error', title: 'Failed to stop regime engine', message: describeActionFailure(res.status, err) })
+        addToast({ type: 'error', title: 'Failed to stop regime engine', message: describeMutationFailure(result) })
       }
-    } catch (err) {
-      if (!isCurrentFundAction(actionGeneration)) return
-      addToast({ type: 'error', title: 'Failed to stop regime engine', message: err.message || 'Network error' })
     } finally {
       if (isCurrentFundAction(actionGeneration)) setStopping(false)
     }
@@ -488,13 +469,9 @@ function AppContent() {
   const submitCloseFund = async () => {
     const actionGeneration = beginFundAction(setClosing)
     try {
-      const res = await fetch(`/api/${currentExchange}/regime/close${pairQuery()}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: closeFundReason || undefined }),
-      })
+      const result = await apiPost(`/api/${currentExchange}/regime/close${pairQuery()}`, { reason: closeFundReason || undefined }, { allowEmpty: true })
       if (!isCurrentFundAction(actionGeneration)) return
-      if (res.ok) {
+      if (result.ok) {
         invalidateStatusRead()
         setRegimeLifecycle('draining')
         setCloseFundDialogOpen(false)
@@ -506,13 +483,8 @@ function AppContent() {
           message: 'New entries blocked. Fund will close after the current cycle\'s TP fills.',
         })
       } else {
-        const err = await res.json().catch(() => ({}))
-        if (!isCurrentFundAction(actionGeneration)) return
-        addToast({ type: 'error', title: 'Failed to close fund', message: describeActionFailure(res.status, err) })
+        addToast({ type: 'error', title: 'Failed to close fund', message: describeMutationFailure(result) })
       }
-    } catch (err) {
-      if (!isCurrentFundAction(actionGeneration)) return
-      addToast({ type: 'error', title: 'Failed to close fund', message: err.message || 'Network error' })
     } finally {
       if (isCurrentFundAction(actionGeneration)) setClosing(false)
     }
@@ -527,9 +499,9 @@ function AppContent() {
   const submitReopenFund = async () => {
     const actionGeneration = beginFundAction(setReopening)
     try {
-      const res = await fetch(`/api/${currentExchange}/regime/reopen${pairQuery()}`, { method: 'POST' })
+      const result = await apiPost(`/api/${currentExchange}/regime/reopen${pairQuery()}`, undefined, { allowEmpty: true })
       if (!isCurrentFundAction(actionGeneration)) return
-      if (res.ok) {
+      if (result.ok) {
         invalidateStatusRead()
         setRegimeLifecycle('active')
         setReopenFundDialogOpen(false)
@@ -541,13 +513,8 @@ function AppContent() {
           message: 'Fund lifecycle restored to active. Click Start to resume trading.',
         })
       } else {
-        const err = await res.json().catch(() => ({}))
-        if (!isCurrentFundAction(actionGeneration)) return
-        addToast({ type: 'error', title: 'Failed to reopen fund', message: describeActionFailure(res.status, err) })
+        addToast({ type: 'error', title: 'Failed to reopen fund', message: describeMutationFailure(result) })
       }
-    } catch (err) {
-      if (!isCurrentFundAction(actionGeneration)) return
-      addToast({ type: 'error', title: 'Failed to reopen fund', message: err.message || 'Network error' })
     } finally {
       if (isCurrentFundAction(actionGeneration)) setReopening(false)
     }
@@ -561,18 +528,13 @@ function AppContent() {
   const handleExecuteResetDryRun = async () => {
     const actionGeneration = beginFundAction(setResetting)
     try {
-      const res = await fetch(`/api/${currentExchange}/regime/dry-run/reset${pairQuery()}`, { method: 'POST' })
+      const result = await apiPost(`/api/${currentExchange}/regime/dry-run/reset${pairQuery()}`, undefined, { allowEmpty: true })
       if (!isCurrentFundAction(actionGeneration)) return
-      if (res.ok) {
+      if (result.ok) {
         invalidateStatusRead()
       } else {
-        const err = await res.json().catch(() => ({}))
-        if (!isCurrentFundAction(actionGeneration)) return
-        addToast({ type: 'error', title: 'Failed to reset dry-run state', message: describeActionFailure(res.status, err) })
+        addToast({ type: 'error', title: 'Failed to reset dry-run state', message: describeMutationFailure(result) })
       }
-    } catch (err) {
-      if (!isCurrentFundAction(actionGeneration)) return
-      addToast({ type: 'error', title: 'Failed to reset dry-run state', message: err.message || 'Network error' })
     } finally {
       if (isCurrentFundAction(actionGeneration)) {
         setResetting(false)

@@ -1,4 +1,5 @@
 import { describeConfigSaveError } from '../utils/configSaveError.mjs'
+import { apiGet, apiPost, apiPut, apiPatch } from '../utils/apiClient'
 import { buildSavePayload } from '../utils/configSavePayload.mjs'
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { TIERS as CELESTIAL_TIERS, formatTierCapitalRange } from '../../../shared/celestial-tiers.mjs'
@@ -172,18 +173,15 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
 
   // Fetch aggressiveness presets for regime mode
   const loadPresets = useCallback(async (isStale = () => false) => {
-    try {
-      const res = await fetch('/api/presets/aggressiveness')
-      const data = res.ok ? await res.json() : null
-      if (isStale()) return
-      if (data?.presets) {
-        setPresets(data.presets)
-        setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
-        setPresetsError(null)
-      } else setPresetsError(res.ok ? 'Presets unavailable' : `Presets unavailable (HTTP ${res.status})`)
-    } catch (err) {
-      if (!isStale()) setPresetsError('Presets unavailable: request failed')
-    }
+    const result = await apiGet('/api/presets/aggressiveness')
+    if (isStale()) return
+    const data = result.ok ? result.data : null
+    if (data?.presets) {
+      setPresets(data.presets)
+      setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
+      setPresetsError(null)
+    } else if (result.ok) setPresetsError('Presets unavailable')
+    else setPresetsError(result.status ? `Presets unavailable (HTTP ${result.status})` : 'Presets unavailable: request failed')
   }, [])
   useEffect(() => {
     if (!isRegime) return
@@ -224,13 +222,9 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     setSavingPresets(true)
     setPresetsMessage(null)
     try {
-      const res = await fetch('/api/presets/aggressiveness', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingPresets),
-      })
-      if (res.ok) {
-        const data = await res.json().catch(() => null)
+      const result = await apiPut('/api/presets/aggressiveness', editingPresets, { allowEmpty: true })
+      if (result.ok) {
+        const data = result.data
         if (data) {
           setPresets(data.presets)
           setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
@@ -238,11 +232,9 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         setPresetsDirty(false)
         setPresetsMessage({ type: 'success', text: 'Presets saved!' })
       } else {
-        const err = await res.json().catch(() => ({}))
-        setPresetsMessage({ type: 'error', text: err.errors?.join(', ') || 'Failed to save' })
+        const reason = result.data?.errors?.join(', ') || (result.status ? '' : result.error)
+        setPresetsMessage({ type: 'error', text: reason || 'Failed to save' })
       }
-    } catch (err) {
-      setPresetsMessage({ type: 'error', text: err.message || 'Failed to save' })
     } finally {
       setSavingPresets(false)
     }
@@ -284,6 +276,12 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
 
   const pairQuery = pair ? `?pair=${encodeURIComponent(pair)}` : ''
 
+  // Operator-facing reason for a failed config write. A reply that was never
+  // read (status 0) has no body, so the client's own message stands in for it.
+  const describeWriteFailure = (result) => (
+    describeConfigSaveError(result.status || null, result.status ? result.data : { message: result.error }).message
+  )
+
   const handleSave = async () => {
     if (pendingWriteRef.current > 0) return // a toggle (or another save) is already in flight
     pendingWriteRef.current += 1
@@ -291,12 +289,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     setMessage(null)
     const payload = buildSavePayload(config, baselineRef.current)
     try {
-      const res = await fetch(`/api/${exchange}/config${pairQuery}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      const result = await res.json().catch(() => ({}))
+      const res = await apiPut(`/api/${exchange}/config${pairQuery}`, payload, { allowEmpty: true })
+      const result = res.data || {}
       if (res.ok) {
         if (result.config) loadDraft(result.config)
         setMessage({ type: 'success', text: 'Configuration saved!' })
@@ -314,10 +308,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         })
         onSave?.()
       } else {
-        setMessage({ type: 'error', text: describeConfigSaveError(res.status, result).message })
+        setMessage({ type: 'error', text: describeWriteFailure(res) })
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: describeConfigSaveError(null, err).message })
     } finally {
       pendingWriteRef.current -= 1
       setSaving(false)
@@ -342,15 +334,15 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // full save — is ever in flight, so out-of-order responses can't persist
   // the opposite of the final UI state, and a full save can't submit an
   // unconfirmed optimistic toggle value. try/finally is required here — a
-  // network rejection must still decrement the ref, or the sync effect stays
-  // blocked forever and the toggle is stuck showing an unsaved value.
+  // thrown render-time error must still decrement the ref, or the sync effect
+  // stays blocked forever and the toggle is stuck showing an unsaved value.
   const persistToggle = async (label, doFetch, optimistic, revert, adoptPersisted) => {
     pendingWriteRef.current += 1
     setToggleBusy(true)
     optimistic()
     try {
       const res = await doFetch()
-      const result = await res.json().catch(() => ({}))
+      const result = res.data || {}
       if (res.ok) {
         setMessage({ type: 'success', text: `${label} saved` })
         // restartNeeded is derived from engine vs saved state — the optimistic
@@ -368,11 +360,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         onSave?.()
       } else {
         revert()
-        setMessage({ type: 'error', text: describeConfigSaveError(res.status, result).message })
+        setMessage({ type: 'error', text: describeWriteFailure(res) })
       }
-    } catch (err) {
-      revert()
-      setMessage({ type: 'error', text: describeConfigSaveError(null, err).message })
     } finally {
       pendingWriteRef.current -= 1
       setToggleBusy(false)
@@ -387,14 +376,14 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const handleRestartEngine = async () => {
     setRestarting(true)
     setMessage(null)
-    const stop = await fetch(`/api/${exchange}/regime/stop${pairQuery}`, { method: 'POST' }).catch(() => null)
-    if (!stop?.ok) {
-      const stopErr = stop ? await stop.json().catch(() => ({})) : {}
+    const stop = await apiPost(`/api/${exchange}/regime/stop${pairQuery}`, undefined, { allowEmpty: true })
+    if (!stop.ok) {
+      const stopErr = stop.data || {}
       const alreadyStopped = typeof stopErr.error === 'string' && stopErr.error.includes('not running')
       if (!alreadyStopped) {
         // Starting now would only answer "already running" and hide why the
         // stop failed, while the engine keeps trading in its previous mode.
-        const reason = stop
+        const reason = stop.status
           ? (stopErr.error || `HTTP ${stop.status}`)
           : 'the server is unreachable'
         setMessage({ type: 'error', text: `Could not stop the engine to apply the change (${reason}). It may still be running with its previous Dry Run setting — retry the restart.` })
@@ -403,8 +392,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         return
       }
     }
-    const start = await fetch(`/api/${exchange}/regime/start${pairQuery}`, { method: 'POST' }).catch(() => null)
-    if (start && start.ok) {
+    const start = await apiPost(`/api/${exchange}/regime/start${pairQuery}`, undefined, { allowEmpty: true })
+    if (start.ok) {
       setMessage({ type: 'success', text: 'Engine restarted — change applied' })
       onSave?.()
       onRestart?.() // refresh engine status so the derived restart banner clears
@@ -412,8 +401,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       // Stop succeeded, so the engine is now STOPPED rather than running its
       // old mode. Say so explicitly — "failed to restart" alone would imply
       // nothing changed.
-      const err = start ? await start.json().catch(() => ({})) : {}
-      const reason = err.error || (start ? `HTTP ${start.status}` : 'the server is unreachable')
+      const reason = start.data?.error || (start.status ? `HTTP ${start.status}` : 'the server is unreachable')
       setMessage({ type: 'error', text: `Engine stopped but did not start again (${reason}) — start it manually from the dashboard.` })
       onRestart?.() // refresh engine status to reflect the stop
     }
@@ -425,11 +413,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     const next = !config.dryRun
     persistToggle(
       'Dry Run',
-      () => fetch(`/api/${exchange}/config${pairQuery}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dryRun: next }),
-      }),
+      () => apiPatch(`/api/${exchange}/config${pairQuery}`, { dryRun: next }, { allowEmpty: true }),
       () => setConfig(prev => ({ ...prev, dryRun: next })),
       () => setConfig(prev => ({ ...prev, dryRun: !next })),
       saved => saved && loadDraft(saved),
@@ -444,11 +428,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       const next = !regimeConfig.enabled
       persistToggle(
         'Enabled',
-        () => fetch(`/api/${exchange}/regime/config${pairQuery}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: next }),
-        }),
+        () => apiPut(`/api/${exchange}/regime/config${pairQuery}`, { enabled: next }, { allowEmpty: true }),
         () => setConfig(prev => ({ ...prev, regime: { ...prev.regime, enabled: next } })),
         () => setConfig(prev => ({ ...prev, regime: { ...prev.regime, enabled: !next } })),
         saved => saved && adoptSaved(prev => {
@@ -465,11 +445,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       const next = !config.enabled
       persistToggle(
         'Enabled',
-        () => fetch(`/api/${exchange}/config${pairQuery}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: next }),
-        }),
+        () => apiPatch(`/api/${exchange}/config${pairQuery}`, { enabled: next }, { allowEmpty: true }),
         () => setConfig(prev => ({ ...prev, enabled: next })),
         () => setConfig(prev => ({ ...prev, enabled: !next })),
         saved => saved && loadDraft(saved),
