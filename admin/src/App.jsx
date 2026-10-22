@@ -627,7 +627,7 @@ function AppContent() {
         {/* Header */}
         <header className="bg-gray-800 border-b border-gray-700">
           <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-2 md:py-4">
-            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2 lg:gap-3">
+            <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-2 xl:gap-3">
               {/* Top row: Title + Exchange selector */}
               <div className="flex items-center justify-between">
                 <Link to="/" className="text-lg md:text-2xl font-bold text-white hover:text-gray-200 flex items-center gap-2 whitespace-nowrap min-w-0 shrink">
@@ -652,7 +652,7 @@ function AppContent() {
                   </svg>
                   Critical Mass
                 </Link>
-                <div className="flex items-center gap-1.5 lg:hidden shrink-0">
+                <div className="flex items-center gap-1.5 xl:hidden shrink-0">
                   {/* Hamburger menu button for mobile */}
                   <button
                     onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -673,13 +673,13 @@ function AppContent() {
               </div>
 
               {/* Bottom row on mobile / Right side on desktop */}
-              <nav aria-label="Sections" className="hidden lg:flex items-center justify-end gap-4">
+              <nav aria-label="Sections" className="hidden xl:flex items-center justify-end gap-4">
                 {SECTION_LINKS.map(({ to, label, end }) => (
                   <NavLink
                     key={to}
                     to={to}
                     end={end}
-                    className={({ isActive }) => `min-h-11 inline-flex items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm hover:text-white transition-colors whitespace-nowrap ${isActive ? 'text-white underline underline-offset-4 decoration-blue-500' : 'text-gray-400'}`}
+                    className={({ isActive }) => `min-h-11 inline-flex items-center px-2 xl:px-3 py-1.5 text-xs xl:text-sm hover:text-white transition-colors whitespace-nowrap ${isActive ? 'text-white underline underline-offset-4 decoration-blue-500' : 'text-gray-400'}`}
                   >
                     {label}
                   </NavLink>
@@ -689,7 +689,7 @@ function AppContent() {
 
             {/* Mobile menu dropdown */}
             {mobileMenuOpen && (
-              <nav aria-label="Sections" className="lg:hidden mt-2 pt-2 border-t border-gray-700 flex flex-col gap-1">
+              <nav aria-label="Sections" className="xl:hidden mt-2 pt-2 border-t border-gray-700 flex flex-col gap-1">
                 {SECTION_LINKS.map(({ to, label, end }) => (
                   <NavLink
                     key={to}
