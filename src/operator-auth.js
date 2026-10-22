@@ -141,6 +141,7 @@ const makeRecord = async (password) => {
  *   configured secret, a generated owner-only secret file that enrollment must
  *   present (X-Operator-Bootstrap). It never enables a remote listener.
  * @param {Function} [opts.onPasswordChanged] Called after successful credential persistence
+ * @param {Function} [opts.onSessionsRevoked] Called after sign-out bumps the session epoch
  * @param {Function} [opts.onPasswordRemoved]
  * @param {() => number} [opts.now] Clock for the peer attempt window
  * @param {(req: import('express').Request) => boolean} [opts.isTrustedBootstrapRequest]
@@ -197,6 +198,7 @@ const createOperatorAuth = ({
   bootstrapSecretFile = '',
   localBootstrapSecretFile = '',
   onPasswordChanged = null,
+  onSessionsRevoked = null,
   onPasswordRemoved = null,
   isTrustedBootstrapRequest = isLoopbackRequest,
   now = Date.now,
@@ -509,6 +511,7 @@ const createOperatorAuth = ({
       // Only a valid session may revoke: bump the epoch so a copied cookie dies too.
       if (auth?.source === 'session' && hasPassword()) {
         persist({ ...record, sessionEpoch: sessionEpoch() + 1 });
+        onSessionsRevoked?.();
       }
       res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict', path: '/' });
       res.status(204).send();

@@ -544,7 +544,8 @@ describe('operator authentication boundary', () => {
   it('sign-out revokes a copied session cookie and sessions use a key independent of the password hash (#1583)', async () => {
     const authFile = tmpAuthFile();
     seedPassword(authFile);
-    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+    let revoked = 0;
+    await withServer({ authFile, readJSON, writeJSON, onSessionsRevoked: () => { revoked += 1; } }, async ({ baseUrl }) => {
       const login = await fetch(`${baseUrl}/api/auth/session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -566,6 +567,7 @@ describe('operator authentication boundary', () => {
       const out = await fetch(`${baseUrl}/api/auth/session`, { method: 'DELETE', headers: { Cookie: cookie, Origin: baseUrl } });
       assert.equal(out.status, 204);
       assert.equal(readJSON(authFile, null).sessionEpoch, 2);
+      assert.equal(revoked, 1);
       assert.equal((await probe(cookie)).authenticated, false);
     });
   });
