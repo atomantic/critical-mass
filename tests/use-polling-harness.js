@@ -20,7 +20,20 @@ async function compileUsePollingCode() {
 function loadUsePolling(code, React, timers = { setInterval, clearInterval }) {
   const mod = { exports: {} }
   vm.runInNewContext(code, { module: mod, exports: mod.exports, require: () => React, ...timers })
-  return mod.exports
+  return asHookModule(mod.exports.default || mod.exports.usePolling)
 }
 
-module.exports = { compileUsePollingCode, loadUsePolling }
+/**
+ * Wrap a hook so a stub resolves whether the bundler's CJS interop hands the
+ * component the module object or its `default` (rolldown node-mode interop
+ * makes `default` the whole module on some versions).
+ */
+function asHookModule(hook) {
+  const fn = (...args) => hook(...args)
+  fn.__esModule = true
+  fn.default = fn
+  fn.usePolling = fn
+  return fn
+}
+
+module.exports = { compileUsePollingCode, loadUsePolling, asHookModule }

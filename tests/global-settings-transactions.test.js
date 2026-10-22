@@ -1,5 +1,6 @@
 const { before, describe, it } = require('node:test')
 const assert = require('node:assert/strict')
+const { asHookModule } = require('./use-polling-harness')
 const path = require('node:path')
 const vm = require('node:vm')
 const { createRequire } = require('node:module')
@@ -96,7 +97,7 @@ function createView(name) {
           ),
         }
       }
-      if (name === '../hooks/usePolling') { const usePolling = (fn, ms, { immediate = true, enabled = true } = {}) => { hooks.useEffect(() => { if (enabled && immediate) fn() }) }; return { __esModule: true, default: usePolling, usePolling } }
+      if (name === '../hooks/usePolling') { const usePolling = (fn, ms, { immediate = true, enabled = true } = {}) => { hooks.useEffect(() => { if (enabled && immediate) fn() }) }; return asHookModule(usePolling) }
       if (name === './ModalDialog') return ({ children }) => children
       throw new Error(`Unexpected fixture import ${name}`)
     },
