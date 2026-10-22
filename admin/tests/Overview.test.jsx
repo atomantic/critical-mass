@@ -36,7 +36,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks() })
 
 describe('Overview read failures', () => {
   it('shows an exchange error instead of the empty state and retries successfully', async () => {
-    fetch.mockResolvedValueOnce({ ok: false, status: 500 })
+    fetch.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ exchanges: [] }) })
 
     render(<Overview />)
@@ -54,7 +54,7 @@ describe('Overview read failures', () => {
       if (url === '/api/exchanges') return { ok: true, json: async () => ({ exchanges: exchangeList }) }
       if (url.includes('/coinbase/')) return { ok: true, json: async () => ({ status: status(100, 7) }) }
       if (url.includes('/gemini/')) return fetch.geminiFails
-        ? { ok: false, status: 504 }
+        ? { ok: false, status: 504, json: async () => ({}) }
         : { ok: true, json: async () => ({ status: status(900, 90) }) }
       return { ok: true, json: async () => ({}) }
     })
