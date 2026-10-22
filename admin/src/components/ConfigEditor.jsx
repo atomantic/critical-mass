@@ -5,6 +5,7 @@ import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { TIERS as CELESTIAL_TIERS, formatTierCapitalRange } from '../../../shared/celestial-tiers.mjs'
 import { useState, useEffect, useId, useRef, useCallback } from 'react'
 import ToggleSwitch from './ToggleSwitch'
+import { useNotify, useToast } from './Toast'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 
 // Input component defined OUTSIDE ConfigEditor to prevent re-creation on every render
@@ -100,14 +101,26 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const [saving, setSaving] = useState(false)
   const [toggleBusy, setToggleBusy] = useState(false)
   const [restarting, setRestarting] = useState(false)
-  const [message, setMessage] = useState(null)
+  const notify = useNotify()
+  const { removeToast } = useToast()
+  // Id of the sticky "restart the engine to apply" warning currently on screen.
+  // Dismissed when the restart succeeds or a later save applies cleanly, so it
+  // never contradicts a newer success toast.
+  const restartWarningRef = useRef(null)
+  const dismissRestartWarning = () => {
+    if (restartWarningRef.current !== null) removeToast(restartWarningRef.current)
+    restartWarningRef.current = null
+  }
+  const warnRestartNeeded = (message) => {
+    dismissRestartWarning() // one warning at a time; the newest supersedes
+    restartWarningRef.current = notify('warning', message, { sticky: true })
+  }
   const [isDirty, setIsDirty] = useState(false)
   const [presets, setPresets] = useState(null)
   const [editingPresets, setEditingPresets] = useState(null)
   const [presetsError, setPresetsError] = useState(null)
   const [presetsDirty, setPresetsDirty] = useState(false)
   const [savingPresets, setSavingPresets] = useState(false)
-  const [presetsMessage, setPresetsMessage] = useState(null)
   const [expandedPresets, setExpandedPresets] = useState(new Set())
   const prevExchangeRef = useRef(exchange)
   const prevStrategyRef = useRef(strategy)
@@ -220,7 +233,6 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
 
   const handleSavePresets = async () => {
     setSavingPresets(true)
-    setPresetsMessage(null)
     try {
       const result = await apiPut('/api/presets/aggressiveness', editingPresets, { allowEmpty: true })
       if (result.ok) {
@@ -230,10 +242,10 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
           setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
         }
         setPresetsDirty(false)
-        setPresetsMessage({ type: 'success', text: 'Presets saved!' })
+        notify('success', 'Presets saved!')
       } else {
         const reason = result.data?.errors?.join(', ') || (result.status ? '' : result.error)
-        setPresetsMessage({ type: 'error', text: reason || 'Failed to save' })
+        notify('error', reason || 'Failed to save')
       }
     } finally {
       setSavingPresets(false)
@@ -244,7 +256,6 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     if (presets) {
       setEditingPresets(JSON.parse(JSON.stringify(presets)))
       setPresetsDirty(false)
-      setPresetsMessage(null)
     }
   }
 
@@ -286,14 +297,14 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     if (pendingWriteRef.current > 0) return // a toggle (or another save) is already in flight
     pendingWriteRef.current += 1
     setSaving(true)
-    setMessage(null)
     const payload = buildSavePayload(config, baselineRef.current)
     try {
       const res = await apiPut(`/api/${exchange}/config${pairQuery}`, payload, { allowEmpty: true })
       const result = res.data || {}
       if (res.ok) {
         if (result.config) loadDraft(result.config)
-        setMessage({ type: 'success', text: 'Configuration saved!' })
+        dismissRestartWarning()
+        notify('success', 'Configuration saved!')
         setIsDirty(false)
         onSave?.()
       } else if (result.persisted === true) {
@@ -302,13 +313,10 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         // that a restart is required; reverting here would display stale state.
         if (result.config) loadDraft(result.config)
         setIsDirty(false)
-        setMessage({
-          type: 'warning',
-          text: 'Configuration saved, but the live engine is still using the previous settings. Restart the engine to apply it.',
-        })
+        warnRestartNeeded('Configuration saved, but the live engine is still using the previous settings. Restart the engine to apply it.')
         onSave?.()
       } else {
-        setMessage({ type: 'error', text: describeWriteFailure(res) })
+        notify('error', describeWriteFailure(res))
       }
     } finally {
       pendingWriteRef.current -= 1
@@ -320,7 +328,6 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     if (initialConfig) {
       loadDraft(initialConfig)
       setIsDirty(false)
-      setMessage(null)
     }
   }
 
@@ -344,7 +351,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       const res = await doFetch()
       const result = res.data || {}
       if (res.ok) {
-        setMessage({ type: 'success', text: `${label} saved` })
+        dismissRestartWarning()
+        notify('success', `${label} saved`)
         // restartNeeded is derived from engine vs saved state — the optimistic
         // config update plus onSave's refetch drive the banner; nothing to set.
         onSave?.()
@@ -353,14 +361,11 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         // when available and refetch the parent config, but never roll back to
         // the stale pre-request value merely because live IPC propagation failed.
         adoptPersisted?.(result.config)
-        setMessage({
-          type: 'warning',
-          text: `${label} saved, but the live engine is still using the previous setting. Restart the engine to apply it.`,
-        })
+        warnRestartNeeded(`${label} saved, but the live engine is still using the previous setting. Restart the engine to apply it.`)
         onSave?.()
       } else {
         revert()
-        setMessage({ type: 'error', text: describeWriteFailure(res) })
+        notify('error', describeWriteFailure(res))
       }
     } finally {
       pendingWriteRef.current -= 1
@@ -375,7 +380,6 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // running, so stop first; an engine that is already stopped just starts fresh.
   const handleRestartEngine = async () => {
     setRestarting(true)
-    setMessage(null)
     const stop = await apiPost(`/api/${exchange}/regime/stop${pairQuery}`, undefined, { allowEmpty: true })
     if (!stop.ok) {
       const stopErr = stop.data || {}
@@ -386,7 +390,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         const reason = stop.status
           ? (stopErr.error || `HTTP ${stop.status}`)
           : 'the server is unreachable'
-        setMessage({ type: 'error', text: `Could not stop the engine to apply the change (${reason}). It may still be running with its previous Dry Run setting — retry the restart.` })
+        notify('error', `Could not stop the engine to apply the change (${reason}). It may still be running with its previous Dry Run setting — retry the restart.`)
         onRestart?.()
         setRestarting(false)
         return
@@ -394,7 +398,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     }
     const start = await apiPost(`/api/${exchange}/regime/start${pairQuery}`, undefined, { allowEmpty: true })
     if (start.ok) {
-      setMessage({ type: 'success', text: 'Engine restarted — change applied' })
+      dismissRestartWarning()
+      notify('success', 'Engine restarted — change applied')
       onSave?.()
       onRestart?.() // refresh engine status so the derived restart banner clears
     } else {
@@ -402,7 +407,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       // old mode. Say so explicitly — "failed to restart" alone would imply
       // nothing changed.
       const reason = start.data?.error || (start.status ? `HTTP ${start.status}` : 'the server is unreachable')
-      setMessage({ type: 'error', text: `Engine stopped but did not start again (${reason}) — start it manually from the dashboard.` })
+      notify('error', `Engine stopped but did not start again (${reason}) — start it manually from the dashboard.`)
       onRestart?.() // refresh engine status to reflect the stop
     }
     setRestarting(false)
@@ -525,17 +530,6 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               <span className="text-sm font-medium text-yellow-400">Unsaved changes</span>
             )}
           </div>
-          {message && (
-            <div className={`p-2 rounded text-sm w-full sm:w-auto ${
-              message.type === 'success'
-                ? 'bg-green-900/50 border border-green-700 text-green-200'
-                : message.type === 'warning'
-                  ? 'bg-amber-900/40 border border-amber-700 text-amber-200'
-                  : 'bg-red-900/50 border border-red-700 text-red-200'
-            }`}>
-              {message.text}
-            </div>
-          )}
         </div>
       </div>
 
@@ -1168,11 +1162,6 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                     )
                   })}
                 </div>
-                {presetsMessage && (
-                  <div className={`mt-2 text-xs ${presetsMessage.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
-                    {presetsMessage.text}
-                  </div>
-                )}
                 <div className="flex gap-2 mt-3">
                   <button
                     onClick={handleSavePresets}

@@ -132,18 +132,19 @@ describe('ConfigEditor shared write gate (issue #455)', () => {
   })
 
   it('preserves the distinct success/warning/error messages and persisted-but-not-applied handling for both write paths', () => {
-    assert.match(configEditorSource, /text: 'Configuration saved!'/)
+    assert.match(configEditorSource, /notify\('success', 'Configuration saved!'\)/)
     assert.match(
       configEditorSource,
-      /text: 'Configuration saved, but the live engine is still using the previous settings\. Restart the engine to apply it\.',/,
+      /warnRestartNeeded\('Configuration saved, but the live engine is still using the previous settings\. Restart the engine to apply it\.'\)/,
     )
-    assert.equal((configEditorSource.match(/text: describeWriteFailure\(res\)/g) || []).length, 2, 'both save paths use the shared humanized error description')
-    assert.match(configEditorSource, /text: `\$\{label\} saved`/)
+    assert.match(configEditorSource, /restartWarningRef\.current = notify\('warning', message, \{ sticky: true \}\)/, 'the sticky warning id is kept so it can be dismissed')
+    assert.ok((configEditorSource.match(/dismissRestartWarning\(\)/g) || []).length >= 4, 'restart success and clean saves dismiss the stale warning')
+    assert.equal((configEditorSource.match(/notify\('error', describeWriteFailure\(res\)\)/g) || []).length, 2, 'both save paths use the shared humanized error description')
+    assert.match(configEditorSource, /notify\('success', `\$\{label\} saved`\)/)
     assert.match(
       configEditorSource,
-      /text: `\$\{label\} saved, but the live engine is still using the previous setting\. Restart the engine to apply it\.`,/,
+      /warnRestartNeeded\(`\$\{label\} saved, but the live engine is still using the previous setting\. Restart the engine to apply it\.`\)/,
     )
-
   })
 })
 

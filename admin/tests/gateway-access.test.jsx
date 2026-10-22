@@ -1,7 +1,8 @@
 /** @vitest-environment jsdom */
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { renderWithToasts as render } from './renderWithToasts'
 import GatewayAccess from '../src/components/GatewayAccess'
 
 vi.mock('../src/lib/router', () => ({ Link: ({ children, ...props }) => <a {...props}>{children}</a> }))

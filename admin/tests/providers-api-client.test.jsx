@@ -1,9 +1,9 @@
 import React from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, screen } from '@testing-library/react'
+import { renderWithToasts as render } from './renderWithToasts'
 import AIProviders from '../src/components/ai/Providers'
 
-vi.mock('../src/components/Toast', () => ({ useToast: () => ({ addToast: vi.fn() }) }))
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 

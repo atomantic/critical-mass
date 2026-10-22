@@ -1,5 +1,6 @@
 import React from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { renderWithToasts as render } from './renderWithToasts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import ConfigEditor from '../src/components/ConfigEditor'
 import CapitalAdjust from '../src/components/regime/CapitalAdjust'
@@ -106,6 +107,45 @@ describe('dry-run restart', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Restart Engine' }))
     return onRestart
   }
+
+  const STALE = /Restart the engine to apply it/
+  // PUT /config answers per `save`; the lifecycle endpoints always succeed.
+  const stubSaveThenRestart = (save) => vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
+    if (url.includes('/regime/')) return response(200, { success: true })
+    if (options.method === 'PUT') return save()
+    return response(200, { presets: {} })
+  }))
+  const saveEdit = () => {
+    fireEvent.change(screen.getByLabelText('Min Order Size ($)'), { target: { value: '12' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save Configuration/ }))
+  }
+
+  it('dismisses the sticky restart warning once the restart succeeds', async () => {
+    stubSaveThenRestart(() => response(503, { persisted: true, applied: false, error: 'engine unavailable' }))
+    render(<ConfigEditor config={{ ...config, dryRun: true }} strategy="regime" engineRunning engineDryRun={false} />)
+    saveEdit()
+    await screen.findByText(STALE)
+    fireEvent.click(screen.getByRole('button', { name: 'Restart Engine' }))
+    await screen.findByText('Engine restarted — change applied')
+    expect(screen.queryByText(STALE)).toBeNull()
+  })
+
+  it('dismisses the sticky restart warning when a later save applies cleanly, and never stacks duplicates', async () => {
+    let applied = false
+    stubSaveThenRestart(() => applied
+      ? response(200, { config })
+      : response(503, { persisted: true, applied: false, error: 'engine unavailable' }))
+    render(<ConfigEditor config={config} strategy="regime" />)
+    saveEdit()
+    await screen.findByText(STALE)
+    saveEdit()
+    await waitFor(() => expect(fetch.mock.calls.filter(([, o]) => o?.method === 'PUT')).toHaveLength(2))
+    await waitFor(() => expect(screen.getAllByText(STALE)).toHaveLength(1))
+    applied = true
+    saveEdit()
+    await screen.findByText('Configuration saved!')
+    expect(screen.queryByText(STALE)).toBeNull()
+  })
 
   it('reports why the stop failed and does not try to start a still-running engine', async () => {
     stubLifecycle(response(400, { success: false, error: 'Fund writers are still draining' }), response(200, { success: true }))

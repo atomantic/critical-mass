@@ -1,11 +1,11 @@
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { renderWithToasts as render } from './renderWithToasts'
 import KeysConfig from '../src/components/KeysConfig'
 import NotificationsConfig from '../src/components/NotificationsConfig'
 import AIProviders from '../src/components/ai/Providers'
 
-vi.mock('../src/components/Toast', () => ({ useToast: () => ({ addToast: vi.fn() }) }))
 
 // jsdom does not implement <dialog> modality; the provider form relies on it.
 HTMLDialogElement.prototype.showModal = function () { this.open = true }

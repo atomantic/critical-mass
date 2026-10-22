@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import ModalDialog from './ModalDialog'
 import { plural } from '../utils/plural.mjs'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
+import { useNotify } from './Toast'
 
 const EXCHANGE_DISPLAY_NAMES = { coinbase: 'Coinbase', gemini: 'Gemini', cryptocom: 'Crypto.com' }
 
@@ -69,7 +70,11 @@ function KeysConfig({ exchange, funds = [], onSave }) {
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [message, setMessage] = useState(null)
+  // The delete confirmation is a native modal that sits above the toast stack, so its failure is shown inside it.
+  const [deleteError, setDeleteError] = useState(null)
+  // Load failure is a persistent state of this panel, so it stays inline; save/delete results are toasts.
+  const [loadError, setLoadError] = useState(null)
+  const notify = useNotify()
   const [showSecrets, setShowSecrets] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
@@ -96,7 +101,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
   const pairList = fundPairs.join(', ')
 
   // `silent` skips the full-page loading state so a post-save/post-delete refetch
-  // doesn't blank out the success message that was just set.
+  // doesn't blank out the form while the save/delete toast is up.
   const fetchKeys = async (silent = false) => {
     if (!silent) setLoading(true)
     testGeneration.current += 1
@@ -107,34 +112,19 @@ function KeysConfig({ exchange, funds = [], onSave }) {
       setConfigured(Boolean(data.configured))
       setFields(data.fields || {})
       setCreatedAt(data.createdAt || null)
+      setLoadError(null)
     } else if (result.status !== 404) {
-      setMessage({ type: 'error', text: result.status === 0 ? result.error : 'Failed to load keys' })
+      setLoadError(result.status === 0 ? result.error : 'Failed to load keys')
     }
     if (!silent) setLoading(false)
   }
 
   useEffect(() => {
     setKeys({})
-    setMessage(null)
+    setLoadError(null)
     fetchKeys()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [exchange])
-
-  // Announce save/delete messages via live regions
-  useEffect(() => {
-    if (message) {
-      if (message.type === 'success') {
-        setStatusAnnouncement(message.text)
-        setAlertAnnouncement('')
-      } else {
-        setAlertAnnouncement(message.text)
-        setStatusAnnouncement('')
-      }
-    } else {
-      setStatusAnnouncement('')
-      setAlertAnnouncement('')
-    }
-  }, [message])
 
   // Announce connection test results via live regions
   useEffect(() => {
@@ -164,16 +154,15 @@ function KeysConfig({ exchange, funds = [], onSave }) {
 
   const handleSave = async () => {
     setSaving(true)
-    setMessage(null)
     try {
       const result = await apiPut(`/api/${exchange}/keys`, keys, { allowEmpty: true })
       if (result.ok) {
-        setMessage({ type: 'success', text: 'API keys saved successfully!' })
+        notify('success', 'API keys saved successfully!')
         setKeys({})
         await fetchKeys(true)
         onSave?.()
       } else {
-        setMessage({ type: 'error', text: describeMutationFailure(result, 'Failed to save keys') })
+        notify('error', describeMutationFailure(result, 'Failed to save keys'))
       }
     } finally {
       setSaving(false)
@@ -205,17 +194,17 @@ function KeysConfig({ exchange, funds = [], onSave }) {
 
   const handleDelete = async () => {
     setDeleting(true)
-    setMessage(null)
+    setDeleteError(null)
     try {
       const result = await apiDelete(`/api/${exchange}/keys`, { allowEmpty: true })
       if (result.ok) {
         setKeys({})
         setConfirmDelete(false)
-        setMessage({ type: 'success', text: 'API keys deleted successfully!' })
+        notify('success', 'API keys deleted successfully!')
         await fetchKeys(true)
         onSave?.()
       } else {
-        setMessage({ type: 'error', text: describeMutationFailure(result, 'Failed to delete keys') })
+        setDeleteError(describeMutationFailure(result, 'Failed to delete keys'))
       }
     } finally {
       setDeleting(false)
@@ -329,13 +318,9 @@ function KeysConfig({ exchange, funds = [], onSave }) {
           {configured && createdAt ? `Stored on ${new Date(createdAt).toLocaleString()}` : ' '}
         </p>
 
-        {message && (
-          <div className={`mb-4 p-3 rounded-lg ${
-            message.type === 'success'
-              ? 'bg-green-900/50 border border-green-700 text-green-200'
-              : 'bg-red-900/50 border border-red-700 text-red-200'
-          }`}>
-            {message.text}
+        {loadError && (
+          <div className="mb-4 p-3 rounded-lg bg-red-900/50 border border-red-700 text-red-200">
+            {loadError}
           </div>
         )}
 
@@ -434,7 +419,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
         {/* Delete Confirmation Modal */}
         {confirmDelete && (
           <ModalDialog
-            onClose={() => setConfirmDelete(false)}
+            onClose={() => { setConfirmDelete(false); setDeleteError(null) }}
             labelledBy="delete-keys-title"
             describedBy="delete-keys-desc"
             dismissible={!deleting}
@@ -445,11 +430,12 @@ function KeysConfig({ exchange, funds = [], onSave }) {
               {exchange === 'gemini' && 'If this key has "Requires Heartbeat" enabled, Gemini cancels its open orders about 5 minutes after heartbeats stop. '}
               Exchanges show the secret only once, so reconnecting usually means creating a new key.
             </p>
+            {deleteError && <p role="alert" className="text-red-300 mb-4">{deleteError}</p>}
             <div className="flex flex-col-reverse sm:flex-row gap-3 sm:justify-end">
               <button
                 type="button"
                 autoFocus
-                onClick={() => setConfirmDelete(false)}
+                onClick={() => { setConfirmDelete(false); setDeleteError(null) }}
                 disabled={deleting}
                 className="min-h-11 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded-lg font-medium transition-colors"
               >

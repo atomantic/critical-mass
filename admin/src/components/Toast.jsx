@@ -1,10 +1,45 @@
-import { useState, useEffect, useRef, createContext, useContext, useCallback } from 'react'
+import { useState, useEffect, useRef, useMemo, createContext, useContext, useCallback } from 'react'
 
+// addToast returns the new toast's id so a caller can removeToast(id) once the
+// message is stale (e.g. a sticky "restart to apply" warning after the restart).
 const ToastContext = createContext({
-  addToast: () => {},
+  addToast: () => null,
+  removeToast: () => {},
 })
 
 export const useToast = () => useContext(ToastContext)
+
+/*
+ * Feedback convention for admin views (issue #1606). Pick the channel by what
+ * the message is, not by what the component happened to do before:
+ *
+ *   - Toast (useToast / useNotify): the RESULT of an action the operator just
+ *     took -- save/delete/create/test succeeded, or failed transiently. Toasts
+ *     render in a fixed corner, so they are visible even when the button sat at
+ *     the bottom of a long form. Errors stay until dismissed; others auto-close.
+ *   - Inline, next to the field/form: validation errors and persistent states
+ *     the operator must fix or keep seeing (bad input, load failures that
+ *     replace the page body, "not configured", per-row status).
+ *   - Banner (AlertBanner / page-level): engine-wide conditions that are not the
+ *     result of one click (engine stopped, exchange unreachable, drawdown halt).
+ *
+ * Native <dialog> modals render in the top layer above the toast stack, so a
+ * failure the operator must read while a modal is still open stays inline in
+ * that modal.
+ */
+
+// notify(type, message, { title, sticky }) is sugar over addToast for the common
+// "report the outcome of this request" call. type: success | error | warning |
+// info. Errors never auto-close; pass `sticky` to keep a warning the operator must
+// act on (e.g. "restart the engine to apply") until dismissed. Returns the toast
+// id (null when there was no message) -- pair a sticky toast with
+// useToast().removeToast(id) so it is dismissed once the condition clears.
+export function useNotify() {
+  const { addToast } = useToast()
+  return useCallback((type, message, { title, sticky } = {}) => (
+    message ? addToast({ type, title, message, sticky }) : null
+  ), [addToast])
+}
 
 // Toast types with their styles
 const toastStyles = {
@@ -44,12 +79,12 @@ const toastIcons = {
   ),
 }
 
-function Toast({ id, type, title, message, onClose }) {
+function Toast({ id, type, title, message, sticky, onClose }) {
   const timerRef = useRef(null)
   const [paused, setPaused] = useState(false)
-  const persistent = type === 'error'
+  const persistent = type === 'error' || Boolean(sticky)
 
-  // Errors stay until dismissed; other toasts auto-close but pause on hover/focus
+  // Errors (and toasts added with `sticky`) stay until dismissed; other toasts auto-close but pause on hover/focus
   useEffect(() => {
     if (persistent || paused) return undefined
     timerRef.current = setTimeout(() => onClose(id), 5000)
@@ -91,17 +126,20 @@ function Toast({ id, type, title, message, onClose }) {
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([])
 
-  const addToast = useCallback(({ type = 'info', title, message }) => {
+  const addToast = useCallback(({ type = 'info', title, message, sticky = false }) => {
     const id = Date.now() + Math.random()
-    setToasts((prev) => [...prev.slice(-4), { id, type, title, message }])
+    setToasts((prev) => [...prev.slice(-4), { id, type, title, message, sticky }])
+    return id
   }, [])
 
   const removeToast = useCallback((id) => {
     setToasts((prev) => prev.filter((t) => t.id !== id))
   }, [])
 
+  const value = useMemo(() => ({ addToast, removeToast }), [addToast, removeToast])
+
   return (
-    <ToastContext.Provider value={{ addToast }}>
+    <ToastContext.Provider value={value}>
       {children}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm max-h-[60vh] overflow-y-auto">
         {toasts.map((toast) => (

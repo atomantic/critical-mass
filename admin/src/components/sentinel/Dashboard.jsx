@@ -5,6 +5,7 @@ import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { completePagedItems } from '../../utils/pagedList.mjs'
 import { apiGet, apiPost, apiPut, apiDelete } from '../../utils/apiClient'
 import usePolling from '../../hooks/usePolling'
+import { useNotify } from '../Toast'
 
 const TOUCH_BTN = 'min-h-11 min-w-11 shrink-0 inline-flex items-center justify-center'
 
@@ -30,7 +31,7 @@ export default function SentinelDashboard() {
   const [alertsError, setAlertsError] = useState(null)
   const [filter, setFilter] = useState('all')
   const [polling, setPolling] = useState(false)
-  const [mutationError, setMutationError] = useState('')
+  const notify = useNotify()
   const [feedWritePending, setFeedWritePending] = useState(false)
   const feedWriteLock = useRef(false)
   const configRevision = useRef(0)
@@ -71,9 +72,8 @@ export default function SentinelDashboard() {
     setAlertsView({ filter, alerts: await completePagedItems(url, data) })
   }, [filter, alertsOwner])
 
-  // `throwOnError` lets a confirmation dialog own the failure message instead of the page banner.
+  // `throwOnError` lets a confirmation dialog own the failure message instead of a toast.
   const request = async (label, send, { throwOnError = false } = {}) => {
-    setMutationError('')
     const result = await send()
     if (result.ok) return result.data || true
     // Validation replies carry an `errors` list rather than a single `error`.
@@ -82,7 +82,7 @@ export default function SentinelDashboard() {
       : (Array.isArray(errors) ? errors.join(', ') : errors) || result.error
     const message = `${label}: ${typeof detail === 'object' ? JSON.stringify(detail) : detail}`
     if (throwOnError) throw new Error(message)
-    setMutationError(message)
+    notify('error', message)
     return false
   }
 
@@ -318,7 +318,6 @@ export default function SentinelDashboard() {
           Enable turns the service on and saves that choice; Start/Stop runs or pauses polling now.
         </p>
       </div>
-      {mutationError && <p role="alert" className="text-sm text-red-400">{mutationError}</p>}
 
       {/* Feed Configuration */}
       <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">

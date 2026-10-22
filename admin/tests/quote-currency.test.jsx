@@ -1,13 +1,13 @@
 import React from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, screen } from '@testing-library/react'
+import { renderWithToasts as render } from './renderWithToasts'
 import ConfigEditor from '../src/components/ConfigEditor'
 import CostBasisRegime from '../src/components/CostBasisRegime'
 import Overview from '../src/components/Overview'
 import RiskLimitsPanel from '../src/components/regime/RiskLimitsPanel'
 import LadderPanel from '../src/components/regime/LadderPanel'
 
-vi.mock('../src/components/Toast', () => ({ useToast: () => ({ addToast: vi.fn() }) }))
 vi.mock('../src/hooks/useTradeEvents', () => ({ useMultiRegimeStatuses: () => ({ statuses: {}, connected: false }) }))
 vi.mock('../src/components/celestial/CelestialVisualization', () => ({ default: () => <div /> }))
 vi.mock('../src/lib/router', () => ({ Link: ({ children }) => <div>{children}</div>, useNavigate: () => vi.fn() }))

@@ -3,6 +3,7 @@ import { formatBytes } from '../utils/format.mjs'
 import { plural } from '../utils/plural.mjs'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
 import ModalDialog from './ModalDialog'
+import { useNotify, useToast } from './Toast'
 
 const INTERVAL_OPTIONS = [
   { label: '6 hours', value: 6 * 60 * 60 * 1000 },
@@ -26,7 +27,11 @@ function BackupRestore() {
   const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
   const [creating, setCreating] = useState(false)
-  const [message, setMessage] = useState(null)
+  const notify = useNotify()
+  const { removeToast } = useToast()
+  // Sticky "check engine status" warning from the last backup; superseded (and
+  // dismissed) by the next backup attempt's own result.
+  const backupWarningRef = useRef(null)
   const [restoreTarget, setRestoreTarget] = useState(null)
   const [restoring, setRestoring] = useState(false)
   // Set when the gateway refuses a restore because a writer never confirmed it
@@ -70,7 +75,7 @@ function BackupRestore() {
   }
 
   // `silent` refreshes run after a completed action: they must never swap the page
-  // for the loading/error gate, or the action's own result message is erased.
+  // for the loading/error gate (which would unmount the page mid-action).
   const fetchData = async ({ silent = false, adoptConfig = !silent } = {}) => {
     const request = ++dataRequest.current
     const version = draftVersion.current
@@ -133,18 +138,17 @@ function BackupRestore() {
     pendingSave.current = true
     draftVersion.current += 1 // Older reads may update lists, but cannot adopt config.
     setSaving(true)
-    setMessage(null)
     try {
       const result = await apiPut('/api/backups/config', config)
       if (!result.ok) {
         const { data, status } = result
-        setMessage({ type: 'error', text: data?.errors?.join('; ') || (status ? data?.error || `Failed to save settings (HTTP ${status})` : describeMutationFailure(result, 'Failed to save settings')) })
+        notify('error', data?.errors?.join('; ') || (status ? data?.error || `Failed to save settings (HTTP ${status})` : describeMutationFailure(result, 'Failed to save settings')))
       } else if (!result.data.config) {
-        setMessage({ type: 'error', text: 'Saved settings could not be confirmed' })
+        notify('error', 'Saved settings could not be confirmed')
       } else {
         setConfig(result.data.config)
         dirty.current = false
-        setMessage({ type: 'success', text: 'Backup settings saved!' })
+        notify('success', 'Backup settings saved!')
       }
     } finally {
       pendingSave.current = false
@@ -154,21 +158,21 @@ function BackupRestore() {
 
   const handleCreateBackup = async () => {
     setCreating(true)
-    setMessage(null)
     try {
       const result = await apiPost('/api/backups')
       const data = result.data || {}
+      if (backupWarningRef.current !== null) removeToast(backupWarningRef.current)
+      backupWarningRef.current = null
       if (result.ok) {
         const created = `Backup created: ${data.filename} (${formatBytes(data.sizeBytes)})`
-        setMessage(data.warnings?.length
-          ? { type: 'warning', text: `${created}. ${data.warnings.join('. ')}. Check engine status before resuming trading.` }
-          : { type: 'success', text: created })
+        if (data.warnings?.length) backupWarningRef.current = notify('warning', `${created}. ${data.warnings.join('. ')}. Check engine status before resuming trading.`, { sticky: true })
+        else notify('success', created)
         fetchData({ silent: true })
       } else {
         const warnings = data.warnings?.length
           ? `. ${data.warnings.join('. ')}. Check engine status before resuming trading.`
           : ''
-        setMessage({ type: 'error', text: `Backup failed: ${describeMutationFailure(result)}${warnings}` })
+        notify('error', `Backup failed: ${describeMutationFailure(result)}${warnings}`)
       }
     } finally {
       setCreating(false)
@@ -183,28 +187,27 @@ function BackupRestore() {
     if (!fundStateRestoreConfirm) return
     const { snapshotId, exchange, pair } = fundStateRestoreConfirm
     setFundStateRestoring(true)
-    setMessage(null)
     let blocked = null
     try {
       const result = await apiPost(`/api/backups/fund-state/${encodeURIComponent(snapshotId)}/${encodeURIComponent(exchange)}/${encodeURIComponent(pair)}/restore`, { force })
       const data = result.data || {}
       if (result.ok && data.success) {
-        setMessage({
-          type: data.forced || data.warnings?.length ? 'error' : 'success',
-          text: [
+        notify(
+          data.forced || data.warnings?.length ? 'error' : 'success',
+          [
             data.forced
               ? `${data.message || `Restored ${plural(data.filesRestored, "file")} for ${exchange}/${pair}`} — FORCED past ${plural(data.unconfirmed?.length || 0, "unconfirmed writer")}; verify your data before restarting engines.`
               : (data.message || `Restored ${plural(data.filesRestored, "file")} for ${exchange}/${pair}`),
             ...(data.warnings || []),
           ].join(' '),
-        })
+        )
         fetchData({ silent: true })
       } else if (result.status === 409 && data.code === 'writers-not-quiesced') {
         // Nothing was written. Keep the dialog open and offer the override.
         blocked = data.unconfirmed || []
-        setMessage({ type: 'error', text: data.error || 'Restore blocked: writers did not confirm shutdown' })
+        notify('error', data.error || 'Restore blocked: writers did not confirm shutdown')
       } else {
-        setMessage({ type: 'error', text: data.error || describeMutationFailure(result, 'Fund-state restore failed') })
+        notify('error', data.error || describeMutationFailure(result, 'Fund-state restore failed'))
       }
     } finally {
       setFundStateRestoring(false)
@@ -226,10 +229,10 @@ function BackupRestore() {
     try {
       const result = await apiDelete(`/api/backups/${filename}`, { allowEmpty: true })
       if (result.ok) {
-        setMessage({ type: 'success', text: `Deleted ${filename}` })
+        notify('success', `Deleted ${filename}`)
         fetchData({ silent: true })
       } else {
-        setMessage({ type: 'error', text: `Could not delete ${filename}: ${result.data?.error || (result.status ? `HTTP ${result.status}` : describeMutationFailure(result))}` })
+        notify('error', `Could not delete ${filename}: ${result.data?.error || (result.status ? `HTTP ${result.status}` : describeMutationFailure(result))}`)
       }
     } finally {
       setDeleting(null)
@@ -240,15 +243,14 @@ function BackupRestore() {
   const handleRestore = async ({ force = false } = {}) => {
     if (!restoreTarget) return
     setRestoring(true)
-    setMessage(null)
     let blocked = null
     try {
       const result = await apiPost(`/api/backups/${restoreTarget}/restore`, { force, acceptLegacyWithoutBase: legacyAcknowledged, acceptFundRemoval: fundRemovalAcknowledged })
       const data = result.data || {}
       if (result.ok && data.success) {
-        setMessage({
-          type: data.forced || data.warnings?.length ? 'error' : 'success',
-          text: [
+        notify(
+          data.forced || data.warnings?.length ? 'error' : 'success',
+          [
             data.forced
               ? `${data.message || `Restored ${plural(data.filesRestored, "file")}`} — FORCED past ${plural(data.unconfirmed?.length || 0, "unconfirmed writer")}; verify your data before restarting engines.`
               : (data.message || `Restored ${plural(data.filesRestored, "file")}`),
@@ -257,25 +259,22 @@ function BackupRestore() {
               : 'Data files only — this machine kept its existing fund configuration.',
             ...(data.warnings || []),
           ].join(' '),
-        })
+        )
       } else if (result.status === 409 && data.code === 'writers-not-quiesced') {
         // Nothing was written. Keep the target selected and offer the override.
         blocked = data.unconfirmed || []
-        setMessage({ type: 'error', text: data.error || 'Restore blocked: writers did not confirm shutdown' })
+        notify('error', data.error || 'Restore blocked: writers did not confirm shutdown')
       } else if (data.code === 'fund-removal-unacknowledged') {
         // Nothing was written. Surfaces if the removal set changed server-side
         // since the pre-flight check ran — tick the checkbox again to retry.
-        setMessage({ type: 'error', text: data.error || 'Restore blocked: acknowledge the funds this archive would remove' })
+        notify('error', data.error || 'Restore blocked: acknowledge the funds this archive would remove')
       } else if (data.code === 'restore-incomplete-recovery') {
         // The application failed AND could not be rolled back: data/ is a mix of
         // archive-era and current-era files. Say so plainly — the recovery
         // artifacts are retained and every startup retries the rollback (#431).
-        setMessage({
-          type: 'error',
-          text: `${data.error || 'Restore failed and could not be rolled back.'} Do NOT start engines: restart the gateway to retry the rollback, and keep the retained recovery files until it succeeds.`,
-        })
+        notify('error', `${data.error || 'Restore failed and could not be rolled back.'} Do NOT start engines: restart the gateway to retry the rollback, and keep the retained recovery files until it succeeds.`)
       } else {
-        setMessage({ type: 'error', text: `Restore failed: ${describeMutationFailure(result)}` })
+        notify('error', `Restore failed: ${describeMutationFailure(result)}`)
       }
     } finally {
       setBlockedBy(blocked)
@@ -452,18 +451,6 @@ function BackupRestore() {
       {/* Config Panel */}
       <div className="bg-gray-800 rounded-lg p-6">
         <h2 className="text-xl font-semibold mb-4">Backup Settings</h2>
-
-        {message && (
-          <div className={`mb-4 p-3 rounded-lg ${
-            message.type === 'success'
-              ? 'bg-green-900/50 border border-green-700 text-green-200'
-              : message.type === 'warning'
-                ? 'bg-yellow-900/50 border border-yellow-700 text-yellow-200'
-                : 'bg-red-900/50 border border-red-700 text-red-200'
-          }`}>
-            {message.text}
-          </div>
-        )}
 
         {refreshError && (
           <div className="mb-4 p-3 rounded-lg bg-yellow-900/50 border border-yellow-700 text-yellow-200 flex items-center justify-between gap-3">

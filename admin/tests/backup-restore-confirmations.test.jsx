@@ -1,6 +1,7 @@
 import React from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { renderWithToasts as render } from './renderWithToasts'
 import BackupRestore from '../src/components/BackupRestore'
 
 HTMLDialogElement.prototype.showModal = function () { this.open = true; this.querySelector('[autofocus]')?.focus() }
@@ -182,4 +183,19 @@ it('a successful restore names its recovery archive and shows the server warning
   await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm Restore' }).disabled).toBe(false))
   fireEvent.click(screen.getByRole('button', { name: 'Confirm Restore' }))
   expect(await screen.findByText(/saved as backup-pre\.zip; restore that backup to undo\..*UpDown failed to reload restored state: boom/)).toBeTruthy()
+})
+
+it('a later clean backup dismisses the earlier sticky engine-status warning', async () => {
+  const backupResponses = [
+    json(200, { filename: 'b1.zip', sizeBytes: 10, warnings: ['UpDown pause failed'] }),
+    json(200, { filename: 'b2.zip', sizeBytes: 10 }),
+  ]
+  writeResponse = () => backupResponses.shift()
+  render(<BackupRestore />)
+  const create = await screen.findByRole('button', { name: /Create Backup Now/ })
+  fireEvent.click(create)
+  expect(await screen.findByText(/Check engine status before resuming trading/)).toBeTruthy()
+  fireEvent.click(create)
+  expect(await screen.findByText(/Backup created: b2\.zip/)).toBeTruthy()
+  expect(screen.queryByText(/Check engine status before resuming trading/)).toBeNull()
 })
