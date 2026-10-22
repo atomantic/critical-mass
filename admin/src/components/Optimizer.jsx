@@ -185,7 +185,6 @@ function Optimizer({ exchange = 'coinbase', pair }) {
     }
   }, [exchange, pair, pairQuery])
 
-
   const toggleInterval = (interval) => {
     setSelectedIntervals(prev =>
       prev.includes(interval)

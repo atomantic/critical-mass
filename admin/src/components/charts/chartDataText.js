@@ -22,7 +22,6 @@ export function formatClock(ts) {
 
 export function formatStamp(ts) {
   if (!isValidTimestamp(ts)) return 'unknown time'
-  const d = new Date(ts)
   return formatLocalStamp(ts)
 }
 
