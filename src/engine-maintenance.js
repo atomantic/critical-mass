@@ -23,6 +23,9 @@ const path = require('path');
 const { DATA_DIR } = require('./paths');
 const { JOURNAL_FILENAME } = require('./restore-apply');
 const { hasPendingBackfill } = require('./fifo-backfill-transaction');
+const { createContextLogger } = require('./logger');
+
+const maintenanceLog = createContextLogger({ component: 'engine-maintenance' });
 
 const DEFAULT_MAINTENANCE_TTL_MS = 15 * 60_000;
 const MAX_MAINTENANCE_TTL_MS = 60 * 60_000;
@@ -72,7 +75,7 @@ let legacyKindLogged = false;
 const deriveLegacyKind = (reason) => {
   if (!legacyKindLogged) {
     legacyKindLogged = true;
-    console.warn('[engine-maintenance] maintenance request omitted "kind"; deriving it from the legacy reason prefix (deprecated)');
+    maintenanceLog.warn('maintenance request omitted "kind"; deriving it from the legacy reason prefix (deprecated)');
   }
   const prefix = /^(restore|backup) /.exec(reason)?.[1];
   return prefix === 'restore' || prefix === 'backup' ? prefix : 'generic';
