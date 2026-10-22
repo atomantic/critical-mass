@@ -46,7 +46,7 @@ function view(name, props = {}, notificationConfig = {}) {
     require: id => {
       if (id === 'react') return hooks
       if (id === '../App') return { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }
-      if (id === './Toast') return { useNotify: () => () => {} }
+      if (id === './Toast') return { useNotify: () => () => null, useToast: () => ({ addToast: () => null, removeToast() {} }) }
       throw new Error(`Unexpected fixture import: ${id}`)
     },
   })

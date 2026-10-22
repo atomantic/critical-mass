@@ -1,7 +1,10 @@
-import { useState, useEffect, useRef, createContext, useContext, useCallback } from 'react'
+import { useState, useEffect, useRef, useMemo, createContext, useContext, useCallback } from 'react'
 
+// addToast returns the new toast's id so a caller can removeToast(id) once the
+// message is stale (e.g. a sticky "restart to apply" warning after the restart).
 const ToastContext = createContext({
-  addToast: () => {},
+  addToast: () => null,
+  removeToast: () => {},
 })
 
 export const useToast = () => useContext(ToastContext)
@@ -28,12 +31,14 @@ export const useToast = () => useContext(ToastContext)
 // notify(type, message, { title, sticky }) is sugar over addToast for the common
 // "report the outcome of this request" call. type: success | error | warning |
 // info. Errors never auto-close; pass `sticky` to keep a warning the operator must
-// act on (e.g. "restart the engine to apply") until dismissed.
+// act on (e.g. "restart the engine to apply") until dismissed. Returns the toast
+// id (null when there was no message) -- pair a sticky toast with
+// useToast().removeToast(id) so it is dismissed once the condition clears.
 export function useNotify() {
   const { addToast } = useToast()
-  return useCallback((type, message, { title, sticky } = {}) => {
-    if (message) addToast({ type, title, message, sticky })
-  }, [addToast])
+  return useCallback((type, message, { title, sticky } = {}) => (
+    message ? addToast({ type, title, message, sticky }) : null
+  ), [addToast])
 }
 
 // Toast types with their styles
@@ -124,14 +129,17 @@ export function ToastProvider({ children }) {
   const addToast = useCallback(({ type = 'info', title, message, sticky = false }) => {
     const id = Date.now() + Math.random()
     setToasts((prev) => [...prev.slice(-4), { id, type, title, message, sticky }])
+    return id
   }, [])
 
   const removeToast = useCallback((id) => {
     setToasts((prev) => prev.filter((t) => t.id !== id))
   }, [])
 
+  const value = useMemo(() => ({ addToast, removeToast }), [addToast, removeToast])
+
   return (
-    <ToastContext.Provider value={{ addToast }}>
+    <ToastContext.Provider value={value}>
       {children}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm max-h-[60vh] overflow-y-auto">
         {toasts.map((toast) => (

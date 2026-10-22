@@ -3,7 +3,7 @@ import { formatBytes } from '../utils/format.mjs'
 import { plural } from '../utils/plural.mjs'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
 import ModalDialog from './ModalDialog'
-import { useNotify } from './Toast'
+import { useNotify, useToast } from './Toast'
 
 const INTERVAL_OPTIONS = [
   { label: '6 hours', value: 6 * 60 * 60 * 1000 },
@@ -28,6 +28,10 @@ function BackupRestore() {
   const [saving, setSaving] = useState(false)
   const [creating, setCreating] = useState(false)
   const notify = useNotify()
+  const { removeToast } = useToast()
+  // Sticky "check engine status" warning from the last backup; superseded (and
+  // dismissed) by the next backup attempt's own result.
+  const backupWarningRef = useRef(null)
   const [restoreTarget, setRestoreTarget] = useState(null)
   const [restoring, setRestoring] = useState(false)
   // Set when the gateway refuses a restore because a writer never confirmed it
@@ -157,9 +161,11 @@ function BackupRestore() {
     try {
       const result = await apiPost('/api/backups')
       const data = result.data || {}
+      if (backupWarningRef.current !== null) removeToast(backupWarningRef.current)
+      backupWarningRef.current = null
       if (result.ok) {
         const created = `Backup created: ${data.filename} (${formatBytes(data.sizeBytes)})`
-        if (data.warnings?.length) notify('warning', `${created}. ${data.warnings.join('. ')}. Check engine status before resuming trading.`, { sticky: true })
+        if (data.warnings?.length) backupWarningRef.current = notify('warning', `${created}. ${data.warnings.join('. ')}. Check engine status before resuming trading.`, { sticky: true })
         else notify('success', created)
         fetchData({ silent: true })
       } else {

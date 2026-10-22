@@ -5,7 +5,7 @@ import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { TIERS as CELESTIAL_TIERS, formatTierCapitalRange } from '../../../shared/celestial-tiers.mjs'
 import { useState, useEffect, useId, useRef, useCallback } from 'react'
 import ToggleSwitch from './ToggleSwitch'
-import { useNotify } from './Toast'
+import { useNotify, useToast } from './Toast'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 
 // Input component defined OUTSIDE ConfigEditor to prevent re-creation on every render
@@ -102,6 +102,19 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const [toggleBusy, setToggleBusy] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const notify = useNotify()
+  const { removeToast } = useToast()
+  // Id of the sticky "restart the engine to apply" warning currently on screen.
+  // Dismissed when the restart succeeds or a later save applies cleanly, so it
+  // never contradicts a newer success toast.
+  const restartWarningRef = useRef(null)
+  const dismissRestartWarning = () => {
+    if (restartWarningRef.current !== null) removeToast(restartWarningRef.current)
+    restartWarningRef.current = null
+  }
+  const warnRestartNeeded = (message) => {
+    dismissRestartWarning() // one warning at a time; the newest supersedes
+    restartWarningRef.current = notify('warning', message, { sticky: true })
+  }
   const [isDirty, setIsDirty] = useState(false)
   const [presets, setPresets] = useState(null)
   const [editingPresets, setEditingPresets] = useState(null)
@@ -290,6 +303,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       const result = res.data || {}
       if (res.ok) {
         if (result.config) loadDraft(result.config)
+        dismissRestartWarning()
         notify('success', 'Configuration saved!')
         setIsDirty(false)
         onSave?.()
@@ -299,7 +313,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         // that a restart is required; reverting here would display stale state.
         if (result.config) loadDraft(result.config)
         setIsDirty(false)
-        notify('warning', 'Configuration saved, but the live engine is still using the previous settings. Restart the engine to apply it.', { sticky: true })
+        warnRestartNeeded('Configuration saved, but the live engine is still using the previous settings. Restart the engine to apply it.')
         onSave?.()
       } else {
         notify('error', describeWriteFailure(res))
@@ -337,6 +351,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       const res = await doFetch()
       const result = res.data || {}
       if (res.ok) {
+        dismissRestartWarning()
         notify('success', `${label} saved`)
         // restartNeeded is derived from engine vs saved state — the optimistic
         // config update plus onSave's refetch drive the banner; nothing to set.
@@ -346,7 +361,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         // when available and refetch the parent config, but never roll back to
         // the stale pre-request value merely because live IPC propagation failed.
         adoptPersisted?.(result.config)
-        notify('warning', `${label} saved, but the live engine is still using the previous setting. Restart the engine to apply it.`, { sticky: true })
+        warnRestartNeeded(`${label} saved, but the live engine is still using the previous setting. Restart the engine to apply it.`)
         onSave?.()
       } else {
         revert()
@@ -383,6 +398,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     }
     const start = await apiPost(`/api/${exchange}/regime/start${pairQuery}`, undefined, { allowEmpty: true })
     if (start.ok) {
+      dismissRestartWarning()
       notify('success', 'Engine restarted — change applied')
       onSave?.()
       onRestart?.() // refresh engine status so the derived restart banner clears
