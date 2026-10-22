@@ -94,6 +94,28 @@ const mergeConsumedBy = (current, incoming) => {
 };
 
 /**
+ * On-disk format revision of fill-ledger.json. Every persisted row carries it
+ * as `formatVersion`; the file stays a bare array so backup, migration and DCA
+ * conversion tooling keep working. A build refuses a ledger containing a row
+ * stamped newer than it understands (issue #1397): running an older build over
+ * newer trading data is unsupported, because fields it does not maintain
+ * (e.g. `consumedBy`, `bodyBookedSize`) would go stale and be misread on the
+ * next upgrade. Rows with no stamp predate versioning (revision 0).
+ * Bump this whenever a field's meaning changes in a way an older build would
+ * mishandle.
+ */
+const LEDGER_FORMAT_VERSION = 1;
+
+/**
+ * @param {Array<Object>} data - ledger rows
+ * @returns {number} highest formatVersion found (0 when none stamped)
+ */
+const maxLedgerFormatVersion = (data) => data.reduce((max, fill) => {
+  const v = Number(fill?.formatVersion);
+  return Number.isFinite(v) && v > max ? v : max;
+}, 0);
+
+/**
  * Get fill ledger file path for a fund (exchange + pair).
  * Read-only path resolution — does NOT create the directory. The persist()
  * function below mkdirs before writing.
@@ -561,6 +583,15 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         reload: `at ${filePath} is not an array (got ${actualType})`,
       }, { actualType });
     }
+    // Refuse newer-format data before anything else: an older build must not
+    // interpret (or later rewrite) a ledger it cannot fully understand.
+    const newerFormat = maxLedgerFormatVersion(data);
+    if (newerFormat > LEDGER_FORMAT_VERSION) {
+      return refuseLoad(filePath, isReload, {
+        coldStart: `was written by a newer build (format v${newerFormat}; this build supports up to v${LEDGER_FORMAT_VERSION}). Running an older build over newer trading data is not supported — upgrade to the build that wrote it, or restore a backup taken before the upgrade (see UPGRADE.md)`,
+        reload: `at ${filePath} was written by a newer build (format v${newerFormat}; this build supports up to v${LEDGER_FORMAT_VERSION}) — refusing to load; see UPGRADE.md`,
+      }, { newerFormat, supported: LEDGER_FORMAT_VERSION });
+    }
     // Element-level validation: even an array can contain malformed
     // entries like `[null]` or `[{}]` that would crash on `fill.tradeId`
     // mid-loop, leaving the live ledger half-populated after the
@@ -586,6 +617,9 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     let negativeHoldbackRepairCount = 0;
     for (const fill of data) {
       if (repairLegacyFill(fill)) negativeHoldbackRepairCount++;
+      // The stamp is a persistence concern: persist() re-adds it, so in-memory
+      // rows keep the exact shape they had before versioning.
+      delete fill.formatVersion;
       fills.set(fill.tradeId, fill);
       for (const allocation of fill.syntheticCoverage?.reconciledTrades || []) {
         reconciledTradeIds.add(allocation.tradeId);
@@ -672,7 +706,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     }
 
     const fillsArray = Array.from(fills.values())
-      .sort((a, b) => a.timestamp - b.timestamp);
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .map(fill => (fill.formatVersion >= LEDGER_FORMAT_VERSION ? fill : { ...fill, formatVersion: LEDGER_FORMAT_VERSION }));
 
     atomicWriteSync(filePath, JSON.stringify(fillsArray, null, 2));
     dirtySinceLastPersist = false;
@@ -2529,6 +2564,7 @@ const getCachedFillLedger = (exchange, productId, pair) => {
 
 module.exports = {
   createFillLedger,
+  LEDGER_FORMAT_VERSION,
   LEGACY_CONSUMPTION_KEY,
   FillValidationError,
   validateFillInput: normalizeFillInput,

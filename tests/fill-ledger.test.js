@@ -1336,6 +1336,46 @@ describe('Fill Ledger', () => {
     assert.throws(() => createTestLedger(exchange), /not an array on cold start/);
   });
 
+  describe('on-disk format version (#1397)', () => {
+    it('stamps persisted rows and reloads its own output', () => {
+      const { LEDGER_FORMAT_VERSION } = freshFillLedgerModule();
+      const exchange = 'test-format-stamp';
+      const ledger = createTestLedger(exchange);
+      ledger.ingestFill(makeBuyFill({ tradeId: 'stamped-1' }));
+      ledger.persist();
+      const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
+      const rows = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      assert.ok(Array.isArray(rows));
+      assert.equal(rows[0].formatVersion, LEDGER_FORMAT_VERSION);
+      assert.equal(createTestLedger(exchange).getFillCount(), 1);
+    });
+
+    it('loads unstamped legacy ledgers', () => {
+      const exchange = 'test-format-legacy';
+      const ledger = createTestLedger(exchange);
+      ledger.ingestFill(makeBuyFill({ tradeId: 'legacy-1' }));
+      ledger.persist();
+      const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
+      const rows = JSON.parse(fs.readFileSync(filePath, 'utf8')).map(({ formatVersion, ...row }) => row);
+      fs.writeFileSync(filePath, JSON.stringify(rows));
+      assert.equal(createTestLedger(exchange).getFillCount(), 1);
+    });
+
+    it('refuses to boot on a ledger written by a newer build and leaves the file untouched', () => {
+      const exchange = 'test-format-newer';
+      const ledger = createTestLedger(exchange);
+      ledger.ingestFill(makeBuyFill({ tradeId: 'newer-1' }));
+      ledger.persist();
+      const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
+      const rows = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      rows[0].formatVersion = 99;
+      const newer = JSON.stringify(rows);
+      fs.writeFileSync(filePath, newer);
+      assert.throws(() => createTestLedger(exchange), /written by a newer build \(format v99/);
+      assert.equal(fs.readFileSync(filePath, 'utf8'), newer);
+    });
+  });
+
   describe('ordinary ingestion boundary validation (#875)', () => {
     const good = (o = {}) => ({ tradeId: 'ok-1', orderId: 'o1', side: 'buy', price: '100', size: '0.5', totalCommission: '0.1', ...o });
     const ledgerFile = (exchange) => path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
@@ -3215,7 +3255,11 @@ describe('Fill Ledger', () => {
           ledger.ingestFill({ tradeId: `real-${mode}`, orderId: mode, side: 'buy',
             price: 2000, size, fee: size * 2, netFee: size * 2, tradeTime });
           const file = freshFillLedgerModule().getFillLedgerPath(mode);
-          const digest = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          // The #1397 formatVersion stamp is the only intended byte change; strip
+          // it so the hash still pins every other field and its order.
+          const unstamped = JSON.stringify(
+            JSON.parse(fs.readFileSync(file, 'utf8')).map(({ formatVersion, ...row }) => row), null, 2);
+          const digest = crypto.createHash('sha256').update(unstamped).digest('hex');
           assert.equal(digest, expected[mode], `${mode} persisted rows changed`);
         }
       } finally {

@@ -255,6 +255,7 @@ describe('UpDown cycle history and side-effect characterization', () => {
     const row = { type: 'BUY', action: 'OPEN', score: 30, confidence: 0.5, timestamp: ts, price: 100 }
     const writes = calls.filter(c => c.name === 'persist').map(c => c.payload)
     const state = {
+      formatVersion: 1,
       contract: { expiry: null, target: null, stop: null, range: null, direction: null },
       position: null, signalHistory: [], stability: { publishedType: 'NEUTRAL' },
       perpBook: { contractSizeBtc: 0.01, lots: book.lots, realizedPnl: 0, closedTrades: [], maxContracts: 1, lastSide: 'BUY', open: true },

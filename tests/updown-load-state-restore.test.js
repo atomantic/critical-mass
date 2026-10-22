@@ -69,3 +69,24 @@ describe('UpDown loadState replaces in-memory state (restore reload)', () => {
     service.stop()
   })
 })
+
+describe('UpDown state format version (#1397)', () => {
+  it('stamps the persisted state and reloads it', () => {
+    const files = {}
+    const service = makeService(files)
+    seed(service)
+    service.stop()
+    const [key] = Object.keys(files)
+    assert.equal(files[key].formatVersion, 1)
+    assert.doesNotThrow(() => makeService(files))
+  })
+
+  it('loads a pre-versioning state file', () => {
+    assert.doesNotThrow(() => makeService({ '/tmp/updown-load-state-restore/updown-state.json': { signalHistory: [] } }))
+  })
+
+  it('refuses a state file written by a newer build', () => {
+    const files = { '/tmp/updown-load-state-restore/updown-state.json': { formatVersion: 99, signalHistory: [] } }
+    assert.throws(() => makeService(files), /written by a newer build \(format v99/)
+  })
+})
