@@ -68,6 +68,7 @@ const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
 const { createTtlStore } = require('./ttl-store');
 const { buildPartialFillData, makeFillDedupKey, resolveEntryBudget, isInsufficientFundsMessage, sizeEntry, entryOffsetBps, isBuyAlreadyCommitted, isUnsettledBuyRow, collectBuyBookingBatch, measureUnbookedOrderQty, boundRecoveredBuyRows, isFullTpExecution, splitTpHoldback, pruneStaleTpCancelMarkers, isStrandedDustBody, snapshotBody, shouldSkipBuyRecommit } = require('./regime-pure-helpers');
 const { restorePersistedCycleId, repairHistoricalFillAnnotations, planBodyGrowthFromRecoveredBuyRows } = require('./regime-fill-annotations');
+const { LIVE_STATE_SAVE_INTERVAL_MS, DRY_RUN_STATE_SAVE_INTERVAL_MS, FILL_RETRY_DELAY_MS, PLACEMENT_RETRY_DELAY_MS } = require('./timing-constants');
 
 /** Interval between periodic metrics/regime-classification updates (ms) */
 const METRICS_INTERVAL_MS = 60000;
@@ -2748,11 +2749,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Start periodic state saving for live mode (every 5 minutes)
       // Guarded: a bare `setInterval(saveLiveState, ...)` turns a full disk into
       // an uncaughtException that kills the process from a timer tick (#532).
-      stateSaveInterval = setInterval(() => saveLiveStateGuarded('state-save-timer'), 300000);
+      stateSaveInterval = setInterval(() => saveLiveStateGuarded('state-save-timer'), LIVE_STATE_SAVE_INTERVAL_MS);
       startFillDriftSweep();
     } else {
       // Start periodic state saving for dry-run (every 60 seconds)
-      stateSaveInterval = setInterval(() => saveDryRunStateGuarded('state-save-timer'), 60000);
+      stateSaveInterval = setInterval(() => saveDryRunStateGuarded('state-save-timer'), DRY_RUN_STATE_SAVE_INTERVAL_MS);
     }
 
     invalidateEntryAdmission();
@@ -3929,9 +3930,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (rawFills.length === 0 && fillData.filledSize > 0) {
       logger.info(
         `⏳ [${exchange}] No fills yet for ${fillData.orderId}, retrying in 2s (status shows ${fillData.filledSize} filled)`,
-        { orderId: fillData.orderId, side: fillData.side, filledSize: fillData.filledSize, retryDelayMs: 2000 }
+        { orderId: fillData.orderId, side: fillData.side, filledSize: fillData.filledSize, retryDelayMs: FILL_RETRY_DELAY_MS }
       );
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, FILL_RETRY_DELAY_MS));
       try {
         rawFills = await adapter.getOrderFills(fillData.orderId);
       } catch (err) {
@@ -7298,7 +7299,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     let placed = await placeBodyTp(body);
     if (!placed && !body.tpOrderId) {
       logger.warn(`⚠️ [${exchange}] ${context} TP placement failed for body ${body.id.slice(-8)}, retrying after 1s...`);
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, PLACEMENT_RETRY_DELAY_MS));
       placed = await placeBodyTp(body);
       if (!placed && !body.tpOrderId) {
         logger.error(

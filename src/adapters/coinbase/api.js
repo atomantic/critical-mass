@@ -5,6 +5,7 @@ const { getAuthHeaders } = require('./auth');
 const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
 const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
+const { REST_TIMEOUT_MS } = require('../../timing-constants');
 const { validateCoinbaseKeys, createKeyFileLoader } = require('../key-validation');
 
 /**
@@ -187,7 +188,7 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = (ms) => new Promise(re
       // mirrors the Gemini/Crypto.com adapters, which keep body reads inside
       // the same try/signal scope. (#428)
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 30000);
+      const timeout = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
       try {
         const response = await fetch(`${BASE_URL}${apiPath}`, {
           ...fetchOptions,
