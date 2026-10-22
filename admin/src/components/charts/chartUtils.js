@@ -1,6 +1,8 @@
 // Chart utilities - formatting, layout and palette shared by the admin charts
 import { bisectLeft } from '../../lib/chart-math'
 
+export { formatUsd, formatPercent, formatLocalStamp, formatBytes } from '../../utils/format.mjs'
+
 // Compact currency formatting for axes
 export function formatCurrencyCompact(value) {
   const absValue = Math.abs(value)

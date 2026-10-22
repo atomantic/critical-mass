@@ -2,6 +2,7 @@ import { Target, TrendingUp, TrendingDown, Minus } from '../icons'
 import { TF_ORDER } from '../../utils/timeframes.mjs'
 import { INDICATORS, INDICATOR_LABELS, INDICATOR_WEIGHTS } from '../../../../shared/indicator-config.mjs'
 import { signedPrefix } from '../../utils/pnlFormat.mjs'
+import { formatUsd } from '../../utils/format.mjs'
 
 const WINDOW_ORDER = ['1m', '5m', '15m', '1h']
 
@@ -58,14 +59,7 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
   const StreakIcon = overall?.streak > 0 ? TrendingUp : overall?.streak < 0 ? TrendingDown : Minus
   const streakColor = overall?.streak > 0 ? 'text-green-400' : overall?.streak < 0 ? 'text-red-400' : 'text-gray-400'
   const pnlColor = (n) => n > 0 ? 'text-green-400' : n < 0 ? 'text-red-400' : 'text-gray-300'
-  const formatUsd = (n) => {
-    if (n == null || !Number.isFinite(n)) return '---'
-    const abs = Math.abs(n)
-    const formatted = abs >= 1000
-      ? abs.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
-      : abs.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
-    return n < 0 ? `-${formatted}` : formatted
-  }
+  const scoreUsd = (n) => formatUsd(n, { decimals: Math.abs(n) >= 1000 ? 0 : 2 })
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
@@ -80,16 +74,16 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
         <div className="flex items-center justify-between mb-1">
           <span className="text-[10px] uppercase tracking-wide text-gray-400">Perp long P&amp;L (0.01 BTC / contract)</span>
           {perp?.contracts > 0 && (
-            <span className="text-[10px] font-mono text-teal-400">{perp.contracts} open @ {formatUsd(perp.avgEntry)}</span>
+            <span className="text-[10px] font-mono text-teal-400">{perp.contracts} open @ {scoreUsd(perp.avgEntry)}</span>
           )}
         </div>
         <div className="flex items-center justify-between mb-1">
           <span className={`text-2xl font-bold font-mono ${pnlColor(perp?.totalPnl ?? 0)}`}>
-            {formatUsd(perp?.totalPnl ?? 0)}
+            {scoreUsd(perp?.totalPnl ?? 0)}
           </span>
           <span className="text-xs text-gray-400" title="Realized from closed rounds + mark-to-market on open lots">
-            {formatUsd(perp?.realizedPnl ?? 0)} real
-            {perp?.contracts > 0 && <span className={`ml-1 ${pnlColor(perp.unrealizedPnl)}`}>{formatUsd(perp.unrealizedPnl)} mtm</span>}
+            {scoreUsd(perp?.realizedPnl ?? 0)} real
+            {perp?.contracts > 0 && <span className={`ml-1 ${pnlColor(perp.unrealizedPnl)}`}>{scoreUsd(perp.unrealizedPnl)} mtm</span>}
           </span>
         </div>
         <div className="flex justify-between text-xs text-gray-400">
@@ -100,8 +94,8 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
         </div>
         {(perp?.avgWin !== 0 || perp?.avgLoss !== 0) && (
           <div className="flex justify-between text-xs text-gray-400 mt-0.5">
-            <span>Avg win: <span className="text-green-400 font-mono">{formatUsd(perp.avgWin)}</span></span>
-            <span>Avg loss: <span className="text-red-400 font-mono">{formatUsd(perp.avgLoss)}</span></span>
+            <span>Avg win: <span className="text-green-400 font-mono">{scoreUsd(perp.avgWin)}</span></span>
+            <span>Avg loss: <span className="text-red-400 font-mono">{scoreUsd(perp.avgLoss)}</span></span>
           </div>
         )}
       </div>

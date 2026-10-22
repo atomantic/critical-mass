@@ -7,6 +7,7 @@ import { plural } from '../utils/plural.mjs'
 import { describeActionFailure } from '../utils/actionFailure.mjs'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
 import { describeConfigSaveError } from '../utils/configSaveError.mjs'
+import { formatPercent } from '../utils/format.mjs'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 
 // Available options for optimizer
@@ -183,8 +184,6 @@ function Optimizer({ exchange = 'coinbase', pair }) {
       controller.abort()
     }
   }, [exchange, pair, pairQuery])
-
-  const formatPercent = (n) => `${(n || 0).toFixed(2)}%`
 
   const toggleInterval = (interval) => {
     setSelectedIntervals(prev =>
