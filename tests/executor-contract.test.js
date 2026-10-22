@@ -179,6 +179,48 @@ describe('Order Executor Contract - Interface Parity', () => {
     }
   });
 
+  it('isLadderOrder classifies ladder, entry, TP, unknown and settled ids identically on both executors', async () => {
+    const adapter = makeMockAdapter({
+      placeLimitBuy: async () => ({ success: true, orderId: `live-buy-${adapter.placeLimitBuy.calls++}` }),
+      placeLimitSell: async () => ({ success: true, orderId: 'live-tp-1' }),
+      getOrder: async () => ({ status: 'OPEN', filledSize: 0 }),
+    });
+    adapter.placeLimitBuy.calls = 1;
+    const liveExec = createOrderExecutor('coinbase', baseConfig(), adapter, TEST_PAIR, {}, TEST_PAIR);
+    const dryRunExec = createDryRunExecutor('coinbase', baseConfig(), { lastPrice: 50000, regime: 'NEUTRAL' }, {}, TEST_PAIR);
+    engines.push({ _test: { clearTimers: () => { liveExec.clearTimers(); dryRunExec.clearTimers(); } } });
+
+    const place = async (exec) => {
+      const { orders } = await exec.placeLadderOrders([{ index: 0, price: 49000, sizeUsdc: 100, assetQty: 0.002 }]);
+      const entry = await exec.placeEntryBid(100, 50000, 50010);
+      const tp = await exec.placeTakeProfitOrder(0.002, 52000, { forceUpdate: true });
+      const settled = await exec.placeLadderOrders([{ index: 1, price: 48000, sizeUsdc: 100, assetQty: 0.002 }]);
+      exec.handleOrderCancel(settled.orders[0].orderId);
+      exec.markSettled(settled.orders[0].orderId);
+      return {
+        ladderId: orders[0].orderId,
+        entryId: entry.orderId,
+        tpId: tp.orderId,
+        settledId: settled.orders[0].orderId,
+      };
+    };
+    const live = await place(liveExec);
+    const dry = await place(dryRunExec);
+    assert.ok(live.entryId && live.tpId && dry.entryId && dry.tpId, 'fixtures must place every order kind');
+
+    const classify = (exec, ids) => ({
+      ladder: exec.isLadderOrder(ids.ladderId),
+      entry: exec.isLadderOrder(ids.entryId),
+      tp: exec.isLadderOrder(ids.tpId),
+      unknown: exec.isLadderOrder('no-such-order'),
+      settled: exec.isLadderOrder(ids.settledId),
+    });
+    const expected = { ladder: true, entry: false, tp: false, unknown: false, settled: false };
+    assert.deepStrictEqual(classify(liveExec, live), expected, 'live executor');
+    assert.deepStrictEqual(classify(dryRunExec, dry), expected, 'dry-run executor');
+    assert.deepStrictEqual(classify(liveExec, live), classify(dryRunExec, dry));
+  });
+
   it('validateExecutor validates argument types and reports missing methods', () => {
     assert.throws(() => validateExecutor(null, 'test'), /must be an object/);
     assert.throws(() => validateExecutor(undefined, 'test'), /must be an object/);

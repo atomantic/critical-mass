@@ -484,6 +484,27 @@ const isOrderNotFoundError = (err) =>
   !!err && (err.orderNotFound === true || /\border [\w-]+ not found\b/.test(err.message || ''));
 
 /**
+ * True when an exchange rejection text means a post-only order was refused
+ * because it would have crossed the book (price moved). Case-insensitive and
+ * adapter-agnostic: Coinbase `POST_ONLY_REJ`/`INVALID_LIMIT_PRICE_POST_ONLY`,
+ * Gemini "would cross"/"post only", Crypto.com "price is too aggressive".
+ * Single matcher for the TP taker retry, the entry/buy retry and the DCA sell
+ * retry so the call sites cannot drift apart.
+ *
+ * @param {string|Error|null|undefined} errorOrMessage
+ * @returns {boolean}
+ */
+const isPostOnlyRejection = (errorOrMessage) => {
+  const raw = errorOrMessage && typeof errorOrMessage === 'object' ? errorOrMessage.message : errorOrMessage;
+  const msg = String(raw || '').toLowerCase();
+  return msg.includes('post_only') ||
+         msg.includes('post only') ||
+         msg.includes('would cross') ||
+         msg.includes('would immediately match') ||
+         msg.includes('price is too aggressive');
+};
+
+/**
  * True when `orderId` is present in an open-orders listing. Used to reject a
  * FALSE terminal status: a freshly-placed order can transiently read
  * CANCELLED/FAILED from an eventually-consistent getOrder endpoint while it is
@@ -560,6 +581,7 @@ module.exports = {
   isCancelledStatus,
   isTerminalStatus,
   isOrderNotFoundError,
+  isPostOnlyRejection,
   isOrderStillOpen,
   readJSON,
   writeJSON,
