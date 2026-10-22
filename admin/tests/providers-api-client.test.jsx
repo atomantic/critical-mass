@@ -38,3 +38,16 @@ it('accepts a provider write that answers without a body', async () => {
   await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/providers/p1', expect.objectContaining({ method: 'PUT' })))
   expect(screen.queryByRole('alert')).toBeNull()
 })
+
+it('reads a finished run that recorded success:false as done, not unavailable', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url, init = {}) => {
+    if (url === '/api/providers') return reply(200, providers)
+    if (url === '/api/runs?limit=20') return reply(200, { runs: [{ id: 'r1', providerId: 'p1', prompt: 'x', startTime: '2026-10-10T00:00:00.000Z' }] })
+    if (url === '/api/runs/r1') return reply(200, { id: 'r1', success: false, endTime: '2026-10-10T00:01:00.000Z' })
+    return reply(200, {})
+  }))
+  render(<AIProviders />)
+  await screen.findByText('Example API')
+  await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/runs/r1', expect.anything()))
+  expect(screen.queryByText('Status unavailable')).toBeNull()
+})

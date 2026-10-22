@@ -16,6 +16,8 @@
 // false) or an acknowledged stop. An unreadable status or a failed stop keeps
 // the run identity and surfaces a recoverable notice instead.
 
+import { apiFetch } from './apiClient.js'
+
 export const RUN_POLL_INTERVAL_MS = 2000
 
 export const RUN_NOTICE = { READ: 'read', STOP: 'stop' }
@@ -23,7 +25,7 @@ export const RUN_NOTICE = { READ: 'read', STOP: 'stop' }
 const noop = () => {}
 
 export const createRunLifecycle = ({
-  fetchImpl = fetch,
+  fetchImpl = apiFetch,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   createAbortController = () => new AbortController(),
