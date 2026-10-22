@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import ModalDialog from './ModalDialog'
 import { pairQuery } from '../utils/api'
+import { apiPost } from '../utils/apiClient'
 
 // An unknown placement outcome blocks every subsequent DCA interval. This
 // panel is independent of failed sells: the stranded placement may be a buy.
@@ -25,13 +26,12 @@ function DcaPlacementRecovery({ intents = [], exchange, pair, onResolved }) {
     setError(null)
     const { intent } = confirmation
     try {
-      const response = await fetch(`/api/${exchange}/reconcile-placement-intent${pairQuery(pair)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ intentId: intent.id, action: 'discard' }),
+      const result = await apiPost(`/api/${exchange}/reconcile-placement-intent${pairQuery(pair)}`, {
+        intentId: intent.id,
+        action: 'discard',
       })
-      const data = await response.json()
-      if (!response.ok || !data.success) throw new Error(data.error || data.message || 'Reconciliation was rejected')
+      const data = result.data ?? {}
+      if (!result.ok || !data.success) throw new Error(data.error || data.message || result.error || 'Reconciliation was rejected')
       setConfirmation(null)
       setNotice(data.message || 'Placement intent discarded. This fund can place orders again.')
       try {

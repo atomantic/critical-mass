@@ -1,4 +1,5 @@
 import { CONFIG_FIELD_LABELS, describeConfigSaveError } from '../../utils/configSaveError.mjs'
+import { apiPut } from '../../utils/apiClient'
 import React, { useState, useMemo } from 'react'
 import { buildAggressivenessLevels, detectAggressivenessLevel, computeAggressivenessParams, formatInterval } from './aggressiveness'
 
@@ -21,22 +22,18 @@ export default function AggressivenessControl({ config, exchange, pairQuery, onC
       const params = computeAggressivenessParams(level, presets)
       const updates = { aggressiveness: level, ...params }
 
-      const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      })
-
-      if (res.ok) {
+      const result = await apiPut(`/api/${exchange}/regime/config${pairQuery}`, updates)
+      if (result.status === 0) throw new Error(result.error || 'Network error')
+      if (result.ok) {
         onConfigUpdate()
       } else {
-        const err = await res.json().catch(() => ({}))
+        const err = result.data ?? {}
         if (err.persisted === true) {
           // Saved to disk but not applied live: show the saved level, not the old one.
-          addToast?.({ type: 'warning', title: 'Aggressiveness saved, not applied', message: describeConfigSaveError(res.status, err).message })
+          addToast?.({ type: 'warning', title: 'Aggressiveness saved, not applied', message: describeConfigSaveError(result.status, err).message })
           onConfigUpdate()
         } else {
-          addToast?.({ type: 'error', title: 'Could not update aggressiveness', message: describeConfigSaveError(res.status, err).message })
+          addToast?.({ type: 'error', title: 'Could not update aggressiveness', message: describeConfigSaveError(result.status, err).message })
         }
       }
     } catch (err) {

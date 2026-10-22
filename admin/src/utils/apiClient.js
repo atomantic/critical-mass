@@ -30,10 +30,13 @@ export async function apiRequest(method, url, { body, signal, allowEmpty = false
     return { ok: false, status: 0, data: null, error: err?.message || 'Network error' }
   }
   const data = await parseBody(res)
+  // A fetch Response always carries a numeric status. A stand-in that only sets
+  // `ok` is treated as 200 or as no status at all, so callers can keep using status.
+  const status = typeof res.status === 'number' ? res.status : (res.ok ? 200 : 0)
   // A 2xx page that is not JSON (a proxy HTML page) is a failure unless the caller expects an empty reply.
   const ok = res.ok && data?.success !== false && (allowEmpty || data !== null)
-  if (ok) return { ok, status: res.status, data, error: null }
-  return { ok, status: res.status, data, error: describeActionFailure(res.ok && data === null ? 0 : res.status, data) }
+  if (ok) return { ok, status, data, error: null }
+  return { ok, status, data, error: describeActionFailure(res.ok && data === null ? 0 : status, data) }
 }
 
 export const apiGet = (url, opts) => apiRequest('GET', url, opts)

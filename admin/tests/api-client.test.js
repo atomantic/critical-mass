@@ -10,6 +10,11 @@ const reply = (status, body) => ({
 afterEach(() => vi.unstubAllGlobals())
 
 describe('apiClient', () => {
+  it('treats a status-less ok response as HTTP 200', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ price: 1 }) }))
+    expect(await apiGet('/api/x')).toMatchObject({ ok: true, status: 200, data: { price: 1 }, error: null })
+  })
+
   it('returns parsed data on success', async () => {
     const fetchMock = vi.fn().mockResolvedValue(reply(200, { price: 5 }))
     vi.stubGlobal('fetch', fetchMock)

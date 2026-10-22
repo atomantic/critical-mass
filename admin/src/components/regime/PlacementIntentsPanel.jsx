@@ -3,6 +3,7 @@ import { formatPriceByMagnitude } from '../charts/chartUtils'
 import { formatTimestamp } from './regimeFormat'
 import RegimeActionModals from './RegimeActionModals'
 import { describeActionFailure } from '../../utils/actionFailure.mjs'
+import { apiPost } from '../../utils/apiClient'
 
 export default function PlacementIntentsPanel({ placementIntents, asset, exchange, pairQuery, addToast, setSocketStatus, fetchStatus, fetchFills }) {
   // { intent, action: 'adopt'|'discard' } — operator reconcile of an unresolved placement intent
@@ -16,13 +17,10 @@ export default function PlacementIntentsPanel({ placementIntents, asset, exchang
     const { intent, action } = intentConfirm
     setReconcilingIntent(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/reconcile-placement-intent${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ intentId: intent.id, action }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (data.success) {
+      const result = await apiPost(`/api/${exchange}/regime/reconcile-placement-intent${pairQuery}`, { intentId: intent.id, action })
+      if (result.status === 0) throw new Error(result.error || 'Network error')
+      const data = result.data ?? {}
+      if (result.ok && data.success) {
         addToast({
           type: 'success',
           title: action === 'adopt' ? 'Order adopted' : 'Intent discarded',
@@ -32,7 +30,7 @@ export default function PlacementIntentsPanel({ placementIntents, asset, exchang
         fetchStatus()
         fetchFills()
       } else {
-        addToast({ type: 'error', title: 'Reconcile failed', message: describeActionFailure(res.status, data) })
+        addToast({ type: 'error', title: 'Reconcile failed', message: result.error || describeActionFailure(result.status, data) })
       }
     } catch (err) {
       addToast({ type: 'error', title: 'Reconcile failed', message: err.message })

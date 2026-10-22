@@ -1,4 +1,5 @@
 import { describeConfigSaveError } from '../../utils/configSaveError.mjs'
+import { apiPut } from '../../utils/apiClient'
 import LongTermBiasDetails from './LongTermBiasDetails'
 import React, { useState } from 'react'
 import { detectAggressivenessLevel, computeAggressivenessParams, AGGRESSIVENESS_LEVEL_META } from './aggressiveness'
@@ -25,12 +26,9 @@ export default function LongTermBiasPanel({ bias, config, presets, exchange, pai
     try {
       const params = computeAggressivenessParams(suggested, presets)
       const updates = { aggressiveness: suggested, ...params }
-      const res = await fetch(`/api/${exchange}/regime/config${pairQuery || ''}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      })
-      if (res.ok) {
+      const result = await apiPut(`/api/${exchange}/regime/config${pairQuery || ''}`, updates)
+      if (result.status === 0) throw new Error(result.error || 'Network error')
+      if (result.ok) {
         addToast?.({
           type: 'success',
           title: 'Aggressiveness applied',
@@ -38,12 +36,12 @@ export default function LongTermBiasPanel({ bias, config, presets, exchange, pai
         })
         onConfigUpdate()
       } else {
-        const err = await res.json().catch(() => ({}))
+        const err = result.data ?? {}
         // persisted: saved to disk but not applied live — refetch so the saved level shows.
         addToast?.({
           type: err.persisted === true ? 'warning' : 'error',
           title: err.persisted === true ? 'Suggested level saved, not applied' : 'Could not apply suggested level',
-          message: describeConfigSaveError(res.status, err).message,
+          message: describeConfigSaveError(result.status, err).message,
         })
         if (err.persisted === true) onConfigUpdate()
       }

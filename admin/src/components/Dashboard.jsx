@@ -11,6 +11,7 @@ import { useToast } from './Toast'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
+import { apiGet, apiPost } from '../utils/apiClient'
 import { createRequestOwner } from '../utils/requestOwner.mjs'
 import { runDashboardAction } from '../utils/dashboardAction.mjs'
 import { formatCountdown } from '../utils/countdown.mjs'
@@ -59,14 +60,15 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
     setBuyRecoveryNotice(null)
     let message
     try {
-      const res = await fetch(`/api/${exchange}/resume-pending-buy${pairQuery}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orderId }),
-      })
-      const data = await res.json()
+      const result = await apiPost(`/api/${exchange}/resume-pending-buy${pairQuery}`, { orderId })
       if (!liveOwnerRef.current.owns(token)) return
+      const data = result.data ?? {}
+      // HTTP status, not result.ok: a pending fill is success even when `success` is absent,
+      // and a recovered buy whose covering sell failed is still an acknowledged outcome.
+      const httpOk = result.status >= 200 && result.status < 300
       const sellFailed = data.status === 'sell_placement_failed' && data.recoveredPendingBuy
-      if (!sellFailed && (!res.ok || (!data.success && data.status !== 'buy_fill_pending'))) {
-        throw new Error(data.error || data.message || 'Buy recovery could not be confirmed')
+      if (!sellFailed && (!httpOk || (!data.success && data.status !== 'buy_fill_pending'))) {
+        throw new Error(data.error || data.message || result.error || 'Buy recovery could not be confirmed')
       }
       message = sellFailed
         ? `Buy fill recorded, but its covering sell failed: ${data.error || 'see engine logs'}. Check Failed Sell Placements below or the engine logs before resuming automation.`
@@ -182,12 +184,11 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   // Check if regime engine is running (for Export to Regime button)
   useEffect(() => {
     const controller = new AbortController()
-    fetch(`/api/${exchange}/regime/status${pairQuery}`, { signal: controller.signal })
-      .then(async r => {
+    apiGet(`/api/${exchange}/regime/status${pairQuery}`, { signal: controller.signal })
+      .then(result => {
         // Keep the Export button hidden when the engine state is unknown
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        const data = await r.json()
-        setRegimeRunning(data.running || data.status?.isRunning || false)
+        if (!result.ok) throw new Error(result.status ? `HTTP ${result.status}` : (result.error || 'Network error'))
+        setRegimeRunning(result.data?.running || result.data?.status?.isRunning || false)
         setRegimeStatusError(false)
       })
       .catch(() => { if (!controller.signal.aborted) { setRegimeStatusError(true); setRegimeRunning(true) } })

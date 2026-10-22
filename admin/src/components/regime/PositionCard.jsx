@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { plural } from '../../utils/plural.mjs'
 import { describeActionFailure } from '../../utils/actionFailure.mjs'
+import { apiPost } from '../../utils/apiClient'
 import { formatPriceByMagnitude, formatCurrency } from '../charts/chartUtils'
 import CapitalAdjust from './CapitalAdjust'
 
@@ -18,16 +19,13 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
   const handleRecalculatePreview = async () => {
     setRecalculating(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/recalculate${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apply: false }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (res.ok && data.success) {
+      const result = await apiPost(`/api/${exchange}/regime/recalculate${pairQuery}`, { apply: false })
+      if (result.status === 0) throw new Error(result.error || 'Network error')
+      const data = result.data ?? {}
+      if (result.ok && data.success) {
         setRecalcPreview(data)
       } else {
-        addToast?.({ type: 'error', title: 'Recalculate failed', message: describeActionFailure(res.status, data) })
+        addToast?.({ type: 'error', title: 'Recalculate failed', message: result.error || describeActionFailure(result.status, data) })
       }
     } catch (err) {
       addToast?.({ type: 'error', title: 'Recalculate failed', message: err.message })
@@ -39,17 +37,14 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
   const handleRecalculateApply = async () => {
     setRecalculating(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/recalculate${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apply: true }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (res.ok && data.success) {
+      const result = await apiPost(`/api/${exchange}/regime/recalculate${pairQuery}`, { apply: true })
+      if (result.status === 0) throw new Error(result.error || 'Network error')
+      const data = result.data ?? {}
+      if (result.ok && data.success) {
         setRecalcPreview(null)
         await fetchStatus?.()
       } else {
-        addToast?.({ type: 'error', title: 'Recalculate failed', message: describeActionFailure(res.status, data) })
+        addToast?.({ type: 'error', title: 'Recalculate failed', message: result.error || describeActionFailure(result.status, data) })
       }
     } catch (err) {
       addToast?.({ type: 'error', title: 'Recalculate failed', message: err.message })

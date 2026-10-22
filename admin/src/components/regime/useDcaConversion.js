@@ -1,22 +1,17 @@
 import { useState, useEffect, useCallback } from 'react'
 import { plural } from '../../utils/plural.mjs'
-import { describeActionFailure } from '../../utils/actionFailure.mjs'
+import { apiGet, apiPost } from '../../utils/apiClient'
 
 // Shared by Dashboard and the regime dashboard: POST the merge preview and toast on
 // failure. Resolves to the preview payload, or null when it failed.
 export async function fetchConvertPreview({ exchange, pairQuery, addToast }) {
   try {
-    const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ preview: true, merge: true }),
-    })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      addToast({ type: 'error', title: 'Preview Failed', message: describeActionFailure(res.status, err) })
+    const result = await apiPost(`/api/${exchange}/regime/convert-dca${pairQuery}`, { preview: true, merge: true })
+    if (!result.ok) {
+      addToast({ type: 'error', title: 'Preview Failed', message: result.error || 'Network error' })
       return null
     }
-    return await res.json()
+    return result.data
   } catch (err) {
     addToast({ type: 'error', title: 'Preview Failed', message: err.message || 'Network error' })
     return null
@@ -36,11 +31,10 @@ export default function useDcaConversion({ exchange, pairQuery, isRunning, addTo
     if (!isRunning) {
       const controller = new AbortController()
       setDcaStateError(null)
-      fetch(`/api/${exchange}/state${pairQuery}`, { signal: controller.signal })
-        .then(async r => {
-          const data = await r.json().catch(() => ({}))
-          if (!r.ok) throw new Error(describeActionFailure(r.status, data))
-          setDcaState(data)
+      apiGet(`/api/${exchange}/state${pairQuery}`, { signal: controller.signal })
+        .then(result => {
+          if (!result.ok) throw new Error(result.error || 'Network error')
+          setDcaState(result.data)
         })
         .catch(err => {
           if (err.name === 'AbortError') return
@@ -68,21 +62,19 @@ export default function useDcaConversion({ exchange, pairQuery, isRunning, addTo
       : ['DCA Orders Upgraded', 'Upgrade Failed']
     setConverting(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ preview: false, merge: convertPreview?.merge }),
+      const result = await apiPost(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
+        preview: false,
+        merge: convertPreview?.merge,
       })
       setShowConvertConfirm(false)
       setConvertPreview(null)
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        addToast({ type: 'error', title: failedTitle, message: describeActionFailure(res.status, err) })
+      if (!result.ok) {
+        addToast({ type: 'error', title: failedTitle, message: result.error || 'Network error' })
         return
       }
 
-      const data = await res.json()
+      const data = result.data
       addToast({
         type: 'success',
         title: doneTitle,

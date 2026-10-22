@@ -42,6 +42,8 @@ before(async () => {
   ))
 })
 
+const { apiClientStub } = require('./api-client-harness')
+
 function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
   const writes = []
   const toasts = []
@@ -143,6 +145,7 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
     '../App': { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' },
     '../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
     '../../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
+    '../utils/apiClient': apiClientStub(fetch),
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../utils/api': { pairQuery: pair => `?pair=${encodeURIComponent(pair)}` },
