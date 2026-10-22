@@ -2,6 +2,7 @@ import { describeConfigSaveError } from '../../utils/configSaveError.mjs'
 import { apiPut } from '../../utils/apiClient'
 import React, { useId, useState } from 'react'
 import { computeCapitalAdjustment } from '../../utils/capitalAdjustment.mjs'
+import { signedPrefix } from '../../utils/pnlFormat.mjs'
 
 /**
  * RegimeDashboard "Available capital" inline form, inside the Position/APY
@@ -40,7 +41,7 @@ function CapitalAdjust({ apy, exchange, pairQuery, fetchConfig, fetchStatus, add
         addToast?.({
           type: 'success',
           title: 'Capital Adjusted',
-          message: `${delta >= 0 ? '+' : ''}$${delta.toLocaleString()} applied — deposited: $${appliedDeposited.toLocaleString()}, max: $${appliedMax.toLocaleString()}`,
+          message: `${signedPrefix(delta)}$${delta.toLocaleString()} applied — deposited: $${appliedDeposited.toLocaleString()}, max: $${appliedMax.toLocaleString()}`,
         })
         await Promise.all([fetchConfig?.(), fetchStatus?.()])
       } else {

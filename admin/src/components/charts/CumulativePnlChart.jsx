@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { buildPnlGeometry, PNL_VIEW } from './cumulativePnlGeometry'
 import { formatCurrency } from './chartUtils'
+import { pnlColorClass } from '../../utils/pnlFormat.mjs'
 
 // Bounded SVG line chart of cumulative P&L with a native range input for
 // touch/keyboard point selection. Read-only: selection never mutates anything.
@@ -45,7 +46,7 @@ function CumulativePnlChart({ points }) {
         />
       )}
       <div className="text-xs text-gray-300 mt-1" aria-live="polite">
-        {new Date(sel.t).toLocaleString()}: <span className={sel.v >= 0 ? 'text-green-400' : 'text-red-400'}>{formatCurrency(sel.v)}</span>
+        {new Date(sel.t).toLocaleString()}: <span className={pnlColorClass(sel.v)}>{formatCurrency(sel.v)}</span>
       </div>
     </div>
   )

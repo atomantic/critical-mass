@@ -5,6 +5,7 @@ import { pairQuery as buildPairQuery } from '../utils/api'
 import ManualTrades from './ManualTrades'
 import { createTransactionsReader } from '../utils/transactionsRead.mjs'
 import { apiGet } from '../utils/apiClient'
+import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 
 const EMPTY_SUMMARY = { totalBuys: 0, totalSells: 0, totalAssetBought: 0, totalBtcSold: 0, totalFees: 0, totalPnL: 0, totalHoldbackBtc: 0, totalHoldbackValue: 0 }
 const EMPTY_PAGE = { page: 0, pageCount: 1, total: 0, start: 0, end: 0, hasPrev: false, hasNext: false }
@@ -258,8 +259,8 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
             </div>
             <div>
               <span className="text-gray-400">Total P&L:</span>
-              <span className={`ml-2 font-medium ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {totalPnL >= 0 ? '+' : ''}{formatCurrency(totalPnL)}
+              <span className={`ml-2 font-medium ${pnlColorClass(totalPnL)}`}>
+                {signedPrefix(totalPnL)}{formatCurrency(totalPnL)}
               </span>
             </div>
           </div>
@@ -392,8 +393,8 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                     </td>
                     <td className="px-4 py-3">
                       {fill.pnl !== null ? (
-                        <span className={fill.pnl >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {fill.pnl >= 0 ? '+' : ''}{formatCurrency(fill.pnl)}
+                        <span className={pnlColorClass(fill.pnl)}>
+                          {signedPrefix(fill.pnl)}{formatCurrency(fill.pnl)}
                         </span>
                       ) : (
                         <span className="text-gray-400">—</span>

@@ -99,6 +99,7 @@ function createView(props = {}) {
     },
     '../utils/api': { pairQuery: pair => pair ? `?pair=${encodeURIComponent(pair)}` : '' },
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
+    '../utils/pnlFormat.mjs': { pnlColorClass: n => (n >= 0 ? 'text-green-400' : 'text-red-400'), signedPrefix: n => (n >= 0 ? '+' : '') },
     '../utils/regimeFillGroups.mjs': { compareCycleIds: (a, b) => a.localeCompare(b) },
   }
   const mod = { exports: {} }

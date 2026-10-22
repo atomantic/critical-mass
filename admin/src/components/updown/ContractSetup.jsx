@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useId } from 'react'
 import { FileText, Save, Camera, Upload, Check, X, Loader2 } from '../icons'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { apiGet, apiPut, apiRequest, describeMutationFailure } from '../../utils/apiClient'
+import { pnlColorClass, signedPrefix } from '../../utils/pnlFormat.mjs'
 
 const LS_PROVIDER_KEY = 'updown-screenshot-provider'
 const LS_MODEL_KEY = 'updown-screenshot-model'
@@ -445,8 +446,8 @@ export default function ContractSetup({ initialContract }) {
               {preview.screenType === 'position' && preview.unrealizedPnl != null && (
                 <div className="flex justify-between">
                   <span className="text-gray-400">Unrealized P&L</span>
-                  <span className={`font-medium ${preview.unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {preview.unrealizedPnl >= 0 ? '+' : ''}${preview.unrealizedPnl.toLocaleString()}
+                  <span className={`font-medium ${pnlColorClass(preview.unrealizedPnl)}`}>
+                    {signedPrefix(preview.unrealizedPnl)}${preview.unrealizedPnl.toLocaleString()}
                   </span>
                 </div>
               )}

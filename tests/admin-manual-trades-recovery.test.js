@@ -96,6 +96,7 @@ function createView(respond) {
     './charts/chartUtils': { formatCurrency: String, formatPrice: String, formatDateTime: String },
     '../utils/api': { pairQuery: () => '?pair=BTC-USDC' },
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
+    '../utils/pnlFormat.mjs': { pnlColorClass: n => (n >= 0 ? 'text-green-400' : 'text-red-400'), signedPrefix: n => (n >= 0 ? '+' : '') },
     '../App': { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' },
     '../utils/unaccountedFillsScan.mjs': { runUnaccountedFillsScan: async () => ({ status: 'cancelled' }), describeScanProgress: () => '' },
   }

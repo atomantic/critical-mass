@@ -6,6 +6,7 @@ import {
 } from '../../utils/regimeFillGroups.mjs'
 import { getPriceDecimals, formatCurrency } from '../charts/chartUtils'
 import { formatDuration, formatTimestamp } from './regimeFormat'
+import { pnlColorClass, signedPrefix } from '../../utils/pnlFormat.mjs'
 
 const EMPTY = []
 
@@ -236,9 +237,9 @@ function FilledOrdersSection({ fillsUnavailable = false, retry, liveFills, fillA
                       ${sellValue.toFixed(2)}
                     </td>
                     <td className={`text-right py-1.5 pr-2 font-mono text-xs ${
-                      sellPnl !== null ? (sellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-400'
+                      sellPnl !== null ? (pnlColorClass(sellPnl)) : 'text-gray-400'
                     }`}>
-                      {sellPnl !== null ? `${sellPnl >= 0 ? '+' : ''}${formatCurrency(sellPnl)}` : '—'}
+                      {sellPnl !== null ? `${signedPrefix(sellPnl)}${formatCurrency(sellPnl)}` : '—'}
                       {sellHoldback > 0 && <span className="ml-1 text-cyan-400" title={`Holdback ${asset}`}>+{sellHoldback.toFixed(8)}</span>}
                       {!isDryRun && sell.reservesSold > 0 && <span className="ml-1 text-amber-400" title={`Sold beyond the body's holdings — drawn from ${asset} reserves`}>−{sell.reservesSold.toFixed(8)}</span>}
                     </td>
@@ -322,8 +323,8 @@ function FilledOrdersSection({ fillsUnavailable = false, retry, liveFills, fillA
                         <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
                           <td className="py-1.5 pr-1"></td>
                           <td className="py-1.5 pr-2 text-gray-400 text-xs" colSpan={4}>Totals ({plural(sellGroups.length, "sell")})</td>
-                          <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)}` : '—'}
+                          <td className={`text-right py-1.5 pr-2 font-mono text-xs ${pnlColorClass(totalPnl)}`}>
+                            {totalPnl !== 0 ? `${signedPrefix(totalPnl)}${formatCurrency(totalPnl)}` : '—'}
                             {totalHoldback > 0 && <span className="ml-1 text-cyan-400" title="Total holdback">+{totalHoldback.toFixed(8)}</span>}
                           </td>
                           <td className="text-right py-1.5"></td>
@@ -358,8 +359,8 @@ function FilledOrdersSection({ fillsUnavailable = false, retry, liveFills, fillA
                     <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded-sm text-xs">
                       <span className="text-gray-400">{plural(shownSellCount, "sell")} across {plural(shownCycleCount, "cycle")}</span>
                       <span className="font-mono">
-                        <span className={totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)}` : '—'}
+                        <span className={pnlColorClass(totalPnl)}>
+                          {totalPnl !== 0 ? `${signedPrefix(totalPnl)}${formatCurrency(totalPnl)}` : '—'}
                         </span>
                         {showReserves && (
                           <>
@@ -368,7 +369,7 @@ function FilledOrdersSection({ fillsUnavailable = false, retry, liveFills, fillA
                               <>
                                 <span className={`ml-1 ${totalHoldback < 0 ? 'text-amber-400/70' : 'text-cyan-400/70'}`}>({formatCurrency(reservesUsd)})</span>
                                 <span className={`ml-2 font-bold ${grandTotal >= 0 ? 'text-green-300' : 'text-red-300'}`}>
-                                  = {grandTotal >= 0 ? '+' : ''}{formatCurrency(grandTotal)}
+                                  = {signedPrefix(grandTotal)}{formatCurrency(grandTotal)}
                                 </span>
                               </>
                             )}
@@ -490,8 +491,8 @@ function FilledOrdersSection({ fillsUnavailable = false, retry, liveFills, fillA
                             </span>
                           )}
                         </span>
-                        <span className={`font-mono text-xs ${cycle.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}${formatCurrency(cycle.totalPnl)}` : '—'}
+                        <span className={`font-mono text-xs ${pnlColorClass(cycle.totalPnl)}`}>
+                          {cycle.totalPnl !== 0 ? `${signedPrefix(cycle.totalPnl)}${formatCurrency(cycle.totalPnl)}` : '—'}
                           {cycle.totalHoldback !== 0 && <span className={`ml-1 ${cycle.totalHoldback < 0 ? 'text-amber-400' : 'text-cyan-400'}`}>{cycle.totalHoldback < 0 ? '−' : '+'}{Math.abs(cycle.totalHoldback).toFixed(8)}</span>}
                         </span>
                       </button>
@@ -511,8 +512,8 @@ function FilledOrdersSection({ fillsUnavailable = false, retry, liveFills, fillA
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">{cycle.totalSize.toFixed(8)}</td>
                                   <td className="text-right py-1.5 pr-2"></td>
                                   <td className="text-right py-1.5 pr-2"></td>
-                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${cycle.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                    {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}${formatCurrency(cycle.totalPnl)}` : '—'}
+                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${pnlColorClass(cycle.totalPnl)}`}>
+                                    {cycle.totalPnl !== 0 ? `${signedPrefix(cycle.totalPnl)}${formatCurrency(cycle.totalPnl)}` : '—'}
                                     {cycle.totalHoldback !== 0 && <span className={`ml-1 ${cycle.totalHoldback < 0 ? 'text-amber-400' : 'text-cyan-400'}`}>{cycle.totalHoldback < 0 ? '−' : '+'}{Math.abs(cycle.totalHoldback).toFixed(8)}</span>}
                                   </td>
                                   <td className="text-right py-1.5"></td>

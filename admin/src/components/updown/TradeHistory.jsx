@@ -7,6 +7,7 @@ import { runDashboardAction } from '../../utils/dashboardAction.mjs'
 import { apiDelete, apiRequest } from '../../utils/apiClient'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { parseTradeAmountExpression } from './tradeAmountExpression'
+import { signedPrefix } from '../../utils/pnlFormat.mjs'
 
 function fmt(v) {
   if (v == null) return '---'
@@ -199,7 +200,7 @@ export default function TradeHistory() {
           <div className="bg-gray-900 rounded-sm px-2 py-1">
             <div className="text-gray-400 text-[10px]">P&L</div>
             <div className={`font-mono font-semibold ${pnlColor(summary.totalPnl)}`}>
-              {summary.totalPnl >= 0 ? '+' : ''}{fmt(summary.totalPnl)}
+              {signedPrefix(summary.totalPnl)}{fmt(summary.totalPnl)}
             </div>
           </div>
           <div className="bg-gray-900 rounded-sm px-2 py-1">
@@ -404,7 +405,7 @@ export default function TradeHistory() {
                   <td className="py-1 px-1 text-right font-mono text-gray-300">{fmt(t.cost)}</td>
                   <td className="py-1 px-1 text-right font-mono text-gray-300">{fmt(t.returnAmount)}</td>
                   <td className={`py-1 px-1 text-right font-mono font-medium whitespace-nowrap ${pnlColor(t.pnl)}`}>
-                    {t.pnl >= 0 ? '+' : ''}{fmt(t.pnl)}
+                    {signedPrefix(t.pnl)}{fmt(t.pnl)}
                   </td>
                   <td className="py-1 pl-1">
                     <div className="flex gap-2">

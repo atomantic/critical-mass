@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **[issue-1593] Admin P&L colour and sign logic uses shared helpers** — `pnlColorClass` and `signedPrefix` in `admin/src/utils/pnlFormat.mjs` replace ~94 inline `>= 0 ? ...` ternaries across 23 admin components. Presentation only; output is identical (zero stays green with a `+`). The two local `pnlColor` helpers in the updown panels keep their own neutral zero colour.
+
 ### Security
 - **[issue-1590] Dockerfile base images are pinned by digest** — both `FROM node:26-alpine` stages now reference `node:26-alpine@sha256:40cd011b…797`, so a republished tag can no longer change the production image (which holds the exchange keys) without a diff. Dependabot's existing `docker` ecosystem entry proposes digest bumps.
 

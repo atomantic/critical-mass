@@ -1,6 +1,7 @@
 import { Target, TrendingUp, TrendingDown, Minus } from '../icons'
 import { TF_ORDER } from '../../utils/timeframes.mjs'
 import { INDICATORS, INDICATOR_LABELS, INDICATOR_WEIGHTS } from '../../../../shared/indicator-config.mjs'
+import { signedPrefix } from '../../utils/pnlFormat.mjs'
 
 const WINDOW_ORDER = ['1m', '5m', '15m', '1h']
 
@@ -255,7 +256,7 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
                   <span className="w-16 text-gray-400 truncate">{label}</span>
                   <span className="font-mono text-gray-300 w-10 text-right">{(current * 100).toFixed(1)}%</span>
                   <span className={`font-mono w-12 text-right ${deltaColor}`}>
-                    {delta >= 0 ? '+' : ''}{(delta * 100).toFixed(1)}%
+                    {signedPrefix(delta)}{(delta * 100).toFixed(1)}%
                   </span>
                 </div>
               )
