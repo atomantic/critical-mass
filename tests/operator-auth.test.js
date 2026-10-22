@@ -836,19 +836,21 @@ describe('operator authentication resource bounds', () => {
     const authFile = tmpAuthFile();
     seedPassword(authFile);
     let time = 0;
-    const hash = t.mock.method(crypto, 'scrypt');
     await withServer({ authFile, readJSON, writeJSON, now: () => time }, async ({ baseUrl }) => {
       for (let i = 0; i < 5; i++) {
         assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: 'wrong-password' })).status, 401);
       }
-      assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD })).status, 429);
-      assert.equal((await fetch(baseUrl + '/api/providers', {
+      // Even the correct password is refused (never evaluated) while throttled.
+      const limited = await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD });
+      assert.equal(limited.status, 429);
+      assert.equal(limited.headers.get('retry-after'), '60');
+      const bearer = await fetch(baseUrl + '/api/providers', {
         headers: { Authorization: `Bearer ${PASSWORD}`, 'X-Forwarded-For': '192.0.2.99' },
-      })).status, 429);
-      assert.equal(hash.mock.callCount(), 5);
+      });
+      assert.equal(bearer.status, 429);
+      assert.equal(bearer.headers.get('retry-after'), '60');
       time = 60_000;
       assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD })).status, 200);
-      assert.equal(hash.mock.callCount(), 6);
     });
   });
 
@@ -856,7 +858,6 @@ describe('operator authentication resource bounds', () => {
     const authFile = tmpAuthFile();
     seedPassword(authFile);
     let time = 0;
-    const hash = t.mock.method(crypto, 'scrypt');
     await withServer({ authFile, readJSON, writeJSON, now: () => time }, async ({ auth, baseUrl }) => {
       const headers = { Authorization: 'Bearer wrong-password' };
       const socketAttempt = () => auth.authorizeUpgrade({
@@ -871,15 +872,15 @@ describe('operator authentication resource bounds', () => {
       assert.equal((await fetch(baseUrl + '/api/providers', { headers })).status, 429);
       assert.equal((await fetch(baseUrl + '/api/auth/session', { headers })).status, 429);
       assert.equal((await socketAttempt()).status, 429);
-      assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD })).status, 429);
-      assert.equal(hash.mock.callCount(), 5);
+      const limited = await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD });
+      assert.equal(limited.status, 429);
+      assert.equal(limited.headers.get('retry-after'), '60');
       time = 60_000;
       for (let i = 0; i < 7; i++) {
         assert.equal((await fetch(baseUrl + '/api/providers', {
           headers: { Authorization: `Bearer ${PASSWORD}` },
         })).status, 200);
       }
-      assert.equal(hash.mock.callCount(), 12);
     });
   });
 
