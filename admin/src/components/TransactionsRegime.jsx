@@ -6,6 +6,7 @@ import ManualTrades from './ManualTrades'
 import { createTransactionsReader } from '../utils/transactionsRead.mjs'
 import { apiGet } from '../utils/apiClient'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
+import usePolling from '../hooks/usePolling'
 
 const EMPTY_SUMMARY = { totalBuys: 0, totalSells: 0, totalAssetBought: 0, totalBtcSold: 0, totalFees: 0, totalPnL: 0, totalHoldbackBtc: 0, totalHoldbackValue: 0 }
 const EMPTY_PAGE = { page: 0, pageCount: 1, total: 0, start: 0, end: 0, hasPrev: false, hasNext: false }
@@ -84,21 +85,14 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
     setLoading(false)
   }, [exchange, pair, pairQuery, fund, page, filter, cycleFilter, sortField, sortDir, reader])
 
-  useEffect(() => {
-    let pending = false
-    const refresh = async () => {
-      if (pending) return
-      pending = true
-      await fetchData()
-      pending = false
-    }
-    // Only the first read gates the page. A page/filter/sort change or a poll
-    // keeps the current view mounted: the gate would unmount Manual Trades and
-    // discard its scan results and any half-filled import or recovery form.
-    refresh()
-    const interval = setInterval(refresh, 10000)
-    return () => { reader.invalidate(); clearInterval(interval) }
-  }, [fetchData, reader])
+  // Only the first read gates the page. A page/filter/sort change or a poll
+  // keeps the current view mounted: the gate would unmount Manual Trades and
+  // discard its scan results and any half-filled import or recovery form.
+  usePolling(fetchData, 10000, {
+    skipOverlap: true,
+    deps: [fetchData, reader],
+    onCleanup: () => reader.invalidate(),
+  })
 
   const isDryRun = status?.isDryRun
   const baseCurrency = getBaseCurrency(productId || pair)

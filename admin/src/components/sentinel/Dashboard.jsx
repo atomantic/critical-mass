@@ -4,6 +4,7 @@ import useSentinelSocket from '../../hooks/useSentinelSocket'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { completePagedItems } from '../../utils/pagedList.mjs'
 import { apiGet, apiPost, apiPut, apiDelete } from '../../utils/apiClient'
+import usePolling from '../../hooks/usePolling'
 
 const TOUCH_BTN = 'min-h-11 min-w-11 shrink-0 inline-flex items-center justify-center'
 
@@ -87,15 +88,14 @@ export default function SentinelDashboard() {
 
   useEffect(() => {
     setAlertsError(null)
-    fetchStatus()
-    fetchAlerts()
-    const interval = setInterval(() => { fetchStatus(); fetchAlerts() }, 15000)
-    return () => {
-      clearInterval(interval)
+  }, [fetchStatus, fetchAlerts, statusOwner, alertsOwner])
+  usePolling(() => { fetchStatus(); fetchAlerts() }, 15000, {
+    deps: [fetchStatus, fetchAlerts, statusOwner, alertsOwner],
+    onCleanup: () => {
       statusOwner.invalidate()
       alertsOwner.invalidate()
-    }
-  }, [fetchStatus, fetchAlerts, statusOwner, alertsOwner])
+    },
+  })
 
   // Re-fetch alerts when new alert arrives via socket (status comes via socket already)
   useEffect(() => {

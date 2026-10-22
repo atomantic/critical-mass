@@ -18,6 +18,7 @@ import { formatCountdown } from '../utils/countdown.mjs'
 import ToggleSwitch from './ToggleSwitch'
 import StatCard from './StatCard'
 import { signedPrefix } from '../utils/pnlFormat.mjs'
+import usePolling from '../hooks/usePolling'
 
 function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const convertTitleId = useId()
@@ -92,14 +93,10 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
     }
   }
 
-  useEffect(() => {
-    fetchLive()
-    const interval = setInterval(fetchLive, 10000)
-    return () => {
-      clearInterval(interval)
-      liveOwnerRef.current.invalidate()
-    }
-  }, [fetchLive])
+  usePolling(fetchLive, 10000, {
+    deps: [fetchLive],
+    onCleanup: () => liveOwnerRef.current.invalidate(),
+  })
 
   // Live countdown timer
   useEffect(() => {

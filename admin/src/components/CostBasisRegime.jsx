@@ -5,6 +5,7 @@ import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { apiGet } from '../utils/apiClient'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
+import usePolling from '../hooks/usePolling'
 
 function CostBasisRegime({ exchange = 'coinbase', pair }) {
   const [status, setStatus] = useState(null)
@@ -77,14 +78,13 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
     setError(null)
     setStale(false)
     setLoading(true)
-    fetchData()
-    const interval = setInterval(fetchData, 10000)
     return () => {
-      clearInterval(interval)
       session.active = false
       session.controller?.abort()
     }
   }, [fetchData])
+  // Declared after the reset effect so each restart reseeds the session first.
+  usePolling(fetchData, 10000, { deps: [fetchData] })
 
   if (error) {
     return (
