@@ -27,7 +27,7 @@ const { syncFundOrders, runIntervalCycle, resumePendingBuy, executeConsolidation
 const { shouldAutoResumeRegime, readBooleanFlag } = require('../shared-utils');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { prepareConfigUpdate, persistConfigUpdate } = require('./config-update');
-const { resolvePairParam, getSafeIPC, asyncRoute, tradeResultStatusCode, parsePaging } = require('./route-utils');
+const { resolvePairParam, getSafeIPC, asyncRoute, tradeResultStatusCode, parsePaging, pagedEnvelope } = require('./route-utils');
 
 /**
  * Tag a rejected promise's error with an HTTP status before rethrowing, so
@@ -418,15 +418,7 @@ module.exports = (app, deps) => {
     if (error) return res.status(400).json({ success: false, error });
     const logFile = getLogFile(exchange, pair);
     const transactions = parseTSV(logFile);
-    const paging = parsePaging(req.query);
-    if (!paging) return res.json(transactions);
-    res.json({
-      success: true,
-      items: transactions.slice(paging.offset, paging.offset + paging.limit),
-      total: transactions.length,
-      limit: paging.limit,
-      offset: paging.offset,
-    });
+    res.json(pagedEnvelope(transactions, parsePaging(req.query)));
   });
 
   // Get live status for an exchange

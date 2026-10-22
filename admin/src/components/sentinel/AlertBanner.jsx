@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from '../../lib/router'
 import { apiGet } from '../../utils/apiClient'
+import { completePagedItems } from '../../utils/pagedList.mjs'
 
 /**
  * Compact alert banner shown globally when critical/warning sentinel alerts are active.
@@ -17,7 +18,7 @@ export default function AlertBanner() {
         if (data.criticalAlerts > 0 || data.warningAlerts > 0) {
           const { ok: alertsOk, data: alertsData } = await apiGet('/api/sentinel/alerts')
           if (!alertsOk) return
-          const undismissed = (alertsData.alerts || []).filter(a => !a.dismissed && (a.severity === 'critical' || a.severity === 'warning'))
+          const undismissed = (await completePagedItems('/api/sentinel/alerts', alertsData)).filter(a => !a.dismissed && (a.severity === 'critical' || a.severity === 'warning'))
           setActiveAlerts(prev => {
             // Skip update if alerts haven't changed
             if (prev.length === undismissed.length && prev.every((a, i) => a.id === undismissed[i]?.id)) return prev

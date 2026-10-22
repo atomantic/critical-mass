@@ -5,8 +5,10 @@ const { parsePaging, MAX_PAGE_LIMIT } = require('../src/routes/route-utils');
 const registerSentinelRoutes = require('../src/routes/sentinel-routes');
 
 describe('parsePaging', () => {
-  it('returns null when no paging params are present', () => {
-    assert.equal(parsePaging({}), null);
+  it('defaults to a bounded first page when no paging params are present', () => {
+    assert.deepEqual(parsePaging({}), { limit: MAX_PAGE_LIMIT, offset: 0 });
+    assert.deepEqual(parsePaging({}, 100), { limit: 100, offset: 0 });
+    assert.deepEqual(parsePaging({ limit: '9999' }, 100), { limit: MAX_PAGE_LIMIT, offset: 0 });
   });
   it('bounds limit and offset', () => {
     assert.deepEqual(parsePaging({ limit: '99999' }), { limit: MAX_PAGE_LIMIT, offset: 0 });
@@ -28,12 +30,14 @@ describe('GET /api/sentinel/alerts paging', () => {
   };
   const run = (handler, query) => { let body; handler({ query }, { json: (b) => { body = b; } }); return body; };
 
-  it('keeps the legacy shape without paging params', () => {
-    assert.deepEqual(run(setup(), {}), { success: true, alerts: [1, 2, 3, 4, 5].map((id) => ({ id })) });
+  it('returns the full envelope (items + alias) without paging params', () => {
+    const all = [1, 2, 3, 4, 5].map((id) => ({ id }));
+    assert.deepEqual(run(setup(), {}), { success: true, items: all, alerts: all, total: 5, limit: MAX_PAGE_LIMIT, offset: 0 });
   });
   it('returns a page with total', () => {
     const body = run(setup(), { limit: '2', offset: '1' });
-    assert.deepEqual(body.alerts, [{ id: 2 }, { id: 3 }]);
+    assert.deepEqual(body.items, [{ id: 2 }, { id: 3 }]);
+    assert.deepEqual(body.alerts, body.items);
     assert.equal(body.total, 5);
   });
 });

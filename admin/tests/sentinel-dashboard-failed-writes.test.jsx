@@ -26,7 +26,7 @@ function failure(status, body) { return { ok: false, status, json: async () => b
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url) => {
     if (url === '/api/sentinel/status') return success(sentinelStatus)
-    if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert] })
+    if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert], items: [sentinelAlert] })
     return success()
   }))
 })
@@ -44,7 +44,7 @@ describe('Sentinel dashboard failed writes', () => {
     fetch.mockImplementation(async (url, options) => {
       if (url === '/api/sentinel/config' && options?.method === 'PUT') return failure(400, { errors: ['Feed URL resolves to a private address'] })
       if (url === '/api/sentinel/status') return success(sentinelStatus)
-      if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert] })
+      if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert], items: [sentinelAlert] })
       return success()
     })
 
@@ -62,7 +62,7 @@ describe('Sentinel dashboard failed writes', () => {
     fetch.mockImplementation(async (url) => {
       if (url === '/api/sentinel/dismiss/alert-1') return failure(404, { error: 'Alert not found' })
       if (url === '/api/sentinel/status') return success(sentinelStatus)
-      if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert] })
+      if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert], items: [sentinelAlert] })
       return success()
     })
 
@@ -77,7 +77,7 @@ describe('Sentinel dashboard failed writes', () => {
     fetch.mockImplementation(async (url, options) => {
       if (url === '/api/sentinel/alerts' && options?.method === 'DELETE') return failure(503, { error: 'Storage unavailable' })
       if (url === '/api/sentinel/status') return success(sentinelStatus)
-      if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert] })
+      if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert], items: [sentinelAlert] })
       return success()
     })
 
@@ -93,7 +93,7 @@ describe('Sentinel dashboard failed writes', () => {
     fetch.mockImplementation(async (url) => {
       if (url === '/api/sentinel/poll') throw new Error('Gateway restarting')
       if (url === '/api/sentinel/status') return success(sentinelStatus)
-      if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert] })
+      if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert], items: [sentinelAlert] })
       return success()
     })
 
@@ -109,7 +109,7 @@ describe('Sentinel dashboard failed writes', () => {
     fetch.mockImplementation(async (url) => {
       if (url === '/api/sentinel/config') return new Promise(resolve => { resolveWrite = resolve })
       if (url === '/api/sentinel/status') return success(sentinelStatus)
-      if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert] })
+      if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert], items: [sentinelAlert] })
       return success()
     })
 
@@ -134,7 +134,7 @@ describe('Sentinel dashboard failed writes', () => {
       }
       if (url === '/api/sentinel/status' && refreshFails) throw new Error('Status unavailable')
       if (url === '/api/sentinel/status') return success(sentinelStatus)
-      if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert] })
+      if (url.startsWith('/api/sentinel/alerts')) return success({ alerts: [sentinelAlert], items: [sentinelAlert] })
       return success()
     })
 

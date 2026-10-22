@@ -9,7 +9,7 @@ const { syncFundOrders, runIntervalCycle } = require('../dca-engine');
 const { createContextLogger, getLogFile } = require('../logger');
 const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { prepareConfigUpdate, persistConfigUpdate } = require('./config-update');
-const { asyncRoute, getSafeIPC, tradeResultStatusCode } = require('./route-utils');
+const { asyncRoute, getSafeIPC, tradeResultStatusCode, parsePaging, pagedEnvelope } = require('./route-utils');
 const { readBooleanFlag } = require('../shared-utils');
 const { buildFundStatus } = require('../fund-status');
 const { buildActiveFundSummary } = require('../fund-summary');
@@ -148,8 +148,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/transactions', (req, res) => {
     const logFile = getLogFile('coinbase');
-    const transactions = parseTSV(logFile);
-    res.json(transactions);
+    res.json(pagedEnvelope(parseTSV(logFile), parsePaging(req.query)));
   });
 
   const NO_FUND_ERROR = 'No coinbase fund exists; add one with POST /api/coinbase/funds first';
