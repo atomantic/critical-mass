@@ -70,6 +70,8 @@ function KeysConfig({ exchange, funds = [], onSave }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [writePending, setWritePending] = useState(false)
+  const writePendingRef = useRef(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   // The delete confirmation is a native modal that sits above the toast stack, so its failure is shown inside it.
   const [deleteError, setDeleteError] = useState(null)
@@ -148,24 +150,31 @@ function KeysConfig({ exchange, funds = [], onSave }) {
   }, [testResult])
 
   const handleChange = (key, value) => {
+    if (writePendingRef.current) return
     setKeys(prev => ({ ...prev, [key]: value }))
     testGeneration.current += 1
     setTestResult(null)
   }
 
   const handleSave = async () => {
+    if (writePendingRef.current) return
+    writePendingRef.current = true
+    setWritePending(true)
+    const submittedKeys = { ...keys }
     setSaving(true)
     try {
-      const result = await apiPut(`/api/${exchange}/keys`, keys, { allowEmpty: true })
+      const result = await apiPut(`/api/${exchange}/keys`, submittedKeys, { allowEmpty: true })
       if (result.ok) {
         notify('success', 'API keys saved successfully!')
-        setKeys({})
         await fetchKeys(true)
+        setKeys(current => Object.keys(submittedKeys).every(key => current[key] === submittedKeys[key]) ? {} : current)
         onSave?.()
       } else {
         notify('error', describeMutationFailure(result, 'Failed to save keys'))
       }
     } finally {
+      writePendingRef.current = false
+      setWritePending(false)
       setSaving(false)
     }
   }
@@ -194,6 +203,9 @@ function KeysConfig({ exchange, funds = [], onSave }) {
   const canTest = configured && !hasTypedKeys
 
   const handleDelete = async () => {
+    if (writePendingRef.current) return
+    writePendingRef.current = true
+    setWritePending(true)
     setDeleting(true)
     setDeleteError(null)
     try {
@@ -208,6 +220,8 @@ function KeysConfig({ exchange, funds = [], onSave }) {
         setDeleteError(describeMutationFailure(result, 'Failed to delete keys'))
       }
     } finally {
+      writePendingRef.current = false
+      setWritePending(false)
       setDeleting(false)
     }
   }
@@ -345,6 +359,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
                 <textarea
                   id={field.key}
                   value={keys[field.key] || ''}
+                  disabled={writePending}
                   onChange={(e) => handleChange(field.key, e.target.value)}
                   placeholder={placeholder}
                   rows={5}
@@ -355,6 +370,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
                   id={field.key}
                   type={field.type === 'password' && !showSecrets ? 'password' : 'text'}
                   value={keys[field.key] || ''}
+                  disabled={writePending}
                   onChange={(e) => handleChange(field.key, e.target.value)}
                   placeholder={placeholder}
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
@@ -391,7 +407,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
         <div className="mt-6 flex flex-col sm:flex-row gap-3">
           <Button
             onClick={handleSave}
-            disabled={saving || !hasAllFields}
+            disabled={writePending || saving || !hasAllFields}
             variant="primary" size="md" touchTarget="always" className="flex-1 font-medium"
           >
             {saving ? 'Saving...' : 'Save Keys'}
@@ -409,7 +425,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
           {hasAnyKeys && (
             <Button
               onClick={() => setConfirmDelete(true)}
-              disabled={deleting}
+              disabled={writePending || deleting}
               variant="destructive" size="md" touchTarget="always" className="font-medium"
             >
               Delete Keys
