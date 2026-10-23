@@ -33,6 +33,7 @@ const loadClassifier = (options = {}) => {
       if (name === 'fs/promises') return { readFile: async () => JSON.stringify({ providers }) };
       if (name === '../logger') return { createContextLogger: () => ({ warn: () => {} }) };
       if (name === '../config-utils') return { SENTINEL_DEFAULTS: { keywords } };
+      if (name === '../paths') return { DATA_DIR: '/synthetic-data' };
       if (name === '../ai-security') return { parseAllowedOrigins: () => new Set(['https://provider.example']) };
       if (name === '../url-validator') return {
         validateEndpointUrl: options.validate || (async () => ({ valid: true })),
