@@ -281,8 +281,15 @@ describe('mutation/socket status ordering', () => {
     emitStatus(stoppedStatus(61000))
     httpStatus = stoppedStatus(62000)
     const readsBefore = statusReads()
+    let respondStatus
+    statusResponse = () => new Promise(resolve => { respondStatus = resolve })
     await act(async () => { respond(reply({ success: true, status: runningStatus() })) })
     await waitFor(() => expect(statusReads()).toBe(readsBefore + 1))
+    // Check before the read completes: reconciliation used to briefly install
+    // the old running mutation snapshot even though it also fetched status.
+    expect(screen.getByText('Engine Stopped')).toBeTruthy()
+    expectNoRunningPanels()
+    await act(async () => { respondStatus(reply({ status: httpStatus })) })
     expect(screen.getByText('Engine Stopped')).toBeTruthy()
     expectNoRunningPanels()
   })
