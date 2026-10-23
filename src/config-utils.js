@@ -258,6 +258,7 @@ const REGIME_DEFAULTS = {
   longTermBiasEnabled: true,           // Compute and expose depression score on macro state
   longTermLookbackDays: 365,           // History depth for percentile/drawdown/z-score
   longTermUpdateIntervalMs: 3600000,   // Refresh cadence for long-term candle store (1h)
+  aggressivenessSuggestionHours: 6,   // Stable divergence before an advisory (hours)
   autoAggressivenessEnabled: false,    // Phase 3: actually modulate sizing from the score
 
   // Entry Mode
@@ -294,6 +295,7 @@ const NOTIFICATION_DEFAULTS = {
     spread_pause: false,
     depth_pause: false,
     regime_hourly: false,
+    aggressiveness_suggestion: false,
     orders_consolidated: false,
   },
   rateLimitMs: 5000,

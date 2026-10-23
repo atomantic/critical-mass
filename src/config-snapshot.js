@@ -117,7 +117,7 @@ const SNAPSHOT_GLOBAL_KEYS = Object.freeze([
  * SNAPSHOT_GLOBAL_KEYS.length` fails CI the moment a field is added to
  * DEFAULTS / REGIME_DEFAULTS / GLOBAL_DEFAULTS without bumping it.
  */
-const CONFIG_SNAPSHOT_FIELD_REVISION = 122;
+const CONFIG_SNAPSHOT_FIELD_REVISION = 123;
 
 /**
  * Copy only the allowlisted, defined keys of `source`, in allowlist order (so

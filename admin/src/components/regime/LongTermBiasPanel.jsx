@@ -2,13 +2,27 @@ import Button from '../ui/Button'
 import { describeConfigSaveError } from '../../utils/configSaveError.mjs'
 import { apiPut } from '../../utils/apiClient'
 import LongTermBiasDetails from './LongTermBiasDetails'
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { detectAggressivenessLevel, computeAggressivenessParams, AGGRESSIVENESS_LEVEL_META } from './aggressiveness'
 import { SUGGESTED_LEVEL_STYLES, CACHE_HEALTH_STYLES } from './regimeStyles'
 import { ConfigTooltip, LONG_TERM_BIAS_TOOLTIP } from './RegimeHelp'
 
 export default function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfigUpdate, addToast }) {
   const [applying, setApplying] = useState(false)
+  const seenAdvisories = useRef(new Set())
+  const advisory = bias?.ready ? bias.advisory : null
+  useEffect(() => {
+    if (!advisory || !addToast || !exchange) return
+    const current = detectAggressivenessLevel(config, presets)
+    if (current !== advisory.currentLevel || bias.suggestedLevel !== advisory.suggestedLevel) return
+    const key = `aggressiveness-advisory:${exchange}:${pairQuery || ''}:${advisory.id}`
+    if (seenAdvisories.current.has(key)) return
+    try { if (sessionStorage.getItem(key)) return } catch { /* storage may be disabled */ }
+    seenAdvisories.current.add(key)
+    try { sessionStorage.setItem(key, '1') } catch { /* in-memory dedup still applies */ }
+    addToast({ type: 'info', title: 'Aggressiveness suggestion',
+      message: `${exchange}${pairQuery ? ` ${new URLSearchParams(pairQuery).get('pair') || ''}` : ''}: Long-term bias suggests ${AGGRESSIVENESS_LEVEL_META[advisory.suggestedLevel]?.label || advisory.suggestedLevel} (stable for ${advisory.hours}h). Apply the suggestion manually to change sizing.` })
+  }, [advisory, addToast, exchange, pairQuery, config, presets, bias?.suggestedLevel])
   if (!bias) return null
 
   const currentLevel = detectAggressivenessLevel(config, presets)

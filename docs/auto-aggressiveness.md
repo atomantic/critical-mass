@@ -23,10 +23,13 @@ Goal: extend the bot's lookback beyond the current ~20-day macro window so it ca
 - Zero impact on sizing — purely advisory
 - **Risks to watch:** signal correlation across assets (does it agree with what you'd manually pick?), candle-fetch reliability (Gemini caps at ~500 candles, no pagination), restart behavior (cache must survive PM2 restarts cleanly)
 
-## Phase 2 — Advisory (in progress)
+## Phase 2 — Advisory (shipped)
 
 - Shipped: one-click "Apply suggested aggressiveness" button on the panel — user stays in the loop
-- Remaining: divergence toast and optional Telegram alert — [#1677](https://github.com/atomantic/critical-mass/issues/1677)
+- Sustained divergence toast: one advisory per stable current/suggested preset pair, scoped to exchange and fund. A suggestion must differ by at least one level for `aggressivenessSuggestionHours` (default **6**, range **0.01–720** hours), configurable in each fund's regime config through the config editor/API.
+- Optional Telegram alert: enable **Notifications → Aggressiveness Suggestions (advisory)**. Off by default, using the existing notifier queue, quiet hours and Telegram channel.
+- Timing uses server observations, so the browser need not stay open. Flapping, missing observations, custom sizing, operator config changes and engine restarts reset the dwell period. Alerts occur on the first macro refresh after the threshold; dashboard toasts are deduplicated for the browser session. Enabling Telegram after an advisory has already fired waits for the next sustained suggestion.
+- All alerts are advisory only; sizing changes still require the operator's Apply action.
 
 ## Phase 3 — Auto (gated on Phase 2 confidence)
 

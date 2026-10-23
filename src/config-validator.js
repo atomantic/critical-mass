@@ -106,6 +106,7 @@ const REGIME_FIELD_RULES = {
   longTermLookbackDays: { type: 'number' },
   longTermUpdateIntervalMs: { type: 'number' },
   autoAggressivenessEnabled: { type: 'boolean' },
+  aggressivenessSuggestionHours: { type: 'number' },
   entryMode: { type: 'string', enum: ['reactive', 'ladder'] },
   ladderMaxAthDropPct: { type: 'number' },
   ladderSpacingMode: { type: 'string', enum: ['linear', 'sqrt', 'exponential'] },
@@ -142,6 +143,11 @@ const validateRegimeConfig = (config) => {
     if (!validLevels.includes(config.aggressiveness)) {
       errors.push('aggressiveness must be one of: conservative, moderate, aggressive, maximum');
     }
+  }
+
+  if (config.aggressivenessSuggestionHours !== undefined &&
+      (config.aggressivenessSuggestionHours < 0.01 || config.aggressivenessSuggestionHours > 720)) {
+    errors.push('aggressivenessSuggestionHours must be between 0.01 and 720');
   }
 
   // Volatility Clock validation
