@@ -2203,7 +2203,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // executions; an explicitly supplied invalid value must not fall back to
     // an average (planTerminalFillGap).
     const gap = planTerminalFillGap({
-      fillData, existingFills: fillLedger.getFillsForOrder(fillData.orderId), isTerminalFill,
+      fillData,
+      recordedSize: fillLedger.getRecordedSizeForOrder(fillData.orderId),
+      loadExistingFills: () => fillLedger.getFillsForOrder(fillData.orderId),
+      isTerminalFill,
     });
     if (gap) {
       const { ledgerTotalForOrder, fillGap, cumulativeQuote, recordedQuote, remainingQuote, gapPrice } = gap;

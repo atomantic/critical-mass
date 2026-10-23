@@ -291,18 +291,50 @@ describe('untracked sell planners', () => {
 });
 
 describe('terminal fill gap', () => {
+  // The planner takes the recorded size from the ledger index; rows mirror
+  // what the index sums (roundAsset after each add, as fill-ledger does).
+  const plan = (fillData, existingFills, isTerminalFill = true) => planTerminalFillGap({
+    fillData,
+    recordedSize: existingFills.reduce((sum, f) => roundAsset(sum + f.size), 0),
+    loadExistingFills: () => existingFills,
+    isTerminalFill,
+  });
+
   it('returns null for a non-terminal fill or a ledger that already covers the order', () => {
     const fillData = { filledSize: 1, filledValue: 100, totalFees: 0.1 };
-    assert.equal(planTerminalFillGap({ fillData, existingFills: [], isTerminalFill: false }), null);
-    assert.equal(planTerminalFillGap({ fillData, existingFills: [{ size: 1, quoteAmount: 100 }], isTerminalFill: true }), null);
+    assert.equal(plan(fillData, [], false), null);
+    assert.equal(plan(fillData, [{ size: 1, quoteAmount: 100 }]), null);
+  });
+
+  it('only loads the order rows when there is a gap to price', () => {
+    let loads = 0;
+    const loadExistingFills = () => { loads++; return [{ size: 1, quoteAmount: 100 }]; };
+    const fillData = { filledSize: 1, filledValue: 100 };
+    assert.equal(planTerminalFillGap({ fillData, recordedSize: 1, loadExistingFills, isTerminalFill: true }), null);
+    assert.equal(planTerminalFillGap({ fillData, recordedSize: 0, loadExistingFills, isTerminalFill: false }), null);
+    assert.equal(loads, 0);
+  });
+
+  it('measures the gap at asset precision (8dp), not the raw sub-8dp row sum', () => {
+    // Three 4e-9 rows: the raw sum (1.2e-8) covers filledSize, but at 8dp the
+    // index records 0 — the gap is the full 1e-8 at asset precision (#1622).
+    const fillData = { orderId: 'o', side: 'buy', filledSize: 1.2e-8, filledValue: 0.0012 };
+    const rows = [{ size: 4e-9, quoteAmount: 0 }, { size: 4e-9, quoteAmount: 0 }, { size: 4e-9, quoteAmount: 0 }];
+    const gap = plan(fillData, rows);
+    assert.ok(gap && gap.valid);
+    assert.equal(gap.ledgerTotalForOrder, 0);
+    assert.equal(gap.fillGap, 1e-8);
+    // Float noise between filledSize and the recorded total is not a gap.
+    assert.equal(plan({ filledSize: 0.1 + 0.2, filledValue: 30 }, [{ size: 0.3, quoteAmount: 30 }]), null);
+    // A sub-8dp shortfall rounds away rather than synthesizing a dust row.
+    assert.equal(plan({ filledSize: 1.000000004, filledValue: 100 }, [{ size: 1, quoteAmount: 100 }]), null);
   });
 
   it('prices only the unrecorded tranche and charges only the unbooked fee', () => {
     const fillData = { orderId: 'o', side: 'BUY', filledSize: 1, filledValue: 100, totalFees: 0.3 };
-    const existingFills = [{ size: 0.4, quoteAmount: 38, netFee: 0.1 }];
-    const gap = planTerminalFillGap({ fillData, existingFills, isTerminalFill: true });
+    const gap = plan(fillData, [{ size: 0.4, quoteAmount: 38, netFee: 0.1 }]);
     assert.ok(gap && gap.valid);
-    assert.ok(Math.abs(gap.fillGap - 0.6) < 1e-12);
+    assert.equal(gap.fillGap, 0.6);
     assert.equal(gap.remainingQuote, 62);
     assert.ok(Math.abs(gap.feeDelta - 0.2) < 1e-12);
     const row = buildSyntheticGapFill({ fillData, gap, timestamp: 5 });
@@ -315,7 +347,7 @@ describe('terminal fill gap', () => {
 
   it('flags an inconsistent cumulative quote as invalid instead of averaging', () => {
     const fillData = { orderId: 'o', side: 'sell', filledSize: 1, filledValue: 30 };
-    const gap = planTerminalFillGap({ fillData, existingFills: [{ size: 0.5, quoteAmount: 50 }], isTerminalFill: true });
+    const gap = plan(fillData, [{ size: 0.5, quoteAmount: 50 }]);
     assert.ok(gap);
     assert.equal(gap.valid, false);
     assert.equal('feeDelta' in gap, false);
