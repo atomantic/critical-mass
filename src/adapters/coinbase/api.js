@@ -6,6 +6,7 @@ const { createBaseAdapter, createAmbiguousPlacementError, buildFill, createPrice
 const { withAbortTimeout, createNetworkError } = require('../http');
 const { incrementToDecimals, floorToIncrement, finiteFloat, sleep: defaultSleep } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
+const { DATA_DIR } = require('../../paths');
 const { validateCoinbaseKeys, createKeyFileLoader } = require('../key-validation');
 
 /**
@@ -84,7 +85,7 @@ const mapOrderResponse = (result, clientOrderId, extra = {}) => ({
  */
 const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random = Math.random } = {}) => {
   // Resolve keys path
-  const resolvedKeysPath = keysPath || path.join(__dirname, '..', '..', '..', 'data', 'coinbase-keys.json');
+  const resolvedKeysPath = keysPath || path.join(DATA_DIR, 'coinbase-keys.json');
 
   // Start with base adapter
   const adapter = createBaseAdapter('coinbase');

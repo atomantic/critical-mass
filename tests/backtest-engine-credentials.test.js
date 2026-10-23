@@ -34,7 +34,7 @@ const backtestEngine = require('../src/backtest-engine');
 // Matches both src/adapters/coinbase/api.js's `resolvedKeysPath` default
 // (path.join(__dirname, '..', '..', '..', 'data', 'coinbase-keys.json') from
 // src/adapters/coinbase/) and this file's own path.join to the same target.
-const DEFAULT_KEYS_PATH = path.join(__dirname, '..', 'data', 'coinbase-keys.json');
+const DEFAULT_KEYS_PATH = path.join(process.env.CRITICAL_MASS_DATA_DIR || path.join(__dirname, '..', 'data'), 'coinbase-keys.json');
 
 const realExistsSync = fs.existsSync;
 const realReadFileSync = fs.readFileSync;

@@ -72,6 +72,7 @@ const createClassifier = () => {
       if (name === '../logger') return { createContextLogger: () => ({ warn: () => {} }) };
       if (name === '../config-utils') return { SENTINEL_DEFAULTS: {} };
       if (name === '../ai-security') return { parseAllowedOrigins };
+      if (name === '../paths') return { DATA_DIR: '/synthetic-data' };
       if (name === '../url-validator') return { safeFetch, validateEndpointUrl };
       throw new Error(`Unexpected dependency: ${name}`);
     },

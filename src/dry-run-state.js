@@ -25,11 +25,11 @@ const { resolveFundDataDir, getFundDataDir } = require('./migration');
 const { atomicWriteSync, quarantineFile } = require('./state-tracker');
 const { fundKey: composeFundKey } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
+const { APP_ROOT } = require('./paths');
 
 const dryRunStateLogger = createContextLogger();
 
 const STATE_FILENAME = 'dry-run-state.json';
-const APP_ROOT = path.join(__dirname, '..');
 /** Pre-#531 location: a single file for every fund, outside the data directory. */
 const LEGACY_STATE_FILE = path.join(APP_ROOT, STATE_FILENAME);
 const SAVE_DEBOUNCE_MS = 5000; // Debounce saves to avoid excessive disk writes

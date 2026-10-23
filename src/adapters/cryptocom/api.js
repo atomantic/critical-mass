@@ -10,6 +10,7 @@ const { withAbortTimeout, createNetworkError, createPublicNetworkError } = requi
 const { validateStandardExchangeKeys, createKeyFileLoader } = require('../key-validation');
 const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
+const { DATA_DIR } = require('../../paths');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -59,7 +60,7 @@ const safeParseBigInt = (data) => {
  */
 const createCryptocomAdapter = (keysPath = null) => {
   // Resolve keys path
-  const resolvedKeysPath = keysPath || path.join(__dirname, '..', '..', '..', 'data', 'cryptocom-keys.json');
+  const resolvedKeysPath = keysPath || path.join(DATA_DIR, 'cryptocom-keys.json');
 
   // Start with base adapter
   const adapter = createBaseAdapter('cryptocom');

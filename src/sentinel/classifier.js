@@ -13,11 +13,12 @@ const { createContextLogger } = require('../logger');
 const { SENTINEL_DEFAULTS } = require('../config-utils');
 const { validateEndpointUrl, safeFetch } = require('../url-validator');
 const { parseAllowedOrigins } = require('../ai-security');
+const { DATA_DIR } = require('../paths');
 
 /** Classification is provider-scoped; the provider travels per call. */
 const classifierLogger = createContextLogger({ module: 'sentinel-classifier' });
 
-const PROVIDERS_PATH = path.join(__dirname, '..', '..', 'data', 'providers.json');
+const PROVIDERS_PATH = path.join(DATA_DIR, 'providers.json');
 
 // Severity enum + rank (issue #212F). The AI response is untrusted (fed by
 // attacker-influenceable RSS content) and must never be allowed to downgrade a
