@@ -40,7 +40,9 @@ export const createRequestOwner = ({
   /**
    * Owned JSON read.
    *
-   * Resolves to `{ owned, ok, data }`. `owned` is false when a newer read (or
+   * Resolves to `{ owned, ok, data, token, signal }`. Keep the captured token
+   * and signal for follow-up awaits, and check `owns(token)` before committing.
+   * `owned` is false when a newer read (or
    * `invalidate()`) superseded this one at any await boundary — callers must
    * commit nothing in that case, including loading/error resets, so an obsolete
    * request cannot clear newer state. Network failures, non-OK responses and
@@ -48,14 +50,15 @@ export const createRequestOwner = ({
    */
   const read = async (url, options = {}) => {
     const token = claim()
-    const response = await fetchImpl(url, { ...options, signal: state.controller?.signal }).catch(() => null)
-    if (!owns(token)) return { owned: false, ok: false, data: null }
+    const signal = state.controller?.signal
+    const response = await fetchImpl(url, { ...options, signal }).catch(() => null)
+    if (!owns(token)) return { owned: false, ok: false, data: null, token, signal }
 
     const ok = response?.ok === true
     const data = ok ? await response.json().catch(() => null) : null
-    if (!owns(token)) return { owned: false, ok: false, data: null }
+    if (!owns(token)) return { owned: false, ok: false, data: null, token, signal }
 
-    return { owned: true, ok, data }
+    return { owned: true, ok, data, token, signal }
   }
 
   return { read, claim, owns, invalidate, getSignal: () => state.controller?.signal }

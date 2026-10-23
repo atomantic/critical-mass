@@ -63,14 +63,16 @@ export default function SentinelDashboard() {
 
   const fetchAlerts = useCallback(async () => {
     const url = filter !== 'all' ? `/api/sentinel/alerts?severity=${filter}` : '/api/sentinel/alerts'
-    const { owned, data } = await alertsOwner.read(url)
-    if (!owned) return
+    const { token, signal, data } = await alertsOwner.read(url)
+    if (!alertsOwner.owns(token)) return
     if (!Array.isArray(data?.items)) {
       setAlertsError('Could not load alerts.')
       return
     }
+    const items = await completePagedItems(url, data, { signal })
+    if (!alertsOwner.owns(token)) return
     setAlertsError(null)
-    setAlertsView({ filter, alerts: await completePagedItems(url, data) })
+    setAlertsView({ filter, alerts: items })
   }, [filter, alertsOwner])
 
   // `throwOnError` lets a confirmation dialog own the failure message instead of a toast.

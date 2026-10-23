@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1698] Paginated alerts and trade history retain request ownership** — changing filters, clearing alerts, refreshing trades or leaving the page cancels every page of an obsolete read and prevents it from replacing newer lists, summaries or loading/error state.
+
 ### Changed
 - **[issue-1681] Timeout readout follows the resting entry** — engine status exposes the active entry's adaptive stale window, and the dashboard displays it while an entry rests, falling back to the effective global timeout when none is pending.
 - **[issue-1686] Runtime data paths honor shared path configuration** — Coinbase, Gemini and Crypto.com default key files plus sentinel provider configuration now resolve from `DATA_DIR`, and legacy dry-run state derives its app root from `src/paths.js`. Explicit adapter key paths remain supported.
