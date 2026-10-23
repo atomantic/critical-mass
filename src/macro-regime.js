@@ -17,6 +17,9 @@ const { calculateEMA, clamp } = require('./volatility-utils');
 const { createLongTermCandleStore } = require('./long-term-candle-store');
 const { computeDepressionScore } = require('./depression-score');
 const { createContextLogger } = require('./logger');
+const { getAggressivenessPresets } = require('./config-utils');
+const { tradeEvents } = require('./trade-events');
+const { detectCurrentLevel, createAggressivenessAdvisory } = require('./aggressiveness-advisory');
 
 /**
  * @typedef {import('./types').MacroRegimeMode} MacroRegimeMode
@@ -194,6 +197,8 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
   /** @type {ReturnType<typeof createLongTermCandleStore>|null} */
   let longTermStore = null;
   let longTermBias = null;
+  const advisory = createAggressivenessAdvisory();
+  let suggestion = null;
 
   /**
    * Fetch hourly candles (200 most recent)
@@ -218,9 +223,9 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
   /**
    * Update macro regime: fetch candles, compute EMAs, score, classify
    * @param {number} [currentPrice] - Optional current price override
-   * @returns {Promise<void>}
+   * @returns {Promise<boolean|undefined>}
    */
-  const update = async (currentPrice) => {
+  const updateObserved = async (currentPrice) => {
     const [rawHourly, rawDaily] = await Promise.all([
       fetchHourlyCandles(),
       fetchDailyCandles(),
@@ -314,6 +319,19 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
       longTermBias = computeDepressionScore(price, ltCandles);
     }
 
+    suggestion = advisory.observe({
+      current: detectCurrentLevel(config, getAggressivenessPresets()),
+      suggested: longTermBias?.suggestedLevel,
+      ready: config.longTermBiasEnabled !== false && longTermBias?.ready && !isStale(),
+      hours: config.aggressivenessSuggestionHours ?? 6,
+      maxGapMs: Math.max(900000, (config.macroUpdateIntervalMs || 300000) * 3),
+    });
+    if (suggestion?.first) {
+      tradeEvents.emitTradeEvent('aggressiveness_suggestion', exchange,
+        `Advisory: long-term bias suggests ${suggestion.suggestedLevel}; current ${suggestion.currentLevel} (stable for ${suggestion.hours}h). Apply manually to change sizing.`,
+        { pair: productId, ...suggestion });
+    }
+
     if (prevMode !== mode) {
       logger.info(`🔭 [${exchange}] Macro regime: ${prevMode} → ${mode} (score=${score.toFixed(1)}, EMAs: 21h=$${h21.toFixed(0)} 50h=$${h50.toFixed(0)} 200h=$${h200.toFixed(0)} 20d=$${d20.toFixed(0)})`, {
         previousMode: prevMode, mode, score, ema21h: h21, ema50h: h50, ema200h: h200, ema20d: d20,
@@ -340,6 +358,16 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
         zScore: c.zscore.zscore,
         sampleSize: longTermBias.sampleSize,
       });
+    }
+    return true;
+  };
+
+  const update = async (currentPrice) => {
+    let valid = false;
+    try {
+      valid = !!(await updateObserved(currentPrice));
+    } finally {
+      if (!valid) { advisory.reset(); suggestion = null; }
     }
   };
 
@@ -416,6 +444,7 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
     // recomputed from cached candles on every update cycle.
     longTermBias: longTermBias ? {
       ...longTermBias,
+      advisory: !isStale() && config.longTermBiasEnabled !== false ? suggestion : null,
       cache: longTermStore ? longTermStore.getStats() : null,
     } : null,
   });
@@ -441,7 +470,9 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
    */
   const updateConfig = (updates) => {
     // Config is already updated by regime-engine's Object.assign
-    // This is a hook for any macro-specific reinitialization if needed
+    // A saved operator change starts a new observation period.
+    advisory.reset();
+    suggestion = null;
   };
 
   /**
@@ -488,6 +519,8 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
    * Stop periodic updates
    */
   const stop = () => {
+    advisory.reset();
+    suggestion = null;
     if (updateTimer) {
       clearInterval(updateTimer);
       updateTimer = null;

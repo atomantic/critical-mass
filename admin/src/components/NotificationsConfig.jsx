@@ -24,6 +24,7 @@ const EVENT_GROUPS = {
     { key: 'active_mode', label: 'Active Mode Restored' },
     { key: 'spread_pause', label: 'Spread Pause' },
     { key: 'regime_hourly', label: 'Hourly Summary' },
+    { key: 'aggressiveness_suggestion', label: 'Aggressiveness Suggestions (advisory)' },
     { key: 'orders_consolidated', label: 'Orders Consolidated' },
   ],
 }

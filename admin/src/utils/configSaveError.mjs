@@ -105,6 +105,7 @@ export const CONFIG_FIELD_LABELS = {
   sizeMinCycleBuys: 'Min Cycle Buys',
   sizeMaxCycleBuys: 'Max Cycle Buys',
   longTermBiasEnabled: 'Long-Term Bias',
+  aggressivenessSuggestionHours: 'Suggestion Delay (hours)',
   longTermLookbackDays: 'Long-Term Lookback Days',
   longTermUpdateIntervalMs: 'Long-Term Update Interval',
   autoAggressivenessEnabled: 'Auto Aggressiveness',

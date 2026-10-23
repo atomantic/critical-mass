@@ -714,6 +714,7 @@
  * @property {number} macroDeclineOffsetMult - Regime setting (default: 1.5)
  * @property {boolean} longTermBiasEnabled - Regime setting (default: true)
  * @property {number} longTermLookbackDays - Regime setting (default: 365)
+ * @property {number} aggressivenessSuggestionHours - Stable divergence before advisory (default: 6 hours)
  * @property {number} longTermUpdateIntervalMs - Regime setting (default: 3600000)
  * @property {boolean} autoAggressivenessEnabled - Regime setting (default: false)
  */

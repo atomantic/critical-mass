@@ -82,6 +82,7 @@ const EVENT_EMOJI = {
   spread_pause: '⏸️',
   depth_pause: '⏸️',
   regime_hourly: '📊',
+  aggressiveness_suggestion: '💡',
   orders_consolidated: '🔗',
   starting: 'ℹ️',
   complete: 'ℹ️',
@@ -185,6 +186,9 @@ const isQuietHours = (quietHours, now = new Date()) => {
 const shouldSendEvent = (config, eventType, now = new Date()) => {
   if (!config.enabled) return false;
   if (!config.telegram.botToken || !config.telegram.chatId) return false;
+
+  // Advisory alerts require an explicit opt-in, even for partial configs.
+  if (eventType === 'aggressiveness_suggestion' && config.events.aggressiveness_suggestion !== true) return false;
 
   // Check event toggle
   if (config.events[resolveNotificationEventKey(eventType)] === false) return false;
