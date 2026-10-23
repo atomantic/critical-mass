@@ -256,7 +256,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
           </div>
           <Button
             onClick={() => setShowSecrets(!showSecrets)}
-            variant="quiet" size="inline" className="gap-1"
+            variant="quiet" size="bare" className="gap-1"
           >
             {showSecrets ? (
               <>

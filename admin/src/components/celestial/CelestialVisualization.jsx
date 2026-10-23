@@ -89,7 +89,7 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
             type="button"
             onClick={toggleMotionPaused}
             aria-pressed={motionPaused}
-            variant="quiet-muted" size="inline" className="pointer-events-auto gap-1 px-1.5 py-0.5 border border-gray-600 hover:border-gray-500"
+            variant="quiet-muted" size="pill" className="pointer-events-auto gap-1 border border-gray-600 hover:border-gray-500"
             title={motionPaused ? 'Resume motion' : 'Pause motion'}
           >
             {motionPaused ? <Play size={12} /> : <Pause size={12} />}

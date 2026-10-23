@@ -29,6 +29,8 @@ const VARIANTS = {
   // Text-only actions: no fill, muted text that brightens on hover.
   quiet: 'bg-transparent text-gray-400 hover:text-white disabled:opacity-50',
   'quiet-muted': 'bg-transparent text-gray-400 hover:text-gray-200 disabled:opacity-50',
+  'quiet-blue': 'bg-transparent text-gray-400 hover:text-blue-400 disabled:opacity-50',
+  'quiet-red': 'bg-transparent text-gray-400 hover:text-red-400 disabled:opacity-50',
   'quiet-danger': 'bg-transparent text-red-400 hover:text-red-300 disabled:opacity-50',
   'quiet-success': 'bg-transparent text-green-400 hover:text-green-300 disabled:opacity-50',
   'quiet-warning': 'bg-transparent text-yellow-400 hover:text-yellow-300 disabled:opacity-50',
@@ -47,6 +49,8 @@ const SIZES = {
   'compact-xs': 'px-3 py-1.5 text-xs',
   micro: 'px-2 py-0.5 text-2xs',
   icon: 'p-1.5',
+  bare: 'p-0 text-sm',
+  pill: 'px-1.5 py-0.5 text-xs',
   inline: 'p-0',
   // Dense header controls that shrink below the md breakpoint.
   responsive: 'px-2 md:px-3 py-1 md:py-1.5 text-xs md:text-sm',
@@ -65,9 +69,13 @@ export default function Button({
   children,
   ...rest
 }) {
+  // In-sentence actions must keep the line's natural height and flow.
+  const isInlineText = size === 'inline' && touchTarget !== 'always'
   const classes = [
-    'min-h-11 min-w-11 inline-flex items-center justify-center rounded-sm transition-colors disabled:cursor-not-allowed',
-    touchTarget === 'always' ? '' : 'md:min-h-0 md:min-w-0',
+    isInlineText
+      ? 'inline rounded-sm transition-colors disabled:cursor-not-allowed'
+      : 'min-h-11 min-w-11 inline-flex items-center justify-center rounded-sm transition-colors disabled:cursor-not-allowed',
+    !isInlineText && touchTarget !== 'always' ? 'md:min-h-0 md:min-w-0' : '',
     VARIANTS[variant] ?? VARIANTS.primary,
     SIZES[size] ?? SIZES.md,
     className,

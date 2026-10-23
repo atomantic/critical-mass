@@ -400,10 +400,10 @@ export default function TradeHistory() {
                   </td>
                   <td className="py-1 pl-1">
                     <div className="flex gap-2">
-                      <Button disabled={busy} onClick={() => handleEdit(t)} aria-label={`Edit trade from ${fmtDate(t.date)}`} variant="link" size="inline" touchTarget="always" className="trade-history-touch-target">
+                      <Button disabled={busy} onClick={() => handleEdit(t)} aria-label={`Edit trade from ${fmtDate(t.date)}`} variant="quiet-blue" size="inline" touchTarget="always" className="trade-history-touch-target">
                         <Edit3 size={11} />
                       </Button>
-                      <Button disabled={busy} onClick={() => setDeleteTrade(t)} aria-label={`Delete trade from ${fmtDate(t.date)}`} variant="quiet-danger" size="inline" touchTarget="always" className="trade-history-touch-target">
+                      <Button disabled={busy} onClick={() => setDeleteTrade(t)} aria-label={`Delete trade from ${fmtDate(t.date)}`} variant="quiet-red" size="inline" touchTarget="always" className="trade-history-touch-target">
                         <Trash2 size={11} />
                       </Button>
                     </div>
