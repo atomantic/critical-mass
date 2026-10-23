@@ -408,18 +408,26 @@ const buildCoreTpClosedTrade = ({ sellOrderId, stamp, recordedAt, summary, close
  *
  * The fee owed on just this gap is the cumulative status fee minus the fee the
  * order's prior rows already booked, never the whole cumulative fee again.
+ *
+ * The gap is measured at asset precision (8dp): the recorded size is the
+ * ledger's O(1) orderSizeIndex total (already roundAsset'd), so the gap is
+ * rounded the same way before the >1e-9 test. The order's rows are only
+ * loaded — a full ledger scan — once a gap actually needs pricing (#1622).
  * @param {Object} args
  * @param {{filledSize?: number, filledValue?: number, averageFilledPrice?: number, totalFees?: number}} args.fillData
- * @param {Array<Object>} args.existingFills - Ledger rows for the order
+ * @param {number} args.recordedSize - fillLedger.getRecordedSizeForOrder(orderId)
+ * @param {() => Array<Object>} args.loadExistingFills - Ledger rows for the order
  * @param {boolean} args.isTerminalFill
  * @returns {null|{ledgerTotalForOrder: number, fillGap: number, cumulativeQuantity: number,
  *   cumulativeQuote: number, recordedQuote: number, remainingQuote: number, gapPrice: number,
  *   valid: boolean, alreadyBookedFees?: number, feeDelta?: number}}
  */
-const planTerminalFillGap = ({ fillData, existingFills, isTerminalFill }) => {
-  const ledgerTotalForOrder = existingFills.reduce((sum, f) => sum + Number(f.size || 0), 0);
-  const fillGap = fillData.filledSize > 0 ? fillData.filledSize - ledgerTotalForOrder : 0;
-  if (!(isTerminalFill && fillGap > 1e-9)) return null;
+const planTerminalFillGap = ({ fillData, recordedSize, loadExistingFills, isTerminalFill }) => {
+  if (!isTerminalFill) return null;
+  const ledgerTotalForOrder = Number(recordedSize) || 0;
+  const fillGap = fillData.filledSize > 0 ? roundAsset(fillData.filledSize - ledgerTotalForOrder) : 0;
+  if (!(fillGap > 1e-9)) return null;
+  const existingFills = loadExistingFills();
   const cumulativeQuantity = Number(fillData.filledSize);
   const cumulativeQuote = fillData.filledValue != null
     ? Number(fillData.filledValue)
