@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { plural } from '../../utils/plural.mjs'
 import {
@@ -115,17 +116,13 @@ function FilledOrdersSection({ fillsUnavailable = false, retry, liveFills, fillA
         <h3 className="text-sm font-medium text-gray-400">Filled Orders</h3>
         <div className="flex items-center gap-3">
           {!isDryRun && (fillAggregates?.fillCount || liveFills?.length) > 0 && (
-            <button
+            <Button
               type="button"
               onClick={e => { e.currentTarget.focus(); setShowAllCycles(!showAllCycles); setExpandedCycles(new Set()); cycleInitRef.current = false }}
-              className={`text-xs px-2 py-1 rounded transition-colors focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-cyan-400 ${
-                showAllCycles
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-              }`}
+              variant={showAllCycles ? 'primary' : 'secondary'} size="xs" className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-cyan-400"
             >
               {showAllCycles ? 'All Cycles' : 'Current Cycle'}
-            </button>
+            </Button>
           )}
           {((isDryRun && dryRunFilled.length > 0) || (!isDryRun && visibleFillCount > 0)) && (
             <span className="text-xs text-gray-400">
@@ -152,7 +149,7 @@ function FilledOrdersSection({ fillsUnavailable = false, retry, liveFills, fillA
       {fillsUnavailable && !isDryRun && (
         <div className="text-red-300 text-sm py-4">
           Fills unavailable{(fillAggregates?.fillCount || liveFills?.length) > 0 ? ' — showing last good fills (stale)' : ''}.
-          <button type="button" onClick={retry} className="ml-2 underline">Retry fills</button>
+          <Button type="button" onClick={retry} variant="link" size="inline" className="ml-2 underline">Retry fills</Button>
         </div>
       )}
       {(isDryRun

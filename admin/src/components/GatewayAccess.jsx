@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { useEffect, useState } from 'react'
 import { Link } from '../lib/router'
 import { KeyRound, ScrollText } from './icons'
@@ -98,7 +99,7 @@ export default function GatewayAccess() {
           statusError ? (
             <div className="space-y-2" role="alert">
               <p className="text-sm text-red-300">Could not read gateway status — reload to retry.</p>
-              <button type="button" onClick={refresh} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-sm text-sm">Retry</button>
+              <Button type="button" onClick={refresh} variant="secondary" size="compact">Retry</Button>
             </div>
           ) : null
         ) : (
@@ -150,28 +151,28 @@ export default function GatewayAccess() {
             />
           </div>
           <div className="flex gap-2">
-            <button
+            <Button
               type="submit"
               disabled={saving}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm font-medium"
+              variant="primary" size="compact" className="font-medium"
             >
               {saving ? 'Saving...' : 'Change password'}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               onClick={handleClear}
               disabled={clearing || !currentPassword}
-              className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded-sm text-sm"
+              variant="secondary" size="compact"
             >
               {clearing ? '...' : 'Remove password'}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               onClick={handleSignOut}
-              className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-sm text-sm ml-auto"
+              variant="secondary" size="compact" className="ml-auto"
             >
               Sign out
-            </button>
+            </Button>
           </div>
         </form>
         </>

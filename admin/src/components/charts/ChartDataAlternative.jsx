@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { useEffect, useId, useState } from 'react'
 import { TABLE_PAGE_SIZE } from './chartDataText'
 
@@ -46,23 +47,23 @@ function DataTable({ caption, columns, rows, pageSize }) {
       </div>
       {pageCount > 1 && (
         <nav aria-label={`${caption} pages`} className="flex items-center gap-2 mt-1 text-xs text-gray-400">
-          <button
+          <Button
             type="button"
-            className="px-2 py-0.5 rounded-sm bg-gray-700 text-gray-200 disabled:opacity-40"
+            variant="secondary" size="xs"
             disabled={safePage === 0}
             onClick={() => setPage(safePage - 1)}
           >
             Previous
-          </button>
+          </Button>
           <span>Rows {from + 1} to {from + visible.length} of {rows.length}</span>
-          <button
+          <Button
             type="button"
-            className="px-2 py-0.5 rounded-sm bg-gray-700 text-gray-200 disabled:opacity-40"
+            variant="secondary" size="xs"
             disabled={safePage >= pageCount - 1}
             onClick={() => setPage(safePage + 1)}
           >
             Next
-          </button>
+          </Button>
         </nav>
       )}
     </div>

@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { useEffect, useMemo } from 'react'
 import { BarChart3 } from '../icons'
 import useCandleData, { DEFAULT_VIEWS } from '../../hooks/useCandleData'
@@ -341,28 +342,24 @@ export default function BTCPriceChart({
             {['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1D', '1W'].map(k => {
               const tfKey = k === '1D' ? '1d' : k === '1W' ? '1w' : k
               return (
-                <button
+                <Button
                   key={tfKey}
                   onClick={() => setInterval(tfKey)}
-                  className={`min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 text-xs rounded transition-colors ${
-                    interval === tfKey ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'
-                  }`}
+                  variant={interval === tfKey ? 'primary' : 'secondary'} size="xs"
                 >
                   {k}
-                </button>
+                </Button>
               )
             })}
             <span className="text-gray-600 text-xs px-1">/</span>
             {availableRanges.map(r => (
-              <button
+              <Button
                 key={r.key}
                 onClick={() => setTimeRange(r.key)}
-                className={`min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 text-xs rounded transition-colors ${
-                  timeRange === r.key ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'
-                }`}
+                variant={timeRange === r.key ? 'soft-info' : 'secondary'} size="xs"
               >
                 {r.label}
-              </button>
+              </Button>
             ))}
           </div>
         )}
@@ -371,15 +368,13 @@ export default function BTCPriceChart({
         {!isIntervalMode && showViewSelector && (
           <div className="ml-auto flex gap-1">
             {viewKeys.map(k => (
-              <button
+              <Button
                 key={k}
                 onClick={() => setView(k)}
-                className={`min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 text-xs rounded transition-colors ${
-                  view === k ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'
-                }`}
+                variant={view === k ? 'primary' : 'secondary'} size="xs"
               >
                 {views[k].label}
-              </button>
+              </Button>
             ))}
           </div>
         )}
@@ -388,7 +383,7 @@ export default function BTCPriceChart({
       {error && !isLoading ? (
         <div role="alert" className="flex flex-col items-center justify-center gap-3 py-12">
           <div className="text-red-400 text-sm">Failed to load price history: {error}</div>
-          <button type="button" onClick={retry} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-sm">Retry</button>
+          <Button type="button" onClick={retry} variant="primary" size="compact">Retry</Button>
         </div>
       ) : isLoading || displayData.length < 2 ? (
         <div className="text-gray-400 text-sm text-center py-12">

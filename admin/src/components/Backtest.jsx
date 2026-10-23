@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { useState, useEffect, useId } from 'react'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
@@ -312,43 +313,39 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
         {/* Time Period Selector */}
         <div className="flex flex-wrap gap-2 mb-4">
           {availablePeriods.map(period => (
-            <button
+            <Button
               key={period.label}
               onClick={() => handlePeriodChange(period)}
-              className={`px-4 py-2 rounded font-medium transition-colors ${
-                selectedPeriod === period.label
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
+              variant={selectedPeriod === period.label ? 'primary' : 'secondary'} size="md" className="font-medium"
             >
               {period.label}
-            </button>
+            </Button>
           ))}
         </div>
 
         <div className="flex gap-3">
-          <button
+          <Button
             onClick={runBacktest}
             disabled={loading}
-            className="px-6 py-2 bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded-sm font-medium"
+            variant="success" size="md" className="font-medium"
           >
             {loading ? 'Running Backtest...' : 'Run Backtest'}
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={loadFromConfig}
             disabled={!summary?.config}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-sm font-medium"
+            variant="primary" size="md" className="font-medium"
             title="Load settings from current system config"
           >
             Load from Config
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={resetToDefaults}
-            className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded-sm font-medium"
+            variant="secondary" size="md" className="font-medium"
             title="Reset to default backtest values"
           >
             Reset Defaults
-          </button>
+          </Button>
         </div>
       </div>
 

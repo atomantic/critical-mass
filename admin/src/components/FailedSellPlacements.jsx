@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { formatPrice, formatAsset } from './charts/chartUtils'
 
 const formatTimestamp = (iso) => new Date(iso).toISOString().replace('T', ' ').slice(0, 19)
@@ -63,18 +64,14 @@ function FailedSellPlacements({ failedSells = [], placementIntents = [], baseCur
                   {order.sellFailedAt && <div className="text-gray-400 mt-1">{formatTimestamp(order.sellFailedAt)}</div>}
                 </td>
                 <td className="py-2 text-right">
-                  <button
+                  <Button
                     type="button"
                     onClick={() => onRetry?.(order.buyOrderId)}
                     disabled={retryDisabled}
-                    className={`px-3 py-1 min-h-11 sm:min-h-0 text-xs rounded font-medium whitespace-nowrap ${
-                      retryDisabled
-                        ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                        : 'bg-red-700 hover:bg-red-800 text-white'
-                    }`}
+                    variant="destructive" size="xs" className="font-medium whitespace-nowrap"
                   >
                     {retryingBuyId === order.buyOrderId ? 'Retrying...' : 'Retry sell'}
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}

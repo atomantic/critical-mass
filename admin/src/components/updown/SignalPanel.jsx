@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Signal, Minus } from '../icons'
 import { signalBadgeColors, getSignalIcon, getActionLabel, labelHistoryActions } from '../../constants/signals'
@@ -107,7 +108,7 @@ export default function SignalPanel({ signal, indicators, position }) {
       {historyError && (
         <div role="alert" className="flex items-center justify-between gap-2 mb-2 text-xs text-red-400">
           <span>{historyError}</span>
-          <button onClick={() => fetchHistory()} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded-sm shrink-0">Retry</button>
+          <Button onClick={() => fetchHistory()} variant="secondary" size="xs" className="shrink-0">Retry</Button>
         </div>
       )}
 

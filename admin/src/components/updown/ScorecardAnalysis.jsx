@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from '../../lib/router'
 import { ArrowLeft, RefreshCw } from '../icons'
@@ -108,26 +109,22 @@ export default function ScorecardAnalysis() {
           </div>
           <div className="flex items-center gap-2">
             {RANGES.map(r => (
-              <button
+              <Button
                 key={r.days}
                 onClick={() => setRange(r.days)}
-                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${
-                  range === r.days
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 text-gray-400 hover:text-white'
-                }`}
+                variant={range === r.days ? 'primary' : 'secondary'} size="compact-xs" className="font-medium"
               >
                 {r.label}
-              </button>
+              </Button>
             ))}
-            <button
+            <Button
               onClick={fetchData}
               disabled={loading}
               aria-label="Refresh scorecard analysis"
-              className="p-1.5 bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors text-gray-400 hover:text-white"
+              variant="secondary" size="icon"
             >
               <RefreshCw size={14} aria-hidden="true" className={loading ? 'animate-spin' : ''} />
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -135,14 +132,14 @@ export default function ScorecardAnalysis() {
       {error && data && (
         <div role="alert" className="flex items-center justify-between gap-2 text-sm text-red-400">
           <span>{error} Showing the last loaded analysis.</span>
-          <button onClick={fetchData} disabled={loading} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-xs shrink-0">Retry</button>
+          <Button onClick={fetchData} disabled={loading} variant="secondary" size="compact-xs" className="shrink-0">Retry</Button>
         </div>
       )}
 
       {error && !data && !loading ? (
         <div role="alert" className="bg-gray-800 rounded-lg p-8 border border-gray-700 text-center">
           <p className="text-red-400">{error}</p>
-          <button onClick={fetchData} className="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-sm text-sm">Retry</button>
+          <Button onClick={fetchData} variant="primary" size="md" className="mt-3">Retry</Button>
         </div>
       ) : !data ? (
         <div className="flex items-center justify-center h-48 text-gray-400">Loading analysis...</div>

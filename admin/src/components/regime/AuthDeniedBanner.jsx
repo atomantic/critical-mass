@@ -1,4 +1,4 @@
-import { TOUCH_TARGET } from '../ui/touchTarget'
+import Button from '../ui/Button'
 import React from 'react'
 
 export default function AuthDeniedBanner({ health, handleResumeFromAuthDenied, resumingAuth }) {
@@ -20,13 +20,13 @@ export default function AuthDeniedBanner({ health, handleResumeFromAuthDenied, r
               )}
             </div>
           </div>
-          <button
+          <Button
             onClick={handleResumeFromAuthDenied}
             disabled={resumingAuth}
-            className={`${TOUCH_TARGET} shrink-0 px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:opacity-50 text-white text-xs font-medium rounded-sm transition-colors`}
+            variant="destructive" size="compact-xs" className="shrink-0 font-medium"
           >
             {resumingAuth ? 'Resuming…' : 'Resume'}
-          </button>
+          </Button>
         </div>
       )}
     </>

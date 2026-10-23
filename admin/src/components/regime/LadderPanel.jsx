@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { describeConfigSaveError } from '../../utils/configSaveError.mjs'
 import { describeActionFailure } from '../../utils/actionFailure.mjs'
 import { apiGet, apiPost, apiPut } from '../../utils/apiClient'
@@ -246,12 +247,12 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
   return (
     <>
       {showToggle && (
-        <button
+        <Button
           onClick={handleToggle}
-          className="px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded-sm transition-colors"
+          variant="primary" size="xs"
         >
           {showLadderPanel ? 'Close' : 'Rebuild Ladder'}
-        </button>
+        </Button>
       )}
       {showLadderPanel && ladderEdits && (
         <div className="mb-4 p-3 bg-indigo-900/20 border border-indigo-700/50 rounded-lg space-y-3">
@@ -374,13 +375,13 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
                   </tbody>
                 </table>
               </div>
-              <button
+              <Button
                 onClick={handlePlaceLadder}
                 disabled={placingLadder || panelState !== 'ready'}
-                className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-sm transition-colors"
+                variant="primary" size="compact-xs"
               >
                 {placingLadder ? 'Placing...' : `Place ${plural(ladderPreview.levelCount, 'Order')}`}
-              </button>
+              </Button>
             </div>
           ) : (
             <div className="text-xs text-gray-400" role="status" aria-busy={panelState === 'loading' || panelState === 'saving'}>
@@ -391,11 +392,11 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
               {['failed', 'rejected', 'notApplied'].includes(panelState) && (
                 <span className="text-red-400">
                   {blockMessage}{' '}
-                  {panelState === 'failed' && <button onClick={handleRetry} className="underline text-indigo-300">Retry</button>}
-                  {panelState !== 'notApplied' && <>{' '}<button onClick={handleRevert} className="underline text-indigo-300">Revert</button></>}
+                  {panelState === 'failed' && <Button onClick={handleRetry} variant="link" size="inline" className="underline">Retry</Button>}
+                  {panelState !== 'notApplied' && <>{' '}<Button onClick={handleRevert} variant="link" size="inline" className="underline">Revert</Button></>}
                 </span>
               )}
-              {panelState === 'previewFailed' && <>{' '}<button onClick={refreshPreview} className="underline text-indigo-300">Retry preview</button></>}
+              {panelState === 'previewFailed' && <>{' '}<Button onClick={refreshPreview} variant="link" size="inline" className="underline">Retry preview</Button></>}
             </div>
           )}
         </div>

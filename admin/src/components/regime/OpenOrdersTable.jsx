@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import React, { useId, useMemo, useState } from 'react'
 import { buildOpenOrderRelationIndex, deriveOpenOrderRows } from '../../utils/openOrderRelations.mjs'
 import { DEFAULT_FEE_RATE_PER_SIDE } from '../../utils/openOrderEstimates.mjs'
@@ -55,16 +56,16 @@ function OpenOrdersTable({
     const bd = bodyLookup.get(order.orderId)
     if (!bd) return null
     return (
-      <button
+      <Button
         title="Edit TP target"
-        className={`${REGIME_ORDER_TOUCH_TARGET} text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded-sm text-sm leading-none`}
+        variant="quiet" size="xs" className="ml-1 leading-none"
         onClick={(e) => {
           e.stopPropagation()
           setTpEditModal({ bodyId: bd.id, currentTpPct: order.tpPercent, currentPrice: order.price, avgPrice: bd.avgPrice, bodyLabel: bd.id.slice(-8), inputValue: String(order.tpPercent ?? ''), priceValue: String(order.price ?? ''), mode })
         }}
       >
         ✎
-      </button>
+      </Button>
     )
   }
 
@@ -230,16 +231,16 @@ function OpenOrdersTable({
                       const srcLabel = `${bodyData.id?.slice(-8)} ($${bodyData.costBasis?.toFixed(0)})`
                       const tgtLabel = `${targetBody.id?.slice(-8)} ($${targetBody.costBasis?.toFixed(0)})`
                       return (
-                        <button
+                        <Button
                           title={`Roll up into ${tgtLabel}`}
-                          className={`${REGIME_ORDER_TOUCH_TARGET} px-1 py-0.5 text-xs text-yellow-400 hover:text-yellow-300 hover:bg-yellow-900/30 rounded-sm transition-colors`}
+                          variant="quiet-warning" size="xs"
                           onClick={(e) => {
                             e.stopPropagation()
                             setRollUpConfirm({ bodyId: bodyData.id, bodyLabel: srcLabel, targetLabel: tgtLabel })
                           }}
                         >
                           ↑
-                        </button>
+                        </Button>
                       )
                     })()}
                   </td>

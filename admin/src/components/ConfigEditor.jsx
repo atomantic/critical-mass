@@ -215,7 +215,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         {loadError ? (
           <div role="alert" className="mt-4 text-red-200">
             Failed to load configuration: {loadError}
-            <button type="button" onClick={onRetry} className="ml-3 underline">Retry configuration</button>
+            <Button type="button" onClick={onRetry} variant="link" size="inline" className="ml-3 underline">Retry configuration</Button>
           </div>
         ) : (
           <p role="status" className="mt-4 text-gray-400">Loading configuration...</p>

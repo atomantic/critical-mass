@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { memo, useState, useEffect, useRef, useId } from 'react'
 import { useLogStream } from '../hooks/useLogStream'
 import { useToast } from './Toast'
@@ -96,36 +97,36 @@ export default function LogViewer({ processName }) {
             <span className={`w-2 h-2 rounded-full ${status.dotClass}`} />
             <span className={status.textClass}>{status.text}</span>
             {!subscribed && terminal && (
-              <button
+              <Button
                 onClick={retry}
-                className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-0.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-sm transition-colors"
+                variant="secondary" size="xs"
               >
                 Retry
-              </button>
+              </Button>
             )}
           </div>
 
-          <button
+          <Button
             onClick={clear}
-            className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-sm transition-colors"
+            variant="secondary" size="xs"
           >
             Clear
-          </button>
+          </Button>
 
-          <button
+          <Button
             onClick={flush}
             disabled={flushing}
-            className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 text-xs bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:text-gray-500 text-yellow-100 rounded-sm transition-colors"
+            variant="warning" size="xs"
           >
             {flushing ? 'Flushing...' : 'Flush'}
-          </button>
+          </Button>
 
-          <button
+          <Button
             onClick={() => setFullscreen(!fullscreen)}
-            className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-sm transition-colors"
+            variant="secondary" size="xs"
           >
             {fullscreen ? 'Close' : 'Fullscreen'}
-          </button>
+          </Button>
         </div>
       </div>
 

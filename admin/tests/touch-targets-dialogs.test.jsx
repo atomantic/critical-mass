@@ -45,27 +45,18 @@ it('gives the DCA export dialog confirm/cancel buttons a touch-sized target', as
   expectTouchSized(within(dialog).getByRole('button', { name: 'Confirm Export' }))
 })
 
-it.each([
-  ['src/components/regime/RegimeActionModals.jsx'],
-  ['src/components/ActivityFeed.jsx'],
-])('%s: every <button> className starts with the shared touch target', (file) => {
-  const src = readFileSync(resolve(process.cwd(), file), 'utf8')
-  const chunks = src.split('<button').slice(1)
-  expect(chunks.length).toBeGreaterThan(0)
-  for (const chunk of chunks) {
-    const at = chunk.indexOf('className=')
-    expect(at).toBeGreaterThan(-1)
-    expect(chunk.slice(at, at + 40)).toContain('${TOUCH_TARGET}')
-  }
-})
-
 // Fully migrated files take their touch target (and colours/radius) from the
 // shared Button, so a raw <button> reappearing there would drift again.
 it.each([
+  ['src/components/regime/RegimeActionModals.jsx'],
+  ['src/components/ActivityFeed.jsx'],
+  ['src/components/ManualTrades.jsx', 1],
+  ['src/components/sentinel/Dashboard.jsx', 1],
+  ['src/components/updown/Dashboard.jsx'],
   ['src/components/ai/Providers.jsx'],
   ['src/components/BackupRestore.jsx'],
-  ['src/components/Optimizer.jsx', 1],
-  ['src/components/ConfigEditor.jsx', 2],
+  ['src/components/Optimizer.jsx'],
+  ['src/components/ConfigEditor.jsx', 1],
 ])('%s: buttons come from the shared Button', (file, rawButtons = 0) => {
   const src = readFileSync(resolve(process.cwd(), file), 'utf8')
   expect(src).toContain("import Button from")

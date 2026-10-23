@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { TOUCH_TARGET } from './ui/touchTarget'
 import { Fragment, useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { formatCurrency, formatPrice, formatDateTime } from './charts/chartUtils'
@@ -455,17 +456,13 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                 onChange={(e) => setStartDate(e.target.value)}
                 className="px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-xs text-gray-300"
               />
-              <button
+              <Button
                 onClick={fetchUnaccounted}
                 disabled={loading || !startDate}
-                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                  loading || !startDate
-                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                    : 'bg-purple-600/30 text-purple-400 hover:bg-purple-600/50 border border-purple-500/30'
-                }`}
+                variant="soft-purple" size="xs" className="font-medium"
               >
                 {loading ? 'Fetching...' : 'Fetch'}
-              </button>
+              </Button>
               {loading && (
                 <span className="text-xs text-gray-400" role="status" aria-live="polite">{describeScanProgress(scanProgress)}</span>
               )}
@@ -477,7 +474,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
             {error && (
               <div className="mb-2 p-2 rounded-sm text-xs bg-red-900/30 border border-red-700/50 text-red-400">
                 {error}
-                <button onClick={() => setError(null)} className="ml-2 text-red-300 hover:text-red-100">&times;</button>
+                <Button onClick={() => setError(null)} variant="quiet-danger" size="inline" className="ml-2">&times;</Button>
               </div>
             )}
 
@@ -507,19 +504,19 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                         <td className="px-2 py-1 text-right text-gray-300">{formatCurrency(order.totalUsdc)}</td>
                         <td className="px-2 py-1 text-gray-400">{fmtDate(order.time)}</td>
                         <td className="px-2 py-1 flex flex-wrap gap-2">
-                          <button
+                          <Button
                             onClick={() => openImportModal(order)}
-                            className="trade-history-touch-target min-h-11 min-w-11 px-3 py-1 rounded-sm text-xs bg-blue-600/30 text-blue-400 hover:bg-blue-600/50 border border-blue-500/30"
+                            variant="soft-primary" size="xs" touchTarget="always" className="trade-history-touch-target"
                           >
                             Import
-                          </button>
-                          <button
+                          </Button>
+                          <Button
                             onClick={() => handleDismiss(order.orderId)}
                             disabled={dismissing === order.orderId}
-                            className="trade-history-touch-target min-h-11 min-w-11 px-3 py-1 rounded-sm text-xs bg-gray-600/30 text-gray-400 hover:bg-gray-600/50 border border-gray-500/30"
+                            variant="soft-secondary" size="xs" touchTarget="always" className="trade-history-touch-target"
                           >
                             {dismissing === order.orderId ? '...' : 'Dismiss'}
-                          </button>
+                          </Button>
                         </td>
                       </tr>
                     ))}
@@ -554,29 +551,21 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
 
               {/* Tab selector */}
               <div className="flex gap-2 mb-3">
-                <button
+                <Button
                   onClick={() => { setImportTab('orphan'); setSelectedMatch(null) }}
-                  className={`px-3 py-1 rounded text-xs ${
-                    importTab === 'orphan'
-                      ? 'bg-purple-600/50 text-purple-300 border border-purple-400/50'
-                      : 'bg-gray-700 text-gray-400 border border-gray-600'
-                  }`}
+                  variant={importTab === 'orphan' ? 'soft-purple' : 'secondary'} size="xs"
                 >
                   Import as Orphan
-                </button>
-                <button
+                </Button>
+                <Button
                   onClick={() => setImportTab('pair')}
-                  className={`px-3 py-1 rounded text-xs ${
-                    importTab === 'pair'
-                      ? 'bg-purple-600/50 text-purple-300 border border-purple-400/50'
-                      : 'bg-gray-700 text-gray-400 border border-gray-600'
-                  }`}
+                  variant={importTab === 'pair' ? 'soft-purple' : 'secondary'} size="xs"
                 >
                   Pair with Match
                   {matchSuggestions.length > 0 && (
                     <span className="ml-1 text-2xs opacity-60">({matchSuggestions.length})</span>
                   )}
-                </button>
+                </Button>
               </div>
 
               {/* Orphan tab */}
@@ -586,26 +575,18 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                     <>
                       {/* Existing sell orphan flow */}
                       <div className="flex gap-2 mb-3">
-                        <button
+                        <Button
                           onClick={() => setImportMode('place')}
-                          className={`px-3 py-1 rounded text-xs ${
-                            importMode === 'place'
-                              ? 'bg-purple-600/50 text-purple-300 border border-purple-400/50'
-                              : 'bg-gray-700 text-gray-400 border border-gray-600'
-                          }`}
+                          variant={importMode === 'place' ? 'soft-purple' : 'secondary'} size="xs"
                         >
                           Place Recovery Buy
-                        </button>
-                        <button
+                        </Button>
+                        <Button
                           onClick={() => setImportMode('link')}
-                          className={`px-3 py-1 rounded text-xs ${
-                            importMode === 'link'
-                              ? 'bg-purple-600/50 text-purple-300 border border-purple-400/50'
-                              : 'bg-gray-700 text-gray-400 border border-gray-600'
-                          }`}
+                          variant={importMode === 'link' ? 'soft-purple' : 'secondary'} size="xs"
                         >
                           Link Existing Buy
-                        </button>
+                        </Button>
                       </div>
 
                       {importMode === 'place' ? (
@@ -774,23 +755,19 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
 
               {/* Action buttons */}
               <div className="flex gap-2">
-                <button
+                <Button
                   onClick={handleImport}
                   disabled={importBtnState.disabled}
-                  className={`px-3 py-1 rounded text-xs font-medium ${
-                    importBtnState.disabled
-                      ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                      : 'bg-purple-600/50 text-purple-300 hover:bg-purple-600/70 border border-purple-400/50'
-                  }`}
+                  variant="soft-purple" size="xs" className="font-medium"
                 >
                   {importBtnState.label}
-                </button>
-                <button
+                </Button>
+                <Button
                   onClick={() => setImportModal(null)}
-                  className="px-3 py-1 rounded-sm text-xs text-gray-400 hover:text-gray-300 bg-gray-700 border border-gray-600"
+                  variant="secondary" size="xs"
                 >
                   Cancel
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -799,13 +776,13 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
           <div className="bg-gray-900/40 rounded-lg p-3">
             <h4 className="text-xs font-medium text-purple-400 mb-2 flex items-center gap-2">
               Tracked Manual Trades
-              <button
+              <Button
                 onClick={fetchManualTrades}
                 disabled={tradesLoading}
-                className="ml-auto px-2 py-0.5 rounded-sm text-2xs bg-gray-700 text-gray-400 hover:bg-gray-600 border border-gray-600"
+                variant="secondary" size="micro" className="ml-auto"
               >
                 {tradesLoading ? '...' : 'Refresh'}
-              </button>
+              </Button>
             </h4>
 
             {tradesError && (
@@ -876,38 +853,38 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                           </td>
                           <td className="px-2 py-1">
                             {pendingImport && (
-                              <button type="button" onClick={() => handleResumeImport(trade.id)}
+                              <Button type="button" onClick={() => handleResumeImport(trade.id)}
                                 disabled={Boolean(resumingImport)}
                                 title={resumingImport && resumingImport !== trade.id ? 'Another import is being resumed' : 'Finish creating the body for this recorded buy'}
-                                className="min-h-11 px-3 py-2 rounded-sm text-xs bg-purple-600/50 text-purple-200 hover:bg-purple-600/70 disabled:opacity-50">
+                                variant="soft-purple" size="xs" touchTarget="always">
                                 {resumingImport === trade.id ? 'Resuming import...' : 'Resume import'}
-                              </button>
+                              </Button>
                             )}
                             {(trade.status === 'buy_pending' || trade.status === 'tp_pending') && (
-                              <button
+                              <Button
                                 onClick={() => handleCheckStatus(trade.id)}
                                 disabled={checking[trade.id]}
-                                className="px-2 py-0.5 rounded-sm text-2xs bg-yellow-600/30 text-yellow-400 hover:bg-yellow-600/50 border border-yellow-500/30"
+                                variant="soft-warning" size="micro"
                               >
                                 {checking[trade.id] ? 'Checking...' : 'Check Status'}
-                              </button>
+                              </Button>
                             )}
                             {canContinueRecovery(trade) && (
                               <span className="flex gap-1">
-                                <button
+                                <Button
                                   type="button"
                                   onClick={() => openRecoveryForm(trade, 'retry')}
-                                  className="px-2 py-0.5 rounded-sm text-2xs bg-purple-600/30 text-purple-300 hover:bg-purple-600/50 border border-purple-500/30"
+                                  variant="soft-purple" size="micro"
                                 >
                                   Retry recovery
-                                </button>
-                                <button
+                                </Button>
+                                <Button
                                   type="button"
                                   onClick={() => openRecoveryForm(trade, 'link')}
-                                  className="px-2 py-0.5 rounded-sm text-2xs bg-blue-600/30 text-blue-300 hover:bg-blue-600/50 border border-blue-500/30"
+                                  variant="soft-primary" size="micro"
                                 >
                                   Link replacement
-                                </button>
+                                </Button>
                               </span>
                             )}
                           </td>
@@ -942,25 +919,21 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                                       className="px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-xs text-gray-300 font-mono"
                                     />
                                   </div>
-                                  <button
+                                  <Button
                                     type="button"
                                     onClick={handleContinueRecovery}
                                     disabled={recovering[trade.id] || !recoveryForm.value.trim()}
-                                    className={`px-3 py-1 rounded text-xs font-medium ${
-                                      recovering[trade.id] || !recoveryForm.value.trim()
-                                        ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                                        : 'bg-purple-600/50 text-purple-300 hover:bg-purple-600/70 border border-purple-400/50'
-                                    }`}
+                                    variant="soft-purple" size="xs" className="font-medium"
                                   >
                                     {recovering[trade.id] ? 'Submitting...' : recoveryForm.mode === 'retry' ? 'Place Recovery Buy' : 'Link Buy'}
-                                  </button>
-                                  <button
+                                  </Button>
+                                  <Button
                                     type="button"
                                     onClick={() => setRecoveryForm(null)}
-                                    className="px-3 py-1 rounded-sm text-xs text-gray-400 hover:text-gray-300 bg-gray-700 border border-gray-600"
+                                    variant="secondary" size="xs"
                                   >
                                     Cancel
-                                  </button>
+                                  </Button>
                                 </div>
                               )}
                             </td>

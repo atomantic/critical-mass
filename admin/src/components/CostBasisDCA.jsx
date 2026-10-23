@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { useState, useEffect, useRef } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
@@ -90,7 +91,7 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
       {priceError && (
         <div role="alert" className="flex items-center justify-between gap-2 text-sm text-red-400">
           <span>{priceError}</span>
-          <button type="button" onClick={() => setRetryKey(k => k + 1)} className="px-2 py-1 rounded bg-gray-700 text-white">Retry</button>
+          <Button type="button" onClick={() => setRetryKey(k => k + 1)} variant="secondary" size="xs">Retry</Button>
         </div>
       )}
       {/* Current Price Banner */}

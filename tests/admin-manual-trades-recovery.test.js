@@ -88,6 +88,7 @@ function createView(respond) {
   }
   const stubs = {
     react: hooks,
+    './ui/Button': 'button',
     '../utils/apiClient': {
       apiGet: (url) => request('GET', url),
       apiPost: (url, body) => request('POST', url, body),

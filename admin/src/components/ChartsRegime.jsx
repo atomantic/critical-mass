@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useRegimeEvents } from '../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
@@ -199,7 +200,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   }, [fillAggregates, isDryRun, dryRunFilled])
 
   if (error) {
-    return <div role="alert" className="flex flex-col items-center justify-center h-64 gap-4"><div className="text-red-400">Error: {error}</div><button onClick={fetchData} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-sm">Retry</button></div>
+    return <div role="alert" className="flex flex-col items-center justify-center h-64 gap-4"><div className="text-red-400">Error: {error}</div><Button onClick={fetchData} variant="primary" size="md">Retry</Button></div>
   }
 
   if (loading) {
@@ -212,8 +213,8 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
 
   return (
     <div className="space-y-6">
-      {stale && <div role="status" className="bg-yellow-900/30 border border-yellow-600 rounded-lg p-3 flex items-center justify-between"><span className="text-yellow-400">Data is stale. Waiting for a successful refresh...</span><button onClick={fetchData} className="px-3 py-1 bg-yellow-700 text-white text-sm rounded-sm">Refresh Now</button></div>}
-      {!stale && <div className="flex justify-end"><button onClick={fetchData} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-sm">Refresh</button></div>}
+      {stale && <div role="status" className="bg-yellow-900/30 border border-yellow-600 rounded-lg p-3 flex items-center justify-between"><span className="text-yellow-400">Data is stale. Waiting for a successful refresh...</span><Button onClick={fetchData} variant="warning" size="sm">Refresh Now</Button></div>}
+      {!stale && <div className="flex justify-end"><Button onClick={fetchData} variant="secondary" size="sm">Refresh</Button></div>}
       {historyUnavailable && <p className="text-sm text-yellow-400">Price history unavailable.</p>}
       {/* Status Banner */}
       <div className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">

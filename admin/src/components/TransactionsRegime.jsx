@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { useState, useEffect, useCallback, useRef, useMemo, useId } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
@@ -115,13 +116,13 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   return (
     <div className="space-y-4">
       {fillsError && <div role="alert" className="text-sm text-yellow-400">
-        {fillsError} <button type="button" onClick={() => fetchData()} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 rounded-sm bg-gray-700">Retry</button>
+        {fillsError} <Button type="button" onClick={() => fetchData()} variant="secondary" size="xs">Retry</Button>
       </div>}
       {/* Header with status */}
       {statusError && !status && (
         <div role="alert" className="text-sm text-yellow-400">
           Engine status unavailable — dry-run mode unknown{' '}
-          <button type="button" onClick={() => fetchData()} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-1 rounded-sm bg-gray-700">Retry status</button>
+          <Button type="button" onClick={() => fetchData()} variant="secondary" size="xs">Retry status</Button>
         </div>
       )}
       {isDryRun && (
@@ -143,9 +144,9 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                 ? `Open orders may be stale: ${ordersError}`
                 : `Open orders unavailable: ${ordersError}`}
             </span>
-            <button type="button" onClick={() => fetchData()} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-0.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs">
+            <Button type="button" onClick={() => fetchData()} variant="secondary" size="xs">
               Retry
-            </button>
+            </Button>
           </div>
         )}
         {openOrders.length > 0 && (
@@ -267,17 +268,13 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
       <div className="flex flex-wrap gap-4 items-center">
         <div className="flex gap-2">
           {['all', 'buy', 'sell'].map(f => (
-            <button
+            <Button
               key={f}
               onClick={() => { setFilter(f); setPage(0) }}
-              className={`px-3 py-1 rounded text-sm ${
-                filter === f
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
+              variant={filter === f ? 'primary' : 'secondary'} size="sm"
             >
               {f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1) + 's'}
-            </button>
+            </Button>
           ))}
         </div>
 
@@ -406,22 +403,22 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
               Showing {pageInfo.start}–{pageInfo.end} of {pageInfo.total} · Page {pageInfo.page + 1} of {pageInfo.pageCount}
             </span>
             <div className="flex gap-2">
-              <button
+              <Button
                 type="button"
                 onClick={() => setPage(pageInfo.page - 1)}
                 disabled={!pageInfo.hasPrev}
-                className="px-3 py-1 rounded-sm bg-gray-700 text-gray-200 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                variant="secondary" size="sm"
               >
                 Previous
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 onClick={() => setPage(pageInfo.page + 1)}
                 disabled={!pageInfo.hasNext}
-                className="px-3 py-1 rounded-sm bg-gray-700 text-gray-200 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                variant="secondary" size="sm"
               >
                 Next
-              </button>
+              </Button>
             </div>
           </nav>
         )}

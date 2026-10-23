@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { useRef, useState } from 'react'
 import ModalDialog from './ModalDialog'
 import { pairQuery } from '../utils/api'
@@ -76,10 +77,10 @@ function DcaPlacementRecovery({ intents = [], exchange, pair, onResolved }) {
                     : 'Check open orders and recent fills on the exchange. Cancel any live order from this placement and reconcile any executions in the fund records before discarding the intent.'}
                 </p>
                 {!unreadable && <div className="flex flex-wrap items-center gap-2">
-                  <button type="button" onClick={() => open(intent)} disabled={pending}
-                    className="min-h-11 px-3 py-2 bg-amber-700 hover:bg-amber-800 rounded-sm disabled:opacity-50">
+                  <Button type="button" onClick={() => open(intent)} disabled={pending}
+                    variant="caution" size="md" touchTarget="always">
                     Discard
-                  </button>
+                  </Button>
                   {!intent.clientOrderId && <span className="text-gray-300">No client order id was recorded; check the placement time, side and amount on the exchange.</span>}
                 </div>}
               </div>
@@ -101,12 +102,12 @@ function DcaPlacementRecovery({ intents = [], exchange, pair, onResolved }) {
           <p className="font-mono text-xs break-all mb-3">Intent {confirmation.intent.id}</p>
           {error && <p role="alert" className="text-sm text-red-300 mb-3">{error}</p>}
           <div className="flex flex-wrap justify-end gap-3">
-            <button type="button" autoFocus disabled={pending} onClick={() => setConfirmation(null)}
-              className="min-h-11 px-4 py-2 bg-gray-700 rounded-sm disabled:opacity-50">Cancel</button>
-            <button type="button" disabled={pending} onClick={reconcile}
-              className="min-h-11 px-4 py-2 bg-amber-700 rounded-sm disabled:opacity-50">
+            <Button type="button" autoFocus disabled={pending} onClick={() => setConfirmation(null)}
+              variant="secondary" size="md" touchTarget="always">Cancel</Button>
+            <Button type="button" disabled={pending} onClick={reconcile}
+              variant="caution" size="md" touchTarget="always">
               {pending ? 'Working…' : 'Discard intent'}
-            </button>
+            </Button>
           </div>
         </ModalDialog>
       )}

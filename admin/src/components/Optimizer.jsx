@@ -32,19 +32,14 @@ const DEFAULT_BUY_AMOUNTS = {
 
 function ToggleChip({ label, checked, onChange, disabled }) {
   return (
-    <button
+    <Button
       type="button"
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-        disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
-      } ${checked
-        ? 'bg-blue-600 text-white'
-        : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-      }`}
+      variant={checked ? 'primary' : 'secondary'} size="compact" className="font-medium"
     >
       {label}
-    </button>
+    </Button>
   )
 }
 

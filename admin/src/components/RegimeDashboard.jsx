@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import React, { useState, lazy, Suspense } from 'react'
 import { deriveDashboardStatus } from './regime/deriveDashboardStatus'
 import EmptyRegimeState from './regime/EmptyRegimeState'
@@ -10,7 +11,7 @@ import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
 import RegimeActionModals from './regime/RegimeActionModals'
-import OpenOrdersTable, { REGIME_ORDER_TOUCH_TARGET } from './regime/OpenOrdersTable'
+import OpenOrdersTable from './regime/OpenOrdersTable'
 import FilledOrdersSection from './regime/FilledOrdersSection'
 import PositionCard from './regime/PositionCard'
 import LadderPanel from './regime/LadderPanel'
@@ -76,7 +77,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
       {error && (
         <div role="alert" className="p-3 bg-red-900/50 border border-red-700 rounded-sm text-red-200 text-sm">
           {error}. {stale && 'Showing last good data (stale). '}
-          <button type="button" onClick={retry} className="ml-2 underline">Retry</button>
+          <Button type="button" onClick={retry} variant="link" size="inline" className="ml-2 underline">Retry</Button>
         </div>
       )}
 
@@ -209,23 +210,23 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               <div className="flex flex-wrap items-center gap-2">
                 {isDryRun && <span className="text-xs text-purple-400">(Simulated)</span>}
                 {status?.position?.ladderActive && status?.isRunning && (
-                  <button
+                  <Button
                     onClick={handleCancelLadder}
                     disabled={cancellingLadder}
-                    className={`px-2 py-1 text-xs bg-red-700 hover:bg-red-800 text-white rounded-sm transition-colors disabled:opacity-50 ${REGIME_ORDER_TOUCH_TARGET}`}
+                    variant="destructive" size="xs" touchTarget="always" className="regime-order-touch-target"
                   >
                     {cancellingLadder ? 'Cancelling…' : 'Cancel Ladder → Reactive'}
-                  </button>
+                  </Button>
                 )}
                 {status?.isRunning && (status?.celestial?.bodies?.length || 0) >= 2 && (
-                  <button
+                  <Button
                     onClick={() => setCollapseAllConfirm(true)}
                     disabled={collapsingAll}
                     title="Cancel all body TP orders, combine into one body, place a single TP"
-                    className={`px-2 py-1 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-sm transition-colors disabled:opacity-50 ${REGIME_ORDER_TOUCH_TARGET}`}
+                    variant="caution" size="xs" touchTarget="always" className="regime-order-touch-target"
                   >
                     {collapsingAll ? 'Collapsing…' : `Collapse All (${status.celestial.bodies.length})`}
-                  </button>
+                  </Button>
                 )}
                 {pendingOrdersList.length > 0 && (
                   <input

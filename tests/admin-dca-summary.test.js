@@ -29,6 +29,7 @@ before(async () => {
     finally { await bundle.close() }
     const stubs = {
       react: React,
+      './ui/Button': ({ children, ...props }) => React.createElement('button', props, children),
       '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
       '../utils/pnlFormat.mjs': { pnlColorClass: n => (n >= 0 ? 'text-green-400' : 'text-red-400'), signedPrefix: n => (n >= 0 ? '+' : '') },
       '../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },

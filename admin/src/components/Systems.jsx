@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { Suspense, useRef, useState, useCallback, useMemo } from 'react'
 import { Canvas, useThree, invalidate } from '@react-three/fiber'
 import BloomEffect from './celestial/BloomEffect'
@@ -125,17 +126,13 @@ const Systems = () => {
       <div className="flex items-center gap-2">
         <span className="text-gray-400 text-xs uppercase tracking-wider mr-1">View:</span>
         {Object.entries(CAMERA_VIEWS).map(([key, view]) => (
-          <button
+          <Button
             key={key}
             onClick={() => handleViewChange(key)}
-            className={`px-3 py-1.5 text-xs rounded transition-colors ${
-              activeView === key
-                ? 'bg-cyan-600 text-white'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
+            variant={activeView === key ? 'accent' : 'secondary'} size="compact-xs"
           >
             {view.name}
-          </button>
+          </Button>
         ))}
       </div>
 

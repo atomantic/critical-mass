@@ -1,4 +1,4 @@
-import { TOUCH_TARGET } from './ui/touchTarget'
+import Button from './ui/Button'
 import { useState } from 'react'
 import { useTradeEvents } from '../hooks/useTradeEvents'
 
@@ -49,19 +49,19 @@ function ActivityFeed({ exchange = null, maxEvents = 10, showWhenEmpty = true })
         {events.length > 0 && (
           <div className="flex items-center gap-2">
             {events.length > maxEvents && (
-              <button
+              <Button
                 onClick={() => setExpanded(!expanded)}
-                className={`${TOUCH_TARGET} px-2 py-2 -ml-2 text-xs text-gray-400 hover:text-white`}
+                variant="quiet" size="xs" className="-ml-2"
               >
                 {expanded ? 'Show less' : `Show all (${events.length})`}
-              </button>
+              </Button>
             )}
-            <button
+            <Button
               onClick={clearEvents}
-              className={`${TOUCH_TARGET} px-2 py-2 -mr-2 text-xs text-gray-400 hover:text-white`}
+              variant="quiet" size="xs" className="-mr-2"
             >
               Clear
-            </button>
+            </Button>
           </div>
         )}
       </div>

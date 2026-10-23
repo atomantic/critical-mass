@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { useState } from 'react'
 import ModalDialog from './ModalDialog'
 import { apiPost } from '../utils/apiClient'
@@ -222,21 +223,21 @@ function AddFundDialog({ onClose, onCreated, exchanges = [] }) {
         )}
 
         <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-2">
-          <button
+          <Button
             type="button"
             onClick={onClose}
             disabled={submitting}
-            className="min-h-11 px-4 py-2 text-sm text-gray-300 hover:text-white"
+            variant="quiet" size="md" touchTarget="always"
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="submit"
             disabled={submitting}
-            className="min-h-11 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm font-medium text-white"
+            variant="primary" size="md" touchTarget="always" className="font-medium"
           >
             {submitting ? 'Creating...' : 'Create Fund'}
-          </button>
+          </Button>
         </div>
       </form>
     </ModalDialog>

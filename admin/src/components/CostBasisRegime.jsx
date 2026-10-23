@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { plural } from '../utils/plural.mjs'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
@@ -90,12 +91,12 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-4">
         <div className="text-red-400">Error: {error}</div>
-        <button
+        <Button
           onClick={fetchData}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-sm"
+          variant="primary" size="md"
         >
           Retry
-        </button>
+        </Button>
       </div>
     )
   }
@@ -136,12 +137,12 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
       {stale && (
         <div className="bg-yellow-900/30 border border-yellow-600 rounded-lg p-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <span className="text-yellow-400">Data is stale. Waiting for the next successful refresh...</span>
-          <button
+          <Button
             onClick={fetchData}
-            className="self-start sm:self-auto px-3 py-1 bg-yellow-700 hover:bg-yellow-800 text-white text-sm rounded-sm"
+            variant="warning" size="sm" className="self-start sm:self-auto"
           >
             Refresh Now
-          </button>
+          </Button>
         </div>
       )}
 

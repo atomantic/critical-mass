@@ -50,3 +50,18 @@ it('Button maps tinted, text-only and responsive-size options', () => {
   expect(link.className).toContain('md:px-3')
   expect(screen.getByRole('button', { name: 'M' }).className).toContain('bg-blue-600/50')
 })
+
+// These controls were already 44px on desktop before adopting Button.
+it('keeps an always-touch target and forwards form, accessibility and ref props', () => {
+  const ref = { current: null }
+  const onClick = vi.fn()
+  render(<Button ref={ref} touchTarget="always" type="submit" aria-label="Create fund" disabled onClick={onClick}>Create</Button>)
+  const button = screen.getByRole('button', { name: 'Create fund' })
+  expect(ref.current).toBe(button)
+  expect(button.type).toBe('submit')
+  expect(button.disabled).toBe(true)
+  expect(button.className).toContain('min-h-11')
+  expect(button.className).not.toContain('md:min-h-0')
+  fireEvent.click(button)
+  expect(onClick).not.toHaveBeenCalled()
+})
