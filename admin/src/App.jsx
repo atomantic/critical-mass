@@ -1,4 +1,3 @@
-import { TOUCH_TARGET } from './components/ui/touchTarget'
 import { Component, useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react'
 import { Routes, Route, Link, NavLink, useLocation, useNavigate, Navigate } from './lib/router'
 import ExchangeSelector from './components/ExchangeSelector'
@@ -114,7 +113,6 @@ const getTabsForStrategy = (strategy) => {
 
 // Valid exchange names
 const VALID_EXCHANGES = ['coinbase', 'gemini', 'cryptocom']
-const REGIME_ACTION_TOUCH_TARGET = TOUCH_TARGET
 
 class RouteErrorBoundary extends Component {
   state = { hasError: false }
@@ -129,13 +127,9 @@ class RouteErrorBoundary extends Component {
     return (
       <div className="flex h-64 flex-col items-center justify-center gap-3 text-center" role="alert">
         <p className="text-gray-300">This page could not be loaded.</p>
-        <button
-          type="button"
-          className="rounded-sm bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
-          onClick={() => window.location.reload()}
-        >
+        <Button className="font-medium" onClick={() => window.location.reload()}>
           Reload page
-        </button>
+        </Button>
       </div>
     )
   }
@@ -723,12 +717,9 @@ function AppContent() {
                   {fundsUnavailable ? (
                     <div role="alert" className="flex items-center gap-2 text-xs md:text-sm text-red-300">
                       <span>Could not load funds ({exchangesError})</span>
-                      <button
-                        onClick={retryExchanges}
-                        className="min-h-11 px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded-sm transition-colors"
-                      >
+                      <Button variant="secondary" size="sm" onClick={retryExchanges}>
                         Retry
-                      </button>
+                      </Button>
                     </div>
                   ) : (
                     <ExchangeSelector
@@ -772,50 +763,58 @@ function AppContent() {
                     {regimeRunning ? (
                       <>
                         {regimeDryRun && (
-                          <button
+                          <Button
+                            variant="purple"
+                            size="responsive-xs"
                             onClick={handleResetDryRun}
                             disabled={resetting}
-                            className={`${REGIME_ACTION_TOUCH_TARGET} px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded-sm text-2xs md:text-xs transition-colors`}
                             title="Reset dry-run state"
                           >
                             {resetting ? '...' : 'Reset'}
-                          </button>
+                          </Button>
                         )}
                         {regimeLifecycle === 'active' && (
-                          <button
+                          <Button
+                            variant="warning"
+                            size="responsive"
+                            className="font-medium"
                             onClick={openCloseFundDialog}
                             disabled={closing}
-                            className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 rounded-sm text-xs md:text-sm font-medium transition-colors`}
                             title="Block new entries; auto-close after current cycle's TP fills"
                           >
                             {closing ? '...' : 'Close Fund'}
-                          </button>
+                          </Button>
                         )}
-                        <button
+                        <Button
+                          variant="destructive"
+                          size="responsive"
+                          className="font-medium"
                           onClick={handleStopRegime}
                           disabled={stopping}
-                          className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded-sm text-xs md:text-sm font-medium transition-colors`}
                         >
                           {stopping ? '...' : 'Stop'}
-                        </button>
+                        </Button>
                       </>
                     ) : regimeLifecycle === 'closed' ? (
-                      <button
+                      <Button
+                        size="responsive"
+                        className="font-medium"
                         onClick={openReopenFundDialog}
                         disabled={reopening}
-                        className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-xs md:text-sm font-medium transition-colors`}
                         title="Reopen fund (does not restart the engine)"
                       >
                         {reopening ? '...' : 'Reopen'}
-                      </button>
+                      </Button>
                     ) : (
-                      <button
+                      <Button
+                        variant="success"
+                        size="responsive"
+                        className="font-medium"
                         onClick={handleStartRegime}
                         disabled={starting}
-                        className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded-sm text-xs md:text-sm font-medium transition-colors`}
                       >
                         {starting ? '...' : 'Start'}
-                      </button>
+                      </Button>
                     )}
                 </>)}
                 </div>

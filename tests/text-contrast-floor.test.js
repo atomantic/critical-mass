@@ -218,8 +218,11 @@ describe('admin/src bg-green/yellow/red-600 button-fill sweep (issue #538)', () 
     assert.match(backtest, /bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded-sm font-medium/) // Run Backtest
     assert.match(sentinelDashboard, /bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed rounded-sm text-sm/) // Start
     assert.match(sentinelDashboard, /bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded-sm text-sm min-h-\[44px\]/) // Add Feed
-    assert.match(backupRestore, /bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded-lg font-medium/) // Confirm Restore
-    assert.match(backupRestore, /bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded-sm text-xs font-medium/) // Restore
-    assert.match(backupRestore, /bg-red-700 hover:bg-red-800 disabled:bg-red-900 disabled:cursor-not-allowed rounded-sm text-xs font-medium/) // Delete
+    // BackupRestore now routes through the shared Button; the contrast floor lives in its variants.
+    const button = fs.readFileSync(path.join(ADMIN_SRC, 'components', 'ui', 'Button.jsx'), 'utf8')
+    assert.match(backupRestore, /variant="warning"/) // Confirm Restore / Restore
+    assert.match(backupRestore, /variant="destructive"/) // Delete
+    assert.match(button, /warning: 'bg-yellow-800 hover:bg-yellow-900 text-white/)
+    assert.match(button, /destructive: 'bg-red-700 hover:bg-red-800 text-white/)
   })
 })

@@ -53,6 +53,7 @@ function createView(providers = [], activeProvider = null, runs = [], samples = 
       if (name === 'react') return hooks
       if (name === '../ui/touchTarget') return { TOUCH_TARGET: 'min-h-11' }
       if (name === '../ModalDialog') return { default: ({ children }) => children }
+      if (name === '../ui/Button') return 'button'
       if (name === '../Toast') return { useNotify: () => () => {} }
       if (name === '../DestructiveConfirmation') return { default: ({ children }) => children }
       if (name === '../../utils/apiClient') return apiClientStub(fetch)

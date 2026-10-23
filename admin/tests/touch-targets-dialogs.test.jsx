@@ -47,7 +47,6 @@ it('gives the DCA export dialog confirm/cancel buttons a touch-sized target', as
 
 it.each([
   ['src/components/regime/RegimeActionModals.jsx'],
-  ['src/components/ai/Providers.jsx'],
   ['src/components/ActivityFeed.jsx'],
 ])('%s: every <button> className starts with the shared touch target', (file) => {
   const src = readFileSync(resolve(process.cwd(), file), 'utf8')
@@ -58,4 +57,17 @@ it.each([
     expect(at).toBeGreaterThan(-1)
     expect(chunk.slice(at, at + 40)).toContain('${TOUCH_TARGET}')
   }
+})
+
+// Fully migrated files take their touch target (and colours/radius) from the
+// shared Button, so a raw <button> reappearing there would drift again.
+it.each([
+  ['src/components/ai/Providers.jsx'],
+  ['src/components/BackupRestore.jsx'],
+  ['src/components/Optimizer.jsx', 1],
+  ['src/components/ConfigEditor.jsx', 2],
+])('%s: buttons come from the shared Button', (file, rawButtons = 0) => {
+  const src = readFileSync(resolve(process.cwd(), file), 'utf8')
+  expect(src).toContain("import Button from")
+  expect(src.split('<button').length - 1).toBe(rawButtons)
 })
