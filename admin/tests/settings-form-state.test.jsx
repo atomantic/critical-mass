@@ -42,6 +42,60 @@ describe('KeysConfig Test Connection', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(screen.queryByText(/Connected to Gemini/)).toBeNull()
   })
+
+  it.each([
+    ['Gemini text and password inputs', 'gemini', [['API Key', 'new-key'], ['API Secret', 'new-secret']]],
+    ['Coinbase text input and private-key textarea', 'coinbase', [['API Key Name', 'new-name'], ['Private Key', 'new-private-key']]],
+    ['Crypto.com text and password inputs', 'cryptocom', [['API Key', 'new-key'], ['API Secret', 'new-secret']]],
+  ])('locks %s through save and metadata refresh', async (_name, exchange, values) => {
+    const inputFor = label => screen.getByLabelText(label === 'API Key' ? /^API Key/ : label === 'API Secret' ? /^API Secret/ : label)
+    let finishSave
+    const fetchMock = vi.fn((url, options) => {
+      if (options?.method === 'PUT') {
+        return new Promise(resolve => { finishSave = () => resolve(ok({})) })
+      }
+      return Promise.resolve(ok({ configured: true, fields: { apiKey: true } }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<KeysConfig exchange={exchange} funds={[]} />)
+    await screen.findByRole('button', { name: 'Test Connection' })
+
+    for (const [label, value] of values) fireEvent.change(inputFor(label), { target: { value } })
+    const save = screen.getByRole('button', { name: 'Save Keys' })
+    fireEvent.click(save)
+    await waitFor(() => expect(finishSave).toBeTypeOf('function'))
+
+    for (const [label] of values) expect(inputFor(label).disabled).toBe(true)
+    expect(save.disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'Delete Keys' }).disabled).toBe(true)
+    // React's disabled attribute is the user-facing guard; the ref also rejects
+    // same-turn re-entry before React commits the state update.
+    fireEvent.click(save)
+    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1)
+    fireEvent.change(inputFor(values[0][0]), { target: { value: 'later-edit' } })
+    expect(inputFor(values[0][0]).value).toBe(values[0][1])
+
+    finishSave()
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => url === `/api/${exchange}/keys`)).toHaveLength(2))
+    for (const [label] of values) expect(inputFor(label).value).toBe('')
+    expect(inputFor(values[0][0]).disabled).toBe(false)
+  })
+
+  it('retains credentials and allows retry when save fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url, options) => options?.method === 'PUT'
+      ? { ok: false, status: 400, json: async () => ({ error: 'Rejected' }) }
+      : ok({ configured: false, fields: {} })))
+    render(<KeysConfig exchange="gemini" funds={[]} />)
+    await screen.findByRole('button', { name: 'Test Connection' })
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'retry-key' } })
+    fireEvent.change(screen.getByLabelText('API Secret'), { target: { value: 'retry-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Keys' }))
+
+    await screen.findByText(/Rejected/)
+    expect(screen.getByLabelText('API Key').value).toBe('retry-key')
+    expect(screen.getByLabelText('API Secret').value).toBe('retry-secret')
+    expect(screen.getByRole('button', { name: 'Save Keys' }).disabled).toBe(false)
+  })
 })
 
 describe('NotificationsConfig', () => {
