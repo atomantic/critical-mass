@@ -1171,6 +1171,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       size: order.size,
       sizeUsdc: order.sizeUsdc,
       placedAt: order.placedAt,
+      staleMs: order.staleMs ?? null,
       status: 'open',
       filledSize: partialFillTracker.get(orderId) || 0,
     }));

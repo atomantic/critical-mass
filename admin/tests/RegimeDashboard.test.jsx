@@ -58,6 +58,17 @@ async function renderDashboard() {
 }
 
 describe('RegimeDashboard behavior pin', () => {
+  it('shows the resting entry timeout and falls back to the effective global timeout', async () => {
+    await renderDashboard()
+    expect(screen.getByText(/Timeout: 10\.0s/)).toBeTruthy()
+
+    cleanup()
+    fixture.status = { ...fixture.status, pendingEntryStaleMs: 600000 }
+    await renderDashboard()
+    expect(screen.getByText(/Timeout: 600\.0s/)).toBeTruthy()
+    expect(screen.getByText('(resting entry)')).toBeTruthy()
+  })
+
   it('renders the running fund sections, bodies, open ladder and blocking placement', async () => {
     await renderDashboard()
     for (const heading of ['Volatility', 'TP Auto-Management', 'Size Auto-Management', 'Fill Time Stats (7d)', 'Risk Limits', 'Position', 'Macro Regime', 'Configuration Summary', 'Open Orders', 'Unresolved Placements (1)']) {

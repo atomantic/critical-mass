@@ -6285,6 +6285,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const getState = () => {
     refreshRealizedFromCyclePairs();
+    const executorOrders = orderExecutor.capabilities?.liveReconciliation
+      ? orderExecutor.getPendingOrdersList()
+      : [];
+    const dryRunState = isDryRun ? orderExecutor.getDryRunState() : null;
+    const pendingEntry = isDryRun
+      ? dryRunState.pendingOrders.find(order => order.type === 'entry')
+      : executorOrders.find(order => order.type === 'entry');
     return ({
     isRunning,
     isDryRun,
@@ -6297,12 +6304,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     risk: riskManager.getState(),
     orders: orderExecutor.getPendingCounts(),
     pendingOrders: orderExecutor.capabilities?.liveReconciliation
-      ? buildPendingOrders(orderExecutor.getPendingOrdersList(), positionState)
+      ? buildPendingOrders(executorOrders, positionState)
       : [],
     fillDrift,
     positionCoverage,
     apy: calculateApyMetrics(),
-    dryRun: isDryRun ? orderExecutor.getDryRunState() : null,
+    dryRun: dryRunState,
     tpOptimizer: tpOptimizer.getStatus(),
     sizeOptimizer: sizeOptimizer.getStatus(),
     fillTimeStats: fillLedger.getFillTimeStats ? fillLedger.getFillTimeStats(7) : null,
@@ -6312,6 +6319,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       count: closedTrades.getCount(),
     },
     effectiveStaleMs: orderExecutor.capabilities?.liveReconciliation ? orderExecutor.getEffectiveStaleMs() : config.orderStaleMs,
+    pendingEntryStaleMs: pendingEntry?.staleMs ?? null,
     // Include current config for real-time dashboard updates
     config: {
       maxUsdcDeployed: config.maxUsdcDeployed,
