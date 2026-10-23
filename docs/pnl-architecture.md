@@ -31,6 +31,9 @@ A body buys `body.assetQty` of asset, then places a TP for
   retained as asset-side profit (reserves).
 - Cost basis attributed to this sell is prorated:
   `proratedCostBasis = body.costBasis × (summary.totalSize / body.assetQty)`.
+  Both this proration and the partial-vs-holdback classification below live
+  in `classifyTpFill` (`src/regime-sell-booking.js`), shared by the live
+  body path and the merge-snapshot path.
 
 The unattributed cost (the cost basis of the held-back portion) is
 implicitly written off — reserves carry forward as zero-cost. This is the
