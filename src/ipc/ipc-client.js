@@ -9,7 +9,7 @@
  */
 
 const { connectWebSocket } = require('../websocket-connection');
-const { MSG_TYPE, IPC_ERROR_CODE, IPC_SECRET_HEADER, getIpcSecret, DEFAULT_TIMEOUT, createMessage, serialize, deserialize } = require('./ipc-protocol');
+const { MSG_TYPE, IPC_ERROR_CODE, IPC_REQUEST_LIMITS, ipcRequestLane, engineBusy, IPC_SECRET_HEADER, getIpcSecret, DEFAULT_TIMEOUT, createMessage, serialize, deserialize } = require('./ipc-protocol');
 const { createContextLogger } = require('../logger');
 
 const CALLBACK_ERROR_LOG_MS = 10_000;
@@ -64,7 +64,7 @@ const createIPCClient = (url, name, options = {}) => {
   /** @type {NodeJS.Timeout | null} */
   let pingTimer = null;
 
-  /** @type {Map<string, { resolve: Function, reject: Function, timer: NodeJS.Timeout }>} */
+  /** @type {Map<string, { resolve: Function, reject: Function, timer: NodeJS.Timeout, lane: string }>} */
   const pendingRequests = new Map();
 
   /** @type {Map<string, number>} callback key -> last time a failure was logged */
@@ -243,38 +243,64 @@ const createIPCClient = (url, name, options = {}) => {
       timeout = typeof pairOrTimeout === 'number' ? pairOrTimeout : DEFAULT_TIMEOUT;
     }
 
+    return sendRequest(MSG_TYPE.REQUEST, channel, payload, exchange, pair, timeout);
+  };
+
+  /**
+   * Shared request/config admission happens before allocating a UUID or timer.
+   * @param {string} type
+   * @param {string} channel
+   * @param {*} payload
+   * @param {string | undefined} exchange
+   * @param {string | undefined} pair
+   * @param {number} timeout
+   * @returns {Promise<any>}
+   */
+  const sendRequest = (type, channel, payload, exchange, pair, timeout) => {
     return new Promise((resolve, reject) => {
       if (!connected) {
         return reject(ipcError(`IPC not connected (${name})`, IPC_ERROR_CODE.TRANSPORT));
       }
 
-      const msg = createMessage(MSG_TYPE.REQUEST, channel, payload, { exchange, pair });
+      const lane = ipcRequestLane(channel);
+      let pendingInLane = 0;
+      for (const pending of pendingRequests.values()) if (pending.lane === lane) pendingInLane++;
+      if (pendingInLane >= IPC_REQUEST_LIMITS[lane]) return resolve(engineBusy());
+
+      const msg = createMessage(type, channel, payload, { exchange, pair });
       const timer = setTimeout(() => {
         pendingRequests.delete(msg.id);
         reject(ipcError(`IPC request timeout: ${channel} (${name})`, IPC_ERROR_CODE.TIMEOUT));
       }, timeout);
 
-      pendingRequests.set(msg.id, { resolve, reject, timer });
+      pendingRequests.set(msg.id, { resolve, reject, timer, lane });
       if (!ws || !ws.isOpen()) {
         clearTimeout(timer);
         pendingRequests.delete(msg.id);
         return reject(ipcError(`IPC WebSocket not open (${name})`, IPC_ERROR_CODE.TRANSPORT));
       }
-      ws.send(serialize(msg));
+      try {
+        if (!ws.send(serialize(msg))) throw new Error('IPC WebSocket not open');
+      } catch (err) {
+        clearTimeout(timer);
+        pendingRequests.delete(msg.id);
+        reject(ipcError(err.message, IPC_ERROR_CODE.TRANSPORT));
+      }
     });
   };
 
   /**
-   * Send a one-way config update to the engine
-   * @param {*} payload - Updated config values
-   * @param {string} [exchange] - Exchange name
-   * @param {string} [pair] - Pair name
+   * Config updates use the same bounded pending admission and acknowledgements
+   * as requests. Legacy callers may ignore the promise; failures are contained.
+   * @param {*} payload
+   * @param {string} [exchange]
+   * @param {string} [pair]
    */
-  const sendConfigUpdate = (payload, exchange, pair) => {
-    if (!connected || !ws || !ws.isOpen()) return;
-    const msg = createMessage(MSG_TYPE.CONFIG_UPDATE, 'config_update', payload, { exchange, pair });
-    ws.send(serialize(msg));
-  };
+  const sendConfigUpdate = (payload, exchange, pair) =>
+    sendRequest(MSG_TYPE.CONFIG_UPDATE, 'config_update', payload, exchange, pair, DEFAULT_TIMEOUT).catch((err) => {
+      logger.warn(`⚠️ 🔗 [${name}] Config update failed: ${err.message}`, { channel: 'config_update', code: err.code });
+      return { success: false, error: err.message, code: err.code };
+    });
 
   /**
    * Disconnect from the engine (no auto-reconnect)

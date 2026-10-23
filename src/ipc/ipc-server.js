@@ -8,7 +8,7 @@
  */
 
 const { WebSocketServer, OPEN } = require('./ws-server');
-const { MSG_TYPE, IPC_CHANNELS, IPC_SECRET_HEADER, getIpcSecret, ipcSecretMatches, createMessage, serialize, deserialize } = require('./ipc-protocol');
+const { MSG_TYPE, IPC_CHANNELS, IPC_REQUEST_LIMITS, ipcRequestLane, engineBusy, IPC_SECRET_HEADER, getIpcSecret, ipcSecretMatches, createMessage, serialize, deserialize } = require('./ipc-protocol');
 const { createContextLogger } = require('../logger');
 const { trackPendingWrite } = require('../pending-writes');
 const { setEngineMaintenance, refuseDuringMaintenance } = require('../engine-maintenance');
@@ -59,6 +59,9 @@ const createIPCServer = (port, name, options = {}) => {
   /** @type {string[]} Serialized held event frames, oldest first. */
   let heldFrames = [];
   let droppedHeldFrames = 0;
+  // Server-wide, across every gateway connection. Only handler settlement
+  // releases capacity; losing the requester does not cancel engine work.
+  const activeRequests = { ordinary: 0, control: 0 };
 
   // Built-in, registered for every engine: the gateway opens a maintenance
   // window here before a backup restore so this process stops mutating the
@@ -214,7 +217,7 @@ const createIPCServer = (port, name, options = {}) => {
     }
 
     if (shuttingDown) {
-      if (msg.type === MSG_TYPE.REQUEST) {
+      if (msg.type === MSG_TYPE.REQUEST || msg.type === MSG_TYPE.CONFIG_UPDATE) {
         const refusal = {
           success: false,
           code: 'engine-shutting-down',
@@ -227,8 +230,9 @@ const createIPCServer = (port, name, options = {}) => {
       return;
     }
 
-    if (msg.type === MSG_TYPE.REQUEST) {
-      const handler = requestHandlers.get(msg.channel);
+    if (msg.type === MSG_TYPE.REQUEST || msg.type === MSG_TYPE.CONFIG_UPDATE) {
+      const channel = msg.type === MSG_TYPE.CONFIG_UPDATE ? 'config_update' : msg.channel;
+      const handler = requestHandlers.get(channel);
       if (!handler) {
         const response = createMessage(MSG_TYPE.RESPONSE, msg.channel, null, {
           id: msg.id,
@@ -240,7 +244,7 @@ const createIPCServer = (port, name, options = {}) => {
 
       // A restore in flight outranks every mutating request: answering one
       // would write the exact files the gateway is replacing.
-      const refusal = refuseDuringMaintenance(msg.channel);
+      const refusal = refuseDuringMaintenance(channel);
       if (refusal) {
         logger.warn(`⚠️ 🔗 [${name}] Refused "${msg.channel}" during maintenance (${refusal.heldBy})`, {
           channel: msg.channel, exchange: msg.exchange, pair: msg.pair,
@@ -249,9 +253,15 @@ const createIPCServer = (port, name, options = {}) => {
         return;
       }
 
+      const lane = ipcRequestLane(channel);
+      if (activeRequests[lane] >= IPC_REQUEST_LIMITS[lane]) {
+        ws.send(serialize(createMessage(MSG_TYPE.RESPONSE, msg.channel, engineBusy(), { id: msg.id })));
+        return;
+      }
+      activeRequests[lane]++;
       try {
         const run = () => handler(msg.payload, msg.exchange, msg.pair);
-        const result = await ([IPC_CHANNELS.ENGINE_MAINTENANCE, IPC_CHANNELS.ENGINE_BACKUP_PAUSE, IPC_CHANNELS.ENGINE_BACKUP_RESUME].includes(msg.channel) ? run() : trackPendingWrite(`ipc:${msg.channel}`, run));
+        const result = await ([IPC_CHANNELS.ENGINE_MAINTENANCE, IPC_CHANNELS.ENGINE_BACKUP_PAUSE, IPC_CHANNELS.ENGINE_BACKUP_RESUME].includes(channel) ? run() : trackPendingWrite(`ipc:${channel}`, run));
         const response = createMessage(MSG_TYPE.RESPONSE, msg.channel, result, { id: msg.id });
         ws.send(serialize(response));
       } catch (err) {
@@ -260,23 +270,10 @@ const createIPCServer = (port, name, options = {}) => {
           error: err.message,
         });
         ws.send(serialize(response));
+      } finally {
+        activeRequests[lane]--;
       }
       return;
-    }
-
-    if (msg.type === MSG_TYPE.CONFIG_UPDATE) {
-      if (refuseDuringMaintenance('config_update')) return;
-      const handler = requestHandlers.get('config_update');
-      if (handler) {
-        trackPendingWrite('ipc:config_update', () => handler(msg.payload, msg.exchange, msg.pair)).catch((err) => {
-          logger.error(`❌ 🔗 [${name}] config_update handler error: ${err.message}`, {
-            channel: 'config_update',
-            exchange: msg.exchange,
-            pair: msg.pair,
-            error: err.message,
-          });
-        });
-      }
     }
   };
 

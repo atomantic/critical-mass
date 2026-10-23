@@ -789,6 +789,18 @@ describe('engine IPC failure contract (architecture #10)', () => {
     }
   });
 
+  it('preserves busy preview, stop and status replies as 503 without an offline fallback', async () => {
+    mock.method(regimeStatusModule, 'buildStoppedRegimeStatus', () => ({ isRunning: false }));
+    const reply = require('../src/ipc/ipc-protocol').engineBusy();
+    const app = setupApp(() => Promise.resolve(reply));
+    for (const endpoint of ['GET /api/:exchange/regime/preview-ladder', 'POST /api/:exchange/regime/stop', 'GET /api/:exchange/regime/status']) {
+      const res = await invoke(app, endpoint, reqFor({}));
+      assert.equal(res.statusCode, 503, endpoint);
+      assert.deepEqual(res.body, reply);
+      assert.equal(res.body.engineDown, undefined);
+    }
+  });
+
   it('maps a handler throw inside a healthy engine to 500 without leaking its message', async () => {
     const app = setupApp(() => Promise.reject(withCode('TypeError: cannot read /secret/path', 'handler')));
     const res = await invoke(app, route, reqFor({}));

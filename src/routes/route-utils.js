@@ -91,6 +91,7 @@ const createIPCResolver = (exchangeIPCMap) => (exchange) => getSafeIPC(exchangeI
 //       server-side only (same policy as error-middleware.js for 5xx)
 //   - a resolved `{ success: false, ... }` domain reply:
 //       the engine refused the request       -> its explicit `statusCode`, else 400
+//       admission's engine-busy keeps its structured code and statusCode:503
 // The failure kind rides on `engineError`'s result under a non-enumerable
 // symbol so it never reaches the JSON body or deepEqual comparisons.
 // ---------------------------------------------------------------------------
