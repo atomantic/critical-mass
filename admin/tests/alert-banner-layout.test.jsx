@@ -17,7 +17,7 @@ it('keeps a zero-height slot before and after alerts arrive and pins the banner 
   const slot = screen.getByTestId('alert-banner-slot')
   expect(slot.className).toContain('h-0')
 
-  const link = (await screen.findByText(/Feed down/)).closest('a')
+  const link = (await screen.findByText(/Feed down/)).closest('a').parentElement
   expect(link.className).toContain('fixed')
   expect(link.className).toContain('bottom-0')
   expect(link.className).not.toContain('top-0')

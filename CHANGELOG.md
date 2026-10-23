@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 - **[issue-1698] Paginated alerts and trade history retain request ownership** — changing filters, clearing alerts, refreshing trades or leaving the page cancels every page of an obsolete read and prevents it from replacing newer lists, summaries or loading/error state.
+- **[issue-1699] Incomplete paginated reads report errors** — trade history and Sentinel retain their last complete data with Retry, the global banner keeps alert failures visible, and Clear-all waits for a complete count.
 
 ### Changed
 - **[issue-1681] Timeout readout follows the resting entry** — engine status exposes the active entry's adaptive stale window, and the dashboard displays it while an entry rests, falling back to the effective global timeout when none is pending.

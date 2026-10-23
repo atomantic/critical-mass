@@ -70,7 +70,13 @@ export default function TradeHistory() {
     const { token, signal, data } = await tradesOwner.read('/api/updown/trades')
     if (!tradesOwner.owns(token)) return
     if (data?.success && Array.isArray(data.items)) {
-      const items = await completePagedItems('/api/updown/trades', data, { signal })
+      let items
+      try {
+        items = await completePagedItems('/api/updown/trades', data, { signal })
+      } catch {
+        if (tradesOwner.owns(token)) setLoadError('Could not load trade history.')
+        return
+      }
       if (!tradesOwner.owns(token)) return
       setTrades(items)
       setSummary(data.summary ?? null)

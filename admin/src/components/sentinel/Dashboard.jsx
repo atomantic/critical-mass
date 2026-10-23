@@ -69,7 +69,13 @@ export default function SentinelDashboard() {
       setAlertsError('Could not load alerts.')
       return
     }
-    const items = await completePagedItems(url, data, { signal })
+    let items
+    try {
+      items = await completePagedItems(url, data, { signal })
+    } catch {
+      if (alertsOwner.owns(token)) setAlertsError('Could not load alerts.')
+      return
+    }
     if (!alertsOwner.owns(token)) return
     setAlertsError(null)
     setAlertsView({ filter, alerts: items })
