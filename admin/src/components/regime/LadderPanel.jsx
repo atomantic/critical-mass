@@ -9,7 +9,7 @@ import { formatPriceByMagnitude, formatCurrency } from '../charts/chartUtils'
 /**
  * RegimeDashboard "Rebuild Ladder" toggle + settings/preview panel. Owns its
  * own expand state, draft edits and in-flight flags; the parent only
- * supplies fetched config/status and the shared refetch/toast/socket-status
+ * supplies fetched config/status and the shared refetch/toast
  * callbacks.
  *
  * Rendered as a single unit (toggle button + panel) on its own line below
@@ -19,7 +19,7 @@ import { formatPriceByMagnitude, formatCurrency } from '../charts/chartUtils'
  * the toggle button is gated by `entryMode === 'ladder' && isRunning`; the
  * settings/preview panel's own visibility is independent of that guard.
  */
-function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addToast, fetchConfig, setSocketStatus }) {
+function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addToast, fetchConfig, fetchStatus }) {
   const athDropId = useId()
   const spacingModeId = useId()
   const sizeModeId = useId()
@@ -192,13 +192,14 @@ function LadderPanel({ quoteCurrency, config, status, exchange, pairQuery, addTo
       const data = result.data ?? {}
       if (result.ok && data.success) {
         addToast?.({ type: 'success', title: 'Ladder Placed', message: data.message })
-        if (data.status) setSocketStatus?.(data.status)
+        fetchStatus?.()
         gen.current++
         previewGen.current = -1
         setShowLadderPanel(false)
         setLadderPreview(null)
       } else {
         addToast?.({ type: 'error', title: 'Ladder Failed', message: result.error || describeActionFailure(result.status, data) })
+        if (data.status) fetchStatus?.()
       }
     } catch (err) {
       addToast?.({ type: 'error', title: 'Ladder Failed', message: err.message })

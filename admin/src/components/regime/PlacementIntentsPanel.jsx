@@ -6,7 +6,7 @@ import RegimeActionModals from './RegimeActionModals'
 import { describeActionFailure } from '../../utils/actionFailure.mjs'
 import { apiPost } from '../../utils/apiClient'
 
-export default function PlacementIntentsPanel({ placementIntents, asset, exchange, pairQuery, addToast, setSocketStatus, fetchStatus, fetchFills }) {
+export default function PlacementIntentsPanel({ placementIntents, asset, exchange, pairQuery, addToast, fetchStatus, fetchFills }) {
   // { intent, action: 'adopt'|'discard' } — operator reconcile of an unresolved placement intent
   const [intentConfirm, setIntentConfirm] = useState(null)
   const [reconcilingIntent, setReconcilingIntent] = useState(false)
@@ -27,11 +27,11 @@ export default function PlacementIntentsPanel({ placementIntents, asset, exchang
           title: action === 'adopt' ? 'Order adopted' : 'Intent discarded',
           message: data.message || 'Placements resume for this fund',
         })
-        if (data.status) setSocketStatus(data.status)
         fetchStatus()
         fetchFills()
       } else {
         addToast({ type: 'error', title: 'Reconcile failed', message: result.error || describeActionFailure(result.status, data) })
+        if (data.status) fetchStatus()
       }
     } catch (err) {
       addToast({ type: 'error', title: 'Reconcile failed', message: err.message })
