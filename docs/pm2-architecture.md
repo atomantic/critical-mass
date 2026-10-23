@@ -68,6 +68,27 @@ disconnected, and 1–30 second exponential backoff.
 | Gemini | `gemini-engine.js` | `EXCHANGE_NAME=gemini` | 5573 | Thin wrapper around exchange-engine |
 | Crypto.com | `cryptocom-engine.js` | `EXCHANGE_NAME=cryptocom` | 5574 | Thin wrapper around exchange-engine |
 
+## Restore recovery at startup
+
+Before the gateway or any exchange engine loads persisted funds, its synchronous
+restore guard acquires cross-process ownership of the shared data directory.
+Ownership covers reading the journal, applying or rolling back files, and retiring
+the journal, originals and temporary replacements. Contending starters wait up to
+5 seconds, then exit without loading state so the supervisor can retry. After
+ownership transfers, each starter reads the journal again; a completed recovery
+cannot be replayed from another starter's stale snapshot.
+
+Ownership atomically publishes a populated `.restore-owner-lock` directory from
+a unique `.restore-owner-*` candidate. Retirement removes only the observed
+owner identity and then the empty directory; it cannot remove a new owner. Only a
+process confirmed dead by the operating system can have its identity reclaimed. A live owner, including a conservatively treated reused PID,
+is never displaced by elapsed time. Do not delete live ownership markers or
+recovery artifacts to bypass a startup refusal. Corrupt ownership markers and
+unusable or unsupported journals block startup for operator investigation. These
+coordination identities are excluded from backup archives and restore payloads.
+Restore maintenance still quiesces writers before application; filesystem
+ownership does not replace that writer drain.
+
 ## Gateway Routing
 
 - Regime/exchange routes → IPC proxy via `exchangeIPCMap` (per-exchange routing)

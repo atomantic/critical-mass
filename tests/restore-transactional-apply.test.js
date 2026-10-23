@@ -23,6 +23,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawn } = require('child_process');
 
 const {
   applyStagedFiles,
@@ -30,6 +31,8 @@ const {
   guardIncompleteRestore,
   JOURNAL_FILENAME,
   JOURNAL_VERSION,
+  OWNER_PREFIX,
+  OWNER_DIR,
   STATUS,
 } = require('../src/restore-apply');
 const { createBackup, restoreBackup } = require('../src/backup-service');
@@ -129,6 +132,85 @@ const preRestoreState = () => ({
   gamma: read(path.join(dataDir, 'sub', 'gamma.json')),
 });
 
+/** A real independent starter; file barriers work while its synchronous API waits. */
+const startRestoreProcess = (t, options) => {
+  const script = `
+    const fs = require('fs');
+    const path = require('path');
+    const opts = JSON.parse(process.argv[1]);
+    const send = (event) => process.stdout.write(JSON.stringify(event) + '\\n');
+    const sleep = new Int32Array(new SharedArrayBuffer(4));
+    const pause = (name) => {
+      fs.writeFileSync(path.join(opts.root, name + '.ready'), '');
+      while (!fs.existsSync(path.join(opts.root, name + '.go'))) Atomics.wait(sleep, 0, 0, 10);
+    };
+    if (opts.pauseContender) {
+      const readdir = fs.readdirSync;
+      let paused = false;
+      fs.readdirSync = (...args) => {
+        const entries = readdir(...args);
+        if (!paused && String(args[0]) === path.join(opts.dataDir, opts.ownerDir) && entries.length > 0) {
+          paused = true;
+          pause('contender');
+        }
+        return entries;
+      };
+    }
+    const { applyStagedFiles, recoverIncompleteRestore } = require(opts.modulePath);
+    const logger = {
+      warn: () => { if (opts.pauseRecovery) pause('recovery'); },
+      error: () => {},
+      info: (message) => {
+        if (opts.pauseApply && message.includes('Restore applying')) pause('apply');
+        if (opts.runtimeWrite && message.includes('Incomplete restore rolled back')) {
+          fs.writeFileSync(path.join(opts.dataDir, 'created.json'), 'new runtime generation');
+        }
+      },
+    };
+    const result = opts.apply
+      ? applyStagedFiles({ dataDir: opts.dataDir, stageDir: opts.stageDir, logger, ownershipWaitMs: opts.waitMs })
+      : recoverIncompleteRestore({ dataDir: opts.dataDir, logger, ownershipWaitMs: opts.waitMs });
+    send(result);
+  `;
+  const child = spawn(process.execPath, ['-e', script, JSON.stringify({
+    root, dataDir, stageDir, ownerDir: OWNER_DIR, modulePath: require.resolve('../src/restore-apply'), ...options,
+  })], { env: { ...process.env, CRITICAL_MASS_DATA_DIR: dataDir }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '';
+  let err = '';
+  child.stdout.on('data', (chunk) => { out += chunk; });
+  child.stderr.on('data', (chunk) => { err += chunk; });
+  const done = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal, out, err }));
+  });
+  t.after(async () => { if (child.exitCode === null) child.kill('SIGKILL'); await done; });
+  return { child, done, result: async () => {
+    const ended = await done;
+    assert.equal(ended.code, 0, ended.err);
+    return JSON.parse(ended.out);
+  } };
+};
+
+const waitForBarrier = async (name) => {
+  const deadline = Date.now() + 5_000;
+  while (!fs.existsSync(path.join(root, `${name}.ready`))) {
+    assert.ok(Date.now() < deadline, `child did not reach ${name} barrier`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};
+const releaseBarrier = (name) => write(path.join(root, `${name}.go`), '');
+
+const seedInterruptedJournal = () => {
+  write(path.join(dataDir, '.restore-originals-crashed', 'alpha.json'), 'original generation');
+  write(path.join(dataDir, 'alpha.json'), 'interrupted generation');
+  write(path.join(dataDir, 'created.json'), 'interrupted creation');
+  write(path.join(dataDir, JOURNAL_FILENAME), JSON.stringify({
+    journalVersion: JOURNAL_VERSION, restoreId: 'crashed', status: STATUS.APPLYING,
+    filename: 'crashed.zip', originalsDir: '.restore-originals-crashed',
+    entries: [{ dest: 'alpha.json', existed: true }, { dest: 'created.json', existed: false }],
+  }));
+};
+
 describe('restore-apply — transactional application (#431)', () => {
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-restore-apply-'));
@@ -142,6 +224,123 @@ describe('restore-apply — transactional application (#431)', () => {
   afterEach(() => {
     mock.restoreAll();
     for (const dir of roots.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('serializes two real starters and re-reads after ownership transfer (#1693)', async (t) => {
+    seedInterruptedJournal();
+    const first = startRestoreProcess(t, { pauseRecovery: true, runtimeWrite: true });
+    await waitForBarrier('recovery');
+    const second = startRestoreProcess(t, { pauseContender: true });
+    await waitForBarrier('contender');
+    releaseBarrier('recovery');
+    assert.deepEqual(await first.result(), { pending: true, recovered: true, blocked: false });
+    assert.equal(read(path.join(dataDir, 'created.json')), 'new runtime generation');
+    assert.equal(fs.existsSync(path.join(dataDir, JOURNAL_FILENAME)), false);
+    releaseBarrier('contender');
+    assert.deepEqual(await second.result(), { pending: false, recovered: false, blocked: false });
+    assert.equal(read(path.join(dataDir, 'created.json')), 'new runtime generation');
+    assert.equal(read(path.join(dataDir, 'alpha.json')), 'original generation');
+    assert.equal(fs.existsSync(path.join(dataDir, JOURNAL_FILENAME)), false, 'a stale starter cannot recreate the retired journal');
+    assert.equal(artifactNames().some((name) => name.startsWith(OWNER_PREFIX)), false);
+  });
+
+  it('never displaces a live apply owner on timeout and recovers after it is killed (#1693)', async (t) => {
+    const owner = startRestoreProcess(t, { apply: true, pauseApply: true });
+    await waitForBarrier('apply');
+    const journalBefore = read(path.join(dataDir, JOURNAL_FILENAME));
+    const markersBefore = artifactNames().filter((name) => name.startsWith(OWNER_PREFIX));
+    const tmp = path.join(dataDir, '.alpha.json.restore-tmp');
+    write(tmp, 'owned temporary replacement');
+    const contender = startRestoreProcess(t, { waitMs: 50 });
+    const refused = await contender.result();
+    assert.equal(refused.blocked, true);
+    assert.equal(refused.code, 'restore-ownership-unavailable');
+    assert.equal(read(tmp), 'owned temporary replacement', 'a starter cannot clear the active owner temp file');
+    assert.equal(read(path.join(dataDir, JOURNAL_FILENAME)), journalBefore);
+    assert.deepEqual(artifactNames().filter((name) => name.startsWith(OWNER_PREFIX)), markersBefore);
+    owner.child.kill('SIGKILL');
+    await owner.done;
+    // Two reclaimers observe the dead owner. Pause one with that stale identity,
+    // then let the other publish a new ownership directory before it continues.
+    const staleReclaimer = startRestoreProcess(t, { pauseContender: true, waitMs: 200 });
+    await waitForBarrier('contender');
+    const recovery = startRestoreProcess(t, { pauseRecovery: true });
+    await waitForBarrier('recovery');
+    const successorIdentity = fs.readdirSync(path.join(dataDir, OWNER_DIR));
+    write(tmp, 'successor temporary replacement');
+    releaseBarrier('contender');
+    assert.equal((await staleReclaimer.result()).blocked, true);
+    assert.deepEqual(fs.readdirSync(path.join(dataDir, OWNER_DIR)), successorIdentity,
+      'a stale reclaimer cannot retire the new owner identity');
+    assert.equal(read(tmp), 'successor temporary replacement');
+    releaseBarrier('recovery');
+    assert.deepEqual(await recovery.result(), { pending: true, recovered: true, blocked: false });
+    assert.equal(read(tmp), null);
+    assert.equal(read(path.join(dataDir, 'alpha.json')), '{"gen":"current-alpha"}');
+    assert.equal(artifactNames().some((name) => name.startsWith(OWNER_PREFIX)), false, 'only the dead identity is reclaimed');
+  });
+
+  it('keeps an old marker for a live or reused PID and blocks without touching artifacts (#1693)', () => {
+    seedInterruptedJournal();
+    const marker = path.join(dataDir, OWNER_DIR, `${process.pid}-00000000-0000-0000-0000-000000000000`);
+    write(marker, '');
+    fs.utimesSync(marker, new Date(0), new Date(0));
+    const before = read(path.join(dataDir, JOURNAL_FILENAME));
+    const result = recoverIncompleteRestore({ dataDir, ownershipWaitMs: 0 });
+    assert.equal(result.code, 'restore-ownership-unavailable');
+    assert.equal(result.blocked, true);
+    assert.equal(fs.existsSync(marker), true, 'age is never permission to evict a live PID');
+    assert.equal(read(path.join(dataDir, JOURNAL_FILENAME)), before);
+  });
+
+  it('blocks on corrupt ownership metadata and unsupported journals (#1693)', () => {
+    const corrupt = path.join(dataDir, OWNER_DIR, 'unrecognized');
+    write(corrupt, '');
+    assert.equal(recoverIncompleteRestore({ dataDir }).blocked, true);
+    assert.equal(fs.existsSync(corrupt), true);
+    fs.rmSync(path.join(dataDir, OWNER_DIR), { recursive: true });
+    seedInterruptedJournal();
+    const journal = JSON.parse(read(path.join(dataDir, JOURNAL_FILENAME)));
+    write(path.join(dataDir, JOURNAL_FILENAME), JSON.stringify({ ...journal, journalVersion: JOURNAL_VERSION + 1 }));
+    const result = recoverIncompleteRestore({ dataDir });
+    assert.equal(result.blocked, true);
+    assert.match(result.error, /not supported/);
+    assert.equal(read(path.join(dataDir, 'alpha.json')), 'interrupted generation');
+  });
+
+  for (const operation of ['apply', 'recover']) {
+    it(`fails closed if ${operation} cannot release its ownership identity (#1693)`, () => {
+      const remove = fs.rmSync;
+      mock.method(fs, 'rmSync', (target, ...args) => {
+        if (path.dirname(String(target)) === path.join(dataDir, OWNER_DIR)) throw new Error('EACCES: ownership retirement refused');
+        return remove(target, ...args);
+      });
+      const result = operation === 'apply'
+        ? applyStagedFiles({ dataDir, stageDir })
+        : recoverIncompleteRestore({ dataDir });
+      assert.equal(result.code, 'restore-ownership-unavailable');
+      assert.match(result.error, /Could not release restore ownership/);
+      if (operation === 'apply') assert.equal(result.rolledBack, false, 'the coordinator must keep writers stopped');
+      else assert.equal(result.blocked, true, 'startup cannot load state after failed ownership retirement');
+      assert.equal(fs.readdirSync(path.join(dataDir, OWNER_DIR)).length, 1, 'the exact ownership identity survives the IO error');
+    });
+  }
+
+  it('does not overwrite an earlier recovery plan when another archive is applied (#1693)', () => {
+    seedInterruptedJournal();
+    const before = read(path.join(dataDir, JOURNAL_FILENAME));
+    const refused = applyStagedFiles({ dataDir, stageDir });
+    assert.equal(refused.code, 'restore-recovery-pending');
+    assert.equal(refused.rolledBack, false);
+    assert.equal(read(path.join(dataDir, JOURNAL_FILENAME)), before);
+    assert.equal(read(path.join(dataDir, 'alpha.json')), 'interrupted generation');
+  });
+
+  it('does not restore coordination identities from staged payloads (#1693)', () => {
+    const name = `${OWNER_PREFIX}123-00000000-0000-0000-0000-000000000000-1`;
+    write(path.join(stageDir, name), 'archive ownership');
+    assert.equal(applyStagedFiles({ dataDir, stageDir }).success, true);
+    assert.equal(read(path.join(dataDir, name)), null);
   });
 
   it('applies the whole set, commits once and leaves no journal or originals behind', async () => {
@@ -639,6 +838,8 @@ describe('backup-service — restore failure leaves the install coherent (#431)'
   it('never archives its own restore bookkeeping', async () => {
     write(path.join(install.dataDir, JOURNAL_FILENAME), '{"journalVersion":1,"entries":[]}');
     write(path.join(install.dataDir, '.restore-originals-stale', 'alpha.json'), '{}');
+    write(path.join(install.dataDir, OWNER_DIR, '123-00000000-0000-0000-0000-000000000000'), '');
+    write(path.join(install.dataDir, `${OWNER_PREFIX}456-orphan-candidate`, '456-identity'), '');
     write(path.join(install.dataDir, '.alpha.json.restore-tmp'), '{}');
     write(path.join(install.dataDir, 'fund', '.state.json.restore-tmp'), '{}');
     const created = await createBackup({ paths: install });

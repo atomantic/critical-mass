@@ -24,7 +24,7 @@ const { fsyncDir } = require('./fsync-dir');
 const { fsyncFile } = require('./durable-write');
 const { spawnSync, spawn } = require('child_process');
 const { DATA_DIR, BACKUP_DIR } = require('./paths');
-const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME } = require('./restore-apply');
+const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME, OWNER_PREFIX } = require('./restore-apply');
 const { LOCK_FILENAME: LEGACY_MIGRATION_LOCK } = require('./legacy-namespace-migration');
 
 // UpDown scorecard maintenance lock (relative to data/). A backup taken while a
@@ -572,6 +572,7 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
     // restore, and a startup recovery would then "roll back" a restore that
     // never ran on that machine (issue #431).
     JOURNAL_FILENAME,
+    `${OWNER_PREFIX}*`, `${OWNER_PREFIX}*/*`,
     `${STAGE_PREFIX}*`, `${STAGE_PREFIX}*/*`,
     `${ORIGINALS_PREFIX}*`, `${ORIGINALS_PREFIX}*/*`,
     '*.restore-tmp', '*/*.restore-tmp', // Orphaned atomic-replace temp files

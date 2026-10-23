@@ -38,6 +38,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const { randomUUID } = require('crypto');
+const { performance } = require('perf_hooks');
 const { DATA_DIR } = require('./paths');
 const { hasPendingBackfill } = require('./fifo-backfill-transaction');
 const { fsyncDir } = require('./fsync-dir');
@@ -54,6 +56,13 @@ const ORIGINALS_PREFIX = '.restore-originals-';
 
 /** Archive extraction staging directory. */
 const STAGE_PREFIX = '.restore-temp-';
+
+/** Immutable, per-contender identities; never archive or restore these files. */
+const OWNER_PREFIX = '.restore-owner-';
+const OWNER_DIR = `${OWNER_PREFIX}lock`;
+const OWNER_WAIT_MS = 5_000;
+const OWNER_POLL_MS = 25;
+const ownerSleep = new Int32Array(new SharedArrayBuffer(4));
 
 /** A staging directory younger than this may still be extracting in another process. */
 const ORPHAN_STAGE_MIN_AGE_MS = 10 * 60_000;
@@ -84,11 +93,87 @@ const attempt = (fn) => {
 };
 
 /**
+ * Publish a populated directory atomically: rename cannot replace an existing
+ * nonempty owner directory. Preparing the identity in a unique directory first
+ * avoids the ownerless mkdir/write window, including if the process is killed.
+ *
+ * Retirement only unlinks the observed immutable identity, then uses rmdir on
+ * the shared directory. A stale reclaimer cannot unlink a successor's identity,
+ * and rmdir cannot remove its populated directory. Never recursively remove the
+ * shared ownership path or rename it aside: either could steal a new owner.
+ * ESRCH is the only proof of death; live/reused PIDs never expire with time.
+ */
+const acquireRestoreOwnership = (dataDir, waitMs) => {
+  const identity = `${process.pid}-${randomUUID()}`;
+  const candidate = path.join(dataDir, `${OWNER_PREFIX}${identity}`);
+  const ownerDir = path.join(dataDir, OWNER_DIR);
+  const deadline = performance.now() + Math.max(0, waitMs);
+  const removeEmptyOwnerDir = () => {
+    try { fs.rmdirSync(ownerDir); } catch (error) {
+      // Another contender may already have published its nonempty directory.
+      if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error;
+    }
+  };
+  const retire = (observedIdentity) => {
+    fs.rmSync(path.join(ownerDir, observedIdentity), { force: true });
+    removeEmptyOwnerDir();
+  };
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.mkdirSync(candidate, { mode: 0o700 });
+    fs.writeFileSync(path.join(candidate, identity), '', { flag: 'wx', mode: 0o600 });
+    while (true) {
+      try {
+        fs.renameSync(candidate, ownerDir);
+        return { ok: true, release: () => retire(identity) };
+      } catch (error) {
+        if (!['ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error;
+      }
+      const listed = attempt(() => fs.readdirSync(ownerDir));
+      if (!listed.ok) {
+        if (listed.error.code !== 'ENOENT') throw listed.error;
+      } else if (listed.value.length === 0) {
+        // An owner died after unlinking its identity. Removing an empty dir is
+        // safe even if someone else just published: their dir is nonempty.
+        removeEmptyOwnerDir();
+      } else {
+        const [observedIdentity] = listed.value;
+        const parsed = /^([1-9]\d*)-[0-9a-f-]{36}$/.exec(observedIdentity);
+        if (listed.value.length !== 1 || !parsed || !Number.isSafeInteger(Number(parsed[1]))) {
+          throw new Error('Unrecognized restore ownership identity');
+        }
+        let dead = false;
+        try { process.kill(Number(parsed[1]), 0); } catch (error) { dead = error.code === 'ESRCH'; }
+        if (dead) retire(observedIdentity);
+      }
+      if (performance.now() >= deadline) throw new Error(`Restore ownership is busy after ${waitMs}ms; retry after the current owner exits`);
+      Atomics.wait(ownerSleep, 0, 0, Math.min(OWNER_POLL_MS, Math.max(1, deadline - performance.now())));
+    }
+  } catch (error) {
+    return { ok: false, error: error.message };
+  } finally {
+    // This path is unique to this attempt and is absent after publication.
+    attempt(() => fs.rmSync(candidate, { recursive: true, force: true }));
+  }
+};
+
+/** Never let a release error hide a result that must keep writers stopped. */
+const withRestoreOwnership = (dataDir, waitMs, operation) => {
+  const owner = acquireRestoreOwnership(dataDir, waitMs);
+  if (!owner.ok) return owner;
+  const result = attempt(operation);
+  const released = attempt(owner.release);
+  if (!released.ok) return { ok: false, error: `Could not release restore ownership: ${released.error.message}` };
+  if (!result.ok) return { ok: false, error: `Restore operation could not establish coherent state: ${result.error.message}` };
+  return result;
+};
+
+/**
  * Deterministic sibling temp path for staging a replacement of `dest`. The name
  * is predictable (no pid/timestamp) so a temp file orphaned by a process death
  * can be found and removed by rollback before the next attempt. A
- * restore is serialized by the journal and maintenance lock, so two live
- * writers never share a name.
+ * restore is serialized by cross-process ownership and the maintenance lock,
+ * so two live writers never share a name.
  * @param {string} dest - Destination file
  * @returns {string} Temp file path next to `dest`
  */
@@ -357,16 +442,26 @@ const revertAndSettle = ({ dataDir, journal, logger }) => {
  *   {success: false, code: string, error: string, rolledBack: boolean, recovery?: Object}} Application outcome.
  *   `rolledBack: true` is the caller's guarantee that the data directory is at
  *   its pre-restore state — whether the attempt was refused before the first
- *   write or reverted after one. `false` means it is a mixed generation and
- *   `recovery` names the artifacts a retry needs.
+ *   write or reverted after one. `false` means coherence cannot be established
+ *   (including unavailable ownership); callers must keep writers stopped.
+ *   When a journal could be read, `recovery` names the artifacts a retry needs.
  */
-const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logger = NOOP_LOGGER }) => {
+const applyStagedFilesOwned = ({ dataDir, stageDir, filename = 'archive', skip, logger = NOOP_LOGGER }) => {
+  // Ownership must be acquired BEFORE inspecting the journal or destinations.
+  const read = readJournal(dataDir);
+  if (read.present) {
+    return { success: false, code: 'restore-recovery-pending', rolledBack: false,
+      error: read.ok ? 'An earlier restore journal must be recovered before applying another archive.' : read.error,
+      ...(read.ok ? { recovery: describeArtifacts(read.journal) } : {}),
+    };
+  }
   const startedAt = Date.now();
   // Nothing is journalled yet, so a walk that throws must be reported as a
   // refusal (rolledBack: true) — the caller then disposes of the staging tree.
   let staged;
   try {
-    staged = collectStagedSet({ stageDir, dataDir, skip });
+    staged = collectStagedSet({ stageDir, dataDir, skip: (name, isRoot, rel) =>
+      (isRoot && name.startsWith(OWNER_PREFIX)) || Boolean(skip?.(name, isRoot, rel)) });
   } catch (error) {
     logger.error(`❌ 💾 Restore refused before any write: could not read the staged set: ${error.message}`, { action: 'restore-apply', filename, error: error.message });
     return { success: false, code: 'staged-set-unreadable', error: `Could not read the extracted archive: ${error.message}. No files were changed.`, rolledBack: true };
@@ -494,6 +589,12 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
   return { success: true, filesRestored: files.length };
 };
 
+/** Keep the public API synchronous for restore handlers and startup callers. */
+const applyStagedFiles = (params) => {
+  const result = withRestoreOwnership(params.dataDir, params.ownershipWaitMs ?? OWNER_WAIT_MS, () => applyStagedFilesOwned(params));
+  return result.ok ? result.value : { success: false, code: 'restore-ownership-unavailable', error: result.error, rolledBack: false };
+};
+
 // A directory's own mtime only moves when a direct child is added or removed,
 // so a restore still writing into nested entries looks idle; take the newest
 // mtime anywhere in the tree.
@@ -557,7 +658,7 @@ const sweepOrphanStageDirs = ({ dataDir, referenced, logger }) => {
  * @param {{info: Function, warn: Function, error: Function}} [params.logger] - Context logger
  * @returns {{pending: boolean, recovered: boolean, blocked: boolean, error?: string, recovery?: Object}} Recovery outcome
  */
-const recoverIncompleteRestore = ({ dataDir = DATA_DIR, logger = NOOP_LOGGER } = {}) => {
+const recoverIncompleteRestoreOwned = ({ dataDir, logger }) => {
   const read = readJournal(dataDir);
   if (!read.present) {
     sweepOrphanStageDirs({ dataDir, referenced: new Set(), logger });
@@ -602,6 +703,12 @@ const recoverIncompleteRestore = ({ dataDir = DATA_DIR, logger = NOOP_LOGGER } =
   return { pending: true, recovered: true, blocked: false };
 };
 
+/** Acquire first, then re-read: no pre-ownership journal snapshot may be used. */
+const recoverIncompleteRestore = ({ dataDir = DATA_DIR, logger = NOOP_LOGGER, ownershipWaitMs = OWNER_WAIT_MS } = {}) => {
+  const result = withRestoreOwnership(dataDir, ownershipWaitMs, () => recoverIncompleteRestoreOwned({ dataDir, logger }));
+  return result.ok ? result.value : { pending: true, recovered: false, blocked: true, code: 'restore-ownership-unavailable', error: result.error };
+};
+
 /**
  * Startup gate: recover an interrupted restore, and hard-stop the process if
  * the data directory cannot be proven coherent. Shared verbatim by the gateway
@@ -623,12 +730,16 @@ const guardIncompleteRestore = ({ processLabel, logger, dataDir = DATA_DIR, exit
   }
   const result = recoverIncompleteRestore({ dataDir, logger });
   if (result.blocked) {
-    logger.error(`❌ 💾 Refusing to start ${processLabel}: a backup restore was interrupted and could not be rolled back — ${result.error}`, {
+    logger.error(`❌ 💾 Refusing to start ${processLabel}: restore recovery could not prove the data directory coherent — ${result.error}`, {
       action: 'restore-recovery', processLabel, error: result.error,
     });
-    logger.error(`❌ 💾 Resolve it by hand: restore the files listed in ${JOURNAL_FILENAME} from ${result.recovery?.originalsDir ?? 'the retained originals directory'}, then delete both. Trading data may be a mixed generation until then.`, {
-      action: 'restore-recovery', processLabel,
-    });
+    if (result.code === 'restore-ownership-unavailable') {
+      logger.error('Restore ownership is unavailable; let the supervisor retry. Do not remove a live process ownership marker or its recovery artifacts.', { action: 'restore-recovery', processLabel });
+    } else {
+      logger.error(`❌ 💾 Resolve it by hand: restore the files listed in ${JOURNAL_FILENAME} from ${result.recovery?.originalsDir ?? 'the retained originals directory'}, then delete both. Trading data may be a mixed generation until then.`, {
+        action: 'restore-recovery', processLabel,
+      });
+    }
     exit(1);
   }
   return result;
@@ -642,5 +753,7 @@ module.exports = {
   JOURNAL_VERSION,
   ORIGINALS_PREFIX,
   STAGE_PREFIX,
+  OWNER_PREFIX,
+  OWNER_DIR,
   STATUS,
 };
