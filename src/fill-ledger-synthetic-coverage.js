@@ -36,6 +36,7 @@ const { ORDER_LEVEL_FIELDS } = require('./fill-ledger-recalc');
  * @property {Map<string, Fill>} fills - tradeId -> fill
  * @property {Map<string, Set<string>>} cycleIndex - cycleId -> tradeIds
  * @property {Map<string, number>} orderSizeIndex - orderId -> recorded size
+ * @property {Map<string, Set<string>>} orderIdIndex - orderId -> tradeIds
  * @property {Set<string>} syntheticOrders - orderIds with unresolved coverage
  * @property {Set<string>} reconciledTradeIds - real tradeIds recorded only on coverage rows
  */
@@ -293,7 +294,7 @@ const getBookableReconciliationFills = (fill, reconciliation) => {
  * @param {CoverageState} state
  */
 const createSyntheticCoverage = (state) => {
-  const { fills, cycleIndex, orderSizeIndex, syntheticOrders, reconciledTradeIds } = state;
+  const { fills, cycleIndex, orderSizeIndex, orderIdIndex, syntheticOrders, reconciledTradeIds } = state;
 
   const recordPreservedCoverage = (fill, reconciliation, tradeId) => {
     for (const allocation of reconciliation.allocations) {
@@ -375,6 +376,7 @@ const createSyntheticCoverage = (state) => {
       fills: new Map(Array.from(fills, ([id, row]) => [id, structuredClone(row)])),
       cycleIndex: new Map(Array.from(cycleIndex, ([id, ids]) => [id, new Set(ids)])),
       orderSize: orderSizeIndex.get(fill.orderId),
+      orderTradeIds: orderIdIndex.has(fill.orderId) ? new Set(orderIdIndex.get(fill.orderId)) : undefined,
       hadSyntheticCoverage: syntheticOrders.has(fill.orderId),
       hadReconciledTrade: reconciledTradeIds.has(tradeId),
     };
@@ -385,6 +387,8 @@ const createSyntheticCoverage = (state) => {
     for (const [id, row] of snapshot.fills) fills.set(id, row);
     cycleIndex.clear();
     for (const [id, ids] of snapshot.cycleIndex) cycleIndex.set(id, ids);
+    if (snapshot.orderTradeIds === undefined) orderIdIndex.delete(fill.orderId);
+    else orderIdIndex.set(fill.orderId, snapshot.orderTradeIds);
     if (snapshot.orderSize === undefined) orderSizeIndex.delete(fill.orderId);
     else orderSizeIndex.set(fill.orderId, snapshot.orderSize);
     if (snapshot.hadSyntheticCoverage) syntheticOrders.add(fill.orderId);
@@ -398,6 +402,9 @@ const createSyntheticCoverage = (state) => {
       if (residual) fills.set(old.tradeId, residual);
       else {
         fills.delete(old.tradeId);
+        const orderTradeIds = orderIdIndex.get(old.orderId);
+        orderTradeIds?.delete(old.tradeId);
+        if (orderTradeIds?.size === 0) orderIdIndex.delete(old.orderId);
         if (old.cycleId) cycleIndex.get(old.cycleId)?.delete(old.tradeId);
       }
     }
@@ -411,6 +418,11 @@ const createSyntheticCoverage = (state) => {
   };
 
   const indexIngestedFill = (fill, tradeId, replacements) => {
+    // Identity-only reconciliations have no canonical row to index.
+    if (fill.size > 1e-9) {
+      if (!orderIdIndex.has(fill.orderId)) orderIdIndex.set(fill.orderId, new Set());
+      orderIdIndex.get(fill.orderId).add(tradeId);
+    }
     if (fill.cycleId && fill.size > 1e-9) {
       if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
       cycleIndex.get(fill.cycleId).add(tradeId);
