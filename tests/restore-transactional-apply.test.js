@@ -308,6 +308,24 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.equal(read(path.join(dataDir, 'alpha.json')), 'interrupted generation');
   });
 
+  for (const operation of ['apply', 'recover']) {
+    it(`fails closed if ${operation} cannot release its ownership identity (#1693)`, () => {
+      const remove = fs.rmSync;
+      mock.method(fs, 'rmSync', (target, ...args) => {
+        if (path.dirname(String(target)) === path.join(dataDir, OWNER_DIR)) throw new Error('EACCES: ownership retirement refused');
+        return remove(target, ...args);
+      });
+      const result = operation === 'apply'
+        ? applyStagedFiles({ dataDir, stageDir })
+        : recoverIncompleteRestore({ dataDir });
+      assert.equal(result.code, 'restore-ownership-unavailable');
+      assert.match(result.error, /Could not release restore ownership/);
+      if (operation === 'apply') assert.equal(result.rolledBack, false, 'the coordinator must keep writers stopped');
+      else assert.equal(result.blocked, true, 'startup cannot load state after failed ownership retirement');
+      assert.equal(fs.readdirSync(path.join(dataDir, OWNER_DIR)).length, 1, 'the exact ownership identity survives the IO error');
+    });
+  }
+
   it('does not overwrite an earlier recovery plan when another archive is applied (#1693)', () => {
     seedInterruptedJournal();
     const before = read(path.join(dataDir, JOURNAL_FILENAME));

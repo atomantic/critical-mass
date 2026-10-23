@@ -157,6 +157,17 @@ const acquireRestoreOwnership = (dataDir, waitMs) => {
   }
 };
 
+/** Never let a release error hide a result that must keep writers stopped. */
+const withRestoreOwnership = (dataDir, waitMs, operation) => {
+  const owner = acquireRestoreOwnership(dataDir, waitMs);
+  if (!owner.ok) return owner;
+  const result = attempt(operation);
+  const released = attempt(owner.release);
+  if (!released.ok) return { ok: false, error: `Could not release restore ownership: ${released.error.message}` };
+  if (!result.ok) return { ok: false, error: `Restore operation could not establish coherent state: ${result.error.message}` };
+  return result;
+};
+
 /**
  * Deterministic sibling temp path for staging a replacement of `dest`. The name
  * is predictable (no pid/timestamp) so a temp file orphaned by a process death
@@ -580,9 +591,8 @@ const applyStagedFilesOwned = ({ dataDir, stageDir, filename = 'archive', skip, 
 
 /** Keep the public API synchronous for restore handlers and startup callers. */
 const applyStagedFiles = (params) => {
-  const owner = acquireRestoreOwnership(params.dataDir, params.ownershipWaitMs ?? OWNER_WAIT_MS);
-  if (!owner.ok) return { success: false, code: 'restore-ownership-unavailable', error: owner.error, rolledBack: false };
-  try { return applyStagedFilesOwned(params); } finally { owner.release(); }
+  const result = withRestoreOwnership(params.dataDir, params.ownershipWaitMs ?? OWNER_WAIT_MS, () => applyStagedFilesOwned(params));
+  return result.ok ? result.value : { success: false, code: 'restore-ownership-unavailable', error: result.error, rolledBack: false };
 };
 
 // A directory's own mtime only moves when a direct child is added or removed,
@@ -695,9 +705,8 @@ const recoverIncompleteRestoreOwned = ({ dataDir, logger }) => {
 
 /** Acquire first, then re-read: no pre-ownership journal snapshot may be used. */
 const recoverIncompleteRestore = ({ dataDir = DATA_DIR, logger = NOOP_LOGGER, ownershipWaitMs = OWNER_WAIT_MS } = {}) => {
-  const owner = acquireRestoreOwnership(dataDir, ownershipWaitMs);
-  if (!owner.ok) return { pending: true, recovered: false, blocked: true, code: 'restore-ownership-unavailable', error: owner.error };
-  try { return recoverIncompleteRestoreOwned({ dataDir, logger }); } finally { owner.release(); }
+  const result = withRestoreOwnership(dataDir, ownershipWaitMs, () => recoverIncompleteRestoreOwned({ dataDir, logger }));
+  return result.ok ? result.value : { pending: true, recovered: false, blocked: true, code: 'restore-ownership-unavailable', error: result.error };
 };
 
 /**
