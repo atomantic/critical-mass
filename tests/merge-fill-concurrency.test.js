@@ -554,6 +554,16 @@ describe('#196 _mergeBodyImpl — successful merge folds source into target', ()
     assert.ok(Math.abs(merged.costBasis - (0.01 * 50000 + 0.02 * 51000)) < 1e-6, 'cost basis summed');
     assert.ok(merged.tpOrderId, 'merged body has a fresh TP order');
   });
+
+  it('prunes the removed source body dust log entry', async () => {
+    const eng = makeEngine({
+      bodies: [makeBody('dust-source', 50000, 0.01, 'tp-dust-source'), makeBody('tgt-dust', 51000, 0.02, 'tp-tgt-dust')],
+    });
+    eng._test.setDustWaitLoggedQtyForTest('dust-source', 0.00009);
+    const r = await eng.manualMergeBody('dust-source', { targetId: 'tgt-dust' });
+    assert.equal(r.success, true, `merge should succeed: ${r.message}`);
+    assert.equal(eng._test.getDustWaitLoggedQty().has('dust-source'), false);
+  });
 });
 
 // ---------------------------------------------------------------------------
