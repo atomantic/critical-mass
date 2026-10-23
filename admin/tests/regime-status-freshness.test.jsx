@@ -2,9 +2,10 @@
 // snapshot, the newest snapshot wins across socket/HTTP, and silence is flagged.
 import React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import RegimeDashboard from '../src/components/RegimeDashboard'
 import useRegimeDashboardData from '../src/components/regime/useRegimeDashboardData'
+import useRegimeDashboardActions from '../src/components/regime/useRegimeDashboardActions'
 import { mergeRegimeStatus, STATUS_STALE_MS, toUnreachableStatus } from '../src/utils/regimeStatusSnapshot.mjs'
 
 const handlers = new Map()
@@ -19,7 +20,8 @@ const emitStatus = status => act(() => {
 
 vi.mock('../src/lib/realtime', () => ({ getRealtimeClient: () => socket }))
 vi.mock('../src/App', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }))
-vi.mock('../src/components/Toast', () => ({ useToast: () => ({ addToast: vi.fn() }) }))
+const addToast = vi.hoisted(() => vi.fn())
+vi.mock('../src/components/Toast', () => ({ useToast: () => ({ addToast }) }))
 vi.mock('../src/components/charts/RegimePriceChart', () => ({ default: () => <div>Price chart</div> }))
 vi.mock('../src/components/charts/VolatilityChart', () => ({ default: () => <div>Volatility chart</div> }))
 vi.mock('../src/components/charts/RegimeTimeline', () => ({ default: () => <div>Regime timeline</div> }))
@@ -54,17 +56,29 @@ function stoppedStatus(lastPrice = 60100, extra = {}) {
 const config = { productId: 'BTC-USDC', maxCycleBuys: 3, baseSizeUsdc: 100, kFactor: 0.6, tpMinPercent: 1, tpMaxPercent: 2, aggressiveness: 'conservative' }
 let httpStatus
 let statusResponse
+let mutationResponse
+
+const reply = (data, status = 200) => ({ ok: status < 400, status, json: async () => data })
+const statusReads = () => fetch.mock.calls.filter(([url]) => url.includes('/regime/status')).length
+
+// Exercise the real confirmation dialogs in jsdom.
+HTMLDialogElement.prototype.showModal = function () { this.open = true }
+HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event('close')) }
 
 beforeEach(() => {
   handlers.clear()
+  addToast.mockClear()
   httpStatus = runningStatus()
   statusResponse = null
-  vi.stubGlobal('fetch', vi.fn(async (url) => {
+  mutationResponse = null
+  vi.stubGlobal('fetch', vi.fn(async (url, options) => {
+    if (options?.method === 'POST' && mutationResponse) return mutationResponse()
     if (url.includes('/regime/status') && statusResponse) return statusResponse()
     return { ok: true, json: async () => {
       if (url.includes('/regime/config')) return { config }
       if (url.includes('/regime/status')) return { status: httpStatus }
       if (url.includes('/regime/fills')) return { detailFills: [], fillCount: 0, fillCycleGroups: [] }
+      if (url.includes('/regime/preview-ladder')) return { success: true, preview: { levelCount: 1, levels: [{ price: 59000, sizeUsdc: 100, assetQty: 0.001, distancePct: 1 }], totalBudget: 100, lowerBoundPct: 10 } }
       if (url.includes('/presets/')) return { presets: {} }
       return {}
     } }
@@ -181,5 +195,121 @@ describe('RegimeDashboard status freshness', () => {
     expect(screen.getByText('Engine Stopped')).toBeTruthy()
     expect(screen.queryByText('Engine Unreachable')).toBeNull()
     expect(statusReads()).toBe(readsBefore)
+  })
+})
+
+
+function useDashboardWithActions() {
+  const data = useRegimeDashboardData('coinbase', 'BTC-USDC', '?pair=BTC-USDC')
+  const actions = useRegimeDashboardActions({ exchange: 'coinbase', pairQuery: '?pair=BTC-USDC', addToast, ...data })
+  return { ...data, ...actions }
+}
+
+describe('mutation/socket status ordering', () => {
+  it.each([
+    ['roll-up', 'handleRollUp', ['body-1']],
+    ['collapse', 'handleCollapseAll', []],
+    ['reset cycle', 'handleResetCycle', []],
+    ['TP percentage', 'handleSetTp', ['pct']],
+    ['TP price', 'handleSetTp', ['price']],
+    ['ladder cancellation', 'handleExecuteCancelLadder', []],
+  ])('refreshes current status after a late %s reply without reviving running state', async (_name, action, args) => {
+    const { result } = renderHook(useDashboardWithActions)
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    if (action === 'handleSetTp') act(() => result.current.setTpEditModal({ bodyId: 'body-1', inputValue: '2', priceValue: '61000', avgPrice: 50000 }))
+    let respond
+    mutationResponse = () => new Promise(resolve => { respond = resolve })
+    let mutation
+    act(() => { mutation = result.current[action](...args) })
+    await waitFor(() => expect(respond).toBeTypeOf('function'))
+    emitStatus(stoppedStatus(61000))
+    httpStatus = stoppedStatus(62000)
+    const readsBefore = statusReads()
+    await act(async () => { respond(reply({ success: true, status: runningStatus(60000) })); await mutation })
+    expect(statusReads()).toBe(readsBefore + 1)
+    expect(result.current.status).toEqual(httpStatus)
+    expect(result.current.isRunning).toBe(false)
+    expect(addToast.mock.calls.some(([toast]) => toast.type === 'error')).toBe(false)
+  })
+
+  it('keeps a socket stop delivered during the post-mutation status read', async () => {
+    const { result } = renderHook(useDashboardWithActions)
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    mutationResponse = async () => reply({ success: true, status: runningStatus(60000) })
+    let respond
+    statusResponse = () => new Promise(resolve => { respond = resolve })
+    let mutation
+    act(() => { mutation = result.current.handleResetCycle() })
+    await waitFor(() => expect(respond).toBeTypeOf('function'))
+    emitStatus(stoppedStatus(63000))
+    await act(async () => { respond(reply({ status: runningStatus(62000) })); await mutation })
+    expect(result.current.status).toEqual(stoppedStatus(63000))
+  })
+
+  it.each([
+    ['handleCollapseAll', 'Collapse failed'],
+    ['handleResetCycle', 'Cycle reset failed'],
+  ])('refreshes a partial %s failure without losing its action error or applying its snapshot', async (action, title) => {
+    const { result } = renderHook(useDashboardWithActions)
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    let respond
+    mutationResponse = () => new Promise(resolve => { respond = resolve })
+    let mutation
+    act(() => { mutation = result.current[action]() })
+    await waitFor(() => expect(respond).toBeTypeOf('function'))
+    emitStatus(stoppedStatus(61000))
+    httpStatus = stoppedStatus(62000)
+    await act(async () => { respond(reply({ success: false, error: 'Synthetic partial failure', status: runningStatus() }, 400)); await mutation })
+    expect(result.current.status).toEqual(httpStatus)
+    expect(addToast).toHaveBeenCalledWith({ type: 'error', title, message: 'Synthetic partial failure' })
+  })
+
+  it.each(['rebuild ladder', 'reconcile placement'])('orders the rendered %s panel refresh after a late reply', async action => {
+    httpStatus = { ...runningStatus(), config: { entryMode: 'ladder' }, placementIntents: [{ id: 'intent-1', clientOrderId: 'client-1', status: 'unresolved', needsAttention: true, action: 'entry', side: 'buy' }] }
+    render(<RegimeDashboard exchange="coinbase" pair="BTC-USDC" />)
+    await screen.findByRole('heading', { name: 'Risk Limits' })
+    let respond
+    mutationResponse = () => new Promise(resolve => { respond = resolve })
+    if (action === 'rebuild ladder') {
+      fireEvent.click(screen.getByRole('button', { name: 'Rebuild Ladder' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Place 1 Order' }))
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: 'Adopt', exact: true }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Look up & adopt' }))
+    }
+    await waitFor(() => expect(respond).toBeTypeOf('function'))
+    emitStatus(stoppedStatus(61000))
+    httpStatus = stoppedStatus(62000)
+    const readsBefore = statusReads()
+    let respondStatus
+    statusResponse = () => new Promise(resolve => { respondStatus = resolve })
+    await act(async () => { respond(reply({ success: true, status: runningStatus() })) })
+    await waitFor(() => expect(statusReads()).toBe(readsBefore + 1))
+    // Check before the read completes: reconciliation used to briefly install
+    // the old running mutation snapshot even though it also fetched status.
+    expect(screen.getByText('Engine Stopped')).toBeTruthy()
+    expectNoRunningPanels()
+    await act(async () => { respondStatus(reply({ status: httpStatus })) })
+    expect(screen.getByText('Engine Stopped')).toBeTruthy()
+    expectNoRunningPanels()
+  })
+
+  it('keeps the last valid stopped state and shows inline Retry when a mutation refresh fails', async () => {
+    httpStatus = { ...runningStatus(), position: { ...runningStatus().position, cycleBuys: 3 } }
+    render(<RegimeDashboard exchange="coinbase" pair="BTC-USDC" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Reset cycle & resume buying' }))
+    mutationResponse = async () => reply({ success: true, status: runningStatus() })
+    statusResponse = async () => reply({}, 504)
+    emitStatus(stoppedStatus(61000))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Reset cycle & resume buying' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('Status request failed')
+    expect(screen.getByRole('alert').textContent).toContain('Showing last good data (stale)')
+    expectNoRunningPanels()
+    statusResponse = null
+    httpStatus = stoppedStatus(62000)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(screen.getByText('Engine Stopped')).toBeTruthy()
+    expectNoRunningPanels()
   })
 })

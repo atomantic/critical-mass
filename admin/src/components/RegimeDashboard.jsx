@@ -39,7 +39,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const { addToast } = useToast()
   const {
     status, config, loading, error, stale, retry, fillsUnavailable, liveFills, fillAggregates, presets, presetsError, retryPresets, isRunning, prevPriceRef,
-    priceHistory, atrHistory, regimeHistory, setSocketStatus, fetchStatus, fetchConfig, fetchFills,
+    priceHistory, atrHistory, regimeHistory, fetchStatus, fetchConfig, fetchFills,
   } = useRegimeDashboardData(exchange, pair, pairQuery)
   const {
     dcaState, dcaStateError, retryDcaState, convertPreview, converting, showConvertConfirm, setShowConvertConfirm,
@@ -53,7 +53,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     cancelLadderConfirm, setCancelLadderConfirm, handleResumeDrawdown, handleResumeFromAuthDenied,
     handleRollUp, handleCollapseAll, handleResetCycle, handleSetTp,
     handleCancelLadder, handleExecuteCancelLadder,
-  } = useRegimeDashboardActions({ exchange, pairQuery, addToast, setSocketStatus, fetchStatus, fetchConfig, fetchFills })
+  } = useRegimeDashboardActions({ exchange, pairQuery, addToast, fetchStatus, fetchConfig, fetchFills })
   const [openSearchId, setOpenSearchId] = useState('')
 
   if (loading) {
@@ -251,7 +251,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               pairQuery={pairQuery}
               addToast={addToast}
               fetchConfig={fetchConfig}
-              setSocketStatus={setSocketStatus}
+              fetchStatus={fetchStatus}
             />
             <OpenOrdersTable
               pendingOrdersList={pendingOrdersList}
@@ -272,7 +272,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
           </div>
 
           {/* Unresolved placement intents — while any exist the fund refuses new placements */}
-          <PlacementIntentsPanel placementIntents={placementIntents} asset={asset} exchange={exchange} pairQuery={pairQuery} addToast={addToast} setSocketStatus={setSocketStatus} fetchStatus={fetchStatus} fetchFills={fetchFills} />
+          <PlacementIntentsPanel placementIntents={placementIntents} asset={asset} exchange={exchange} pairQuery={pairQuery} addToast={addToast} fetchStatus={fetchStatus} fetchFills={fetchFills} />
 
         </div>
         </>

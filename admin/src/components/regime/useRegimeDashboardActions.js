@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { describeActionFailure } from '../../utils/actionFailure.mjs'
 import { apiPost } from '../../utils/apiClient'
 
-export default function useRegimeDashboardActions({ exchange, pairQuery, addToast, setSocketStatus, fetchStatus, fetchConfig, fetchFills }) {
+export default function useRegimeDashboardActions({ exchange, pairQuery, addToast, fetchStatus, fetchConfig, fetchFills }) {
   const [rollUpConfirm, setRollUpConfirm] = useState(null)
   const [rollingUp, setRollingUp] = useState(false)
   const [collapseAllConfirm, setCollapseAllConfirm] = useState(false)
@@ -64,14 +64,15 @@ export default function useRegimeDashboardActions({ exchange, pairQuery, addToas
     try {
       const result = await post('rollup-body', { bodyId })
       const data = result.data ?? {}
-      if (result.ok && data.success && data.status) {
-        // Directly update socket status from API response for immediate visual refresh
-        // (avoids race where socketStatus overrides stale localStatus from fetchStatus)
-        setSocketStatus(data.status)
+      if (result.ok && data.success) {
+        // Mutation snapshots can arrive after a newer socket event. Read the
+        // current status through the shared HTTP/socket ordering fence instead.
+        fetchStatus()
         // Re-fetch fills so buy order annotations (bodyId, sellOrderId) reflect the merge
         fetchFills()
       } else {
         addToast({ type: 'error', title: 'Roll-up failed', message: failureMessage(result, data) })
+        if (data.status) fetchStatus()
       }
     } catch (err) {
       addToast({ type: 'error', title: 'Roll-up failed', message: err.message })
@@ -89,11 +90,11 @@ export default function useRegimeDashboardActions({ exchange, pairQuery, addToas
       const data = result.data ?? {}
       if (result.ok && data.success) {
         addToast({ type: 'success', title: 'Collapse complete', message: data.message || 'Bodies merged' })
-        if (data.status) setSocketStatus(data.status)
+        fetchStatus()
         fetchFills()
       } else {
         addToast({ type: 'error', title: 'Collapse failed', message: failureMessage(result, data) })
-        if (data.status) setSocketStatus(data.status)
+        if (data.status) fetchStatus()
       }
     } catch (err) {
       addToast({ type: 'error', title: 'Collapse failed', message: err.message })
@@ -112,11 +113,11 @@ export default function useRegimeDashboardActions({ exchange, pairQuery, addToas
       const data = result.data ?? {}
       if (result.ok && data.success) {
         addToast({ type: 'success', title: 'Cycle reset', message: data.message || 'Buying re-enabled' })
-        if (data.status) setSocketStatus(data.status)
+        fetchStatus()
         fetchFills()
       } else {
         addToast({ type: 'error', title: 'Cycle reset failed', message: failureMessage(result, data) })
-        if (data.status) setSocketStatus(data.status)
+        if (data.status) fetchStatus()
       }
     } catch (err) {
       addToast({ type: 'error', title: 'Cycle reset failed', message: err.message })
@@ -141,14 +142,15 @@ export default function useRegimeDashboardActions({ exchange, pairQuery, addToas
     try {
       const result = await post(endpoint, payload)
       const data = result.data ?? {}
-      if (result.ok && data.success && data.status) {
-        setSocketStatus(data.status)
+      if (result.ok && data.success) {
+        fetchStatus()
         fetchFills()
         setTpEditModal(null)
       } else {
         // Keep the modal open on failure so the operator can retry — the old TP
         // is still resting on the exchange, so silently closing misled them.
         addToast({ type: 'error', title: 'Set TP failed', message: failureMessage(result, data) })
+        if (data.status) fetchStatus()
       }
     } catch (err) {
       addToast({ type: 'error', title: 'Set TP failed', message: err.message })
@@ -168,10 +170,11 @@ export default function useRegimeDashboardActions({ exchange, pairQuery, addToas
       const data = result.data ?? {}
       if (result.ok && data.success) {
         addToast({ type: 'success', title: 'Ladder Cancelled', message: data.message })
-        if (data.status) setSocketStatus(data.status)
+        fetchStatus()
         fetchConfig()
       } else {
         addToast({ type: 'error', title: 'Cancel ladder failed', message: failureMessage(result, data) })
+        if (data.status) fetchStatus()
       }
     } catch (err) {
       addToast({ type: 'error', title: 'Cancel ladder failed', message: err.message })
