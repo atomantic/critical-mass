@@ -10,6 +10,7 @@ const { withAbortTimeout, createNetworkError, createPublicNetworkError } = requi
 const { validateStandardExchangeKeys, createKeyFileLoader } = require('../key-validation');
 const { incrementToDecimals, floorToIncrement, finiteFloat } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
+const { DATA_DIR } = require('../../paths');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -85,7 +86,7 @@ const isRetryableRateLimit = (status, attempt, maxRetries) =>
  */
 const createGeminiAdapter = (keysPath = null, { sleep = defaultSleep } = {}) => {
   // Resolve keys path
-  const resolvedKeysPath = keysPath || path.join(__dirname, '..', '..', '..', 'data', 'gemini-keys.json');
+  const resolvedKeysPath = keysPath || path.join(DATA_DIR, 'gemini-keys.json');
 
   // Start with base adapter
   const adapter = createBaseAdapter('gemini');
