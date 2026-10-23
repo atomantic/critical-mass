@@ -136,6 +136,8 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
   }
   const stubs = {
     react: hooks,
+    './ui/Button': 'button',
+    '../ui/Button': 'button',
     '../hooks/useTradeEvents': { useRegimeEvents: () => ({ status, setStatus() {} }) },
     '../hooks/useChartDataBuffer': {
       useChartDataBuffer: () => ({ priceHistory: [], atrHistory: [], regimeHistory: [], initializeFromCache() {} }),
