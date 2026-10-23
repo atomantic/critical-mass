@@ -122,7 +122,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             <SizeOptimizerPanel sizeOptimizer={sizeOptimizer} />
 
             {/* Fill Time Stats */}
-            <FillTimeStats fillTimeStats={status?.fillTimeStats} effectiveStaleMs={status?.effectiveStaleMs} orderStaleMs={config?.orderStaleMs} />
+            <FillTimeStats fillTimeStats={status?.fillTimeStats} effectiveStaleMs={status?.effectiveStaleMs} pendingEntryStaleMs={status?.pendingEntryStaleMs} orderStaleMs={config?.orderStaleMs} />
 
             {/* Optimal TP Analytics (dry-run) */}
             <OptimalTpAnalysis isDryRun={isDryRun} optimalTpAnalytics={dryRunState?.optimalTpAnalytics} tpMinPercent={config?.tpMinPercent} tpMaxPercent={config?.tpMaxPercent} />

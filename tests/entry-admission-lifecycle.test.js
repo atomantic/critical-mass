@@ -99,11 +99,22 @@ for (const mode of ['reactive', 'ladder']) {
   describe(`${mode} entry admission across stop/close (issue #1009)`, () => {
     it('places entries normally while the fund is running and ACTIVE', async () => {
       const { eng, adapter } = await makeEngine(`__test1009_${mode}_ok__`, mode);
+      if (mode === 'reactive') {
+        eng._getConfig().maxIntervalMs = 600000;
+        eng._getMarketState().atr1m = 0.05;
+      }
       const evaluation = beginHeldEntry(eng, adapter);
       await tick();
       adapter.release();
       await evaluation;
       assert.ok(submitted(eng) > 0, 'control: an admitted evaluation submits');
+      if (mode === 'reactive') {
+        const entry = eng._test.getOrderExecutor().getDryRunState().pendingOrders.find(order => order.type === 'entry');
+        assert.ok(entry?.staleMs > 0, 'the resting entry has its adaptive timeout');
+        const status = eng.getStatus();
+        assert.ok(entry.staleMs > status.effectiveStaleMs, 'the adaptive timeout exceeds the global fallback');
+        assert.equal(status.pendingEntryStaleMs, entry.staleMs);
+      }
     });
 
     it('stop() during the balance preflight results in zero submissions', async () => {

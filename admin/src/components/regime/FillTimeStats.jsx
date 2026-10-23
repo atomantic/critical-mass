@@ -1,7 +1,9 @@
 import React from 'react'
 import { plural } from '../../utils/plural.mjs'
 
-export default function FillTimeStats({ fillTimeStats, effectiveStaleMs, orderStaleMs }) {
+export default function FillTimeStats({ fillTimeStats, effectiveStaleMs, pendingEntryStaleMs, orderStaleMs }) {
+  const hasPendingEntryTimeout = pendingEntryStaleMs != null
+  const timeoutMs = hasPendingEntryTimeout ? pendingEntryStaleMs : effectiveStaleMs
   return (
     <>
       {fillTimeStats?.count > 0 && (
@@ -38,10 +40,12 @@ export default function FillTimeStats({ fillTimeStats, effectiveStaleMs, orderSt
               </span>
             </div>
 
-            {effectiveStaleMs && (
+            {timeoutMs && (
               <div className="text-2xs text-gray-400 pt-1 border-t border-gray-700">
-                Timeout: {(effectiveStaleMs / 1000).toFixed(1)}s
-                {effectiveStaleMs !== orderStaleMs && (
+                Timeout: {(timeoutMs / 1000).toFixed(1)}s
+                {hasPendingEntryTimeout ? (
+                  <span className="text-purple-400 ml-1">(resting entry)</span>
+                ) : timeoutMs !== orderStaleMs && (
                   <span className="text-purple-400 ml-1">(regime-adjusted)</span>
                 )}
               </div>
