@@ -1,6 +1,6 @@
 # Done Log
 
-Completed items archived from PLAN.md.
+Completed items archived from the former PLAN.md. Open work is tracked in GitHub issues.
 
 ## 2026-03-27
 
