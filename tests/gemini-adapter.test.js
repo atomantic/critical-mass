@@ -445,7 +445,8 @@ describe('isRetryableRateLimit', () => {
 
 describe('makeRestRequest 429 handling (issue #193)', () => {
   it('retries a 429 then succeeds, regenerating the payload (fresh nonce) each attempt', async () => {
-    const adapter = createGeminiAdapter(keysPath);
+    const waits = [];
+    const adapter = createGeminiAdapter(keysPath, { sleep: async (ms) => { waits.push(ms); } });
     const nonces = [];
     const { calls } = installFetchMock((endpoint, payload, allCalls) => {
       nonces.push(payload.nonce);
@@ -461,17 +462,17 @@ describe('makeRestRequest 429 handling (issue #193)', () => {
     // Two attempts → two distinct, increasing nonces (no reuse).
     assert.equal(nonces.length, 2);
     assert.notEqual(nonces[0], nonces[1]);
+    assert.deepEqual(waits, [500]);
   });
 
   it('gives up after RATE_LIMIT_MAX_RETRIES and throws the 429', async () => {
-    const adapter = createGeminiAdapter(keysPath);
+    const waits = [];
+    const adapter = createGeminiAdapter(keysPath, { sleep: async (ms) => { waits.push(ms); } });
     const { calls } = installFetchMock(() => ({ __error: true, status: 429 }));
-    await assert.rejects(
-      () => adapter.getAccountBalance('USD'),
-      (err) => err.status === 429 && /429/.test(err.message)
-    );
+    await assert.rejects(() => adapter.getAccountBalance('USD'), (err) => err.status === 429 && /429/.test(err.message));
     // 1 initial + 2 retries = 3 attempts total.
     assert.equal(calls.filter(c => c.endpoint === '/v1/balances').length, 3);
+    assert.deepEqual(waits, [500, 1000]);
   });
 
   it('does NOT retry a 429 on order placement — fails fast to avoid a double-place', async () => {

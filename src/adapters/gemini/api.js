@@ -82,7 +82,7 @@ const isRetryableRateLimit = (status, attempt, maxRetries) =>
  * @param {string|null} [keysPath] - Path to keys file (defaults to data/gemini-keys.json)
  * @returns {ExchangeAdapter} Gemini adapter with all required methods
  */
-const createGeminiAdapter = (keysPath = null) => {
+const createGeminiAdapter = (keysPath = null, { sleep = defaultSleep } = {}) => {
   // Resolve keys path
   const resolvedKeysPath = keysPath || path.join(__dirname, '..', '..', '..', 'data', 'gemini-keys.json');
 
@@ -171,7 +171,7 @@ const createGeminiAdapter = (keysPath = null) => {
           throw createAmbiguousPlacementError('Gemini', `POST ${endpoint}`, payload?.client_order_id, `HTTP ${response.status}`);
         }
         if (retryRateLimit && isRetryableRateLimit(response.status, attempt, RATE_LIMIT_MAX_RETRIES)) {
-          await awaitAndAccountQueuedTime(defaultSleep(RATE_LIMIT_BACKOFF_MS * (attempt + 1)));
+          await awaitAndAccountQueuedTime(sleep(RATE_LIMIT_BACKOFF_MS * (attempt + 1)));
           continue;
         }
         let errData;
