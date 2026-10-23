@@ -99,7 +99,8 @@ export function summarizeRegimeFillGroups(sellGroups) {
   // the paired sell). Derived from cycle pairs, same source as totalPnl.
   let totalHoldback = 0
   cycleMap.forEach(entry => { totalHoldback += entry.totalHoldback })
-  const cycleGroups = Array.from(cycleMap.values()).sort((a, b) => compareCycleIds(a.cycleId, b.cycleId))
+  const cycleGroups = Array.from(cycleMap.values()).sort((a, b) =>
+    (b.maxTs - a.maxTs) || compareCycleIds(a.cycleId, b.cycleId))
   const totalPnl = sellGroups.reduce((sum, group) => sum + (group.sell.pnl || 0), 0)
   return { cycleGroups, totalHoldback, totalPnl }
 }

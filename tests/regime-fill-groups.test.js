@@ -61,6 +61,19 @@ test('body fallback, direct linkage precedence, unknown cycles and orphan orderi
   assert.equal(result.sellGroups.find(g => g.sell.orderId === 'unknown').sell.pnl, null);
 });
 
+test('cycle groups sort by latest activity, with cycle number breaking timestamp ties', async () => {
+  const { deriveRegimeFillGroups } = await load();
+  const result = deriveRegimeFillGroups([
+    sell('old-cycle-late-sell', { cycleId: 'cycle-18', timestamp: 300 }),
+    sell('new-cycle-earlier-sell', { cycleId: 'cycle-22', timestamp: 200 }),
+    sell('tie-lower-cycle', { cycleId: 'cycle-24', timestamp: 400 }),
+    sell('tie-higher-cycle', { cycleId: 'cycle-25', timestamp: 400 }),
+  ]);
+  assert.deepEqual(result.cycleGroups.map(group => group.cycleId), [
+    'cycle-25', 'cycle-24', 'cycle-18', 'cycle-22'
+  ]);
+});
+
 test('search recomputes visible totals and pending TP visibility never mutates cached history', async () => {
   const { deriveRegimeFillGroups, searchRegimeFillGroups, visibleOrphanBuys } = await load();
   const history = deriveRegimeFillGroups([buy('BUY-A', { sellOrderId: 's1' }), sell('s1'), sell('s2', { bodyPnl: 50 }), buy('orphan', { bodyId: 'open' })]);
