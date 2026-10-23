@@ -164,18 +164,38 @@ describe('dashboard request ownership', () => {
     assert.deepEqual(view.status, { running: false }, 'ownership is re-checked after the parse boundary')
   })
 
+  it('captures a token and signal that remain tied to the entire original read', async () => {
+    const { owner, calls } = await createHarness()
+    const first = owner.read('/list')
+    calls[0].resolve(jsonResponse({ items: [1], total: 2 }))
+    const result = await first
+    assert.equal(owner.owns(result.token), true)
+    assert.equal(result.signal, calls[0].signal)
+    const next = owner.read('/list')
+    assert.equal(result.signal.aborted, true)
+    assert.equal(owner.owns(result.token), false)
+    assert.notEqual(result.signal, owner.getSignal())
+    calls[1].resolve(jsonResponse({ items: [] }))
+    const latest = await next
+    owner.invalidate()
+    assert.equal(latest.signal.aborted, true)
+    assert.equal(owner.owns(latest.token), false)
+  })
+
   it('reports a current failure as owned but without data', async () => {
     const { owner, calls } = await createHarness()
     const pending = owner.read('/api/updown/status')
     await flush()
     calls[0].resolve(failedResponse(500))
-    assert.deepEqual(await pending, { owned: true, ok: false, data: null })
+    const result = await pending
+    assert.deepEqual(result, { owned: true, ok: false, data: null, token: 1, signal: calls[0].signal })
   })
 
   it('treats a network rejection as a completed, data-less read', async () => {
     const { createRequestOwner } = await import('../admin/src/utils/requestOwner.mjs')
     const owner = createRequestOwner({ fetchImpl: async () => { throw new Error('offline') } })
-    assert.deepEqual(await owner.read('/api/updown/status'), { owned: true, ok: false, data: null })
+    const result = await owner.read('/api/updown/status')
+    assert.deepEqual(result, { owned: true, ok: false, data: null, token: 1, signal: owner.getSignal() })
   })
 })
 

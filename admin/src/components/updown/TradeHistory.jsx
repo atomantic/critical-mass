@@ -67,10 +67,12 @@ export default function TradeHistory() {
   // A failed read keeps the last good list and reports the failure, so an
   // outage is never shown as "No trades recorded yet".
   const fetchTrades = useCallback(async () => {
-    const { owned, data } = await tradesOwner.read('/api/updown/trades')
-    if (!owned) return
+    const { token, signal, data } = await tradesOwner.read('/api/updown/trades')
+    if (!tradesOwner.owns(token)) return
     if (data?.success && Array.isArray(data.items)) {
-      setTrades(await completePagedItems('/api/updown/trades', data))
+      const items = await completePagedItems('/api/updown/trades', data, { signal })
+      if (!tradesOwner.owns(token)) return
+      setTrades(items)
       setSummary(data.summary ?? null)
       setLoaded(true)
       setLoadError(null)
