@@ -6,8 +6,12 @@
  * Supports backward compatibility with single-exchange config format.
  */
 
-const { DEFAULT_AGGRESSIVENESS_PRESETS, MERGE_PROXIMITY_BOUNDS, PRESET_FIELD_RULES } = require('./regime-preset-contract');
+const { DEFAULT_AGGRESSIVENESS_PRESETS, MERGE_PROXIMITY_BOUNDS } = require('./regime-preset-contract');
 const { DEFAULT_MAX_USDC_DEPLOYED } = require('./fund-defaults');
+const { createNotificationSettings, NOTIFICATION_DEFAULTS } = require('./config-settings/notification');
+const { createAggressivenessSettings } = require('./config-settings/aggressiveness');
+const { createBackupSettings, BACKUP_INTERVAL_BOUNDS } = require('./config-settings/backup');
+const { createSentinelSettings, SENTINEL_DEFAULTS, SENTINEL_POLL_INTERVAL_BOUNDS, SENTINEL_MAX_ALERTS_BOUNDS } = require('./config-settings/sentinel');
 const fs = require('fs');
 const { atomicWriteSync } = require('./durable-write');
 const path = require('path');
@@ -272,39 +276,6 @@ const REGIME_DEFAULTS = {
   ladderAutoSwitchVolMult: 2.0,       // Vol expansion threshold
   ladderMinSpacingPct: 0.5,           // Min % between rungs
 };
-
-/**
- * Default notification configuration
- */
-const NOTIFICATION_DEFAULTS = {
-  enabled: false,
-  telegram: { botToken: '', chatId: '' },
-  events: {
-    buy_filled: true,
-    entry_filled: true,
-    tp_filled: true,
-    regime_change: true,
-    flash_move: true,
-    safe_mode: true,
-    active_mode: true,
-    cap_reached: true,
-    cycle_reset: true,
-    error: true,
-    sell_placed: false,
-    tp_placed: false,
-    spread_pause: false,
-    depth_pause: false,
-    regime_hourly: false,
-    aggressiveness_suggestion: false,
-    orders_consolidated: false,
-  },
-  rateLimitMs: 5000,
-  dailySummaryHour: 20,
-  quietHours: { enabled: false, start: 23, end: 7 },
-};
-
-// Node clamps delays above its signed 32-bit limit to 1 ms.
-const BACKUP_INTERVAL_BOUNDS = { min: 300000, max: 2147483647 };
 
 /**
  * Global default configuration
@@ -1378,229 +1349,12 @@ const updateExchangeRegimeConfig = (exchange, updates) => (
  */
 const validateRegimeConfig = (config) => getConfigValidator().validateRegimeConfig(config);
 
-/**
- * Get notification configuration with defaults
- * @returns {Object} Notification config
- */
-const getNotificationConfig = () => {
-  const config = loadConfig();
-  const notif = config.global?.notifications || {};
-  return {
-    ...NOTIFICATION_DEFAULTS,
-    ...notif,
-    telegram: { ...NOTIFICATION_DEFAULTS.telegram, ...notif.telegram },
-    events: { ...NOTIFICATION_DEFAULTS.events, ...notif.events },
-    quietHours: { ...NOTIFICATION_DEFAULTS.quietHours, ...notif.quietHours },
-  };
-};
-
-/**
- * Whether a stored preset value satisfies the shared preset bounds. Keys with
- * no rule (e.g. historical schema-only fields) are passed through untouched.
- * @param {string} key
- * @param {unknown} value
- * @returns {boolean}
- */
-const isPresetValueInBounds = (key, value) => {
-  const rule = PRESET_FIELD_RULES[key];
-  if (!rule) return true;
-  return typeof value === 'number' && Number.isFinite(value) && value >= rule.min && value <= rule.max;
-};
-
-/**
- * Get aggressiveness presets (user-customized merged with defaults).
- * Stored values outside the current preset bounds (e.g. saved under the looser
- * pre-#323 limits) are reported and skipped in favor of the shipped default,
- * so the editor never offers a value the fund-config save would reject.
- * @returns {Object} Presets keyed by level id
- */
-const getAggressivenessPresets = () => {
-  const config = loadConfig();
-  const saved = config.global?.aggressivenessPresets || {};
-  const merged = {};
-  for (const level of Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS)) {
-    const valid = {};
-    for (const [key, value] of Object.entries(saved[level] || {})) {
-      if (isPresetValueInBounds(key, value)) {
-        valid[key] = value;
-      } else {
-        configLogger.warn('⚠️ [config] Ignoring out-of-range stored aggressiveness preset value; using default', { level, key, value });
-      }
-    }
-    merged[level] = { ...DEFAULT_AGGRESSIVENESS_PRESETS[level], ...valid };
-  }
-  return merged;
-};
-
-/**
- * Update aggressiveness presets. Only keys that differ from the shipped
- * defaults (or were already explicitly stored) are persisted, so later changes
- * to default preset values still reach installs that edited one level.
- * @param {Object} updates - Presets keyed by level id with partial param overrides
- * @returns {Object} Updated full configuration (global.aggressivenessPresets holds the effective values)
- */
-const updateAggressivenessPresets = (updates) => {
-  const effective = {};
-  const config = mutateConfig((draft) => {
-    const current = draft.global?.aggressivenessPresets || {};
-
-    const overrides = {};
-    for (const level of Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS)) {
-      const defaults = DEFAULT_AGGRESSIVENESS_PRESETS[level];
-      const requested = { ...current[level], ...updates[level] };
-      effective[level] = { ...defaults, ...requested };
-      // Previously pinned keys survive even when equal to the default; keys merely
-      // echoed back by the editor at their default value are not pinned.
-      const diff = computeDiff(defaults, requested, current[level] || {});
-      if (Object.keys(diff).length) overrides[level] = diff;
-    }
-
-    draft.global = draft.global || {};
-    draft.global.aggressivenessPresets = overrides;
-  });
-  // Return effective values for callers; the file holds only the overrides.
-  config.global.aggressivenessPresets = effective;
-  return config;
-};
-
-/**
- * Update notification configuration
- * @param {Object} updates - Notification config updates
- * @returns {Object} Updated full configuration
- */
-const updateNotificationConfig = (updates) => mutateConfig((config) => {
-  const current = config.global?.notifications || {};
-
-  config.global = config.global || {};
-  config.global.notifications = {
-    ...current,
-    ...updates,
-    telegram: updates.telegram
-      ? { ...current.telegram, ...updates.telegram }
-      : current.telegram,
-    events: updates.events
-      ? { ...current.events, ...updates.events }
-      : current.events,
-    quietHours: updates.quietHours
-      ? { ...current.quietHours, ...updates.quietHours }
-      : current.quietHours,
-  };
-});
-
-/**
- * Get backup configuration with defaults
- * @returns {Object} Backup config
- */
-const getBackupConfig = () => {
-  const config = loadConfig();
-  const backup = config.global?.backup || {};
-  const result = {
-    ...GLOBAL_DEFAULTS.backup,
-    ...backup,
-  };
-  // Files edited by hand bypass the API schema. Never hand an unsafe delay
-  // to either backup timer, which could churn through the retained history.
-  for (const key of ['intervalMs', 'fundStateIntervalMs']) {
-    const value = result[key];
-    if (!Number.isFinite(value) || value < BACKUP_INTERVAL_BOUNDS.min || value > BACKUP_INTERVAL_BOUNDS.max) {
-      result[key] = GLOBAL_DEFAULTS.backup[key];
-    }
-  }
-  return result;
-};
-
-/**
- * Update backup configuration
- * @param {Object} updates - Backup config updates
- * @returns {Object} Updated full configuration
- */
-const updateBackupConfig = (updates) => mutateConfig((config) => {
-  const current = config.global?.backup || {};
-
-  config.global = config.global || {};
-  config.global.backup = {
-    ...GLOBAL_DEFAULTS.backup,
-    ...current,
-    ...updates,
-  };
-});
-
-/**
- * Default sentinel configuration
- */
-const SENTINEL_DEFAULTS = {
-  enabled: false,
-  pollIntervalMs: 300000,
-  maxAlerts: 200,
-  aiClassification: { enabled: true, maxPerHour: 10 },
-  feeds: [
-    { name: 'Federal Reserve', url: 'https://www.federalreserve.gov/feeds/press_all.xml', enabled: true },
-    { name: 'CNBC Economy', url: 'https://www.cnbc.com/id/20910258/device/rss/rss.html', enabled: true },
-  ],
-  keywords: {
-    critical: ['rate cut', 'rate hike', 'emergency', 'FOMC decision', 'quantitative easing', 'quantitative tightening', 'war declared', 'nuclear'],
-    warning: ['FOMC', 'inflation', 'CPI', 'unemployment', 'tariff', 'sanctions', 'Iran', 'geopolitical', 'fed funds'],
-    info: ['fed speech', 'treasury', 'GDP', 'economic data'],
-  },
-};
-
-// Same "~1ms setInterval" clamp risk as BACKUP_INTERVAL_BOUNDS (#547): a
-// 60s floor keeps a bad pollIntervalMs from hammering every configured RSS
-// feed back-to-back, a 24h ceiling keeps it from effectively never running.
-// Shared with SENTINEL_CONFIG_SCHEMA (config-validator.js) so the PUT-time
-// bound and the on-disk clamp below never drift apart (issue #687).
-const SENTINEL_POLL_INTERVAL_BOUNDS = { min: 60000, max: 86400000 };
-// alerts.slice(-maxAlerts) (sentinel-service.js) needs a small positive
-// integer — 0/negative/non-finite would keep the wrong tail (or none).
-const SENTINEL_MAX_ALERTS_BOUNDS = { min: 1, max: 5000 };
-
-/**
- * Get sentinel configuration with defaults
- * @returns {Object} Sentinel config
- */
-const getSentinelConfig = () => {
-  const config = loadConfig();
-  const sentinel = config.global?.sentinel || {};
-  const result = {
-    ...SENTINEL_DEFAULTS,
-    ...sentinel,
-    aiClassification: { ...SENTINEL_DEFAULTS.aiClassification, ...sentinel.aiClassification },
-    keywords: { ...SENTINEL_DEFAULTS.keywords, ...sentinel.keywords },
-    feeds: sentinel.feeds || SENTINEL_DEFAULTS.feeds,
-  };
-  // Files edited by hand (or saved before #687 added PUT-time validation)
-  // bypass the API schema. Never hand an out-of-range value to the poll
-  // timer or the alert-history trim — clamp back to the default the same
-  // way getBackupConfig does for the backup timers.
-  if (!Number.isFinite(result.pollIntervalMs) || result.pollIntervalMs < SENTINEL_POLL_INTERVAL_BOUNDS.min || result.pollIntervalMs > SENTINEL_POLL_INTERVAL_BOUNDS.max) {
-    result.pollIntervalMs = SENTINEL_DEFAULTS.pollIntervalMs;
-  }
-  if (!Number.isInteger(result.maxAlerts) || result.maxAlerts < SENTINEL_MAX_ALERTS_BOUNDS.min || result.maxAlerts > SENTINEL_MAX_ALERTS_BOUNDS.max) {
-    result.maxAlerts = SENTINEL_DEFAULTS.maxAlerts;
-  }
-  return result;
-};
-
-/**
- * Update sentinel configuration
- * @param {Object} updates - Sentinel config updates
- * @returns {Object} Updated full configuration
- */
-const updateSentinelConfig = (updates) => mutateConfig((config) => {
-  const current = config.global?.sentinel || {};
-
-  config.global = config.global || {};
-  config.global.sentinel = {
-    ...current,
-    ...updates,
-    aiClassification: updates.aiClassification
-      ? { ...current.aiClassification, ...updates.aiClassification }
-      : current.aiClassification,
-    keywords: updates.keywords
-      ? { ...current.keywords, ...updates.keywords }
-      : current.keywords,
-  };
-});
+// Domain factories have no runtime import of this facade. All writes retain the
+// same mutateConfig closure, so settings share fund writes' lock and fresh read.
+const { getNotificationConfig, updateNotificationConfig } = createNotificationSettings({ loadConfig, mutateConfig });
+const { getAggressivenessPresets, updateAggressivenessPresets } = createAggressivenessSettings({ loadConfig, mutateConfig, computeDiff, configLogger });
+const { getBackupConfig, updateBackupConfig } = createBackupSettings({ loadConfig, mutateConfig, globalDefaults: GLOBAL_DEFAULTS });
+const { getSentinelConfig, updateSentinelConfig } = createSentinelSettings({ loadConfig, mutateConfig });
 
 const initializeConfigBase = () => {
   const result = reconcileBaseConfig({ dataDir: pathsModule.DATA_DIR, baseConfigFile: resolveBaseConfigFile(), logger: configLogger });

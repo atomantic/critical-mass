@@ -1141,6 +1141,45 @@ describe('mutateConfig', () => {
     assert.deepEqual(configUtils.getFundsForExchange('gemini'), ['BTC-USD']);
   });
 
+  it('keeps fresh external edits across every global settings writer (#1719)', (t) => {
+    const files = setupPublishedConfig(t, {
+      base: { exchanges: {}, global: {} },
+      user: { global: {
+        notifications: { telegram: { botToken: 'token', chatId: 'old' }, events: { error: false }, quietHours: { start: 22 } },
+        aggressivenessPresets: { moderate: { kFactor: 0.7 } },
+        backup: { maxBackups: 14 },
+        sentinel: { aiClassification: { enabled: false, maxPerHour: 8 }, keywords: { critical: ['existing'] }, feeds: [] },
+      } },
+    });
+    const writers = [
+      () => updateNotificationConfig({ telegram: { chatId: 'new' }, events: { buy_filled: false }, quietHours: { end: 8 } }),
+      () => updateAggressivenessPresets({ moderate: { ...DEFAULT_AGGRESSIVENESS_PRESETS.moderate, kFactor: 0.7, cautionScale: 0.42 } }),
+      () => updateBackupConfig({ includePriceCache: true }),
+      () => configUtils.updateSentinelConfig({ aiClassification: { maxPerHour: 12 }, keywords: { warning: ['added'] } }),
+    ];
+    for (const [index, write] of writers.entries()) {
+      writeBehindCache({ ...files.user(), global: { ...files.user().global, externalEdit: index } });
+      const result = write();
+      assert.equal(result.global.externalEdit, index, 'settings must return the fresh locked config');
+      assert.equal(files.user().global.externalEdit, index, "settings must preserve another writer's edit");
+    }
+    const global = files.user().global;
+    assert.deepEqual(global.notifications, {
+      telegram: { botToken: 'token', chatId: 'new' }, events: { error: false, buy_filled: false }, quietHours: { start: 22, end: 8 },
+    });
+    assert.deepEqual(global.aggressivenessPresets, { moderate: { kFactor: 0.7, cautionScale: 0.42 } });
+    assert.equal(global.backup.maxBackups, 14);
+    assert.equal(global.backup.includePriceCache, true);
+    assert.deepEqual(global.sentinel, {
+      aiClassification: { enabled: false, maxPerHour: 12 }, keywords: { critical: ['existing'], warning: ['added'] }, feeds: [],
+    });
+    files.restart();
+    assert.equal(getNotificationConfig().telegram.chatId, 'new');
+    assert.equal(getAggressivenessPresets().moderate.cautionScale, 0.42);
+    assert.equal(getBackupConfig().maxBackups, 14);
+    assert.deepEqual(getSentinelConfig().feeds, []);
+  });
+
   it('writes nothing when the mutator throws and releases the lock', (t) => {
     const files = setupPublishedConfig(t, { base: { exchanges: {}, global: { schedulerInterval: 30000 } }, user: { global: { a: 1 } } });
     assert.throws(() => configUtils.mutateConfig((config) => {
