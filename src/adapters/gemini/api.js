@@ -80,6 +80,7 @@ const isRetryableRateLimit = (status, attempt, maxRetries) =>
 /**
  * Create a Gemini adapter instance
  * @param {string|null} [keysPath] - Path to keys file (defaults to data/gemini-keys.json)
+ * @param {{sleep?: (ms: number) => Promise<void>}} [options] - Adapter options; `sleep` overrides the 429 retry backoff delay and defaults to the production sleep.
  * @returns {ExchangeAdapter} Gemini adapter with all required methods
  */
 const createGeminiAdapter = (keysPath = null, { sleep = defaultSleep } = {}) => {
