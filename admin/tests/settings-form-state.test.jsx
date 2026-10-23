@@ -49,10 +49,16 @@ describe('KeysConfig Test Connection', () => {
     ['Crypto.com text and password inputs', 'cryptocom', [['API Key', 'new-key'], ['API Secret', 'new-secret']]],
   ])('locks %s through save and metadata refresh', async (_name, exchange, values) => {
     const inputFor = label => screen.getByLabelText(label === 'API Key' ? /^API Key/ : label === 'API Secret' ? /^API Secret/ : label)
+    const saveButton = () => screen.getByRole('button', { name: /^(Save Keys|Saving\.\.\.)$/ })
     let finishSave
+    let finishRefresh
+    let keyReads = 0
     const fetchMock = vi.fn((url, options) => {
       if (options?.method === 'PUT') {
         return new Promise(resolve => { finishSave = () => resolve(ok({})) })
+      }
+      if (url === `/api/${exchange}/keys` && ++keyReads > 1) {
+        return new Promise(resolve => { finishRefresh = () => resolve(ok({ configured: true, fields: { apiKey: true } })) })
       }
       return Promise.resolve(ok({ configured: true, fields: { apiKey: true } }))
     })
@@ -61,7 +67,7 @@ describe('KeysConfig Test Connection', () => {
     await screen.findByRole('button', { name: 'Test Connection' })
 
     for (const [label, value] of values) fireEvent.change(inputFor(label), { target: { value } })
-    const save = screen.getByRole('button', { name: 'Save Keys' })
+    const save = saveButton()
     fireEvent.click(save)
     await waitFor(() => expect(finishSave).toBeTypeOf('function'))
 
@@ -76,9 +82,15 @@ describe('KeysConfig Test Connection', () => {
     expect(inputFor(values[0][0]).value).toBe(values[0][1])
 
     finishSave()
-    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => url === `/api/${exchange}/keys`)).toHaveLength(2))
+    await waitFor(() => expect(finishRefresh).toBeTypeOf('function'))
+    for (const [label] of values) expect(inputFor(label).disabled).toBe(true)
+    expect(saveButton().disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'Delete Keys' }).disabled).toBe(true)
+    for (const [label] of values) expect(inputFor(label).value).toBe(values.find(([candidate]) => candidate === label)[1])
+
+    finishRefresh()
+    await waitFor(() => expect(inputFor(values[0][0]).disabled).toBe(false))
     for (const [label] of values) expect(inputFor(label).value).toBe('')
-    expect(inputFor(values[0][0]).disabled).toBe(false)
   })
 
   it('retains credentials and allows retry when save fails', async () => {
