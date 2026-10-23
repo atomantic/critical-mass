@@ -42,6 +42,7 @@ const {
   GLOBAL_DEFAULTS,
 } = require('./config-utils');
 const { isPerFundFile, normalizeExchangeTreeToPairs } = require('./migration');
+const { serializeFundState } = require('./dry-run-state');
 
 const BACKUPS_DIR = BACKUP_DIR;
 
@@ -736,6 +737,44 @@ const configuredFundIdentities = (config) => Object.entries(config?.exchanges ||
 );
 
 /**
+ * Complete the accounting generation for precisely the restored funds. Missing
+ * sidecars mean absence, except dry-run state which needs a tombstone to prevent
+ * the legacy application-root importer resurrecting a newer simulation.
+ */
+const planAbsentFundState = (stageDir, funds) => funds.flatMap(({ exchange, pair }) => {
+  if ([exchange, pair].some((segment) => !isSafeFundStateSegment(segment) || segment === '.' || segment === '..')) {
+    throw new Error('Unsafe fund identity in restore plan');
+  }
+  return FUND_STATE_SNAPSHOT_FILENAMES.flatMap((name) => {
+    const dest = path.join(exchange, pair, name);
+    if (fs.existsSync(path.join(stageDir, dest))) return [];
+    return [{ dest, operation: name === 'dry-run-state.json' ? 'reset' : 'remove',
+      ...(name === 'dry-run-state.json' ? { contents: serializeFundState() } : {}) }];
+  });
+});
+
+/**
+ * Full archives can include retired funds and pre-manifest layouts. After layout
+ * translation, discover only directories carrying authoritative accounting files;
+ * also include the archive's configured funds, including entirely empty ones.
+ * Never infer a restored fund from destination state or a cache-only directory.
+ */
+const restoredArchiveFunds = (stageDir, snapshot) => {
+  const funds = new Map(configuredFundIdentities(snapshot).map((fund) => [path.join(fund.exchange, fund.pair), fund]));
+  for (const exchange of fs.readdirSync(stageDir, { withFileTypes: true })) {
+    if (!exchange.isDirectory() || NON_EXCHANGE_DIRS.has(exchange.name) || exchange.name.startsWith('.')) continue;
+    for (const pair of fs.readdirSync(path.join(stageDir, exchange.name), { withFileTypes: true })) {
+      if (!pair.isDirectory() || pair.name.startsWith('.')) continue;
+      const fundDir = path.join(stageDir, exchange.name, pair.name);
+      if (fs.readdirSync(fundDir).some((name) => FUND_STATE_SNAPSHOT_FILENAMES.includes(name))) {
+        funds.set(path.join(exchange.name, pair.name), { exchange: exchange.name, pair: pair.name });
+      }
+    }
+  }
+  return [...funds.values()];
+};
+
+/**
  * Read a fund-state snapshot manifest and reject malformed snapshots before
  * they can be listed or restored.
  * @param {string} snapshotDir
@@ -1022,6 +1061,7 @@ const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrid
   const { snapshotDir } = resolved;
 
   const stageDir = fs.mkdtempSync(path.join(paths.dataDir, STAGE_PREFIX));
+  let absent;
   try {
     for (const name of resolved.files) {
       const source = path.join(snapshotDir, exchange, pair, name);
@@ -1031,12 +1071,15 @@ const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrid
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.copyFileSync(source, target);
     }
+    absent = planAbsentFundState(stageDir, [{ exchange, pair }]);
   } catch (error) {
     fs.rmSync(stageDir, { recursive: true, force: true });
     return { success: false, error: `Fund-state restore staging failed: ${error.message}` };
   }
 
-  const applied = applyStagedFiles({ dataDir: paths.dataDir, stageDir, filename: `${snapshotId}/${exchange}/${pair}`, logger });
+  const applied = applyStagedFiles({ dataDir: paths.dataDir, stageDir, filename: `${snapshotId}/${exchange}/${pair}`, logger,
+    absent,
+  });
   if (!applied.success && applied.rolledBack !== false) fs.rmSync(stageDir, { recursive: true, force: true });
   return applied;
 };
@@ -1498,6 +1541,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
       stageDir: tempDir,
       filename,
       logger,
+      absent: planAbsentFundState(tempDir, restoredArchiveFunds(tempDir, snapshot)),
       // Skip the backups directory, root credential files, key files and the
       // archive's own metadata.
       skip: (name, isRoot, rel) => name === 'backups'
