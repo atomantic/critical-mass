@@ -87,6 +87,23 @@ describe('durable full archive publication', () => {
 });
 
 describe('durable fund-state snapshot publication before retention', () => {
+  it('refuses an incomplete staged snapshot before publication or pruning (#1703)', () => {
+    const previous = createFundStateBackup({ paths, now: new Date('2026-10-01'), maxBackups: 1 });
+    assert.equal(previous.success, true, previous.error);
+    const events = observePublication((file) => {
+      if (path.basename(file) === 'fund-state-manifest.json') {
+        fs.unlinkSync(path.join(path.dirname(file), 'coinbase', 'BTC-USDC', 'fill-ledger.json'));
+      }
+      return false;
+    });
+    const result = createFundStateBackup({ paths, now: new Date('2026-10-02'), maxBackups: 1 });
+    assert.equal(result.success, false);
+    assert.match(result.error, /incomplete.*fill-ledger.json/);
+    assert.equal(events.some(({ kind }) => kind === 'rename'), false);
+    assert.deepEqual(listFundStateBackups({ paths }).map(({ snapshotId }) => snapshotId), [previous.snapshotId]);
+    assert.deepEqual(fs.readdirSync(backupsDir), ['fund-state']);
+  });
+
   const points = [...stateFiles, 'fund-state-manifest.json', 'fund directory', 'exchange directory', 'staging directory', 'snapshot parent', 'backups directory', 'data directory'];
   for (const point of points) {
     it(`preserves the last recovery point when flushing ${point} fails`, async () => {

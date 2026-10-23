@@ -11,6 +11,8 @@ const path = require('path');
 const {
   createFundStateBackup,
   listFundStateBackups,
+  pruneFundStateBackups,
+  checkFundStateRestorePreconditions,
   restoreFundStateBackup,
 } = require('../src/backup-service');
 
@@ -144,3 +146,133 @@ for (const explicitEmpty of [false, true]) {
     await exerciseFundRestoreGeneration(t, 'hourly', explicitEmpty);
   });
 }
+
+// Each damaged recovery point has an older, complete sibling. Invalid entries
+// must remain available for diagnosis without spending the retention budget.
+const makeRecoveryFixture = (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-snapshot-validation-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const paths = { dataDir: path.join(root, 'data'), baseConfigFile: path.join(root, 'config.json') };
+  writeJson(paths.baseConfigFile, { exchanges: { coinbase: { pairs: { 'BTC-USDC': {} } } } });
+  const liveDir = path.join(paths.dataDir, 'coinbase', 'BTC-USDC');
+  writeJson(path.join(liveDir, 'fill-ledger.json'), { fills: ['saved'] });
+  writeJson(path.join(liveDir, 'regime-state.json'), { generation: 'saved' });
+  const older = createFundStateBackup({ paths, now: new Date('2026-10-01'), maxBackups: 10 });
+  const newer = createFundStateBackup({ paths, now: new Date('2026-10-02'), maxBackups: 10 });
+  assert.equal(older.success, true, older.error);
+  assert.equal(newer.success, true, newer.error);
+  const snapshotDir = path.join(paths.dataDir, 'backups', 'fund-state', newer.snapshotId);
+  const manifestFile = path.join(snapshotDir, 'fund-state-manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+  return { root, paths, older, newer, liveDir, snapshotDir, manifestFile, manifest,
+    ledger: path.join(snapshotDir, 'coinbase', 'BTC-USDC', 'fill-ledger.json') };
+};
+
+const damagedSnapshots = {
+  'missing child': ({ ledger }) => fs.unlinkSync(ledger),
+  'unreadable child': ({ ledger }) => fs.chmodSync(ledger, 0),
+  'nonregular child': ({ ledger }) => { fs.unlinkSync(ledger); fs.mkdirSync(ledger); },
+  'symlinked child': ({ ledger, root }) => {
+    const outside = path.join(root, 'outside.json');
+    writeJson(outside, { outside: true });
+    fs.unlinkSync(ledger);
+    fs.symlinkSync(outside, ledger);
+  },
+  'symlinked exchange': ({ snapshotDir, root }) => {
+    const source = path.join(snapshotDir, 'coinbase');
+    const outside = path.join(root, 'outside-exchange');
+    fs.renameSync(source, outside);
+    fs.symlinkSync(outside, source, 'dir');
+  },
+  'symlinked pair': ({ snapshotDir, root }) => {
+    const source = path.join(snapshotDir, 'coinbase', 'BTC-USDC');
+    const outside = path.join(root, 'outside-pair');
+    fs.renameSync(source, outside);
+    fs.symlinkSync(outside, source, 'dir');
+  },
+  'symlinked manifest': ({ manifestFile, root }) => {
+    const outside = path.join(root, 'outside-manifest.json');
+    fs.renameSync(manifestFile, outside);
+    fs.symlinkSync(outside, manifestFile);
+  },
+  'invalid creation time': ({ manifest }) => { manifest.createdAt = 'not-a-time'; },
+  'missing creation time': ({ manifest }) => { delete manifest.createdAt; },
+  'snapshot identity mismatch': ({ manifest }) => { manifest.snapshotId = 'another-snapshot'; },
+  'empty funds': ({ manifest }) => { manifest.funds = []; },
+  'null fund': ({ manifest }) => { manifest.funds.push(null); },
+  'duplicate fund': ({ manifest }) => { manifest.funds.push({ ...manifest.funds[0] }); },
+  'missing fund identity': ({ manifest }) => { delete manifest.funds[0].exchange; },
+  'escaping fund identity': ({ manifest }) => { manifest.funds[0].exchange = '..'; },
+  'dot fund identity': ({ manifest }) => { manifest.funds[0].pair = '.'; },
+  'empty file list': ({ manifest }) => { manifest.funds[0].files = []; },
+  'duplicate file': ({ manifest }) => { manifest.funds[0].files.push(manifest.funds[0].files[0]); },
+  'escaping file': ({ manifest }) => { manifest.funds[0].files.push('../../outside.json'); },
+  'unsupported file': ({ manifest }) => { manifest.funds[0].files.push('chart-data-buffer.json'); },
+  'incomplete second fund': ({ manifest }) => { manifest.funds.push({ exchange: 'coinbase', pair: 'ETH-USDC', files: ['fill-ledger.json'] }); },
+};
+
+describe('complete snapshot validation (#1703)', () => {
+  for (const [name, damage] of Object.entries(damagedSnapshots)) {
+    it(`excludes ${name} from listing, preflight and retention without deleting it`, (t) => {
+      const fixture = makeRecoveryFixture(t);
+      damage(fixture);
+      // A symlinked manifest must stay untouched, rather than being rewritten.
+      if (name !== 'symlinked manifest') writeJson(fixture.manifestFile, fixture.manifest);
+      const before = fs.readdirSync(fixture.paths.dataDir).sort();
+      assert.deepEqual(listFundStateBackups({ paths: fixture.paths }).map((entry) => entry.snapshotId), [fixture.older.snapshotId]);
+      const preflight = checkFundStateRestorePreconditions(fixture.newer.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths });
+      assert.equal(preflight.ok, false);
+      assert.match(preflight.error, /snapshot|manifest/i);
+      assert.deepEqual(fs.readdirSync(fixture.paths.dataDir).sort(), before, 'validation is read-only');
+      assert.deepEqual(pruneFundStateBackups(1, { paths: fixture.paths }), { pruned: 0, remaining: 1 });
+      assert.ok(fs.existsSync(fixture.snapshotDir), 'invalid recovery directory is preserved');
+      assert.ok(fs.existsSync(path.join(path.dirname(fixture.snapshotDir), fixture.older.snapshotId)), 'healthy older recovery point survives');
+    });
+  }
+
+  it('rechecks a source lost after preflight and preserves every live destination', (t) => {
+    const fixture = makeRecoveryFixture(t);
+    writeJson(path.join(fixture.liveDir, 'fill-ledger.json'), { fills: ['live'] });
+    writeJson(path.join(fixture.liveDir, 'closed-trades.json'), ['live-sidecar']);
+    const before = fs.readdirSync(fixture.liveDir).map((name) => [name, fs.readFileSync(path.join(fixture.liveDir, name))]);
+    assert.deepEqual(checkFundStateRestorePreconditions(fixture.newer.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths }), { ok: true });
+    fs.unlinkSync(fixture.ledger);
+    const result = restoreFundStateBackup(fixture.newer.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths });
+    assert.equal(result.success, false);
+    assert.match(result.error, /incomplete.*fill-ledger.json/);
+    assert.deepEqual(fs.readdirSync(fixture.liveDir).map((name) => [name, fs.readFileSync(path.join(fixture.liveDir, name))]), before);
+    assert.equal(fs.readdirSync(fixture.paths.dataDir).some((name) => name.startsWith('.restore-')), false);
+  });
+
+  it('refuses a file lost during staging before any live replacement or removal', (t) => {
+    const fixture = makeRecoveryFixture(t);
+    writeJson(path.join(fixture.liveDir, 'closed-trades.json'), ['live-sidecar']);
+    const before = fs.readdirSync(fixture.liveDir).map((name) => [name, fs.readFileSync(path.join(fixture.liveDir, name))]);
+    const copy = fs.copyFileSync;
+    let copied = 0;
+    t.mock.method(fs, 'copyFileSync', (source, target) => {
+      if (++copied === 2) fs.unlinkSync(source);
+      return copy(source, target);
+    });
+    const result = restoreFundStateBackup(fixture.newer.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths });
+    assert.equal(result.success, false);
+    assert.match(result.error, /staging failed/);
+    assert.equal(copied, 2, 'failure happens after a state file was staged');
+    assert.deepEqual(fs.readdirSync(fixture.liveDir).map((name) => [name, fs.readFileSync(path.join(fixture.liveDir, name))]), before);
+    assert.equal(fs.readdirSync(fixture.paths.dataDir).some((name) => name.startsWith('.restore-')), false);
+  });
+
+  it('validates the staged restore before planning absent-sidecar changes', (t) => {
+    const fixture = makeRecoveryFixture(t);
+    writeJson(path.join(fixture.liveDir, 'closed-trades.json'), ['live-sidecar']);
+    const before = fs.readdirSync(fixture.liveDir).map((name) => [name, fs.readFileSync(path.join(fixture.liveDir, name))]);
+    const copy = fs.copyFileSync;
+    t.mock.method(fs, 'copyFileSync', (source, target) => {
+      if (path.basename(source) !== 'fill-ledger.json') copy(source, target);
+    });
+    const result = restoreFundStateBackup(fixture.newer.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths });
+    assert.equal(result.success, false);
+    assert.match(result.error, /staging failed.*incomplete/);
+    assert.deepEqual(fs.readdirSync(fixture.liveDir).map((name) => [name, fs.readFileSync(path.join(fixture.liveDir, name))]), before);
+  });
+});

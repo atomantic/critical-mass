@@ -24,6 +24,7 @@ const { performRestore } = require('../src/restore-coordinator');
 const maintenance = require('../src/restore-maintenance');
 const {
   createBackup,
+  createFundStateBackup,
   restoreBackup,
   checkRestorePreconditions,
   checkFundStateRestorePreconditions,
@@ -328,5 +329,28 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
     const missing = checkFundStateRestorePreconditions('20260101T000000Z', 'coinbase', 'ETH-USDC', { paths: install.paths });
     assert.deepEqual(missing, { ok: false, error: 'Fund-state snapshot not found' });
     assert.equal(checkFundStateRestorePreconditions('../x', 'coinbase', 'ETH-USDC', { paths: install.paths }).ok, false);
+  });
+
+  it('refuses an incomplete hourly snapshot before maintenance or stop-all (#1703)', async () => {
+    const install = makeInstall('dest', BASE);
+    writeJson(path.join(install.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), { fills: ['synthetic'] });
+    const created = createFundStateBackup({ paths: install.paths });
+    assert.equal(created.success, true, created.error);
+    fs.unlinkSync(path.join(install.dataDir, 'backups', 'fund-state', created.snapshotId, 'coinbase', 'ETH-USDC', 'fill-ledger.json'));
+    const calls = [];
+    const before = listDir(install.dataDir);
+    const { status, body } = await performRestore({
+      filename: created.snapshotId,
+      exchangeIPCMap: { coinbase: recordingIPC('coinbase', ['ETH-USDC'], calls) },
+      configuredExchanges: ['coinbase'],
+      preflight: () => checkFundStateRestorePreconditions(created.snapshotId, 'coinbase', 'ETH-USDC', { paths: install.paths }),
+      restore: () => assert.fail('invalid snapshots must not reach restore'),
+      logger: silentLogger,
+    });
+    assert.equal(status, 400);
+    assert.match(body.error, /incomplete.*fill-ledger.json/);
+    assert.deepEqual(calls, [], 'no engine maintenance, stop or restart call');
+    assert.deepEqual(listDir(install.dataDir), before, 'no staging or recovery state');
+    assert.equal(maintenance.isMaintenanceActive(), false);
   });
 });
