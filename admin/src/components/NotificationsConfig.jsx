@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { useState, useEffect, useRef } from 'react'
 import { apiGet, apiPost, apiPut, describeMutationFailure } from '../utils/apiClient'
 import usePolling from '../hooks/usePolling'
@@ -172,13 +173,13 @@ function NotificationsConfig() {
           <div className="bg-red-900/50 border border-red-700 text-red-200 p-4 rounded-lg mb-4">
             {error}
           </div>
-          <button
+          <Button
             onClick={() => fetchConfig()}
             disabled={loading}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+            variant="primary" size="md" className="font-medium"
           >
             {loading ? 'Retrying...' : 'Retry'}
-          </button>
+          </Button>
         </div>
       </div>
     )
@@ -208,34 +209,34 @@ function NotificationsConfig() {
           )}
         </div>
         <div className="flex gap-3">
-          <button
+          <Button
             onClick={handleTest}
             disabled={testing || hasUnsavedChanges || !config.telegram.chatId}
             title={hasUnsavedChanges ? 'Save your changes first — the test uses the saved settings' : undefined}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
+            variant="secondary" size="md" className="font-medium"
           >
             {testing ? 'Sending...' : 'Send Test'}
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={handleSave}
             disabled={saving}
-            className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
+            variant="primary" size="md" className="font-medium"
           >
             {saving ? 'Saving...' : 'Save'}
-          </button>
+          </Button>
         </div>
       </div>
 
       {refreshError && (
         <div className="p-3 rounded-lg bg-yellow-900/50 border border-yellow-700 text-yellow-200 flex items-center justify-between gap-3">
           <span>Settings may be out of date: {refreshError}</span>
-          <button
+          <Button
             onClick={() => fetchConfig({ silent: true })}
             disabled={saving}
-            className="px-3 py-1 bg-yellow-800 hover:bg-yellow-900 rounded-sm font-medium transition-colors"
+            variant="warning" size="sm" className="font-medium"
           >
             Refresh
-          </button>
+          </Button>
         </div>
       )}
 

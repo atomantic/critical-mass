@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import React from 'react'
 
 export default function BuysPausedBanner({ buysPaused, cycleBuys, maxCycleBuys, isRunning, isDrainingOrClosed, setResetCycleConfirm, resettingCycle }) {
@@ -17,13 +18,13 @@ export default function BuysPausedBanner({ buysPaused, cycleBuys, maxCycleBuys, 
             </div>
           </div>
           {isRunning && !isDrainingOrClosed && (
-            <button
+            <Button
               onClick={() => setResetCycleConfirm(true)}
               disabled={resettingCycle}
-              className="shrink-0 px-3 py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:opacity-50 text-white text-xs font-medium rounded-sm transition-colors"
+              variant="warning" size="compact-xs" className="shrink-0 font-medium"
             >
               {resettingCycle ? 'Resetting…' : 'Reset cycle & resume buying'}
-            </button>
+            </Button>
           )}
         </div>
       )}

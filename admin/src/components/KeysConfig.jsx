@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { useState, useEffect, useRef } from 'react'
 import ModalDialog from './ModalDialog'
 import { plural } from '../utils/plural.mjs'
@@ -253,9 +254,9 @@ function KeysConfig({ exchange, funds = [], onSave }) {
               </span>
             )}
           </div>
-          <button
+          <Button
             onClick={() => setShowSecrets(!showSecrets)}
-            className="text-sm text-gray-400 hover:text-white flex items-center gap-1"
+            variant="quiet" size="bare" className="gap-1"
           >
             {showSecrets ? (
               <>
@@ -273,7 +274,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
                 Show Secrets
               </>
             )}
-          </button>
+          </Button>
         </div>
 
         {config.notice && (
@@ -388,31 +389,31 @@ function KeysConfig({ exchange, funds = [], onSave }) {
 
         {/* Action Buttons */}
         <div className="mt-6 flex flex-col sm:flex-row gap-3">
-          <button
+          <Button
             onClick={handleSave}
             disabled={saving || !hasAllFields}
-            className="flex-1 min-h-11 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+            variant="primary" size="md" touchTarget="always" className="flex-1 font-medium"
           >
             {saving ? 'Saving...' : 'Save Keys'}
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={handleTest}
             disabled={testing || !canTest}
-            className="min-h-11 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+            variant="secondary" size="md" touchTarget="always" className="font-medium"
           >
             {testing ? 'Testing...' : 'Test Connection'}
-          </button>
+          </Button>
           {hasTypedKeys && (
             <p className="text-xs text-gray-400 sm:self-center">Save the new keys to test them.</p>
           )}
           {hasAnyKeys && (
-            <button
+            <Button
               onClick={() => setConfirmDelete(true)}
               disabled={deleting}
-              className="min-h-11 px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-red-900 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+              variant="destructive" size="md" touchTarget="always" className="font-medium"
             >
               Delete Keys
-            </button>
+            </Button>
           )}
         </div>
 
@@ -432,23 +433,23 @@ function KeysConfig({ exchange, funds = [], onSave }) {
             </p>
             {deleteError && <p role="alert" className="text-red-300 mb-4">{deleteError}</p>}
             <div className="flex flex-col-reverse sm:flex-row gap-3 sm:justify-end">
-              <button
+              <Button
                 type="button"
                 autoFocus
                 onClick={() => { setConfirmDelete(false); setDeleteError(null) }}
                 disabled={deleting}
-                className="min-h-11 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded-lg font-medium transition-colors"
+                variant="secondary" size="md" touchTarget="always" className="font-medium"
               >
                 Keep keys
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 onClick={handleDelete}
                 disabled={deleting}
-                className="min-h-11 px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded-lg font-medium transition-colors"
+                variant="destructive" size="md" touchTarget="always" className="font-medium"
               >
                 {deleting ? 'Deleting…' : `Delete ${exchangeName} keys`}
-              </button>
+              </Button>
             </div>
           </ModalDialog>
         )}

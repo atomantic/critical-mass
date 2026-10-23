@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import React, { useState } from 'react'
 import { plural } from '../../utils/plural.mjs'
 import { describeActionFailure } from '../../utils/actionFailure.mjs'
@@ -133,13 +134,13 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
 
       {/* Recalculate Button */}
       {!recalcPreview && (
-        <button
+        <Button
           onClick={handleRecalculatePreview}
           disabled={recalculating}
-          className="mt-2 w-full text-xs px-3 py-1.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-300 disabled:opacity-50 transition-colors"
+          variant="secondary" size="compact-xs" className="mt-2 w-full"
         >
           {recalculating ? 'Calculating...' : 'Recalculate from Fills'}
-        </button>
+        </Button>
       )}
 
       {/* Recalculate Preview Modal */}
@@ -147,12 +148,12 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
         <div className="mt-3 p-3 bg-gray-900 rounded-sm border border-yellow-600/50">
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm font-medium text-yellow-400">Recalculate Preview</span>
-            <button
+            <Button
               onClick={() => setRecalcPreview(null)}
-              className="text-gray-400 hover:text-white"
+              variant="quiet" size="inline"
             >
               ×
-            </button>
+            </Button>
           </div>
 
           {recalcPreview.orphansFixed > 0 && (
@@ -203,19 +204,19 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
           )}
 
           <div className="flex gap-2">
-            <button
+            <Button
               onClick={handleRecalculateApply}
               disabled={recalculating}
-              className="flex-1 text-xs px-3 py-1.5 rounded-sm bg-yellow-800 hover:bg-yellow-900 text-white disabled:opacity-50"
+              variant="warning" size="compact-xs" className="flex-1"
             >
               {recalculating ? 'Applying...' : 'Apply Changes'}
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={() => setRecalcPreview(null)}
-              className="text-xs px-3 py-1.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-300"
+              variant="secondary" size="compact-xs"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       )}

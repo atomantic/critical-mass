@@ -98,6 +98,7 @@ function createView(props = {}) {
   }
   const stubs = {
     react: React,
+    './ui/Button': ({ children, ...props }) => React.createElement('button', props, children),
     '../hooks/usePolling': loadUsePolling(pollingCode, React, clock),
     '../utils/apiClient': apiClientStub(fetchImpl),
     './charts/chartUtils': { formatCurrency: value => `$${value}`, formatPrice: value => `$${value}`, formatAsset: String },

@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { useEffect, useState } from 'react'
 import { apiGet, apiPost, apiPut, onUnauthorized } from '../utils/apiClient'
 
@@ -100,9 +101,9 @@ export default function OperatorLogin({ children }) {
           <div className="text-3xl mb-3" aria-hidden="true">⚛</div>
           <h1 className="text-2xl font-semibold">Can&apos;t reach the gateway</h1>
           <p className="mt-2 text-sm text-gray-400">critical-mass did not respond. Check that it is running, then try again.</p>
-          <button type="button" onClick={checkSession} className="mt-6 w-full rounded-lg bg-blue-600 px-4 py-2 font-medium hover:bg-blue-500">
+          <Button type="button" onClick={checkSession} variant="primary" size="md" className="mt-6 w-full font-medium">
             Try again
-          </button>
+          </Button>
         </section>
       </main>
     )
@@ -172,9 +173,9 @@ export default function OperatorLogin({ children }) {
           </>
         )}
         {error && <p className="mt-3 text-sm text-red-400" role="alert">{error}</p>}
-        <button type="submit" className="mt-6 w-full rounded-lg bg-blue-600 px-4 py-2 font-medium hover:bg-blue-500">
+        <Button type="submit" variant="primary" size="md" className="mt-6 w-full font-medium">
           {bootstrapRequired ? 'Create operator password' : 'Sign in'}
-        </button>
+        </Button>
       </form>
     </main>
   )

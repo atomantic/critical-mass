@@ -11,9 +11,10 @@ describe('Sentinel dashboard touch targets', () => {
   })
 
   it('applies it to every operational control', () => {
-    const uses = src.match(/\$\{TOUCH_BTN\}/g) || []
-    // Stop, Start, Force Poll, Enable/Disable, feed switch, Remove, Clear All, Dismiss
-    assert.ok(uses.length >= 8, `expected >=8 uses, got ${uses.length}`)
+    const sharedButtons = src.match(/touchTarget="always"/g) || []
+    // Stop, Start, Force Poll, Enable/Disable, retries, Remove, Add Feed, Clear All, Dismiss.
+    assert.ok(sharedButtons.length >= 10, `expected >=10 shared controls, got ${sharedButtons.length}`)
+    assert.match(src, /role="switch"[\s\S]*?\$\{TOUCH_BTN\}/)
   })
 
   it('keeps the compact visual switch track inside the 44px button', () => {

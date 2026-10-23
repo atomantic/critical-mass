@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import DestructiveConfirmation from '../DestructiveConfirmation'
 import useSentinelSocket from '../../hooks/useSentinelSocket'
@@ -277,41 +278,41 @@ export default function SentinelDashboard() {
 
           <div className="ml-auto flex flex-wrap gap-2">
             {status?.running ? (
-              <button onClick={handleStop} className={`${TOUCH_BTN} px-3 py-1.5 bg-red-700 hover:bg-red-800 rounded-sm text-sm`}>
+              <Button onClick={handleStop} variant="destructive" size="compact" touchTarget="always" className="shrink-0">
                 Stop
-              </button>
+              </Button>
             ) : (
-              <button
+              <Button
                 onClick={handleStart}
                 disabled={!serviceEnabled}
                 title={serviceEnabled ? undefined : 'Enable the service first'}
-                className={`${TOUCH_BTN} px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed rounded-sm text-sm`}
+                variant="success" size="compact" touchTarget="always" className="shrink-0"
               >
                 Start
-              </button>
+              </Button>
             )}
-            <button
+            <Button
               onClick={handleForcePoll}
               disabled={polling}
-              className={`${TOUCH_BTN} px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm`}
+              variant="primary" size="compact" touchTarget="always" className="shrink-0"
             >
               {polling ? 'Polling...' : 'Force Poll'}
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={handleToggleEnabled}
               disabled={!status?.config || feedWritePending}
-              className={`${TOUCH_BTN} px-3 py-1.5 rounded-sm text-sm ${status?.config?.enabled ? 'bg-yellow-800 hover:bg-yellow-900' : 'bg-gray-600 hover:bg-gray-700'} ${!status?.config ? 'opacity-50 cursor-not-allowed' : ''}`}
+              variant={status?.config?.enabled ? 'warning' : 'secondary'} size="compact" touchTarget="always" className="shrink-0"
             >
               {serviceEnabled ? 'Disable service' : 'Enable service'}
-            </button>
+            </Button>
           </div>
         </div>
         {statusError && (
           <div role="alert" className="mt-3 flex items-center justify-between gap-2 text-sm text-red-400">
             <span>{status ? `${statusError} Showing the last loaded status.` : statusError}</span>
-            <button onClick={fetchStatus} className={`${TOUCH_BTN} px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm`}>
+            <Button onClick={fetchStatus} variant="secondary" size="compact" touchTarget="always" className="shrink-0">
               Retry
-            </button>
+            </Button>
           </div>
         )}
         <p className="mt-3 text-xs text-gray-400">
@@ -339,7 +340,7 @@ export default function SentinelDashboard() {
               </button>
               <span className="text-sm text-white font-medium min-w-0 flex-1 sm:flex-none sm:min-w-[120px] wrap-break-word">{feed.name}</span>
               <span className="order-last basis-full sm:order-0 sm:basis-0 text-xs text-gray-400 truncate min-w-0 sm:flex-1">{feed.url}</span>
-              <button aria-label={`Remove ${feed.name} feed`} onClick={() => setConfirmation({ kind: 'feed', feed: { ...feed } })} disabled={feedWritePending} className={`${TOUCH_BTN} text-red-400 hover:text-red-300 text-sm px-2`}>Remove</button>
+              <Button aria-label={`Remove ${feed.name} feed`} onClick={() => setConfirmation({ kind: 'feed', feed: { ...feed } })} disabled={feedWritePending} variant="quiet-danger" size="xs" touchTarget="always" className="shrink-0">Remove</Button>
             </div>
           ))}
         </div>
@@ -360,13 +361,13 @@ export default function SentinelDashboard() {
             placeholder="RSS feed URL"
             className="px-3 py-1.5 bg-gray-900 border border-gray-600 rounded-sm text-sm text-white w-full min-w-0 sm:flex-1"
           />
-          <button
+          <Button
             onClick={handleAddFeed}
             disabled={feedWritePending || !status?.config || !newFeedName.trim() || !newFeedUrl.trim()}
-            className="px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded-sm text-sm min-h-[44px]"
+            variant="success" size="compact" touchTarget="always"
           >
             Add Feed
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -389,9 +390,9 @@ export default function SentinelDashboard() {
               <option value="info">Info</option>
             </select>
             {alerts?.length > 0 && (
-              <button onClick={requestClearAll} className={`${TOUCH_BTN} text-red-400 hover:text-red-300 text-sm px-2`}>
+              <Button onClick={requestClearAll} variant="quiet-danger" size="xs" touchTarget="always" className="shrink-0">
                 Clear all alerts
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -399,9 +400,9 @@ export default function SentinelDashboard() {
         {alertsError && (
           <div role="alert" className="flex items-center justify-between gap-2 mb-3 text-sm text-red-400">
             <span>{alerts ? `${alertsError} Showing the last loaded alerts.` : alertsError}</span>
-            <button onClick={fetchAlerts} className={`${TOUCH_BTN} px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-sm`}>
+            <Button onClick={fetchAlerts} variant="secondary" size="compact" touchTarget="always" className="shrink-0">
               Retry
-            </button>
+            </Button>
           </div>
         )}
         {!alerts ? (
@@ -449,13 +450,13 @@ export default function SentinelDashboard() {
                     )}
                   </div>
                   {!alert.dismissed && (
-                    <button
+                    <Button
                       onClick={() => handleDismiss(alert.id)}
-                      className={`${TOUCH_BTN} text-gray-400 hover:text-white text-sm px-2`}
+                      variant="quiet" size="xs" touchTarget="always" className="shrink-0"
                       title="Dismiss"
                     >
                       Dismiss
-                    </button>
+                    </Button>
                   )}
                 </div>
               </div>

@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { useState, useEffect, useRef, useCallback, useId } from 'react'
 import { FileText, Save, Camera, Upload, Check, X, Loader2 } from '../icons'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
@@ -277,7 +278,7 @@ export default function ContractSetup({ initialContract }) {
         {providersError ? (
           <div role="alert" className="text-xs text-red-400 bg-red-900/20 rounded-sm px-2 py-1">
             {providersError}
-            <button type="button" onClick={loadProviders} className="ml-2 underline">Retry</button>
+            <Button type="button" onClick={loadProviders} variant="link" size="inline" className="ml-2 underline">Retry</Button>
           </div>
         ) : providers?.length === 0 && (
           <div className="text-xs text-gray-400">No enabled API providers. Add one on the AI Providers page to read screenshots.</div>
@@ -465,18 +466,18 @@ export default function ContractSetup({ initialContract }) {
               )}
             </div>
             <div className="flex gap-2 pt-1">
-              <button
+              <Button
                 onClick={applyPreview}
-                className="flex-1 py-1.5 bg-purple-600 hover:bg-purple-700 rounded-sm text-xs font-medium transition-colors flex items-center justify-center gap-1"
+                variant="purple" size="compact-xs" className="flex-1 font-medium gap-1"
               >
                 <Check size={12} /> Apply
-              </button>
-              <button
+              </Button>
+              <Button
                 onClick={() => setPreview(null)}
-                className="flex-1 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-sm text-xs font-medium transition-colors flex items-center justify-center gap-1"
+                variant="secondary" size="compact-xs" className="flex-1 font-medium gap-1"
               >
                 <X size={12} /> Cancel
-              </button>
+              </Button>
             </div>
           </div>
         )}
@@ -536,38 +537,30 @@ export default function ContractSetup({ initialContract }) {
           <div>
             <label className="text-xs text-gray-400 block mb-1">Direction</label>
             <div className="flex gap-2">
-              <button
+              <Button
                 onClick={() => setDirection('Up')}
-                className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${
-                  direction === 'Up'
-                    ? 'bg-green-800 text-white'
-                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                }`}
+                variant={direction === 'Up' ? 'success' : 'secondary'} size="compact" className="flex-1 font-medium"
               >
                 Up
-              </button>
-              <button
+              </Button>
+              <Button
                 onClick={() => setDirection('Down')}
-                className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${
-                  direction === 'Down'
-                    ? 'bg-red-700 text-white'
-                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                }`}
+                variant={direction === 'Down' ? 'destructive' : 'secondary'} size="compact" className="flex-1 font-medium"
               >
                 Down
-              </button>
+              </Button>
             </div>
           </div>
         </div>
 
-        <button
+        <Button
           onClick={handleSave}
           disabled={saving}
-          className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm font-medium transition-colors flex items-center justify-center gap-2"
+          variant="primary" size="md" className="w-full font-medium gap-2"
         >
           <Save size={14} />
           {saving ? 'Saving...' : saved ? 'Saved' : 'Save Contract'}
-        </button>
+        </Button>
         {saveError && <div className="text-xs text-red-400" role="alert">{saveError}</div>}
       </div>
     </div>

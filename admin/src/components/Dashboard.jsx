@@ -1,4 +1,4 @@
-import { TOUCH_TARGET } from './ui/touchTarget'
+import Button from './ui/Button'
 import { getIntervalMs } from '../utils/intervals.mjs'
 import { plural } from '../utils/plural.mjs'
 import { fetchConvertPreview } from './regime/useDcaConversion'
@@ -256,7 +256,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
           {liveError && (
             <div role="alert" className="mb-3 flex items-center justify-between gap-2 text-sm text-red-400">
               <span>{liveError}</span>
-              <button type="button" onClick={fetchLive} className="px-2 py-1 rounded bg-gray-700 text-white">Retry</button>
+              <Button type="button" onClick={fetchLive} variant="secondary" size="xs">Retry</Button>
             </div>
           )}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
@@ -451,43 +451,35 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
               <h3 className="text-sm font-semibold">Pending Sell Orders ({stats.pendingOrders})</h3>
               <div className="flex flex-wrap gap-2">
-                <button
+                <Button
                   onClick={handleSync}
                   disabled={syncing}
-                  className={`px-3 py-1 text-xs rounded font-medium ${
-                    syncing
-                      ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                      : 'bg-blue-600 hover:bg-blue-500 text-white'
-                  }`}
+                  variant="primary" size="xs" className="font-medium"
                 >
                   {syncing ? 'Syncing...' : 'Sync Orders'}
-                </button>
+                </Button>
                 {stats.pendingOrders >= 2 && (
-                  <button
+                  <Button
                     onClick={handleConsolidate}
                     disabled={consolidating}
-                    className={`px-3 py-1 text-xs rounded font-medium ${
-                      consolidating
-                        ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                        : 'bg-purple-600 hover:bg-purple-500 text-white'
-                    }`}
+                    variant="purple" size="xs" className="font-medium"
                   >
                     {consolidating ? 'Consolidating...' : 'Consolidate'}
-                  </button>
+                  </Button>
                 )}
                 {regimeStatusError && (
                   <span role="alert" className="flex items-center gap-2 text-xs text-yellow-400">
                     Regime status unavailable
-                    <button type="button" onClick={() => setRegimeStatusNonce(n => n + 1)} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-0.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-200">Retry</button>
+                    <Button type="button" onClick={() => setRegimeStatusNonce(n => n + 1)} variant="secondary" size="xs">Retry</Button>
                   </span>
                 )}
                 {!regimeRunning && (
-                  <button
+                  <Button
                     onClick={handlePreviewExport}
-                    className="px-3 py-1 text-xs rounded-sm font-medium bg-blue-600 hover:bg-blue-500 text-white"
+                    variant="primary" size="xs" className="font-medium"
                   >
                     Export to Regime
-                  </button>
+                  </Button>
                 )}
               </div>
             </div>
@@ -611,21 +603,21 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
             Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.
           </p>
           <div className="flex justify-end gap-3">
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors`}
+            <Button
+              variant="cancel" size="md"
               onClick={() => setShowConvertConfirm(false)}
               disabled={converting}
               autoFocus
             >
               Cancel
-            </button>
-            <button
-              className={`${TOUCH_TARGET} px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded-sm transition-colors disabled:opacity-50`}
+            </Button>
+            <Button
+              variant="primary" size="md"
               onClick={handleExecuteExport}
               disabled={converting}
             >
               {converting ? 'Exporting...' : 'Confirm Export'}
-            </button>
+            </Button>
           </div>
         </ModalDialog>
       )}

@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { useState, useEffect, useCallback, useId } from 'react'
 import DestructiveConfirmation from '../DestructiveConfirmation'
 import { plural } from '../../utils/plural.mjs'
@@ -179,13 +180,13 @@ export default function TradeHistory() {
             <span className="text-xs text-gray-400">{plural(summary.count, "trade")}</span>
           )}
         </div>
-        <button
+        <Button
           disabled={busy}
           onClick={() => { resetForm(); setShowForm(!showForm) }}
-          className="flex items-center justify-center gap-1 min-h-11 px-2 text-xs bg-emerald-600 hover:bg-emerald-700 rounded-sm transition-colors"
+          variant="success" size="xs" touchTarget="always" className="gap-1"
         >
           <Plus size={12} /> Add Trade
-        </button>
+        </Button>
       </div>
 
       {/* P&L Summary */}
@@ -312,19 +313,15 @@ export default function TradeHistory() {
             <label className="text-2xs text-gray-400 block mb-0.5">Direction</label>
             <div className="flex gap-1">
               {['', 'up', 'down'].map(d => (
-                <button
+                <Button
                   disabled={busy}
                   key={d}
                   type="button"
                   onClick={() => setForm({ ...form, direction: d })}
-                  className={`flex-1 py-1 text-xs rounded transition-colors ${
-                    form.direction === d
-                      ? d === 'up' ? 'bg-green-600 text-white' : d === 'down' ? 'bg-red-600 text-white' : 'bg-gray-600 text-white'
-                      : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                  }`}
+                  variant={form.direction === d ? (d === 'up' ? 'success' : d === 'down' ? 'destructive' : 'secondary') : 'ghost'} size="xs" className="flex-1"
                 >
                   {d === '' ? 'Auto' : d === 'up' ? 'Up' : 'Down'}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
@@ -349,21 +346,21 @@ export default function TradeHistory() {
             </div>
           )}
           <div className="flex gap-2">
-            <button
+            <Button
               disabled={busy}
               type="submit"
-              className="flex-1 min-h-11 bg-emerald-600 hover:bg-emerald-700 rounded-sm text-xs font-medium transition-colors flex items-center justify-center gap-1"
+              variant="success" size="xs" touchTarget="always" className="flex-1 font-medium gap-1"
             >
               <Check size={12} /> {editId != null ? 'Update' : 'Save'}
-            </button>
-            <button
+            </Button>
+            <Button
               disabled={busy}
               type="button"
               onClick={resetForm}
-              className="flex-1 min-h-11 bg-gray-700 hover:bg-gray-600 rounded-sm text-xs font-medium transition-colors flex items-center justify-center gap-1"
+              variant="secondary" size="xs" touchTarget="always" className="flex-1 font-medium gap-1"
             >
               <X size={12} /> Cancel
-            </button>
+            </Button>
           </div>
         </form>
       )}
@@ -371,9 +368,9 @@ export default function TradeHistory() {
       {loadError && (
         <div role="alert" className="flex items-center justify-between gap-2 mb-2 text-xs text-red-400">
           <span>{loaded ? `${loadError} Showing the last loaded trades.` : loadError}</span>
-          <button disabled={busy} onClick={fetchTrades} className="min-h-11 px-2 bg-gray-700 hover:bg-gray-600 text-white rounded-sm shrink-0">
+          <Button disabled={busy} onClick={fetchTrades} variant="secondary" size="xs" touchTarget="always" className="shrink-0">
             Retry
-          </button>
+          </Button>
         </div>
       )}
 
@@ -403,12 +400,12 @@ export default function TradeHistory() {
                   </td>
                   <td className="py-1 pl-1">
                     <div className="flex gap-2">
-                      <button disabled={busy} onClick={() => handleEdit(t)} aria-label={`Edit trade from ${fmtDate(t.date)}`} className="trade-history-touch-target min-h-11 min-w-11 inline-flex items-center justify-center text-gray-400 hover:text-blue-400 transition-colors">
+                      <Button disabled={busy} onClick={() => handleEdit(t)} aria-label={`Edit trade from ${fmtDate(t.date)}`} variant="quiet-blue" size="inline" touchTarget="always" className="trade-history-touch-target">
                         <Edit3 size={11} />
-                      </button>
-                      <button disabled={busy} onClick={() => setDeleteTrade(t)} aria-label={`Delete trade from ${fmtDate(t.date)}`} className="trade-history-touch-target min-h-11 min-w-11 inline-flex items-center justify-center text-gray-400 hover:text-red-400 transition-colors">
+                      </Button>
+                      <Button disabled={busy} onClick={() => setDeleteTrade(t)} aria-label={`Delete trade from ${fmtDate(t.date)}`} variant="quiet-red" size="inline" touchTarget="always" className="trade-history-touch-target">
                         <Trash2 size={11} />
-                      </button>
+                      </Button>
                     </div>
                   </td>
                 </tr>

@@ -1,9 +1,9 @@
+import Button from '../ui/Button'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Link } from '../../lib/router'
 import { Play, Square, RotateCcw, Volume2, VolumeX, BarChart3 } from '../icons'
 import { useUpDownSocket } from '../../hooks/useUpDownSocket'
 
-const ENGINE_CONTROL_CLASS = 'min-h-11 min-w-11 shrink-0 inline-flex items-center justify-center'
 import PriceChart from './PriceChart'
 import ContractSetup from './ContractSetup'
 import PositionTracker from './PositionTracker'
@@ -172,9 +172,9 @@ export default function UpDownDashboard() {
     return (
       <div role="alert" className="bg-gray-800 rounded-lg p-8 text-center space-y-3">
         <div className="text-red-400">{statusError || 'Could not load UpDown status.'}</div>
-        <button onClick={fetchStatus} className="min-h-11 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-sm text-sm">
+        <Button onClick={fetchStatus} variant="secondary" size="md" touchTarget="always">
           Retry
-        </button>
+        </Button>
       </div>
     )
   }
@@ -184,9 +184,9 @@ export default function UpDownDashboard() {
       {statusError && (
         <div role="alert" className="flex items-center justify-between gap-2 text-sm text-red-400">
           <span>{statusError} Showing the last loaded status.</span>
-          <button onClick={fetchStatus} className="min-h-11 px-3 bg-gray-700 hover:bg-gray-600 text-white rounded-sm shrink-0">
+          <Button onClick={fetchStatus} variant="secondary" size="md" touchTarget="always" className="shrink-0">
             Retry
-          </button>
+          </Button>
         </div>
       )}
 
@@ -227,17 +227,17 @@ export default function UpDownDashboard() {
             </div>
 
             {/* Audio toggle */}
-            <button
+            <Button
               onClick={() => setAudioEnabled(!audioEnabled)}
-              className={`${ENGINE_CONTROL_CLASS} rounded-sm transition-colors ${audioEnabled ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'}`}
+              variant={audioEnabled ? 'primary' : 'secondary'} size="icon" touchTarget="always" className="shrink-0"
               title={audioEnabled ? 'Disable audio alerts' : 'Enable audio alerts'}
               aria-label={audioEnabled ? 'Disable audio alerts' : 'Enable audio alerts'}
             >
               {audioEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
-            </button>
+            </Button>
 
             {/* Restart server */}
-            <button
+            <Button
               onClick={async () => {
                 setRestarting(true)
                 try {
@@ -252,32 +252,32 @@ export default function UpDownDashboard() {
                 }
               }}
               disabled={restarting}
-              className={`${ENGINE_CONTROL_CLASS} rounded-sm transition-colors ${restarting ? 'bg-yellow-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
+              variant={restarting ? 'warning' : 'secondary'} size="icon" touchTarget="always" className="shrink-0"
               title="Restart server (pm2)"
               aria-label="Restart server"
             >
               <RotateCcw size={14} className={restarting ? 'animate-spin' : ''} />
-            </button>
+            </Button>
 
             {/* Start/Stop */}
             {isRunning ? (
-              <button
+              <Button
                 onClick={handleStop}
                 disabled={stopping}
-                className={`${ENGINE_CONTROL_CLASS} px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded-sm text-sm font-medium transition-colors gap-1.5`}
+                variant="destructive" size="compact" touchTarget="always" className="shrink-0 font-medium gap-1.5"
               >
                 <Square size={14} />
                 {stopping ? '...' : 'Stop'}
-              </button>
+              </Button>
             ) : (
-              <button
+              <Button
                 onClick={handleStart}
                 disabled={starting}
-                className={`${ENGINE_CONTROL_CLASS} px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded-sm text-sm font-medium transition-colors gap-1.5`}
+                variant="success" size="compact" touchTarget="always" className="shrink-0 font-medium gap-1.5"
               >
                 <Play size={14} />
                 {starting ? '...' : 'Start'}
-              </button>
+              </Button>
             )}
           </div>
         </div>

@@ -55,7 +55,7 @@ describe('FailedSellPlacements (issue #1035)', () => {
     assert.match(html, /2026-10-11 12:00:00/)
     const button = html.match(/<button[^>]*>[^<]*<\/button>/)[0]
     assert.match(button, />Retry sell</)
-    assert.doesNotMatch(button, /disabled/)
+    assert.doesNotMatch(button, /\sdisabled(?:\s|=|>)/)
   })
 
   it('blocks retry and shows the reconcile path while a placement intent needs attention', () => {
@@ -70,7 +70,7 @@ describe('FailedSellPlacements (issue #1035)', () => {
     assert.match(html, /Check client order id coid-42 on the exchange/)
     assert.doesNotMatch(html, /not shown/)
     assert.match(html, /Earlier sell outcome unknown \(intent <span[^>]*>intent-42/)
-    assert.match(html.match(/<button[^>]*>/)[0], /disabled/)
+    assert.match(html.match(/<button[^>]*>/)[0], /\sdisabled(?:\s|=|>)/)
   })
 
   it('labels only the row being retried and disables the others meanwhile', () => {
@@ -79,7 +79,7 @@ describe('FailedSellPlacements (issue #1035)', () => {
     assert.equal(buttons.length, 2)
     assert.match(buttons[0], />Retrying\.\.\.</)
     assert.match(buttons[1], />Retry sell</)
-    assert.ok(buttons.every(b => /disabled/.test(b)))
+    assert.ok(buttons.every(b => /\sdisabled(?:\s|=|>)/.test(b)))
   })
 })
 

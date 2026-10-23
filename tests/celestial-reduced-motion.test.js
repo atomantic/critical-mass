@@ -80,7 +80,7 @@ describe('CelestialVisualization pause control and canvas name (issue #539)', ()
   })
 
   it('renders a real toggle button with accessible pressed state, not window.confirm/alert', () => {
-    assert.match(celestialVisualizationSource, /<button[\s\S]*?aria-pressed={motionPaused}/)
+    assert.match(celestialVisualizationSource, /<Button[\s\S]*?aria-pressed={motionPaused}/)
     assert.doesNotMatch(celestialVisualizationSource, /window\.(confirm|alert)/)
   })
 

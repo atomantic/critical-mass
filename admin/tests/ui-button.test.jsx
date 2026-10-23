@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import Button from '../src/components/ui/Button'
 import RetryBanner from '../src/components/ui/RetryBanner'
 
@@ -49,4 +49,30 @@ it('Button maps tinted, text-only and responsive-size options', () => {
   expect(link.className).toContain('text-blue-400')
   expect(link.className).toContain('md:px-3')
   expect(screen.getByRole('button', { name: 'M' }).className).toContain('bg-blue-600/50')
+})
+
+// These controls were already 44px on desktop before adopting Button.
+it('keeps an always-touch target and forwards form, accessibility and ref props', () => {
+  const ref = { current: null }
+  const onClick = vi.fn()
+  render(<Button ref={ref} touchTarget="always" type="submit" aria-label="Create fund" disabled onClick={onClick}>Create</Button>)
+  const button = screen.getByRole('button', { name: 'Create fund' })
+  expect(ref.current).toBe(button)
+  expect(button.type).toBe('submit')
+  expect(button.disabled).toBe(true)
+  expect(button.className).toContain('min-h-11')
+  expect(button.className).not.toContain('md:min-h-0')
+  fireEvent.click(button)
+  expect(onClick).not.toHaveBeenCalled()
+})
+
+it('keeps in-sentence links inline while retaining explicit always-touch controls', () => {
+  const { container } = render(<p>Could not load. <Button variant="link" size="inline">Retry</Button><Button variant="quiet-red" size="inline" touchTarget="always">Delete</Button></p>)
+  const retry = within(container).getByRole('button', { name: 'Retry' })
+  const remove = within(container).getByRole('button', { name: 'Delete' })
+  expect(retry.className).toContain('inline')
+  expect(retry.className).not.toContain('min-h-11')
+  expect(remove.className).toContain('min-h-11')
+  expect(remove.className).toContain('hover:text-red-400')
+  expect(remove.className).toContain('text-gray-400')
 })

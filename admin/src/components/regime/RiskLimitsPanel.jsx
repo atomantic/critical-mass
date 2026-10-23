@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import React from 'react'
 
 export default function RiskLimitsPanel({ quoteCurrency, risk, position, config, committedUsdc, asset, setDrawdownResumeConfirm }) {
@@ -7,14 +8,14 @@ export default function RiskLimitsPanel({ quoteCurrency, risk, position, config,
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-xs font-medium text-gray-400">Risk Limits</h3>
           {risk.isDrawdownPaused && (
-            <button
+            <Button
               onClick={() => setDrawdownResumeConfirm(true)}
               title={risk.equityDepleted ? 'Fund equity is depleted — the time-based auto-reset does not apply; resume manually once equity recovers.' : undefined}
-              className="px-2 py-0.5 bg-green-800 hover:bg-green-900 text-white text-2xs rounded-sm flex items-center gap-1"
+              variant="success" size="micro" className="gap-1"
             >
               <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
               Resume
-            </button>
+            </Button>
           )}
         </div>
         {risk.isDrawdownPaused && risk.equityDepleted && (

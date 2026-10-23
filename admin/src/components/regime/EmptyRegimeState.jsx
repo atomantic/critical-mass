@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import React from 'react'
 
 export default function EmptyRegimeState({ isDryRun, dcaState, dcaStateError, retryDcaState, handlePreviewConvert }) {
@@ -22,16 +23,16 @@ export default function EmptyRegimeState({ isDryRun, dcaState, dcaStateError, re
           {dcaStateError && (
             <p role="alert" className="mt-4 text-sm text-red-400">
               Could not check for DCA orders to upgrade: {dcaStateError}{' '}
-              <button type="button" onClick={retryDcaState} className="ml-1 min-h-11 min-w-11 md:min-h-0 md:min-w-0 px-2 py-1 rounded-sm bg-gray-700 hover:bg-gray-600 text-white">Retry</button>
+              <Button type="button" onClick={retryDcaState} variant="secondary" size="xs" className="ml-1">Retry</Button>
             </p>
           )}
           {dcaState?.orders?.some(o => o.status === 'pending') && (
-            <button
-              className="mt-4 px-5 py-2.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
+            <Button
+              variant="primary" size="lg" className="mt-4 font-medium"
               onClick={handlePreviewConvert}
             >
               Upgrade DCA Orders to Regime Engine
-            </button>
+            </Button>
           )}
         </div>
       </div>

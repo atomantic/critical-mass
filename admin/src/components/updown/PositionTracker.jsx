@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { useState, useEffect, useRef } from 'react'
 import { Crosshair, Save, Trash2 } from '../icons'
 import { calculateManualPositionPnl } from './position-tracker-math'
@@ -139,23 +140,23 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
         )}
 
         <div className="flex gap-2">
-          <button
+          <Button
             onClick={handleSave}
             disabled={saving}
-            className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-sm text-sm font-medium transition-colors flex items-center justify-center gap-2"
+            variant="primary" size="md" className="flex-1 font-medium gap-2"
           >
             <Save size={14} />
             {saving ? 'Saving...' : 'Save'}
-          </button>
+          </Button>
           {hasPosition && (
-            <button
+            <Button
               onClick={handleClear}
               disabled={clearing}
-              className="py-2 px-3 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 rounded-sm text-sm text-red-400 transition-colors flex items-center gap-1"
+              variant="soft-danger" size="md" className="gap-1"
             >
               <Trash2 size={14} />
               {clearing ? '...' : 'Clear tracker'}
-            </button>
+            </Button>
           )}
         </div>
       </div>

@@ -20,7 +20,9 @@ test('regime order actions share a touch target without changing their handlers'
     dashboardSource,
     /export const REGIME_ORDER_TOUCH_TARGET = 'min-h-11 min-w-11 inline-flex items-center justify-center regime-order-touch-target'/,
   )
-  assert.equal((dashboardSource.match(/\$\{REGIME_ORDER_TOUCH_TARGET\}/g) || []).length, 2)
+  assert.equal((dashboardSource.match(/\$\{REGIME_ORDER_TOUCH_TARGET\}/g) || []).length, 1)
+  assert.match(dashboardSource, /className=\{REGIME_ORDER_TOUCH_TARGET\}/)
+  assert.equal((dashboardSource.match(/touchTarget="always"/g) || []).length, 2)
   assert.equal((dashboardSource.match(/renderTpEditBtn\(order, '(pct|price)'\)/g) || []).length, 2)
   assert.match(dashboardSource, /title="Edit TP target"[\s\S]*?e\.stopPropagation\(\)[\s\S]*?setTpEditModal\(/)
   assert.match(dashboardSource, /title=\{`Roll up into \$\{tgtLabel\}`\}[\s\S]*?e\.stopPropagation\(\)[\s\S]*?setRollUpConfirm\(/)

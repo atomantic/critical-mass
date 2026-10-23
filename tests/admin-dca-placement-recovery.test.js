@@ -63,6 +63,7 @@ function view(name, fetchImpl, extra = {}) {
   }
   const stubs = {
     react: hooks,
+    './ui/Button': 'button',
     './ModalDialog': () => null,
     './ui/touchTarget': { TOUCH_TARGET: 'min-h-11' },
     '../utils/api': { pairQuery: pair => `?pair=${encodeURIComponent(pair)}` },

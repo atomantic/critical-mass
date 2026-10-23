@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import React, { useState } from 'react'
 import { formatPriceByMagnitude } from '../charts/chartUtils'
 import { formatTimestamp } from './regimeFormat'
@@ -62,23 +63,23 @@ export default function PlacementIntentsPanel({ placementIntents, asset, exchang
                     {intent.price ? ` @ ${formatPriceByMagnitude(intent.price)}` : ''}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
+                    <Button
                       type="button"
                       onClick={() => setIntentConfirm({ intent, action: 'adopt' })}
                       disabled={reconcilingIntent || !intent.clientOrderId}
                       title={intent.clientOrderId ? 'Look the order up on the exchange and adopt it into tracking' : 'No client order id was recorded — check the exchange manually, then discard'}
-                      className="px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-sm transition-colors disabled:opacity-50"
+                      variant="primary" size="xs"
                     >
                       Adopt
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                       type="button"
                       onClick={() => setIntentConfirm({ intent, action: 'discard' })}
                       disabled={reconcilingIntent}
-                      className="px-2 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded-sm transition-colors disabled:opacity-50"
+                      variant="caution" size="xs"
                     >
                       Discard
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 <div className="mt-2 text-gray-400">{intent.recoveryHint}</div>

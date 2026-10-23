@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { CONFIG_FIELD_LABELS, describeConfigSaveError } from '../../utils/configSaveError.mjs'
 import { apiPut } from '../../utils/apiClient'
 import React, { useState, useMemo } from 'react'
@@ -82,7 +83,7 @@ export default function AggressivenessControl({ config, exchange, pairQuery, onC
       {presetsError && !presets && (
         <div role="alert" className="flex items-center gap-3 text-xs text-yellow-400 mb-2">
           <span>Presets unavailable</span>
-          <button type="button" onClick={() => retryPresets?.()} className="min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center px-2 py-0.5 rounded-sm bg-gray-700 hover:bg-gray-600 text-gray-200">Retry</button>
+          <Button type="button" onClick={() => retryPresets?.()} variant="secondary" size="xs">Retry</Button>
         </div>
       )}
 
@@ -156,14 +157,14 @@ export default function AggressivenessControl({ config, exchange, pairQuery, onC
             </div>
           </div>
           {canApply && (
-            <button
+            <Button
               type="button"
               onClick={() => handleLevelChange(previewLevel)}
               disabled={updating}
-              className={`mt-2 min-w-11 min-h-11 w-full px-3 py-1.5 text-xs font-medium rounded-sm border border-blue-400 bg-blue-600 text-white ${updating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-blue-500'}`}
+              variant="primary" size="compact-xs" touchTarget="always" className="mt-2 w-full font-medium border border-blue-400"
             >
               {updating ? 'Applying...' : `Apply ${previewMeta?.label || previewLevel}`}
-            </button>
+            </Button>
           )}
         </div>
       )}

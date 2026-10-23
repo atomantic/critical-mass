@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { describeConfigSaveError } from '../../utils/configSaveError.mjs'
 import { apiPut } from '../../utils/apiClient'
 import React, { useId, useState } from 'react'
@@ -77,21 +78,21 @@ function CapitalAdjust({ apy, exchange, pairQuery, fetchConfig, fetchStatus, add
           autoFocus
           disabled={capitalAdjusting}
         />
-        <button
+        <Button
           onClick={handleCapitalAdjust}
           disabled={capitalAdjusting}
-          className="text-green-400 hover:text-green-300 disabled:opacity-50"
+          variant="quiet-success" size="inline"
           title="Apply"
         >
           {capitalAdjusting ? '...' : '✓'}
-        </button>
-        <button
+        </Button>
+        <Button
           onClick={() => setCapitalAdjustMode(false)}
-          className="text-gray-400 hover:text-gray-300"
+          variant="quiet" size="inline"
           title="Cancel"
         >
           {'✗'}
-        </button>
+        </Button>
       </span>
     )
   }

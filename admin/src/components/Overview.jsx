@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { Link, useNavigate } from '../lib/router'
 import { ExternalLink } from './icons'
@@ -262,13 +263,13 @@ function Overview() {
       {/* Header with Add Fund button */}
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-bold text-white">Funds</h1>
-        <button
+        <Button
           onClick={() => setAddFundOpen(true)}
-          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded-sm text-sm font-medium text-white transition-colors"
+          variant="primary" size="compact" className="font-medium"
           title="Create a new trading fund on an existing exchange"
         >
           + Add Fund
-        </button>
+        </Button>
       </div>
 
       <AddFundModal
@@ -285,7 +286,7 @@ function Overview() {
       {exchangesError && (
         <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-red-700 bg-red-900/20 p-4 mb-4 text-red-200">
           <span>Unable to load exchanges: {exchangesError}</span>
-          <button onClick={load} className="px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-700 text-white">Retry</button>
+          <Button onClick={load} variant="primary" size="compact">Retry</Button>
         </div>
       )}
 
@@ -361,7 +362,7 @@ function Overview() {
                   </Link>
                   <span className="text-xs px-2 py-0.5 rounded-sm bg-amber-900/60 text-amber-200">Status unavailable</span>
                 </div>
-                <button onClick={load} className="mt-4 px-3 py-1.5 rounded-sm bg-blue-600 hover:bg-blue-700 text-white text-sm">Retry</button>
+                <Button onClick={load} variant="primary" size="compact" className="mt-4">Retry</Button>
               </div>
             )
           }

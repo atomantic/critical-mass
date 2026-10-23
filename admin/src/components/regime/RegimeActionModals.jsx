@@ -1,5 +1,4 @@
 import Button from '../ui/Button'
-import { TOUCH_TARGET } from '../ui/touchTarget'
 import React from 'react'
 import ModalDialog from '../ModalDialog'
 import { plural } from '../../utils/plural.mjs'
@@ -277,18 +276,18 @@ const RegimeActionModals = ({
           <p id="tp-edit-description" className="text-gray-400 text-xs font-mono mb-3">body …{tpEditModal.bodyLabel}</p>
           {/* Mode tabs */}
           <div className="flex mb-3 border border-gray-600 rounded-sm overflow-hidden">
-            <button
-              className={`${TOUCH_TARGET} flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${tpEditModal.mode === 'pct' ? 'bg-cyan-800 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'}`}
+            <Button
+              variant={tpEditModal.mode === 'pct' ? 'accent' : 'secondary'} size="compact-xs" className="flex-1 font-medium"
               onClick={() => onSetTpMode('pct')}
             >
               Percentage
-            </button>
-            <button
-              className={`${TOUCH_TARGET} flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${tpEditModal.mode === 'price' ? 'bg-cyan-800 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'}`}
+            </Button>
+            <Button
+              variant={tpEditModal.mode === 'price' ? 'accent' : 'secondary'} size="compact-xs" className="flex-1 font-medium"
               onClick={() => onSetTpMode('price')}
             >
               Limit Price
-            </button>
+            </Button>
           </div>
           {tpEditModal.mode === 'pct' ? (
             <div className="mb-1">

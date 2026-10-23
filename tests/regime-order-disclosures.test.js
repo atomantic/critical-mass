@@ -13,7 +13,7 @@ let active
 before(async () => {
   const { rolldown } = await import(pathToFileURL(adminRequire.resolve('rolldown')).href)
   for (const name of ['OpenOrdersTable', 'FilledOrdersSection']) {
-    const bundle = await rolldown({ input: path.join(__dirname, `../admin/src/components/regime/${name}.jsx`), external: ['react'], transform: { jsx: 'react' } })
+    const bundle = await rolldown({ input: path.join(__dirname, `../admin/src/components/regime/${name}.jsx`), external: ['react', '../ui/Button'], transform: { jsx: 'react' } })
     const code = (await bundle.generate({ format: 'cjs' })).output[0].code
     await bundle.close()
     const hooks = {
@@ -29,7 +29,7 @@ before(async () => {
       },
     }
     const m = { exports: {} }
-    vm.runInNewContext(code, { module: m, exports: m.exports, require: name => name === 'react' ? hooks : adminRequire(name), console })
+    vm.runInNewContext(code, { module: m, exports: m.exports, require: name => name === 'react' ? hooks : name === '../ui/Button' ? 'button' : adminRequire(name), console })
     components[name] = m.exports.default || m.exports
   }
 })

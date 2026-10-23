@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { useId, useRef, useState } from 'react'
 import ModalDialog from './ModalDialog'
 
@@ -28,8 +29,8 @@ export default function DestructiveConfirmation({ title, children, confirmLabel,
       <p id={bodyId} className="mt-3 text-gray-300">{children}</p>
       {error && <p role="alert" className="mt-3 text-red-300">{error}</p>}
       <div className="mt-5 flex justify-end gap-3">
-        <button autoFocus disabled={busy} onClick={onClose} className="min-h-11 px-4 rounded-sm bg-gray-700 disabled:opacity-50">Cancel</button>
-        <button disabled={busy} onClick={confirm} className="min-h-11 px-4 rounded-sm bg-red-700 disabled:opacity-50">{busy ? 'Working...' : confirmLabel}</button>
+        <Button autoFocus disabled={busy} onClick={onClose} variant="secondary" size="md" touchTarget="always">Cancel</Button>
+        <Button disabled={busy} onClick={confirm} variant="destructive" size="md" touchTarget="always">{busy ? 'Working...' : confirmLabel}</Button>
       </div>
     </ModalDialog>
   )

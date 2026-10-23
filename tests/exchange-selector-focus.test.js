@@ -23,7 +23,7 @@ before(async () => {
   vm.runInNewContext(code, {
     module,
     exports: module.exports,
-    require: id => id === 'react' ? testReact : id === './exchangeStyles' ? { EXCHANGE_ICONS: {}, EXCHANGE_COLORS: {} } : adminRequire(id),
+    require: id => id === 'react' ? testReact : id === './ui/Button' ? 'button' : id === './exchangeStyles' ? { EXCHANGE_ICONS: {}, EXCHANGE_COLORS: {} } : adminRequire(id),
     React: testReact,
     document: {
       addEventListener: (...args) => global.document.addEventListener(...args),

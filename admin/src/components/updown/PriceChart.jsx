@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { useMemo, useState } from 'react'
 import BTCPriceChart from '../charts/BTCPriceChart'
 import { formatBTCPrice } from '../charts/chartUtils'
@@ -123,15 +124,13 @@ export default function PriceChart({ tick, indicators, weeklyTrend, dailySMA, co
       <div className="flex items-center gap-1.5">
         <span className="text-xs text-gray-400">Candles:</span>
         {CANDLE_COUNT_OPTIONS.map(opt => (
-          <button
+          <Button
             key={opt.label}
             onClick={() => setCandleCount(opt.value)}
-            className={`px-2 py-0.5 text-xs rounded transition-colors ${
-              candleCount === opt.value ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'
-            }`}
+            variant={candleCount === opt.value ? 'primary' : 'secondary'} size="xs"
           >
             {opt.label}
-          </button>
+          </Button>
         ))}
       </div>
       {/* 1-minute chart — full width */}

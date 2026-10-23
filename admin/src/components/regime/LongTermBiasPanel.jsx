@@ -1,3 +1,4 @@
+import Button from '../ui/Button'
 import { describeConfigSaveError } from '../../utils/configSaveError.mjs'
 import { apiPut } from '../../utils/apiClient'
 import LongTermBiasDetails from './LongTermBiasDetails'
@@ -124,15 +125,15 @@ export default function LongTermBiasPanel({ bias, config, presets, exchange, pai
           </div>
         )}
         {divergent && canApply && (
-          <button
+          <Button
             type="button"
             onClick={handleApplySuggested}
             disabled={applying}
             title={`Apply ${suggestedLabel} preset to ${exchange}`}
-            className={`mt-2 w-full px-2 py-1 text-2xs font-medium rounded-sm border transition-all ${suggestedStyle.border} ${suggestedStyle.text} hover:bg-gray-900/60 ${applying ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+            variant="outline" size="micro" className={`mt-2 w-full font-medium border ${suggestedStyle.border} ${suggestedStyle.text}`}
           >
             {applying ? 'Applying…' : `Apply Suggested (${suggestedLabel})`}
-          </button>
+          </Button>
         )}
       </div>
 

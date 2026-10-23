@@ -1,3 +1,4 @@
+import Button from './ui/Button'
 import { useState } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { formatLocalStamp } from '../utils/format.mjs'
@@ -63,17 +64,13 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-center">
         {['all', 'BUY', 'SELL_ORDER', 'SELL_FILLED'].map(f => (
-          <button
+          <Button
             key={f}
             onClick={() => setFilter(f)}
-            className={`px-3 py-1.5 rounded text-sm min-h-[36px] ${
-              filter === f
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
+            variant={filter === f ? 'primary' : 'secondary'} size="sm"
           >
             {f === 'all' ? 'All' : f.replace('_', ' ')}
-          </button>
+          </Button>
         ))}
         <span className="ml-auto text-gray-400 text-sm">
           {plural(sortedTx.length, 'transaction')}
