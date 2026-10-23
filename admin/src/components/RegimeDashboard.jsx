@@ -11,7 +11,7 @@ import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
 import RegimeActionModals from './regime/RegimeActionModals'
-import OpenOrdersTable from './regime/OpenOrdersTable'
+import OpenOrdersTable, { REGIME_ORDER_TOUCH_TARGET } from './regime/OpenOrdersTable'
 import FilledOrdersSection from './regime/FilledOrdersSection'
 import PositionCard from './regime/PositionCard'
 import LadderPanel from './regime/LadderPanel'
@@ -213,7 +213,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   <Button
                     onClick={handleCancelLadder}
                     disabled={cancellingLadder}
-                    variant="destructive" size="xs" touchTarget="always" className="regime-order-touch-target"
+                    variant="destructive" size="xs" touchTarget="always" className={REGIME_ORDER_TOUCH_TARGET}
                   >
                     {cancellingLadder ? 'Cancelling…' : 'Cancel Ladder → Reactive'}
                   </Button>
@@ -223,7 +223,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     onClick={() => setCollapseAllConfirm(true)}
                     disabled={collapsingAll}
                     title="Cancel all body TP orders, combine into one body, place a single TP"
-                    variant="caution" size="xs" touchTarget="always" className="regime-order-touch-target"
+                    variant="caution" size="xs" touchTarget="always" className={REGIME_ORDER_TOUCH_TARGET}
                   >
                     {collapsingAll ? 'Collapsing…' : `Collapse All (${status.celestial.bodies.length})`}
                   </Button>

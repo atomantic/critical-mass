@@ -58,7 +58,7 @@ function OpenOrdersTable({
     return (
       <Button
         title="Edit TP target"
-        variant="quiet" size="xs" className="ml-1 leading-none"
+        variant="quiet" size="xs" touchTarget="always" className={`${REGIME_ORDER_TOUCH_TARGET} ml-1 leading-none`}
         onClick={(e) => {
           e.stopPropagation()
           setTpEditModal({ bodyId: bd.id, currentTpPct: order.tpPercent, currentPrice: order.price, avgPrice: bd.avgPrice, bodyLabel: bd.id.slice(-8), inputValue: String(order.tpPercent ?? ''), priceValue: String(order.price ?? ''), mode })
@@ -233,7 +233,7 @@ function OpenOrdersTable({
                       return (
                         <Button
                           title={`Roll up into ${tgtLabel}`}
-                          variant="quiet-warning" size="xs"
+                          variant="quiet-warning" size="xs" touchTarget="always" className={REGIME_ORDER_TOUCH_TARGET}
                           onClick={(e) => {
                             e.stopPropagation()
                             setRollUpConfirm({ bodyId: bodyData.id, bodyLabel: srcLabel, targetLabel: tgtLabel })

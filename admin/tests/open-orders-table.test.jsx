@@ -1,6 +1,6 @@
 import React from 'react'
-import { afterEach, describe, expect, it } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import OpenOrdersTable from '../src/components/regime/OpenOrdersTable'
 
 afterEach(() => cleanup())
@@ -70,5 +70,33 @@ describe('OpenOrdersTable', () => {
     render(<OpenOrdersTable {...baseProps({ pendingOrdersList: [sellOrder, entryOrder] })} />)
     const entryTable = screen.getAllByRole('table').find(t => t.textContent.includes('entry-buy-1'))
     expect(entryTable.parentElement.className).toContain('overflow-x-auto')
+  })
+
+  it('keeps TP edit and roll-up controls touch-sized on desktop and forwards their actions', () => {
+    const onEdit = vi.fn()
+    const onRollUp = vi.fn()
+    const low = { ...sellOrder, orderId: 'tp-low', type: 'body_tp', price: 52000 }
+    const high = { ...sellOrder, orderId: 'tp-high', type: 'body_tp', price: 55000 }
+    const bodies = [
+      { id: 'body-low', tpOrderId: 'tp-low', tpPrice: 52000, costBasis: 450, avgPrice: 50000 },
+      { id: 'body-high', tpOrderId: 'tp-high', tpPrice: 55000, costBasis: 470, avgPrice: 51000 },
+    ]
+    render(<OpenOrdersTable {...baseProps({
+      pendingOrdersList: [low, high], celestialBodies: bodies,
+      setTpEditModal: onEdit, setRollUpConfirm: onRollUp,
+    })} />)
+
+    const edit = screen.getAllByTitle('Edit TP target').find(button => button.closest('tr').textContent.includes('tp-low'))
+    expect(edit).toBeTruthy()
+    const rollUp = screen.getByTitle(/Roll up into/)
+    for (const button of [edit, rollUp]) {
+      expect(button.className).toContain('min-h-11')
+      expect(button.className).toContain('regime-order-touch-target')
+      expect(button.className).not.toContain('md:min-h-0')
+    }
+    fireEvent.click(edit)
+    fireEvent.click(rollUp)
+    expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ bodyId: 'body-low' }))
+    expect(onRollUp).toHaveBeenCalledWith(expect.objectContaining({ bodyId: 'body-low' }))
   })
 })

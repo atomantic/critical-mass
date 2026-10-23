@@ -28,6 +28,7 @@ const VARIANTS = {
   'soft-info': 'bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400 disabled:opacity-50',
   // Text-only actions: no fill, muted text that brightens on hover.
   quiet: 'bg-transparent text-gray-400 hover:text-white disabled:opacity-50',
+  'quiet-muted': 'bg-transparent text-gray-400 hover:text-gray-200 disabled:opacity-50',
   'quiet-danger': 'bg-transparent text-red-400 hover:text-red-300 disabled:opacity-50',
   'quiet-success': 'bg-transparent text-green-400 hover:text-green-300 disabled:opacity-50',
   'quiet-warning': 'bg-transparent text-yellow-400 hover:text-yellow-300 disabled:opacity-50',
