@@ -99,6 +99,7 @@ function createView(name) {
       }
       if (name === '../hooks/usePolling') { const usePolling = (fn, ms, { immediate = true, enabled = true } = {}) => { hooks.useEffect(() => { if (enabled && immediate) fn() }) }; return asHookModule(usePolling) }
       if (name === './ModalDialog') return ({ children }) => children
+      if (name === './ui/Button') return 'button'
       if (name === './Toast') return { useNotify: () => (type, message) => { notices.push({ type, message }); return null }, useToast: () => ({ addToast: () => null, removeToast() {} }) }
       throw new Error(`Unexpected fixture import ${name}`)
     },
