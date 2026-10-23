@@ -118,6 +118,8 @@ class WebSocketConnection extends EventEmitter {
     /** @type {NodeJS.Timeout | null} */
     this._closeTimer = null;
     this._closeEmitted = false;
+    /** @type {Set<(err?: Error) => void>} */
+    this._pendingSends = new Set();
 
     socket.setNoDelay(true);
     socket.setTimeout(0);
@@ -147,7 +149,20 @@ class WebSocketConnection extends EventEmitter {
     }
     const payload = typeof data === 'string' ? Buffer.from(data) : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     const opcode = typeof data === 'string' ? OPCODE.TEXT : OPCODE.BINARY;
-    this._socket.write(encodeFrame(opcode, payload), callback && ((err) => callback(err || undefined)));
+    let complete;
+    if (callback) {
+      complete = (err) => {
+        if (!this._pendingSends.delete(complete)) return;
+        callback(err || undefined);
+      };
+      this._pendingSends.add(complete);
+    }
+    try {
+      this._socket.write(encodeFrame(opcode, payload), complete);
+    } catch (err) {
+      if (complete) complete(err);
+      else throw err;
+    }
   }
 
   /**
@@ -168,6 +183,12 @@ class WebSocketConnection extends EventEmitter {
     if (this.readyState === CLOSED) return;
     this.readyState = CLOSING;
     this._socket.destroy();
+    this._settleSends(new Error('WebSocket terminated before flushing'));
+  }
+
+  /** @param {Error} err */
+  _settleSends(err) {
+    for (const complete of this._pendingSends) complete(err);
   }
 
   /**
@@ -204,6 +225,7 @@ class WebSocketConnection extends EventEmitter {
 
   /** @param {Error} err */
   _emitError(err) {
+    this._settleSends(err);
     if (this.listenerCount('error')) this.emit('error', err);
   }
 
@@ -211,6 +233,7 @@ class WebSocketConnection extends EventEmitter {
     if (this._closeEmitted) return;
     this._closeEmitted = true;
     this.readyState = CLOSED;
+    this._settleSends(new Error('WebSocket closed before flushing'));
     if (this._closeTimer) clearTimeout(this._closeTimer);
     this._closeTimer = null;
     const code = this._peerClose?.code ?? this._failCode ?? 1006;

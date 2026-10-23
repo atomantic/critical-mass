@@ -27,6 +27,7 @@ const ipcServerLogger = (name) => createContextLogger({ module: 'ipc-server', pe
 // the next subscribing gateway instead of being dropped. Bounded: the oldest
 // go first so a long gateway outage cannot grow engine memory.
 const MAX_HELD_EVENTS = 200;
+const MAX_PENDING_BYTES = 8 * 1024 * 1024;
 
 /**
  * Create an IPC server for an engine process
@@ -193,7 +194,7 @@ const createIPCServer = (port, name, options = {}) => {
    */
   const handleIncoming = async (ws, msg) => {
     if (msg.type === MSG_TYPE.PING) {
-      ws.send(serialize(createMessage(MSG_TYPE.PONG, 'ping', null)));
+      sendFrame(ws, serialize(createMessage(MSG_TYPE.PONG, 'ping', null)));
       return;
     }
 
@@ -212,7 +213,7 @@ const createIPCServer = (port, name, options = {}) => {
         code: 'engine-initializing',
         error: 'Engine is initializing; retry after startup recovery completes.',
       };
-      ws.send(serialize(createMessage(MSG_TYPE.RESPONSE, msg.channel, refusal, { id: msg.id })));
+      sendFrame(ws, serialize(createMessage(MSG_TYPE.RESPONSE, msg.channel, refusal, { id: msg.id })));
       return;
     }
 
@@ -224,7 +225,7 @@ const createIPCServer = (port, name, options = {}) => {
           error: 'Engine is shutting down; request rejected.',
         };
         try {
-          ws.send(serialize(createMessage(MSG_TYPE.RESPONSE, msg.channel, refusal, { id: msg.id })));
+          sendFrame(ws, serialize(createMessage(MSG_TYPE.RESPONSE, msg.channel, refusal, { id: msg.id })));
         } catch { /* client disconnected */ }
       }
       return;
@@ -238,7 +239,7 @@ const createIPCServer = (port, name, options = {}) => {
           id: msg.id,
           error: `No handler for channel: ${msg.channel}`,
         });
-        ws.send(serialize(response));
+        sendFrame(ws, serialize(response));
         return;
       }
 
@@ -249,13 +250,13 @@ const createIPCServer = (port, name, options = {}) => {
         logger.warn(`⚠️ 🔗 [${name}] Refused "${msg.channel}" during maintenance (${refusal.heldBy})`, {
           channel: msg.channel, exchange: msg.exchange, pair: msg.pair,
         });
-        ws.send(serialize(createMessage(MSG_TYPE.RESPONSE, msg.channel, refusal, { id: msg.id })));
+        sendFrame(ws, serialize(createMessage(MSG_TYPE.RESPONSE, msg.channel, refusal, { id: msg.id })));
         return;
       }
 
       const lane = ipcRequestLane(channel);
       if (activeRequests[lane] >= IPC_REQUEST_LIMITS[lane]) {
-        ws.send(serialize(createMessage(MSG_TYPE.RESPONSE, msg.channel, engineBusy(), { id: msg.id })));
+        sendFrame(ws, serialize(createMessage(MSG_TYPE.RESPONSE, msg.channel, engineBusy(), { id: msg.id })));
         return;
       }
       activeRequests[lane]++;
@@ -263,13 +264,13 @@ const createIPCServer = (port, name, options = {}) => {
         const run = () => handler(msg.payload, msg.exchange, msg.pair);
         const result = await ([IPC_CHANNELS.ENGINE_MAINTENANCE, IPC_CHANNELS.ENGINE_BACKUP_PAUSE, IPC_CHANNELS.ENGINE_BACKUP_RESUME].includes(channel) ? run() : trackPendingWrite(`ipc:${channel}`, run));
         const response = createMessage(MSG_TYPE.RESPONSE, msg.channel, result, { id: msg.id });
-        ws.send(serialize(response));
+        sendFrame(ws, serialize(response));
       } catch (err) {
         const response = createMessage(MSG_TYPE.RESPONSE, msg.channel, null, {
           id: msg.id,
           error: err.message,
         });
-        ws.send(serialize(response));
+        sendFrame(ws, serialize(response));
       } finally {
         activeRequests[lane]--;
       }
@@ -285,14 +286,14 @@ const createIPCServer = (port, name, options = {}) => {
    */
   const replayHeldFrames = (ws) => {
     if (ws.readyState !== OPEN || (heldFrames.length === 0 && droppedHeldFrames === 0)) return;
-    const frames = heldFrames;
+    let delivered = 0;
+    while (delivered < heldFrames.length && sendFrame(ws, heldFrames[delivered], 'replay')) delivered++;
+    heldFrames = heldFrames.slice(delivered);
     const dropped = droppedHeldFrames;
-    heldFrames = [];
-    droppedHeldFrames = 0;
-    for (const data of frames) sendFrame(ws, data, 'replay');
+    if (heldFrames.length === 0) droppedHeldFrames = 0;
     const log = dropped > 0 ? logger.warn : logger.info;
-    log(`${dropped > 0 ? '⚠️' : 'ℹ️'} 🔗 [${name}] Delivered ${frames.length} event(s) held while no gateway was connected${dropped > 0 ? `; ${dropped} older event(s) were dropped` : ''}`, {
-      event: 'replay', delivered: frames.length, dropped,
+    log(`${dropped > 0 ? '⚠️' : 'ℹ️'} 🔗 [${name}] Delivered ${delivered} held event(s); ${heldFrames.length} remain${dropped > 0 ? `; ${dropped} older event(s) were dropped` : ''}`, {
+      event: 'replay', delivered, dropped,
     });
   };
 
@@ -301,14 +302,28 @@ const createIPCServer = (port, name, options = {}) => {
    * @param {string} data - Serialized frame
    * @param {string} channel - For the failure log
    */
-  const sendFrame = (client, data, channel) => {
+  const sendFrame = (client, data, channel = 'response') => {
+    if (client.readyState !== OPEN) return false;
+    // bufferedAmount includes encoded WebSocket bytes, so include the next
+    // frame's UTF-8 payload and unmasked framing header before queueing it.
+    const bytes = Buffer.byteLength(data);
+    const frameBytes = bytes + (bytes < 126 ? 2 : bytes < 65536 ? 4 : 10);
+    if (client.bufferedAmount + frameBytes > MAX_PENDING_BYTES) {
+      logger.warn(`⚠️ 🔗 [${name}] Disconnecting slow IPC client`, { channel, event: 'backpressure' });
+      client.terminate();
+      return false;
+    }
     let complete;
     const sent = new Promise((resolve) => { complete = resolve; });
     pendingBroadcasts.add(sent);
+    let settled = false;
     const onSent = (err) => {
+      if (settled) return;
+      settled = true;
       pendingBroadcasts.delete(sent);
       complete();
-      if (err) {
+      if (err && client.readyState === OPEN) {
+        client.terminate();
         logger.error(`❌ 🔗 [${name}] IPC event send failed: ${err.message}`, {
           channel, event: 'broadcast', error: err.message,
         });
@@ -318,7 +333,10 @@ const createIPCServer = (port, name, options = {}) => {
       client.send(data, onSent);
     } catch (err) {
       onSent(err);
+      client.terminate();
+      return false;
     }
+    return true;
   };
 
   /**
@@ -333,10 +351,7 @@ const createIPCServer = (port, name, options = {}) => {
     const data = serialize(msg);
     let delivered = false;
     for (const client of clients) {
-      if (client.readyState === OPEN) {
-        delivered = true;
-        sendFrame(client, data, channel);
-      }
+      if (sendFrame(client, data, channel)) delivered = true;
     }
     if (!delivered && options.hold) {
       heldFrames.push(data);
@@ -403,4 +418,4 @@ const createIPCServer = (port, name, options = {}) => {
   };
 };
 
-module.exports = { createIPCServer, MAX_HELD_EVENTS };
+module.exports = { createIPCServer, MAX_HELD_EVENTS, MAX_PENDING_BYTES };

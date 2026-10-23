@@ -54,6 +54,16 @@ bound pending replies; engine slots remain owned until the actual handler
 settles, even after timeout, disconnect or shutdown. Internal fills do not use
 request slots, and engine lock/reentrancy rules are unchanged.
 
+Each engine bounds queued output to **8 MiB per IPC peer**, including the next
+UTF-8 message and its WebSocket frame header. Events, held-event replay, replies
+and refusals share the bound. A peer that would exceed it is terminated immediately
+so the gateway can reconnect; healthy peers and producers continue independently.
+Pending send callbacks and shutdown flushes settle on disconnect or error. Events
+remain best effort: acceptance into a socket is not an acknowledgement from the
+gateway. A `hold:true` trade event refused by every peer stays in the existing
+200-event disconnected hold (oldest dropped first); replay keeps its unaccepted
+tail for the next subscribing gateway. The hold is bounded by event count, not bytes.
+
 ## Admin realtime bus (`src/realtime-bus.js`)
 
 The admin UI receives live events over one WebSocket per tab at `/realtime` on
