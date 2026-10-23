@@ -9,9 +9,8 @@
  * rows inherit (#752), classify completed vs active cycles, split the
  * remaining orphans into recovered cycles, and renumber (#675). The planner
  * never mutates a fill or any ledger state, so preview and apply cannot
- * disagree. The ledger (`fill-ledger.js`) applies the plan: it stamps fills,
- * updates its indexes, live cycle and dirty/version flags, runs the legacy
- * auto-link and persists.
+ * disagree. `fill-ledger-cycle-application.js` applies the plan to the
+ * ledger's state, runs the legacy auto-link and persists.
  *
  * Accounting-adjacent: cycle ids feed `computeRealizedFromCyclePairs`. Read
  * the P&L model in CLAUDE.md before changing anything here.
