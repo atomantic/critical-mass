@@ -43,6 +43,17 @@ including same-origin, `null`, and empty values. The gateway IPC client sends no
 Origin header. All three engine wrappers use this shared server gate; loopback
 binding alone does not prevent browser access.
 
+Both the gateway IPC client and each engine server admit at most **32 ordinary
+requests** and **4 control requests** at a time, with no waiting queue. Status,
+stop/stop-all, maintenance and backup pause/resume use the control lane; all
+other channels, including config updates, use ordinary capacity. Excess work
+returns `{ success: false, code: "engine-busy", statusCode: 503 }`, which the
+HTTP gateway preserves as a 503 response. Config updates receive correlated
+acknowledgements and share the client's pending-request bound. Client deadlines
+bound pending replies; engine slots remain owned until the actual handler
+settles, even after timeout, disconnect or shutdown. Internal fills do not use
+request slots, and engine lock/reentrancy rules are unchanged.
+
 ## Admin realtime bus (`src/realtime-bus.js`)
 
 The admin UI receives live events over one WebSocket per tab at `/realtime` on

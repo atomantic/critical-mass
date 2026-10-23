@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const {
   engineError, ipcFailureKind, ipcFailureResponse, sendIpcFailure, createIPCResolver, getSafeIPC,
 } = require('../src/routes/route-utils');
-const { IPC_ERROR_CODE } = require('../src/ipc/ipc-protocol');
+const { IPC_ERROR_CODE, engineBusy } = require('../src/ipc/ipc-protocol');
 
 const coded = (message, code) => Object.assign(new Error(message), code ? { code } : {});
 
@@ -70,6 +70,14 @@ describe('engineError + ipcFailureResponse', () => {
       assert.equal(body, reply);
     }
     assert.equal(ipcFailureKind({ success: false, statusCode: 404 }), null);
+  });
+
+  it('preserves the structured engine-busy refusal as HTTP 503', () => {
+    const reply = engineBusy();
+    const res = fakeRes();
+    sendIpcFailure(res, reply);
+    assert.equal(res.statusCode, 503);
+    assert.deepEqual(JSON.parse(JSON.stringify(res.body)), reply);
   });
 
   it('defaults a domain reply without a usable statusCode to 400', () => {

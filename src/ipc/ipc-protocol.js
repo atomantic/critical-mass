@@ -12,7 +12,7 @@ const MSG_TYPE = {
   EVENT: 'event',                 // One-way: engine -> gateway (forwarded to the realtime bus)
   REQUEST: 'request',             // Two-way: gateway -> engine (expects response)
   RESPONSE: 'response',          // Two-way: engine -> gateway (reply to request)
-  CONFIG_UPDATE: 'config_update', // One-way: gateway -> engine (config changed)
+  CONFIG_UPDATE: 'config_update', // Gateway -> engine config change (correlated acknowledgement)
   SUBSCRIBE: 'subscribe',         // One-way: gateway -> engine (deliver events held while no gateway was connected)
   PING: 'ping',
   PONG: 'pong',
@@ -69,6 +69,25 @@ const IPC_CHANNELS = Object.freeze({
   REGIME_UNACCOUNTED_FILLS: 'regime:unaccounted-fills',
   REGIME_UNACCOUNTED_FILLS_STATUS: 'regime:unaccounted-fills-status',
   REGIME_UPDATE_CONFIG: 'regime:update-config',
+});
+
+// These are request limits, not engine locks: internal fills and reconciliation
+// never acquire a slot. Unknown/new channels default to the ordinary lane.
+const IPC_REQUEST_LIMITS = Object.freeze({ ordinary: 32, control: 4 });
+const CONTROL_CHANNELS = new Set([
+  IPC_CHANNELS.REGIME_STATUS, IPC_CHANNELS.REGIME_STOP, IPC_CHANNELS.REGIME_STOP_ALL,
+  IPC_CHANNELS.ENGINE_MAINTENANCE, IPC_CHANNELS.ENGINE_BACKUP_PAUSE, IPC_CHANNELS.ENGINE_BACKUP_RESUME,
+]);
+
+/** @param {string} channel @returns {'ordinary' | 'control'} */
+const ipcRequestLane = (channel) => CONTROL_CHANNELS.has(channel) ? 'control' : 'ordinary';
+
+/** A domain refusal shared by local client admission and engine admission. */
+const engineBusy = () => ({
+  success: false,
+  code: 'engine-busy',
+  statusCode: 503,
+  error: 'Engine request capacity is full; retry after outstanding work completes.',
 });
 
 /**
@@ -128,4 +147,4 @@ const deserialize = (data) => JSON.parse(data);
 
 const { IPC_SECRET_HEADER, getIpcSecret, ipcSecretMatches } = require('./ipc-secret');
 
-module.exports = { IPC_SECRET_HEADER, getIpcSecret, ipcSecretMatches, MSG_TYPE, IPC_CHANNELS, IPC_ERROR_CODE, DEFAULT_TIMEOUT, createMessage, serialize, deserialize };
+module.exports = { IPC_SECRET_HEADER, getIpcSecret, ipcSecretMatches, MSG_TYPE, IPC_CHANNELS, IPC_ERROR_CODE, IPC_REQUEST_LIMITS, ipcRequestLane, engineBusy, DEFAULT_TIMEOUT, createMessage, serialize, deserialize };

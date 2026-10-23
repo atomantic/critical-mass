@@ -198,7 +198,9 @@ module.exports = (app, deps) => {
       const isTimeout = ipcFailureKind(result) === 'timeout' || (result.error || '').toLowerCase().includes('request timeout');
       // A handler that threw inside a connected engine is not an outage either.
       const engineHandlerFailed = ipcFailureKind(result) === 'handler';
-      if (!isTimeout && !engineHandlerFailed) {
+      // Admission refusal means a connected engine is busy, not stopped.
+      const engineBusy = result.code === 'engine-busy';
+      if (!isTimeout && !engineHandlerFailed && !engineBusy) {
         const offlineStatus = buildOfflineStatus(exchange, pair);
         if (offlineStatus) {
           return res.json({ success: true, status: offlineStatus, engineDown: true, engineError: result.error });
