@@ -15,7 +15,7 @@ const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isPostOnlyRejection, sleep } = require('./shared-utils');
 const { placeWithUnknownReconcile } = require('./order-manager');
 const { createContextLogger } = require('./logger');
-const { createOrderLookups } = require('./executor-contract');
+const { createExecutorOrderState } = require('./executor-order-state');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -51,19 +51,19 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   const intentFor = (action, side, details = {}) => ({
     intent: { exchange, pair, action, side, ...details },
   });
-  /** @type {Map<string, PendingOrder>} */
-  const pendingOrders = new Map();
-  const orderLookups = createOrderLookups(pendingOrders);
+  const orderState = createExecutorOrderState({
+    mode: 'live',
+    onUntrackedFill: (orderId) => {
+      logger.error(`🚨 [${exchange}] WS fill for untracked order ${orderId} — likely orphan (check audit-fills.js)`, { orderId, orphan: true });
+    },
+  });
+  const { pendingOrders, bodyTpOrders, coreTp, orderLookups, getPendingCounts, getPendingEntries,
+    getPendingLadderOrders, getActiveTpOrderId, isTrackedTpOrder, isBodyTpOrder,
+    getBodyByTpOrderId, removeBodyTracking, markSettled, handleOrderFill, handleOrderCancel } = orderState;
   const baseCurrency = getBaseCurrency(productId);
 
-  let lastTpPrice = 0;
-  let lastTpSize = 0;
-  let activeTpOrderId = null;
   let staleTimeoutMultiplier = 1.0; // Can be adjusted by regime
   let priceIncrement = 0.01; // Updated via setPriceIncrement from product details
-
-  /** @type {Map<string, {tpOrderId: string, assetQty: number, tpPrice: number}>} */
-  const bodyTpOrders = new Map(); // bodyId -> body TP tracking
 
   /** @type {Map<string, ReturnType<typeof createMutex>>} bodyId -> per-body TP mutex */
   const bodyTpMutexes = new Map();
@@ -97,9 +97,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   // Retry ownership follows the pending-order object; cancellation still needs
   // the high-water mark above, even when booking failed or history lagged.
   const retryablePartials = new WeakSet();
-
-  /** @type {Map<string, string>} tpOrderId -> buyOrderId/bodyId for O(1) reverse lookups */
-  const tpOrderToKey = new Map();
 
   // Track stale order timeouts for cleanup on shutdown
   const staleTimers = new Set();
@@ -135,36 +132,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     }
     return null;
   });
-
-  /** @type {Map<string, number>} orderId -> settlement timestamp.
-   * Distinguishes "we removed this from pendingOrders intentionally" from
-   * "this fill is for an order we never tracked." Without this, every
-   * polling-backstop fill (which deletes from pendingOrders before routing
-   * the fill through the engine, which then runs orderExecutor.handleOrderFill
-   * at the end of its chain) fires a misleading "untracked order" warning. */
-  const recentlySettled = new Map();
-  /** @type {Map<string, number>} orderId -> settlement timestamp, for settled
-   * orders the executor itself placed as the legacy core `take_profit`. Lets
-   * the engine prove a sell with no owning body was its OWN TP (issue #672)
-   * even after the polling backstop / cancel-race path already dropped it
-   * from pendingOrders and cleared activeTpOrderId. */
-  const recentlySettledTps = new Map();
-  const SETTLED_TTL_MS = 5 * 60 * 1000;
-  const pruneSettled = (map) => {
-    if (map.size > 256) {
-      const cutoff = Date.now() - SETTLED_TTL_MS;
-      for (const [id, ts] of map) if (ts < cutoff) map.delete(id);
-    }
-  };
-  const markSettled = (orderId, type) => {
-    if (!orderId) return;
-    recentlySettled.set(orderId, Date.now());
-    pruneSettled(recentlySettled);
-    if (type === 'take_profit') {
-      recentlySettledTps.set(orderId, Date.now());
-      pruneSettled(recentlySettledTps);
-    }
-  };
 
   // Mutex to serialize concurrent TP updates (prevents duplicate TP sells).
   //
@@ -480,12 +447,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       // placeTakeProfitOrder, that section would mutate activeTpOrderId out from
       // under us; we re-read it before placing (below) and abort rather than
       // create a second live TP sell (issue #209 B).
-      const entryTpId = activeTpOrderId;
+      const entryTpId = coreTp.activeTpOrderId;
 
       // Anti-churn: check if price OR size change is significant (skip if forceUpdate)
-      if (!options.forceUpdate && entryTpId && lastTpPrice > 0 && lastTpSize > 0) {
-        const priceChange = Math.abs(tpPrice - lastTpPrice) / lastTpPrice * 100;
-        const sizeChange = Math.abs(assetQty - lastTpSize) / lastTpSize * 100;
+      if (!options.forceUpdate && entryTpId && coreTp.lastTpPrice > 0 && coreTp.lastTpSize > 0) {
+        const priceChange = Math.abs(tpPrice - coreTp.lastTpPrice) / coreTp.lastTpPrice * 100;
+        const sizeChange = Math.abs(assetQty - coreTp.lastTpSize) / coreTp.lastTpSize * 100;
         // Update if neither price nor size changed significantly
         if (priceChange < config.tpUpdateThresholdPct && sizeChange < 1) {
           return {
@@ -532,14 +499,14 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       // cancel above nulls it (or it was null on entry), any non-null value
       // that differs from what we entered with means a concurrent section
       // already placed a TP — abort rather than stack a second live sell.
-      if (activeTpOrderId && activeTpOrderId !== entryTpId) {
-        logger.warn(`⚠️ [${exchange}] activeTpOrderId changed (${entryTpId || 'none'} → ${activeTpOrderId}) during TP placement — aborting to avoid duplicate TP sell`, {
+      if (coreTp.activeTpOrderId && coreTp.activeTpOrderId !== entryTpId) {
+        logger.warn(`⚠️ [${exchange}] activeTpOrderId changed (${entryTpId || 'none'} → ${coreTp.activeTpOrderId}) during TP placement — aborting to avoid duplicate TP sell`, {
           previousOrderId: entryTpId,
-          activeOrderId: activeTpOrderId,
+          activeOrderId: coreTp.activeTpOrderId,
         });
         return {
           success: false,
-          errorMessage: `Concurrent TP placement detected (activeTpOrderId=${activeTpOrderId})`,
+          errorMessage: `Concurrent TP placement detected (activeTpOrderId=${coreTp.activeTpOrderId})`,
         };
       }
 
@@ -592,9 +559,9 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           baseCurrency,
           price: roundedPrice,
         });
-        activeTpOrderId = result.orderId;
-        lastTpPrice = roundedPrice;
-        lastTpSize = roundedQty;
+        coreTp.activeTpOrderId = result.orderId;
+        coreTp.lastTpPrice = roundedPrice;
+        coreTp.lastTpSize = roundedQty;
 
         pendingOrders.set(result.orderId, {
           type: 'take_profit',
@@ -625,9 +592,9 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @returns {Promise<{cancelled: boolean, filled: boolean, filledSize: number, filledOrderId?: string, filledValue?: number, averageFilledPrice?: number, totalFees?: number}>}
    */
   const cancelTpOrder = async () => {
-    if (!activeTpOrderId) return { cancelled: true, filled: false, filledSize: 0 };
+    if (!coreTp.activeTpOrderId) return { cancelled: true, filled: false, filledSize: 0 };
 
-    const orderToCancel = activeTpOrderId;
+    const orderToCancel = coreTp.activeTpOrderId;
     const result = await safeCancelOrder(orderToCancel);
 
     if (result.cancelled) {
@@ -637,8 +604,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         filledSize: result.filledSize || 0,
       });
       pendingOrders.delete(orderToCancel);
-      activeTpOrderId = null;
-      lastTpSize = 0;
+      coreTp.activeTpOrderId = null;
+      coreTp.lastTpSize = 0;
       return { cancelled: true, filled: false, filledSize: result.filledSize || 0 };
     }
 
@@ -650,8 +617,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       });
       pendingOrders.delete(orderToCancel);
       markSettled(orderToCancel, 'take_profit');
-      activeTpOrderId = null;
-      lastTpSize = 0;
+      coreTp.activeTpOrderId = null;
+      coreTp.lastTpSize = 0;
       return {
         cancelled: false,
         filled: true,
@@ -1081,84 +1048,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   /**
-   * Handle order fill notification
-   * @param {string} orderId - Filled order ID
-   */
-  const handleOrderFill = (orderId) => {
-    const order = pendingOrders.get(orderId);
-    if (order) {
-      pendingOrders.delete(orderId);
-      markSettled(orderId, order.type);
-
-      if (order.type === 'take_profit') {
-        activeTpOrderId = null;
-        lastTpPrice = 0;
-        lastTpSize = 0;
-      } else if (order.type === 'body_tp') {
-        removeBodyTracking(orderId);
-      }
-    } else if (!recentlySettled.has(orderId)) {
-      // Genuine orphan: the order isn't in pendingOrders AND we have no
-      // record of recently settling it (polling backstop, stale-cancel,
-      // or engine restart paths all stamp `recentlySettled`).
-      logger.error(`🚨 [${exchange}] WS fill for untracked order ${orderId} — likely orphan (check audit-fills.js)`, { orderId, orphan: true });
-    }
-  };
-
-  /**
-   * Handle order cancel notification
-   * @param {string} orderId - Cancelled order ID
-   */
-  const handleOrderCancel = (orderId) => {
-    const order = pendingOrders.get(orderId);
-    if (order) {
-      pendingOrders.delete(orderId);
-
-      if (order.type === 'take_profit' && orderId === activeTpOrderId) {
-        activeTpOrderId = null;
-        lastTpPrice = 0;
-        lastTpSize = 0;
-      } else if (order.type === 'body_tp') {
-        removeBodyTracking(orderId);
-      }
-    }
-  };
-
-  /**
-   * Get pending orders count by type
-   * @returns {{entries: number, ladderEntries: number, takeProfits: number, bodies: number, total: number}}
-   */
-  const getPendingCounts = () => {
-    let entries = 0;
-    let ladderEntries = 0;
-    let takeProfits = 0;
-    let bodies = 0;
-
-    for (const order of pendingOrders.values()) {
-      if (order.type === 'entry') entries++;
-      else if (order.type === 'ladder_entry') ladderEntries++;
-      else if (order.type === 'take_profit') takeProfits++;
-      else if (order.type === 'body_tp') bodies++;
-    }
-
-    return { entries, ladderEntries, takeProfits, bodies, total: pendingOrders.size };
-  };
-
-  /**
-   * Get all pending entry orders
-   * @returns {Map<string, PendingOrder>}
-   */
-  const getPendingEntries = () => {
-    const entries = new Map();
-    for (const [orderId, order] of pendingOrders) {
-      if (order.type === 'entry') {
-        entries.set(orderId, order);
-      }
-    }
-    return entries;
-  };
-
-  /**
    * Get all pending orders as array for UI display
    * @returns {Array<{orderId: string, type: string, price: number, size: number, sizeUsdc: number, placedAt: number, status: string}>}
    */
@@ -1175,29 +1064,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       status: 'open',
       filledSize: partialFillTracker.get(orderId) || 0,
     }));
-  };
-
-  /**
-   * Get active TP order ID
-   * @returns {string|null}
-   */
-  const getActiveTpOrderId = () => activeTpOrderId;
-
-  /**
-   * Whether `orderId` is (or recently was) the legacy core take-profit this
-   * executor placed — pending as `take_profit`, the current activeTpOrderId, or
-   * settled as a `take_profit` within SETTLED_TTL_MS. The engine uses this to
-   * refuse closing a cycle on a foreign sell (manual/DCA/script) that merely
-   * shares the product (issue #672).
-   * @param {string} orderId
-   * @returns {boolean}
-   */
-  const isTrackedTpOrder = (orderId) => {
-    if (!orderId) return false;
-    if (orderId === activeTpOrderId) return true;
-    if (pendingOrders.get(orderId)?.type === 'take_profit') return true;
-    const ts = recentlySettledTps.get(orderId);
-    return ts !== undefined && Date.now() - ts < SETTLED_TTL_MS;
   };
 
   /**
@@ -1221,9 +1087,9 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     }
 
     if (order.type === 'take_profit') {
-      activeTpOrderId = orderId;
-      lastTpPrice = order.price;
-      lastTpSize = order.size;
+      coreTp.activeTpOrderId = orderId;
+      coreTp.lastTpPrice = order.price;
+      coreTp.lastTpSize = order.size;
     }
     // body_tp orders are restored via restoreBodyTpOrder
   };
@@ -1274,12 +1140,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           baseCurrency,
           price: roundedPrice,
         });
-        bodyTpOrders.set(bodyId, {
+        orderState.trackBodyTp(bodyId, {
           tpOrderId: result.orderId,
           assetQty: roundedQty,
           tpPrice: roundedPrice,
         });
-        tpOrderToKey.set(result.orderId, bodyId);
 
         pendingOrders.set(result.orderId, {
           type: 'body_tp',
@@ -1337,8 +1202,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       const result = await safeCancelOrder(orderToCancel);
       if (result.cancelled) {
         pendingOrders.delete(orderToCancel);
-        tpOrderToKey.delete(orderToCancel);
-        bodyTpOrders.delete(bodyId);
+        orderState.deleteBodyTp(bodyId, orderToCancel);
         // filledSize > 0 here means the TP partially filled during the cancel —
         // surfaced (issue #227) so the merge path can react to the sold tranche.
         // filledValue/averageFilledPrice/totalFees ride along too (issue #227
@@ -1356,8 +1220,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         };
       }
       if (result.filled) {
-        tpOrderToKey.delete(orderToCancel);
-        bodyTpOrders.delete(bodyId);
+        orderState.deleteBodyTp(bodyId, orderToCancel);
         // Leave in pendingOrders for polling to process the fill
         return { cancelled: false, filled: true, filledSize: result.filledSize || 0 };
       }
@@ -1365,25 +1228,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     } finally {
       release();
     }
-  };
-
-  /**
-   * Check if an order ID is a body TP order
-   * @param {string} orderId - Exchange order ID to check
-   * @returns {boolean}
-   */
-  const isBodyTpOrder = (orderId) => tpOrderToKey.has(orderId);
-
-  /**
-   * Get body tracking info by TP order ID
-   * @param {string} tpOrderId - Exchange sell order ID
-   * @returns {{bodyId: string, assetQty: number, tpPrice: number}|null}
-   */
-  const getBodyByTpOrderId = (tpOrderId) => {
-    const bodyId = tpOrderToKey.get(tpOrderId);
-    if (!bodyId) return null;
-    const body = bodyTpOrders.get(bodyId);
-    return body ? { bodyId, ...body } : null;
   };
 
   /**
@@ -1395,8 +1239,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @param {number} [placedAt] - Original placement timestamp (ms), defaults to now
    */
   const restoreBodyTpOrder = (bodyId, tpOrderId, assetQty, tpPrice, placedAt) => {
-    bodyTpOrders.set(bodyId, { tpOrderId, assetQty, tpPrice });
-    tpOrderToKey.set(tpOrderId, bodyId);
+    orderState.trackBodyTp(bodyId, { tpOrderId, assetQty, tpPrice });
 
     pendingOrders.set(tpOrderId, {
       type: 'body_tp',
@@ -1479,19 +1322,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       ...(intent?.ladderIndex === undefined ? {} : { ladderIndex: intent.ladderIndex }),
     });
     return { tracked: true, message: `Adopted ${type} order ${orderId} into tracking` };
-  };
-
-  /**
-   * Remove body tracking after fill or cancel
-   * @param {string} tpOrderId - Exchange sell order ID that was filled/cancelled
-   */
-  const removeBodyTracking = (tpOrderId) => {
-    const bodyId = tpOrderToKey.get(tpOrderId);
-    if (bodyId) {
-      bodyTpOrders.delete(bodyId);
-      tpOrderToKey.delete(tpOrderId);
-      pendingOrders.delete(tpOrderId);
-    }
   };
 
   // ============================================================================
@@ -1740,27 +1570,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       .filter(o => o.type === 'ladder_entry').length;
 
     return { cancelled, remainingTracked, partialFills, partialFillOrderIds, partialFillsCost, partialFillReservations, unbookedFills };
-  };
-
-  /**
-   * Get all pending ladder orders
-   * @returns {Array<{orderId: string, price: number, sizeUsdc: number, ladderIndex: number, placedAt: number}>}
-   */
-  const getPendingLadderOrders = () => {
-    const ladderOrders = [];
-    for (const [orderId, order] of pendingOrders) {
-      if (order.type === 'ladder_entry') {
-        ladderOrders.push({
-          orderId,
-          price: order.price,
-          size: order.size,
-          sizeUsdc: order.sizeUsdc,
-          ladderIndex: order.ladderIndex,
-          placedAt: order.placedAt,
-        });
-      }
-    }
-    return ladderOrders.sort((a, b) => b.price - a.price); // Sort by price descending (top of ladder first)
   };
 
   return {

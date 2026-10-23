@@ -17,7 +17,7 @@ const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, ENTRY_NOT_ADMITTED } = require('./shared-utils');
 const { DEFAULT_FEE_RATE_PER_SIDE } = require('../shared/fee-defaults.mjs');
 const { createContextLogger } = require('./logger');
-const { createOrderLookups } = require('./executor-contract');
+const { createExecutorOrderState } = require('./executor-order-state');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -93,9 +93,12 @@ const getOrderIdCounter = () => orderIdCounter;
  * @returns {Object} Dry-run order executor instance
  */
 const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, productId, deps = {}) => {
-  /** @type {Map<string, SimulatedOrder>} */
-  const pendingOrders = new Map();
-  const orderLookups = createOrderLookups(pendingOrders);
+  const orderState = createExecutorOrderState({
+    mode: 'dry-run',
+  });
+  const { pendingOrders, bodyTpOrders, coreTp, orderLookups, getPendingCounts, getPendingEntries,
+    getPendingLadderOrders, getActiveTpOrderId, isTrackedTpOrder, isBodyTpOrder,
+    getBodyByTpOrderId, removeBodyTracking, markSettled, handleOrderFill, handleOrderCancel } = orderState;
   const baseCurrency = getBaseCurrency(productId);
   const logger = deps.logger || createContextLogger({ exchange, pair: productId, mode: 'dry-run' });
   let priceIncrement = 0.01; // Updated via setPriceIncrement from product details
@@ -117,13 +120,6 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       filledOrders.shift();
     }
   };
-
-  let lastTpPrice = 0;
-  let lastTpSize = 0;
-  let activeTpOrderId = null;
-
-  /** @type {Map<string, {tpOrderId: string, assetQty: number, tpPrice: number, costBasis: number}>} */
-  const bodyTpOrders = new Map(); // bodyId -> body TP tracking
 
   // Body simulated P&L tracking
   let simulatedBodyRealizedPnL = 0;
@@ -250,21 +246,21 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     // live path forces — order-flow divergence between dry-run and live (#109).
     const forceUpdate = options && options.forceUpdate;
     // Anti-churn: check if price OR size change is significant (skip if forceUpdate)
-    if (!forceUpdate && activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
-      const priceChange = Math.abs(tpPrice - lastTpPrice) / lastTpPrice * 100;
-      const sizeChange = Math.abs(assetQty - lastTpSize) / lastTpSize * 100;
+    if (!forceUpdate && coreTp.activeTpOrderId && coreTp.lastTpPrice > 0 && coreTp.lastTpSize > 0) {
+      const priceChange = Math.abs(tpPrice - coreTp.lastTpPrice) / coreTp.lastTpPrice * 100;
+      const sizeChange = Math.abs(assetQty - coreTp.lastTpSize) / coreTp.lastTpSize * 100;
       // Update if neither price nor size changed significantly
       if (priceChange < config.tpUpdateThresholdPct && sizeChange < 1) {
         return {
           success: true,
-          orderId: activeTpOrderId,
+          orderId: coreTp.activeTpOrderId,
           updated: false,
         };
       }
     }
 
     // Cancel existing TP order if present
-    if (activeTpOrderId) {
+    if (coreTp.activeTpOrderId) {
       await cancelTpOrder();
     }
 
@@ -287,9 +283,9 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     };
 
     pendingOrders.set(orderId, order);
-    activeTpOrderId = orderId;
-    lastTpPrice = roundedPrice;
-    lastTpSize = roundedQty;
+    coreTp.activeTpOrderId = orderId;
+    coreTp.lastTpPrice = roundedPrice;
+    coreTp.lastTpSize = roundedQty;
 
     logDecision('tp_placed', marketStateRef.regime || 'UNKNOWN', marketStateRef.lastPrice || 0, {
       orderId,
@@ -314,19 +310,19 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    * @returns {Promise<boolean>}
    */
   const cancelTpOrder = async () => {
-    if (!activeTpOrderId) return true;
+    if (!coreTp.activeTpOrderId) return true;
 
-    const order = pendingOrders.get(activeTpOrderId);
+    const order = pendingOrders.get(coreTp.activeTpOrderId);
     if (order) {
       order.status = 'cancelled';
       logDecision('tp_cancelled', 'N/A', marketStateRef.lastPrice || 0, {
-        orderId: activeTpOrderId,
+        orderId: coreTp.activeTpOrderId,
       });
     }
 
-    pendingOrders.delete(activeTpOrderId);
-    activeTpOrderId = null;
-    lastTpSize = 0;
+    pendingOrders.delete(coreTp.activeTpOrderId);
+    coreTp.activeTpOrderId = null;
+    coreTp.lastTpSize = 0;
     return true;
   };
 
@@ -569,10 +565,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
         { orderId, orderType: 'take_profit', assetQty: order.size, fillPrice, pnl, usdcProfit, holdbackAsset, holdbackValue }
       );
 
-      if (orderId === activeTpOrderId) {
-        activeTpOrderId = null;
-        lastTpPrice = 0;
-        lastTpSize = 0;
+      if (orderId === coreTp.activeTpOrderId) {
+        coreTp.activeTpOrderId = null;
+        coreTp.lastTpPrice = 0;
+        coreTp.lastTpSize = 0;
       }
 
       // Record cycle analytics for optimal TP analysis
@@ -710,7 +706,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     const avgEntryPrice = avgBuyPrice || getAverageEntryPrice() || roundedPrice;
     const entryNotional = roundedQty * avgEntryPrice;
     const costBasis = entryNotional + (entryNotional * feeRate);
-    bodyTpOrders.set(bodyId, {
+    orderState.trackBodyTp(bodyId, {
       tpOrderId: orderId,
       assetQty: roundedQty,
       tpPrice: roundedPrice,
@@ -738,32 +734,6 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   };
 
   /**
-   * Check if an order ID is a body TP order
-   * @param {string} orderId - Order ID to check
-   * @returns {boolean}
-   */
-  const isBodyTpOrder = (orderId) => {
-    for (const body of bodyTpOrders.values()) {
-      if (body.tpOrderId === orderId) return true;
-    }
-    return false;
-  };
-
-  /**
-   * Get body tracking info by TP order ID
-   * @param {string} tpOrderId - Sell order ID
-   * @returns {{bodyId: string, assetQty: number, tpPrice: number, costBasis: number}|null}
-   */
-  const getBodyByTpOrderId = (tpOrderId) => {
-    for (const [bodyId, body] of bodyTpOrders) {
-      if (body.tpOrderId === tpOrderId) {
-        return { bodyId, ...body };
-      }
-    }
-    return null;
-  };
-
-  /**
    * Restore body TP order tracking (for state recovery)
    * @param {string} bodyId - Body ID
    * @param {string} tpOrderId - Sell order ID
@@ -772,7 +742,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    * @param {number} [placedAt] - Original placement timestamp (ms), defaults to now
    */
   const restoreBodyTpOrder = (bodyId, tpOrderId, assetQty, tpPrice, placedAt) => {
-    bodyTpOrders.set(bodyId, { tpOrderId, assetQty, tpPrice, costBasis: assetQty * tpPrice });
+    orderState.trackBodyTp(bodyId, { tpOrderId, assetQty, tpPrice, costBasis: assetQty * tpPrice });
     pendingOrders.set(tpOrderId, {
       orderId: tpOrderId,
       type: 'body_tp',
@@ -785,20 +755,6 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       filledAt: null,
       fillPrice: null,
     });
-  };
-
-  /**
-   * Remove body tracking after fill or cancel
-   * @param {string} tpOrderId - Sell order ID that was filled/cancelled
-   */
-  const removeBodyTracking = (tpOrderId) => {
-    for (const [bodyId, body] of bodyTpOrders) {
-      if (body.tpOrderId === tpOrderId) {
-        bodyTpOrders.delete(bodyId);
-        pendingOrders.delete(tpOrderId);
-        return;
-      }
-    }
   };
 
   // ============================================================================
@@ -896,119 +852,6 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     const remainingTracked = Array.from(pendingOrders.values())
       .filter(o => o.type === 'ladder_entry').length;
     return { cancelled, remainingTracked, partialFills: 0, partialFillOrderIds: [], partialFillsCost: 0, unbookedFills: [] };
-  };
-
-  /**
-   * Get all pending ladder orders
-   * @returns {Array<{orderId: string, price: number, size: number, sizeUsdc: number, ladderIndex: number, placedAt: number}>}
-   */
-  const getPendingLadderOrders = () => {
-    const ladderOrders = [];
-    for (const [orderId, order] of pendingOrders) {
-      if (order.type === 'ladder_entry' && order.status === 'open') {
-        ladderOrders.push({
-          orderId,
-          price: order.price,
-          size: order.size,
-          sizeUsdc: order.sizeUsdc,
-          ladderIndex: order.ladderIndex,
-          placedAt: order.placedAt,
-        });
-      }
-    }
-    return ladderOrders.sort((a, b) => b.price - a.price); // Sort by price descending (top of ladder first)
-  };
-
-  /**
-   * Mark an orderId as settled (for interface parity with live executor)
-   * @param {string} orderId - Order ID
-   */
-  const markSettled = (orderId) => {
-    // No-op in dry-run; provides interface parity with live executor
-  };
-
-  // ============================================================================
-
-  /**
-   * Handle order fill notification (passthrough for compatibility)
-   * @param {string} orderId - Filled order ID
-   */
-  const handleOrderFill = (orderId) => {
-    // In dry-run mode, fills are handled internally
-  };
-
-  /**
-   * Handle order cancel notification (passthrough for compatibility)
-   * @param {string} orderId - Cancelled order ID
-   */
-  const handleOrderCancel = (orderId) => {
-    const order = pendingOrders.get(orderId);
-    if (order) {
-      order.status = 'cancelled';
-      pendingOrders.delete(orderId);
-
-      if (order.type === 'take_profit' && orderId === activeTpOrderId) {
-        activeTpOrderId = null;
-        lastTpPrice = 0;
-        lastTpSize = 0;
-      } else if (order.type === 'body_tp') {
-        removeBodyTracking(orderId);
-      }
-    }
-  };
-
-  /**
-   * Get pending orders count by type
-   * @returns {{entries: number, takeProfits: number, total: number}}
-   */
-  const getPendingCounts = () => {
-    let entries = 0;
-    let ladderEntries = 0;
-    let takeProfits = 0;
-    let bodies = 0;
-
-    for (const order of pendingOrders.values()) {
-      if (order.status === 'open') {
-        if (order.type === 'entry') entries++;
-        else if (order.type === 'ladder_entry') ladderEntries++;
-        else if (order.type === 'take_profit') takeProfits++;
-        else if (order.type === 'body_tp') bodies++;
-      }
-    }
-
-    return { entries, ladderEntries, takeProfits, bodies, total: pendingOrders.size };
-  };
-
-  /**
-   * Get all pending entry orders
-   * @returns {Map<string, Object>}
-   */
-  const getPendingEntries = () => {
-    const entries = new Map();
-    for (const [orderId, order] of pendingOrders) {
-      if (order.type === 'entry' && order.status === 'open') {
-        entries.set(orderId, order);
-      }
-    }
-    return entries;
-  };
-
-  /**
-   * Get active TP order ID
-   * @returns {string|null}
-   */
-  const getActiveTpOrderId = () => activeTpOrderId;
-
-  /**
-   * Whether `orderId` is the legacy core take-profit this executor placed
-   * (interface parity with the live executor — issue #672).
-   * @param {string} orderId
-   * @returns {boolean}
-   */
-  const isTrackedTpOrder = (orderId) => {
-    if (!orderId) return false;
-    if (orderId === activeTpOrderId) return true;
-    return pendingOrders.get(orderId)?.type === 'take_profit';
   };
 
   /**
@@ -1178,9 +1021,9 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     filledOrders.length = 0;
     cycleAnalytics.length = 0;
     currentCycleTracking = null;
-    activeTpOrderId = null;
-    lastTpPrice = 0;
-    lastTpSize = 0;
+    coreTp.activeTpOrderId = null;
+    coreTp.lastTpPrice = 0;
+    coreTp.lastTpSize = 0;
     simulatedRealizedPnL = 0;
     simulatedRealizedAssetPnL = 0;
     simulatedBodyRealizedPnL = 0;
@@ -1197,9 +1040,9 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   const exportState = () => ({
     pendingOrders: Array.from(pendingOrders.values()),
     filledOrders: [...filledOrders],
-    activeTpOrderId,
-    lastTpPrice,
-    lastTpSize,
+    activeTpOrderId: coreTp.activeTpOrderId,
+    lastTpPrice: coreTp.lastTpPrice,
+    lastTpSize: coreTp.lastTpSize,
     simulatedRealizedPnL,
     simulatedRealizedAssetPnL,
     simulatedBodyRealizedPnL,
@@ -1238,9 +1081,9 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     }
 
     // Restore TP tracking
-    activeTpOrderId = state.activeTpOrderId || null;
-    lastTpPrice = state.lastTpPrice || 0;
-    lastTpSize = state.lastTpSize || 0;
+    coreTp.activeTpOrderId = state.activeTpOrderId || null;
+    coreTp.lastTpPrice = state.lastTpPrice || 0;
+    coreTp.lastTpSize = state.lastTpSize || 0;
 
     // Restore P&L tracking
     simulatedRealizedPnL = state.simulatedRealizedPnL || 0;

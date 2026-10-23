@@ -405,3 +405,148 @@ describe('Dry-Run Ladder Execution and Simulation', () => {
     assert.equal(stateAfterFill.orders.bodies, 1, 'Body count should be 1');
   });
 });
+
+describe('Order Executor Contract - Order state policies', () => {
+  const makeExecutor = (mode) => {
+    const exec = mode === 'live'
+      ? createOrderExecutor('coinbase', baseConfig(), makeMockAdapter(), TEST_PAIR, {}, TEST_PAIR)
+      : createDryRunExecutor('coinbase', baseConfig(), { lastPrice: 50000, regime: 'NEUTRAL' }, {}, TEST_PAIR);
+    engines.push({ _test: { clearTimers: exec.clearTimers } });
+    return exec;
+  };
+  const order = (orderId, type, status = 'open', price = 50000) => ({
+    orderId, type, status, side: type.endsWith('entry') ? 'buy' : 'sell',
+    price, size: 0.002, sizeUsdc: price * 0.002, placedAt: 1000, staleMs: Infinity,
+    ladderIndex: 2, filledAt: null, fillPrice: null,
+  });
+
+  for (const mode of ['live', 'dry-run']) {
+    it(`${mode} keeps its count/filter policy, raw lookups, ladder ordering and entry references`, () => {
+      const exec = makeExecutor(mode);
+      const orders = [
+        order('entry-open', 'entry'), order('entry-filled', 'entry', 'filled'),
+        order('ladder-low', 'ladder_entry', 'open', 40000),
+        order('ladder-closed', 'ladder_entry', 'cancelled', 49000),
+        order('ladder-top', 'ladder_entry', 'open', 50000),
+        order('tp-filled', 'take_profit', 'filled'), order('body-closed', 'body_tp', 'cancelled'),
+      ];
+      if (mode === 'live') {
+        for (const item of orders) exec.restorePendingOrder(item.orderId, item);
+      } else {
+        exec.importState({ pendingOrders: orders });
+      }
+      assert.deepEqual(exec.getPendingCounts(), mode === 'live'
+        ? { entries: 2, ladderEntries: 3, takeProfits: 1, bodies: 1, total: 7 }
+        : { entries: 1, ladderEntries: 2, takeProfits: 0, bodies: 0, total: 7 });
+      const entries = exec.getPendingEntries();
+      assert.deepEqual([...entries.keys()], mode === 'live' ? ['entry-open', 'entry-filled'] : ['entry-open']);
+      assert.equal(entries.get('entry-open'), orders[0], 'views retain the tracked order identity');
+      entries.clear();
+      assert.equal(exec.getPendingEntries().has('entry-open'), true, 'view map is independent');
+      assert.deepEqual(exec.getPendingLadderOrders().map(o => o.orderId), mode === 'live'
+        ? ['ladder-top', 'ladder-closed', 'ladder-low'] : ['ladder-top', 'ladder-low']);
+      assert.deepEqual(exec.getPendingLadderOrders()[0], {
+        orderId: 'ladder-top', price: 50000, size: 0.002, sizeUsdc: 100, ladderIndex: 2, placedAt: 1000,
+      });
+      assert.equal(exec.isLadderOrder('ladder-closed'), true, 'classification is independent of visibility');
+      assert.equal(exec.getOrderPlacedAt('entry-filled'), 1000);
+      assert.equal(exec.isTrackedTpOrder('tp-filled'), true, 'TP identity is independent of visibility');
+      exec.handleOrderCancel('entry-open');
+      exec.handleOrderCancel('entry-open');
+      assert.equal(exec.getPendingCounts().total, 6);
+      assert.equal(orders[0].status, mode === 'live' ? 'open' : 'cancelled');
+    });
+
+    it(`${mode} restores and removes body TP tracking with duplicate cancels and cleanup`, () => {
+      const exec = makeExecutor(mode);
+      exec.restoreBodyTpOrder('body-a', 'body-tp-a', 0.002, 52000, 1234);
+      exec.restoreBodyTpOrder('body-b', 'body-tp-b', 0.003, 53000, 2345);
+      assert.equal(exec.getPendingCounts().bodies, 2);
+      assert.equal(exec.getOrderPlacedAt('body-tp-a'), 1234);
+      assert.equal(exec.isBodyTpOrder('body-tp-a'), true);
+      const body = exec._test.getBodyByTpOrderId('body-tp-a');
+      assert.equal(body.bodyId, 'body-a');
+      assert.equal(body.assetQty, 0.002);
+      assert.equal(body.tpPrice, 52000);
+      exec.handleOrderCancel('body-tp-a');
+      exec.handleOrderCancel('body-tp-a');
+      exec.removeBodyTracking('body-tp-a');
+      assert.equal(exec.isBodyTpOrder('body-tp-a'), false);
+      assert.equal(exec._test.getBodyByTpOrderId('body-tp-a'), null);
+      assert.equal(exec.getPendingCounts().bodies, 1);
+      exec.removeBodyTracking('body-tp-b');
+      exec.removeBodyTracking('unknown');
+      assert.equal(exec.getPendingCounts().total, 0);
+    });
+  }
+
+  it('live remembers core TP settlements through duplicate fills and expires recognition after five minutes', (t) => {
+    let now = 1000000;
+    const errors = [];
+    t.mock.method(Date, 'now', () => now);
+    t.mock.method(console, 'error', message => errors.push(message));
+    const exec = makeExecutor('live');
+    exec.restorePendingOrder('core-tp', order('core-tp', 'take_profit'));
+    assert.equal(exec._test.getActiveTpOrderId(), 'core-tp');
+    exec.handleOrderFill('core-tp');
+    exec.handleOrderFill('core-tp');
+    assert.equal(exec._test.getActiveTpOrderId(), null);
+    assert.equal(exec.getPendingCounts().total, 0);
+    assert.equal(exec.isTrackedTpOrder('core-tp'), true);
+    assert.equal(exec.isTrackedTpOrder('foreign-sell'), false);
+    exec.markSettled('offline-tp', 'take_profit');
+    exec.markSettled('offline-entry', 'entry');
+    assert.equal(exec.isTrackedTpOrder('offline-tp'), true);
+    assert.equal(exec.isTrackedTpOrder('offline-entry'), false);
+    now += 5 * 60 * 1000;
+    assert.equal(exec.isTrackedTpOrder('core-tp'), false);
+    assert.equal(exec.isTrackedTpOrder('offline-tp'), false);
+    exec.restoreBodyTpOrder('body-a', 'body-tp-a', 0.002, 52000);
+    exec.handleOrderFill('body-tp-a');
+    exec.handleOrderFill('body-tp-a');
+    assert.equal(exec.isBodyTpOrder('body-tp-a'), false);
+    assert.equal(exec.getPendingCounts().total, 0);
+    assert.equal(exec.isTrackedTpOrder('body-tp-a'), false);
+    assert.deepEqual(errors, [], 'duplicate cleanup must not warn about settled orders');
+    exec.handleOrderFill('foreign-sell');
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /WS fill for untracked order foreign-sell/);
+  });
+
+  it('dry-run keeps external fills/restore/settlement as no-ops and retains simulation persistence and reset', async () => {
+    const exec = makeExecutor('dry-run');
+    exec.restorePendingOrder('external', order('external', 'entry'));
+    assert.equal(exec.getPendingCounts().total, 0);
+    const entry = await exec.placeEntryBid(100, 50000, 50010);
+    const tp = await exec.placeTakeProfitOrder(0.002, 52000, { forceUpdate: true });
+    exec.restoreBodyTpOrder('body-a', 'body-tp-a', 0.003, 53000, 1234);
+    exec.handleOrderFill(entry.orderId);
+    exec.handleOrderFill(tp.orderId);
+    exec.handleOrderFill('body-tp-a');
+    exec.markSettled('offline-tp', 'take_profit');
+    assert.equal(exec.getPendingCounts().total, 3);
+    assert.equal(exec.isTrackedTpOrder('offline-tp'), false);
+    assert.equal(exec._test.getActiveTpOrderId(), tp.orderId);
+    assert.equal(exec.getFilledOrders().length, 0);
+    const state = exec.exportState();
+    const restored = makeExecutor('dry-run');
+    restored.importState(state);
+    assert.deepEqual(restored.exportState(), state);
+    assert.equal(restored._test.getActiveTpOrderId(), tp.orderId);
+    assert.equal(restored._test.getBodyByTpOrderId('body-tp-a').bodyId, 'body-a');
+    restored.checkEntryFills(49000);
+    restored.checkTpFills(54000);
+    assert.equal(restored.getPendingCounts().total, 0);
+    assert.equal(restored.getFilledOrders().length, 3);
+    assert.equal(restored._test.getActiveTpOrderId(), null);
+    assert.equal(restored.isTrackedTpOrder(tp.orderId), false, 'simulation does not retain live settlement memory');
+    assert.equal(restored.isBodyTpOrder('body-tp-a'), false);
+    restored.importState(state);
+    restored.resetDryRunState();
+    assert.deepEqual(restored.getPendingCounts(), { entries: 0, ladderEntries: 0, takeProfits: 0, bodies: 0, total: 0 });
+    assert.equal(restored._test.getActiveTpOrderId(), null);
+    assert.equal(restored.isBodyTpOrder('body-tp-a'), false);
+    assert.equal(restored.getFilledOrders().length, 0);
+    assert.deepEqual(restored.exportState().bodyTpOrders, []);
+  });
+});
