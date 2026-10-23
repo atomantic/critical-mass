@@ -64,6 +64,6 @@ export const LONG_TERM_BIAS_TOOLTIP = (
     <div>• <strong>Percentile of range</strong> (60% weight): position in trailing high/low. 1.0 = at the period low.</div>
     <div>• <strong>Drawdown</strong> (30%): % below trailing high. Maps 80% drawdown → 1.0.</div>
     <div>• <strong>Z-score</strong> (10%): standard deviations below the trailing mean.</div>
-    <div className="mt-1">When &quot;Suggested&quot; diverges from &quot;Current&quot;, an <em>Apply Suggested</em> button appears so you can adopt the recommendation with one click. See PLAN.md → Auto-Aggressiveness Roadmap.</div>
+    <div className="mt-1">When &quot;Suggested&quot; diverges from &quot;Current&quot;, an <em>Apply Suggested</em> button appears so you can adopt the recommendation with one click. See docs/auto-aggressiveness.md.</div>
   </>
 )
