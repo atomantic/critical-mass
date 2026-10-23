@@ -722,7 +722,8 @@ const pruneBackups = async (maxBackups) => {
   return { pruned, remaining: backups.length - pruned };
 };
 
-const isSafeFundStateSegment = (value) => typeof value === 'string' && /^[A-Za-z0-9._-]+$/.test(value);
+const isSafeFundStateSegment = (value) => typeof value === 'string' && /^[A-Za-z0-9._-]+$/.test(value)
+  && value !== '.' && value !== '..';
 
 /**
  * Return the configured exchange/pair identities without reading the live
@@ -775,20 +776,73 @@ const restoredArchiveFunds = (stageDir, snapshot) => {
 };
 
 /**
- * Read a fund-state snapshot manifest and reject malformed snapshots before
- * they can be listed or restored.
+ * Validate a complete recovery point without mutating it. Restore stages use
+ * the selected fund's manifest in memory so it is never applied as live state.
  * @param {string} snapshotDir
+ * @param {string} snapshotId
+ * @param {Object} [stagedManifest]
  * @returns {{ok: true, manifest: Object} | {ok: false, error: string}}
  */
-const readFundStateManifest = (snapshotDir) => {
-  const read = readJsonFile(path.join(snapshotDir, FUND_STATE_MANIFEST_FILENAME));
-  if (!read.ok) return read;
-  const manifest = read.value;
-  if (!manifest || Array.isArray(manifest) || manifest.manifestVersion !== FUND_STATE_MANIFEST_VERSION
-    || typeof manifest.snapshotId !== 'string' || !Array.isArray(manifest.funds)) {
-    return { ok: false, error: `${FUND_STATE_MANIFEST_FILENAME} is malformed or unsupported` };
+const validateFundStateSnapshot = (snapshotDir, snapshotId, stagedManifest) => {
+  // lstat every component: checking only the leaf permits an exchange or pair
+  // symlink to make an otherwise supported filename escape the recovery tree.
+  const checkPath = (segments, directory = false, readContents = false) => {
+    let current = snapshotDir;
+    for (let i = -1; i < segments.length; i++) {
+      if (i >= 0) current = path.join(current, segments[i]);
+      const stat = fs.lstatSync(current);
+      const expectDirectory = i < segments.length - 1 || directory;
+      if (expectDirectory ? !stat.isDirectory() : !stat.isFile()) {
+        throw new Error(`${segments.join('/') || 'snapshot directory'} must be a regular ${expectDirectory ? 'directory' : 'file'} (symlinks are not supported)`);
+      }
+    }
+    if (!directory) {
+      // Opening with no-follow also refuses a leaf replaced after lstat. An
+      // actual read detects unreadable storage, rather than trusting mode bits.
+      const fd = fs.openSync(current, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      try {
+        if (!fs.fstatSync(fd).isFile()) throw new Error(`${segments.join('/')} must be a regular file`);
+        if (readContents) return fs.readFileSync(fd, 'utf8');
+        fs.readSync(fd, Buffer.alloc(1), 0, 1, 0);
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+  };
+  try {
+    checkPath([], true);
+    let manifest = stagedManifest;
+    if (!manifest) {
+      manifest = JSON.parse(checkPath([FUND_STATE_MANIFEST_FILENAME], false, true));
+    }
+    if (!manifest || Array.isArray(manifest) || manifest.manifestVersion !== FUND_STATE_MANIFEST_VERSION
+      || !isSafeFundStateSegment(manifest.snapshotId) || manifest.snapshotId !== snapshotId
+      || typeof manifest.createdAt !== 'string' || !Number.isFinite(Date.parse(manifest.createdAt))
+      || !Array.isArray(manifest.funds) || manifest.funds.length === 0) {
+      throw new Error(`${FUND_STATE_MANIFEST_FILENAME} is malformed or unsupported (check identity, creation time and funds)`);
+    }
+    const identities = new Set();
+    for (const fund of manifest.funds) {
+      if (!fund || !isSafeFundStateSegment(fund.exchange) || !isSafeFundStateSegment(fund.pair)
+        || !Array.isArray(fund.files) || fund.files.length === 0) {
+        throw new Error('Snapshot contains a malformed fund identity or empty state file list');
+      }
+      const identity = `${fund.exchange}/${fund.pair}`;
+      if (identities.has(identity)) throw new Error(`Snapshot contains duplicate fund identity: ${identity}`);
+      identities.add(identity);
+      const filenames = new Set();
+      for (const name of fund.files) {
+        if (!FUND_STATE_SNAPSHOT_FILENAMES.includes(name) || filenames.has(name)) {
+          throw new Error(`Snapshot contains an unsupported or duplicate state file for ${identity}`);
+        }
+        filenames.add(name);
+        checkPath([fund.exchange, fund.pair, name]);
+      }
+    }
+    return { ok: true, manifest };
+  } catch (error) {
+    return { ok: false, error: `Fund-state snapshot is incomplete or invalid: ${error.message}` };
   }
-  return { ok: true, manifest };
 };
 
 /**
@@ -819,16 +873,19 @@ const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
     .filter((entry) => entry.isDirectory() && isSafeFundStateSegment(entry.name) && !entry.name.startsWith('.'))
     .map((entry) => {
       const snapshotDir = path.join(paths.fundStateBackupsDir, entry.name);
-      const parsed = readFundStateManifest(snapshotDir);
+      const parsed = validateFundStateSnapshot(snapshotDir, entry.name);
       if (!parsed.ok) return null;
       const { manifest } = parsed;
-      if (manifest.snapshotId !== entry.name || !isSafeFundStateSegment(manifest.snapshotId)) return null;
-      return {
-        snapshotId: manifest.snapshotId,
-        createdAt: manifest.createdAt,
-        funds: manifest.funds,
-        sizeBytes: directorySizeBytes(snapshotDir),
-      };
+      try {
+        return {
+          snapshotId: manifest.snapshotId,
+          createdAt: manifest.createdAt,
+          funds: manifest.funds,
+          sizeBytes: directorySizeBytes(snapshotDir),
+        };
+      } catch (_error) {
+        return null; // A snapshot may disappear while it is being listed.
+      }
     })
     .filter(Boolean)
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -972,6 +1029,8 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
     fsyncFile(path.join(stageDir, FUND_STATE_MANIFEST_FILENAME));
     // Persist the whole staged tree, children before parents, before exposing it.
     for (const dir of [...snapshotDirs].sort((a, b) => b.length - a.length)) fsyncDir(dir);
+    const validated = validateFundStateSnapshot(stageDir, snapshotId);
+    if (!validated.ok) throw new Error(validated.error);
     fs.mkdirSync(paths.fundStateBackupsDir, { recursive: true });
     fs.renameSync(stageDir, publishedPath);
     published = true;
@@ -1004,7 +1063,7 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
  * @param {string} exchange
  * @param {string} pair
  * @param {{fundStateBackupsDir: string}} paths - Resolved paths
- * @returns {{ok: true, snapshotDir: string, files: Array<string>} | {ok: false, error: string}}
+ * @returns {{ok: true, snapshotDir: string, files: Array<string>, manifest: Object} | {ok: false, error: string}}
  */
 const resolveFundStateSnapshot = (snapshotId, exchange, pair, paths) => {
   if (!isSafeFundStateSegment(snapshotId) || !isSafeFundStateSegment(exchange) || !isSafeFundStateSegment(pair)) {
@@ -1019,16 +1078,13 @@ const resolveFundStateSnapshot = (snapshotId, exchange, pair, paths) => {
   }
   if (!stat.isDirectory()) return { ok: false, error: 'Fund-state snapshot is invalid' };
 
-  const parsed = readFundStateManifest(snapshotDir);
+  const parsed = validateFundStateSnapshot(snapshotDir, snapshotId);
   if (!parsed.ok) return { ok: false, error: parsed.error };
-  if (parsed.manifest.snapshotId !== snapshotId) return { ok: false, error: 'Fund-state snapshot identity mismatch' };
   const fund = parsed.manifest.funds.find((entry) => entry.exchange === exchange && entry.pair === pair);
-  if (!fund || !Array.isArray(fund.files) || fund.files.length === 0) {
+  if (!fund) {
     return { ok: false, error: `Snapshot does not contain state for ${exchange}/${pair}` };
   }
-  const unsupported = fund.files.find((name) => !FUND_STATE_SNAPSHOT_FILENAMES.includes(name));
-  if (unsupported !== undefined) return { ok: false, error: `Snapshot contains an unsupported state file: ${unsupported}` };
-  return { ok: true, snapshotDir, files: fund.files };
+  return { ok: true, snapshotDir, files: fund.files, manifest: parsed.manifest };
 };
 
 /**
@@ -1071,6 +1127,13 @@ const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrid
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.copyFileSync(source, target);
     }
+    const sourceValidated = validateFundStateSnapshot(snapshotDir, snapshotId);
+    if (!sourceValidated.ok) throw new Error(sourceValidated.error);
+    const validated = validateFundStateSnapshot(stageDir, snapshotId, {
+      ...resolved.manifest,
+      funds: [{ exchange, pair, files: resolved.files }],
+    });
+    if (!validated.ok) throw new Error(validated.error);
     absent = planAbsentFundState(stageDir, [{ exchange, pair }]);
   } catch (error) {
     fs.rmSync(stageDir, { recursive: true, force: true });
