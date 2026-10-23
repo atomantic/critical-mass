@@ -2671,7 +2671,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (liveMerged && snapshotClosed && !(liveMerged.assetQty > 0) && !liveMerged.tpOrderId) {
       // In place: the buy-merge caller still holds this array.
       const drainedIdx = positionState.celestialBodies.indexOf(liveMerged);
-      if (drainedIdx !== -1) positionState.celestialBodies.splice(drainedIdx, 1);
+      if (drainedIdx !== -1) {
+        positionState.celestialBodies.splice(drainedIdx, 1);
+        dustWaitLoggedQty.delete(liveMerged.id);
+      }
     }
 
     celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
@@ -2776,6 +2779,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // FULL FILL: remove body entirely
     // Remove body from array
     positionState.celestialBodies.splice(bodyIdx, 1);
+    dustWaitLoggedQty.delete(body.id);
 
     // Remove executor tracking
     orderExecutor.removeBodyTracking(fillData.orderId);
@@ -6890,6 +6894,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       // Remove source from celestialBodies
       positionState.celestialBodies = positionState.celestialBodies.filter(b => b.id !== source.id);
+      dustWaitLoggedQty.delete(source.id);
 
       // Retain both snapshots for late-arriving fills (5-minute TTL).
       completeMergeSnapshot(sourceSnapshot);
@@ -7739,6 +7744,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       getIncompleteFillRetryCount: (dedupKey) => incompleteFillRetries.get(dedupKey) || 0,
       getFlags: () => ({ isRunning, dustMergeRetryAfter, ...engineLocks.getFlags() }),
       consolidateDustBodies,
+      getDustWaitLoggedQty: () => new Map(dustWaitLoggedQty),
+      setDustWaitLoggedQtyForTest: (bodyId, qty) => dustWaitLoggedQty.set(bodyId, qty),
       mergeBody: _mergeBodyImpl,
       handleOrderFill,
       handlePolledFill: (orderId, status) => liveCallbacks.onFillDetected(orderId, status),
