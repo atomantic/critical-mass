@@ -1045,6 +1045,33 @@ describe('Fill Ledger', () => {
       'persist() after load() must be a no-op — load resets the dirty flag');
   });
 
+  it('order lookups match a scan after ingest, duplicate, and live reload', () => {
+    const ledger = createTestLedger();
+    const assertParity = () => {
+      for (const orderId of ['o-1', 'o-2', 'unknown']) {
+        const expected = ledger.getAllFills().filter(fill => fill.orderId === orderId)
+          .sort((a, b) => a.timestamp - b.timestamp);
+        const actual = ledger.getFillsForOrder(orderId);
+        assert.deepEqual(actual, expected);
+        actual.forEach((fill, index) => assert.equal(fill, expected[index], 'return canonical row references'));
+      }
+    };
+    for (let i = 0; i < 12; i++) {
+      ledger.ingestFill(makeBuyFill({ tradeId: `indexed-${i}`, orderId: i % 3 ? 'o-1' : 'o-2',
+        tradeTime: new Date(1700000000000 + (i % 4) * 1000).toISOString() }));
+      assertParity();
+    }
+    ledger.ingestFill(makeBuyFill({ tradeId: 'indexed-0', orderId: 'o-1' }));
+    assertParity();
+    ledger.load();
+    assertParity();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'unpersisted', orderId: 'o-1' }), null, { skipPersist: true });
+    assertParity();
+    ledger.load();
+    assertParity();
+    assert.ok(!ledger.getFillsForOrder('o-1').some(fill => fill.tradeId === 'unpersisted'));
+  });
+
   it('getRecordedSizeForOrder returns the per-order total in O(1)', () => {
     const ledger = createTestLedger();
     ledger.startNewCycle();

@@ -259,6 +259,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   const cycleIndex = new Map();
   /** @type {Map<string, number>} orderId -> total recorded size for O(1) watermark lookups in hot retry loops */
   const orderSizeIndex = new Map();
+  /** @type {Map<string, Set<string>>} orderId -> tradeIds for order-scoped lookups */
+  const orderIdIndex = new Map();
   // Avoid scanning the whole ledger on ordinary fill ingestion.
   const syntheticOrders = new Set();
   // Identity-only real fills are stored on their synthetic coverage rows.
@@ -282,7 +284,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   // callers that mutate fill objects directly (via getAllFills /
   // getFillsForOrder) MUST call markDirty() so the next persist actually
   // flushes their changes — and per its contract may only mutate
-  // metadata fields that do not feed orderSizeIndex / cycleIndex.
+  // metadata fields that do not feed orderSizeIndex / orderIdIndex / cycleIndex.
   let dirtySinceLastPersist = false;
   // Tracks whether load() has ever completed (file present or absent) so
   // corruption-recovery branches can distinguish a live SIGUSR1 reload
@@ -330,6 +332,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     fills.clear();
     cycleIndex.clear();
     orderSizeIndex.clear();
+    orderIdIndex.clear();
     syntheticOrders.clear();
     reconciledTradeIds.clear();
     currentCycleId = null;
@@ -466,7 +469,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   };
 
   const rebuildLoadedOrderIndexes = () => {
-    // Rebuild orderSizeIndex from the canonical fills Map AFTER population.
+    // Rebuild order indexes from the canonical fills Map AFTER population.
     // load() can be called multiple times on a live ledger (regime-engine.js
     // re-loads on state reload). If we accumulated while populating fills,
     // a second load() would double-count every persisted fill on top of
@@ -474,7 +477,10 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // and the market-data-service watermark believe orders are fully
     // ingested when they're not. Rebuilding from `fills` is idempotent.
     orderSizeIndex.clear();
+    orderIdIndex.clear();
     for (const f of fills.values()) {
+      if (!orderIdIndex.has(f.orderId)) orderIdIndex.set(f.orderId, new Set());
+      orderIdIndex.get(f.orderId).add(f.tradeId);
       if (isUnresolvedSyntheticCoverage(f)) syntheticOrders.add(f.orderId);
       if (f.orderId) {
         const next = (orderSizeIndex.get(f.orderId) || 0) + (f.size || 0);
@@ -664,7 +670,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   // Synthetic coverage reconciliation (issue #1613): planners and mutators
   // bound to this ledger's maps; dirty flag, persistence and version stay here.
   const coverage = createSyntheticCoverage({
-    fills, cycleIndex, orderSizeIndex, syntheticOrders, reconciledTradeIds,
+    fills, cycleIndex, orderSizeIndex, orderIdIndex, syntheticOrders, reconciledTradeIds,
   });
 
   /**
@@ -844,8 +850,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * @returns {Fill[]} Fills for the order
    */
   const getFillsForOrder = (orderId) => {
-    return Array.from(fills.values())
-      .filter(f => f.orderId === orderId)
+    return Array.from(orderIdIndex.get(orderId) || [], tradeId => fills.get(tradeId))
       .sort((a, b) => a.timestamp - b.timestamp);
   };
 
@@ -1443,8 +1448,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
      * writes to disk. Restricted contract: callers MUST limit mutations
      * to METADATA-ONLY fields that do not feed any derived index — i.e.
      * NOT tradeId, orderId, cycleId, or size. The orderSizeIndex (keyed
-     * by orderId, summed by size) and cycleIndex (keyed by cycleId) are
-     * not refreshed here; mutating an indexed field via this path would
+     * by orderId, summed by size), orderIdIndex (keyed by orderId), and
+     * cycleIndex (keyed by cycleId) are not refreshed here; mutating an indexed field via this path would
      * persist new values to disk while in-memory lookups continued to
      * return stale results until the next reload. dca-converter.js uses
      * this only for the sellOrderId annotation, which is metadata. For

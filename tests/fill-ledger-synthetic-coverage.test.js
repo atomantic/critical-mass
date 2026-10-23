@@ -67,15 +67,22 @@ const runTranscript = () => {
     ledger.setSellCorrectionHandler(correction => handled.push({ sell: structuredClone(correction) }));
     return { ledger, handled };
   };
-  const snapshot = (name, ledger, handled, orderIds, tradeIds) => ({
-    name,
-    fills: ledger.getAllFills(),
-    sizes: orderIds.map(id => ledger.getRecordedSizeForOrder(id)),
-    processed: tradeIds.map(id => ledger.hasProcessedTrade(id)),
-    currentCycle: ledger.getCurrentCycleFills().map(f => f.tradeId),
-    handled,
-    derived: ledger.computeRealizedFromCyclePairs(),
-  });
+  const snapshot = (name, ledger, handled, orderIds, tradeIds) => {
+    for (const orderId of new Set([...orderIds, ...ledger.getAllFills().map(fill => fill.orderId)])) {
+      assert.deepEqual(ledger.getFillsForOrder(orderId),
+        ledger.getAllFills().filter(fill => fill.orderId === orderId).sort((a, b) => a.timestamp - b.timestamp),
+        `${name}: order index must match canonical rows for ${orderId}`);
+    }
+    return {
+      name,
+      fills: ledger.getAllFills(),
+      sizes: orderIds.map(id => ledger.getRecordedSizeForOrder(id)),
+      processed: tradeIds.map(id => ledger.hasProcessedTrade(id)),
+      currentCycle: ledger.getCurrentCycleFills().map(f => f.tradeId),
+      handled,
+      derived: ledger.computeRealizedFromCyclePairs(),
+    };
+  };
   const step = (ledger, data, options) => {
     const reported = { ...data, quoteAmount: data.size * data.price, rebate: 0 };
     let plan = null;
