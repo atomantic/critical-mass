@@ -103,16 +103,23 @@ it('retains the newly refused trade event and bounds disconnected holding for th
 
 it('bounds held replay and preserves the unaccepted tail for another subscribing gateway', async (t) => {
   const { server, connect, command } = await fixture(t);
-  for (let i = 0; i < 150; i++) server.broadcast('trade:event', { i, data: 'x'.repeat(64 * 1024) }, { hold: true });
+  for (let i = 0; i < 10; i++) server.broadcast('trade:event', { i, data: 'x'.repeat(64 * 1024) }, { hold: true });
   const slow = await connect(true);
   let peak = 0;
+  let queued = 0;
+  // Control remaining capacity rather than relying on platform TCP buffer sizes.
+  Object.defineProperty(slow.peer, 'bufferedAmount', { get: () => MAX_PENDING_BYTES - 150000 + queued });
   const send = slow.peer.send.bind(slow.peer);
-  t.mock.method(slow.peer, 'send', (...args) => { send(...args); peak = Math.max(peak, slow.peer.bufferedAmount); });
+  t.mock.method(slow.peer, 'send', (...args) => {
+    send(...args);
+    queued += Buffer.byteLength(args[0]) + 10;
+    peak = Math.max(peak, slow.peer.bufferedAmount);
+  });
   command(slow.socket, MSG_TYPE.SUBSCRIBE);
   await until(() => slow.peer.readyState !== OPEN, 'replay cap disconnect');
   await server.flush();
   assert.ok(peak <= MAX_PENDING_BYTES);
-  assert.ok(server.getHeldEventCount() > 0 && server.getHeldEventCount() < 150);
+  assert.ok(server.getHeldEventCount() > 0 && server.getHeldEventCount() < 10);
   const next = await connect();
   command(next.socket, MSG_TYPE.SUBSCRIBE);
   await until(() => server.getHeldEventCount() === 0, 'remaining replay');
@@ -144,4 +151,20 @@ it('rejects an oversized response before writing even to an empty socket', async
   command(client.socket, MSG_TYPE.REQUEST);
   await until(() => client.peer.readyState !== OPEN, 'oversized response disconnect');
   await server.flush();
+});
+
+
+it('drops a permanently oversized held event so later trade replay can progress', async (t) => {
+  const { server, connect, command } = await fixture(t);
+  server.broadcast('trade:event', { data: 'x'.repeat(MAX_PENDING_BYTES) }, { hold: true });
+  server.broadcast('trade:event', { trade: 'after-oversized' }, { hold: true });
+  assert.equal(server.getHeldEventCount(), 1);
+  const client = await connect();
+  const received = [];
+  client.socket.on('data', (data) => received.push(data));
+  command(client.socket, MSG_TYPE.SUBSCRIBE);
+  await until(() => server.getHeldEventCount() === 0, 'replay past oversized event');
+  await server.flush();
+  await until(() => Buffer.concat(received).includes(Buffer.from('after-oversized')), 'following trade delivery');
+  assert.equal(client.peer.readyState, OPEN);
 });

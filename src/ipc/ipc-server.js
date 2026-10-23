@@ -28,6 +28,10 @@ const ipcServerLogger = (name) => createContextLogger({ module: 'ipc-server', pe
 // go first so a long gateway outage cannot grow engine memory.
 const MAX_HELD_EVENTS = 200;
 const MAX_PENDING_BYTES = 8 * 1024 * 1024;
+const encodedFrameBytes = (data) => {
+  const bytes = Buffer.byteLength(data);
+  return bytes + (bytes < 126 ? 2 : bytes < 65536 ? 4 : 10);
+};
 
 /**
  * Create an IPC server for an engine process
@@ -306,9 +310,7 @@ const createIPCServer = (port, name, options = {}) => {
     if (client.readyState !== OPEN) return false;
     // bufferedAmount includes encoded WebSocket bytes, so include the next
     // frame's UTF-8 payload and unmasked framing header before queueing it.
-    const bytes = Buffer.byteLength(data);
-    const frameBytes = bytes + (bytes < 126 ? 2 : bytes < 65536 ? 4 : 10);
-    if (client.bufferedAmount + frameBytes > MAX_PENDING_BYTES) {
+    if (client.bufferedAmount + encodedFrameBytes(data) > MAX_PENDING_BYTES) {
       logger.warn(`⚠️ 🔗 [${name}] Disconnecting slow IPC client`, { channel, event: 'backpressure' });
       client.terminate();
       return false;
@@ -336,7 +338,7 @@ const createIPCServer = (port, name, options = {}) => {
       client.terminate();
       return false;
     }
-    return true;
+    return client.readyState === OPEN;
   };
 
   /**
@@ -354,6 +356,13 @@ const createIPCServer = (port, name, options = {}) => {
       if (sendFrame(client, data, channel)) delivered = true;
     }
     if (!delivered && options.hold) {
+      // A permanently oversized event can never be replayed. Do not let it
+      // poison the head of the hold and disconnect every future subscriber.
+      if (encodedFrameBytes(data) > MAX_PENDING_BYTES) {
+        droppedHeldFrames++;
+        logger.warn(`⚠️ 🔗 [${name}] Dropped oversized held IPC event`, { channel, event: 'oversized-held-event' });
+        return;
+      }
       heldFrames.push(data);
       if (heldFrames.length > MAX_HELD_EVENTS) {
         droppedHeldFrames += heldFrames.length - MAX_HELD_EVENTS;

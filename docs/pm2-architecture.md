@@ -62,7 +62,8 @@ Pending send callbacks and shutdown flushes settle on disconnect or error. Event
 remain best effort: acceptance into a socket is not an acknowledgement from the
 gateway. A `hold:true` trade event refused by every peer stays in the existing
 200-event disconnected hold (oldest dropped first); replay keeps its unaccepted
-tail for the next subscribing gateway. The hold is bounded by event count, not bytes.
+tail for the next subscribing gateway. A single frame larger than 8 MiB is
+dropped with a diagnostic because it can never be replayed within the bound. The hold is bounded by event count, not bytes.
 
 ## Admin realtime bus (`src/realtime-bus.js`)
 
