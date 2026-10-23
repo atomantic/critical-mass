@@ -122,6 +122,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const [presetsError, setPresetsError] = useState(null)
   const [presetsDirty, setPresetsDirty] = useState(false)
   const [savingPresets, setSavingPresets] = useState(false)
+  const pendingPresetSaveRef = useRef(false)
   const [expandedPresets, setExpandedPresets] = useState(new Set())
   const prevExchangeRef = useRef(exchange)
   const prevStrategyRef = useRef(strategy)
@@ -225,6 +226,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   }
 
   const handlePresetParamChange = (level, key, value) => {
+    if (pendingPresetSaveRef.current) return
     setEditingPresets(prev => ({
       ...prev,
       [level]: { ...prev[level], [key]: value },
@@ -233,6 +235,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   }
 
   const handleSavePresets = async () => {
+    if (pendingPresetSaveRef.current || !presetsDirty) return
+    pendingPresetSaveRef.current = true
     setSavingPresets(true)
     try {
       const result = await apiPut('/api/presets/aggressiveness', editingPresets, { allowEmpty: true })
@@ -249,11 +253,13 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         notify('error', reason || 'Failed to save')
       }
     } finally {
+      pendingPresetSaveRef.current = false
       setSavingPresets(false)
     }
   }
 
   const handleResetPresets = () => {
+    if (pendingPresetSaveRef.current) return
     if (presets) {
       setEditingPresets(JSON.parse(JSON.stringify(presets)))
       setPresetsDirty(false)
@@ -1124,6 +1130,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 <div className="text-xs text-gray-400 mb-3">
                   Customize the parameter values applied by each aggressiveness level on the dashboard.
                 </div>
+                <fieldset disabled={savingPresets} className="contents">
                 <div className="space-y-2">
                   {[
                     { id: 'conservative', label: 'Conservative', color: 'text-green-400' },
@@ -1184,6 +1191,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                     </Button>
                   )}
                 </div>
+                </fieldset>
               </SectionCard>
             )}
           </div>
