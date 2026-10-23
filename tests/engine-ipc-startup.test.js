@@ -43,12 +43,15 @@ const createHarness = (exchange = 'coinbase', failFirst = false, stopped = false
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/ipc/ipc-server.js'), 'utf8'), {
     module: ipcModule,
+    Buffer,
     require: (name) => { assert.ok(name in ipcDependencies, `unexpected IPC dependency ${name}`); return ipcDependencies[name]; },
   });
   const ipc = ipcModule.exports.createIPCServer(12345, 'test');
   const send = (type, channel, payload = {}) => {
     const socket = new EventEmitter();
-    socket.send = (frame) => socket.frames.push(JSON.parse(frame));
+    socket.readyState = 1;
+    socket.bufferedAmount = 0;
+    socket.send = (frame, callback) => { socket.frames.push(JSON.parse(frame)); callback?.(); };
     socket.frames = [];
     socket.close = () => {};
     socket.terminate = () => {};

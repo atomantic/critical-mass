@@ -408,17 +408,38 @@ describe('ws-server sending and backpressure', () => {
     await until(() => connection.bufferedAmount === 0, 'drained');
   });
 
+  it('settles pending send callbacks once on socket error and ignores late write completions', async () => {
+    const { port, connections } = await serverWithRecorder();
+    const { socket } = await rawHandshake(port);
+    await until(() => connections.length === 1, 'connection');
+    const { connection } = connections[0];
+    socket.pause();
+    const calls = Array(64).fill(0);
+    const pending = calls.map((_, i) => new Promise((resolve) => connection.send('z'.repeat(256 * 1024), (err) => { calls[i]++; resolve(err); })));
+    assert.ok(connection.bufferedAmount > 0);
+    connection._socket.emit('error', new Error('synthetic transport failure'));
+    const results = await Promise.all(pending);
+    assert.ok(results.some((err) => err?.message === 'synthetic transport failure'));
+    connection.terminate();
+    await until(() => connection.readyState === CLOSED, 'socket close after error');
+    assert.deepEqual(calls, Array(64).fill(1));
+  });
+
   it('fails pending send callbacks when the connection is terminated before flushing', async () => {
     const { port, connections } = await serverWithRecorder();
     const { socket } = await rawHandshake(port);
     await until(() => connections.length === 1, 'connection');
     const { connection } = connections[0];
     socket.pause();
-    const pending = Array.from({ length: 16 }, () => new Promise((resolve) => connection.send('y'.repeat(256 * 1024), resolve)));
+    const calls = Array(64).fill(0);
+    const pending = calls.map((_, i) => new Promise((resolve) => connection.send('y'.repeat(256 * 1024), (err) => { calls[i]++; resolve(err); })));
     await sleep(20);
     connection.terminate();
     const results = await Promise.all(pending);
     assert.ok(results.some(Boolean), 'at least one unflushed send reports an error');
+    await until(() => connection.readyState === CLOSED, 'socket close after terminate');
+    await sleep(10);
+    assert.deepEqual(calls, Array(64).fill(1), 'termination and late socket callbacks settle each send once');
     assert.equal(await new Promise((resolve) => connection.send('after', resolve)) instanceof Error, true);
   });
 });
