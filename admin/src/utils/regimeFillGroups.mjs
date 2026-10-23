@@ -12,6 +12,12 @@ export function compareCycleIds(a, b) {
   return numB - numA
 }
 
+export function compareCycleGroupsByRecency(a, b) {
+  const maxTsA = Number.isFinite(a.maxTs) ? a.maxTs : 0
+  const maxTsB = Number.isFinite(b.maxTs) ? b.maxTs : 0
+  return (maxTsB - maxTsA) || compareCycleIds(a.cycleId, b.cycleId)
+}
+
 // Historical cycle accounting only. Callers own snapshot memoization; prices and
 // pending orders must not invalidate this derivation. Input fills are never mutated.
 //
@@ -99,8 +105,7 @@ export function summarizeRegimeFillGroups(sellGroups) {
   // the paired sell). Derived from cycle pairs, same source as totalPnl.
   let totalHoldback = 0
   cycleMap.forEach(entry => { totalHoldback += entry.totalHoldback })
-  const cycleGroups = Array.from(cycleMap.values()).sort((a, b) =>
-    (b.maxTs - a.maxTs) || compareCycleIds(a.cycleId, b.cycleId))
+  const cycleGroups = Array.from(cycleMap.values()).sort(compareCycleGroupsByRecency)
   const totalPnl = sellGroups.reduce((sum, group) => sum + (group.sell.pnl || 0), 0)
   return { cycleGroups, totalHoldback, totalPnl }
 }

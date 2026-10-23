@@ -2,7 +2,7 @@ import Button from '../ui/Button'
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { plural } from '../../utils/plural.mjs'
 import {
-  deriveRegimeFillGroups, searchRegimeFillGroups, visibleOrphanBuys,
+  compareCycleGroupsByRecency, deriveRegimeFillGroups, searchRegimeFillGroups, visibleOrphanBuys,
   deriveDryRunFillGroups, searchDryRunFillGroups,
 } from '../../utils/regimeFillGroups.mjs'
 import { getPriceDecimals, formatCurrency } from '../charts/chartUtils'
@@ -54,7 +54,7 @@ function FilledOrdersSection({ fillsUnavailable = false, retry, liveFills, fillA
       minTs: cycle.minTs ?? Infinity,
       maxTs: cycle.maxTs ?? 0,
       sells: recent.sellGroups.filter(group => (group.sell.cycleId || 'unknown') === cycle.cycleId),
-    }))
+    })).sort(compareCycleGroupsByRecency)
     return {
       ...recent,
       orphanCandidates: fillAggregates.openFillsTruncated ? [] : recent.orphanCandidates,

@@ -141,7 +141,7 @@ test('60 price updates reuse history; fills, cycle selection and remount invalid
   const memoSource = source.slice(source.indexOf('  const filteredFills = useMemo'), source.indexOf('  // Derive the most recent cycle ID'));
   assert.ok(memoSource.includes('historicalFillGroups'));
   const reserveSource = source.match(/const reservesUsd = .*\n/)[0];
-  const run = new Function('useMemo', 'deriveRegimeFillGroups', 'searchRegimeFillGroups', 'fillAggregates', 'liveFills', 'showAllCycles', 'fillSearchId', 'status', `${memoSource}\nconst { totalHoldback } = searchedFillGroups; const market = status.market; ${reserveSource} return { history: historicalFillGroups, searched: searchedFillGroups, reservesUsd };`);
+  const run = new Function('useMemo', 'deriveRegimeFillGroups', 'searchRegimeFillGroups', 'compareCycleGroupsByRecency', 'fillAggregates', 'liveFills', 'showAllCycles', 'fillSearchId', 'status', `${memoSource}\nconst { totalHoldback } = searchedFillGroups; const market = status.market; ${reserveSource} return { history: historicalFillGroups, searched: searchedFillGroups, reservesUsd };`);
   let calls = 0, cache = [], cursor = 0;
   const useMemo = (fn, deps) => {
     const slot = cursor++;
@@ -149,9 +149,9 @@ test('60 price updates reuse history; fills, cycle selection and remount invalid
     return cache[slot].value;
   };
   const fills = [buy('b', { sellOrderId: 's' }), sell('s'), sell('s2', { cycleId: 'cycle-2', bodyPnl: 10 })];
-  const render = (price, snapshot = fills, all = true, search = '') => {
+  const render = (price, snapshot = fills, all = true, search = '', aggregates = null) => {
     cursor = 0;
-    return run(useMemo, (...args) => { calls++; return utils.deriveRegimeFillGroups(...args); }, utils.searchRegimeFillGroups, null, snapshot, all, search, { market: { lastPrice: price }, pendingOrders: [] });
+    return run(useMemo, (...args) => { calls++; return utils.deriveRegimeFillGroups(...args); }, utils.searchRegimeFillGroups, utils.compareCycleGroupsByRecency, aggregates, snapshot, all, search, { market: { lastPrice: price }, pendingOrders: [] });
   };
   const first = render(100);
   for (let i = 1; i <= 60; i++) {
@@ -166,6 +166,21 @@ test('60 price updates reuse history; fills, cycle selection and remount invalid
   const refreshed = [...fills, sell('s3')];
   render(200, refreshed); assert.equal(calls, 3);
   cache = []; render(200, refreshed); assert.equal(calls, 4);
+
+  const liveAggregates = {
+    fillCycleGroups: [
+      { cycleId: 'cycle-22', maxTs: 200, totalPnl: 0, totalHoldback: 0 },
+      { cycleId: 'cycle-18', maxTs: 300, totalPnl: 0, totalHoldback: 0 },
+      { cycleId: 'cycle-24', maxTs: 400, totalPnl: 0, totalHoldback: 0 },
+      { cycleId: 'cycle-25', maxTs: 400, totalPnl: 0, totalHoldback: 0 },
+    ],
+    totalPnl: 0,
+    totalHoldback: 0,
+    fillCount: 4,
+  };
+  assert.deepEqual(render(200, fills, true, '', liveAggregates).history.cycleGroups.map(group => group.cycleId), [
+    'cycle-25', 'cycle-24', 'cycle-18', 'cycle-22'
+  ]);
 });
 
 // ---------------------------------------------------------------------------
