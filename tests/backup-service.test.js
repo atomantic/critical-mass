@@ -792,3 +792,32 @@ describe('backup-service — pruneBackups retention', () => {
     });
   }
 });
+
+// An absent sidecar and an explicit empty one describe the same generation.
+const { exerciseFundRestoreGeneration } = require('./helpers/fund-restore-generation');
+for (const explicitEmpty of [false, true]) {
+  it(`full restore resets newer accounting (${explicitEmpty ? 'empty' : 'absent'} closed trades, #1702)`, async (t) => {
+    await exerciseFundRestoreGeneration(t, 'full', explicitEmpty);
+  });
+}
+
+it('full restore resets a configured fund that had no accounting files yet (#1702)', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-empty-fund-restore-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dataDir = path.join(root, 'data');
+  const baseConfigFile = path.join(root, 'base.json');
+  const paths = { dataDir, baseConfigFile };
+  fs.mkdirSync(dataDir);
+  fs.writeFileSync(baseConfigFile, JSON.stringify({ exchanges: { coinbase: { pairs: { 'BTC-USDC': { productId: 'BTC-USDC', enabled: true } } } } }));
+  const archived = await createBackup({ paths });
+  assert.equal(archived.success, true, JSON.stringify(archived));
+  const fundDir = path.join(dataDir, 'coinbase', 'BTC-USDC');
+  fs.mkdirSync(fundDir, { recursive: true });
+  for (const filename of ['fill-ledger.json', 'regime-state.json', 'closed-trades.json', 'state.json', 'manual-trades.json', 'pending-corrective-buys.json']) {
+    fs.writeFileSync(path.join(fundDir, filename), '{"later":true}');
+  }
+  const result = restoreBackup(archived.filename, { paths });
+  assert.equal(result.success, true, JSON.stringify(result));
+  assert.deepEqual(fs.readdirSync(fundDir), ['dry-run-state.json']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fundDir, 'dry-run-state.json'), 'utf8')), { version: 1, state: null });
+});

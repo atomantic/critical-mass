@@ -226,6 +226,147 @@ describe('restore-apply — transactional application (#431)', () => {
     for (const dir of roots.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it('journals removals and resets with replacements, rolling bytes and modes back after a removal (#1702)', () => {
+    const removed = path.join(dataDir, 'later.json');
+    const reset = path.join(dataDir, 'dry-run-state.json');
+    write(removed, 'later trade');
+    write(reset, 'later simulation');
+    fs.chmodSync(removed, 0o640);
+    fs.chmodSync(reset, 0o604);
+    const before = preRestoreState();
+    const remove = fs.rmSync;
+    let sawRemoval = false;
+    mock.method(fs, 'rmSync', (file, ...args) => {
+      const result = remove(file, ...args);
+      if (String(file) === removed) sawRemoval = true;
+      return result;
+    });
+    const rename = fs.renameSync;
+    mock.method(fs, 'renameSync', (from, to) => {
+      if (String(to) === reset && sawRemoval) {
+        sawRemoval = false; // rollback must be able to write this destination
+        assert.equal(fs.existsSync(removed), false, 'failure is after the real removal');
+        const journal = JSON.parse(read(path.join(dataDir, JOURNAL_FILENAME)));
+        assert.equal(journal.journalVersion, 2);
+        assert.deepEqual(journal.entries.slice(-2).map(e => e.operation), ['remove', 'reset']);
+        throw new Error('Injected failure after removal');
+      }
+      return rename(from, to);
+    });
+    const previousUmask = process.umask(0o077);
+    let result;
+    try {
+      result = applyStagedFiles({ dataDir, stageDir, absent: [
+        { dest: 'later.json', operation: 'remove' },
+        { dest: 'dry-run-state.json', operation: 'reset', contents: '{"version":1,"state":null}' },
+      ] });
+    } finally { process.umask(previousUmask); }
+    assert.equal(result.success, false);
+    assert.equal(result.rolledBack, true);
+    assert.deepEqual(preRestoreState(), before);
+    assert.equal(read(removed), 'later trade');
+    assert.equal(read(reset), 'later simulation');
+    assert.equal(fs.statSync(removed).mode & 0o777, 0o640);
+    assert.equal(fs.statSync(reset).mode & 0o777, 0o604);
+    assert.deepEqual(artifactNames(), []);
+  });
+
+  it('commits removal and dry-run reset durably, including a previously absent reset (#1702)', () => {
+    write(path.join(dataDir, 'later.json'), 'later');
+    const { events } = traceStorage();
+    const result = applyStagedFiles({ dataDir, stageDir, absent: [
+      { dest: 'later.json', operation: 'remove' },
+      { dest: 'new-fund/dry-run-state.json', operation: 'reset', contents: '{"version":1,"state":null}' },
+      { dest: 'missing/closed-trades.json', operation: 'remove' },
+    ] });
+    assert.equal(result.success, true);
+    assert.equal(read(path.join(dataDir, 'later.json')), null);
+    assert.equal(read(path.join(dataDir, 'new-fund/dry-run-state.json')), '{"version":1,"state":null}');
+    assert.equal(fs.existsSync(path.join(dataDir, 'missing')), false);
+    const removedAt = events.findIndex(e => e.type === 'remove' && e.file === path.join(dataDir, 'later.json'));
+    const commitAt = events.findIndex(e => e.status === STATUS.COMMITTED);
+    assert.ok(events.slice(removedAt + 1, commitAt).some(e => e.type === 'sync' && e.file === dataDir));
+  });
+
+  it('recovers removed/reset originals and removes a newly-created tombstone after a real process death (#1702)', async (t) => {
+    write(path.join(dataDir, 'later.json'), 'later trade');
+    write(path.join(dataDir, 'dry-run-state.json'), 'later simulation');
+    fs.chmodSync(path.join(dataDir, 'later.json'), 0o640);
+    fs.chmodSync(path.join(dataDir, 'dry-run-state.json'), 0o604);
+    const before = preRestoreState();
+    const script = `
+      const fs = require('fs');
+      const path = require('path');
+      const { applyStagedFiles } = require(${JSON.stringify(require.resolve('../src/restore-apply'))});
+      const [dataDir, stageDir] = process.argv.slice(1);
+      const rename = fs.renameSync;
+      fs.renameSync = (from, to) => {
+        const result = rename(from, to);
+        if (String(to) === path.join(dataDir, 'created/dry-run-state.json')) process.kill(process.pid, 'SIGKILL');
+        return result;
+      };
+      applyStagedFiles({ dataDir, stageDir, absent: [
+        { dest: 'later.json', operation: 'remove' },
+        { dest: 'dry-run-state.json', operation: 'reset', contents: '{"version":1,"state":null}' },
+        { dest: 'created/dry-run-state.json', operation: 'reset', contents: '{"version":1,"state":null}' }
+      ] });
+    `;
+    const child = spawn(process.execPath, ['-e', script, dataDir, stageDir], { stdio: 'pipe' });
+    t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+    const exit = await new Promise((resolve, reject) => { child.on('error', reject); child.on('exit', (code, signal) => resolve({ code, signal })); });
+    assert.equal(exit.signal, 'SIGKILL');
+    assert.equal(read(path.join(dataDir, 'later.json')), null);
+    assert.equal(read(path.join(dataDir, 'dry-run-state.json')), '{"version":1,"state":null}');
+    assert.deepEqual(recoverIncompleteRestore({ dataDir }), { pending: true, recovered: true, blocked: false });
+    assert.deepEqual(preRestoreState(), before);
+    assert.equal(read(path.join(dataDir, 'later.json')), 'later trade');
+    assert.equal(read(path.join(dataDir, 'dry-run-state.json')), 'later simulation');
+    assert.equal(fs.statSync(path.join(dataDir, 'later.json')).mode & 0o777, 0o640);
+    assert.equal(fs.statSync(path.join(dataDir, 'dry-run-state.json')).mode & 0o777, 0o604);
+    assert.equal(fs.existsSync(path.join(dataDir, 'created')), false);
+    assert.deepEqual(artifactNames(), []);
+  });
+
+  it('still recovers v1 journals without operation fields (#1702)', () => {
+    seedInterruptedJournal();
+    const journalPath = path.join(dataDir, JOURNAL_FILENAME);
+    const journal = JSON.parse(read(journalPath));
+    journal.journalVersion = 1;
+    for (const entry of journal.entries) delete entry.operation;
+    write(journalPath, JSON.stringify(journal));
+    assert.deepEqual(recoverIncompleteRestore({ dataDir }), { pending: true, recovered: true, blocked: false });
+    assert.equal(read(path.join(dataDir, 'alpha.json')), 'original generation');
+  });
+
+  it('rejects conflicting or escaping absence operations before changing destinations (#1702)', () => {
+    const before = preRestoreState();
+    for (const absent of [
+      [{ dest: '../outside.json', operation: 'remove' }],
+      [{ dest: 'alpha.json', operation: 'remove' }],
+      [{ dest: 'absent.json', operation: 'reset' }],
+      [{ dest: 'absent.json', operation: 'remove' }, { dest: 'absent.json', operation: 'remove' }],
+    ]) {
+      const result = applyStagedFiles({ dataDir, stageDir, absent });
+      assert.equal(result.success, false);
+      assert.equal(result.rolledBack, true);
+      assert.deepEqual(preRestoreState(), before);
+    }
+  });
+
+  it('refuses absence operations through destination symlinks (#1702)', () => {
+    const outside = path.join(root, 'unrelated');
+    fs.mkdirSync(outside);
+    write(path.join(outside, 'closed-trades.json'), 'preserved');
+    fs.symlinkSync(outside, path.join(dataDir, 'linked'));
+    const result = applyStagedFiles({ dataDir, stageDir, absent: [
+      { dest: 'linked/closed-trades.json', operation: 'remove' },
+    ] });
+    assert.equal(result.success, false);
+    assert.equal(result.rolledBack, true);
+    assert.equal(read(path.join(outside, 'closed-trades.json')), 'preserved');
+    assert.equal(preRestoreState().alpha, '{"gen":"current-alpha"}');
+  });
+
   it('serializes two real starters and re-reads after ownership transfer (#1693)', async (t) => {
     seedInterruptedJournal();
     const first = startRestoreProcess(t, { pauseRecovery: true, runtimeWrite: true });

@@ -136,3 +136,11 @@ describe('hourly fund-state snapshots', () => {
     assert.match(result.error, /Invalid fund-state/);
   });
 });
+
+// An absent sidecar and an explicit empty one describe the same generation.
+const { exerciseFundRestoreGeneration } = require('./helpers/fund-restore-generation');
+for (const explicitEmpty of [false, true]) {
+  it(`hourly restore resets newer accounting (${explicitEmpty ? 'empty' : 'absent'} closed trades, #1702)`, async (t) => {
+    await exerciseFundRestoreGeneration(t, 'hourly', explicitEmpty);
+  });
+}

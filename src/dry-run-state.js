@@ -105,6 +105,9 @@ const pendingStates = new Map();
 const STATE_VERSION = 1;
 const STALE_STATE_DAYS = 7;
 
+/** Shared envelope for normal writes and transactional restore tombstones. */
+const serializeFundState = (state = null) => JSON.stringify({ version: STATE_VERSION, state }, null, 2);
+
 // Compose the key identifying a fund in logs (and in the legacy root file).
 // Legacy single-fund installations stored state under bare exchange names;
 // callers that pass no pair still get that form so their log context is stable.
@@ -187,7 +190,7 @@ const readFundStateFile = (stateFile, key, logger) => {
  */
 const writeFundStateFile = (exchange, pair, state = null) => {
   const stateFile = path.join(getFundDataDir(exchange, pair), STATE_FILENAME);
-  atomicWriteSync(stateFile, JSON.stringify({ version: STATE_VERSION, state }, null, 2));
+  atomicWriteSync(stateFile, serializeFundState(state));
   return stateFile;
 };
 
@@ -460,4 +463,5 @@ module.exports = {
   getStateFile,
   STATE_FILENAME,
   LEGACY_STATE_FILE,
+  serializeFundState,
 };

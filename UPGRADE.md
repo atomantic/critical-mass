@@ -4,6 +4,31 @@ Step-by-step instructions for breaking changes that require operator action.
 
 ---
 
+## Restores Reproduce Missing Fund Accounting State (Unreleased)
+
+Hourly fund snapshots and full archives now restore each included fund's complete
+accounting generation. If a snapshot predates a file, restore removes the newer
+`closed-trades.json`, `manual-trades.json`, `pending-corrective-buys.json`,
+`fill-ledger.json`, `regime-state.json`, or `state.json`. Missing closed trades and
+an explicit empty trade list therefore both produce zero later trades and P&L.
+Missing `dry-run-state.json` writes the same reset tombstone as clearing a
+simulation, preventing an old application-root simulation from being re-imported.
+
+Only these accounting files for restored funds receive absence operations. Other
+funds, rebuildable caches, and machine-local credentials are not removed. Full
+archives still replace any non-excluded files they actually contain. The archive's
+configured funds (including empty funds), plus fund directories carrying accounting
+state after legacy layout translation, define its restored fund set. Hourly restore
+affects only the selected fund.
+
+Replacements, removals, and resets share one durable rollback transaction. Failure
+or interrupted startup recovery restores previous bytes and permissions. New
+journals use version 2; this build still recovers existing version 1 journals.
+Finish recovery with this build before switching back to an older build that does
+not understand version 2 journals.
+
+---
+
 ## Rollback Over Newer Trading Data Is Not Supported (Unreleased)
 
 Running an older Critical Mass build over trading data written by a newer one is

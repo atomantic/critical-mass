@@ -49,7 +49,7 @@ const { atomicWriteSync, fsyncFile } = require('./durable-write');
 const JOURNAL_FILENAME = '.restore-journal.json';
 
 /** Journal envelope version — recovery refuses anything it does not understand. */
-const JOURNAL_VERSION = 1;
+const JOURNAL_VERSION = 2;
 
 /** Pre-restore copies of every destination the attempt replaces. */
 const ORIGINALS_PREFIX = '.restore-originals-';
@@ -189,14 +189,19 @@ const restoreTmpPath = (dest) => path.join(path.dirname(dest), `.${path.basename
  * file to 0600 would silently get it widened.
  * @param {string} src - Source file
  * @param {string} dest - Destination file
+ * @param {boolean} [preserveMode] - Preserve destination mode, or restore source mode during rollback
  * @returns {void}
  */
-const replaceFileAtomic = (src, dest) => {
+const replaceFileAtomic = (src, dest, preserveMode = true) => {
   atomicWriteSync(dest, fs.readFileSync(src), {
-    preserveMode: true,
+    preserveMode,
     mode: fs.statSync(src).mode & 0o777,
     temporaryPath: restoreTmpPath(dest),
   });
+  if (!preserveMode) {
+    fs.chmodSync(dest, fs.statSync(src).mode & 0o777);
+    fsyncFile(dest);
+  }
 };
 
 /**
@@ -265,6 +270,47 @@ const validateStagedSet = ({ stageDir, dataDir, files }) => {
 };
 
 /**
+ * Add explicit absence operations to the staged replacements. No operation may
+ * escape the data root, overlap a staged file, or traverse a destination symlink.
+ * Reset contents come from the caller's state-format serializer (e.g. dry-run
+ * tombstones), and are journalled with exactly the same originals as removals.
+ */
+const planOperations = ({ dataDir, files, dirs, absent = [] }) => {
+  const operations = files.map((dest) => ({ dest, operation: 'replace' }));
+  const seen = new Set(files);
+  for (const entry of absent) {
+    const { dest, operation, contents } = entry;
+    if (typeof dest !== 'string' || path.isAbsolute(dest) || path.normalize(dest) !== dest
+      || dest.split(path.sep).some((part) => !part || part === '.' || part === '..')
+      || seen.has(dest) || !['remove', 'reset'].includes(operation)
+      || (operation === 'reset' && typeof contents !== 'string')) {
+      throw new Error('Invalid or conflicting restore absence operation');
+    }
+    seen.add(dest);
+    operations.push({ dest, operation, ...(operation === 'reset' ? { contents } : {}) });
+  }
+  const createdDirs = new Set(dirs);
+  for (const entry of operations) {
+    const parts = entry.dest.split(path.sep);
+    for (let i = 1; i <= parts.length; i++) {
+      const rel = parts.slice(0, i).join(path.sep);
+      const target = path.join(dataDir, rel);
+      let stat;
+      try { stat = fs.lstatSync(target); } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      const isParent = i < parts.length;
+      if (stat && (stat.isSymbolicLink() || (isParent ? !stat.isDirectory() : !stat.isFile()))) {
+        throw new Error(`Restore destination ${rel} is not a regular ${isParent ? 'directory' : 'file'}`);
+      }
+      if (stat && isParent) fs.accessSync(target, fs.constants.W_OK);
+      if (!stat && isParent && entry.operation !== 'remove') createdDirs.add(rel);
+    }
+  }
+  return { operations, dirs: [...createdDirs].sort((a, b) => a.length - b.length) };
+};
+
+/**
  * Read and validate the journal, if one is present.
  * @param {string} dataDir - Data directory
  * @returns {{present: false} | {present: true, ok: true, journal: Object} | {present: true, ok: false, error: string}} Journal state
@@ -278,7 +324,7 @@ const readJournal = (dataDir) => {
   if (!journal || typeof journal !== 'object' || Array.isArray(journal) || !Array.isArray(journal.entries)) {
     return { present: true, ok: false, error: `${JOURNAL_FILENAME} is malformed (no entry list)` };
   }
-  if (journal.journalVersion !== JOURNAL_VERSION) {
+  if (![1, JOURNAL_VERSION].includes(journal.journalVersion)) {
     return { present: true, ok: false, error: `${JOURNAL_FILENAME} version ${JSON.stringify(journal.journalVersion)} is not supported by this build (expected ${JOURNAL_VERSION})` };
   }
   return { present: true, ok: true, journal };
@@ -347,7 +393,7 @@ const rollbackFromJournal = ({ dataDir, journal, logger }) => {
         failures.push(`${entry.dest}: saved original is missing at ${journal.originalsDir}/${entry.dest}`);
         continue;
       }
-      const back = attempt(() => replaceFileAtomic(original, dest));
+      const back = attempt(() => replaceFileAtomic(original, dest, false));
       if (back.ok) restored++;
       else failures.push(`${entry.dest}: ${back.error.message}`);
       continue;
@@ -437,6 +483,7 @@ const revertAndSettle = ({ dataDir, journal, logger }) => {
  * @param {string} params.stageDir - Extraction root (absolute, inside dataDir)
  * @param {string} [params.filename] - Archive filename, for journal/log context
  * @param {(name: string, isRoot: boolean, rel: string) => boolean} [params.skip] - Staged-entry filter (name, at-stage-root, path relative to stage root)
+ * @param {Array<{dest: string, operation: string, contents?: string}>} [params.absent] - Authoritative missing state operations
  * @param {{info: Function, warn: Function, error: Function}} [params.logger] - Context logger
  * @returns {{success: true, filesRestored: number} |
  *   {success: false, code: string, error: string, rolledBack: boolean, recovery?: Object}} Application outcome.
@@ -446,7 +493,7 @@ const revertAndSettle = ({ dataDir, journal, logger }) => {
  *   (including unavailable ownership); callers must keep writers stopped.
  *   When a journal could be read, `recovery` names the artifacts a retry needs.
  */
-const applyStagedFilesOwned = ({ dataDir, stageDir, filename = 'archive', skip, logger = NOOP_LOGGER }) => {
+const applyStagedFilesOwned = ({ dataDir, stageDir, filename = 'archive', skip, absent = [], logger = NOOP_LOGGER }) => {
   // Ownership must be acquired BEFORE inspecting the journal or destinations.
   const read = readJournal(dataDir);
   if (read.present) {
@@ -466,11 +513,13 @@ const applyStagedFilesOwned = ({ dataDir, stageDir, filename = 'archive', skip, 
     logger.error(`❌ 💾 Restore refused before any write: could not read the staged set: ${error.message}`, { action: 'restore-apply', filename, error: error.message });
     return { success: false, code: 'staged-set-unreadable', error: `Could not read the extracted archive: ${error.message}. No files were changed.`, rolledBack: true };
   }
-  const { files, dirs } = staged;
-
+  const { files } = staged;
+  let operations;
+  let dirs;
   let valid;
   try {
     valid = validateStagedSet({ stageDir, dataDir, files });
+    if (valid.ok) ({ operations, dirs } = planOperations({ dataDir, files, dirs: staged.dirs, absent }));
   } catch (error) {
     valid = { ok: false, error: `Could not validate the extracted archive: ${error.message}. No files were changed.` };
   }
@@ -488,19 +537,20 @@ const applyStagedFilesOwned = ({ dataDir, stageDir, filename = 'archive', skip, 
   const saved = attempt(() => {
     fs.mkdirSync(originalsPath, { recursive: true, mode: 0o700 });
     const snapshotDirs = new Set([originalsPath]);
-    for (const rel of files) {
+    for (const { dest: rel, operation } of operations) {
       const dest = path.join(dataDir, rel);
       const existed = fs.existsSync(dest);
       if (existed) {
         const copyTo = path.join(originalsPath, rel);
         fs.mkdirSync(path.dirname(copyTo), { recursive: true });
         fs.copyFileSync(dest, copyTo);
+        fs.chmodSync(copyTo, fs.statSync(dest).mode & 0o777);
         fsyncFile(copyTo);
         for (let dir = path.dirname(copyTo); dir !== originalsPath; dir = path.dirname(dir)) {
           snapshotDirs.add(dir);
         }
       }
-      entries.push({ dest: rel, existed });
+      entries.push({ dest: rel, existed, operation });
     }
     // Flush the entire rollback tree, children before parents, before its
     // journal can authorize replacing even one live file.
@@ -554,7 +604,17 @@ const applyStagedFilesOwned = ({ dataDir, stageDir, filename = 'archive', skip, 
       fs.mkdirSync(dir, { recursive: true });
       fsyncDir(path.dirname(dir));
     }
-    for (const rel of files) replaceFileAtomic(path.join(stageDir, rel), path.join(dataDir, rel));
+    for (const { dest: rel, operation, contents } of operations) {
+      const dest = path.join(dataDir, rel);
+      if (operation === 'replace') replaceFileAtomic(path.join(stageDir, rel), dest);
+      else if (operation === 'reset') atomicWriteSync(dest, contents, {
+        preserveMode: true, mode: 0o600, temporaryPath: restoreTmpPath(dest),
+      });
+      else {
+        fs.rmSync(dest, { force: true });
+        if (fs.existsSync(path.dirname(dest))) fsyncDir(path.dirname(dest));
+      }
+    }
   });
 
   // Success requires the durable commit marker too. A failed marker write is
