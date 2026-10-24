@@ -82,21 +82,27 @@ function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, o
     }
   }, [isOpen])
 
+  // Focus before removing the active option so dialogs capture a connected
+  // return target and navigation/refresh never leave focus on the body.
+  const closeWithFocus = () => {
+    triggerRef.current?.focus()
+    setIsOpen(false)
+  }
+
   const handleKeyDown = (event) => {
     if (event.key === 'Escape') {
       event.preventDefault()
-      setIsOpen(false)
-      triggerRef.current?.focus()
+      closeWithFocus()
     }
   }
 
   const handleSelect = (exchangeName, pair) => {
+    closeWithFocus()
     onChange(exchangeName, pair)
-    setIsOpen(false)
   }
 
   const handleAddFund = () => {
-    setIsOpen(false)
+    closeWithFocus()
     onAddFund?.()
   }
 
@@ -198,7 +204,7 @@ function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, o
             )}
             <Button
               onClick={() => {
-                setIsOpen(false)
+                closeWithFocus()
                 onRefresh?.()
               }}
               variant="secondary" size="md" className="w-full gap-2"

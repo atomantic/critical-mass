@@ -196,6 +196,28 @@ function AppContent() {
   const [reopenFundDialogOpen, setReopenFundDialogOpen] = useState(false)
   const [addFundDialogOpen, setAddFundDialogOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const mainContentRef = useRef(null)
+  const mobileDestinationRef = useRef(null)
+
+  const handleMobileSection = (event, to) => {
+    // Match Link's same-window activation rules. Modified clicks keep both
+    // their native browser behavior and the current menu/focus position.
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
+    mobileDestinationRef.current = to
+    setMobileMenuOpen(false)
+  }
+
+  useLayoutEffect(() => {
+    if (mobileMenuOpen || mobileDestinationRef.current === null) return
+    const destination = mobileDestinationRef.current
+    mobileDestinationRef.current = null
+    if (destination === location.pathname + location.search + location.hash) {
+      // The destination's content or Suspense loading region has committed.
+      // Focus the persistent landmark once; lazy completion and polls must
+      // leave the operator's subsequent focus choices alone.
+      mainContentRef.current?.focus()
+    }
+  }, [location, mobileMenuOpen])
   const [simpleDcaEnabled, setSimpleDcaEnabled] = useState(false)
   // Fund list load state. Until the list has loaded once, strategy/badge
   // defaults are guesses, so a failed load must not render default-derived
@@ -681,7 +703,7 @@ function AppContent() {
                     key={to}
                     to={to}
                     end={end}
-                    onClick={() => setMobileMenuOpen(false)}
+                    onClick={(event) => handleMobileSection(event, to)}
                     className={({ isActive }) => `min-h-11 px-3 py-2 text-sm hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center ${isActive ? 'text-white bg-gray-700' : 'text-gray-400'}`}
                   >
                     {label}
@@ -973,7 +995,7 @@ function AppContent() {
         )}
 
         {/* Main Content */}
-        <main id="main-content" tabIndex={-1} className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6 focus:outline-hidden">
+        <main ref={mainContentRef} id="main-content" tabIndex={-1} className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6 focus:outline-hidden">
           {currentStrategy === 'regime' && statusError && (
             <RetryBanner message={statusError} onRetry={fetchRegimeStatus} retryLabel="Retry engine status" />
           )}
