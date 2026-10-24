@@ -146,12 +146,14 @@ pm2 stop critical-mass                                   # 1. drain the gateway 
 pm2 describe critical-mass                               #    wait until status is "stopped"
 pm2 stop critical-mass-coinbase critical-mass-gemini critical-mass-cryptocom critical-mass-ui   # 2. then stop engines (and dev UI, if running)
 git pull                                                 # 3. pull this version
-npm install && npm run build                             # 4. update dependencies, rebuild the admin UI
+npm ci && npm --prefix admin ci && npm run build         # 4. install both locked dependency sets, rebuild the admin UI
 pm2 start ecosystem.config.cjs --only critical-mass-coinbase,critical-mass-gemini,critical-mass-cryptocom   # 5. engines first
 pm2 logs critical-mass-coinbase                          # 6. confirm "Pair migration complete" (check each engine you run)
 pm2 start ecosystem.config.cjs --only critical-mass      # 7. then the gateway
 pm2 start ecosystem.config.cjs --only critical-mass-ui   # 8. development UI only, if you use it
 ```
+
+For every native upgrade, refresh both projects from their committed lockfiles, even when only the root version changes. The production UI build needs the admin project's build dependencies.
 
 Order matters. The gateway drains its admitted commands before it disconnects from the engines (up to 30 seconds; its PM2 `kill_timeout` is 35 seconds), so it must be fully stopped **before** any engine stops. Stopping the whole ecosystem at once, or `pm2 restart all`, cannot provide that ordering: PM2 applies multi-process actions concurrently, so an engine can go away while the gateway still has a command waiting on it, and that command returns HTTP 503 (`IPC connection closed`). `pm2 restart all` also touches unrelated applications sharing your PM2 daemon. Always name the Critical Mass processes as above. Engines start before the gateway so they have finished initialization and migration when the gateway begins sending them requests. Keep any supervisor stop grace longer than the gateway's 35 seconds; see [docs/pm2-architecture.md](docs/pm2-architecture.md) for the drain and deadline details.
 
