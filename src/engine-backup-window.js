@@ -24,6 +24,7 @@ const registerEngineBackupHandlers = (registry, {
   // Keep the only owner of unflushed state separate from replacement-start
   // failures. Healthy funds and passive buffers can resume independently.
   const failedFlushes = new Map();
+  let pendingProducers = null;
   // Funds whose post-backup restart failed; reported until they run again,
   // are stopped by the operator, or the process restarts.
   const unresumed = new Set();
@@ -71,12 +72,51 @@ const registerEngineBackupHandlers = (registry, {
     for (const [key, owner] of failedFlushes) if (!owns(owner)) failedFlushes.delete(key);
     return [...failedFlushes.values()].map(({ key, error }) => ({ fund: key, error }));
   };
+  const producerFailures = () => pendingProducers
+    ? [...pendingProducers.failures, ...(pendingProducers.buffers ? [{ error: 'Backup buffers are still paused', recovering: true }] : [])] : [];
+  const retryDelay = (attempts) => Math.min(RECOVERY_RETRY_MS * 2 ** Math.min(attempts, 6), 300_000);
+  // Stop coordinators synchronously cancel their owners and join recovery.
+  // Excluding them prevents recovery from joining its own joiners.
+  const drainRecoveryWrites = () => drainPendingWrites(30_000,
+    entry => !['ipc:regime:stop', 'ipc:regime:stop-all'].includes(entry.label));
+  const resumeProducers = async (current) => {
+    const producers = pendingProducers;
+    if (!producers) return;
+    const remaining = [];
+    const failures = [];
+    for (const fund of producers.marketFunds) {
+      if (pendingProducers !== producers || producers.cancelled) return;
+      if (!producers.marketFunds.includes(fund)) continue;
+      const { exchange, pair } = fund;
+      if (!current() || isShuttingDown()) {
+        remaining.push(fund);
+        failures.push({ exchange, pair, error: 'Backup market-data writer is still paused', recovering: true });
+        continue;
+      }
+      if (regimeEngines.has(`${exchange}::${pair}`)) continue;
+      let result;
+      try { result = await startMarketService(exchange, pair); }
+      catch (err) { result = { success: false, error: err.message }; }
+      if (!result?.success && producers.marketFunds.includes(fund)) {
+        remaining.push(fund);
+        failures.push({ exchange, pair, error: result?.error || 'No restart acknowledgement' });
+      }
+    }
+    if (pendingProducers !== producers || producers.cancelled) return;
+    producers.marketFunds = remaining.filter(fund => producers.marketFunds.includes(fund));
+    producers.failures = failures.filter(failure => producers.marketFunds.some(fund => fund.exchange === failure.exchange && fund.pair === failure.pair));
+    if (current() && !isShuttingDown() && producers.buffers) { resumeBuffers(); producers.buffers = false; }
+    if (!producers.marketFunds.length && !producers.buffers) pendingProducers = null;
+    else producers.nextRetryAt = now() + retryDelay(producers.attempts++);
+  };
   const scheduleFlushRecovery = () => {
     clearRecoveryTimer();
     flushFailures();
-    if (!failedFlushes.size || isShuttingDown()) return;
+    if ((!failedFlushes.size && !pendingProducers) || isShuttingDown()) return;
     const generation = timerGeneration;
-    const delay = Math.max(0, Math.min(...[...failedFlushes.values()].map(owner => owner.nextRetryAt)) - now());
+    const deadlines = [...failedFlushes.values()].map(owner => owner.nextRetryAt);
+    if (pendingProducers) deadlines.push(pendingProducers.nextRetryAt);
+    const delay = Math.max(0, Math.min(...deadlines) - now());
     recoveryTimer = setTimer(() => {
       if (generation !== timerGeneration) return;
       recoveryTimer = null;
@@ -86,7 +126,7 @@ const registerEngineBackupHandlers = (registry, {
   };
   const deferOwner = (owner, error) => {
     owner.error = error;
-    owner.nextRetryAt = now() + Math.min(RECOVERY_RETRY_MS * 2 ** Math.min(owner.attempts++, 6), 300_000);
+    owner.nextRetryAt = now() + retryDelay(owner.attempts++);
     failedFlushes.set(owner.key, owner);
   };
   /** Final flush and identity check must precede every replacement. */
@@ -128,11 +168,7 @@ const registerEngineBackupHandlers = (registry, {
       const owners = [...failedFlushes.values()].filter(owner => explicit || owner.nextRetryAt <= now());
       // A newer maintenance owner (or retained restore journal) owns writes.
       // Drain accepted work again: callbacks can arrive after the first resume.
-      // Stop coordinators cancel this recovery and join it before handover;
-      // joining their IPC promises here would form a cycle. Their fund owners
-      // are cancelled synchronously and cannot enter resumeOwner below.
-      const drain = current() && !isShuttingDown() ? await drainPendingWrites(30_000,
-        entry => !['ipc:regime:stop', 'ipc:regime:stop-all'].includes(entry.label)) : null;
+      const drain = current() && !isShuttingDown() ? await drainRecoveryWrites() : null;
       for (const owner of owners) {
         if (!owns(owner)) { failedFlushes.delete(owner.key); continue; }
         if (!drain?.drained || !current()) {
@@ -141,7 +177,11 @@ const registerEngineBackupHandlers = (registry, {
         }
         await resumeOwner(owner, current);
       }
-      const failures = [...flushFailures(), ...pendingRecovery()];
+      if (drain?.drained && (explicit || pendingProducers?.nextRetryAt <= now())) await resumeProducers(current);
+      else if (pendingProducers && pendingProducers.nextRetryAt <= now()) {
+        pendingProducers.nextRetryAt = now() + retryDelay(pendingProducers.attempts++);
+      }
+      const failures = [...flushFailures(), ...producerFailures(), ...pendingRecovery()];
       return failures.length ? { success: false, failures } : { success: true };
     })().finally(() => { resumePromise = null; scheduleFlushRecovery(); });
     return resumePromise;
@@ -151,7 +191,7 @@ const registerEngineBackupHandlers = (registry, {
   const resumeWriters = () => {
     if (resumePromise) return resumePromise;
     resumePromise = (async () => {
-      const drain = await drainPendingWrites();
+      const drain = await drainRecoveryWrites();
       if (!drain.drained) return { success: false, error: 'Engine writers are still draining; funds remain stopped' };
       const failures = [];
       const current = () => paused.generation === getEngineMaintenanceGeneration();
@@ -159,12 +199,11 @@ const registerEngineBackupHandlers = (registry, {
         const failure = await resumeOwner(owner, current);
         if (failure) failures.push(failure);
       }
-      for (const { exchange, pair } of paused.marketFunds) {
-        if (!current() || isShuttingDown() || regimeEngines.has(`${exchange}::${pair}`)) continue;
-        const result = await Promise.resolve().then(() => startMarketService(exchange, pair)).catch((err) => ({ success: false, error: err.message }));
-        if (!result?.success) failures.push({ exchange, pair, error: result?.error || 'No restart acknowledgement' });
+      if (!paused.cancelled) {
+        pendingProducers = { marketFunds: paused.marketFunds, buffers: true, failures: [], attempts: 0, nextRetryAt: now() };
+        await resumeProducers(current);
+        failures.push(...producerFailures());
       }
-      if (current() && !isShuttingDown()) resumeBuffers();
       paused = null;
       releaseGate();
       if (failures.length) logger.error('Backup completed but some engine writers could not resume', { failures });
@@ -218,8 +257,12 @@ const registerEngineBackupHandlers = (registry, {
       // Automatic retries are not IPC requests: let an in-flight one settle so
       // its engine (if any) is captured and stopped like every other owner.
       if (!await settleStarts(30_000)) return { success: false, error: 'Fund startups are still running' };
+      const marketFunds = [...new Map([...(pendingProducers?.marketFunds || []), ...getMarketFunds()]
+        .map(fund => [`${fund.exchange}::${fund.pair}`, fund])).values()];
       failedFlushes.clear();
-      paused = { generation: pauseGeneration, funds: [...regimeEngines].map(([key, engine]) => ({ key, engine, attempts: 0 })), marketFunds: getMarketFunds() };
+      if (pendingProducers) pendingProducers.cancelled = true;
+      pendingProducers = null;
+      paused = { generation: pauseGeneration, funds: [...regimeEngines].map(([key, engine]) => ({ key, engine, attempts: 0 })), marketFunds };
       stopMarketServices();
       const stopped = await Promise.allSettled(paused.funds.map(({ engine }) => engine.stop({ keepHeartbeat: true })));
       await drainMarketStarts();
@@ -240,7 +283,7 @@ const registerEngineBackupHandlers = (registry, {
     if (!paused) {
       await resumePromise;
       releaseGate();
-      if (failedFlushes.size) return retryFailedFlushes();
+      if (failedFlushes.size || pendingProducers) return retryFailedFlushes();
       // A repeat resume must not report a fund still awaiting recovery as restored.
       const failures = pendingRecovery();
       return failures.length ? { success: false, failures } : { success: true };
@@ -250,8 +293,14 @@ const registerEngineBackupHandlers = (registry, {
   // Cancellation happens before awaiting the shared attempt. Lifecycle callers
   // then join it before flushing/stopping or handing ownership to a consumer.
   const cancelFund = (key) => {
+    if (key === undefined && paused) paused.cancelled = true;
     for (const owner of [...failedFlushes.values(), ...(paused?.funds || [])]) {
       if (key === undefined || owner.key === key) { owner.cancelled = true; failedFlushes.delete(owner.key); }
+    }
+    if (pendingProducers && key === undefined) { pendingProducers.cancelled = true; pendingProducers = null; }
+    else if (pendingProducers) {
+      pendingProducers.marketFunds = pendingProducers.marketFunds.filter(({ exchange, pair }) => `${exchange}::${pair}` !== key);
+      pendingProducers.failures = pendingProducers.failures.filter(({ exchange, pair }) => `${exchange}::${pair}` !== key);
     }
     if (key === undefined) unresumed.clear();
     else unresumed.delete(key);

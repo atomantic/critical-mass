@@ -398,6 +398,27 @@ describe('coordinator and engine resume failure contracts', () => {
     assert.equal(w.events.filter(event => event === 'start:BTC-USDC').length, 1);
   });
 
+  it('retains deferred standalone producers across a newer backup capture', async (t) => {
+    const w = backupWorkflow(t);
+    w.registry.clear(); // this process only has a standalone market service
+    setEngineMaintenance({ active: true, kind: 'backup', reason: 'backup first' });
+    await w.request('engine:backup-pause');
+    setEngineMaintenance({ active: true, kind: 'restore', reason: 'restore fence' });
+    await w.fireRecovery();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal((await w.resume()).success, false);
+    const stale = w.liveTimers()[0];
+    setEngineMaintenance({ active: true, kind: 'backup', reason: 'backup next' });
+    await w.request('engine:backup-pause');
+    await w.fireRecovery(stale);
+    assert.equal(w.events.some(event => event.startsWith('start-market:')), false);
+    const resumed = await w.resume();
+    assert.equal(resumed.success, true, JSON.stringify(resumed));
+    assert.equal(w.events.filter(event => event === 'start-market:SOL-USDC').length, 1);
+    assert.equal(w.events.filter(event => event === 'resume-buffers').length, 1);
+    assert.equal(w.liveTimers().length, 0);
+  });
+
   it('fences a maintenance generation that changes during an awaited final flush', async (t) => {
     const w = backupWorkflow(t);
     await w.backup(() => w.flushFailures.add('BTC-USDC'));
@@ -677,6 +698,25 @@ describe('backup resume keeps automatic fund supervision', () => {
     });
   }
 
+  it('does not join a tracked Stop coordinator during the initial resume drain', async (t) => {
+    const w = supervisedWorkflow(t, { drain: (_, matches) => drainPendingWrites(1_000, matches) });
+    await w.bootAll();
+    setEngineMaintenance({ active: true, kind: 'backup', reason: 'backup initial join' });
+    assert.equal((await w.handlers.get('engine:backup-pause')()).success, true);
+    const gate = deferred();
+    const writer = trackPendingWrite('engine-booking:BTC-USDC', () => gate.promise);
+    const resume = w.resume();
+    await settle();
+    const stop = trackPendingWrite('ipc:regime:stop', () => w.stop('BTC-USDC'));
+    await settle();
+    gate.resolve();
+    await writer;
+    assert.equal((await resume).success, true);
+    assert.equal((await stop).success, true);
+    assert.equal(w.starts.get('BTC-USDC'), 1);
+    assert.equal(w.starts.get('ETH-USDC'), 2);
+  });
+
   it('does not join a tracked Stop coordinator that is joining retained recovery', async (t) => {
     const w = supervisedWorkflow(t, { drain: (_, matches) => drainPendingWrites(1_000, matches) });
     await w.bootAll();
@@ -809,6 +849,9 @@ describe('abandoned backup pause recovery', () => {
     assert.equal(w.events.some(event => event.startsWith('start:')), false);
     for (const [key, engine] of w.originals) assert.equal(w.registry.get(key), engine);
     assert.equal((await w.resume()).success, false, 'new maintenance keeps the retained owners pending');
+    setEngineMaintenance({ active: false });
+    assert.equal((await w.resume()).success, true);
+    assertResumedOnce(w);
   });
 
   it('keeps retrying an abandoned resume while writers are still draining', async (t) => {
