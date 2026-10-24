@@ -575,7 +575,22 @@ const createCryptocomAdapter = (keysPath = null) => {
       throw new Error(`Crypto.com order lookup for client_oid ${clientOrderId} returned no order id — outcome still unresolved`);
     }
 
-    return normalizeOrderDetail(order, clientOrderId);
+    // A client-id lookup is used to decide whether an ambiguous placement is
+    // safe to retry. Missing or malformed execution evidence cannot mean zero:
+    // that would release the durable intent for a possibly partial fill.
+    const quantityField = Object.prototype.hasOwnProperty.call(order, 'cumulative_quantity')
+      ? 'cumulative_quantity'
+      : 'filled_quantity';
+    const rawFilledQuantity = order[quantityField];
+    const validNumericString = typeof rawFilledQuantity === 'string'
+      && /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(rawFilledQuantity.trim())
+      && Number.isFinite(Number(rawFilledQuantity));
+    if (!((typeof rawFilledQuantity === 'number' && Number.isFinite(rawFilledQuantity)) || validNumericString)
+      || Number(rawFilledQuantity) < 0) {
+      throw new Error(`Crypto.com order lookup for client_oid ${clientOrderId} returned invalid ${quantityField} — outcome still unresolved`);
+    }
+
+    return normalizeOrderDetail({ ...order, cumulative_quantity: rawFilledQuantity }, clientOrderId);
   };
 
   /**
@@ -597,7 +612,7 @@ const createCryptocomAdapter = (keysPath = null) => {
    * @returns {OrderDetails}
    */
   const normalizeOrderDetail = (order, fallbackId) => {
-    const filledQuantity = parseFloat(order.cumulative_quantity || order.filled_quantity || 0);
+    const filledQuantity = parseFloat(order.cumulative_quantity ?? order.filled_quantity ?? 0);
     const originalQuantity = parseFloat(order.quantity || order.order_value || 0);
     const avgPrice = parseFloat(order.avg_price || order.filled_price || 0);
     const filledValue = parseFloat(order.cumulative_value || 0) || filledQuantity * avgPrice;
