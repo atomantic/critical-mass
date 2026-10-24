@@ -1,0 +1,1 @@
+- **[issue-1746] Toggle autosaves preserve pending configuration edits** — Dry Run and Enabled acknowledgements update only their saved field in the draft and baseline, retaining unrelated edits and propagation warnings.

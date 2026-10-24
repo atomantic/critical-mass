@@ -350,7 +350,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // unconfirmed optimistic toggle value. try/finally is required here — a
   // thrown render-time error must still decrement the ref, or the sync effect
   // stays blocked forever and the toggle is stuck showing an unsaved value.
-  const persistToggle = async (label, doFetch, optimistic, revert, adoptPersisted) => {
+  const persistToggle = async (label, doFetch, optimistic, revert, adoptToggle) => {
     pendingWriteRef.current += 1
     setToggleBusy(true)
     optimistic()
@@ -358,16 +358,17 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       const res = await doFetch()
       const result = res.data || {}
       if (res.ok) {
+        adoptToggle(result.config)
         dismissRestartWarning()
         notify('success', `${label} saved`)
         // restartNeeded is derived from engine vs saved state — the optimistic
         // config update plus onSave's refetch drive the banner; nothing to set.
         onSave?.()
       } else if (result.persisted === true) {
-        // The optimistic value is the saved value. Adopt the response payload
-        // when available and refetch the parent config, but never roll back to
-        // the stale pre-request value merely because live IPC propagation failed.
-        adoptPersisted?.(result.config)
+        // A toggle acknowledges only its own field. Updating both copies keeps
+        // it out of the next Save diff without replacing unrelated draft edits
+        // with the older server snapshot, even when propagation fails.
+        adoptToggle(result.config)
         warnRestartNeeded(`${label} saved, but the live engine is still using the previous setting. Restart the engine to apply it.`)
         onSave?.()
       } else {
@@ -428,7 +429,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       () => apiPatch(`/api/${exchange}/config${pairQuery}`, { dryRun: next }, { allowEmpty: true }),
       () => setConfig(prev => ({ ...prev, dryRun: next })),
       () => setConfig(prev => ({ ...prev, dryRun: !next })),
-      saved => saved && loadDraft(saved),
+      saved => adoptSaved(prev => ({ ...prev, dryRun: saved?.dryRun ?? next })),
     )
   }
 
@@ -443,15 +444,10 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         () => apiPut(`/api/${exchange}/regime/config${pairQuery}`, { enabled: next }, { allowEmpty: true }),
         () => setConfig(prev => ({ ...prev, regime: { ...prev.regime, enabled: next } })),
         () => setConfig(prev => ({ ...prev, regime: { ...prev.regime, enabled: !next } })),
-        saved => saved && adoptSaved(prev => {
-          const { dryRun, productId, ...savedRegime } = saved
-          return {
-            ...prev,
-            ...(dryRun !== undefined ? { dryRun } : {}),
-            ...(productId !== undefined ? { productId } : {}),
-            regime: { ...prev.regime, ...savedRegime },
-          }
-        }),
+        saved => adoptSaved(prev => ({
+          ...prev,
+          regime: { ...prev.regime, enabled: saved?.enabled ?? next },
+        })),
       )
     } else {
       const next = !config.enabled
@@ -460,7 +456,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         () => apiPatch(`/api/${exchange}/config${pairQuery}`, { enabled: next }, { allowEmpty: true }),
         () => setConfig(prev => ({ ...prev, enabled: next })),
         () => setConfig(prev => ({ ...prev, enabled: !next })),
-        saved => saved && loadDraft(saved),
+        saved => adoptSaved(prev => ({ ...prev, enabled: saved?.enabled ?? next })),
       )
     }
   }
