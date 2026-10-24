@@ -150,16 +150,17 @@ way.
 - **FIFO replay**: ignores cycle boundaries; over-counts when designed
   holdback exists. Diagnostic only.
 
-## Self-healing properties
+## Recovery properties
 
-A correctly-built system survives operator interventions (clearing files,
-rebuilding state, manual orders) without P&L drift.
+Some derived files can be rebuilt from the annotated fill ledger. Raw exchange
+executions alone do not preserve the bot's accounting annotations, so clearing
+that ledger is not a self-healing operation and can cause P&L drift.
 
 | Action | Self-heal? | Mechanism |
 |---|---|---|
 | Delete `closed-trades.json` | ✅ | `migrateFromFills()` rebuilds from ledger |
 | Truncate to `[]` | ✅ | `migrateFromFills()` runs unconditionally; `record()` dedups |
-| Clear ledger and rebuild from exchange truth | ✅ | Rectification ingests exchange fills; cycle-pair re-derives on next refresh |
+| Rebuild the ledger from raw exchange executions | ❌ | Exchange exports do not contain cycle ownership, buy-to-sell pairing, `consumedBy`, `bodyPnl`, or holdback annotations. Preserve the annotated ledger and relevant state before any rebuild; use the [targeted repair steps](#step-4-prepare-a-targeted-repair) to investigate and verify a recovery |
 | Bodies removed/added | ✅ | Cycle-pair derivation reads ledger annotations, not body state |
 | WS drops fills | ❌ until ingested | Underlying data integrity problem; rectification scripts pull from exchange API |
 
