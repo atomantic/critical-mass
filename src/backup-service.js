@@ -107,6 +107,10 @@ const ROOT_CREDENTIAL_FILES = [
   'ipc-secret',
 ];
 
+/** Root credential writer leftovers are sensitive for the same reason as the target. */
+const isRootCredentialArtifact = (name) => ROOT_CREDENTIAL_FILES.some((credential) =>
+  name === credential || (name.startsWith(`${credential}.`) && name.endsWith('.tmp')));
+
 /** Callers that have no context logger (CLI, tests) get silence, not console noise. */
 const SILENT_LOGGER = { info: () => {}, warn: () => {}, error: () => {} };
 
@@ -562,6 +566,7 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
     '*-keys.json',      // Never include API keys
     '*/*-keys.json',    // Keys in subdirectories
     ...ROOT_CREDENTIAL_FILES,
+    ...ROOT_CREDENTIAL_FILES.map((name) => `${name}.*.tmp`),
     'config.json',      // Portable configuration is carried by the manifest
     'config.json.*.tmp', // Interrupted atomic writes can contain secrets too
     BASE_SNAPSHOT_FILENAME, // Full local base may contain secrets; rebuild on restore
@@ -1611,7 +1616,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
         || rel.startsWith(SCORECARD_MAINTENANCE_LOCK)
         || (isRoot && (name === CONFIG_LOCK_DIR || name.startsWith(`${BASE_SNAPSHOT_FILENAME}.`)))
         || name.endsWith('-keys.json')
-        || (isRoot && ROOT_CREDENTIAL_FILES.includes(name))
+        || (isRoot && isRootCredentialArtifact(name))
         || (isRoot && (name === MANIFEST_FILENAME || (legacy && !override && name === 'config.json'))),
     });
 

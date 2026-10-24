@@ -377,13 +377,52 @@ describe('backup-service — credential exclusion', () => {
 
     const archivePath = path.join(BACKUP_DIR, result.filename);
     const entries = listZipEntries(archivePath);
-    for (const entry of ['operator-auth.json', 'providers.json', 'operator-bootstrap-secret', 'config.json']) {
+    for (const entry of ['operator-auth.json', 'providers.json', 'operator-bootstrap-secret', 'ipc-secret', 'config.json']) {
       assert.ok(!entries.includes(entry), `archive should not contain ${entry}, got: ${entries.join(', ')}`);
     }
 
     const archiveContents = spawnSync('unzip', ['-p', archivePath]).stdout.toString();
     assert.equal(archiveContents.includes('telegram-secret'), false, 'Telegram bot tokens must not enter the archive');
     assert.ok(entries.includes('backup-manifest.json'), 'archive should still carry portable manifest data');
+  });
+
+  it('excludes interrupted credential writer siblings, including a real provider-store crash window', async () => {
+    const { createProviderStore } = require('../src/ai/provider-store');
+    const store = createProviderStore({ dataDir: DATA_DIR, allowedOrigins: new Set(['https://api.openai.com']) });
+    store.create({ id: 'backup-fixture', name: 'Backup fixture', endpoint: 'https://api.openai.com/v1', apiKey: 'synthetic-old-key' });
+
+    // Kill the real provider store after atomicWriteSync has written its temp
+    // file and reaches fsync, reproducing process termination between write and rename.
+    const crashScript = `
+      const fs = require('node:fs');
+      const { createProviderStore } = require(process.argv[1]);
+      const store = createProviderStore({ dataDir: process.argv[2], allowedOrigins: new Set(['https://api.openai.com']) });
+      fs.fsyncSync = () => process.kill(process.pid, 'SIGKILL');
+      store.update('backup-fixture', { apiKey: 'synthetic-crash-window-key' });
+    `;
+    const crashed = spawnSync(process.execPath, ['-e', crashScript, path.resolve(__dirname, '../src/ai/provider-store.js'), DATA_DIR]);
+    assert.equal(crashed.signal, 'SIGKILL');
+    const providerTemps = fs.readdirSync(DATA_DIR).filter((name) => /^providers\.json\.\d+\.[0-9a-f-]{36}\.tmp$/.test(name));
+    assert.equal(providerTemps.length, 1, `expected one provider temp after crash, got: ${fs.readdirSync(DATA_DIR).join(', ')}`);
+
+    // IPC secret creator uses a shorter random hex component; the durable
+    // writer uses a UUID. Both forms must be excluded for each root credential.
+    const ROOT_CREDENTIAL_TEMP_NAMES = [
+      'operator-auth.json.123.550e8400-e29b-41d4-a716-446655440000.tmp',
+      'providers.json.123.550e8400-e29b-41d4-a716-446655440000.tmp',
+      'operator-bootstrap-secret.123.550e8400-e29b-41d4-a716-446655440000.tmp',
+      'ipc-secret.123.0123abcd.tmp',
+    ];
+    for (const name of ROOT_CREDENTIAL_TEMP_NAMES) fs.writeFileSync(path.join(DATA_DIR, name), 'synthetic-secret');
+    const result = await createBackup();
+    assert.equal(result.success, true);
+    createdBackups.push(result.filename);
+    const entries = listZipEntries(path.join(BACKUP_DIR, result.filename));
+    for (const name of [...providerTemps, ...ROOT_CREDENTIAL_TEMP_NAMES]) {
+      assert.ok(!entries.includes(name), `archive should not contain credential temp ${name}`);
+    }
+    assert.ok(entries.includes(path.basename(TEST_FILE)), 'ordinary state remains archived');
+    removeAll([...providerTemps, ...ROOT_CREDENTIAL_TEMP_NAMES].map((name) => path.join(DATA_DIR, name)));
   });
 
   it('omits the backups directory itself from the archive', async () => {
@@ -451,6 +490,7 @@ describe('backup-service — restoreBackup preserves existing credentials', () =
     operatorAuth: path.join(DATA_DIR, 'operator-auth.json'),
     providers: path.join(DATA_DIR, 'providers.json'),
     bootstrap: path.join(DATA_DIR, 'operator-bootstrap-secret'),
+    ipc: path.join(DATA_DIR, 'ipc-secret'),
     config: path.join(DATA_DIR, 'config.json'),
   };
   const restoreState = path.join(DATA_DIR, '__backup_service_test_restore_state.json');
@@ -466,6 +506,7 @@ describe('backup-service — restoreBackup preserves existing credentials', () =
     fs.writeFileSync(liveCredentials.operatorAuth, '{"hash":"live-operator-auth"}');
     fs.writeFileSync(liveCredentials.providers, '{"providers":{"openai":{"apiKey":"live-provider-key"}}}');
     fs.writeFileSync(liveCredentials.bootstrap, 'live-bootstrap-secret');
+    fs.writeFileSync(liveCredentials.ipc, 'live-ipc-secret');
     fs.writeFileSync(liveCredentials.config, '{"global":{"notifications":{"telegram":{"botToken":"live-telegram-token"}}}}');
 
     // Craft an archive directly with `zip` (bypassing createBackup's own
@@ -476,6 +517,13 @@ describe('backup-service — restoreBackup preserves existing credentials', () =
     fs.writeFileSync(path.join(sourceDir, 'operator-auth.json'), '{"hash":"archive-operator-auth-must-not-land"}');
     fs.writeFileSync(path.join(sourceDir, 'providers.json'), '{"providers":{"openai":{"apiKey":"archive-provider-key-must-not-land"}}}');
     fs.writeFileSync(path.join(sourceDir, 'operator-bootstrap-secret'), 'archive-bootstrap-must-not-land');
+    for (const name of [
+      'operator-auth.json.123.550e8400-e29b-41d4-a716-446655440000.tmp',
+      'providers.json.123.550e8400-e29b-41d4-a716-446655440000.tmp',
+      'operator-bootstrap-secret.123.550e8400-e29b-41d4-a716-446655440000.tmp',
+      'ipc-secret.123.0123abcd.tmp',
+    ]) fs.writeFileSync(path.join(sourceDir, name), 'archive-temp-secret-must-not-land');
+    fs.writeFileSync(path.join(sourceDir, 'ipc-secret'), 'archive-ipc-secret-must-not-land');
     fs.writeFileSync(path.join(sourceDir, 'config.json'), '{"global":{"notifications":{"telegram":{"botToken":"archive-telegram-must-not-land"}}}}');
     fs.writeFileSync(path.join(sourceDir, '__backup_service_test_restore_state.json'), JSON.stringify({ marker: 'restored-from-archive' }));
 
@@ -500,7 +548,12 @@ describe('backup-service — restoreBackup preserves existing credentials', () =
     assert.equal(fs.readFileSync(liveCredentials.operatorAuth, 'utf8'), '{"hash":"live-operator-auth"}');
     assert.equal(fs.readFileSync(liveCredentials.providers, 'utf8'), '{"providers":{"openai":{"apiKey":"live-provider-key"}}}');
     assert.equal(fs.readFileSync(liveCredentials.bootstrap, 'utf8'), 'live-bootstrap-secret');
+    assert.equal(fs.readFileSync(liveCredentials.ipc, 'utf8'), 'live-ipc-secret');
     assert.equal(fs.readFileSync(liveCredentials.config, 'utf8'), '{"global":{"notifications":{"telegram":{"botToken":"live-telegram-token"}}}}');
+    for (const name of fs.readdirSync(sourceDir).filter((entry) => entry.endsWith('.tmp'))) {
+      const restoredArtifact = path.join(DATA_DIR, name);
+      assert.equal(fs.existsSync(restoredArtifact), false, `restore must skip credential artifact ${name}`);
+    }
 
     // Non-key file from the archive must have landed.
     assert.equal(fs.existsSync(restoreState), true);
