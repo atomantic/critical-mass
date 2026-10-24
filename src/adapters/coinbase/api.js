@@ -2,7 +2,7 @@
 const path = require('path');
 const crypto = require('crypto');
 const { getAuthHeaders } = require('./auth');
-const { createBaseAdapter, createAmbiguousPlacementError, buildFill, createPriceUnavailableError } = require('../base-adapter');
+const { createBaseAdapter, createAmbiguousPlacementError, isUsableOrderId, buildFill, createPriceUnavailableError } = require('../base-adapter');
 const { withAbortTimeout, createNetworkError } = require('../http');
 const { incrementToDecimals, floorToIncrement, finiteFloat, sleep: defaultSleep } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
@@ -72,7 +72,7 @@ const computeHttpRetryDelayMs = (retryIndex, retryAfterMs, random) => {
 const mapOrderResponse = (result, clientOrderId, extra = {}) => ({
   orderId: result.order_id || result.success_response?.order_id,
   clientOrderId,
-  success: result.success || !!result.success_response,
+  success: result.success !== false && isUsableOrderId(result.order_id || result.success_response?.order_id),
   errorMessage: result.failure_response?.message || result.error_response?.message,
   ...extra,
 });
@@ -237,11 +237,22 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
           // something we can't read, so the outcome is unknown, not a clean
           // failure. (#427/#428)
           if (method === 'POST' && isOrderPlacementEndpoint(apiPath)) {
+            let acknowledgement;
             try {
-              return await response.json();
+              acknowledgement = await response.json();
             } catch (err) {
               throw createAmbiguousPlacementError('Coinbase', `${method} ${apiPath.split('?')[0]}`, data?.client_order_id, `undecodable response: ${err.message}`);
             }
+            const orderId = acknowledgement?.order_id || acknowledgement?.success_response?.order_id;
+            const rejected = acknowledgement?.success === false &&
+              [acknowledgement.error_response?.error, acknowledgement.error_response?.message,
+                acknowledgement.failure_response?.message].some(value => typeof value === 'string' && value.trim());
+            // An empty success envelope is not proof that the submitted order
+            // was refused. Keep the dispatched id on the reconciliation path.
+            if (!rejected && (!isUsableOrderId(orderId) || acknowledgement?.success === false)) {
+              throw createAmbiguousPlacementError('Coinbase', `${method} ${apiPath.split('?')[0]}`, data?.client_order_id, 'malformed order acknowledgement');
+            }
+            return acknowledgement;
           }
           return await response.json();
         });
@@ -421,12 +432,7 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
 
     const result = await makeRequest('POST', '/api/v3/brokerage/orders', orderData);
 
-    return {
-      orderId: result.order_id || result.success_response?.order_id,
-      clientOrderId,
-      success: result.success || !!result.success_response,
-      errorMessage: result.error_response?.message,
-    };
+    return mapOrderResponse(result, clientOrderId);
   };
 
   /**

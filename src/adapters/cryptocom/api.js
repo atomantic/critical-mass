@@ -3,7 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { createAuthenticatedRequest } = require('./auth');
 const {
-  createBaseAdapter, createAmbiguousPlacementError, defaultSleep, awaitAndAccountQueuedTime,
+  createBaseAdapter, createAmbiguousPlacementError, isUsableOrderId, defaultSleep, awaitAndAccountQueuedTime,
   collectOrderFillsWithRetry, buildFill, createPriceUnavailableError,
 } = require('../base-adapter');
 const { withAbortTimeout, createNetworkError, createPublicNetworkError } = require('../http');
@@ -159,6 +159,15 @@ const createCryptocomAdapter = (keysPath = null) => {
         throw createAmbiguousPlacementError('Crypto.com', method, params?.client_oid, `undecodable response: ${err.message}`);
       }
       throw err;
+    }
+
+    if (method === ORDER_PLACEMENT_METHOD) {
+      const rejected = typeof data?.code === 'number' && Number.isInteger(data.code) && data.code !== 0;
+      // Missing/invalid codes and success envelopes without an identified order
+      // are inconclusive, unlike an explicit non-zero exchange rejection.
+      if (!rejected && (data?.code !== 0 || !isUsableOrderId(data?.result?.order_id))) {
+        throw createAmbiguousPlacementError('Crypto.com', method, params?.client_oid, 'malformed order acknowledgement');
+      }
     }
 
     // A non-zero code is a DEFINITIVE exchange rejection (the order was read and
