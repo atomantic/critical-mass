@@ -44,11 +44,15 @@ it('restores focus on Escape and exposes the trigger-to-options relationship', (
   let menuClosed
   const reactWithOpenState = {
     useState: initial => {
-      assert.equal(initial, false)
-      return [true, value => { menuClosed = value }]
+      return initial === false
+        ? [true, value => { menuClosed = value }]
+        : [initial, () => {}]
     },
     useRef: () => ({ current: trigger }),
     useEffect: effect => effect(),
+    // Geometry is covered by the browser/admin tests; this synthetic DOM only
+    // supplies the event listeners needed to verify dismissal semantics.
+    useLayoutEffect: () => {},
   }
 
   // Invoke the actual component with an open menu and a minimal synthetic DOM
@@ -56,6 +60,7 @@ it('restores focus on Escape and exposes the trigger-to-options relationship', (
   const originalUseState = testReact.useState
   const originalUseRef = testReact.useRef
   const originalUseEffect = testReact.useEffect
+  const originalUseLayoutEffect = testReact.useLayoutEffect
   Object.assign(testReact, reactWithOpenState)
   try {
     const tree = ExchangeSelector({
@@ -82,7 +87,7 @@ it('restores focus on Escape and exposes the trigger-to-options relationship', (
     assert.equal(menuClosed, false)
     assert.equal(trigger.focusCalls, 1, 'outside pointer dismissal must not steal focus')
   } finally {
-    Object.assign(testReact, { useState: originalUseState, useRef: originalUseRef, useEffect: originalUseEffect })
+    Object.assign(testReact, { useState: originalUseState, useRef: originalUseRef, useEffect: originalUseEffect, useLayoutEffect: originalUseLayoutEffect })
     delete global.document
   }
 })
