@@ -2,6 +2,13 @@
 
 Step-by-step instructions for breaking changes that require operator action.
 
+## Node.js minimum (22.12.0)
+
+Update native Node.js installations to 22.12.0 or newer before upgrading
+Critical Mass. Production accounting requires synchronous loading of shared
+ESM modules, and the locked admin toolchain requires 22.12 or newer on the
+Node 22 line. Container users should use an image with Node.js 22.12.0 or newer.
+
 ---
 
 ## Restores Reproduce Missing Fund Accounting State (Unreleased)

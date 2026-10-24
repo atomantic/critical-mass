@@ -61,7 +61,7 @@ limits; see [Simulation endpoint limits](docs/simulation-limits.md).
 
 ## Requirements
 
-- Node.js 22.11.0 or newer (the global `WebSocket` client is used for exchange feeds and engine IPC)
+- Node.js 22.12.0 or newer. Production accounting synchronously loads shared ESM modules, and the locked admin toolchain also requires Node 22.12 or newer on the Node 22 line.
 - PM2 available on your `PATH` for the production commands below (installed separately from the project dependencies)
 - `lsof` for the native npm startup port checks
 - Exchange API key with View and Trade permissions
