@@ -124,6 +124,7 @@ const classifyByAI = async (item, aiConfig) => {
   const maxPerHour = aiConfig.maxPerHour || 10;
   if (!hasAIQuota(maxPerHour)) return null;
 
+  let timeout;
   try {
     // Load active provider
     const providersData = JSON.parse(await readFile(PROVIDERS_PATH, 'utf8'));
@@ -158,8 +159,12 @@ Return:
   "suggestedAction": "<brief action suggestion for a crypto trader>"
 }`;
 
+    const controller = new AbortController();
+    timeout = setTimeout(() => controller.abort(), 30000);
+
     // Validate provider endpoint URL to prevent SSRF attacks (includes async DNS check).
-    const endpointValidation = await validateEndpointUrl(activeProvider.endpoint);
+    const endpointValidation = await validateEndpointUrl(activeProvider.endpoint, { signal: controller.signal });
+    controller.signal.throwIfAborted();
     if (!endpointValidation.valid) {
       classifierLogger.warn(`⚠️ Sentinel AI classification rejected: unsafe endpoint: ${endpointValidation.error}`, {
         action: 'classify',
@@ -185,7 +190,7 @@ Return:
         messages: [{ role: 'user', content: prompt }],
         stream: false,
       }),
-      signal: AbortSignal.timeout(30000),
+      signal: controller.signal,
     };
 
     // Validation awaited above: recheck and reserve synchronously so concurrent
@@ -222,6 +227,8 @@ Return:
       error: err.message,
     });
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 };
 

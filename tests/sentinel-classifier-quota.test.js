@@ -27,7 +27,7 @@ const loadClassifier = (options = {}) => {
     __dirname: path.dirname(sourcePath),
     Date: { now: () => now },
     URL,
-    AbortSignal: { timeout: () => undefined },
+    AbortController, setTimeout, clearTimeout,
     require: (name) => {
       if (name === 'path') return path;
       if (name === 'fs/promises') return { readFile: async () => JSON.stringify({ providers }) };

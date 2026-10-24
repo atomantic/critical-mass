@@ -181,7 +181,7 @@ const applyExpiry = (extracted, now = Date.now()) => {
  */
 
 /**
- * @param {{validateEndpointUrl: (url: string) => Promise<{valid: boolean, error?: string}>, safeFetch: Function, allowedOrigins: Set<string>}} deps
+ * @param {{validateEndpointUrl: (url: string, options?: {signal?: AbortSignal}) => Promise<{valid: boolean, error?: string}>, safeFetch: Function, allowedOrigins: Set<string>}} deps
  */
 const createVisionClient = ({ validateEndpointUrl, safeFetch, allowedOrigins }) => {
   /**
@@ -208,23 +208,23 @@ const createVisionClient = ({ validateEndpointUrl, safeFetch, allowedOrigins }) 
       stream: false
     };
 
-    // Validate provider endpoint URL to prevent SSRF attacks (includes async DNS check).
-    const endpointValidation = await validateEndpointUrl(provider.endpoint);
-    if (!endpointValidation.valid) {
-      // Log the full detail server-side (includes URL); return only a generic message to the caller.
-      logger.warn(`⚠️ 🤖 UpDown screenshot rejected: unsafe endpoint for "${providerId}": ${endpointValidation.error}`, {
-        action: 'screenshot',
-        provider: providerId,
-        error: endpointValidation.error,
-      });
-      return { ok: false, status: 400, error: 'Provider endpoint is misconfigured. Contact the administrator.' };
-    }
-
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), provider.timeout || 120_000);
 
     let aiResponse;
     try {
+      // Validate provider endpoint URL to prevent SSRF attacks (includes async DNS check).
+      const endpointValidation = await validateEndpointUrl(provider.endpoint, { signal: controller.signal });
+      controller.signal.throwIfAborted();
+      if (!endpointValidation.valid) {
+        // Log the full detail server-side (includes URL); return only a generic message to the caller.
+        logger.warn(`⚠️ 🤖 UpDown screenshot rejected: unsafe endpoint for "${providerId}": ${endpointValidation.error}`, {
+          action: 'screenshot',
+          provider: providerId,
+          error: endpointValidation.error,
+        });
+        return { ok: false, status: 400, error: 'Provider endpoint is misconfigured. Contact the administrator.' };
+      }
       logger.info(`ℹ️ 🤖 UpDown screenshot → ${providerId}/${model}`, {
         action: 'screenshot',
         provider: providerId,
@@ -241,7 +241,6 @@ const createVisionClient = ({ validateEndpointUrl, safeFetch, allowedOrigins }) 
         signal: controller.signal,
         body: JSON.stringify(body)
       });
-      clearTimeout(timeout);
 
       if (!response.ok) {
         const errBody = await response.text().catch(() => '');
@@ -257,7 +256,6 @@ const createVisionClient = ({ validateEndpointUrl, safeFetch, allowedOrigins }) 
       const result = await response.json();
       aiResponse = result.choices?.[0]?.message?.content || '';
     } catch (err) {
-      clearTimeout(timeout);
       // safeFetch's redirect/TOCTOU guard errors ("Blocked endpoint...",
       // "Blocked private/reserved...") can name the internal address it
       // refused to connect to — log that detail server-side but return a
@@ -274,6 +272,8 @@ const createVisionClient = ({ validateEndpointUrl, safeFetch, allowedOrigins }) 
         return { ok: false, status: 502, error: 'AI provider endpoint is misconfigured. Contact the administrator.' };
       }
       return { ok: false, status: 502, error: `AI request failed: ${err.message}` };
+    } finally {
+      clearTimeout(timeout);
     }
 
     let extracted;

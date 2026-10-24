@@ -171,6 +171,38 @@ function checkHostnameTextual(hostname) {
 }
 
 /**
+ * Bound the validation lookup even though the OS resolver cannot be cancelled.
+ * Both late outcomes remain observed, but can no longer advance the operation.
+ * @param {string} hostname
+ * @param {AbortSignal | undefined} signal
+ * @param {number} timeoutMs
+ */
+function lookupForValidation(hostname, signal, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error, addresses) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (error) reject(error);
+      else resolve(addresses);
+    };
+    const onAbort = () => finish(signal.reason);
+    const timer = setTimeout(() => finish(new Error(`DNS validation timed out after ${timeoutMs}ms`)), timeoutMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    dnsLookup(hostname, { all: true }).then(
+      addresses => finish(null, addresses),
+      error => finish(error),
+    );
+  });
+}
+
+/**
  * Validate an AI provider endpoint URL for SSRF safety.
  *
  * Rules:
@@ -181,9 +213,14 @@ function checkHostnameTextual(hostname) {
  *     must be public (mitigates basic DNS-based SSRF).
  *
  * @param {string} url
+ * @param {{ signal?: AbortSignal, dnsTimeoutMs?: number }} [options]
  * @returns {Promise<{ valid: boolean, error?: string }>}
  */
-async function validateEndpointUrl(url) {
+async function validateEndpointUrl(url, { signal, dnsTimeoutMs = 15000 } = {}) {
+  signal?.throwIfAborted();
+  if (!Number.isFinite(dnsTimeoutMs) || dnsTimeoutMs <= 0) {
+    return { valid: false, error: 'DNS validation timeout must be a positive finite number' };
+  }
   if (!url || typeof url !== 'string') {
     return { valid: false, error: 'Endpoint URL is required' };
   }
@@ -219,7 +256,8 @@ async function validateEndpointUrl(url) {
   // Skip DNS lookup for bare IP addresses (already checked textually above).
   if (!net.isIP(hostname)) {
     try {
-      const resolved = await dnsLookup(hostname, { all: true });
+      const resolved = await lookupForValidation(hostname, signal, dnsTimeoutMs);
+      signal?.throwIfAborted();
       for (const { address, family } of resolved) {
         if (family === 4 && isBlockedIPv4(address)) {
           return { valid: false, error: 'Endpoint hostname resolves to a private/reserved IPv4 address' };
@@ -229,6 +267,7 @@ async function validateEndpointUrl(url) {
         }
       }
     } catch (err) {
+      signal?.throwIfAborted();
       // DNS lookup failed — treat as invalid to avoid SSRF via unresolvable hosts.
       return { valid: false, error: `Endpoint hostname could not be resolved: ${/** @type {Error} */(err).message}` };
     }
@@ -326,6 +365,7 @@ function stripAuthHeaders(headers) {
  * @returns {Promise<{ ok: boolean, status: number, headers: { get: (name: string) => string | undefined }, text: () => Promise<string>, json: () => Promise<any> }>}
  */
 async function safeFetch(url, options = {}) {
+  options.signal?.throwIfAborted();
   const {
     method = 'GET',
     headers = {},
@@ -347,7 +387,9 @@ async function safeFetch(url, options = {}) {
     if (allowedOrigins && !allowedOrigins.has(parsed.origin)) {
       throw new Error(`Blocked endpoint: AI provider origin is not allowlisted: ${parsed.origin}`);
     }
-    const validation = await validateEndpointUrl(currentUrl);
+    signal?.throwIfAborted();
+    const validation = await validateEndpointUrl(currentUrl, { signal });
+    signal?.throwIfAborted();
     if (!validation.valid) {
       throw new Error(`Blocked endpoint: ${validation.error}`);
     }
