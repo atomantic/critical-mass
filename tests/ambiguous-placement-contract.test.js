@@ -362,6 +362,7 @@ describe('Crypto.com ambiguous terminal execution quantity keeps durable intent 
     ['missing', {}], ['null', { cumulative_quantity: null }], ['empty', { cumulative_quantity: '' }],
     ['boolean', { cumulative_quantity: false }], ['non-finite', { cumulative_quantity: 'Infinity' }],
     ['negative', { cumulative_quantity: '-0.01' }], ['partially numeric', { cumulative_quantity: '0.01oops' }],
+    ['underflowing positive', { cumulative_quantity: '1e-324' }],
   ]) {
     it(`${label} terminal execution quantity stays pending and blocks a second placement after reload`, async () => {
       await withDurableFixture(async () => {
