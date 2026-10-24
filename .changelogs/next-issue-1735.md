@@ -1,0 +1,1 @@
+- **[issue-1735] Amortize passive trade-flow expiry** — Consume expired trades with a head cursor and occasional prefix compaction instead of shifting the five-minute window on every expiry. Preserve receipt-clock and reverse-scan flow behavior, with factory-driven differential tests and a repeatable synthetic CPU benchmark.

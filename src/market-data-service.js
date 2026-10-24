@@ -749,7 +749,9 @@ const createMarketDataService = (exchange, pair) => {
   let statusEmitError = null;
 
   // Trade flow tracking — rolling window of recent trades for imbalance calculation
-  const tradeFlowWindow = [] // { price, size, side, timestamp }
+  let tradeFlowWindow = [] // { price, size, side, timestamp }
+  let tradeFlowHead = 0
+  const TRADE_FLOW_COMPACT_MIN = 4096
   const TRADE_FLOW_MAX_AGE_MS = 300_000 // 5 minutes
 
   // Market state (same structure as regime engine)
@@ -1149,9 +1151,15 @@ const createMarketDataService = (exchange, pair) => {
       timestamp: now,
     })
 
-    // Prune entries older than 5 minutes
-    while (tradeFlowWindow.length > 0 && tradeFlowWindow[0].timestamp < now - TRADE_FLOW_MAX_AGE_MS) {
-      tradeFlowWindow.shift()
+    // Consume the expired prefix without reindexing the live tail per trade.
+    while (tradeFlowHead < tradeFlowWindow.length && tradeFlowWindow[tradeFlowHead].timestamp < now - TRADE_FLOW_MAX_AGE_MS) {
+      tradeFlowHead++
+    }
+    // Copy only after enough expirations can pay for the remaining live rows.
+    // Between compactions, stale storage is below 4096 rows or below live size.
+    if (tradeFlowHead >= TRADE_FLOW_COMPACT_MIN && tradeFlowHead * 2 >= tradeFlowWindow.length) {
+      tradeFlowWindow = tradeFlowWindow.slice(tradeFlowHead)
+      tradeFlowHead = 0
     }
   };
 
@@ -2021,7 +2029,7 @@ const createMarketDataService = (exchange, pair) => {
     let sellVolume = 0
     let tradeCount = 0
 
-    for (let i = tradeFlowWindow.length - 1; i >= 0; i--) {
+    for (let i = tradeFlowWindow.length - 1; i >= tradeFlowHead; i--) {
       const t = tradeFlowWindow[i]
       if (t.timestamp < cutoff) break
       if (t.side === 'buy') buyVolume += t.size
@@ -2163,6 +2171,13 @@ const createMarketDataService = (exchange, pair) => {
     _test: {
       handleOrderUpdate,
       handleTicker,
+      handleTrade,
+      computeTradeFlow,
+      getTradeFlowStorage: () => ({
+        head: tradeFlowHead,
+        backingLength: tradeFlowWindow.length,
+        rows: tradeFlowWindow.slice(tradeFlowHead),
+      }),
       updateMetrics,
       marketState,
       regimeState,

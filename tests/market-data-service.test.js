@@ -3310,3 +3310,87 @@ describe('fenceMarketDataService + handover gap recovery (issue #1008)', () => {
     assert.deepEqual(tradeIdsOnDisk(), ['A']);
   });
 });
+
+// The benchmark baseline keeps the pre-cursor callback/scan semantics verbatim.
+// Drive the actual factory hooks rather than a source-extracted replacement.
+describe('passive trade flow cursor (issue #1735)', () => {
+  const { createLegacy } = require('../scripts/bench-market-data-flow');
+
+  it('matches boundary, invalid arrival, burst, rollback and idle-gap flows', (t) => {
+    let now = 1_000_000;
+    t.mock.method(Date, 'now', () => now);
+    const svc = createMarketDataService('coinbase', 'BTC-USD');
+    const baseline = createLegacy();
+    const check = () => {
+      for (const windowMs of [60_000, 300_000]) {
+        assert.deepEqual(svc._test.computeTradeFlow(windowMs), baseline.flow(windowMs));
+      }
+      const flow60 = baseline.flow(60_000);
+      const market = svc.getMarketState().tradeFlow;
+      assert.equal(market.tradeCount60s, flow60.tradeCount);
+      assert.equal(market.buyVolume60s, flow60.buyVolume);
+      assert.equal(market.sellVolume60s, flow60.sellVolume);
+      assert.equal(market.imbalance300s, baseline.flow(300_000).imbalance);
+      assert.deepEqual(svc._test.getTradeFlowStorage().rows, baseline.rows());
+    };
+    const arrive = (delta, data) => {
+      now += delta;
+      svc._test.handleTrade(data);
+      baseline.add(data);
+      check();
+    };
+    const buy = { price: 100, size: '0.25', side: 'buy', timestamp: 0 };
+    arrive(0, buy);
+    arrive(60_000, { ...buy, side: 'sell' }); // cutoff is inclusive
+    arrive(1, buy);
+    arrive(239_999, buy); // exactly the five-minute boundary
+    arrive(1, buy); // consumes the original row
+    arrive(-300_001, buy); // consumed rows must never reappear after rollback
+    for (const data of [null, {}, { ...buy, size: 0 }, { ...buy, price: 0 }, { ...buy, side: '' }]) {
+      arrive(400_000, data); // rejected arrivals must not trigger pruning
+    }
+    for (const size of ['0', 'bad', '-2', '1.5']) arrive(0, { ...buy, size });
+    arrive(0, { ...buy, side: 'unknown' }); // existing non-buy classification
+    for (let i = 0; i < 100; i++) arrive(0, { ...buy, side: i % 2 ? 'buy' : 'sell' });
+    now += 400_000;
+    check(); // status-only idle gap keeps reverse-scan semantics
+    arrive(0, buy);
+  });
+
+  it('compacts long streams and releases the stale prefix after an idle gap', (t) => {
+    let now = 0;
+    t.mock.method(Date, 'now', () => now);
+    const svc = createMarketDataService('coinbase', 'BTC-USD');
+    const baseline = createLegacy();
+    let compactions = 0;
+    let previousHead = 0;
+    for (let i = 0; i < 36_000; i++) {
+      now = i * 100;
+      const trade = { price: 100, size: String(1 + i % 3), side: i % 2 ? 'buy' : 'sell' };
+      svc._test.handleTrade(trade);
+      baseline.add(trade);
+      // Inspect at intervals; slicing the live rows is intentionally off the hot path.
+      if (i % 1000 !== 0) continue;
+      const storage = svc._test.getTradeFlowStorage();
+      if (storage.head < previousHead) compactions++;
+      previousHead = storage.head;
+      assert.ok(storage.head < 4096 || storage.head < storage.rows.length);
+      assert.equal(storage.backingLength, storage.head + storage.rows.length);
+      assert.deepEqual(storage.rows, baseline.rows());
+      for (const windowMs of [60_000, 300_000]) {
+        assert.deepEqual(svc._test.computeTradeFlow(windowMs), baseline.flow(windowMs));
+      }
+    }
+    assert.ok(compactions >= 3, 'the stream must exercise repeated prefix compaction');
+    // Accumulate a larger live burst so the following gap must compact immediately.
+    for (let i = 0; i < 5000; i++) svc._test.handleTrade({ price: 100, size: '1', side: 'buy' });
+    now += 300_001;
+    svc._test.handleTrade({ price: 100, size: '2', side: 'sell' });
+    const storage = svc._test.getTradeFlowStorage();
+    assert.equal(storage.head, 0);
+    assert.equal(storage.backingLength, 1);
+    assert.deepEqual(svc._test.computeTradeFlow(300_000), {
+      buyVolume: 0, sellVolume: 2, tradeCount: 1, imbalance: -1,
+    });
+  });
+});
