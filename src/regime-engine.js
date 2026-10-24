@@ -357,7 +357,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // State (initialized before executor so dry-run can reference marketState)
   let marketState = createInitialMarketState();
   const tradeWindow = createTradeWindow(3 * 60 * 1000);
-  Object.defineProperty(marketState, 'trades', { enumerable: true, get: tradeWindow.getTrades });
+  Object.defineProperty(marketState, 'trades', { enumerable: false, get: tradeWindow.getTrades });
   const positionState = createInitialPositionState();
 
   // positionState keeps one object identity for the engine's lifetime so
