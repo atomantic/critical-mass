@@ -427,6 +427,7 @@ describe('Crypto.com ambiguous terminal execution quantity keeps durable intent 
   for (const [label, fields, expectedSuccess] of [
     ['explicit numeric zero', { cumulative_quantity: 0 }, false],
     ['explicit string zero', { cumulative_quantity: '0' }, false],
+    ['explicit scientific zero', { cumulative_quantity: '0e-8' }, false],
     ['positive partial fill', { cumulative_quantity: '0.01' }, true],
   ]) {
     it(`${label} resolves through the durable placement boundary`, async () => {

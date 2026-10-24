@@ -587,7 +587,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       && Number.isFinite(Number(rawFilledQuantity))
       // A positive decimal smaller than Number's range must not collapse to
       // zero and release the placement intent as though it were unfilled.
-      && !(Number(rawFilledQuantity) === 0 && /[1-9]/.test(rawFilledQuantity));
+      && !(Number(rawFilledQuantity) === 0 && /[1-9]/.test(rawFilledQuantity.trim().split(/[eE]/, 1)[0]));
     if (!((typeof rawFilledQuantity === 'number' && Number.isFinite(rawFilledQuantity)) || validNumericString)
       || Number(rawFilledQuantity) < 0) {
       throw new Error(`Crypto.com order lookup for client_oid ${clientOrderId} returned invalid ${quantityField} — outcome still unresolved`);
