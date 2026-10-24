@@ -65,7 +65,7 @@ const createClassifier = () => {
   const filename = path.join(__dirname, '../src/sentinel/classifier.js');
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
-    module, __dirname: path.dirname(filename), URL, AbortSignal,
+    module, __dirname: path.dirname(filename), URL, AbortSignal, AbortController, setTimeout, clearTimeout,
     require: (name) => {
       if (name === 'path') return path;
       if (name === 'fs/promises') return { readFile: async () => JSON.stringify({ providers: { fixture: provider } }) };
