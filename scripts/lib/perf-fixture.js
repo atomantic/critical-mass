@@ -20,13 +20,15 @@ function syntheticFills(count, startMs = Date.UTC(2025, 0, 1)) {
     const cycle = Math.floor(i / 10) + 1;
     const sell = i % 10 === 9;
     fills.push({
+      tradeId: `synthetic-trade-${i}`,
       orderId: `synthetic-${i}`,
       side: sell ? 'sell' : 'buy',
       price: 50000 + (i % 500),
       size: 0.001,
-      quoteAmount: 50 + (i % 500) / 10,
+      quoteAmount: (50000 + (i % 500)) * 0.001,
       fee: 0.1,
-      timestamp: new Date(startMs + i * 60000).toISOString(),
+      netFee: 0.1,
+      timestamp: startMs + i * 60000,
       cycleId: `cycle-${cycle}`,
     });
   }
