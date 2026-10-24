@@ -317,12 +317,21 @@ const createPriceUnavailableError = (exchange, productId, raw) => Object.assign(
   { code: 'PRICE_UNAVAILABLE' }
 );
 
+/** A decoded placement must identify an order, never an object/boolean/blank id.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+const isUsableOrderId = (value) =>
+  (typeof value === 'string' && value.trim().length > 0) ||
+  (typeof value === 'number' && Number.isSafeInteger(value) && value > 0);
+
 module.exports = {
   REQUIRED_METHODS,
   createPriceUnavailableError,
   validateAdapter,
   createBaseAdapter,
   createAmbiguousPlacementError,
+  isUsableOrderId,
   restQueueTiming,
   defaultSleep,
   awaitAndAccountQueuedTime,

@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { getRestAuthHeaders } = require('./auth');
 const {
   createBaseAdapter, createAmbiguousPlacementError, defaultSleep, awaitAndAccountQueuedTime,
-  collectOrderFillsWithRetry, buildFill, createPriceUnavailableError,
+  collectOrderFillsWithRetry, isUsableOrderId, buildFill, createPriceUnavailableError,
 } = require('../base-adapter');
 const { withAbortTimeout, createNetworkError, createPublicNetworkError } = require('../http');
 const { validateStandardExchangeKeys, createKeyFileLoader } = require('../key-validation');
@@ -193,11 +193,26 @@ const createGeminiAdapter = (keysPath = null, { sleep = defaultSleep } = {}) => 
       // the reconcilable shape; every other endpoint can surface the raw parse
       // failure. A try/catch is required — JSON.parse signals by throwing.
       if (endpoint !== ORDER_PLACEMENT_ENDPOINT) return JSON.parse(preserved);
+      let acknowledgement;
       try {
-        return JSON.parse(preserved);
+        acknowledgement = JSON.parse(preserved);
       } catch (err) {
         throw createAmbiguousPlacementError('Gemini', `POST ${endpoint}`, payload?.client_order_id, `undecodable response: ${err.message}`);
       }
+      const rejected = acknowledgement?.result === 'error' &&
+        typeof acknowledgement.reason === 'string' && acknowledgement.reason.trim().length > 0;
+      const cancelled = acknowledgement?.is_cancelled;
+      const validCancellationFlag = cancelled === undefined || typeof cancelled === 'boolean';
+      const executed = acknowledgement?.executed_amount;
+      const confirmedCancellation = acknowledgement?.is_cancelled !== true ||
+        (((typeof executed === 'string' && executed.trim().length > 0) || typeof executed === 'number') &&
+          Number.isFinite(Number(executed)) && Number(executed) >= 0);
+      // An identified IOC cancellation still needs a known fill amount: a
+      // missing/invalid amount cannot establish that no money moved.
+      if (!rejected && (!isUsableOrderId(acknowledgement?.order_id) || !validCancellationFlag || !confirmedCancellation)) {
+        throw createAmbiguousPlacementError('Gemini', `POST ${endpoint}`, payload?.client_order_id, 'malformed order acknowledgement');
+      }
+      return acknowledgement;
     }
   };
 
