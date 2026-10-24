@@ -55,6 +55,65 @@ describe('config save response handling', () => {
     expect(onSave).toHaveBeenCalledTimes(1)
   })
 
+  describe.each([
+    ['regime', 'Dry Run'],
+    ['regime', 'Enabled'],
+    ['dca', 'Dry Run'],
+    ['dca', 'Enabled'],
+  ])('%s %s autosave preserves the draft', (strategy, toggle) => {
+    it.each(['persisted-not-applied', 'success', 'empty success', 'unpersisted failure'])(
+      'keeps unrelated edits and the next Save diff after %s', async outcome => {
+        const initial = {
+          ...config, dryRun: false, enabled: false, minOrderSize: 5,
+          regime: { ...config.regime, minOrderSizeUsdc: 5 },
+        }
+        const regimeEnabled = strategy === 'regime' && toggle === 'Enabled'
+        const field = toggle === 'Dry Run' ? 'dryRun' : 'enabled'
+        const persisted = outcome !== 'unpersisted failure'
+        const saved = regimeEnabled
+          ? { ...initial, regime: { ...initial.regime, enabled: true } }
+          : { ...initial, [field]: true }
+        const snapshot = regimeEnabled ? saved.regime : saved
+        let writes = 0
+        vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
+          if (!['PATCH', 'PUT'].includes(options.method)) return response(200, { presets: {} })
+          writes += 1
+          if (writes > 1) return response(400, { error: 'Save rejected for test' })
+          if (outcome === 'persisted-not-applied') return response(503, { persisted: true, applied: false, config: snapshot })
+          if (outcome === 'unpersisted failure') return response(400, { error: 'Toggle rejected for test' })
+          return response(200, outcome === 'empty success' ? {} : { config: snapshot })
+        }))
+        const onSave = vi.fn()
+        const view = render(<ConfigEditor config={initial} strategy={strategy} onSave={onSave} />)
+        fireEvent.change(screen.getByLabelText('Product ID'), { target: { value: 'ETH-USD' } })
+        const orderLabel = strategy === 'regime' ? 'Min Order Size ($)' : 'Min Order (USD)'
+        fireEvent.change(screen.getByLabelText(orderLabel), { target: { value: '17' } })
+        // Blurring exposes the committed config value instead of FormInput's
+        // focused text buffer, so the test detects a replaced draft.
+        fireEvent.blur(screen.getByLabelText(orderLabel))
+        fireEvent.click(screen.getByRole('switch', { name: toggle }))
+        if (outcome === 'persisted-not-applied') await screen.findByText(/Restart the engine to apply it/)
+        else await screen.findByText(persisted ? `${toggle} saved` : 'Toggle rejected for test')
+        expect(onSave).toHaveBeenCalledTimes(persisted ? 1 : 0)
+        // Model the parent refresh triggered by a confirmed autosave.
+        if (persisted) view.rerender(<ConfigEditor config={saved} strategy={strategy} onSave={onSave} />)
+        expect(screen.getByRole('switch', { name: toggle }).getAttribute('aria-checked')).toBe(String(persisted))
+        expect(screen.getByLabelText('Product ID').value).toBe('ETH-USD')
+        expect(screen.getByLabelText(orderLabel).value).toBe('17')
+        expect(screen.getByText('Unsaved changes')).toBeTruthy()
+        fireEvent.click(screen.getByRole('button', { name: /Save Configuration/ }))
+        await screen.findByText('Save rejected for test')
+        const [, request] = fetch.mock.calls.filter(([, options]) => ['PATCH', 'PUT'].includes(options?.method))[1]
+        expect(request.method).toBe('PUT')
+        expect(JSON.parse(request.body)).toEqual({
+          productId: 'ETH-USD',
+          ...(strategy === 'regime' ? { regime: { minOrderSizeUsdc: 17 } } : { minOrderSize: 17 }),
+        })
+        if (outcome === 'persisted-not-applied') expect(screen.getByText(/Restart the engine to apply it/)).toBeTruthy()
+      },
+    )
+  })
+
   it.each([
     [503, { success: false, persisted: true, applied: false, error: 'engine down' }, 'warning', 'Capital saved, not yet live', 'Restart the engine to apply it.', true],
     [400, { errors: ['depositedCapital must be 0 (auto-derive) or at least 100'] }, 'error', 'Adjust Failed', 'Deposited Capital must be 0 (auto-derive) or at least 100', false],
