@@ -43,12 +43,13 @@ it('keeps a visible global warning for the 501st active alert when its page fail
     return ok(page(first500, 501))
   }))
   render(<AlertBanner />)
-  expect((await screen.findByRole('alert')).textContent).toContain('Sentinel alerts unavailable.')
+  const loadError = await screen.findByText('Sentinel alerts unavailable.')
+  expect(loadError.closest('[role="alert"]')).toBeTruthy()
   expect(screen.getByRole('link').getAttribute('href')).toBe('/sentinel')
   down = false
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
   await screen.findByText('Synthetic alert 500')
-  expect(screen.queryByRole('alert')).toBeNull()
+  expect(screen.queryByText('Sentinel alerts unavailable.')).toBeNull()
   expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
 })
 

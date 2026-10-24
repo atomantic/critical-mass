@@ -12,6 +12,9 @@ import usePolling from '../../hooks/usePolling'
 export default function AlertBanner() {
   const [activeAlerts, setActiveAlerts] = useState([])
   const [loadError, setLoadError] = useState(null)
+  const [politeAnnouncement, setPoliteAnnouncement] = useState({ text: '', revision: 0 })
+  const [assertiveAnnouncement, setAssertiveAnnouncement] = useState({ text: '', revision: 0 })
+  const alertSnapshot = useRef({ initialized: false, alerts: [] })
   const bannerRef = useRef(null)
   const pending = useRef(false)
   const [loading, setLoading] = useState(false)
@@ -38,8 +41,55 @@ export default function AlertBanner() {
         if (!alertsOk) throw new Error('Alerts unavailable')
         const undismissed = (await completePagedItems('/api/sentinel/alerts', alertsData))
           .filter(a => !a.dismissed && (a.severity === 'critical' || a.severity === 'warning'))
-        setActiveAlerts(undismissed.slice(0, 3))
+        const nextAlerts = undismissed
+        const previous = alertSnapshot.current
+        let changed = []
+        let removed = []
+        if (previous.initialized) {
+          const before = new Map(previous.alerts.map((alert, index) => [alert.id ?? `${alert.title}-${index}`, alert]))
+          const after = new Map(nextAlerts.map((alert, index) => [alert.id ?? `${alert.title}-${index}`, alert]))
+          changed = [...after].filter(([id, alert]) => {
+            const old = before.get(id)
+            return !old || old.severity !== alert.severity
+          }).map(([, alert]) => alert)
+          removed = [...before].filter(([id]) => !after.has(id)).map(([, alert]) => alert)
+        } else {
+          changed = nextAlerts
+        }
+        if (changed.length || removed.length) {
+          const criticalCount = nextAlerts.filter(alert => alert.severity === 'critical').length
+          const warningCount = nextAlerts.filter(alert => alert.severity === 'warning').length
+          let message
+          if (nextAlerts.length === 0) {
+            message = `All ${removed.length} active Sentinel alert${removed.length === 1 ? '' : 's'} cleared.`
+          } else {
+            const summary = [
+              criticalCount && `${criticalCount} critical alert${criticalCount === 1 ? '' : 's'}`,
+              warningCount && `${warningCount} warning${warningCount === 1 ? '' : 's'}`,
+            ].filter(Boolean).join(' and ')
+            const titles = changed.slice(0, 3).map(alert => alert.title).filter(Boolean).join('; ')
+            const additionalTitles = Math.max(0, changed.length - 3)
+            const changes = [
+              removed.length && `${removed.length} alert${removed.length === 1 ? '' : 's'} cleared`,
+              `${summary}${titles ? `: ${titles}${additionalTitles ? `, and ${additionalTitles} more` : ''}` : ''}`,
+            ].filter(Boolean).join('. ')
+            message = `${changes}. View details in Sentinel.`
+          }
+          const urgent = changed.some(alert => alert.severity === 'critical') || removed.some(alert => alert.severity === 'critical')
+          setAssertiveAnnouncement(current => ({ text: urgent ? message : '', revision: current.revision + 1 }))
+          setPoliteAnnouncement(current => ({ text: urgent ? '' : message, revision: current.revision + 1 }))
+        }
+        alertSnapshot.current = { initialized: true, alerts: nextAlerts }
+        setActiveAlerts(nextAlerts.slice(0, 3))
       } else {
+        const previous = alertSnapshot.current
+        if (previous.initialized && previous.alerts.length) {
+          const message = `All ${previous.alerts.length} active Sentinel alert${previous.alerts.length === 1 ? '' : 's'} cleared.`
+          const urgent = previous.alerts.some(alert => alert.severity === 'critical')
+          setAssertiveAnnouncement(current => ({ text: urgent ? message : '', revision: current.revision + 1 }))
+          setPoliteAnnouncement(current => ({ text: urgent ? '' : message, revision: current.revision + 1 }))
+        }
+        alertSnapshot.current = { initialized: true, alerts: [] }
         setActiveAlerts([])
       }
       setLoadError(null)
@@ -56,13 +106,15 @@ export default function AlertBanner() {
   // after the first paint never push <main> down. The banner itself is fixed
   // to the bottom edge (beneath the toast stack, z-50) rather than floating
   // over the top of <main>, where it would cover the first row of content.
-  if (!visible) return <div data-testid="alert-banner-slot" className="h-0" />
-
   const hasCritical = activeAlerts.some(a => a.severity === 'critical')
 
   return (
+    <>
     <div data-testid="alert-banner-slot" className="h-0">
-    <div
+      <div role="status" aria-live="polite" aria-atomic="true" className="sr-only"><span key={politeAnnouncement.revision}>{politeAnnouncement.text}</span></div>
+      <div role="alert" aria-live="assertive" aria-atomic="true" className="sr-only"><span key={assertiveAnnouncement.revision}>{assertiveAnnouncement.text}</span></div>
+    </div>
+    {visible && <div
       ref={bannerRef}
       className={`fixed inset-x-0 bottom-0 z-40 inline-flex items-center gap-2 px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-sm w-full shadow-lg focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-0 ${
         hasCritical
@@ -82,7 +134,7 @@ export default function AlertBanner() {
       <span className="ml-auto text-xs opacity-75 shrink-0">View details</span>
     </Link>
     {loadError && <Button onClick={fetchAlerts} disabled={loading} variant="link" size="compact" touchTarget="always">{loading ? 'Loading...' : 'Retry'}</Button>}
-    </div>
-    </div>
+    </div>}
+    </>
   )
 }
