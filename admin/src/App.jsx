@@ -718,8 +718,8 @@ function AppContent() {
         {!isOverview && !isAI && !isUpDown && !isSentinel && !isGateway && (
           <nav aria-label="Fund views" className="bg-gray-800 border-b border-gray-700">
             <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
-              <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2">
-                <div className="flex gap-1 overflow-x-auto min-w-0">
+              <div className="flex flex-col xl:flex-row xl:items-center gap-0 xl:gap-2">
+                <div className="flex w-full xl:w-auto gap-1 overflow-x-auto min-w-0">
                   {!fundsUnavailable && tabs.map(tab => (
                     <Link
                       key={tab.path}
@@ -735,7 +735,7 @@ function AppContent() {
                     </Link>
                   ))}
                 </div>
-                <div className="flex items-center gap-2 md:gap-3 flex-wrap max-w-full px-3 md:px-0 py-1.5 shrink-0 md:ml-auto">
+                <div className="flex items-center gap-2 md:gap-3 flex-wrap max-w-full px-3 md:px-0 py-1.5 shrink-0 xl:ml-auto">
                   {fundsUnavailable ? (
                     <div role="alert" className="flex items-center gap-2 text-xs md:text-sm text-red-300">
                       <span>Could not load funds ({exchangesError})</span>
