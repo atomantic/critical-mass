@@ -33,7 +33,7 @@ const { createAdjustmentHistory } = require('./adjustment-history');
  * @typedef {Object} TpAdjustment
  * @property {number} tpMinPercent - New minimum TP %
  * @property {number} tpMaxPercent - New maximum TP %
- * @property {number} holdbackRatio - Ratio of position to hold vs sell (0.0-1.0)
+ * @property {number} holdbackRatio - Base share of gross TP profit allocated to retained asset; tier-scaled, effective cap 0.95 (0.0-1.0)
  * @property {string} reason - Adjustment reason
  */
 
@@ -492,8 +492,8 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
       return null;
     }
 
-    // HoldbackRatio stays at 0.5 when auto-managed (50% sell, 50% hold)
-    // This provides balanced profit-taking between USDC and BTC appreciation
+    // Preserve the configured base profit allocation (default 0.5).
+    // The sizer applies tier scaling and the effective cap at TP placement.
     const currentHoldbackRatio = config.holdbackRatio ?? 0.5;
 
     return {

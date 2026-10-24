@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1742] Holdback guidance reflects profit allocation** — regime configuration and reference docs explain the tier-adjusted share of gross TP profit retained as asset, with a qualified sizing example instead of a whole-position split. Trading behavior is unchanged.
+
 - **[issue-1751] Tablet action buttons keep touch-sized targets** — shared buttons and touch-target helpers retain a 44px minimum for coarse pointers at every width; compact desktop sizing applies only to fine pointers at md and above, preserving always-touch and inline actions.
 
 - **[issue-1698] Paginated alerts and trade history retain request ownership** — changing filters, clearing alerts, refreshing trades or leaving the page cancels every page of an obsolete read and prevents it from replacing newer lists, summaries or loading/error state.
