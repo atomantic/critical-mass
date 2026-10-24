@@ -68,7 +68,7 @@ const createRunRecorder = ({ dataDir, providers, maxConcurrentRuns = 3, onRunCom
       body: JSON.stringify({ model: model || undefined, messages: [{ role: 'user', content: prompt }], stream: true }),
     });
     if (!response.ok) {
-      const body = (await response.text().catch(() => '')).replace(/\s+/g, ' ').trim().slice(0, ERROR_BODY_CHARS);
+      const body = (await response.text()).replace(/\s+/g, ' ').trim().slice(0, ERROR_BODY_CHARS);
       throw new Error(`API error: HTTP ${response.status}${body ? ` — ${body}` : ''}`);
     }
 

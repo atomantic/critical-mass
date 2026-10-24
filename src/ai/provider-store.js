@@ -121,7 +121,10 @@ const createProviderStore = ({ dataDir, allowedOrigins, fetchImpl, samplesFile =
       await response.body?.cancel().catch(() => {});
       throw new Error(`API not reachable: HTTP ${response.status}`);
     }
-    const body = await response.json().catch(() => null);
+    const body = await response.json().catch((error) => {
+      if (error instanceof SyntaxError) return null;
+      throw error; // Transport/byte-limit failures must fail the probe.
+    });
     // OpenAI: { data: [{ id }] }; some servers: { models: ["name"] | [{ name }] }.
     const entries = Array.isArray(body?.data) ? body.data : Array.isArray(body?.models) ? body.models : [];
     return entries

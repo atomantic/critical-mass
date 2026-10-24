@@ -14,7 +14,7 @@ const path = require('node:path');
 
 const mountAiRoutes = require('../src/routes/ai-routes');
 const { errorMiddleware } = require('../src/error-middleware');
-const { REDACTED } = require('../src/ai-security');
+const { MAX_RESPONSE_BYTES, REDACTED } = require('../src/ai-security');
 
 /** @param {http.RequestListener} handler */
 const listen = async (handler) => {
@@ -41,6 +41,7 @@ describe('owned AI provider and run routes', () => {
   /** @type {{ url?: string, auth?: string, body?: any }[]} */
   let providerRequests = [];
   let provider, blocked, gateway, dataDir, base;
+  let providerFetch;
 
   const api = async (route, { method = 'GET', body } = {}) => {
     const response = await fetch(`${base}${route}`, {
@@ -74,7 +75,7 @@ describe('owned AI provider and run routes', () => {
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-routes-'));
     const app = express();
     app.use(express.json());
-    mountAiRoutes(/** @type {any} */ (app), { DATA_DIR: dataDir }, { allowedOrigins: new Set([provider.origin]), maxConcurrentRuns: 1 });
+    mountAiRoutes(/** @type {any} */ (app), { DATA_DIR: dataDir }, { allowedOrigins: new Set([provider.origin]), maxConcurrentRuns: 1, fetchImpl: (...args) => (providerFetch || fetch)(...args) });
     app.use(errorMiddleware);
     gateway = await listen(app);
     base = gateway.origin;
@@ -88,6 +89,7 @@ describe('owned AI provider and run routes', () => {
   beforeEach(() => {
     providerBehavior = {};
     providerRequests = [];
+    providerFetch = null;
     fs.rmSync(path.join(dataDir, 'providers.json'), { force: true });
     fs.rmSync(path.join(dataDir, 'runs'), { recursive: true, force: true });
   });
@@ -360,4 +362,82 @@ describe('owned AI provider and run routes', () => {
     assert.equal((await api(`/api/runs/${runId}`)).json.error, 'Run timed out after 1s');
     assert.equal((await api('/api/runs', { method: 'POST', body: { providerId: 'fixture', prompt: 'p', timeout: 10 } })).status, 400);
   });
+
+  // Generate responses on demand: no huge preallocated body and no real provider.
+  const oversizedResponse = (payload, { status = 200, type = 'text/event-stream', tail = '' } = {}) => {
+    const chunk = Buffer.alloc(64 * 1024, payload);
+    const state = { emitted: 0, cancelled: 0, response: null };
+    state.response = new Response(new ReadableStream({
+      pull(controller) {
+        if (state.emitted >= MAX_RESPONSE_BYTES * 2) {
+          if (tail) controller.enqueue(Buffer.from(tail));
+          controller.close();
+          return;
+        }
+        state.emitted += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+      cancel() { state.cancelled += 1; },
+    }, { highWaterMark: 0 }), { status, headers: { 'Content-Type': type, 'Content-Length': '1' } });
+    return state;
+  };
+
+  for (const [label, payload, options] of [
+    ['unterminated SSE', 'x', {}],
+    ['ignored SSE comments', ': keepalive\n\n', {}],
+    ['malformed SSE data', 'data: noise\n\n', {}],
+    ['ignored SSE data', 'data: {}\n\n', {}],
+    ['non-SSE JSON', ' ', { type: 'application/json', tail: '{"choices":[{"message":{"content":"small output"}}]}' }],
+    ['HTTP error bodies', 'x', { status: 503, type: 'text/plain' }],
+  ]) {
+    it(`fails oversized ${label}, cancels the peer and releases run admission`, async () => {
+      await api('/api/providers', { method: 'POST', body: apiProvider() });
+      const source = oversizedResponse(payload, options);
+      providerFetch = async () => source.response;
+      const started = await api('/api/runs', { method: 'POST', body: { providerId: 'fixture', prompt: 'p' } });
+      assert.equal(started.status, 202);
+      const { runId } = started.json;
+      await waitFor(async () => (await api(`/api/runs/${runId}`)).json.isActive === false, label);
+      const failed = (await api(`/api/runs/${runId}`)).json;
+      assert.equal(failed.success, false);
+      assert.equal(failed.exitCode, 1);
+      assert.ok(failed.endTime);
+      assert.match(failed.error, /response exceeded 20971520 bytes/);
+      assert.equal(source.cancelled, 1);
+      assert.equal(source.emitted, MAX_RESPONSE_BYTES + 64 * 1024);
+
+      providerFetch = async () => Response.json({ choices: [{ message: { content: 'retry works' } }] });
+      const retry = await api('/api/runs', { method: 'POST', body: { providerId: 'fixture', prompt: 'retry' } });
+      assert.equal(retry.status, 202, 'failed run released its slot');
+      await waitFor(async () => (await api(`/api/runs/${retry.json.runId}`)).json.isActive === false, 'retry completion');
+      assert.equal((await api(`/api/runs/${retry.json.runId}`)).json.success, true);
+    });
+  }
+
+  it('fails oversized model probes and refreshes without replacing stored models', async () => {
+    await api('/api/providers', { method: 'POST', body: apiProvider() });
+    for (const suffix of ['test', 'refresh-models']) {
+      const source = oversizedResponse(' ', { type: 'application/json', tail: '{"data":[{"id":"replacement"}]}' });
+      providerFetch = async () => source.response;
+      const result = await api(`/api/providers/fixture/${suffix}`, { method: 'POST' });
+      assert.equal(result.status, suffix === 'test' ? 200 : 502);
+      assert.equal(result.json.success, false);
+      assert.match(result.json.error, /response exceeded 20971520 bytes/);
+      assert.equal(source.cancelled, 1);
+      assert.equal(source.emitted, MAX_RESPONSE_BYTES + 64 * 1024);
+      assert.deepEqual(readProvidersFile().providers.fixture.models, ['m1']);
+    }
+  });
+
+
+  it('retains the semantic output limit below the raw byte budget', async () => {
+    await api('/api/providers', { method: 'POST', body: apiProvider() });
+    providerFetch = async () => Response.json({ choices: [{ message: { content: 'x'.repeat(2_000_001) } }] });
+    const { runId } = (await api('/api/runs', { method: 'POST', body: { providerId: 'fixture', prompt: 'p' } })).json;
+    await waitFor(async () => (await api(`/api/runs/${runId}`)).json.isActive === false, 'semantic output limit');
+    const failed = (await api(`/api/runs/${runId}`)).json;
+    assert.equal(failed.success, false);
+    assert.match(failed.error, /Output exceeded 2000000 characters/);
+  });
+
 });
